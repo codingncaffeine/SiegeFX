@@ -52,8 +52,11 @@ public sealed class SnoMeshIndex
         {
             if (path.EndsWith(".sno", StringComparison.OrdinalIgnoreCase))
             {
-                var bare = BareName(path);
-                bareToFull[bare] = path;
+                // Last-wins on bare-name collisions. Fuzz across both retail maps shows no
+                // placement regression; reversing this policy (first-wins via TryAdd) caused
+                // 3,877 previously-resolved door edges to drop out, so the later-listed .sno
+                // is the canonical siege-node asset for some mesh_guids in Terrain.dsres.
+                bareToFull[BareName(path)] = path;
                 continue;
             }
 

@@ -24,8 +24,13 @@ public sealed class RegionLayout
     public uint AnchorGuid { get; }
     public IReadOnlyDictionary<uint, Matrix4x4> Transforms { get; }
 
-    /// <summary>Door edges whose far snode wasn't in this region (cross-region stitches or
-    /// dangling links). Useful for diagnostics and for the region-stitching pass.</summary>
+    /// <summary>Door edges pointing to a snode in a neighbor region. Expected and routine —
+    /// Phase 6c will resolve these by walking the global guid → (region, snode) map.</summary>
+    public int CrossRegionDoorCount { get; }
+
+    /// <summary>Door edges whose local or far door transform couldn't be resolved (missing
+    /// SNO asset, missing door id, or un-invertible matrix). Actionable — non-zero means a
+    /// genuine data or parser problem, not cross-region stitching.</summary>
     public int UnresolvedDoorCount { get; }
 
     /// <summary>Snodes present in the region that the door graph never reached from the anchor.
@@ -35,11 +40,13 @@ public sealed class RegionLayout
     private RegionLayout(
         uint anchorGuid,
         IReadOnlyDictionary<uint, Matrix4x4> transforms,
+        int crossRegionDoorCount,
         int unresolvedDoorCount,
         int unreachableNodeCount)
     {
         AnchorGuid = anchorGuid;
         Transforms = transforms;
+        CrossRegionDoorCount = crossRegionDoorCount;
         UnresolvedDoorCount = unresolvedDoorCount;
         UnreachableNodeCount = unreachableNodeCount;
     }
@@ -54,7 +61,7 @@ public sealed class RegionLayout
     public static RegionLayout Build(RegionGraph graph, Func<uint, SnoModel?> resolveSno)
     {
         if (graph.Nodes.Count == 0)
-            return new RegionLayout(0, new Dictionary<uint, Matrix4x4>(), 0, 0);
+            return new RegionLayout(0, new Dictionary<uint, Matrix4x4>(), 0, 0, 0);
 
         var anchor = graph.TargetNodeGuid;
         if (!graph.TryGetNode(anchor, out _))
@@ -65,7 +72,8 @@ public sealed class RegionLayout
             [anchor] = Matrix4x4.Identity,
         };
 
-        var unresolvedDoors = 0;
+        var crossRegion = 0;
+        var unresolved = 0;
         var queue = new Queue<uint>();
         queue.Enqueue(anchor);
 
@@ -82,30 +90,35 @@ public sealed class RegionLayout
             {
                 if (!graph.TryGetNode(door.FarGuid, out var far))
                 {
-                    unresolvedDoors++;
+                    crossRegion++;
                     continue;
                 }
                 if (transforms.ContainsKey(far.Guid)) continue;
 
                 var farSno = resolveSno(far.MeshGuid);
-                if (farSno is null) continue;
+                if (farSno is null) { unresolved++; continue; }
 
                 var localDoor = FindDoor(currentSno, door.LocalId);
                 var farDoorXform = FindDoor(farSno, door.FarDoorId);
-                if (localDoor is null || farDoorXform is null)
+                if (localDoor is null || farDoorXform is null) { unresolved++; continue; }
+
+                if (!Matrix4x4.Invert(farDoorXform.Value, out var invFar))
                 {
-                    unresolvedDoors++;
+                    // Door transforms are rigid (rotation + translation) so inversion should
+                    // always succeed. A singular matrix means the SNO's door xform is
+                    // degenerate — treat as an unresolved edge rather than poisoning the walk.
+                    unresolved++;
                     continue;
                 }
 
-                var wFar = ComposeNeighborTransform(wCurrent, localDoor.Value, farDoorXform.Value);
+                var wFar = ComposeNeighborTransform(wCurrent, localDoor.Value, invFar);
                 transforms[far.Guid] = wFar;
                 queue.Enqueue(far.Guid);
             }
         }
 
         var unreachable = graph.Nodes.Count - transforms.Count;
-        return new RegionLayout(anchor, transforms, unresolvedDoors, unreachable);
+        return new RegionLayout(anchor, transforms, crossRegion, unresolved, unreachable);
     }
 
     private static Matrix4x4? FindDoor(SnoModel sno, int doorId)
@@ -124,16 +137,22 @@ public sealed class RegionLayout
         xf.Row2.X, xf.Row2.Y, xf.Row2.Z, 0f,
         xf.Translation.X, xf.Translation.Y, xf.Translation.Z, 1f);
 
-    /// <summary>Composes <c>W(far) = W(current) * localDoor * Flip * farDoor^-1</c>. The
+    /// <summary>Composes <c>W(far) = W(current) * localDoor * Flip * invFarDoor</c>. The
     /// 180° flip is around Y because DS1 authors door frames in a Y-up door-local space with
     /// +Z pointing out of the node; two mating doors must therefore face each other along
-    /// opposite +Z, which is the Y-axis rotation.</summary>
+    /// opposite +Z, which is the Y-axis rotation. <paramref name="invFarDoor"/> must be the
+    /// far door's matrix already inverted — invert in the caller so failure is diagnosable.
+    ///
+    /// KNOWN LIMITATION: some neighbors past the first hop render below and crossed — one
+    /// cluster around the anchor looks correct, outward chains spike below the good surface.
+    /// CreateRotationY tested as best; Z made everything wrong, X flattened the region.
+    /// Likely cause: a per-door orientation flag we're ignoring, or DS1 door xforms stored
+    /// in a non-row-vector convention that needs transposing. Needs a data-driven fix
+    /// (dump mating pair xforms, solve by hand) rather than more flip-axis guessing.</summary>
     internal static Matrix4x4 ComposeNeighborTransform(
-        Matrix4x4 wCurrent, Matrix4x4 localDoor, Matrix4x4 farDoor)
+        Matrix4x4 wCurrent, Matrix4x4 localDoor, Matrix4x4 invFarDoor)
     {
-        if (!Matrix4x4.Invert(farDoor, out var invFar))
-            invFar = Matrix4x4.Identity;
         var flip = Matrix4x4.CreateRotationY(MathF.PI);
-        return wCurrent * localDoor * flip * invFar;
+        return wCurrent * localDoor * flip * invFarDoor;
     }
 }
