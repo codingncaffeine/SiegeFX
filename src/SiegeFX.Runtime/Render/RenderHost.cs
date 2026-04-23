@@ -23,6 +23,7 @@ public sealed class RenderHost : IDisposable
     private Shader? _meshShader;
     private GridMesh? _grid;
     private StaticMesh? _mesh;
+    private SnoMesh? _sno;
     private GlTexture? _texture;
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
@@ -149,16 +150,32 @@ void main()
         if (_meshPath is not null)
         {
             var bytes = File.ReadAllBytes(_meshPath);
-            var asp = AspMesh.Load(bytes);
-            _mesh = new StaticMesh(_gl, asp);
+            var ext = Path.GetExtension(_meshPath).ToLowerInvariant();
+            Vector3 center;
+            float radius;
 
-            // Frame the mesh: put the camera a Radius*3 back along -Z, centered vertically
-            // on the model, so something is visible on first paint.
-            var radius = MathF.Max(_mesh.Radius, 0.5f);
-            _camera.Position = _mesh.Center + new Vector3(0, 0, radius * 3f);
+            if (ext == ".sno")
+            {
+                var sno = SnoModel.Load(bytes);
+                _sno = new SnoMesh(_gl, sno);
+                center = _sno.Center;
+                radius = MathF.Max(_sno.Radius, 1f);
+                Console.WriteLine($"loaded SNO v{sno.Version} ({sno.Corners.Length} corners, {sno.TotalTriangleCount} tris across {sno.Surfaces.Length} surfaces, bounds {_sno.Min} .. {_sno.Max})");
+            }
+            else
+            {
+                var asp = AspMesh.Load(bytes);
+                _mesh = new StaticMesh(_gl, asp);
+                center = _mesh.Center;
+                radius = MathF.Max(_mesh.Radius, 0.5f);
+                Console.WriteLine($"loaded mesh '{asp.MeshName}' ({asp.Positions.Length} v, {asp.TriangleCount} tris, bounds {_mesh.Min} .. {_mesh.Max})");
+            }
+
+            // Frame whatever we loaded: put the camera radius*3 back along +Z, looking
+            // at the node's center, so something is visible on first paint.
+            _camera.Position = center + new Vector3(0, 0, radius * 3f);
             _camera.Yaw = 0;
             _camera.Pitch = 0;
-            Console.WriteLine($"loaded mesh '{asp.MeshName}' ({asp.Positions.Length} v, {asp.TriangleCount} tris, bounds {_mesh.Min} .. {_mesh.Max})");
         }
 
         if (_texturePath is not null)
@@ -217,6 +234,19 @@ void main()
             _texture?.Bind(TextureUnit.Texture0);
             _mesh.Draw();
         }
+
+        if (_meshShader is not null && _sno is not null)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
+            _meshShader.SetInt("uAlbedo", 0);
+            // Phase 4d-2: no per-subset textures wired yet — draw untextured so surfaces
+            // read as distinct shapes via Lambert shading.
+            _meshShader.SetInt("uHasTexture", 0);
+            for (var i = 0; i < _sno.Subsets.Count; i++)
+                _sno.DrawSubset(i);
+        }
     }
 
     private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
@@ -224,6 +254,7 @@ void main()
     public void Dispose()
     {
         _texture?.Dispose();
+        _sno?.Dispose();
         _mesh?.Dispose();
         _grid?.Dispose();
         _meshShader?.Dispose();
