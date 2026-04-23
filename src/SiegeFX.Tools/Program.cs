@@ -108,11 +108,19 @@ static int CmdAspInfo(string[] a)
 {
     if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp info <file.asp>"); return 1; }
     var data = File.ReadAllBytes(a[0]);
-    Console.WriteLine($"File  : {a[0]}");
-    Console.WriteLine($"Size  : {data.Length:N0} bytes");
+    Console.WriteLine($"File      : {a[0]}");
+    Console.WriteLine($"Size      : {data.Length:N0} bytes");
+
+    var mesh = AspMesh.Load(data);
+    Console.WriteLine($"Version   : {mesh.AspVersionMajor}.{mesh.AspVersionMinor}");
+    Console.WriteLine($"Skeleton  : {mesh.SkeletonName}");
+    Console.WriteLine($"Mesh      : {mesh.MeshName}");
+    Console.WriteLine($"Vertices  : {mesh.Positions.Length}");
+    Console.WriteLine($"Corners   : {mesh.Corners.Length}");
+    Console.WriteLine($"Triangles : {mesh.TriangleCount}");
 
     var chunks = AspScanner.Scan(data);
-    Console.WriteLine($"Chunks: {chunks.Count}");
+    Console.WriteLine($"Chunks    : {chunks.Count}");
     foreach (var c in chunks)
         Console.WriteLine($"  0x{c.Offset:X8}  {c.Id}  v{c.Version}");
     return 0;
