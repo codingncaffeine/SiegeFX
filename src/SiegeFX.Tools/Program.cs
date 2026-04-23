@@ -32,6 +32,16 @@ catch (FileNotFoundException ex)
     Console.Error.WriteLine($"file not found: {ex.FileName}");
     return 3;
 }
+catch (FormatException ex)
+{
+    Console.Error.WriteLine($"bad argument: {ex.Message}");
+    return 1;
+}
+catch (ArgumentException ex)
+{
+    Console.Error.WriteLine($"bad argument: {ex.Message}");
+    return 1;
+}
 
 static void PrintUsage()
 {

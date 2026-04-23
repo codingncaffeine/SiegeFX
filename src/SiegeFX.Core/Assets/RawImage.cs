@@ -12,7 +12,11 @@ public sealed class RawImage
     public int Width  { get; }
     public int Height { get; }
     public int SurfaceCount { get; }
+    public ushort Flags { get; }
     public byte[] Pixels { get; }
+
+    /// <summary>Max permitted side length. Real DS1 textures top out at 512; this is a sanity cap to reject fuzzed/corrupt headers before overflow math matters.</summary>
+    public const int MaxDimension = 8192;
 
     // Layout: [surface 0 BGRA pixels][surface 1 BGRA pixels]...[surface N-1]
     // where surface k has dimensions (max(1, W >> k), max(1, H >> k)).
@@ -23,11 +27,12 @@ public sealed class RawImage
     public const int HeaderSize = 16;
     public const int BytesPerPixel = 4;
 
-    public RawImage(int width, int height, int surfaceCount, byte[] pixels)
+    public RawImage(int width, int height, int surfaceCount, ushort flags, byte[] pixels)
     {
         Width = width;
         Height = height;
         SurfaceCount = surfaceCount;
+        Flags = flags;
         Pixels = pixels;
     }
 
@@ -50,14 +55,20 @@ public sealed class RawImage
         var surfaceCount = r.ReadU16();
         var width        = r.ReadU16();
         var height       = r.ReadU16();
-        _ = flags;
 
-        var totalPixels = 0;
+        if (surfaceCount == 0)
+            throw new InvalidDataException("RAW has zero surfaces");
+        if (width == 0 || height == 0)
+            throw new InvalidDataException($"RAW has zero dimension: {width}x{height}");
+        if (width > MaxDimension || height > MaxDimension)
+            throw new InvalidDataException($"RAW dimensions exceed cap: {width}x{height} > {MaxDimension}");
+
+        long totalPixels = 0;
         for (var i = 0; i < surfaceCount; i++)
         {
             var w = Math.Max(1, width >> i);
             var h = Math.Max(1, height >> i);
-            totalPixels += w * h;
+            totalPixels += (long)w * h;
         }
 
         var expectedBytes = totalPixels * BytesPerPixel;
@@ -65,11 +76,13 @@ public sealed class RawImage
         if (available < expectedBytes)
             throw new InvalidDataException(
                 $"RAW pixel data truncated: need {expectedBytes}, have {available}");
+        if (expectedBytes > int.MaxValue)
+            throw new InvalidDataException($"RAW pixel buffer too large: {expectedBytes} bytes");
 
         var pixels = new byte[expectedBytes];
-        Buffer.BlockCopy(data, HeaderSize, pixels, 0, expectedBytes);
+        Buffer.BlockCopy(data, HeaderSize, pixels, 0, (int)expectedBytes);
 
-        return new RawImage(width, height, surfaceCount, pixels);
+        return new RawImage(width, height, surfaceCount, flags, pixels);
     }
 
     public int GetSurfaceWidth(int index)  => Math.Max(1, Width  >> index);
