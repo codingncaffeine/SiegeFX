@@ -133,7 +133,7 @@ static int CmdTankList(string[] a)
 
     foreach (var path in reader.ListFiles().OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
     {
-        reader.TryGetFile(path, out var file);
+        if (!reader.TryGetFile(path, out var file)) continue;
         var tag = file.Format switch
         {
             TankDataFormat.Raw  => "raw ",

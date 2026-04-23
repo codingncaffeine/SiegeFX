@@ -8,7 +8,7 @@ The goal is to run Dungeon Siege natively on modern Windows at any resolution, w
 
 ## Status
 
-Bootstrap. Nothing runs yet.
+Tank archive listing + extraction works. RAW textures decode to PNG. Renderer not started.
 
 ## Roadmap
 
@@ -30,7 +30,7 @@ Bootstrap. Nothing runs yet.
 ```
 src/
   SiegeFX.Core       class library — file format parsers, no UI
-  SiegeFX.Tools      CLI tools (tankdump, raw2png, asp2obj, ...)
+  SiegeFX.Tools      unified siegefx CLI (tank info/list/extract, raw info/decode)
   SiegeFX.Browser    WPF asset explorer
   SiegeFX.Runtime    game / engine host (Silk.NET)
 ```

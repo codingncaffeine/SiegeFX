@@ -68,15 +68,11 @@ public sealed class SiegeBinaryReader : IDisposable
     public string ReadNString()
     {
         var len = ReadU16();
-        if (len == 0)
-        {
-            ReadU16(); // burn a word to keep DWORD alignment
-            return string.Empty;
-        }
-
-        var padded = AlignToDword((ushort)(len + 2)) - 2;
-        var bytes = ReadBytes(padded);
-        return Encoding.ASCII.GetString(bytes, 0, len);
+        // NSTRING on-disk: 2-byte prefix + len ASCII bytes; align the total byte count.
+        var totalBytes = AlignToDword(2 + len);
+        var dataBytes  = totalBytes - 2;
+        var bytes = ReadBytes(dataBytes);
+        return len == 0 ? string.Empty : Encoding.ASCII.GetString(bytes, 0, len);
     }
 
     /// <summary>
@@ -86,24 +82,16 @@ public sealed class SiegeBinaryReader : IDisposable
     public string ReadWideNString()
     {
         var len = ReadU16();
-        if (len == 0)
-        {
-            ReadU16();
-            return string.Empty;
-        }
-
-        var padded = AlignToDword((ushort)(len + 2)) - 2;
-        var bytes = ReadBytes(padded * 2);
-        return Encoding.Unicode.GetString(bytes, 0, len * 2);
+        // WNSTRING on-disk: 2-byte prefix + (len * 2) wide bytes; align the total byte count.
+        var totalBytes = AlignToDword(2 + len * 2);
+        var dataBytes  = totalBytes - 2;
+        var bytes = ReadBytes(dataBytes);
+        return len == 0 ? string.Empty : Encoding.Unicode.GetString(bytes, 0, len * 2);
     }
 
     // Matches glampert/Bilas: ALWAYS add 1–4 bytes so the resulting size sits at the next DWORD
     // boundary, even if it was already aligned (offset = 4 when size % 4 == 0).
-    private static ushort AlignToDword(ushort size)
-    {
-        var offset = 4 - (size % 4);
-        return (ushort)(size + offset);
-    }
+    private static int AlignToDword(int size) => size + (4 - (size % 4));
 
     public void Dispose()
     {
