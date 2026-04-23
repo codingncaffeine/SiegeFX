@@ -45,23 +45,25 @@ public sealed class AspMesh
 
         foreach (var chunk in chunks)
         {
-            var span = data.AsSpan(chunk.Offset);
+            if (chunk.Offset + 8 > data.Length)
+                throw new InvalidDataException($"ASP chunk {chunk.Id} header past EOF at 0x{chunk.Offset:X8}");
+            var body = data.AsSpan(chunk.Offset + 8);
             var id = chunk.Id;
 
             if (id == new FourCC('B','M','S','H'))
             {
                 verMajor = chunk.VersionRaw & 0xFF;
                 verMinor = (chunk.VersionRaw >> 8) & 0xFF;
-                // Layout observed: 8-byte header, then 6*u32 of counts (first is 0x20, rest match
-                // later subset info), then two 16-char NUL-padded names (skeleton, mesh).
-                var body = span.Slice(8);
+                // Layout observed: 8-byte header (already skipped), then 6*u32 of counts
+                // (first is 0x20, rest match later subset info), then two 16-char NUL-padded
+                // names (skeleton, mesh).
+                if (body.Length < 56) throw new InvalidDataException("BMSH body truncated");
                 skelName = ReadFixedAscii(body.Slice(24, 16));
                 meshName = ReadFixedAscii(body.Slice(40, 16));
             }
             else if (id == new FourCC('B','V','T','X'))
             {
-                var body = span.Slice(8);
-                var count = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
+                var count = ReadChunkCount(body, stride: 12, chunkName: "BVTX");
                 positions = new Vector3[count];
                 for (var i = 0; i < count; i++)
                 {
@@ -74,8 +76,10 @@ public sealed class AspMesh
             }
             else if (id == new FourCC('B','C','R','N'))
             {
-                var body = span.Slice(8);
-                var count = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
+                // Record is 32 bytes even though we only consume 28 of them:
+                // [0..4) vertIndex, [4..16) normal, [16..20) color, [20..24) padding/reserved
+                // (observed zero; possibly a second color or weight slot), [24..32) uv.
+                var count = ReadChunkCount(body, stride: 32, chunkName: "BCRN");
                 corners = new Corner[count];
                 for (var i = 0; i < count; i++)
                 {
@@ -92,13 +96,29 @@ public sealed class AspMesh
             }
             else if (id == new FourCC('B','T','R','I'))
             {
-                var body = span.Slice(8);
-                var count = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
+                var count = ReadChunkCount(body, stride: 12, chunkName: "BTRI");
                 tris = new int[count * 3];
                 for (var i = 0; i < tris.Length; i++)
                     tris[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(4 + i * 4, 4));
             }
             // BONH/BSUB/BSMM/BVMP/BVWL/STCH/RPOS: preserved for later phases, not consumed here.
+        }
+
+        // BTRI indices point into Corners, not directly into Positions. Validate both hops
+        // here so bad asset data fails fast with a diagnosable error instead of crashing the
+        // GL driver with an out-of-range EBO or hitting IndexOutOfRangeException deep in
+        // StaticMesh.
+        for (var i = 0; i < tris.Length; i++)
+        {
+            var ti = tris[i];
+            if ((uint)ti >= (uint)corners.Length)
+                throw new InvalidDataException($"BTRI index {ti} at triangle {i / 3} out of range (corners={corners.Length})");
+        }
+        for (var i = 0; i < corners.Length; i++)
+        {
+            var vi = corners[i].VertexIndex;
+            if ((uint)vi >= (uint)positions.Length)
+                throw new InvalidDataException($"BCRN corner {i} references vertex {vi} out of range (positions={positions.Length})");
         }
 
         return new AspMesh
@@ -111,6 +131,22 @@ public sealed class AspMesh
             Corners         = corners,
             TriangleIndices = tris,
         };
+    }
+
+    /// <summary>
+    /// Reads a u32 count prefix and clamps it against the chunk body length so a corrupt
+    /// count (e.g. uint.MaxValue) can never cause a gigabyte allocation or a negative
+    /// int cast. Returns the validated count as a non-negative int.
+    /// </summary>
+    private static int ReadChunkCount(ReadOnlySpan<byte> body, int stride, string chunkName)
+    {
+        if (body.Length < 4)
+            throw new InvalidDataException($"{chunkName} body missing count");
+        var raw = BinaryPrimitives.ReadUInt32LittleEndian(body);
+        var maxCount = (body.Length - 4) / stride;
+        if (raw > (uint)maxCount)
+            throw new InvalidDataException($"{chunkName} count {raw} exceeds body capacity {maxCount}");
+        return (int)raw;
     }
 
     private static string ReadFixedAscii(ReadOnlySpan<byte> span)

@@ -68,5 +68,12 @@ public sealed class Shader : IDisposable
         _gl.Uniform3(loc, v.X, v.Y, v.Z);
     }
 
+    public void SetInt(string name, int value)
+    {
+        var loc = _gl.GetUniformLocation(Handle, name);
+        if (loc < 0) return;
+        _gl.Uniform1(loc, value);
+    }
+
     public void Dispose() => _gl.DeleteProgram(Handle);
 }
