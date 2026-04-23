@@ -10,7 +10,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
-    <AssemblyName>tankdump</AssemblyName>
+    <AssemblyName>siegefx</AssemblyName>
     <RootNamespace>SiegeFX.Tools</RootNamespace>
   </PropertyGroup>
 
