@@ -287,11 +287,15 @@ public sealed class SnoModel
 
         public Xform4x3 ReadXform4x3()
         {
-            // Row-major 3x3 + translation, per glampert's reference loader.
+            // Disk layout is TRANSLATION FIRST, then row-major 3x3 — matches OpenSiege's
+            // ReaderWriterSNO.cpp door/spot read order and siege_max's ReadPosThenRot.
+            // Reading rotation-first (glampert's commented caveat) produced det-18 door
+            // xforms where the "rotation rows" were actually the translation vector
+            // and the "translation" was the third rotation row.
+            var t  = ReadVec3();
             var r0 = ReadVec3();
             var r1 = ReadVec3();
             var r2 = ReadVec3();
-            var t  = ReadVec3();
             return new Xform4x3(r0, r1, r2, t);
         }
 
