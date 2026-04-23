@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.IO.Compression;
 
 namespace SiegeFX.Core.Tank;
@@ -11,8 +12,11 @@ public sealed class TankReader
     private readonly TankFile _tank;
     private TankDirEntry[]  _dirs  = Array.Empty<TankDirEntry>();
     private uint[]          _dirOffsets = Array.Empty<uint>();
+    private readonly Dictionary<uint, int> _dirIndexByOffset = new();
     private TankFileEntry[] _files = Array.Empty<TankFileEntry>();
     private readonly Dictionary<string, Entry> _table = new(StringComparer.OrdinalIgnoreCase);
+
+    private const int MaxDirDepth = 64;
 
     private const char Sep = '/';
 
@@ -37,14 +41,14 @@ public sealed class TankReader
     public IEnumerable<string> ListDirectories() =>
         _table.Where(kv => kv.Value.Type == EntryType.Dir).Select(kv => kv.Key);
 
-    public bool TryGetFile(string path, out TankFileEntry entry)
+    public bool TryGetFile(string path, [NotNullWhen(true)] out TankFileEntry? entry)
     {
         if (_table.TryGetValue(path, out var e) && e.Type == EntryType.File)
         {
             entry = e.File!;
             return true;
         }
-        entry = null!;
+        entry = null;
         return false;
     }
 
@@ -53,7 +57,7 @@ public sealed class TankReader
         if (!TryGetFile(path, out var entry))
             throw new TankException($"Resource \"{path}\" not found in {_tank.Path}");
 
-        return ExtractEntry(entry);
+        return ExtractEntry(entry!);
     }
 
     public byte[] ExtractEntry(TankFileEntry entry)
@@ -85,20 +89,25 @@ public sealed class TankReader
 
             if (chunk.IsCompressed)
             {
+                // UncompressedSize is the chunk's total output; the zlib portion accounts
+                // for (UncompressedSize - ExtraBytes) and ExtraBytes tail is raw.
                 var compressed = reader.ReadBytes((int)(chunk.CompressedSize + chunk.ExtraBytes));
                 using var ms = new MemoryStream(compressed, 0, (int)chunk.CompressedSize);
                 using var zlib = new ZLibStream(ms, CompressionMode.Decompress);
 
+                var zlibExpected = (int)(chunk.UncompressedSize - chunk.ExtraBytes);
                 var written = 0;
-                while (written < chunk.UncompressedSize)
+                while (written < zlibExpected)
                 {
-                    var n = zlib.Read(output, outPos + written, (int)(chunk.UncompressedSize - written));
+                    var n = zlib.Read(output, outPos + written, zlibExpected - written);
                     if (n == 0) break;
                     written += n;
                 }
+                if (written != zlibExpected)
+                    throw new TankException(
+                        $"zlib chunk truncated: expected {zlibExpected} bytes, got {written}");
                 outPos += written;
 
-                // extraBytes tail is stored uncompressed and appended verbatim
                 if (chunk.ExtraBytes != 0)
                 {
                     Buffer.BlockCopy(compressed, (int)chunk.CompressedSize,
@@ -135,6 +144,10 @@ public sealed class TankReader
 
         for (var d = 0; d < numDirs; d++)
             _dirOffsets[d] = r.ReadU32();
+
+        _dirIndexByOffset.Clear();
+        for (var d = 0; d < numDirs; d++)
+            _dirIndexByOffset[_dirOffsets[d]] = d;
 
         for (var d = 0; d < numDirs; d++)
         {
@@ -248,16 +261,36 @@ public sealed class TankReader
 
     private string BuildDirPath(int dirIndex)
     {
-        var entry = _dirs[dirIndex];
-        if (entry.ParentOffset == 0) return "";
-        var parentIndex = FindDirIndex(entry.ParentOffset);
-        return BuildDirPath(parentIndex) + Sep + entry.Name;
+        // Walk parent chain iteratively, then stitch names leaf→root; guards against
+        // malformed tanks whose parent links form a cycle or exceed MaxDirDepth.
+        var names = new string[MaxDirDepth];
+        var depth = 0;
+        var current = dirIndex;
+        while (depth < MaxDirDepth)
+        {
+            var entry = _dirs[current];
+            if (entry.ParentOffset == 0) break;
+            names[depth++] = entry.Name;
+            current = FindDirIndex(entry.ParentOffset);
+            if (current == dirIndex)
+                throw new TankException($"Directory cycle detected at index {dirIndex}");
+        }
+        if (depth == MaxDirDepth)
+            throw new TankException($"Directory nesting exceeds {MaxDirDepth} at index {dirIndex}");
+
+        if (depth == 0) return "";
+        var sb = new System.Text.StringBuilder(depth * 16);
+        for (var i = depth - 1; i >= 0; i--)
+        {
+            sb.Append(Sep);
+            sb.Append(names[i]);
+        }
+        return sb.ToString();
     }
 
     private int FindDirIndex(uint offset)
     {
-        for (var i = 0; i < _dirOffsets.Length; i++)
-            if (_dirOffsets[i] == offset) return i;
+        if (_dirIndexByOffset.TryGetValue(offset, out var idx)) return idx;
         throw new TankException($"Orphan directory offset: {offset}");
     }
 
