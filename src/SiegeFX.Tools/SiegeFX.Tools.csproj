@@ -9,6 +9,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>tankdump</AssemblyName>
+    <RootNamespace>SiegeFX.Tools</RootNamespace>
   </PropertyGroup>
 
 </Project>
