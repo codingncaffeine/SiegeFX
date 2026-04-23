@@ -14,6 +14,7 @@ try
     {
         "tank" => DispatchTank(args[1..]),
         "raw"  => DispatchRaw(args[1..]),
+        "asp"  => DispatchAsp(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -53,12 +54,14 @@ static void PrintUsage()
     Console.WriteLine("  siegefx tank extract <tank> <resource-path> [dest-file]");
     Console.WriteLine("  siegefx raw  info    <file.raw>");
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
+    Console.WriteLine("  siegefx asp  info    <file.asp>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
     Console.WriteLine("  siegefx tank extract Objects.dsres /art/bitmaps/gui_logo.raw logo.raw");
     Console.WriteLine("  siegefx raw  decode logo.raw logo.png");
     Console.WriteLine("  siegefx raw  decode logo.raw --all");
+    Console.WriteLine("  siegefx asp  info  boot.asp");
 }
 
 static int UnknownCommand(string cmd)
@@ -89,6 +92,30 @@ static int DispatchRaw(string[] a)
         "decode" => CmdRawDecode(a[1..]),
         _        => UnknownCommand("raw " + a[0]),
     };
+}
+
+static int DispatchAsp(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "info" => CmdAspInfo(a[1..]),
+        _      => UnknownCommand("asp " + a[0]),
+    };
+}
+
+static int CmdAspInfo(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp info <file.asp>"); return 1; }
+    var data = File.ReadAllBytes(a[0]);
+    Console.WriteLine($"File  : {a[0]}");
+    Console.WriteLine($"Size  : {data.Length:N0} bytes");
+
+    var chunks = AspScanner.Scan(data);
+    Console.WriteLine($"Chunks: {chunks.Count}");
+    foreach (var c in chunks)
+        Console.WriteLine($"  0x{c.Offset:X8}  {c.Id}  v{c.Version}");
+    return 0;
 }
 
 static int CmdTankInfo(string[] a)
