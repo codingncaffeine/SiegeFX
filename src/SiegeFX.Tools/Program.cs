@@ -17,6 +17,7 @@ try
         "asp"  => DispatchAsp(args[1..]),
         "sno"  => DispatchSno(args[1..]),
         "gas"  => DispatchGas(args[1..]),
+        "region" => DispatchRegion(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -61,6 +62,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx gas  info    <file.gas>");
     Console.WriteLine("  siegefx gas  dump    <file.gas>");
     Console.WriteLine("  siegefx gas  fuzz    <tank>");
+    Console.WriteLine("  siegefx region info  <map-tank> <region-path>");
+    Console.WriteLine("  siegefx region fuzz  <map-tank>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -71,6 +74,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx sno  info  t_grs01_grs-thick-08.sno");
     Console.WriteLine("  siegefx gas  dump  camera.gas");
     Console.WriteLine("  siegefx gas  fuzz  Logic.dsres");
+    Console.WriteLine("  siegefx region info World.dsmap /world/maps/map_world/regions/ac_r1");
+    Console.WriteLine("  siegefx region fuzz World.dsmap");
 }
 
 static int UnknownCommand(string cmd)
@@ -180,6 +185,99 @@ static int CmdGasDump(string[] a)
         }
         foreach (var c in n.Children) Dump(c, indent + 1);
     }
+}
+
+static int DispatchRegion(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "info" => CmdRegionInfo(a[1..]),
+        "fuzz" => CmdRegionFuzz(a[1..]),
+        _      => UnknownCommand("region " + a[0]),
+    };
+}
+
+static int CmdRegionInfo(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region info <map-tank> <region-path>");
+        return 1;
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    var regionPath = a[1].Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+    var nodesPath = regionPath + "/terrain_nodes/nodes.gas";
+
+    var bytes = reader.ExtractToMemory(nodesPath);
+    var region = RegionGraph.Load(bytes);
+
+    var unconnected = 0;
+    var crossRegion = new HashSet<uint>();
+    var within = new HashSet<uint>();
+    foreach (var n in region.Nodes) within.Add(n.Guid);
+    foreach (var n in region.Nodes)
+    foreach (var d in n.Doors)
+    {
+        if (d.FarGuid == 0) unconnected++;
+        else if (!within.Contains(d.FarGuid)) crossRegion.Add(d.FarGuid);
+    }
+
+    Console.WriteLine($"Region        : {regionPath}");
+    Console.WriteLine($"Target node   : 0x{region.TargetNodeGuid:X8}");
+    Console.WriteLine($"Snode count   : {region.Nodes.Count}");
+    var totalDoors = 0;
+    foreach (var n in region.Nodes) totalDoors += n.Doors.Count;
+    Console.WriteLine($"Door edges    : {totalDoors}");
+    Console.WriteLine($"Cross-region  : {crossRegion.Count} neighbor-region node(s)");
+    Console.WriteLine($"Unconnected   : {unconnected} door(s)");
+    Console.WriteLine($"Target present: {(within.Contains(region.TargetNodeGuid) ? "yes" : "no (cross-region anchor)")}");
+
+    var show = Math.Min(5, region.Nodes.Count);
+    for (var i = 0; i < show; i++)
+    {
+        var n = region.Nodes[i];
+        Console.WriteLine($"  [{i}] guid=0x{n.Guid:X8} mesh=0x{n.MeshGuid:X8} texset='{n.TexsetAbbr}' doors={n.Doors.Count}");
+    }
+    if (region.Nodes.Count > show)
+        Console.WriteLine($"  ... {region.Nodes.Count - show} more");
+    return 0;
+}
+
+static int CmdRegionFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx region fuzz <map-tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    var total = 0;
+    var failed = 0;
+    var totalNodes = 0;
+    var totalDoors = 0;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        try
+        {
+            var bytes = reader.ExtractToMemory(path);
+            var region = RegionGraph.Load(bytes);
+            totalNodes += region.Nodes.Count;
+            foreach (var n in region.Nodes) totalDoors += n.Doors.Count;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [fail] {path}: {ex.Message}");
+            failed++;
+        }
+    }
+    Console.WriteLine($"fuzzed {total} region(s); {totalNodes:N0} snodes, {totalDoors:N0} doors; {failed} failure(s)");
+    return failed == 0 ? 0 : 4;
 }
 
 static int CmdGasFuzz(string[] a)
