@@ -15,6 +15,8 @@ public sealed class GlTexture : IDisposable
 
     public GlTexture(GL gl, RawImage image)
     {
+        if (image.SurfaceCount <= 0)
+            throw new ArgumentException("RawImage has no surfaces to upload", nameof(image));
         _gl = gl;
         Handle = _gl.GenTexture();
         _gl.BindTexture(GLEnum.Texture2D, Handle);

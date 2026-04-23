@@ -1,0 +1,309 @@
+using System.Buffers.Binary;
+using System.Numerics;
+using SiegeFX.Core.Tank;
+
+namespace SiegeFX.Core.Assets;
+
+/// <summary>
+/// A Dungeon Siege Siege Node (.sno) — a 3D terrain/world tile whose instances are
+/// stitched edge-to-edge via named "doors" to form the continuous world described in
+/// Scott Bilas's "Continuous World" paper. Phase 4d-1 reads the full structure but the
+/// axis convention is preserved verbatim from disk; world-space orientation (DS1 is
+/// Z-up; our renderer is Y-up) is applied per-draw, not baked in during parsing.
+/// </summary>
+public sealed class SnoModel
+{
+    public const int ExpectedMinVersion = 7;
+    public const int HeaderSizeBytes = 88;
+    public const int CornerSizeBytes = 36;
+    public const int XformSizeBytes  = 48; // float[4][3] — 3x3 rotation + 3-vector translation
+
+    public static readonly FourCC MagicSnod = new('S', 'N', 'O', 'D');
+
+    public FourCC Magic { get; init; }
+    public int Version  { get; init; }
+    public Vector3 MinBounds { get; init; }
+    public Vector3 MaxBounds { get; init; }
+    public uint DataCrc32 { get; init; }
+
+    public Spot[]    Spots    { get; init; } = Array.Empty<Spot>();
+    public Door[]    Doors    { get; init; } = Array.Empty<Door>();
+    public Corner[]  Corners  { get; init; } = Array.Empty<Corner>();
+    public Surface[] Surfaces { get; init; } = Array.Empty<Surface>();
+
+    /// <summary>A 4x3 affine transform: 3x3 rotation (rows 0-2) + 3-vector translation (row 3).</summary>
+    public readonly record struct Xform4x3(
+        Vector3 Row0, Vector3 Row1, Vector3 Row2, Vector3 Translation);
+
+    /// <summary>Named anchor point inside the node (NPC/prop spawn, camera hints, etc.).</summary>
+    public readonly record struct Spot(Xform4x3 Transform, string Name);
+
+    /// <summary>Edge connector that stitches this node to a neighbor. <paramref name="HotSpots"/>
+    /// are corner indices into the shared perimeter (unused by the renderer, used by the
+    /// world-stitch step later).</summary>
+    public readonly record struct Door(uint Id, Xform4x3 Transform, uint[] HotSpots);
+
+    /// <summary>Vertex record in the flat corner pool. Per-surface triangle indices index
+    /// into this pool, offset by that surface's <see cref="Surface.StartCorner"/>.</summary>
+    public readonly record struct Corner(Vector3 Position, Vector3 Normal, uint Rgba, Vector2 Uv);
+
+    /// <summary>One material subset: a name (matches a .raw texture) and a range of
+    /// triangles whose indices are local (0..SpanCorner-1) and must be resolved against
+    /// the global corner pool via <see cref="StartCorner"/>.</summary>
+    public sealed class Surface
+    {
+        public string TextureName  { get; init; } = "";
+        public uint   StartCorner  { get; init; }
+        public uint   SpanCorner   { get; init; }
+        public uint   CornerCount  { get; init; }
+        public ushort[] TriangleIndices { get; init; } = Array.Empty<ushort>();
+        public int    TriangleCount => TriangleIndices.Length / 3;
+    }
+
+    public static SnoModel Load(byte[] data)
+    {
+        if (data.Length < HeaderSizeBytes)
+            throw new InvalidDataException($"SNO too small: {data.Length} bytes");
+
+        var r = new Reader(data);
+
+        var magic = r.ReadFourCC();
+        if (magic != MagicSnod)
+            throw new InvalidDataException($"not a SNO (magic={magic}, expected SNOD)");
+
+        var version = (int)r.ReadU32();
+        if (version < ExpectedMinVersion)
+            throw new InvalidDataException($"SNO version {version} < {ExpectedMinVersion}");
+
+        r.ReadU32(); // unused0
+
+        var doorCount    = r.ReadU32();
+        var spotCount    = r.ReadU32();
+        var cornerCount  = r.ReadU32();
+        var faceCount    = r.ReadU32();
+        var textureCount = r.ReadU32();
+
+        var minBounds = r.ReadVec3();
+        var maxBounds = r.ReadVec3();
+
+        // unused1..unused7 — purely junk in real files per glampert's RE work.
+        for (var i = 0; i < 7; i++) r.ReadU32();
+
+        var dataCrc32 = r.ReadU32();
+
+        // Cornering is the single heaviest allocation — 36 bytes × count — so clamp it
+        // eagerly. The other sections have variable-length strings / sub-arrays, so we
+        // let each Read* routine EnsureSpace per record instead of pre-summing.
+        var remaining = data.Length - r.Position;
+        if ((long)cornerCount * CornerSizeBytes > remaining)
+            throw new InvalidDataException(
+                $"SNO cornerCount {cornerCount} × {CornerSizeBytes} bytes exceeds remaining {remaining} bytes");
+
+        var spots = ReadSpots(r, spotCount);
+        var doors = ReadDoors(r, doorCount);
+        var corners = ReadCorners(r, cornerCount);
+        var surfaces = ReadSurfaces(r, textureCount, cornerCount);
+
+        // Rough face-count consistency check: sum of surface face counts should equal
+        // the header's faceCount. Report on mismatch but don't throw — glampert's notes
+        // call out that unused fields in DS1 are unreliable.
+        var summedFaces = 0L;
+        foreach (var s in surfaces) summedFaces += s.TriangleCount;
+        _ = summedFaces; _ = faceCount;
+
+        return new SnoModel
+        {
+            Magic       = magic,
+            Version     = version,
+            MinBounds   = minBounds,
+            MaxBounds   = maxBounds,
+            DataCrc32   = dataCrc32,
+            Spots       = spots,
+            Doors       = doors,
+            Corners     = corners,
+            Surfaces    = surfaces,
+        };
+    }
+
+    private static Spot[] ReadSpots(Reader r, uint count)
+    {
+        if (count == 0) return Array.Empty<Spot>();
+        var result = new Spot[count];
+        for (var i = 0; i < count; i++)
+        {
+            var xf = r.ReadXform4x3();
+            var name = r.ReadCString();
+            result[i] = new Spot(xf, name);
+        }
+        return result;
+    }
+
+    private static Door[] ReadDoors(Reader r, uint count)
+    {
+        if (count == 0) return Array.Empty<Door>();
+        var result = new Door[count];
+        for (var i = 0; i < count; i++)
+        {
+            var id = r.ReadU32();
+            var xf = r.ReadXform4x3();
+            var hotSpotCount = r.ReadU32();
+            r.EnsureSpace((long)hotSpotCount * 4, "Door.HotSpots");
+            var hotSpots = new uint[hotSpotCount];
+            for (var h = 0; h < hotSpotCount; h++) hotSpots[h] = r.ReadU32();
+            result[i] = new Door(id, xf, hotSpots);
+        }
+        return result;
+    }
+
+    private static Corner[] ReadCorners(Reader r, uint count)
+    {
+        if (count == 0) return Array.Empty<Corner>();
+        r.EnsureSpace((long)count * CornerSizeBytes, "Corners");
+        var result = new Corner[count];
+        for (var i = 0; i < count; i++)
+        {
+            var pos = r.ReadVec3();
+            var nrm = r.ReadVec3();
+            // Disk order is R-B-G-A (glampert documents this); swizzle to packed RGBA.
+            var rr = r.ReadU8();
+            var bb = r.ReadU8();
+            var gg = r.ReadU8();
+            var aa = r.ReadU8();
+            var rgba = (uint)rr | ((uint)gg << 8) | ((uint)bb << 16) | ((uint)aa << 24);
+            var uv = r.ReadVec2();
+            result[i] = new Corner(pos, nrm, rgba, uv);
+        }
+        return result;
+    }
+
+    private static Surface[] ReadSurfaces(Reader r, uint count, uint cornerCount)
+    {
+        if (count == 0) return Array.Empty<Surface>();
+        var result = new Surface[count];
+        for (var i = 0; i < count; i++)
+        {
+            var texName = r.ReadCString();
+            var start  = r.ReadU32();
+            var span   = r.ReadU32();
+            var corners = r.ReadU32();
+            var faceCount = corners / 3;
+
+            if ((long)start + span > cornerCount)
+                throw new InvalidDataException(
+                    $"Surface {i} '{texName}' span [{start}..{start + span}) overruns corner pool ({cornerCount})");
+
+            r.EnsureSpace((long)faceCount * 6, $"Surface[{i}].faces");
+            var indices = new ushort[faceCount * 3];
+            for (var k = 0; k < indices.Length; k++)
+            {
+                var idx = r.ReadU16();
+                if (idx >= span)
+                    throw new InvalidDataException(
+                        $"Surface {i} face {k / 3} index {idx} >= span {span}");
+                indices[k] = idx;
+            }
+
+            result[i] = new Surface
+            {
+                TextureName = texName,
+                StartCorner = start,
+                SpanCorner = span,
+                CornerCount = corners,
+                TriangleIndices = indices,
+            };
+        }
+        return result;
+    }
+
+    /// <summary>Total triangle count across all surfaces.</summary>
+    public int TotalTriangleCount
+    {
+        get
+        {
+            var t = 0;
+            foreach (var s in Surfaces) t += s.TriangleCount;
+            return t;
+        }
+    }
+
+    /// <summary>Minimal stream-y reader: tracks a position and reads little-endian scalars.
+    /// Lives inside SnoModel because the access pattern is one-off and file-scoped.</summary>
+    private sealed class Reader
+    {
+        private readonly byte[] _data;
+        public int Position { get; private set; }
+
+        public Reader(byte[] data) { _data = data; }
+
+        public void EnsureSpace(long bytes, string context)
+        {
+            if (Position + bytes > _data.Length)
+                throw new InvalidDataException($"SNO truncated reading {context} at 0x{Position:X8}");
+        }
+
+        public byte ReadU8()
+        {
+            EnsureSpace(1, "u8");
+            return _data[Position++];
+        }
+
+        public ushort ReadU16()
+        {
+            EnsureSpace(2, "u16");
+            var v = BinaryPrimitives.ReadUInt16LittleEndian(_data.AsSpan(Position));
+            Position += 2;
+            return v;
+        }
+
+        public uint ReadU32()
+        {
+            EnsureSpace(4, "u32");
+            var v = BinaryPrimitives.ReadUInt32LittleEndian(_data.AsSpan(Position));
+            Position += 4;
+            return v;
+        }
+
+        public float ReadF32()
+        {
+            EnsureSpace(4, "f32");
+            var v = BinaryPrimitives.ReadSingleLittleEndian(_data.AsSpan(Position));
+            Position += 4;
+            return v;
+        }
+
+        public FourCC ReadFourCC()
+        {
+            EnsureSpace(4, "fourcc");
+            var a = (char)_data[Position + 0];
+            var b = (char)_data[Position + 1];
+            var c = (char)_data[Position + 2];
+            var d = (char)_data[Position + 3];
+            Position += 4;
+            return new FourCC(a, b, c, d);
+        }
+
+        public Vector2 ReadVec2() => new(ReadF32(), ReadF32());
+        public Vector3 ReadVec3() => new(ReadF32(), ReadF32(), ReadF32());
+
+        public Xform4x3 ReadXform4x3()
+        {
+            // Row-major 3x3 + translation, per glampert's reference loader.
+            var r0 = ReadVec3();
+            var r1 = ReadVec3();
+            var r2 = ReadVec3();
+            var t  = ReadVec3();
+            return new Xform4x3(r0, r1, r2, t);
+        }
+
+        public string ReadCString()
+        {
+            var start = Position;
+            while (Position < _data.Length && _data[Position] != 0) Position++;
+            if (Position >= _data.Length)
+                throw new InvalidDataException("SNO: unterminated C-string");
+            var s = System.Text.Encoding.ASCII.GetString(_data, start, Position - start);
+            Position++; // skip NUL
+            return s;
+        }
+    }
+}

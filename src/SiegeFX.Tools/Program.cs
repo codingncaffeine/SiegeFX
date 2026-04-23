@@ -15,6 +15,7 @@ try
         "tank" => DispatchTank(args[1..]),
         "raw"  => DispatchRaw(args[1..]),
         "asp"  => DispatchAsp(args[1..]),
+        "sno"  => DispatchSno(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -55,6 +56,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  info    <file.raw>");
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
     Console.WriteLine("  siegefx asp  info    <file.asp>");
+    Console.WriteLine("  siegefx sno  info    <file.sno>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -62,6 +64,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  decode logo.raw logo.png");
     Console.WriteLine("  siegefx raw  decode logo.raw --all");
     Console.WriteLine("  siegefx asp  info  boot.asp");
+    Console.WriteLine("  siegefx sno  info  t_grs01_grs-thick-08.sno");
 }
 
 static int UnknownCommand(string cmd)
@@ -102,6 +105,49 @@ static int DispatchAsp(string[] a)
         "info" => CmdAspInfo(a[1..]),
         _      => UnknownCommand("asp " + a[0]),
     };
+}
+
+static int DispatchSno(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sno <info> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "info" => CmdSnoInfo(a[1..]),
+        _      => UnknownCommand("sno " + a[0]),
+    };
+}
+
+static int CmdSnoInfo(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx sno info <file.sno>"); return 1; }
+    var data = File.ReadAllBytes(a[0]);
+    Console.WriteLine($"File      : {a[0]}");
+    Console.WriteLine($"Size      : {data.Length:N0} bytes");
+
+    var sno = SnoModel.Load(data);
+    Console.WriteLine($"Magic     : {sno.Magic}");
+    Console.WriteLine($"Version   : {sno.Version}");
+    Console.WriteLine($"Bounds    : {sno.MinBounds} .. {sno.MaxBounds}");
+    Console.WriteLine($"Data CRC32: 0x{sno.DataCrc32:X8}");
+    Console.WriteLine($"Spots     : {sno.Spots.Length}");
+    Console.WriteLine($"Doors     : {sno.Doors.Length}");
+    Console.WriteLine($"Corners   : {sno.Corners.Length}");
+    Console.WriteLine($"Surfaces  : {sno.Surfaces.Length} (total {sno.TotalTriangleCount} triangles)");
+    for (var i = 0; i < sno.Surfaces.Length; i++)
+    {
+        var s = sno.Surfaces[i];
+        Console.WriteLine($"  [{i}] '{s.TextureName}'  start={s.StartCorner} span={s.SpanCorner} corners={s.CornerCount} tris={s.TriangleCount}");
+    }
+    for (var i = 0; i < sno.Doors.Length; i++)
+    {
+        var d = sno.Doors[i];
+        Console.WriteLine($"  door[{i}] id={d.Id} hotSpots={d.HotSpots.Length}");
+    }
+    for (var i = 0; i < sno.Spots.Length; i++)
+    {
+        Console.WriteLine($"  spot[{i}] name='{sno.Spots[i].Name}'");
+    }
+    return 0;
 }
 
 static int CmdAspInfo(string[] a)

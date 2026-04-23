@@ -104,6 +104,13 @@ public sealed class AspMesh
             // BONH/BSUB/BSMM/BVMP/BVWL/STCH/RPOS: preserved for later phases, not consumed here.
         }
 
+        // Preflight the cross-chunk invariants so a missing chunk produces a useful error
+        // instead of the confusing "vertex N out of range (positions=0)" further down.
+        if (corners.Length > 0 && positions.Length == 0)
+            throw new InvalidDataException("ASP has BCRN but no BVTX");
+        if (tris.Length > 0 && corners.Length == 0)
+            throw new InvalidDataException("ASP has BTRI but no BCRN");
+
         // BTRI indices point into Corners, not directly into Positions. Validate both hops
         // here so bad asset data fails fast with a diagnosable error instead of crashing the
         // GL driver with an out-of-range EBO or hitting IndexOutOfRangeException deep in
