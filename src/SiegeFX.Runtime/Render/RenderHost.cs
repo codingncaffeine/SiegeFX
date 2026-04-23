@@ -16,12 +16,14 @@ public sealed class RenderHost : IDisposable
 {
     private readonly IWindow _window;
     private readonly string? _meshPath;
+    private readonly string? _texturePath;
     private GL? _gl;
     private IInputContext? _input;
     private Shader? _gridShader;
     private Shader? _meshShader;
     private GridMesh? _grid;
     private StaticMesh? _mesh;
+    private GlTexture? _texture;
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
@@ -57,23 +59,31 @@ void main()
     vUv = aUv;
 }";
 
-    // Cheap N·L lambert plus a constant ambient term; textures come later.
+    // Cheap N·L lambert plus a constant ambient. Samples uAlbedo when uHasTexture != 0;
+    // otherwise falls back to a neutral sand colour so untextured meshes still read as solids.
+    // DS1 textures were authored for D3D (V=0 at top), so we flip V on sample for GL.
     private const string MeshFragmentSource = @"#version 330 core
 in  vec3 vNormal;
 in  vec2 vUv;
 out vec4 FragColor;
+uniform sampler2D uAlbedo;
+uniform int       uHasTexture;
 void main()
 {
     vec3 L = normalize(vec3(0.4, 0.9, 0.3));
     float ndl = max(dot(normalize(vNormal), L), 0.0);
-    vec3 base = vec3(0.85, 0.78, 0.62);
+    vec3 base = (uHasTexture != 0)
+        ? texture(uAlbedo, vec2(vUv.x, 1.0 - vUv.y)).rgb
+        : vec3(0.85, 0.78, 0.62);
     vec3 lit  = base * (0.25 + 0.75 * ndl);
     FragColor = vec4(lit, 1.0);
 }";
 
-    public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720, string? meshPath = null)
+    public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
+        string? meshPath = null, string? texturePath = null)
     {
         _meshPath = meshPath;
+        _texturePath = texturePath;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -150,6 +160,14 @@ void main()
             _camera.Pitch = 0;
             Console.WriteLine($"loaded mesh '{asp.MeshName}' ({asp.Positions.Length} v, {asp.TriangleCount} tris, bounds {_mesh.Min} .. {_mesh.Max})");
         }
+
+        if (_texturePath is not null)
+        {
+            var texBytes = File.ReadAllBytes(_texturePath);
+            var raw = RawImage.Load(texBytes);
+            _texture = new GlTexture(_gl, raw);
+            Console.WriteLine($"loaded texture '{_texturePath}' ({raw.Width}x{raw.Height}, {raw.SurfaceCount} surface(s))");
+        }
     }
 
     private void OnUpdate(double dt)
@@ -194,6 +212,9 @@ void main()
             _meshShader.Use();
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
+            _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uHasTexture", _texture is null ? 0 : 1);
+            _texture?.Bind(TextureUnit.Texture0);
             _mesh.Draw();
         }
     }
@@ -202,6 +223,7 @@ void main()
 
     public void Dispose()
     {
+        _texture?.Dispose();
         _mesh?.Dispose();
         _grid?.Dispose();
         _meshShader?.Dispose();
