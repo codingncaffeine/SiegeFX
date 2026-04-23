@@ -21,6 +21,13 @@ public sealed class GasDocument
     public static GasDocument Load(byte[] bytes)
     {
         var s = (ReadOnlySpan<byte>)bytes;
+        if (s.Length >= 2)
+        {
+            if (s[0] == 0xFF && s[1] == 0xFE)
+                throw new InvalidDataException("GAS file has UTF-16 LE BOM; DS1 ships ASCII/UTF-8 only");
+            if (s[0] == 0xFE && s[1] == 0xFF)
+                throw new InvalidDataException("GAS file has UTF-16 BE BOM; DS1 ships ASCII/UTF-8 only");
+        }
         if (s.Length >= 3 && s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF) s = s[3..];
         return Parse(System.Text.Encoding.UTF8.GetString(s));
     }
@@ -34,9 +41,14 @@ public sealed class GasDocument
 
     private sealed class Parser
     {
+        // Block-nesting depth cap. Real DS1 data tops out around 8 levels; 512 leaves
+        // plenty of headroom while making a hostile input that recurses into SO infeasible.
+        private const int MaxBlockDepth = 512;
+
         private readonly string _src;
         private int _pos;
         private int _line = 1;
+        private int _depth;
 
         public Parser(string src) { _src = src; }
 
@@ -59,6 +71,7 @@ public sealed class GasDocument
 
                 if (c == '[')
                 {
+                    var headerLine = _line;
                     var header = ReadBracketedHeader();
                     SkipTrivia();
                     // DS1 ships with asset typos between ']' and the body's '{': stray
@@ -71,8 +84,13 @@ public sealed class GasDocument
                         if (_src[_pos] == '\n') _line++;
                         _pos++;
                     }
-                    Expect('{', "after block header");
+                    if (_pos >= _src.Length || _src[_pos] != '{')
+                        throw Err($"expected '{{' to open block [{header}] (opened at line {headerLine}, saw '{PeekChar()}')");
+                    _pos++;
+                    if (++_depth > MaxBlockDepth)
+                        throw Err($"GAS nesting exceeds {MaxBlockDepth} (header [{header}] at line {headerLine})");
                     var body = ParseContents('}');
+                    _depth--;
                     Expect('}', "to close block");
                     children.Add(new GasNode(header, body.Children, body.Attributes));
                     continue;
@@ -103,14 +121,16 @@ public sealed class GasDocument
 
         private GasAttribute BuildAttribute(string leftText, string value)
         {
-            // Type tag is a single lowercase b/i/f/s followed by whitespace, then the key.
-            // Anything else is the whole key.
+            // Type tag is a single lowercase letter followed by whitespace, then the key.
+            // DS1 uses b/i/f/s (bool/int/float/string) + x (hex uint) + d (double); being
+            // permissive costs nothing since real attribute names never start with a single
+            // lowercase letter + whitespace.
             string? tag = null;
             var name = leftText;
             if (leftText.Length >= 3)
             {
                 var t = leftText[0];
-                if ((t == 'b' || t == 'i' || t == 'f' || t == 's') && char.IsWhiteSpace(leftText[1]))
+                if (t >= 'a' && t <= 'z' && char.IsWhiteSpace(leftText[1]))
                 {
                     tag = t.ToString();
                     name = leftText[1..].TrimStart();
@@ -153,9 +173,16 @@ public sealed class GasDocument
                 if (!inQuote && c == '[' && _pos + 1 < _src.Length && _src[_pos + 1] == '[')
                 {
                     _pos += 2;
-                    while (_pos + 1 < _src.Length && !(_src[_pos] == ']' && _src[_pos + 1] == ']'))
+                    // Track quotes inside the script body too, so a quoted `]]` doesn't
+                    // prematurely terminate. Effect-script bodies in /world/global/effects/
+                    // contain multiline quoted strings that could plausibly hold `]]`.
+                    var innerQuote = false;
+                    while (_pos + 1 < _src.Length)
                     {
-                        if (_src[_pos] == '\n') _line++;
+                        var ic = _src[_pos];
+                        if (ic == '"') innerQuote = !innerQuote;
+                        else if (!innerQuote && ic == ']' && _src[_pos + 1] == ']') break;
+                        if (ic == '\n') _line++;
                         _pos++;
                     }
                     if (_pos + 1 >= _src.Length) throw Err("unterminated [[...]] script literal");
