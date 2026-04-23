@@ -200,6 +200,7 @@ static int DispatchRegion(string[] a)
         "fuzz"        => CmdRegionFuzz(a[1..]),
         "layout"      => CmdRegionLayout(a[1..]),
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
+        "layout-diag" => CmdRegionLayoutDiag(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -407,6 +408,204 @@ static int CmdRegionLayoutFuzz(string[] a)
                       $"{crossRegionDoors:N0} cross-region door(s), {unresolvedDoors:N0} unresolved door(s), " +
                       $"{missingMeshes:N0} missing mesh(es); {failed} failure(s)");
     return failed == 0 ? 0 : 4;
+}
+
+// Re-walks the door graph with verbose per-edge logging. The idea is to surface edges
+// where the composed far transform lands somewhere wildly different from the parent
+// (dY, distance, handedness flip, non-unit-scale), so we can pick one to solve by hand.
+static int CmdRegionLayoutDiag(string[] a)
+{
+    if (a.Length < 3 || a.Length > 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region layout-diag <map-tank> <terrain-tank> <region-path> [--all]");
+        return 1;
+    }
+    var showAll = a.Length == 4 && a[3] == "--all";
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var regionPath = a[2].Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+
+    var graph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var anchor = graph.TargetNodeGuid;
+    if (!graph.TryGetNode(anchor, out _)) anchor = graph.Nodes[0].Guid;
+
+    var transforms = new Dictionary<uint, System.Numerics.Matrix4x4> { [anchor] = System.Numerics.Matrix4x4.Identity };
+    var parentOf = new Dictionary<uint, uint>();
+    var queue = new Queue<uint>();
+    queue.Enqueue(anchor);
+
+    int edgeCount = 0;
+    int suspicious = 0;
+    Console.WriteLine($"Region : {regionPath}");
+    Console.WriteLine($"Anchor : 0x{anchor:X8}");
+    Console.WriteLine($"Nodes  : {graph.Nodes.Count}");
+    Console.WriteLine();
+    Console.WriteLine("edge# parent→far       dY     dist   hand fromDet  farDet  (localDoorId→farDoorId)");
+
+    while (queue.Count > 0)
+    {
+        var curGuid = queue.Dequeue();
+        if (!graph.TryGetNode(curGuid, out var curNode)) continue;
+        var curSno = Resolve(curNode.MeshGuid);
+        if (curSno is null) continue;
+        var wCur = transforms[curGuid];
+
+        foreach (var door in curNode.Doors)
+        {
+            if (!graph.TryGetNode(door.FarGuid, out var far)) continue;
+            if (transforms.ContainsKey(far.Guid)) continue;
+            var farSno = Resolve(far.MeshGuid);
+            if (farSno is null) continue;
+            var localDoor = FindDoorXf(curSno, door.LocalId);
+            var farDoor = FindDoorXf(farSno, door.FarDoorId);
+            if (localDoor is null || farDoor is null) continue;
+            if (!System.Numerics.Matrix4x4.Invert(farDoor.Value, out var invFar)) continue;
+
+            var flip = System.Numerics.Matrix4x4.CreateRotationY(MathF.PI);
+            var wFar = wCur * localDoor.Value * flip * invFar;
+
+            transforms[far.Guid] = wFar;
+            parentOf[far.Guid] = curGuid;
+            queue.Enqueue(far.Guid);
+
+            var dY = wFar.M42 - wCur.M42;
+            var dx = wFar.M41 - wCur.M41;
+            var dz = wFar.M43 - wCur.M43;
+            var dist = MathF.Sqrt(dx * dx + dY * dY + dz * dz);
+            var locDet = Det3(localDoor.Value);
+            var farDet = Det3(farDoor.Value);
+            var hand = (locDet * farDet) < 0f ? "FLIP" : "ok  ";
+            var isSuspicious = MathF.Abs(dY) > 20f || dist > 100f || MathF.Abs(locDet) < 0.95f || MathF.Abs(farDet) < 0.95f || hand == "FLIP";
+            if (isSuspicious) suspicious++;
+            if (showAll || isSuspicious)
+            {
+                Console.WriteLine($"{edgeCount,5} 0x{curGuid:X8}→0x{far.Guid:X8} {dY,7:F2} {dist,7:F2} {hand} {locDet,7:F3} {farDet,7:F3}  ({door.LocalId}→{door.FarDoorId}){(isSuspicious ? "  <-- SUS" : "")}");
+            }
+            edgeCount++;
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Walked {edgeCount} edge(s); {suspicious} suspicious; placed {transforms.Count}/{graph.Nodes.Count}");
+
+    // Dump the FIRST suspicious edge in full detail.
+    var firstSus = FirstSuspicious(graph, parentOf, transforms, Resolve);
+    if (firstSus.HasValue)
+    {
+        var (parentGuid, childGuid, localDoorId, farDoorId) = firstSus.Value;
+        Console.WriteLine();
+        Console.WriteLine($"FIRST SUSPICIOUS EDGE: 0x{parentGuid:X8} → 0x{childGuid:X8}  (door {localDoorId}→{farDoorId})");
+        DumpEdge(graph, Resolve, transforms, parentGuid, childGuid, localDoorId, farDoorId);
+    }
+
+    return 0;
+}
+
+static float Det3(System.Numerics.Matrix4x4 m) =>
+    m.M11 * (m.M22 * m.M33 - m.M23 * m.M32)
+  - m.M12 * (m.M21 * m.M33 - m.M23 * m.M31)
+  + m.M13 * (m.M21 * m.M32 - m.M22 * m.M31);
+
+static System.Numerics.Matrix4x4? FindDoorXf(SnoModel sno, int doorId)
+{
+    foreach (var d in sno.Doors)
+    {
+        if (d.Id == (uint)doorId)
+        {
+            var xf = d.Transform;
+            return new System.Numerics.Matrix4x4(
+                xf.Row0.X, xf.Row0.Y, xf.Row0.Z, 0f,
+                xf.Row1.X, xf.Row1.Y, xf.Row1.Z, 0f,
+                xf.Row2.X, xf.Row2.Y, xf.Row2.Z, 0f,
+                xf.Translation.X, xf.Translation.Y, xf.Translation.Z, 1f);
+        }
+    }
+    return null;
+}
+
+static (uint parent, uint child, int localDoor, int farDoor)? FirstSuspicious(
+    RegionGraph graph,
+    Dictionary<uint, uint> parentOf,
+    Dictionary<uint, System.Numerics.Matrix4x4> transforms,
+    Func<uint, SnoModel?> resolve)
+{
+    foreach (var kv in parentOf)
+    {
+        var child = kv.Key;
+        var parent = kv.Value;
+        var wCur = transforms[parent];
+        var wFar = transforms[child];
+        var dY = wFar.M42 - wCur.M42;
+        if (MathF.Abs(dY) <= 20f) continue;
+        if (!graph.TryGetNode(parent, out var parentNode)) continue;
+        foreach (var d in parentNode.Doors)
+        {
+            if (d.FarGuid == child)
+                return (parent, child, d.LocalId, d.FarDoorId);
+        }
+    }
+    return null;
+}
+
+static void DumpEdge(
+    RegionGraph graph,
+    Func<uint, SnoModel?> resolve,
+    Dictionary<uint, System.Numerics.Matrix4x4> transforms,
+    uint parentGuid, uint childGuid, int localDoorId, int farDoorId)
+{
+    if (!graph.TryGetNode(parentGuid, out var parent) || !graph.TryGetNode(childGuid, out var child)) return;
+    var parentSno = resolve(parent.MeshGuid);
+    var childSno = resolve(child.MeshGuid);
+    if (parentSno is null || childSno is null) return;
+
+    var wCur = transforms[parentGuid];
+    var wFar = transforms[childGuid];
+    var localDoor = FindDoorXf(parentSno, localDoorId)!.Value;
+    var farDoor = FindDoorXf(childSno, farDoorId)!.Value;
+
+    Console.WriteLine($"  parent mesh=0x{parent.MeshGuid:X8}  world t=({wCur.M41,8:F2},{wCur.M42,8:F2},{wCur.M43,8:F2})");
+    Console.WriteLine($"  child  mesh=0x{child.MeshGuid:X8}  world t=({wFar.M41,8:F2},{wFar.M42,8:F2},{wFar.M43,8:F2})");
+    Console.WriteLine();
+    Console.WriteLine($"  localDoor (parent's door {localDoorId}) det={Det3(localDoor):F4}");
+    PrintMat(localDoor, "    ");
+    Console.WriteLine($"  farDoor (child's door {farDoorId}) det={Det3(farDoor):F4}");
+    PrintMat(farDoor, "    ");
+
+    System.Numerics.Matrix4x4.Invert(farDoor, out var invFar);
+    var flipY = System.Numerics.Matrix4x4.CreateRotationY(MathF.PI);
+    var composed = wCur * localDoor * flipY * invFar;
+    Console.WriteLine($"  wCur * localDoor * flipY * invFar  (current formula)");
+    PrintMat(composed, "    ");
+}
+
+static void PrintMat(System.Numerics.Matrix4x4 m, string indent)
+{
+    Console.WriteLine($"{indent}[{m.M11,7:F3} {m.M12,7:F3} {m.M13,7:F3}]");
+    Console.WriteLine($"{indent}[{m.M21,7:F3} {m.M22,7:F3} {m.M23,7:F3}]");
+    Console.WriteLine($"{indent}[{m.M31,7:F3} {m.M32,7:F3} {m.M33,7:F3}]");
+    Console.WriteLine($"{indent}t ({m.M41,7:F3} {m.M42,7:F3} {m.M43,7:F3})");
 }
 
 static int CmdGasFuzz(string[] a)
