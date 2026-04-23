@@ -64,6 +64,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx gas  fuzz    <tank>");
     Console.WriteLine("  siegefx region info  <map-tank> <region-path>");
     Console.WriteLine("  siegefx region fuzz  <map-tank>");
+    Console.WriteLine("  siegefx region layout      <map-tank> <terrain-tank> <region-path>");
+    Console.WriteLine("  siegefx region layout-fuzz <map-tank> <terrain-tank>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -189,12 +191,14 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "info" => CmdRegionInfo(a[1..]),
-        "fuzz" => CmdRegionFuzz(a[1..]),
-        _      => UnknownCommand("region " + a[0]),
+        "info"        => CmdRegionInfo(a[1..]),
+        "fuzz"        => CmdRegionFuzz(a[1..]),
+        "layout"      => CmdRegionLayout(a[1..]),
+        "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
+        _             => UnknownCommand("region " + a[0]),
     };
 }
 
@@ -277,6 +281,125 @@ static int CmdRegionFuzz(string[] a)
         }
     }
     Console.WriteLine($"fuzzed {total} region(s); {totalNodes:N0} snodes, {totalDoors:N0} doors; {failed} failure(s)");
+    return failed == 0 ? 0 : 4;
+}
+
+static int CmdRegionLayout(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region layout <map-tank> <terrain-tank> <region-path>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var regionPath = a[2].Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+
+    var graph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var layout = RegionLayout.Build(graph, Resolve);
+
+    var missingMeshes = 0;
+    foreach (var n in graph.Nodes)
+        if (!meshIndex.TryResolve(n.MeshGuid, out _)) missingMeshes++;
+
+    Console.WriteLine($"Region            : {regionPath}");
+    Console.WriteLine($"Anchor            : 0x{layout.AnchorGuid:X8}" +
+                      (layout.AnchorGuid == graph.TargetNodeGuid ? " (target)" : " (fallback; target cross-region)"));
+    Console.WriteLine($"Placed snodes     : {layout.Transforms.Count} of {graph.Nodes.Count}");
+    Console.WriteLine($"Unreachable       : {layout.UnreachableNodeCount}");
+    Console.WriteLine($"Unresolved doors  : {layout.UnresolvedDoorCount}");
+    Console.WriteLine($"Missing meshes    : {missingMeshes}");
+    Console.WriteLine($"MeshIndex         : {meshIndex.GuidCount} guid(s), {meshIndex.SnoCount} sno(s)");
+
+    var show = 0;
+    foreach (var n in graph.Nodes)
+    {
+        if (show >= 5) break;
+        if (!layout.TryGetTransform(n.Guid, out var w)) continue;
+        Console.WriteLine($"  0x{n.Guid:X8}  t=({w.M41,8:F2}, {w.M42,8:F2}, {w.M43,8:F2})");
+        show++;
+    }
+    return 0;
+}
+
+static int CmdRegionLayoutFuzz(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region layout-fuzz <map-tank> <terrain-tank>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var regionCount = 0;
+    var placed = 0;
+    var unplaced = 0;
+    var unresolvedDoors = 0;
+    var missingMeshes = 0;
+    var failed = 0;
+    foreach (var path in mapReader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        regionCount++;
+        try
+        {
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
+            var layout = RegionLayout.Build(graph, Resolve);
+            placed += layout.Transforms.Count;
+            unplaced += layout.UnreachableNodeCount;
+            unresolvedDoors += layout.UnresolvedDoorCount;
+            foreach (var n in graph.Nodes)
+                if (!meshIndex.TryResolve(n.MeshGuid, out _)) missingMeshes++;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [fail] {path}: {ex.Message}");
+            failed++;
+        }
+    }
+    Console.WriteLine($"layout-fuzzed {regionCount} region(s): {placed:N0} placed, {unplaced:N0} unreachable, " +
+                      $"{unresolvedDoors:N0} unresolved door(s), {missingMeshes:N0} missing mesh(es); {failed} failure(s)");
     return failed == 0 ? 0 : 4;
 }
 

@@ -18,6 +18,9 @@ public sealed class RenderHost : IDisposable
     private readonly IWindow _window;
     private readonly string? _meshPath;
     private readonly string? _texturePath;
+    private readonly string? _regionMapTankPath;
+    private readonly string? _regionTerrainTankPath;
+    private readonly string? _regionPath;
     private GL? _gl;
     private IInputContext? _input;
     private Shader? _gridShader;
@@ -28,9 +31,13 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _texture;
     private readonly Dictionary<string, GlTexture> _snoTextures =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
+    private readonly List<RegionInstance> _regionInstances = new();
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
+
+    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh);
 
     private const string GridVertexSource = @"#version 330 core
 layout (location = 0) in vec3 aPos;
@@ -84,10 +91,14 @@ void main()
 }";
 
     public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
-        string? meshPath = null, string? texturePath = null)
+        string? meshPath = null, string? texturePath = null,
+        string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
+        _regionMapTankPath = regionMapTankPath;
+        _regionTerrainTankPath = regionTerrainTankPath;
+        _regionPath = regionPath;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -197,6 +208,94 @@ void main()
                 Console.WriteLine($"loaded texture '{_texturePath}' ({raw.Width}x{raw.Height}, {raw.SurfaceCount} surface(s))");
             }
         }
+
+        if (_regionMapTankPath is not null && _regionTerrainTankPath is not null && _regionPath is not null)
+            LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+    }
+
+    /// <summary>Loads a full region: opens both tanks, parses the region graph, walks the
+    /// door graph to get world-space transforms, resolves and uploads each unique SNO + its
+    /// textures once, then enqueues one <see cref="RegionInstance"/> per placed snode.</summary>
+    private void LoadRegion(string mapTankPath, string terrainTankPath, string regionPath)
+    {
+        if (_gl is null) return;
+
+        var normalized = regionPath.Replace('\\', '/');
+        if (!normalized.StartsWith('/')) normalized = "/" + normalized;
+        if (normalized.EndsWith('/')) normalized = normalized[..^1];
+
+        using var mapTank = TankFile.Open(mapTankPath);
+        var mapReader = new TankReader(mapTank);
+        using var terrainTank = TankFile.Open(terrainTankPath);
+        var terrainReader = new TankReader(terrainTank);
+
+        var graph = RegionGraph.Load(mapReader.ExtractToMemory(normalized + "/terrain_nodes/nodes.gas"));
+        var meshIndex = SnoMeshIndex.Build(terrainReader);
+
+        // Two caches: SnoModel (Core-side) per mesh_guid and SnoMesh (GL-side) per mesh_guid.
+        // The model cache lets RegionLayout.Build read door transforms; the mesh cache lets
+        // us upload each unique SNO exactly once regardless of how many instances use it.
+        var modelCache = new Dictionary<uint, SnoModel?>();
+        SnoModel? ResolveModel(uint meshGuid)
+        {
+            if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
+            SnoModel? sno = null;
+            if (meshIndex.TryResolve(meshGuid, out var path))
+            {
+                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                catch { sno = null; }
+            }
+            modelCache[meshGuid] = sno;
+            return sno;
+        }
+
+        var layout = RegionLayout.Build(graph, ResolveModel);
+
+        // Build a bare-filename → full-path .raw index on demand (same pattern as
+        // LoadSnoTexturesFromTank), used every time a subset's texture is first seen.
+        var rawIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in terrainReader.ListFiles())
+        {
+            if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+            var bare = Path.GetFileNameWithoutExtension(p);
+            if (!rawIndex.ContainsKey(bare)) rawIndex[bare] = p;
+        }
+
+        foreach (var node in graph.Nodes)
+        {
+            if (!layout.TryGetTransform(node.Guid, out var world)) continue;
+            var model = ResolveModel(node.MeshGuid);
+            if (model is null) continue;
+
+            if (!_regionMeshes.TryGetValue(node.MeshGuid, out var mesh))
+            {
+                mesh = new SnoMesh(_gl, model);
+                _regionMeshes[node.MeshGuid] = mesh;
+                foreach (var subset in mesh.Subsets)
+                {
+                    if (string.IsNullOrEmpty(subset.TextureName)) continue;
+                    if (_snoTextures.ContainsKey(subset.TextureName)) continue;
+                    if (!rawIndex.TryGetValue(subset.TextureName, out var texPath)) continue;
+                    try
+                    {
+                        var raw = RawImage.Load(terrainReader.ExtractToMemory(texPath));
+                        _snoTextures[subset.TextureName] = new GlTexture(_gl, raw);
+                    }
+                    catch { /* skip unreadable textures; subset falls back to uHasTexture=0 */ }
+                }
+            }
+
+            _regionInstances.Add(new RegionInstance(world, mesh));
+        }
+
+        // Frame the camera on the anchor at identity, pulled back enough that the
+        // first connected cluster is in view. Region-scale heuristic — tune later.
+        _camera.Position = new Vector3(0, 8f, 24f);
+        _camera.Yaw = 0;
+        _camera.Pitch = -0.3f;
+
+        Console.WriteLine($"region '{normalized}': placed {_regionInstances.Count} instance(s) " +
+                          $"across {_regionMeshes.Count} unique SNO(s), {_snoTextures.Count} texture(s)");
     }
 
     /// <summary>
@@ -312,6 +411,31 @@ void main()
                 _sno.DrawSubset(i);
             }
         }
+
+        if (_meshShader is not null && _regionInstances.Count > 0)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetInt("uAlbedo", 0);
+            foreach (var inst in _regionInstances)
+            {
+                _meshShader.SetMatrix4("uModel", inst.World);
+                for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
+                {
+                    var subset = inst.Mesh.Subsets[i];
+                    if (_snoTextures.TryGetValue(subset.TextureName, out var tex))
+                    {
+                        tex.Bind(TextureUnit.Texture0);
+                        _meshShader.SetInt("uHasTexture", 1);
+                    }
+                    else
+                    {
+                        _meshShader.SetInt("uHasTexture", 0);
+                    }
+                    inst.Mesh.DrawSubset(i);
+                }
+            }
+        }
     }
 
     private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
@@ -320,6 +444,9 @@ void main()
     {
         foreach (var tex in _snoTextures.Values) tex.Dispose();
         _snoTextures.Clear();
+        foreach (var mesh in _regionMeshes.Values) mesh.Dispose();
+        _regionMeshes.Clear();
+        _regionInstances.Clear();
         _texture?.Dispose();
         _sno?.Dispose();
         _mesh?.Dispose();
