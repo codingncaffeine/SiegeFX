@@ -288,9 +288,12 @@ void main()
             _regionInstances.Add(new RegionInstance(world, mesh));
         }
 
-        // Frame the camera on the anchor at identity, pulled back enough that the
-        // first connected cluster is in view. Region-scale heuristic — tune later.
-        _camera.Position = new Vector3(0, 8f, 24f);
+        // Frame the camera on the anchor: pull back along +Z by ~3× the anchor SNO's
+        // bounding radius and lift by ~1× so the tile is comfortably visible on first
+        // paint. A full region-bounds pass is overkill here — the user flies from there.
+        var anchorRadius = 8f;
+        foreach (var mesh in _regionMeshes.Values) { anchorRadius = MathF.Max(mesh.Radius, 1f); break; }
+        _camera.Position = new Vector3(0, anchorRadius, anchorRadius * 3f);
         _camera.Yaw = 0;
         _camera.Pitch = -0.3f;
 

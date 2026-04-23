@@ -38,7 +38,12 @@ public sealed class RegionGraph
             // propagate the wrong transform. Fuzz shows this never happens in shipped
             // DS1 data, so treat it as a hard parse error if it ever does.
             if (!_byGuid.TryAdd(n.Guid, n))
-                throw new InvalidDataException($"nodes.gas: duplicate snode guid 0x{n.Guid:X8}");
+            {
+                var prior = _byGuid[n.Guid];
+                throw new InvalidDataException(
+                    $"nodes.gas: duplicate snode guid 0x{n.Guid:X8} " +
+                    $"(prior mesh=0x{prior.MeshGuid:X8}, new mesh=0x{n.MeshGuid:X8})");
+            }
         }
     }
 

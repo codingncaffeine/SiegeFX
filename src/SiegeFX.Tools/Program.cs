@@ -329,6 +329,7 @@ static int CmdRegionLayout(string[] a)
                       (layout.AnchorGuid == graph.TargetNodeGuid ? " (target)" : " (fallback; target cross-region)"));
     Console.WriteLine($"Placed snodes     : {layout.Transforms.Count} of {graph.Nodes.Count}");
     Console.WriteLine($"Unreachable       : {layout.UnreachableNodeCount}");
+    Console.WriteLine($"Cross-region doors: {layout.CrossRegionDoorCount}");
     Console.WriteLine($"Unresolved doors  : {layout.UnresolvedDoorCount}");
     Console.WriteLine($"Missing meshes    : {missingMeshes}");
     Console.WriteLine($"MeshIndex         : {meshIndex.GuidCount} guid(s), {meshIndex.SnoCount} sno(s)");
@@ -375,6 +376,7 @@ static int CmdRegionLayoutFuzz(string[] a)
     var regionCount = 0;
     var placed = 0;
     var unplaced = 0;
+    var crossRegionDoors = 0;
     var unresolvedDoors = 0;
     var missingMeshes = 0;
     var failed = 0;
@@ -388,6 +390,7 @@ static int CmdRegionLayoutFuzz(string[] a)
             var layout = RegionLayout.Build(graph, Resolve);
             placed += layout.Transforms.Count;
             unplaced += layout.UnreachableNodeCount;
+            crossRegionDoors += layout.CrossRegionDoorCount;
             unresolvedDoors += layout.UnresolvedDoorCount;
             foreach (var n in graph.Nodes)
                 if (!meshIndex.TryResolve(n.MeshGuid, out _)) missingMeshes++;
@@ -399,7 +402,8 @@ static int CmdRegionLayoutFuzz(string[] a)
         }
     }
     Console.WriteLine($"layout-fuzzed {regionCount} region(s): {placed:N0} placed, {unplaced:N0} unreachable, " +
-                      $"{unresolvedDoors:N0} unresolved door(s), {missingMeshes:N0} missing mesh(es); {failed} failure(s)");
+                      $"{crossRegionDoors:N0} cross-region door(s), {unresolvedDoors:N0} unresolved door(s), " +
+                      $"{missingMeshes:N0} missing mesh(es); {failed} failure(s)");
     return failed == 0 ? 0 : 4;
 }
 
