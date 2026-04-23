@@ -140,14 +140,7 @@ public sealed class RegionLayout
     /// 180° flip is around Y because DS1 authors door frames in a Y-up door-local space with
     /// +Z pointing out of the node; two mating doors must therefore face each other along
     /// opposite +Z, which is the Y-axis rotation. <paramref name="invFarDoor"/> must be the
-    /// far door's matrix already inverted — invert in the caller so failure is diagnosable.
-    ///
-    /// KNOWN LIMITATION: some neighbors past the first hop render below and crossed — one
-    /// cluster around the anchor looks correct, outward chains spike below the good surface.
-    /// CreateRotationY tested as best; Z made everything wrong, X flattened the region.
-    /// Likely cause: a per-door orientation flag we're ignoring, or DS1 door xforms stored
-    /// in a non-row-vector convention that needs transposing. Needs a data-driven fix
-    /// (dump mating pair xforms, solve by hand) rather than more flip-axis guessing.</summary>
+    /// far door's matrix already inverted — invert in the caller so failure is diagnosable.</summary>
     internal static Matrix4x4 ComposeNeighborTransform(
         Matrix4x4 wCurrent, Matrix4x4 localDoor, Matrix4x4 invFarDoor)
     {
