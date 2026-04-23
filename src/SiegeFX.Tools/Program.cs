@@ -78,6 +78,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx gas  fuzz  Logic.dsres");
     Console.WriteLine("  siegefx region info World.dsmap /world/maps/map_world/regions/ac_r1");
     Console.WriteLine("  siegefx region fuzz World.dsmap");
+    Console.WriteLine("  siegefx region layout      MpWorld.dsmap Terrain.dsres /world/maps/multiplayer_world/regions/abc_r1");
+    Console.WriteLine("  siegefx region layout-fuzz MpWorld.dsmap Terrain.dsres");
 }
 
 static int UnknownCommand(string cmd)

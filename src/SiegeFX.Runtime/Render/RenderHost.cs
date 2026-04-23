@@ -292,7 +292,11 @@ void main()
         // bounding radius and lift by ~1× so the tile is comfortably visible on first
         // paint. A full region-bounds pass is overkill here — the user flies from there.
         var anchorRadius = 8f;
-        foreach (var mesh in _regionMeshes.Values) { anchorRadius = MathF.Max(mesh.Radius, 1f); break; }
+        if (graph.TryGetNode(layout.AnchorGuid, out var anchorNode) &&
+            _regionMeshes.TryGetValue(anchorNode.MeshGuid, out var anchorMesh))
+        {
+            anchorRadius = MathF.Max(anchorMesh.Radius, 1f);
+        }
         _camera.Position = new Vector3(0, anchorRadius, anchorRadius * 3f);
         _camera.Yaw = 0;
         _camera.Pitch = -0.3f;
