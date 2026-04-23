@@ -16,6 +16,7 @@ try
         "raw"  => DispatchRaw(args[1..]),
         "asp"  => DispatchAsp(args[1..]),
         "sno"  => DispatchSno(args[1..]),
+        "gas"  => DispatchGas(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -57,6 +58,9 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
     Console.WriteLine("  siegefx asp  info    <file.asp>");
     Console.WriteLine("  siegefx sno  info    <file.sno>");
+    Console.WriteLine("  siegefx gas  info    <file.gas>");
+    Console.WriteLine("  siegefx gas  dump    <file.gas>");
+    Console.WriteLine("  siegefx gas  fuzz    <tank>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -65,6 +69,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  decode logo.raw --all");
     Console.WriteLine("  siegefx asp  info  boot.asp");
     Console.WriteLine("  siegefx sno  info  t_grs01_grs-thick-08.sno");
+    Console.WriteLine("  siegefx gas  dump  camera.gas");
+    Console.WriteLine("  siegefx gas  fuzz  Logic.dsres");
 }
 
 static int UnknownCommand(string cmd)
@@ -115,6 +121,98 @@ static int DispatchSno(string[] a)
         "info" => CmdSnoInfo(a[1..]),
         _      => UnknownCommand("sno " + a[0]),
     };
+}
+
+static int DispatchGas(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx gas <info|dump|fuzz> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "info" => CmdGasInfo(a[1..]),
+        "dump" => CmdGasDump(a[1..]),
+        "fuzz" => CmdGasFuzz(a[1..]),
+        _      => UnknownCommand("gas " + a[0]),
+    };
+}
+
+static int CmdGasInfo(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx gas info <file.gas>"); return 1; }
+    var bytes = File.ReadAllBytes(a[0]);
+    var doc = GasDocument.Load(bytes);
+    int blocks = 0, attrs = 0, depth = 0;
+    foreach (var r in doc.Roots) Count(r, 1);
+    Console.WriteLine($"File     : {a[0]}");
+    Console.WriteLine($"Size     : {bytes.Length:N0} bytes");
+    Console.WriteLine($"Roots    : {doc.Roots.Count}");
+    Console.WriteLine($"Blocks   : {blocks}");
+    Console.WriteLine($"Attrs    : {attrs}");
+    Console.WriteLine($"Max depth: {depth}");
+    foreach (var r in doc.Roots)
+        Console.WriteLine($"  [{r.Header}]  {r.Children.Count} child blocks, {r.Attributes.Count} attrs");
+    return 0;
+
+    void Count(GasNode n, int d)
+    {
+        blocks++;
+        attrs += n.Attributes.Count;
+        if (d > depth) depth = d;
+        foreach (var c in n.Children) Count(c, d + 1);
+    }
+}
+
+static int CmdGasDump(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx gas dump <file.gas>"); return 1; }
+    var bytes = File.ReadAllBytes(a[0]);
+    var doc = GasDocument.Load(bytes);
+    foreach (var r in doc.Roots) Dump(r, 0);
+    return 0;
+
+    static void Dump(GasNode n, int indent)
+    {
+        var pad = new string(' ', indent * 2);
+        Console.WriteLine($"{pad}[{n.Header}]");
+        foreach (var a in n.Attributes)
+        {
+            var tag = a.TypeTag is null ? "" : $"{a.TypeTag} ";
+            Console.WriteLine($"{pad}  {tag}{a.Name} = {a.Value}");
+        }
+        foreach (var c in n.Children) Dump(c, indent + 1);
+    }
+}
+
+static int CmdGasFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx gas fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    var total = 0;
+    var failed = 0;
+    var totalBytes = 0L;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}");
+            failed++;
+            continue;
+        }
+        totalBytes += bytes.Length;
+        try { _ = GasDocument.Load(bytes); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [parse-fail]   {path}: {ex.Message}");
+            failed++;
+        }
+    }
+    Console.WriteLine($"fuzzed {total} .gas file(s), {totalBytes:N0} bytes total; {failed} failure(s)");
+    return failed == 0 ? 0 : 4;
 }
 
 static int CmdSnoInfo(string[] a)
