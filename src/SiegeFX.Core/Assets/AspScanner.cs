@@ -50,20 +50,26 @@ public static class AspScanner
         var chunks = new List<Chunk>();
         for (var i = 0; i + 8 <= data.Length; i++)
         {
-            if (!IsAscii(data[i]) || !IsAscii(data[i + 1]) ||
-                !IsAscii(data[i + 2]) || !IsAscii(data[i + 3]))
+            if (!IsUpperAscii(data[i]) || !IsUpperAscii(data[i + 1]) ||
+                !IsUpperAscii(data[i + 2]) || !IsUpperAscii(data[i + 3]))
                 continue;
             var id = new FourCC(data[i], data[i + 1], data[i + 2], data[i + 3]);
             if (!Known.Contains(id)) continue;
 
+            // Every real DS1 ASP version is x.y.0.0; the high two bytes being nonzero
+            // almost always means we hit lucky ASCII inside a float blob, not a real header.
             var verMajor = data[i + 4];
             if (verMajor is < 1 or > 9) continue;
+            if (data[i + 6] != 0 || data[i + 7] != 0) continue;
 
             var versionRaw = data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24);
             chunks.Add(new Chunk(id, i, versionRaw));
+            // Skip past this chunk's header so the next iteration can't start inside the
+            // 8 bytes we just consumed. Loop's i++ will move us past the version word.
+            i += 7;
         }
         return chunks;
     }
 
-    private static bool IsAscii(byte b) => b >= 'A' && b <= 'Z';
+    private static bool IsUpperAscii(byte b) => b >= 'A' && b <= 'Z';
 }

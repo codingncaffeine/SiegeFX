@@ -75,9 +75,15 @@ public sealed class SnoMesh : IDisposable
             _gl.VertexAttribPointer(2, 2, GLEnum.Float, false, 8 * sizeof(float), (void*)(6 * sizeof(float)));
         }
 
-        // Per-surface EBO: SNO triangle indices are u16 LOCAL to the surface's
-        // StartCorner span, so resolve to global indices here before upload.
-        // Keeps the draw call a plain DrawElements rather than DrawElementsBaseVertex.
+        // Unbind the VAO before creating per-surface EBOs. Binding GL_ELEMENT_ARRAY_BUFFER
+        // while a VAO is bound mutates that VAO's remembered element buffer — if we left
+        // the VAO bound here, it would "remember" whichever subset we uploaded last.
+        // DrawSubset binds the right EBO per call; the VAO just owns the vertex stream.
+        _gl.BindVertexArray(0);
+
+        // SNO triangle indices are u16 LOCAL to the surface's StartCorner span, so resolve
+        // to global indices here. Keeps the draw call a plain DrawElements rather than
+        // DrawElementsBaseVertex.
         _subsets = new Subset[model.Surfaces.Length];
         for (var si = 0; si < model.Surfaces.Length; si++)
         {
@@ -102,7 +108,6 @@ public sealed class SnoMesh : IDisposable
             };
         }
 
-        _gl.BindVertexArray(0);
         _gl.BindBuffer(GLEnum.ArrayBuffer, 0);
         _gl.BindBuffer(GLEnum.ElementArrayBuffer, 0);
     }
