@@ -55,6 +55,7 @@ public sealed class GridMesh : IDisposable
         }
 
         _gl.BindVertexArray(0);
+        _gl.BindBuffer(GLEnum.ArrayBuffer, 0);
     }
 
     public void Draw()
