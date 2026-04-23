@@ -4,6 +4,7 @@ using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using SiegeFX.Core.Assets;
+using SiegeFX.Core.Tank;
 
 namespace SiegeFX.Runtime.Render;
 
@@ -25,6 +26,8 @@ public sealed class RenderHost : IDisposable
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private GlTexture? _texture;
+    private readonly Dictionary<string, GlTexture> _snoTextures =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
@@ -180,11 +183,64 @@ void main()
 
         if (_texturePath is not null)
         {
-            var texBytes = File.ReadAllBytes(_texturePath);
-            var raw = RawImage.Load(texBytes);
-            _texture = new GlTexture(_gl, raw);
-            Console.WriteLine($"loaded texture '{_texturePath}' ({raw.Width}x{raw.Height}, {raw.SurfaceCount} surface(s))");
+            var ext = Path.GetExtension(_texturePath).ToLowerInvariant();
+            if (ext is ".dsres" or ".dsmap")
+            {
+                if (_sno is not null) LoadSnoTexturesFromTank(_texturePath);
+                else Console.WriteLine($"tank '{_texturePath}' ignored — texture-from-tank resolution only runs for SNO meshes");
+            }
+            else
+            {
+                var texBytes = File.ReadAllBytes(_texturePath);
+                var raw = RawImage.Load(texBytes);
+                _texture = new GlTexture(_gl, raw);
+                Console.WriteLine($"loaded texture '{_texturePath}' ({raw.Width}x{raw.Height}, {raw.SurfaceCount} surface(s))");
+            }
         }
+    }
+
+    /// <summary>
+    /// Resolves each unique <see cref="SnoModel.Surface.TextureName"/> against a tank
+    /// by matching bare filename (case-insensitive) against every <c>*.raw</c> entry.
+    /// DS1 SNOs reference textures by basename (e.g. "t_grs01"), with the canonical
+    /// location varying between terrain/logic tanks — basename matching side-steps that.
+    /// </summary>
+    private void LoadSnoTexturesFromTank(string tankPath)
+    {
+        if (_gl is null || _sno is null) return;
+
+        using var tank = TankFile.Open(tankPath);
+        var reader = new TankReader(tank);
+
+        var index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in reader.ListFiles())
+        {
+            if (!path.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+            var bare = Path.GetFileNameWithoutExtension(path);
+            // First match wins; most DS1 basenames are unique within a tank. A future pass
+            // can promote collision handling if a terrain/logic merge actually shows one.
+            if (!index.ContainsKey(bare)) index[bare] = path;
+        }
+
+        var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in _sno.Subsets) unique.Add(s.TextureName);
+
+        var hits = 0;
+        foreach (var name in unique)
+        {
+            if (string.IsNullOrEmpty(name)) continue;
+            if (!index.TryGetValue(name, out var fullPath))
+            {
+                Console.WriteLine($"  [miss] '{name}' not found in tank");
+                continue;
+            }
+            var bytes = reader.ExtractToMemory(fullPath);
+            var raw = RawImage.Load(bytes);
+            _snoTextures[name] = new GlTexture(_gl, raw);
+            hits++;
+        }
+
+        Console.WriteLine($"resolved {hits}/{unique.Count} SNO textures from tank '{tankPath}'");
     }
 
     private void OnUpdate(double dt)
@@ -241,11 +297,20 @@ void main()
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
             _meshShader.SetInt("uAlbedo", 0);
-            // Phase 4d-2: no per-subset textures wired yet — draw untextured so surfaces
-            // read as distinct shapes via Lambert shading.
-            _meshShader.SetInt("uHasTexture", 0);
             for (var i = 0; i < _sno.Subsets.Count; i++)
+            {
+                var subset = _sno.Subsets[i];
+                if (_snoTextures.TryGetValue(subset.TextureName, out var tex))
+                {
+                    tex.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else
+                {
+                    _meshShader.SetInt("uHasTexture", 0);
+                }
                 _sno.DrawSubset(i);
+            }
         }
     }
 
@@ -253,6 +318,8 @@ void main()
 
     public void Dispose()
     {
+        foreach (var tex in _snoTextures.Values) tex.Dispose();
+        _snoTextures.Clear();
         _texture?.Dispose();
         _sno?.Dispose();
         _mesh?.Dispose();
