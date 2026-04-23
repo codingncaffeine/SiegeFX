@@ -61,5 +61,11 @@ public sealed class Camera
     public Matrix4x4 GetProjection(float aspect)
         => Matrix4x4.CreatePerspectiveFieldOfView(FovRadians, aspect, NearPlane, FarPlane);
 
+    // System.Numerics uses row-vector convention (v * M), so the C# composition is
+    // View * Projection. We upload with transpose=false, which reinterprets the
+    // row-major storage as column-major in GLSL. That effectively transposes the
+    // matrix, converting it to column-vector form so `uViewProj * vec4(pos,1)`
+    // applies View then Projection. If anyone ever flips the uniform's transpose
+    // flag or swaps to a glm-style math lib, this order must flip too.
     public Matrix4x4 GetViewProjection(float aspect) => GetView() * GetProjection(aspect);
 }
