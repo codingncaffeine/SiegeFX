@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
 namespace SiegeFX.Core.Assets;
@@ -23,15 +24,22 @@ public sealed class RegionGraph
 
     private readonly Dictionary<uint, NodeInstance> _byGuid;
 
-    public bool TryGetNode(uint guid, out NodeInstance? node) =>
-        (node = _byGuid.TryGetValue(guid, out var n) ? n : null) != null;
+    public bool TryGetNode(uint guid, [MaybeNullWhen(false)] out NodeInstance node) =>
+        _byGuid.TryGetValue(guid, out node);
 
     private RegionGraph(uint targetNodeGuid, IReadOnlyList<NodeInstance> nodes)
     {
         TargetNodeGuid = targetNodeGuid;
         Nodes = nodes;
         _byGuid = new Dictionary<uint, NodeInstance>(nodes.Count);
-        foreach (var n in nodes) _byGuid[n.Guid] = n;
+        foreach (var n in nodes)
+        {
+            // Guid collisions within a region would make Phase 6b's door-graph walk
+            // propagate the wrong transform. Fuzz shows this never happens in shipped
+            // DS1 data, so treat it as a hard parse error if it ever does.
+            if (!_byGuid.TryAdd(n.Guid, n))
+                throw new InvalidDataException($"nodes.gas: duplicate snode guid 0x{n.Guid:X8}");
+        }
     }
 
     public static RegionGraph Load(byte[] nodesGasBytes) =>
