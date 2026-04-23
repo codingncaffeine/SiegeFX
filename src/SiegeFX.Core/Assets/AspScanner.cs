@@ -35,6 +35,7 @@ public static class AspScanner
         new('B','V','M','P'), // vertex→bone map
         new('S','T','C','H'), // stitch info
         new('R','P','O','S'), // root position
+        new('B','V','W','L'), // vertex weight list
         new('B','E','N','D'), // marker before BENDINFO trailer
     };
 
