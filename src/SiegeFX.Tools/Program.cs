@@ -79,6 +79,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates show     <tank> <name>");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
+    Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");

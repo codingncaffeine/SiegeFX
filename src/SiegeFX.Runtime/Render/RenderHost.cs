@@ -42,6 +42,9 @@ public sealed class RenderHost : IDisposable
     private RegionLayout? _regionLayout;
     private readonly List<ActorRenderState> _actors = new();
     private readonly Dictionary<AspMesh, SkinnedMesh> _actorMeshCache = new();
+    // Bind-pose bone array cached per unique mesh — reused every frame for zero-clip actors
+    // so the hot render loop doesn't allocate 181× Matrix4x4[BoneCount] under GC.
+    private readonly Dictionary<AspMesh, Matrix4x4[]> _actorIdentityBones = new();
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     private double _actorTickAccumulator;
@@ -1030,8 +1033,12 @@ void main()
                     // No parsable PRS for this actor (shipped 0x0202 clips we don't support
                     // yet). Identity per bone = bind-pose pass-through, which renders the
                     // mesh as authored. Good enough to confirm placement.
-                    skin = new Matrix4x4[s.Actor.Mesh.BoneCount];
-                    for (int i = 0; i < skin.Length; i++) skin[i] = Matrix4x4.Identity;
+                    if (!_actorIdentityBones.TryGetValue(s.Actor.Mesh, out skin!))
+                    {
+                        skin = new Matrix4x4[s.Actor.Mesh.BoneCount];
+                        for (int i = 0; i < skin.Length; i++) skin[i] = Matrix4x4.Identity;
+                        _actorIdentityBones[s.Actor.Mesh] = skin;
+                    }
                 }
                 else
                 {
@@ -1084,6 +1091,7 @@ void main()
         _regionInstances.Clear();
         foreach (var mesh in _actorMeshCache.Values) mesh.Dispose();
         _actorMeshCache.Clear();
+        _actorIdentityBones.Clear();
         _actors.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
