@@ -21,6 +21,9 @@ public sealed class RenderHost : IDisposable
     private readonly string? _regionMapTankPath;
     private readonly string? _regionTerrainTankPath;
     private readonly string? _regionPath;
+    private readonly string? _worldMapTankPath;
+    private readonly string? _worldTerrainTankPath;
+    private readonly string? _worldRootHint;
     private GL? _gl;
     private IInputContext? _input;
     private Shader? _gridShader;
@@ -107,13 +110,17 @@ void main()
 
     public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
         string? meshPath = null, string? texturePath = null,
-        string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null)
+        string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null,
+        string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
         _regionMapTankPath = regionMapTankPath;
         _regionTerrainTankPath = regionTerrainTankPath;
         _regionPath = regionPath;
+        _worldMapTankPath = worldMapTankPath;
+        _worldTerrainTankPath = worldTerrainTankPath;
+        _worldRootHint = worldRootHint;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -226,6 +233,131 @@ void main()
 
         if (_regionMapTankPath is not null && _regionTerrainTankPath is not null && _regionPath is not null)
             LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+
+        if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
+            LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint);
+    }
+
+    /// <summary>Loads every region in the map tank stitched into one world. Shares the
+    /// per-mesh / per-texture caches so the 77k-instance MpWorld costs the same in GPU
+    /// upload as one region — the bulk of the work is the CPU-side layout build.</summary>
+    private void LoadWorld(string mapTankPath, string terrainTankPath, string? rootHint)
+    {
+        if (_gl is null) return;
+
+        using var mapTank = TankFile.Open(mapTankPath);
+        var mapReader = new TankReader(mapTank);
+        using var terrainTank = TankFile.Open(terrainTankPath);
+        var terrainReader = new TankReader(terrainTank);
+
+        var meshIndex = SnoMeshIndex.Build(terrainReader);
+        var modelCache = new Dictionary<uint, SnoModel?>();
+        SnoModel? ResolveModel(uint meshGuid)
+        {
+            if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
+            SnoModel? sno = null;
+            if (meshIndex.TryResolve(meshGuid, out var path))
+            {
+                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                catch { sno = null; }
+            }
+            modelCache[meshGuid] = sno;
+            return sno;
+        }
+
+        // Enumerate every region, build its graph + layout + (optional) stitch helper.
+        var entries = new List<WorldLayout.RegionEntry>();
+        var regionGraphs = new Dictionary<string, RegionGraph>();
+        foreach (var path in mapReader.ListFiles())
+        {
+            if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+            var regionPath = path[..^"/terrain_nodes/nodes.gas".Length];
+            try
+            {
+                var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
+                var layout = RegionLayout.Build(graph, ResolveModel);
+                RegionStitchHelper? stitches = null;
+                var stitchPath = regionPath + "/editor/stitch_helper.gas";
+                if (mapReader.TryGetFile(stitchPath, out _))
+                {
+                    try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(stitchPath)); }
+                    catch { /* a bad stitch file just makes that region un-stitchable */ }
+                }
+                entries.Add(new WorldLayout.RegionEntry(regionPath, graph, layout, stitches));
+                regionGraphs[regionPath] = graph;
+            }
+            catch
+            {
+                // Skipping a broken region is better than failing the whole world load.
+            }
+        }
+
+        var world = WorldLayout.Build(entries, ResolveModel, rootHint);
+
+        // .raw index built once; reused for every subset resolution below.
+        var rawIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in terrainReader.ListFiles())
+        {
+            if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+            var bare = Path.GetFileNameWithoutExtension(p);
+            if (!rawIndex.ContainsKey(bare)) rawIndex[bare] = p;
+        }
+
+        // Materialize each placed snode as a RegionInstance. We need per-instance texsetAbbr
+        // (authored per-snode in nodes.gas), so walk region graphs rather than the flat
+        // world.Transforms dict directly.
+        foreach (var entry in entries)
+        {
+            if (!world.RegionOffsets.ContainsKey(entry.Path)) continue;
+            foreach (var node in entry.Graph.Nodes)
+            {
+                if (!world.Transforms.TryGetValue(node.Guid, out var worldXf)) continue;
+                var model = ResolveModel(node.MeshGuid);
+                if (model is null) continue;
+
+                if (!_regionMeshes.TryGetValue(node.MeshGuid, out var mesh))
+                {
+                    mesh = new SnoMesh(_gl, model);
+                    _regionMeshes[node.MeshGuid] = mesh;
+                }
+
+                foreach (var subset in mesh.Subsets)
+                {
+                    if (string.IsNullOrEmpty(subset.TextureName)) continue;
+                    var resolved = ResolveTexName(subset.TextureName, node.TexsetAbbr);
+                    if (_snoTextures.ContainsKey(resolved)) continue;
+                    if (!rawIndex.TryGetValue(resolved, out var texPath)) continue;
+                    try
+                    {
+                        var raw = RawImage.Load(terrainReader.ExtractToMemory(texPath));
+                        _snoTextures[resolved] = new GlTexture(_gl, raw);
+                    }
+                    catch { /* skip */ }
+                }
+
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr));
+            }
+        }
+
+        // Frame the camera over the root region's origin, lifted so the player sees a
+        // decent patch of ground on first paint. World extents span ±1km, so the user
+        // will fly a lot — WASD+sprint is the expected traversal.
+        if (world.RegionOffsets.TryGetValue(world.RootRegion, out var rootOffset))
+        {
+            _camera.Position = new Vector3(rootOffset.M41, rootOffset.M42 + 20f, rootOffset.M43 + 40f);
+        }
+        else
+        {
+            _camera.Position = new Vector3(0, 20f, 40f);
+        }
+        _camera.Yaw = 0;
+        _camera.Pitch = -0.3f;
+
+        Console.WriteLine($"world '{mapTankPath}': root={world.RootRegion}");
+        Console.WriteLine($"  placed {world.PlacedRegionCount}/{entries.Count} region(s), " +
+                          $"{_regionInstances.Count:N0} instance(s), " +
+                          $"{_regionMeshes.Count:N0} unique SNO(s), {_snoTextures.Count:N0} texture(s)");
+        Console.WriteLine($"  unresolved={world.UnresolvedStitchCount} dangling={world.DanglingStitchCount} unreachable={world.UnreachableRegionCount}");
     }
 
     /// <summary>Loads a full region: opens both tanks, parses the region graph, walks the
