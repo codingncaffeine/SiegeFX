@@ -28,6 +28,7 @@ public sealed class SkritInstance
     string? _pendingState; // captured from SetState inside a handler; applied between handlers
 
     readonly List<ScheduledChore> _chores = new();
+    readonly Dictionary<string, SkritStateDecl> _stateDecls = new();
 
     public IReadOnlyList<ScheduledChore> Chores => _chores;
 
@@ -36,6 +37,10 @@ public sealed class SkritInstance
         Program = program;
         Host = host;
         Vm = new SkritVm(program, host); // runs @__init__ on ctor
+
+        // Index state decls once so EnterState doesn't linear-scan TopLevels at 20 Hz × N actors.
+        foreach (var top in program.Script.TopLevels)
+            if (top is SkritStateDecl s) _stateDecls[s.Name] = s;
     }
 
     /// <summary>Activate the startup state (first <c>startup state X$</c> in the script)
@@ -47,14 +52,15 @@ public sealed class SkritInstance
             if (top is SkritStateDecl s && s.IsStartup)
             {
                 EnterState(s.Name);
+                ApplyPendingState();
                 return;
             }
         }
     }
 
     /// <summary>Fire a named event on this instance. Resolution order: current state's
-    /// event handler first, then the top-level <c>@event/Name$</c> chunk. Returns
-    /// <c>true</c> if a handler actually ran.</summary>
+    /// event, current state's trigger, top-level <c>@event/Name</c>, top-level
+    /// <c>@trigger/Name</c>. Returns <c>true</c> if a handler actually ran.</summary>
     public bool Dispatch(string eventName, params SkritValue[] args)
     {
         string? key = null;
@@ -73,6 +79,11 @@ public sealed class SkritInstance
             var topKey = $"@event/{eventName}";
             if (Program.ChunksByName.ContainsKey(topKey)) key = topKey;
         }
+        if (key is null)
+        {
+            var topTrig = $"@trigger/{eventName}";
+            if (Program.ChunksByName.ContainsKey(topTrig)) key = topTrig;
+        }
         if (key is null) return false;
 
         Vm.Run(key, args);
@@ -86,7 +97,13 @@ public sealed class SkritInstance
     /// current state or the script defines it.</summary>
     public void Tick(double dt)
     {
+        // OnUpdate$ first. If it SetStates, EnterState has already cleared + repopulated
+        // _chores, so the chore pass below would decrement Remaining on brand-new chores
+        // that were meant to get their first tick *next* frame. Snapshot state and skip
+        // the chore pass when the dispatch switched us.
+        var stateBefore = CurrentState;
         Dispatch("OnUpdate$", SkritValue.FromFloat((float)dt));
+        if (CurrentState != stateBefore) return;
 
         for (int i = 0; i < _chores.Count; i++)
         {
@@ -114,6 +131,8 @@ public sealed class SkritInstance
     /// bytecode doesn't have its scope/chore list yanked out from under it.</summary>
     public void RequestSetState(string stateName) => _pendingState = stateName;
 
+    // ApplyPendingState is the single drainer. EnterState never recurses into it — it just
+    // populates _pendingState via its own Dispatch calls, and this loop picks them up.
     void ApplyPendingState()
     {
         while (_pendingState is not null)
@@ -126,15 +145,9 @@ public sealed class SkritInstance
 
     void EnterState(string stateName)
     {
-        if (!Program.States.ContainsKey(stateName)) return; // binder already diagnosed unknown targets
+        if (!_stateDecls.TryGetValue(stateName, out var state)) return; // unknown target — binder diagnosed it
         CurrentState = stateName;
         _chores.Clear();
-
-        // Find the AST so we can enumerate scheduled blocks for this state.
-        SkritStateDecl? state = null;
-        foreach (var top in Program.Script.TopLevels)
-            if (top is SkritStateDecl s && s.Name == stateName) { state = s; break; }
-        if (state is null) return;
 
         // Register one-shot chores. `at ( N frames )` converts via FramesPerSecond; any
         // other unit string (seconds, the default) is interpreted as seconds.
@@ -153,14 +166,13 @@ public sealed class SkritInstance
         }
 
         // Run any header-trigger body (inline `startup state X$ trigger OnY$ { ... }`).
+        // Nested SetStates land in _pendingState and are drained by the caller of EnterState.
         var headerKey = $"{stateName}/header";
-        if (Program.ChunksByName.ContainsKey(headerKey))
-        {
-            Vm.Run(headerKey);
-            ApplyPendingState();
-        }
-        // Run OnEnterState$ if the state defines it.
-        Dispatch("OnEnterState$");
+        if (Program.ChunksByName.ContainsKey(headerKey)) Vm.Run(headerKey);
+
+        // Run OnEnterState$ if the state or script defines it.
+        var enterKey = $"{stateName}/event/OnEnterState$";
+        if (Program.ChunksByName.ContainsKey(enterKey)) Vm.Run(enterKey);
     }
 
     /// <summary>Best-effort constant-fold for <c>at ( N ... )</c> counts. Most shipped

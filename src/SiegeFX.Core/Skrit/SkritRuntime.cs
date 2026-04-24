@@ -30,6 +30,8 @@ public sealed class SkritRuntime
 
     public void DispatchAll(string eventName, params SkritValue[] args)
     {
-        foreach (var inst in _instances) inst.Dispatch(eventName, args);
+        // Snapshot: handlers may Add/Remove instances mid-dispatch.
+        var snapshot = _instances.ToArray();
+        foreach (var inst in snapshot) inst.Dispatch(eventName, args);
     }
 }
