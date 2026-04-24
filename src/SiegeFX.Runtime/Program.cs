@@ -5,6 +5,7 @@ using SiegeFX.Runtime.Render;
 //   SiegeFX.Runtime --region <map-tank> <terrain-tank> <region-path>
 //   SiegeFX.Runtime --world  <map-tank> <terrain-tank> [root-region]
 //   SiegeFX.Runtime --anim   <rigged.asp> <clip.prs> [texture.raw]
+//   SiegeFX.Runtime --skrit-anim <rigged.asp> <skrit> <clip0.prs> [clip1.prs ...] [--texture <raw>]
 string? meshPath = null;
 string? texturePath = null;
 string? regionMap = null;
@@ -16,6 +17,8 @@ string? worldRoot = null;
 string? animAsp = null;
 string? animPrs = null;
 string? animTexture = null;
+string? skritPath = null;
+List<string>? skritClips = null;
 
 if (args.Length >= 1 && args[0] == "--region")
 {
@@ -50,6 +53,30 @@ else if (args.Length >= 1 && args[0] == "--anim")
     animPrs = args[2];
     animTexture = args.Length >= 4 ? args[3] : null;
 }
+else if (args.Length >= 1 && args[0] == "--skrit-anim")
+{
+    // Phase 9a. Rigged ASP + skrit that decides which clip plays. Optional trailing
+    // `--texture <raw>` binds albedo (keeps the positional list of clips unambiguous).
+    if (args.Length < 4)
+    {
+        Console.Error.WriteLine("usage: SiegeFX.Runtime --skrit-anim <rigged.asp> <skrit> <clip0.prs> [clip1.prs ...] [--texture <raw>]");
+        return 1;
+    }
+    animAsp = args[1];
+    skritPath = args[2];
+    skritClips = new List<string>();
+    for (int i = 3; i < args.Length; i++)
+    {
+        if (args[i] == "--texture")
+        {
+            if (i + 1 >= args.Length) { Console.Error.WriteLine("--texture needs a value"); return 1; }
+            animTexture = args[i + 1];
+            i++;
+        }
+        else skritClips.Add(args[i]);
+    }
+    if (skritClips.Count == 0) { Console.Error.WriteLine("--skrit-anim requires at least one clip"); return 1; }
+}
 else
 {
     meshPath    = args.Length > 0 ? args[0] : null;
@@ -68,6 +95,8 @@ using var host = new RenderHost(
     worldRootHint: worldRoot,
     animAspPath: animAsp,
     animPrsPath: animPrs,
-    animTexturePath: animTexture);
+    animTexturePath: animTexture,
+    skritPath: skritPath,
+    skritClipPaths: skritClips);
 host.Run();
 return 0;
