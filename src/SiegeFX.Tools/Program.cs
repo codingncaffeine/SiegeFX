@@ -2165,10 +2165,17 @@ static int CmdTemplatesStats(string[] a)
         if (x.StartsWith("--prefix=", StringComparison.Ordinal)) prefix = x["--prefix=".Length..];
         else rest.Add(x);
     }
-    if (rest.Count == 0 || rest.Count > 2 || (prefix is null && rest.Count < 2))
+    // Modes are exclusive: either one specific name or one prefix. The two bare
+    // positionals in prefix mode would be ambiguous (the second could be a name
+    // that shadows the prefix), so reject rather than silently ignoring one.
+    bool wantsName   = prefix is null && rest.Count == 2;
+    bool wantsPrefix = prefix is not null && rest.Count == 1;
+    if (!wantsName && !wantsPrefix)
     {
         Console.Error.WriteLine("usage: siegefx templates stats <tank> <name>");
         Console.Error.WriteLine("   or: siegefx templates stats <tank> --prefix=P");
+        if (prefix is not null && rest.Count == 2)
+            Console.Error.WriteLine("(cannot combine a bare <name> with --prefix=)");
         return 1;
     }
 
