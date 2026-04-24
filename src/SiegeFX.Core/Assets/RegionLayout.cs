@@ -136,15 +136,25 @@ public sealed class RegionLayout
         xf.Row2.X, xf.Row2.Y, xf.Row2.Z, 0f,
         xf.Translation.X, xf.Translation.Y, xf.Translation.Z, 1f);
 
-    /// <summary>Composes <c>W(far) = W(current) * localDoor * Flip * invFarDoor</c>. The
-    /// 180° flip is around Y because DS1 authors door frames in a Y-up door-local space with
-    /// +Z pointing out of the node; two mating doors must therefore face each other along
-    /// opposite +Z, which is the Y-axis rotation. <paramref name="invFarDoor"/> must be the
-    /// far door's matrix already inverted — invert in the caller so failure is diagnosable.</summary>
+    /// <summary>Composes <c>W(far) = invFarDoor * Flip * localDoor * W(current)</c>. Operand
+    /// order matches OpenSiege <c>SiegeNodeMesh::connect</c> (ReaderWriterSiegeNodeList.cpp
+    /// in <c>_ds1refs/</c>). In row-vector convention a point transforms as
+    /// <c>p' = p * M1 * M2 * ...</c> with M1 applied first — so to move a point expressed in
+    /// the far node's local space into world we walk it inverse-far-door → 180° hinge →
+    /// current-door → current-to-world, and that must be the composition order. The earlier
+    /// <c>wCurrent * localDoor * flip * invFarDoor</c> form had the operands REVERSED, which
+    /// applied the current-to-world lift before the door hinge — the hops composed to a near-
+    /// identity cluster around the anchor instead of walking outward along the door chain
+    /// (classic "the whole region clumps at origin" failure mode).
+    ///
+    /// The 180° flip is around Y: DS1 authors door frames in a Y-up door-local space with +Z
+    /// pointing outward, so two mating doors face each other along opposite +Z — Y is the
+    /// hinge axis. <paramref name="invFarDoor"/> is pre-inverted in the caller so a singular
+    /// far-door matrix is diagnosable as an unresolved edge, not a silent identity fallback.</summary>
     internal static Matrix4x4 ComposeNeighborTransform(
         Matrix4x4 wCurrent, Matrix4x4 localDoor, Matrix4x4 invFarDoor)
     {
         var flip = Matrix4x4.CreateRotationY(MathF.PI);
-        return wCurrent * localDoor * flip * invFarDoor;
+        return invFarDoor * flip * localDoor * wCurrent;
     }
 }

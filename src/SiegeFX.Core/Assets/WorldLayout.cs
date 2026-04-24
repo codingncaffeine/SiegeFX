@@ -22,8 +22,10 @@ public sealed class WorldLayout
 {
     public string RootRegion { get; }
 
-    /// <summary>Per-region world offset: <c>global(snode) = RegionOffsets[region] * localLayout.Transforms[snode]</c>.
-    /// The root region's offset is <see cref="Matrix4x4.Identity"/> by construction.</summary>
+    /// <summary>Per-region world offset: <c>global(snode) = localLayout.Transforms[snode] * RegionOffsets[region]</c>
+    /// (row-vector convention — the snode-local→region-frame step runs first, then the
+    /// region-frame→world lift). The root region's offset is <see cref="Matrix4x4.Identity"/>
+    /// by construction.</summary>
     public IReadOnlyDictionary<string, Matrix4x4> RegionOffsets { get; }
 
     /// <summary>Global world transform for every placed snode across every placed region.
@@ -194,17 +196,17 @@ public sealed class WorldLayout
                     if (!Matrix4x4.Invert(farLocal, out var invFarLocal)) { unresolved++; continue; }
 
                     // Same composition as intra-region (RegionLayout.ComposeNeighborTransform),
-                    // just in the world frame — curOffset * curLocal is our local snode's
-                    // world transform.
-                    var wCurGlobal = curOffset * curLocal;
+                    // lifted to world. Row-vector order: a point transforms snode-local →
+                    // region-frame → world, so wCurGlobal = curLocal * curOffset.
+                    var wCurGlobal = curLocal * curOffset;
                     var wFarGlobal = RegionLayout.ComposeNeighborTransform(wCurGlobal, localDoor.Value, invFar);
 
-                    // wFarGlobal = farOffset * farLocal  ⇒  farOffset = wFarGlobal * inv(farLocal).
-                    var farOffset = wFarGlobal * invFarLocal;
+                    // wFarGlobal = farLocal * farOffset  ⇒  farOffset = inv(farLocal) * wFarGlobal.
+                    var farOffset = invFarLocal * wFarGlobal;
                     regionOffsets[farRegionPath] = farOffset;
 
                     foreach (var (g, local) in farEntry.Layout.Transforms)
-                        transforms[g] = farOffset * local;
+                        transforms[g] = local * farOffset;
 
                     queue.Enqueue(farRegionPath);
                     break; // first good pair wins — other pairs are redundant checks.
