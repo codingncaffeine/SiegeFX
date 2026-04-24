@@ -8,22 +8,35 @@ The goal is to run Dungeon Siege natively on modern Windows at any resolution, w
 
 ## Status
 
-Tank archive listing + extraction works. RAW textures decode to PNG. Renderer not started.
+**v0.8.0** — Skrit VM drives rigged actors. You can fly a first-person camera across streamed SNO regions, view skeletal `.asp` meshes animating from `.prs` clips, and run shipped `.skrit` scripts against a live rig via `--skrit-anim`. Actor system, combat, UI, and gameplay are next.
 
 ## Roadmap
 
-| Phase | Goal | Ship criterion |
-|---|---|---|
-| 0 | Bootstrap | Solution scaffolded, repo live |
-| 1 | Tank reader | List + extract `.dsres` / `.dsmap` contents |
-| 2 | Texture pipeline | `.raw` → PNG in asset browser |
-| 3 | Renderer foundation | Silk.NET window, first-person camera |
-| 4 | Static meshes | `.sno` terrain + `.asp` mesh on screen |
-| 5 | GAS parser | Load hierarchical `.gas` templates / configs |
-| 6 | World streaming | Walk across connected SNO nodes |
-| 7 | Skeletal animation | Animate `.asp` with `.prs` keyframes |
-| 8 | Skrit VM | Interpret `.skrit` gameplay scripts |
-| 9+ | Gameplay | Combat, AI, inventory, pathfinding |
+| Phase | Goal | Ship criterion | Status |
+|---|---|---|---|
+| 0 | Bootstrap | Solution scaffolded, repo live | ✅ |
+| 1 | Tank reader | List + extract `.dsres` / `.dsmap` contents | ✅ |
+| 2 | Texture pipeline | `.raw` → PNG in asset browser | ✅ |
+| 3 | Renderer foundation | Silk.NET window, first-person camera | ✅ |
+| 4 | Static meshes | `.sno` terrain + `.asp` mesh on screen | ✅ |
+| 5 | GAS parser | Load hierarchical `.gas` templates / configs | ✅ |
+| 6 | World streaming | Walk across connected SNO nodes | ✅ |
+| 7 | Skeletal animation | Animate `.asp` with `.prs` keyframes | ✅ |
+| 8 | Skrit VM | Interpret `.skrit` gameplay scripts | ✅ |
+| 9a | Skrit-driven viewer | `--skrit-anim` runs shipped scripts against a rig | ✅ (v0.8.0) |
+| 10 | Actor system + GAS spawn | Walk into `fh_r1` and see goblins idling per-skrit | → v0.9.0 |
+| 11 | Pathfinding + nav | Actors path around obstacles on SNO walkable surfaces | |
+| 12 | Combat + stats | Melee kills goblin; corpse drops loot pile | → v0.10.0 |
+| 13 | Player character + input | Playable Farmboy engaging goblins (RMB target / LMB move) | → v0.11.0 |
+| 14 | Inventory + items | Grid inventory, equip slots, pickup from drops | → v0.12.0 |
+| 15 | UI / HUD | Bitmap font, HUD, inventory/options/main-menu screens | → v0.13.0 |
+| 16 | Spells + effect scripts | Fire-bolt casts, hits goblin for spell damage | → v0.14.0 |
+| 17 | Audio | 3D positional SFX, music streaming, anim-event hooks | → v0.15.0 |
+| 18 | Save / load | Quit-and-resume in mid-dungeon | → v0.16.0 |
+| 19 | NPCs / dialogue / quests | Talk to Edward, accept + complete opening quest | → v0.17.0 |
+| 20 | Content integration + polish | Farmhouse → Castle Ehb main-quest end-to-end | → v1.0 |
+
+Deferred past v1.0: multiplayer, Legends of Aranna, mod loader, launcher integration.
 
 ## Project layout
 
