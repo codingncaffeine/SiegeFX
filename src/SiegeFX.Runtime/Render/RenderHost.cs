@@ -41,7 +41,6 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _animTexture;
     private GlTexture? _texture;
     private double _animTime;
-    private Matrix4x4[] _skinScratch = Array.Empty<Matrix4x4>();
     private readonly Dictionary<string, GlTexture> _snoTextures =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
@@ -122,6 +121,10 @@ void main()
               + aWeights.w * uBones[aBones.w];
     vec4 sp = skin * vec4(aPos, 1.0);
     gl_Position = uViewProj * uModel * sp;
+    // DS1 rigs are rigid (rotation + translation, no non-uniform scale), so mat3(skin) is
+    // the correct normal transform. Don't rewrite this as a transpose-inverse: it would be
+    // slower, identical for these inputs, and would mask corruption if a future skin ever did
+    // carry scale.
     vec3 sn = mat3(skin) * aNormal;
     vNormal  = mat3(uModel) * sn;
     vUv = aUv;
@@ -295,6 +298,17 @@ void main()
     {
         if (_gl is null) return;
 
+        if (!File.Exists(aspPath))
+        {
+            Console.Error.WriteLine($"asp '{aspPath}' not found");
+            return;
+        }
+        if (!File.Exists(prsPath))
+        {
+            Console.Error.WriteLine($"prs '{prsPath}' not found");
+            return;
+        }
+
         _skinnedAsp = AspMesh.Load(File.ReadAllBytes(aspPath));
         if (!_skinnedAsp.HasSkin)
         {
@@ -304,12 +318,18 @@ void main()
         }
         _anim = PrsAnimation.Load(File.ReadAllBytes(prsPath));
         _skinnedMesh = new SkinnedMesh(_gl, _skinnedAsp);
-        _skinScratch = new Matrix4x4[_skinnedAsp.BoneCount];
 
         if (texturePath is not null)
         {
-            var raw = RawImage.Load(File.ReadAllBytes(texturePath));
-            _animTexture = new GlTexture(_gl, raw);
+            if (!File.Exists(texturePath))
+            {
+                Console.Error.WriteLine($"texture '{texturePath}' not found; rendering untextured");
+            }
+            else
+            {
+                var raw = RawImage.Load(File.ReadAllBytes(texturePath));
+                _animTexture = new GlTexture(_gl, raw);
+            }
         }
 
         var matched = 0;
@@ -696,15 +716,15 @@ void main()
             // would freeze on the last keyframe forever.
             var t = (float)(_anim.AnimLength > 0f ? _animTime % _anim.AnimLength : 0.0);
             var skin = AnimationRuntime.ComputeSkinMatrices(_skinnedAsp, _anim, t);
-            // Rebuild the scratch buffer if the asset count changed (asset hot-swap not yet
-            // wired, but the array sizing path stays correct if it ever lands).
-            if (_skinScratch.Length != skin.Length) _skinScratch = new Matrix4x4[skin.Length];
-            skin.CopyTo(_skinScratch, 0);
 
             _skinShader.Use();
             _skinShader.SetMatrix4("uViewProj", vp);
             _skinShader.SetMatrix4("uModel", Matrix4x4.Identity);
-            _skinShader.SetMatrix4Array("uBones", _skinScratch);
+            // "uBones[0]" not "uBones": GL 3.3 spec says either is valid for array-of-basic-type
+            // uniforms, but several older Intel / mesa drivers only return a real location for
+            // the element-0 form. With the bare name, SetMatrix4Array silently no-ops (loc<0)
+            // and you get a T-posed mesh with no GL error.
+            _skinShader.SetMatrix4Array("uBones[0]", skin);
             _skinShader.SetInt("uAlbedo", 0);
             _skinShader.SetInt("uHasTexture", _animTexture is null ? 0 : 1);
             _animTexture?.Bind(TextureUnit.Texture0);
