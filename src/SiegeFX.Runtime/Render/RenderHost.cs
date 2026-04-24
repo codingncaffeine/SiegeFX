@@ -24,14 +24,24 @@ public sealed class RenderHost : IDisposable
     private readonly string? _worldMapTankPath;
     private readonly string? _worldTerrainTankPath;
     private readonly string? _worldRootHint;
+    private readonly string? _animAspPath;
+    private readonly string? _animPrsPath;
+    private readonly string? _animTexturePath;
     private GL? _gl;
     private IInputContext? _input;
     private Shader? _gridShader;
     private Shader? _meshShader;
+    private Shader? _skinShader;
     private GridMesh? _grid;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
+    private SkinnedMesh? _skinnedMesh;
+    private AspMesh? _skinnedAsp;
+    private PrsAnimation? _anim;
+    private GlTexture? _animTexture;
     private GlTexture? _texture;
+    private double _animTime;
+    private Matrix4x4[] _skinScratch = Array.Empty<Matrix4x4>();
     private readonly Dictionary<string, GlTexture> _snoTextures =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
@@ -85,6 +95,38 @@ void main()
     vUv = aUv;
 }";
 
+    // Skinning vertex shader. Same per-vertex output contract as MeshVertexSource (vNormal,
+    // vUv) so it pairs with MeshFragmentSource unchanged. Bone uniforms are uploaded by the
+    // host once per frame from CPU-composed skin matrices (AnimationRuntime.ComputeSkinMatrices).
+    // .NET row-vector matrices uploaded with transpose=false flip to column-vector in GL,
+    // so `uBones[i] * vec4(aPos, 1.0)` here matches `Vector3.Transform(aPos, skin[i])` on
+    // the CPU side. The linear combination of mat4s before applying to aPos is mathematically
+    // identical to summing the per-bone-transformed positions weighted by the same weights —
+    // one matmul instead of four, which the GPU prefers.
+    private const string SkinnedVertexSource = @"#version 330 core
+layout (location = 0) in vec3  aPos;
+layout (location = 1) in vec3  aNormal;
+layout (location = 2) in vec2  aUv;
+layout (location = 3) in vec4  aWeights;
+layout (location = 4) in uvec4 aBones;
+uniform mat4 uViewProj;
+uniform mat4 uModel;
+uniform mat4 uBones[64];
+out vec3 vNormal;
+out vec2 vUv;
+void main()
+{
+    mat4 skin = aWeights.x * uBones[aBones.x]
+              + aWeights.y * uBones[aBones.y]
+              + aWeights.z * uBones[aBones.z]
+              + aWeights.w * uBones[aBones.w];
+    vec4 sp = skin * vec4(aPos, 1.0);
+    gl_Position = uViewProj * uModel * sp;
+    vec3 sn = mat3(skin) * aNormal;
+    vNormal  = mat3(uModel) * sn;
+    vUv = aUv;
+}";
+
     // Cheap N·L lambert plus a constant ambient. Samples uAlbedo when uHasTexture != 0;
     // otherwise falls back to a neutral sand colour so untextured meshes still read as solids.
     // DS1 textures were authored for D3D (V=0 at top), so we flip V on sample for GL.
@@ -111,7 +153,8 @@ void main()
     public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
         string? meshPath = null, string? texturePath = null,
         string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null,
-        string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null)
+        string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null,
+        string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
@@ -121,6 +164,9 @@ void main()
         _worldMapTankPath = worldMapTankPath;
         _worldTerrainTankPath = worldTerrainTankPath;
         _worldRootHint = worldRootHint;
+        _animAspPath = animAspPath;
+        _animPrsPath = animPrsPath;
+        _animTexturePath = animTexturePath;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -181,6 +227,7 @@ void main()
 
         _gridShader = new Shader(_gl, GridVertexSource, GridFragmentSource);
         _meshShader = new Shader(_gl, MeshVertexSource, MeshFragmentSource);
+        _skinShader = new Shader(_gl, SkinnedVertexSource, MeshFragmentSource);
         _grid       = new GridMesh(_gl);
 
         if (_meshPath is not null)
@@ -236,6 +283,51 @@ void main()
 
         if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
             LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint);
+
+        if (_animAspPath is not null && _animPrsPath is not null)
+            LoadAnim(_animAspPath, _animPrsPath, _animTexturePath);
+    }
+
+    /// <summary>Loads a rigged ASP and a PRS clip, builds a SkinnedMesh, frames the camera,
+    /// and (optionally) loads an albedo .raw to bind during draw. The clip just loops at
+    /// its native length — this is a viewer, not a state machine.</summary>
+    private void LoadAnim(string aspPath, string prsPath, string? texturePath)
+    {
+        if (_gl is null) return;
+
+        _skinnedAsp = AspMesh.Load(File.ReadAllBytes(aspPath));
+        if (!_skinnedAsp.HasSkin)
+        {
+            Console.Error.WriteLine($"asp '{aspPath}' has no WCRN skin data; --anim requires a rigged mesh");
+            _skinnedAsp = null;
+            return;
+        }
+        _anim = PrsAnimation.Load(File.ReadAllBytes(prsPath));
+        _skinnedMesh = new SkinnedMesh(_gl, _skinnedAsp);
+        _skinScratch = new Matrix4x4[_skinnedAsp.BoneCount];
+
+        if (texturePath is not null)
+        {
+            var raw = RawImage.Load(File.ReadAllBytes(texturePath));
+            _animTexture = new GlTexture(_gl, raw);
+        }
+
+        var matched = 0;
+        var prsByName = new HashSet<string>(_anim.BoneNames);
+        foreach (var n in _skinnedAsp.BoneNames) if (prsByName.Contains(n)) matched++;
+
+        Console.WriteLine($"loaded skinned mesh '{_skinnedAsp.MeshName}' " +
+                          $"({_skinnedAsp.Positions.Length} v, {_skinnedAsp.TriangleCount} tris, " +
+                          $"{_skinnedAsp.BoneCount} bones, bounds {_skinnedMesh.Min} .. {_skinnedMesh.Max})");
+        Console.WriteLine($"loaded clip '{prsPath}' ({_anim.NumBones} bones, length={_anim.AnimLength:F3}s, " +
+                          $"{matched}/{_anim.NumBones} bones map to mesh)");
+
+        // Frame the rigged mesh the same way we frame static meshes — bounds×3 back along +Z.
+        var center = _skinnedMesh.Center;
+        var radius = MathF.Max(_skinnedMesh.Radius, 0.5f);
+        _camera.Position = center + new Vector3(0, 0, radius * 3f);
+        _camera.Yaw = 0;
+        _camera.Pitch = 0;
     }
 
     /// <summary>Loads every region in the map tank stitched into one world. Shares the
@@ -543,6 +635,9 @@ void main()
             if (kb.IsKeyPressed(Key.ShiftLeft)) sprint = true;
         }
         _camera.Move(forward, strafe, vert, (float)dt, sprint);
+
+        if (_anim is not null && _anim.AnimLength > 0f)
+            _animTime += dt;
     }
 
     private void OnRender(double _)
@@ -594,6 +689,28 @@ void main()
             }
         }
 
+        if (_skinShader is not null && _skinnedMesh is not null && _skinnedAsp is not null && _anim is not null)
+        {
+            // Loop the clip by wrapping the running time. AnimationRuntime clamps internally,
+            // so this is just for visual continuity — without the wrap a long-running session
+            // would freeze on the last keyframe forever.
+            var t = (float)(_anim.AnimLength > 0f ? _animTime % _anim.AnimLength : 0.0);
+            var skin = AnimationRuntime.ComputeSkinMatrices(_skinnedAsp, _anim, t);
+            // Rebuild the scratch buffer if the asset count changed (asset hot-swap not yet
+            // wired, but the array sizing path stays correct if it ever lands).
+            if (_skinScratch.Length != skin.Length) _skinScratch = new Matrix4x4[skin.Length];
+            skin.CopyTo(_skinScratch, 0);
+
+            _skinShader.Use();
+            _skinShader.SetMatrix4("uViewProj", vp);
+            _skinShader.SetMatrix4("uModel", Matrix4x4.Identity);
+            _skinShader.SetMatrix4Array("uBones", _skinScratch);
+            _skinShader.SetInt("uAlbedo", 0);
+            _skinShader.SetInt("uHasTexture", _animTexture is null ? 0 : 1);
+            _animTexture?.Bind(TextureUnit.Texture0);
+            _skinnedMesh.Draw();
+        }
+
         if (_meshShader is not null && _regionInstances.Count > 0)
         {
             _meshShader.Use();
@@ -630,10 +747,13 @@ void main()
         foreach (var mesh in _regionMeshes.Values) mesh.Dispose();
         _regionMeshes.Clear();
         _regionInstances.Clear();
+        _animTexture?.Dispose();
+        _skinnedMesh?.Dispose();
         _texture?.Dispose();
         _sno?.Dispose();
         _mesh?.Dispose();
         _grid?.Dispose();
+        _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
         _input?.Dispose();

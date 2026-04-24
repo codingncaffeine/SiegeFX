@@ -61,6 +61,19 @@ public sealed class Shader : IDisposable
         _gl.UniformMatrix4(loc, 1, false, (float*)&m);
     }
 
+    /// <summary>Uploads <paramref name="matrices"/> as a contiguous <c>mat4</c> uniform array
+    /// starting at <paramref name="name"/>. Matrices ride straight to GL with transpose=false:
+    /// <see cref="Matrix4x4"/> stores row-major, GL reads column-major, the swap turns row-vector
+    /// math into the equivalent column-vector form the shader uses.</summary>
+    public unsafe void SetMatrix4Array(string name, ReadOnlySpan<Matrix4x4> matrices)
+    {
+        if (matrices.Length == 0) return;
+        var loc = _gl.GetUniformLocation(Handle, name);
+        if (loc < 0) return;
+        fixed (Matrix4x4* p = matrices)
+            _gl.UniformMatrix4(loc, (uint)matrices.Length, false, (float*)p);
+    }
+
     public void SetVec3(string name, Vector3 v)
     {
         var loc = _gl.GetUniformLocation(Handle, name);
