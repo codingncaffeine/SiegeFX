@@ -350,14 +350,16 @@ static int DispatchWorld(string[] a)
 
 static int DispatchSkrit(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|bind|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|bind|compile|run|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "tokens" => CmdSkritTokens(a[1..]),
-        "parse"  => CmdSkritParse(a[1..]),
-        "bind"   => CmdSkritBind(a[1..]),
-        "fuzz"   => CmdSkritFuzz(a[1..]),
-        _        => UnknownCommand("skrit " + a[0]),
+        "tokens"  => CmdSkritTokens(a[1..]),
+        "parse"   => CmdSkritParse(a[1..]),
+        "bind"    => CmdSkritBind(a[1..]),
+        "compile" => CmdSkritCompile(a[1..]),
+        "run"     => CmdSkritRun(a[1..]),
+        "fuzz"    => CmdSkritFuzz(a[1..]),
+        _         => UnknownCommand("skrit " + a[0]),
     };
 }
 
@@ -411,9 +413,50 @@ static int CmdSkritBind(string[] a)
     return bind.HasErrors ? 4 : 0;
 }
 
+static int CmdSkritCompile(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit compile <file.skrit>"); return 1; }
+    var src = File.ReadAllText(a[0]);
+    var script = SkritParser.Parse(src);
+    var bind = new SkritBinder(script).Bind();
+    var program = new SkritCompiler(script, bind).Compile();
+    Console.WriteLine($"program: {program.Chunks.Count} chunks, {program.Externs.Count} externs");
+    foreach (var c in program.Chunks)
+        Console.Write(SkritDisassembler.Dump(c));
+    return 0;
+}
+
+static int CmdSkritRun(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx skrit run <file.skrit> <chunk> [globalName=intVal ...]"); return 1; }
+    var src = File.ReadAllText(a[0]);
+    var script = SkritParser.Parse(src);
+    var bind = new SkritBinder(script).Bind();
+    var program = new SkritCompiler(script, bind).Compile();
+    var vm = new SkritVm(program, new SiegeFX.Tools.TracingHostBridge());
+
+    for (int i = 2; i < a.Length; i++)
+    {
+        var eq = a[i].IndexOf('=');
+        if (eq <= 0) continue;
+        var k = a[i][..eq];
+        var raw = a[i][(eq + 1)..];
+        SkritValue v;
+        if (long.TryParse(raw, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var lv)) v = SkritValue.FromInt(lv);
+        else if (double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dv)) v = SkritValue.FromFloat(dv);
+        else if (raw == "true") v = SkritValue.True;
+        else if (raw == "false") v = SkritValue.False;
+        else v = SkritValue.FromString(raw);
+        vm.SetGlobal(k, v);
+    }
+    var result = vm.Run(a[1]);
+    Console.WriteLine($"result: {result}");
+    return 0;
+}
+
 static int CmdSkritFuzz(string[] a)
 {
-    // Optional --stage={lex|parse|bind} flag (default: parse, which implies lex).
+    // Optional --stage={lex|parse|bind|compile} flag (default: parse, which implies lex).
     string stage = "parse";
     var rest = new List<string>();
     foreach (var x in a)
@@ -421,7 +464,7 @@ static int CmdSkritFuzz(string[] a)
         if (x.StartsWith("--stage=", StringComparison.Ordinal)) stage = x["--stage=".Length..].ToLowerInvariant();
         else rest.Add(x);
     }
-    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz [--stage=lex|parse|bind] <tank.dsres>"); return 1; }
+    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz [--stage=lex|parse|bind|compile] <tank.dsres>"); return 1; }
     using var tank = TankFile.Open(rest[0]);
     var reader = new TankReader(tank);
 
@@ -467,6 +510,12 @@ static int CmdSkritFuzz(string[] a)
                     filesWithDiags++;
                     totalDiags += bind.Diagnostics.Count;
                 }
+            }
+            else if (stage == "compile")
+            {
+                var script = new SkritParser(toks).ParseScript();
+                var bind = new SkritBinder(script).Bind();
+                _ = new SkritCompiler(script, bind).Compile();
             }
             ok++;
         }
