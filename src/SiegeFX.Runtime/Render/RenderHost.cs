@@ -759,8 +759,10 @@ void main()
         // starts from its first keyframe).
         if (_skritRuntime is not null && _skritHost is not null && _skritClips is not null)
         {
-            _skritTickAccumulator += dt;
             const double stepSec = 1.0 / SkritInstance.FramesPerSecond;
+            // Cap backlog at 5 ticks (250 ms) so a hitched frame / window drag doesn't
+            // burst-fire chores the user didn't witness real time for.
+            _skritTickAccumulator = Math.Min(_skritTickAccumulator + dt, stepSec * 5);
             while (_skritTickAccumulator >= stepSec)
             {
                 _skritTickAccumulator -= stepSec;
