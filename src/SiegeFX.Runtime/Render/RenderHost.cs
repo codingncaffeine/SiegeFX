@@ -51,6 +51,11 @@ public sealed class RenderHost : IDisposable
     // dying actor's template chain on demand. Loot tables live in Core and don't
     // require the render-side resolver, so the store reference is enough.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
+    // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
+    // Drawn as a small untextured cube at CurrentTransform.Translation using the
+    // mesh shader's default beige tint. Persists for the session.
+    private readonly List<Vector3> _lootPiles = new();
+    private DebugCubeMesh? _lootCube;
     private double _actorTickAccumulator;
 
     private sealed class ActorRenderState
@@ -301,6 +306,7 @@ void main()
         _meshShader = new Shader(_gl, MeshVertexSource, MeshFragmentSource);
         _skinShader = new Shader(_gl, SkinnedVertexSource, MeshFragmentSource);
         _grid       = new GridMesh(_gl);
+        _lootCube   = new DebugCubeMesh(_gl);
 
         if (_meshPath is not null)
         {
@@ -1124,15 +1130,16 @@ void main()
         {
             best.IsDead = true;
             best.Follower = null;
-            LogLootDrop(best.Actor);
+            LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
 
-    // Phase 12d — roll the dying actor's loot table and log the outcome. Seeds the
-    // RNG from the actor's scid so every kill of the same instance produces the same
-    // drop (re-attack the same goblin in two sessions, same drop) — helps when we're
-    // debugging whether a template's pcontent parses correctly.
-    private void LogLootDrop(SiegeFX.Core.Actors.Actor actor)
+    // Phase 12d/12e — roll the dying actor's loot table, log the outcome, and place
+    // a visible pile at the actor's last known position. RNG is seeded from scid so
+    // a given instance's drop is stable across re-kills; the visible pile is added
+    // whenever the roll produced at least one entry (which for combatants with an
+    // equipped weapon is every kill — the weapon bucket has no chance gate).
+    private void LogLootDrop(SiegeFX.Core.Actors.Actor actor, Vector3 deathPos)
     {
         if (_templateStore is null) return;
         var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, actor.Template);
@@ -1152,6 +1159,7 @@ void main()
         foreach (var d in drops)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
+        _lootPiles.Add(deathPos);
     }
 
     private void OnRender(double _)
@@ -1264,6 +1272,25 @@ void main()
             }
         }
 
+        // Phase 12e — placeholder loot piles. Untextured cube scaled to ~0.5u lifted
+        // so its base sits on the actor's ground plane; the mesh shader's default
+        // untextured beige fills in as a stand-in for actual DS1 gold/loot models.
+        if (_meshShader is not null && _lootCube is not null && _lootPiles.Count > 0)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uHasTexture", 0);
+            const float pileSize = 0.5f;
+            foreach (var pos in _lootPiles)
+            {
+                var model = Matrix4x4.CreateScale(pileSize)
+                          * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
+                _meshShader.SetMatrix4("uModel", model);
+                _lootCube.Draw();
+            }
+        }
+
         if (_meshShader is not null && _regionInstances.Count > 0)
         {
             _meshShader.Use();
@@ -1309,6 +1336,7 @@ void main()
         _texture?.Dispose();
         _sno?.Dispose();
         _mesh?.Dispose();
+        _lootCube?.Dispose();
         _grid?.Dispose();
         _skinShader?.Dispose();
         _meshShader?.Dispose();
