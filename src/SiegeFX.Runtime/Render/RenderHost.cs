@@ -52,10 +52,18 @@ public sealed class RenderHost : IDisposable
     // require the render-side resolver, so the store reference is enough.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
-    // Drawn as a small untextured cube at CurrentTransform.Translation using the
-    // mesh shader's default beige tint. Persists for the session.
-    private readonly List<Vector3> _lootPiles = new();
+    // Drawn as a small untextured cube at Pile.Position using the mesh shader's
+    // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
+    // so the pickup path can transfer the actual rolled items into PC inventory.
+    private readonly List<LootPile> _lootPiles = new();
     private DebugCubeMesh? _lootCube;
+    // Phase 14a — PC inventory. Flat list for now; grid/equip-slot wiring lands in
+    // 14b/14c. Populated by auto-pickup when the Farmboy walks within PickupRadius
+    // of a pile during the 20 Hz tick.
+    private readonly List<SiegeFX.Core.Actors.LootEntry> _playerInventory = new();
+    private const float PickupRadius = 1.8f;
+
+    private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
     // the NPCs); this field is the named handle for the input layer.
@@ -1205,6 +1213,7 @@ void main()
                     _player.CurrentTransform =
                         Matrix4x4.CreateRotationY(pyaw) *
                         Matrix4x4.CreateTranslation(after);
+                    TryAutoPickup(after);
                 }
             }
             foreach (var s in _actors)
@@ -1532,7 +1541,33 @@ void main()
         foreach (var d in drops)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
-        _lootPiles.Add(deathPos);
+        _lootPiles.Add(new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops)));
+    }
+
+    // Phase 14a — PC auto-pickup. Called each logic tick after the player follower
+    // advances. Any pile within PickupRadius (XZ) of the PC is emptied into the
+    // inventory list; the pile is removed so its cube despawns. Iterating backwards
+    // so a mid-loop RemoveAt doesn't skip the next pile.
+    private void TryAutoPickup(Vector3 playerPos)
+    {
+        if (_lootPiles.Count == 0) return;
+        for (int i = _lootPiles.Count - 1; i >= 0; i--)
+        {
+            var pile = _lootPiles[i];
+            float dx = pile.Position.X - playerPos.X;
+            float dz = pile.Position.Z - playerPos.Z;
+            if (dx * dx + dz * dz > PickupRadius * PickupRadius) continue;
+
+            var parts = new List<string>(pile.Items.Count);
+            foreach (var it in pile.Items)
+            {
+                _playerInventory.Add(it);
+                parts.Add(it.IsEquipped ? $"[{it.Slot}] {it.Reference}" : it.Reference);
+            }
+            Console.WriteLine(
+                $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+            _lootPiles.RemoveAt(i);
+        }
     }
 
     private void OnRender(double _)
@@ -1655,8 +1690,9 @@ void main()
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uHasTexture", 0);
             const float pileSize = 0.5f;
-            foreach (var pos in _lootPiles)
+            foreach (var pile in _lootPiles)
             {
+                var pos = pile.Position;
                 var model = Matrix4x4.CreateScale(pileSize)
                           * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
                 _meshShader.SetMatrix4("uModel", model);
