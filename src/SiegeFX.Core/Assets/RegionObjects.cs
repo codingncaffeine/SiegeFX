@@ -29,6 +29,19 @@ public sealed class ActorInstance
         Node = node;
     }
 
+    /// <summary>Builds an ActorInstance for something not drawn from a region's
+    /// actor.gas — the player character being the motivating case. Uses NodeGuid=0
+    /// so <see cref="Actors.ActorSpawner.ComposeWorldTransform"/> falls through to
+    /// the local pose, which means <paramref name="worldPosition"/> is interpreted
+    /// directly in world space (no region-node indirection).</summary>
+    public static ActorInstance CreateSynthetic(
+        string templateName, uint scid, Vector3 worldPosition, Quaternion orientation)
+    {
+        var placement = new NodePlacement(orientation, worldPosition, NodeGuid: 0u);
+        var emptyNode = new GasNode("synthetic", Array.Empty<GasNode>(), Array.Empty<GasAttribute>());
+        return new ActorInstance(templateName, scid, placement, emptyNode);
+    }
+
     public override string ToString() => $"[t:{TemplateName},n:0x{Scid:x8}]";
 }
 

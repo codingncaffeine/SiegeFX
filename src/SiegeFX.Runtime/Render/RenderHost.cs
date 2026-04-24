@@ -56,6 +56,10 @@ public sealed class RenderHost : IDisposable
     // mesh shader's default beige tint. Persists for the session.
     private readonly List<Vector3> _lootPiles = new();
     private DebugCubeMesh? _lootCube;
+    // Phase 13a — the one player-controlled actor's render state. Null until
+    // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
+    // the NPCs); this field is the named handle for the input layer.
+    private ActorRenderState? _player;
     private double _actorTickAccumulator;
 
     private sealed class ActorRenderState
@@ -75,6 +79,12 @@ public sealed class RenderHost : IDisposable
         // nulled, the anim accumulator stops advancing, and the last skin matrices
         // effectively freeze the body mid-pose. Phase 12d will swap to chore_die.
         public bool IsDead;
+
+        // Phase 13a — set for the single player character. Distinct from NPCs so
+        // the input layer (LMB move, RMB attack — 13c/d) can find and drive this
+        // one actor without scanning all 181. Also gates off the random-wander
+        // follower: the player stands still until the user clicks somewhere.
+        public bool IsPlayer;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -886,16 +896,26 @@ void main()
             Console.WriteLine($"  followers: {actorsOnMesh} wandering / {actorsOffMesh} pinned (off-mesh spawn)");
         }
 
-        // Frame the camera on the centroid of the spawned actors so the user sees them on
-        // first paint instead of staring at a corner. Lift + pull back by the region-anchor
-        // radius we already computed in LoadRegion (camera position is set there); overwrite
-        // here so "play-region" always frames the actors, not the raw terrain anchor.
-        if (_actors.Count > 0)
+        // Phase 13a — spawn one Farmboy PC next to the NPC centroid so he lands on the
+        // nav mesh among the goblins. AI-idle until 13c/13d wire LMB/RMB input — the
+        // render loop already tolerates a null follower by falling back to CurrentTransform.
+        TrySpawnPlayer(spawner, navMesh);
+
+        // Frame the camera on the player (13a) if we spawned one, else fall back to the
+        // NPC centroid. Lift + pull back by the region-anchor radius we already computed
+        // in LoadRegion (camera position is set there); overwrite here so "play-region"
+        // always frames the actors, not the raw terrain anchor.
+        var framingTarget = _player?.CurrentTransform.Translation;
+        if (framingTarget is null && _actors.Count > 0)
         {
             var centroid = Vector3.Zero;
             foreach (var s in _actors) centroid += s.Actor.WorldTransform.Translation;
             centroid /= _actors.Count;
-            _camera.Position = centroid + new Vector3(0, 15f, 25f);
+            framingTarget = centroid;
+        }
+        if (framingTarget is Vector3 f)
+        {
+            _camera.Position = f + new Vector3(0, 15f, 25f);
             _camera.Yaw = 0;
             _camera.Pitch = -0.35f;
         }
@@ -1078,6 +1098,72 @@ void main()
     // front of the camera (XZ distance ≤ 30u, dot(fwd, actor-ray) > 0) and applies
     // one melee hit with a fixed 250-damage profile. This stands in for the PC's
     // weapon stats until Phase 13 wires a real player character.
+    // Phase 13a — spawn a single Farmboy PC at the NPC centroid (snapped to the
+    // nav mesh when present) using the existing ActorSpawner. Template 'farmboy'
+    // is the canonical DS1 male-human hero archetype; aspect.model and the usual
+    // chore_default skrit resolve through the same specializes chain every NPC
+    // uses, so no special-casing in spawn. The actor just doesn't get a wander
+    // follower — 13c will add click-to-move.
+    private void TrySpawnPlayer(ActorSpawner spawner, SiegeFX.Core.Nav.NavMesh? navMesh)
+    {
+        if (_actors.Count == 0)
+        {
+            Console.WriteLine("  player: no NPCs spawned, skipping player spawn (nothing to anchor against)");
+            return;
+        }
+
+        var centroid = Vector3.Zero;
+        foreach (var s in _actors) centroid += s.Actor.WorldTransform.Translation;
+        centroid /= _actors.Count;
+
+        var spawnPos = centroid;
+        if (navMesh is not null && navMesh.TryFindTriangle(centroid, out var tri))
+            spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, centroid) };
+
+        const string playerTemplate = "farmboy";
+        // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
+        // 0x01xxxxxx); any stable out-of-band value works, this one is easy to spot
+        // in the combat log.
+        var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+            playerTemplate, scid: 0xffffff00u, worldPosition: spawnPos,
+            orientation: System.Numerics.Quaternion.Identity);
+
+        var spawned = spawner.Spawn(new[] { inst });
+        if (spawned.Count == 0)
+        {
+            Console.WriteLine($"  player: '{playerTemplate}' did not spawn (spawner diagnostics follow)");
+            foreach (var d in spawner.Diagnostics.TakeLast(4))
+                Console.WriteLine($"    !! {d}");
+            return;
+        }
+
+        var player = spawned[0];
+        if (!_actorMeshCache.TryGetValue(player.Mesh, out var gl))
+        {
+            gl = new SkinnedMesh(_gl!, player.Mesh);
+            _actorMeshCache[player.Mesh] = gl;
+        }
+
+        var state = new ActorRenderState
+        {
+            Actor             = player,
+            GlMesh            = gl,
+            AnimTime          = 0,
+            LastClipIndex     = player.CurrentClipIndex,
+            Follower          = null,
+            CurrentTransform  = player.WorldTransform,
+            IsPlayer          = true,
+        };
+        _actors.Add(state);
+        _player = state;
+
+        Console.WriteLine(
+            $"  player: '{playerTemplate}' spawned at " +
+            $"({spawnPos.X:F1}, {spawnPos.Y:F1}, {spawnPos.Z:F1})  " +
+            $"life={player.Stats.MaxLife:F0} " +
+            $"walk={player.Stats.WalkSpeed:F1}u/s");
+    }
+
     private void DebugAttackNearestActor()
     {
         if (_actors.Count == 0) return;
