@@ -1,5 +1,22 @@
 using SiegeFX.Runtime.Render;
 
+// Crash logger — dumps any unhandled exception (including ones the CLR would
+// otherwise report via its own stderr banner) to siegefx_crash.log next to the
+// DLL. test-all.bat's T23 prints this file after the process exits so the user
+// doesn't lose the stack trace when the console window closes.
+var crashLogPath = System.IO.Path.Combine(AppContext.BaseDirectory, "siegefx_crash.log");
+try { System.IO.File.Delete(crashLogPath); } catch { }
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    try
+    {
+        System.IO.File.WriteAllText(crashLogPath,
+            "UnhandledException at " + DateTime.Now.ToString("o") + Environment.NewLine +
+            (e.ExceptionObject?.ToString() ?? "<no exception object>") + Environment.NewLine);
+    }
+    catch { }
+};
+
 // Invocation shapes:
 //   SiegeFX.Runtime [mesh.sno|mesh.asp] [texture.raw | tank.dsres]
 //   SiegeFX.Runtime --region <map-tank> <terrain-tank> <region-path>
@@ -119,5 +136,26 @@ using var host = new RenderHost(
     skritClipPaths: skritClips,
     playLogicTankPath: playLogic,
     playObjectsTankPath: playObjects);
-host.Run();
+try
+{
+    host.Run();
+}
+catch (Exception ex)
+{
+    // Top-level net. Without this, an unhandled exception in the render/logic
+    // tick closes the console window before the stack prints. Also persist to
+    // siegefx_crash.log so test-all.bat can surface the trace even if the
+    // console scrolled past it or was closed too fast.
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("!! SiegeFX.Runtime crashed:");
+    Console.Error.WriteLine(ex.ToString());
+    try
+    {
+        System.IO.File.WriteAllText(crashLogPath,
+            "host.Run crashed at " + DateTime.Now.ToString("o") + Environment.NewLine +
+            ex.ToString() + Environment.NewLine);
+    }
+    catch { }
+    return 1;
+}
 return 0;
