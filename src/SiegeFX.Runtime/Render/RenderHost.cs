@@ -69,7 +69,14 @@ public sealed class RenderHost : IDisposable
     private readonly Dictionary<string, string> _playerEquipment = new(StringComparer.OrdinalIgnoreCase);
     // Phase 14d — resolver kept alive past LoadPlayActors so weapon swaps at pickup
     // time can load the new item's ASP + texture on demand. Null outside play-region mode.
+    // The resolver holds TankReader handles that wrap the FileStreams below, so the
+    // tanks must outlive the resolver — hence they're fields here rather than `using
+    // var` locals inside LoadPlayActors (initial try died with ObjectDisposedException
+    // the first time a goblin dropped something).
     private SiegeFX.Core.Assets.AssetResolver? _playResolver;
+    private SiegeFX.Core.Tank.TankFile? _playMapTank;
+    private SiegeFX.Core.Tank.TankFile? _playLogicTank;
+    private SiegeFX.Core.Tank.TankFile? _playObjectsTank;
     // Phase 14d — currently-rendered weapon mesh pinned to the PC's weapon_grip bone.
     // Null until TrySpawnPlayer resolves the first equipped weapon. Swapped on every
     // es_weapon_hand change so a pickup upgrade shows up visually.
@@ -880,9 +887,15 @@ void main()
             return;
         }
 
-        using var mapTank     = TankFile.Open(mapTankPath);
-        using var logicTank   = TankFile.Open(logicTankPath);
-        using var objectsTank = TankFile.Open(objectsTankPath);
+        // Pinned to RenderHost fields (not `using var`) so _playResolver can keep
+        // reading from them during gameplay — loot-swap weapon loads fire hours after
+        // LoadPlayActors returns.
+        _playMapTank     = TankFile.Open(mapTankPath);
+        _playLogicTank   = TankFile.Open(logicTankPath);
+        _playObjectsTank = TankFile.Open(objectsTankPath);
+        var mapTank     = _playMapTank;
+        var logicTank   = _playLogicTank;
+        var objectsTank = _playObjectsTank;
         var mapReader     = new TankReader(mapTank);
         var logicReader   = new TankReader(logicTank);
         var objectsReader = new TankReader(objectsTank);
@@ -1963,6 +1976,9 @@ void main()
         _meshShader?.Dispose();
         _gridShader?.Dispose();
         _input?.Dispose();
+        _playMapTank?.Dispose();
+        _playLogicTank?.Dispose();
+        _playObjectsTank?.Dispose();
         _window.Dispose();
     }
 }
