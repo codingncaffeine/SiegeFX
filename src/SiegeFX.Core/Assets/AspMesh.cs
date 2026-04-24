@@ -48,6 +48,20 @@ public sealed class AspMesh
     /// <summary>Triangle indices (BTRI). Each triplet indexes into <see cref="Corners"/>.</summary>
     public int[] TriangleIndices { get; init; } = Array.Empty<int>();
 
+    /// <summary>Per-corner skin weights from WCRN (parallel to <see cref="Corners"/>).
+    /// X/Y/Z/W are the four weights; on-disk nulls are preserved as zero, not compacted.
+    /// Empty for static meshes without WCRN.</summary>
+    public Vector4[] SkinWeights { get; init; } = Array.Empty<Vector4>();
+
+    /// <summary>Per-corner bone indices from WCRN (parallel to <see cref="Corners"/>), packed
+    /// four bytes per corner: bone 0 in the low byte, bone 3 in the high byte. Pair with
+    /// <see cref="SkinWeights"/> — entries with weight 0 have an undefined bone id.
+    /// Empty for static meshes without WCRN.</summary>
+    public uint[] SkinBones { get; init; } = Array.Empty<uint>();
+
+    /// <summary>True when a WCRN chunk was present and per-corner skin data has been populated.</summary>
+    public bool HasSkin => SkinWeights.Length > 0;
+
     public int TriangleCount => TriangleIndices.Length / 3;
     public int BoneCount => BoneNames.Count;
 
@@ -76,6 +90,12 @@ public sealed class AspMesh
         var positionList = new List<Vector3>();
         var cornerList   = new List<Corner>();
         var triList      = new List<int>();
+        // Parallel to cornerList. WCRN writes into these positions; if WCRN is absent for a
+        // given submesh (or the whole file), the slots stay zero and we collapse the output
+        // arrays to empty at the end to signal "unrigged".
+        var skinWeightList = new List<Vector4>();
+        var skinBoneList   = new List<uint>();
+        var sawWcrn = false;
         Vector3[] positions;
         Corner[] corners;
         int[] tris;
@@ -207,7 +227,58 @@ public sealed class AspMesh
                     var u      = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(24));
                     var v      = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(28));
                     cornerList.Add(new Corner(vi + vertPosBase, new Vector3(nx, ny, nz), color, new Vector2(u, v)));
+                    // Keep skin arrays length-synced with Corners; WCRN below overwrites
+                    // these slots for this submesh if the file provides one.
+                    skinWeightList.Add(Vector4.Zero);
+                    skinBoneList.Add(0u);
                 }
+            }
+            else if (id == new FourCC('W','C','R','N'))
+            {
+                // Weighted-corner block: one entry per BCRN corner in the same submesh,
+                // carrying up to 4 (bone, weight) influences. On-disk layout per corner is 56 bytes:
+                //   [ 0..12)  pos         (3 × float)           — ignored; BVTX is authoritative.
+                //   [12..28)  weight[4]   (4 × float)
+                //   [28..32)  bone[4]     (4 × byte)            — bone indices into BoneNames.
+                //   [32..44)  normal      (3 × float)           — ignored; BCRN is authoritative.
+                //   [44..48)  color       (4 × byte)            — ignored; BCRN is authoritative.
+                //   [48..56)  uv          (2 × float)           — ignored; BCRN is authoritative.
+                // Bone-index origin depends on chunk version: ASPImport.ms reads V2_x bytes
+                // as-is into 1-based MaxScript arrays, i.e. the on-disk values *are* 1-based
+                // for V2_x and we subtract 1 to get a 0-based index; V4_0+ (>40) stores
+                // 0-based values already. WCRN entries align with the most recent BCRN
+                // submesh block, so the write target is cornerBase .. cornerBase+count.
+                var count = ReadChunkCount(body, stride: 56, chunkName: "WCRN");
+                if (cornerBase + count > skinWeightList.Count)
+                    throw new InvalidDataException(
+                        $"WCRN has {count} entries but preceding BCRN only contributed {skinWeightList.Count - cornerBase}");
+                var wdec = (chunk.VersionRaw & 0xFF) * 10 + ((chunk.VersionRaw >> 8) & 0xFF);
+                var bias = wdec > 40 ? 0 : -1; // V2_x is 1-based on disk
+                for (var i = 0; i < count; i++)
+                {
+                    var b = body.Slice(4 + i * 56, 56);
+                    var w0 = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(12));
+                    var w1 = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(16));
+                    var w2 = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(20));
+                    var w3 = BinaryPrimitives.ReadSingleLittleEndian(b.Slice(24));
+                    int r0 = b[28], r1 = b[29], r2 = b[30], r3 = b[31];
+                    // Only active slots (weight > 0) get normalized; inactive slots keep 0
+                    // so consumers can ignore them without touching an out-of-range name.
+                    byte bi0 = (byte)(w0 > 0f ? r0 + bias : 0);
+                    byte bi1 = (byte)(w1 > 0f ? r1 + bias : 0);
+                    byte bi2 = (byte)(w2 > 0f ? r2 + bias : 0);
+                    byte bi3 = (byte)(w3 > 0f ? r3 + bias : 0);
+                    if (declaredNumBones > 0)
+                    {
+                        if (w0 > 0f && bi0 >= declaredNumBones) throw new InvalidDataException($"WCRN corner {i} bone0={bi0} >= numBones={declaredNumBones}");
+                        if (w1 > 0f && bi1 >= declaredNumBones) throw new InvalidDataException($"WCRN corner {i} bone1={bi1} >= numBones={declaredNumBones}");
+                        if (w2 > 0f && bi2 >= declaredNumBones) throw new InvalidDataException($"WCRN corner {i} bone2={bi2} >= numBones={declaredNumBones}");
+                        if (w3 > 0f && bi3 >= declaredNumBones) throw new InvalidDataException($"WCRN corner {i} bone3={bi3} >= numBones={declaredNumBones}");
+                    }
+                    skinWeightList[cornerBase + i] = new Vector4(w0, w1, w2, w3);
+                    skinBoneList  [cornerBase + i] = (uint)bi0 | ((uint)bi1 << 8) | ((uint)bi2 << 16) | ((uint)bi3 << 24);
+                }
+                sawWcrn = true;
             }
             else if (id == new FourCC('B','T','R','I'))
             {
@@ -288,6 +359,10 @@ public sealed class AspMesh
             Array.Fill(boneParents, -1);
         }
 
+        // Publish skin arrays only when WCRN was present — static meshes stay zero-cost.
+        var skinWeights = sawWcrn ? skinWeightList.ToArray() : Array.Empty<Vector4>();
+        var skinBones   = sawWcrn ? skinBoneList.ToArray()   : Array.Empty<uint>();
+
         return new AspMesh
         {
             MeshName        = meshName,
@@ -301,6 +376,8 @@ public sealed class AspMesh
             Positions       = positions,
             Corners         = corners,
             TriangleIndices = tris,
+            SkinWeights     = skinWeights,
+            SkinBones       = skinBones,
         };
     }
 

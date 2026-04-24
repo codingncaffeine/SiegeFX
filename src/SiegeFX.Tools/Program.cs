@@ -938,6 +938,22 @@ static int CmdAspInfo(string[] a)
     Console.WriteLine($"Vertices  : {mesh.Positions.Length}");
     Console.WriteLine($"Corners   : {mesh.Corners.Length}");
     Console.WriteLine($"Triangles : {mesh.TriangleCount}");
+    if (mesh.HasSkin)
+    {
+        // Average active (non-zero-weight) influences per corner, and the max single bone
+        // index observed across all corners — cheap sanity probe for downstream skinning.
+        int activeTotal = 0, maxBone = -1;
+        for (var i = 0; i < mesh.SkinWeights.Length; i++)
+        {
+            var w = mesh.SkinWeights[i]; var b = mesh.SkinBones[i];
+            if (w.X > 0) { activeTotal++; maxBone = Math.Max(maxBone, (int)(b        & 0xFF)); }
+            if (w.Y > 0) { activeTotal++; maxBone = Math.Max(maxBone, (int)((b >> 8)  & 0xFF)); }
+            if (w.Z > 0) { activeTotal++; maxBone = Math.Max(maxBone, (int)((b >> 16) & 0xFF)); }
+            if (w.W > 0) { activeTotal++; maxBone = Math.Max(maxBone, (int)((b >> 24) & 0xFF)); }
+        }
+        var avg = mesh.SkinWeights.Length > 0 ? (double)activeTotal / mesh.SkinWeights.Length : 0.0;
+        Console.WriteLine($"Skin      : {mesh.SkinWeights.Length} weighted corner(s), avg {avg:F2} influences/corner, max bone={maxBone}");
+    }
 
     var chunks = AspScanner.Scan(data);
     Console.WriteLine($"Chunks    : {chunks.Count}");
@@ -993,7 +1009,7 @@ static int CmdAspFuzz(string[] a)
     if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp fuzz <tank>"); return 1; }
     using var tank = TankFile.Open(a[0]);
     var reader = new TankReader(tank);
-    int total = 0, failed = 0, skinned = 0;
+    int total = 0, failed = 0, skeletal = 0, skinned = 0;
     long totalBytes = 0;
     foreach (var path in reader.ListFiles())
     {
@@ -1006,7 +1022,8 @@ static int CmdAspFuzz(string[] a)
         try
         {
             var mesh = AspMesh.Load(bytes);
-            if (mesh.BoneCount > 0) skinned++;
+            if (mesh.BoneCount > 0) skeletal++;
+            if (mesh.HasSkin) skinned++;
         }
         catch (Exception ex)
         {
@@ -1014,7 +1031,7 @@ static int CmdAspFuzz(string[] a)
             failed++;
         }
     }
-    Console.WriteLine($"fuzzed {total} .asp file(s), {totalBytes:N0} bytes; {failed} failure(s), {skinned} with skeleton");
+    Console.WriteLine($"fuzzed {total} .asp file(s), {totalBytes:N0} bytes; {failed} failure(s), {skeletal} w/skeleton, {skinned} w/skin");
     return failed == 0 ? 0 : 4;
 }
 
