@@ -31,6 +31,7 @@ echo   11. Phase 10b - Region actor instance loader (fh_r1)
 echo   12. Phase 10c+d - Spawn 181 actors, tick + broadcast (fh_r1)
 echo   13. Phase 10e - Play region (walk into fh_r1, 181 actors idling)
 echo   14. Phase 11a - Walkable-surface nav (fh_r1 stats + world-wide fuzz)
+echo   15. Phase 11b - A* pathfinding (fh_r1 hand path + world-wide fuzz)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -51,6 +52,7 @@ if /i "%CHOICE%"=="11" goto T11
 if /i "%CHOICE%"=="12" goto T12
 if /i "%CHOICE%"=="13" goto T13
 if /i "%CHOICE%"=="14" goto T14
+if /i "%CHOICE%"=="15" goto T15
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -164,6 +166,20 @@ echo --- Phase 11a: world-wide nav fuzz (81 regions, ~7400 unique SNOs) ---
 echo [expect: 0 region failures, floor ~160k, water ~20k, ignored ~430k]
 echo.
 "%TOOL%" region nav-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
+pause
+goto MENU
+
+:T15
+echo.
+echo --- Phase 11b: hand-picked path in fh_r1 (10,0,10 to 30,0,30) ---
+echo [expect: ~30-40 tris, ~35-unit centroid length]
+echo.
+"%TOOL%" region path "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1 "10,0,10" "30,0,30"
+echo.
+echo --- Phase 11b: world-wide A* fuzz (81 regions, 20 samples each) ---
+echo [expect: biggest-component A* = 100%%; random-pair ~40%% reflects topology]
+echo.
+"%TOOL%" region path-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
 pause
 goto MENU
 

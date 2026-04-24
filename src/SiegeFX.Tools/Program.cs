@@ -1,5 +1,7 @@
+using System.Numerics;
 using SiegeFX.Core.Assets;
 using SiegeFX.Core.IO;
+using SiegeFX.Core.Nav;
 using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
 
@@ -83,6 +85,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
     Console.WriteLine("  siegefx region nav         <map-tank> <terrain-tank> <region-path>");
     Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
+    Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
+    Console.WriteLine("  siegefx region path-fuzz   <map-tank> <terrain-tank>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -336,7 +340,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav|path> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -349,6 +353,8 @@ static int DispatchRegion(string[] a)
         "spawn"       => CmdRegionSpawn(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
+        "path"        => CmdRegionPath(a[1..]),
+        "path-fuzz"   => CmdRegionPathFuzz(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -908,6 +914,194 @@ static int CmdRegionNavFuzz(string[] a)
     }
     return (regionFails == 0 && snoFails.Count == 0) ? 0 : 4;
 }
+
+static int CmdRegionPath(string[] a)
+{
+    if (a.Length != 5)
+    {
+        Console.Error.WriteLine("usage: siegefx region path <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
+        return 1;
+    }
+    if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
+    if (!TryParseVec3(a[4], out var goal))  { Console.Error.WriteLine($"bad goal vector: '{a[4]}'");  return 1; }
+
+    var mesh = LoadRegionNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.SourceSnodeCount} source snode(s), {mesh.DegenerateFaceCount} degen");
+
+    if (!mesh.TryFindTriangle(start, out var startTri)) { Console.Error.WriteLine("start point is not over any walkable triangle"); return 2; }
+    if (!mesh.TryFindTriangle(goal,  out var goalTri))  { Console.Error.WriteLine("goal point is not over any walkable triangle"); return 2; }
+    Console.WriteLine($"Start tri  : {startTri}  centroid={FormatVec(mesh.Centroids[startTri])}");
+    Console.WriteLine($"Goal  tri  : {goalTri}  centroid={FormatVec(mesh.Centroids[goalTri])}");
+
+    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, out var path))
+    {
+        Console.Error.WriteLine("no path — triangles are in disconnected components");
+        return 3;
+    }
+    float length = 0f;
+    for (int i = 1; i < path.Count; i++)
+        length += Vector3.Distance(mesh.Centroids[path[i - 1]], mesh.Centroids[path[i]]);
+    Console.WriteLine($"Path       : {path.Count} tris, centroid length {length:F2} units");
+    int show = Math.Min(8, path.Count);
+    for (int i = 0; i < show; i++)
+        Console.WriteLine($"  [{i,3}] tri={path[i]}  {FormatVec(mesh.Centroids[path[i]])}");
+    if (path.Count > show) Console.WriteLine($"  ... {path.Count - show} more");
+    return 0;
+}
+
+static int CmdRegionPathFuzz(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region path-fuzz <map-tank> <terrain-tank>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    const int SamplesPerRegion = 20;
+    var rng = new Random(unchecked((int)0xDEADBEEF));
+    int regions = 0, emptyMeshes = 0, probes = 0, solved = 0, intraBigProbes = 0, intraBigSolved = 0;
+    long totalTris = 0, totalComponents = 0, totalBiggest = 0;
+    foreach (var rnodePath in mapReader.ListFiles())
+    {
+        if (!rnodePath.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        regions++;
+        RegionGraph graph;
+        try { graph = RegionGraph.Load(mapReader.ExtractToMemory(rnodePath)); }
+        catch { continue; }
+        var layout = RegionLayout.Build(graph, Resolve);
+        var mesh = NavMesh.BuildForRegion(graph, layout, Resolve);
+        if (mesh.TriangleCount == 0) { emptyMeshes++; continue; }
+        totalTris += mesh.TriangleCount;
+        var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
+        totalComponents += components;
+        totalBiggest += bigSize;
+        for (int s = 0; s < SamplesPerRegion; s++)
+        {
+            probes++;
+            int a0 = rng.Next(mesh.TriangleCount);
+            int b0 = rng.Next(mesh.TriangleCount);
+            if (NavPathfinder.TryFindPath(mesh, a0, b0, out _)) solved++;
+            // Control probe: both endpoints forced into the biggest component. Exercises
+            // the pathfinder on the mesh's "real" walkable surface rather than measuring
+            // topology disconnectedness. Expect ~100%.
+            int ia = bigComponent[rng.Next(bigComponent.Count)];
+            int ib = bigComponent[rng.Next(bigComponent.Count)];
+            intraBigProbes++;
+            if (NavPathfinder.TryFindPath(mesh, ia, ib, out _)) intraBigSolved++;
+        }
+    }
+    int meshed = regions - emptyMeshes;
+    double solveRate = probes == 0 ? 0 : 100.0 * solved / probes;
+    double bigSolveRate = intraBigProbes == 0 ? 0 : 100.0 * intraBigSolved / intraBigProbes;
+    Console.WriteLine($"Regions              : {regions} ({emptyMeshes} with empty nav mesh)");
+    Console.WriteLine($"Avg tris / mesh      : {(meshed == 0 ? 0 : totalTris / meshed):N0}");
+    Console.WriteLine($"Avg comps / mesh     : {(meshed == 0 ? 0 : totalComponents / meshed)}");
+    Console.WriteLine($"Avg biggest / mesh   : {(meshed == 0 ? 0 : totalBiggest / meshed):N0} ({(totalTris == 0 ? 0 : 100.0 * totalBiggest / totalTris):F1}% of all tris)");
+    Console.WriteLine($"Random-pair A*       : {probes} probes, {solved} solved = {solveRate:F1}%  (measures topology, not pathfinder health)");
+    Console.WriteLine($"Biggest-component A* : {intraBigProbes} probes, {intraBigSolved} solved = {bigSolveRate:F1}%  (should be ~100%)");
+    return 0;
+}
+
+// Flood-fills connected components over triangle adjacency. Returns the total
+// component count, the largest component's triangle indices, and its size. Used
+// by the fuzz probe to separate pathfinder correctness (biggest-component A*
+// should be ~100%) from mesh topology (random-pair A* is bounded by the
+// largest-component fraction squared).
+static (int components, List<int> bigComponent, int bigSize) AnalyzeComponents(NavMesh mesh)
+{
+    var visited = new bool[mesh.TriangleCount];
+    var stack = new Stack<int>();
+    var current = new List<int>();
+    var biggest = new List<int>();
+    int components = 0;
+    for (int seed = 0; seed < mesh.TriangleCount; seed++)
+    {
+        if (visited[seed]) continue;
+        components++;
+        current.Clear();
+        stack.Push(seed);
+        while (stack.Count > 0)
+        {
+            int t = stack.Pop();
+            if (visited[t]) continue;
+            visited[t] = true;
+            current.Add(t);
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = mesh.Neighbors[3 * t + s];
+                if (nb >= 0 && !visited[nb]) stack.Push(nb);
+            }
+        }
+        if (current.Count > biggest.Count)
+        {
+            biggest = new List<int>(current);
+        }
+    }
+    return (components, biggest, biggest.Count);
+}
+
+static NavMesh LoadRegionNavMesh(string mapTankPath, string terrainTankPath, string regionPathRaw)
+{
+    using var mapTank = TankFile.Open(mapTankPath);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(terrainTankPath);
+    var terrainReader = new TankReader(terrainTank);
+
+    var regionPath = regionPathRaw.Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+
+    var graph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+    var layout = RegionLayout.Build(graph, Resolve);
+    return NavMesh.BuildForRegion(graph, layout, Resolve);
+}
+
+static bool TryParseVec3(string s, out Vector3 v)
+{
+    v = default;
+    var parts = s.Split(',');
+    if (parts.Length != 3) return false;
+    if (!float.TryParse(parts[0], System.Globalization.CultureInfo.InvariantCulture, out var x)) return false;
+    if (!float.TryParse(parts[1], System.Globalization.CultureInfo.InvariantCulture, out var y)) return false;
+    if (!float.TryParse(parts[2], System.Globalization.CultureInfo.InvariantCulture, out var z)) return false;
+    v = new Vector3(x, y, z);
+    return true;
+}
+
+static string FormatVec(Vector3 v) => $"({v.X,8:F2},{v.Y,7:F2},{v.Z,8:F2})";
 
 static int CmdRegionLayoutFuzz(string[] a)
 {
