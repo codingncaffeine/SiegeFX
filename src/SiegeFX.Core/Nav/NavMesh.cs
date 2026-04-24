@@ -282,10 +282,10 @@ public sealed class NavMesh
                 float maxX = MathF.Max(p0.X, MathF.Max(p1.X, p2.X));
                 float minZ = MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z));
                 float maxZ = MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z));
-                int cx0 = (int)((minX - originX) / GridCellSize);
-                int cx1 = (int)((maxX - originX) / GridCellSize);
-                int cz0 = (int)((minZ - originZ) / GridCellSize);
-                int cz1 = (int)((maxZ - originZ) / GridCellSize);
+                int cx0 = (int)MathF.Floor((minX - originX) / GridCellSize);
+                int cx1 = (int)MathF.Floor((maxX - originX) / GridCellSize);
+                int cz0 = (int)MathF.Floor((minZ - originZ) / GridCellSize);
+                int cz1 = (int)MathF.Floor((maxZ - originZ) / GridCellSize);
                 cx0 = Math.Clamp(cx0, 0, cellsX - 1);
                 cx1 = Math.Clamp(cx1, 0, cellsX - 1);
                 cz0 = Math.Clamp(cz0, 0, cellsZ - 1);
@@ -326,8 +326,10 @@ public sealed class NavMesh
     {
         triIndex = -1;
         if (TriangleCount == 0) return false;
-        int cx = (int)((worldPos.X - _gridMinX) / GridCellSize);
-        int cz = (int)((worldPos.Z - _gridMinZ) / GridCellSize);
+        // Floor-divide, not C# int-cast: (int)(-0.5) truncates to 0, which would silently
+        // route queries just below the mesh AABB into cell 0 instead of rejecting them.
+        int cx = (int)MathF.Floor((worldPos.X - _gridMinX) / GridCellSize);
+        int cz = (int)MathF.Floor((worldPos.Z - _gridMinZ) / GridCellSize);
         if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return false;
         var bucket = _grid[cz * _gridCellsX + cx];
         if (bucket is null) return false;
@@ -350,13 +352,16 @@ public sealed class NavMesh
 
     /// <summary>Projects <paramref name="worldPos"/> onto triangle <paramref name="tri"/>'s
     /// plane in XZ and returns its world Y. Falls back to the triangle centroid Y when the
-    /// triangle is edge-on. Used by the follower to keep the actor glued to the terrain.</summary>
+    /// triangle is edge-on in XZ — <see cref="InterpolateYXZ"/> is already guarded against
+    /// zero-area denominators, but we double-check the result for NaN/Inf so a downstream
+    /// follower never inherits a poisoned Y. Used to keep the actor glued to the terrain.</summary>
     public float SampleYOnTriangle(int tri, Vector3 worldPos)
     {
         var a = Vertices[Indices[3 * tri + 0]];
         var b = Vertices[Indices[3 * tri + 1]];
         var c = Vertices[Indices[3 * tri + 2]];
-        return InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
+        float y = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
+        return float.IsFinite(y) ? y : Centroids[tri].Y;
     }
 
     private static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
