@@ -20,6 +20,7 @@ try
         "gas"  => DispatchGas(args[1..]),
         "region" => DispatchRegion(args[1..]),
         "world"  => DispatchWorld(args[1..]),
+        "anim"   => DispatchAnim(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -127,6 +128,17 @@ static int DispatchAsp(string[] a)
         "skeleton" => CmdAspSkeleton(a[1..]),
         "fuzz"     => CmdAspFuzz(a[1..]),
         _          => UnknownCommand("asp " + a[0]),
+    };
+}
+
+static int DispatchAnim(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx anim <pose|fuzz> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "pose" => CmdAnimPose(a[1..]),
+        "fuzz" => CmdAnimFuzz(a[1..]),
+        _      => UnknownCommand("anim " + a[0]),
     };
 }
 
@@ -1032,6 +1044,110 @@ static int CmdAspFuzz(string[] a)
         }
     }
     Console.WriteLine($"fuzzed {total} .asp file(s), {totalBytes:N0} bytes; {failed} failure(s), {skeletal} w/skeleton, {skinned} w/skin");
+    return failed == 0 ? 0 : 4;
+}
+
+static int CmdAnimPose(string[] a)
+{
+    if (a.Length is < 2 or > 3)
+    {
+        Console.Error.WriteLine("usage: siegefx anim pose <file.asp> <file.prs> [time-seconds]");
+        return 1;
+    }
+    var mesh = AspMesh.Load(File.ReadAllBytes(a[0]));
+    var anim = PrsAnimation.Load(File.ReadAllBytes(a[1]));
+    var t    = a.Length == 3 ? float.Parse(a[2], System.Globalization.CultureInfo.InvariantCulture) : anim.AnimLength * 0.5f;
+
+    Console.WriteLine($"Mesh   : {a[0]}  bones={mesh.BoneCount} corners={mesh.Corners.Length} skin={mesh.HasSkin}");
+    Console.WriteLine($"Clip   : {a[1]}  bones={anim.NumBones} length={anim.AnimLength:F3}s");
+    Console.WriteLine($"Time   : {t:F3}s ({(anim.AnimLength > 0 ? t / anim.AnimLength : 0):P0} of clip)");
+
+    // Bone-name overlap is the canonical test for a clip vs mesh match: shared bones get
+    // animated, the rest hold their bind pose. A near-zero overlap usually means a wrong
+    // pairing (a clip targeted at a different rig).
+    var meshNames = new HashSet<string>(mesh.BoneNames);
+    var matched = anim.BoneNames.Count(n => meshNames.Contains(n));
+    Console.WriteLine($"Match  : {matched} of {anim.NumBones} clip bones map to mesh bones");
+
+    var skin = AnimationRuntime.ComputeSkinMatrices(mesh, anim, t);
+    if (skin.Length == 0)
+    {
+        Console.WriteLine("(static mesh — nothing to pose)");
+        return 0;
+    }
+    var posed = AnimationRuntime.SkinCorners(mesh, skin);
+    var bindAabb  = AabbOf(IndexedPositions(mesh));
+    var posedAabb = AabbOf(posed);
+    Console.WriteLine($"Bind AABB  : min=({bindAabb.min.X:F2},{bindAabb.min.Y:F2},{bindAabb.min.Z:F2}) max=({bindAabb.max.X:F2},{bindAabb.max.Y:F2},{bindAabb.max.Z:F2})");
+    Console.WriteLine($"Posed AABB : min=({posedAabb.min.X:F2},{posedAabb.min.Y:F2},{posedAabb.min.Z:F2}) max=({posedAabb.max.X:F2},{posedAabb.max.Y:F2},{posedAabb.max.Z:F2})");
+
+    // Spot-check the first few bones' world translations, which is the easiest visual
+    // sanity that the pose composition isn't mirrored or scaled.
+    Console.WriteLine("First bones:");
+    for (var i = 0; i < Math.Min(8, mesh.BoneCount); i++)
+    {
+        var m = skin[i];
+        Console.WriteLine($"  [{i,3}] {mesh.BoneNames[i],-24}  skinT=({m.M41:F3},{m.M42:F3},{m.M43:F3})");
+    }
+    return 0;
+}
+
+static System.Numerics.Vector3[] IndexedPositions(AspMesh mesh)
+{
+    var v = new System.Numerics.Vector3[mesh.Corners.Length];
+    for (var i = 0; i < mesh.Corners.Length; i++) v[i] = mesh.Positions[mesh.Corners[i].VertexIndex];
+    return v;
+}
+
+static (System.Numerics.Vector3 min, System.Numerics.Vector3 max) AabbOf(System.Numerics.Vector3[] pts)
+{
+    if (pts.Length == 0) return (System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero);
+    var min = pts[0]; var max = pts[0];
+    for (var i = 1; i < pts.Length; i++)
+    {
+        min = System.Numerics.Vector3.Min(min, pts[i]);
+        max = System.Numerics.Vector3.Max(max, pts[i]);
+    }
+    return (min, max);
+}
+
+static int CmdAnimFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx anim fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    int total = 0, failed = 0, ok = 0, skipped = 0;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".prs", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex) { Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}"); failed++; continue; }
+        PrsAnimation anim;
+        try { anim = PrsAnimation.Load(bytes); }
+        catch (NotSupportedException) { skipped++; continue; } // legacy v0x202 / v0x302 formats — covered by prs fuzz
+        catch (Exception ex) { Console.Error.WriteLine($"  [parse-fail] {path}: {ex.Message}"); failed++; continue; }
+
+        // Sample every keyed bone at start, mid, and end of the clip; if any quaternion
+        // slerp or vector lerp produces NaN/Inf we want to know about it before runtime.
+        var times = new[] { 0f, anim.AnimLength * 0.5f, anim.AnimLength };
+        var bad = false;
+        foreach (var t in times)
+        {
+            for (var b = 0; b < anim.NumBones; b++)
+            {
+                var (r, p) = AnimationRuntime.EvaluateBone(anim, b, t);
+                if (r is { } rv && (!float.IsFinite(rv.X) || !float.IsFinite(rv.Y) || !float.IsFinite(rv.Z) || !float.IsFinite(rv.W)))
+                { Console.Error.WriteLine($"  [pose-fail] {path}: bone {b} rot at t={t:F3} not finite"); bad = true; break; }
+                if (p is { } pv && (!float.IsFinite(pv.X) || !float.IsFinite(pv.Y) || !float.IsFinite(pv.Z)))
+                { Console.Error.WriteLine($"  [pose-fail] {path}: bone {b} pos at t={t:F3} not finite"); bad = true; break; }
+            }
+            if (bad) break;
+        }
+        if (bad) failed++; else ok++;
+    }
+    Console.WriteLine($"anim fuzz: {total} .prs file(s), {ok} sampled OK, {skipped} legacy-version skipped, {failed} failure(s)");
     return failed == 0 ? 0 : 4;
 }
 
