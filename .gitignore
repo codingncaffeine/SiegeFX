@@ -482,3 +482,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# SiegeFX: local-only reference assets and launchers (DS1 data is proprietary)
+_ds1refs/
+run-goblin-anim.bat
+anim-diag.log
