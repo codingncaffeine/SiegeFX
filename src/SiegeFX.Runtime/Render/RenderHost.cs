@@ -60,6 +60,18 @@ public sealed class RenderHost : IDisposable
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
     // the NPCs); this field is the named handle for the input layer.
     private ActorRenderState? _player;
+    // Phase 13c — NavFollower driving the PC's click-to-move. Separate from any
+    // ActorFollower (wander AI) because the player's targets come from user clicks,
+    // not random sampling. Null until the first LMB click routes through the nav
+    // mesh; once created, ticked alongside NPC followers in the logic-step loop.
+    private SiegeFX.Core.Nav.NavFollower? _playerFollower;
+    // Region-scope nav mesh stashed from LoadPlayActors so the LMB raycaster can
+    // hit-test against it. Null when the region has no nav-floor SNOs (shouldn't
+    // happen for playable regions; guarded anyway).
+    private SiegeFX.Core.Nav.NavMesh? _navMesh;
+    // Persistent XZ unit facing for the PC. Updated only when the player moves,
+    // so an idle PC keeps his last heading instead of snapping to +Z each tick.
+    private Vector3 _playerFacing = Vector3.UnitZ;
     private double _actorTickAccumulator;
 
     private sealed class ActorRenderState
@@ -312,6 +324,13 @@ void main()
                     _lastMousePos = null;
                     m.Cursor.CursorMode = CursorMode.Raw;
                 }
+                // Phase 13c — LMB click-to-move. Unproject the cursor onto the
+                // player's current Y plane, confirm the point lands on a nav
+                // triangle, retarget the follower. Silent no-op on off-mesh clicks
+                // (clicks past the nav edge) so the user can rotate-drag + click
+                // without stray warnings.
+                else if (btn == MouseButton.Left)
+                    TryClickToMove(m.Position);
             };
             mouse.MouseUp += (m, btn) =>
             {
@@ -932,6 +951,11 @@ void main()
             Console.WriteLine($"  followers: {actorsOnMesh} wandering / {actorsOffMesh} pinned (off-mesh spawn)");
         }
 
+        // Phase 13c — remember the nav mesh for the LMB raycast handler. We always
+        // set it (even to null) so mid-session mode changes can't leave a stale
+        // reference from a previous region.
+        _navMesh = navMesh;
+
         // Phase 13a — spawn one Farmboy PC next to the NPC centroid so he lands on the
         // nav mesh among the goblins. AI-idle until 13c/13d wire LMB/RMB input — the
         // render loop already tolerates a null follower by falling back to CurrentTransform.
@@ -1130,6 +1154,30 @@ void main()
                         Matrix4x4.CreateRotationY(yaw) *
                         Matrix4x4.CreateTranslation(s.Follower.Position);
                 }
+                // Phase 13c — tick the player follower on the same cadence. The PC
+                // has no ActorFollower (no wander), so its movement lives here. When
+                // the raw NavFollower actually translates, derive XZ facing from the
+                // position delta and compose a new world transform; if it didn't
+                // move (idle, reached goal, blocked), the last facing is kept so the
+                // PC doesn't snap to +Z on arrival.
+                if (_player is not null && _playerFollower is not null && !_player.IsDead)
+                {
+                    var before = _playerFollower.Position;
+                    _playerFollower.Tick((float)stepSec);
+                    var after = _playerFollower.Position;
+                    float dx = after.X - before.X;
+                    float dz = after.Z - before.Z;
+                    float len2 = dx * dx + dz * dz;
+                    if (len2 > 1e-6f)
+                    {
+                        float len = MathF.Sqrt(len2);
+                        _playerFacing = new Vector3(dx / len, 0f, dz / len);
+                    }
+                    float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
+                    _player.CurrentTransform =
+                        Matrix4x4.CreateRotationY(pyaw) *
+                        Matrix4x4.CreateTranslation(after);
+                }
             }
             foreach (var s in _actors)
             {
@@ -1215,11 +1263,71 @@ void main()
         // user wants to fly around for debugging.
         _cameraMode = CameraMode.Chase;
 
+        // Phase 13c — build the click-to-move NavFollower now so LMB handler can
+        // simply SetTarget without null-checking a fresh PC. Speed falls back to
+        // 4.5u/s (typical DS1 walk) when the template's stats chain didn't resolve
+        // a max_life/walk_speed — see project_siegefx_max_life_formula.md.
+        if (navMesh is not null)
+        {
+            var speed = player.Stats.WalkSpeed > 0f ? player.Stats.WalkSpeed : 4.5f;
+            _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed);
+        }
+        _playerFacing = Vector3.UnitZ;
+
         Console.WriteLine(
             $"  player: '{playerTemplate}' spawned at " +
             $"({spawnPos.X:F1}, {spawnPos.Y:F1}, {spawnPos.Z:F1})  " +
             $"life={player.Stats.MaxLife:F0} " +
             $"walk={player.Stats.WalkSpeed:F1}u/s");
+    }
+
+    // Phase 13c — LMB click-to-move. Unprojects the screen-space cursor to a
+    // world ray, intersects it with the horizontal plane at the player's current
+    // Y (cheap and accurate enough at DS1's shallow terrain slopes), confirms the
+    // hit lands on the nav mesh, and retargets the player's follower. No-op when
+    // there is no player, no nav mesh, the ray misses the Y plane, or the hit
+    // point lies outside any walkable triangle.
+    private void TryClickToMove(Vector2 cursorPx)
+    {
+        if (_player is null || _playerFollower is null || _navMesh is null) return;
+        if (_player.IsDead) return;
+        if (_window is null) return;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return;
+
+        // Screen → NDC. GL's NDC Y is up, window Y is down, hence the 1 - ...
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+
+        // Unproject near + far NDC points through the inverse view-proj. Row-vector
+        // convention: the forward matrix is row-major stored, View * Proj; inverse
+        // multiplies a row vector on the left. Vector4.Transform with Matrix4x4 uses
+        // the same convention, so we can feed Vector4(ndcX, ndcY, z_ndc, 1) in and
+        // divide by W to get the world-space point.
+        float aspect = (float)size.X / size.Y;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+        var dir  = far_ - near;
+        if (dir.LengthSquared() < 1e-8f) return;
+
+        // Intersect with the horizontal plane Y = player.Y. Ray: p = near + t*dir.
+        // Solve: near.Y + t*dir.Y = planeY. Reject near-parallel rays so a top-down
+        // view (dir.Y ~= 0) doesn't land us at effectively infinity.
+        float planeY = _playerFollower.Position.Y;
+        if (MathF.Abs(dir.Y) < 1e-4f) return;
+        float t = (planeY - near.Y) / dir.Y;
+        if (t < 0f) return;
+        var hit = near + dir * t;
+
+        if (!_navMesh.TryFindTriangle(hit, out var tri)) return;
+        hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
+        _playerFollower.SetTarget(hit);
+        Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
     }
 
     private void DebugAttackNearestActor()
