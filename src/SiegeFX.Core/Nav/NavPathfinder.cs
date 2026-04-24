@@ -3,47 +3,80 @@ using System.Numerics;
 namespace SiegeFX.Core.Nav;
 
 /// <summary>
-/// A* over a <see cref="NavMesh"/>'s triangle adjacency. Phase 11b targets region-scope
-/// pathing; Phase 11c will extend across region doors using the same Dijkstra frontier
-/// logic but with portal edges injected by <c>WorldLayout</c>.
+/// A* over a <see cref="NavMesh"/>'s triangle adjacency.
 ///
 /// Cost and heuristic are both raw centroid-to-centroid Euclidean distance. That picks
-/// tight paths across a single-slope region but leaves obvious improvements on the
+/// tight paths across a single-slope region but leaves the obvious improvements on the
 /// table (actual crossing-point distance via the funnel algorithm, kind-aware cost
-/// bumps for water tiles). Keeping it simple makes the 11b review easy to read; the
-/// expensive refinements land with the first actor that actually follows a path.
+/// bumps for water tiles). Funnel smoothing lands alongside the actor follower when
+/// lumpy paths become visible.
 /// </summary>
 public static class NavPathfinder
 {
-    /// <summary>Finds a triangle-sequence path from <paramref name="startTri"/> to
-    /// <paramref name="goalTri"/>. Returns <c>true</c> with <paramref name="path"/>
-    /// populated (including both endpoints) when a route exists, <c>false</c> with an
-    /// empty list when the triangles are in disconnected components.</summary>
-    public static bool TryFindPath(NavMesh mesh, int startTri, int goalTri, out List<int> path)
+    /// <summary>Reusable per-caller state so actors that replan every tick don't allocate
+    /// a full set of scratch arrays per call. Safe to cache per-actor; auto-grows when
+    /// the target mesh exceeds the last seen triangle count.</summary>
+    public sealed class Workspace
     {
-        path = new List<int>();
+        internal int[] CameFrom = Array.Empty<int>();
+        internal float[] GScore = Array.Empty<float>();
+        internal float[] FScore = Array.Empty<float>();
+        internal bool[] Closed = Array.Empty<bool>();
+        internal SortedSet<(float f, int tri)>? Open;
+
+        internal void Prepare(int triCount)
+        {
+            if (CameFrom.Length < triCount)
+            {
+                CameFrom = new int[triCount];
+                GScore = new float[triCount];
+                FScore = new float[triCount];
+                Closed = new bool[triCount];
+            }
+            else
+            {
+                Array.Clear(Closed, 0, triCount);
+            }
+            for (int i = 0; i < triCount; i++)
+            {
+                CameFrom[i] = -1;
+                GScore[i] = float.PositiveInfinity;
+                FScore[i] = float.PositiveInfinity;
+            }
+            Open ??= new SortedSet<(float, int)>(FScoreComparer.Instance);
+            Open.Clear();
+        }
+    }
+
+    /// <summary>Finds a triangle-sequence path from <paramref name="startTri"/> to
+    /// <paramref name="goalTri"/>. Clears <paramref name="pathDest"/> and appends the
+    /// triangle sequence (including both endpoints) on success. Returns <c>false</c> and
+    /// leaves <paramref name="pathDest"/> empty when the triangles are in disconnected
+    /// components. Pass a reused <paramref name="ws"/> to avoid per-call allocation.</summary>
+    public static bool TryFindPath(
+        NavMesh mesh,
+        int startTri,
+        int goalTri,
+        List<int> pathDest,
+        Workspace? ws = null)
+    {
+        pathDest.Clear();
         if (startTri < 0 || startTri >= mesh.TriangleCount) return false;
         if (goalTri  < 0 || goalTri  >= mesh.TriangleCount) return false;
-        if (startTri == goalTri) { path.Add(startTri); return true; }
+        if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
+        ws ??= new Workspace();
         int triCount = mesh.TriangleCount;
-        var cameFrom = new int[triCount];
-        var gScore = new float[triCount];
-        var fScore = new float[triCount];
-        var closed = new bool[triCount];
-        for (int i = 0; i < triCount; i++)
-        {
-            cameFrom[i] = -1;
-            gScore[i] = float.PositiveInfinity;
-            fScore[i] = float.PositiveInfinity;
-        }
+        ws.Prepare(triCount);
+        var cameFrom = ws.CameFrom;
+        var gScore = ws.GScore;
+        var fScore = ws.FScore;
+        var closed = ws.Closed;
+        var open = ws.Open!;
 
         gScore[startTri] = 0f;
         fScore[startTri] = Vector3.Distance(mesh.Centroids[startTri], mesh.Centroids[goalTri]);
-        // Tiny region nav-meshes (most DS1 regions fit in a few thousand triangles) mean
-        // a binary-heap open set is overkill — a sorted-by-f linear scan beats the heap
-        // bookkeeping below ~10k triangles. Re-measure when Phase 11c goes world-scope.
-        var open = new SortedSet<(float f, int tri)>(FScoreComparer.Instance) { (fScore[startTri], startTri) };
+        open.Add((fScore[startTri], startTri));
 
         while (open.Count > 0)
         {
@@ -52,7 +85,7 @@ public static class NavPathfinder
             int curTri = current.tri;
             if (curTri == goalTri)
             {
-                Reconstruct(cameFrom, curTri, path);
+                Reconstruct(cameFrom, curTri, pathDest);
                 return true;
             }
             if (closed[curTri]) continue;
@@ -77,12 +110,13 @@ public static class NavPathfinder
     private static void Reconstruct(int[] cameFrom, int end, List<int> dest)
     {
         int cur = end;
+        int startIdx = dest.Count;
         while (cur != -1)
         {
             dest.Add(cur);
             cur = cameFrom[cur];
         }
-        dest.Reverse();
+        dest.Reverse(startIdx, dest.Count - startIdx);
     }
 
     /// <summary>Lexicographic (f, tri) order so the SortedSet acts as a priority queue

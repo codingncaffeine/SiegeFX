@@ -87,6 +87,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
     Console.WriteLine("  siegefx region path-fuzz   <map-tank> <terrain-tank>");
+    Console.WriteLine("  siegefx region follow      <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -340,7 +341,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav|path> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav|path|follow> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -355,6 +356,7 @@ static int DispatchRegion(string[] a)
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
         "path"        => CmdRegionPath(a[1..]),
         "path-fuzz"   => CmdRegionPathFuzz(a[1..]),
+        "follow"      => CmdRegionFollow(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -933,7 +935,8 @@ static int CmdRegionPath(string[] a)
     Console.WriteLine($"Start tri  : {startTri}  centroid={FormatVec(mesh.Centroids[startTri])}");
     Console.WriteLine($"Goal  tri  : {goalTri}  centroid={FormatVec(mesh.Centroids[goalTri])}");
 
-    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, out var path))
+    var path = new List<int>();
+    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, path))
     {
         Console.Error.WriteLine("no path — triangles are in disconnected components");
         return 3;
@@ -947,6 +950,58 @@ static int CmdRegionPath(string[] a)
         Console.WriteLine($"  [{i,3}] tri={path[i]}  {FormatVec(mesh.Centroids[path[i]])}");
     if (path.Count > show) Console.WriteLine($"  ... {path.Count - show} more");
     return 0;
+}
+
+static int CmdRegionFollow(string[] a)
+{
+    if (a.Length < 5 || a.Length > 7)
+    {
+        Console.Error.WriteLine("usage: siegefx region follow <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
+        return 1;
+    }
+    if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
+    if (!TryParseVec3(a[4], out var goal))  { Console.Error.WriteLine($"bad goal vector: '{a[4]}'");  return 1; }
+    float speed = 6f;
+    if (a.Length >= 6 && !float.TryParse(a[5], System.Globalization.CultureInfo.InvariantCulture, out speed))
+    { Console.Error.WriteLine($"bad speed: '{a[5]}'"); return 1; }
+    int maxTicks = 400;
+    if (a.Length >= 7 && !int.TryParse(a[6], out maxTicks))
+    { Console.Error.WriteLine($"bad tick count: '{a[6]}'"); return 1; }
+
+    var mesh = LoadRegionNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.NonManifoldEdgeCount} non-manifold edge(s)");
+
+    var follower = new SiegeFX.Core.Nav.NavFollower(mesh, start, speed);
+    follower.SetTarget(goal);
+    if (follower.PathBlocked)
+    {
+        Console.Error.WriteLine("path blocked — start or goal off-mesh, or endpoints in disconnected components");
+        return 2;
+    }
+    Console.WriteLine($"Start      : {FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
+    Console.WriteLine($"Goal       : {FormatVec(follower.Target)}   path-tris={follower.RemainingPath.Count}");
+
+    const float tickDt = 1f / 20f; // Match the 20 Hz simulation tick used by actors.
+    float totalDist = 0f;
+    var prev = follower.Position;
+    int lastLogTri = -999;
+    int ticks = 0;
+    for (; ticks < maxTicks; ticks++)
+    {
+        follower.Tick(tickDt);
+        totalDist += Vector3.Distance(prev, follower.Position);
+        prev = follower.Position;
+        if (follower.CurrentTriangle != lastLogTri)
+        {
+            Console.WriteLine($"  t={ticks,3}  pos={FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
+            lastLogTri = follower.CurrentTriangle;
+        }
+        if (follower.ReachedGoal) { ticks++; break; }
+        if (follower.PathBlocked) break;
+    }
+    Console.WriteLine($"Ticks      : {ticks} ({(follower.ReachedGoal ? "reached" : follower.PathBlocked ? "blocked" : "timed out")})");
+    Console.WriteLine($"Distance   : {totalDist:F2} units walked vs {Vector3.Distance(start, goal):F2} units straight-line");
+    return follower.ReachedGoal ? 0 : 3;
 }
 
 static int CmdRegionPathFuzz(string[] a)
@@ -995,19 +1050,21 @@ static int CmdRegionPathFuzz(string[] a)
             var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
             totalComponents += components;
             totalBiggest += bigSize;
+            var ws = new NavPathfinder.Workspace();
+            var pathBuf = new List<int>();
             for (int s = 0; s < SamplesPerRegion; s++)
             {
                 probes++;
                 int a0 = rng.Next(mesh.TriangleCount);
                 int b0 = rng.Next(mesh.TriangleCount);
-                if (NavPathfinder.TryFindPath(mesh, a0, b0, out _)) solved++;
+                if (NavPathfinder.TryFindPath(mesh, a0, b0, pathBuf, ws)) solved++;
                 // Control probe: both endpoints forced into the biggest component.
                 // Exercises the pathfinder on the mesh's "real" walkable surface rather
                 // than measuring topology disconnectedness. Expect ~100%.
                 int ia = bigComponent[rng.Next(bigComponent.Count)];
                 int ib = bigComponent[rng.Next(bigComponent.Count)];
                 intraBigProbes++;
-                if (NavPathfinder.TryFindPath(mesh, ia, ib, out _)) intraBigSolved++;
+                if (NavPathfinder.TryFindPath(mesh, ia, ib, pathBuf, ws)) intraBigSolved++;
             }
         }
         catch (Exception ex)
