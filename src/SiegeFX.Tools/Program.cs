@@ -350,11 +350,12 @@ static int DispatchWorld(string[] a)
 
 static int DispatchSkrit(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|bind|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "tokens" => CmdSkritTokens(a[1..]),
         "parse"  => CmdSkritParse(a[1..]),
+        "bind"   => CmdSkritBind(a[1..]),
         "fuzz"   => CmdSkritFuzz(a[1..]),
         _        => UnknownCommand("skrit " + a[0]),
     };
@@ -391,9 +392,28 @@ static int CmdSkritParse(string[] a)
     return 0;
 }
 
+static int CmdSkritBind(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit bind <file.skrit>"); return 1; }
+    var src = File.ReadAllText(a[0]);
+    var script = SkritParser.Parse(src);
+    var bind = new SkritBinder(script).Bind();
+
+    Console.WriteLine($"script: {script.TopLevels.Count} top-levels");
+    Console.WriteLine($"  globals   : {bind.Globals.Count}");
+    Console.WriteLine($"  states    : {bind.States.Count}");
+    Console.WriteLine($"  externs   : {bind.Externs.Count}");
+    Console.WriteLine($"  diagnostics: {bind.Diagnostics.Count}");
+    foreach (var g in bind.Globals.Values) Console.WriteLine($"    global  {g}");
+    foreach (var s in bind.States.Values)  Console.WriteLine($"    state   {s}");
+    foreach (var e in bind.Externs)        Console.WriteLine($"    extern  {e}");
+    foreach (var d in bind.Diagnostics)    Console.WriteLine($"    !! {d}");
+    return bind.HasErrors ? 4 : 0;
+}
+
 static int CmdSkritFuzz(string[] a)
 {
-    // Optional --stage={lex|parse} flag (default: parse, which implies lex).
+    // Optional --stage={lex|parse|bind} flag (default: parse, which implies lex).
     string stage = "parse";
     var rest = new List<string>();
     foreach (var x in a)
@@ -401,12 +421,14 @@ static int CmdSkritFuzz(string[] a)
         if (x.StartsWith("--stage=", StringComparison.Ordinal)) stage = x["--stage=".Length..].ToLowerInvariant();
         else rest.Add(x);
     }
-    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz [--stage=lex|parse] <tank.dsres>"); return 1; }
+    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz [--stage=lex|parse|bind] <tank.dsres>"); return 1; }
     using var tank = TankFile.Open(rest[0]);
     var reader = new TankReader(tank);
 
     int total = 0, ok = 0, fail = 0;
     long totalTokens = 0;
+    long totalDiags = 0;
+    int filesWithDiags = 0;
     var failures = new List<(string Path, string Msg)>();
     var seenHashes = new HashSet<string>(StringComparer.Ordinal);
     int deduped = 0;
@@ -433,6 +455,19 @@ static int CmdSkritFuzz(string[] a)
             {
                 _ = new SkritParser(toks).ParseScript();
             }
+            else if (stage == "bind")
+            {
+                var script = new SkritParser(toks).ParseScript();
+                var bind = new SkritBinder(script).Bind();
+                // Diagnostics are informational — shipped skrits have real bugs (duplicate
+                // states, unknown transition targets). The fuzz counts them separately
+                // rather than treating them as binder failures.
+                if (bind.Diagnostics.Count > 0)
+                {
+                    filesWithDiags++;
+                    totalDiags += bind.Diagnostics.Count;
+                }
+            }
             ok++;
         }
         catch (Exception ex)
@@ -443,6 +478,8 @@ static int CmdSkritFuzz(string[] a)
     }
 
     Console.WriteLine($"skrit fuzz [{stage}]: {total} found / {deduped} dedup / {ok} OK / {fail} FAIL (total tokens: {totalTokens:N0})");
+    if (stage == "bind")
+        Console.WriteLine($"  bind diagnostics: {totalDiags} across {filesWithDiags} file(s) (informational)");
     foreach (var (p, m) in failures.Take(20)) Console.WriteLine($"  FAIL {p}: {m}");
     if (failures.Count > 20) Console.WriteLine($"  (+{failures.Count - 20} more)");
     return fail == 0 ? 0 : 3;
