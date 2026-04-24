@@ -18,6 +18,7 @@ try
         "sno"  => DispatchSno(args[1..]),
         "gas"  => DispatchGas(args[1..]),
         "region" => DispatchRegion(args[1..]),
+        "world"  => DispatchWorld(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -66,6 +67,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region fuzz  <map-tank>");
     Console.WriteLine("  siegefx region layout      <map-tank> <terrain-tank> <region-path>");
     Console.WriteLine("  siegefx region layout-fuzz <map-tank> <terrain-tank>");
+    Console.WriteLine("  siegefx world  layout      <map-tank> <terrain-tank> [root-region]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -80,6 +82,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region fuzz World.dsmap");
     Console.WriteLine("  siegefx region layout      MpWorld.dsmap Terrain.dsres /world/maps/multiplayer_world/regions/abc_r1");
     Console.WriteLine("  siegefx region layout-fuzz MpWorld.dsmap Terrain.dsres");
+    Console.WriteLine("  siegefx world  layout      MpWorld.dsmap Terrain.dsres");
 }
 
 static int UnknownCommand(string cmd)
@@ -202,6 +205,16 @@ static int DispatchRegion(string[] a)
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
         "layout-diag" => CmdRegionLayoutDiag(a[1..]),
         _             => UnknownCommand("region " + a[0]),
+    };
+}
+
+static int DispatchWorld(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx world <layout> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "layout" => CmdWorldLayout(a[1..]),
+        _        => UnknownCommand("world " + a[0]),
     };
 }
 
@@ -408,6 +421,127 @@ static int CmdRegionLayoutFuzz(string[] a)
                       $"{crossRegionDoors:N0} cross-region door(s), {unresolvedDoors:N0} unresolved door(s), " +
                       $"{missingMeshes:N0} missing mesh(es); {failed} failure(s)");
     return failed == 0 ? 0 : 4;
+}
+
+static int CmdWorldLayout(string[] a)
+{
+    if (a.Length < 2 || a.Length > 3)
+    {
+        Console.Error.WriteLine("usage: siegefx world layout <map-tank> <terrain-tank> [root-region]");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    string? rootHint = null;
+    if (a.Length == 3)
+    {
+        rootHint = a[2].Replace('\\', '/');
+        if (!rootHint.StartsWith('/')) rootHint = "/" + rootHint;
+        if (rootHint.EndsWith('/')) rootHint = rootHint[..^1];
+    }
+
+    // Shared mesh index + SNO cache across every region: many tiles repeat, so
+    // parsing each SNO once and reusing it keeps the whole-map layout cheap.
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var entries = new List<WorldLayout.RegionEntry>();
+    var parseFailures = 0;
+    var regionsWithStitch = 0;
+    foreach (var path in mapReader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        // Strip the nodes.gas suffix so Path is the region root — makes the output
+        // directly copy-pasteable into `region layout` or the viewer .bat.
+        var regionPath = path[..^"/terrain_nodes/nodes.gas".Length];
+        try
+        {
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
+            var layout = RegionLayout.Build(graph, Resolve);
+
+            // Stitch helper is optional — some regions (isolated demo levels) ship without one.
+            RegionStitchHelper? stitches = null;
+            var stitchPath = regionPath + "/editor/stitch_helper.gas";
+            if (mapReader.TryGetFile(stitchPath, out _))
+            {
+                try
+                {
+                    stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(stitchPath));
+                    regionsWithStitch++;
+                }
+                catch (Exception sex)
+                {
+                    Console.Error.WriteLine($"  [stitch-fail] {stitchPath}: {sex.Message}");
+                }
+            }
+
+            entries.Add(new WorldLayout.RegionEntry(regionPath, graph, layout, stitches));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [fail] {path}: {ex.Message}");
+            parseFailures++;
+        }
+    }
+
+    var world = WorldLayout.Build(entries, Resolve, rootHint);
+
+    Console.WriteLine($"Map tank          : {a[0]}");
+    Console.WriteLine($"Terrain tank      : {a[1]}");
+    Console.WriteLine($"Regions discovered: {entries.Count}" + (parseFailures > 0 ? $" ({parseFailures} parse failure(s))" : ""));
+    Console.WriteLine($"Regions w/ stitch : {regionsWithStitch}");
+    Console.WriteLine($"Root region       : {world.RootRegion}");
+    Console.WriteLine($"Placed regions    : {world.PlacedRegionCount} of {entries.Count}");
+    Console.WriteLine($"Unreachable       : {world.UnreachableRegionCount}");
+    Console.WriteLine($"Unresolved stitch : {world.UnresolvedStitchCount}");
+    Console.WriteLine($"Dangling stitch   : {world.DanglingStitchCount}");
+    Console.WriteLine($"Global snodes     : {world.Transforms.Count:N0}");
+
+    // Spatial extent of the placed world, handy for sanity-checking that regions
+    // fan out rather than all stacking at the origin.
+    if (world.Transforms.Count > 0)
+    {
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity, minZ = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity, maxZ = float.NegativeInfinity;
+        foreach (var t in world.Transforms.Values)
+        {
+            if (t.M41 < minX) minX = t.M41;
+            if (t.M42 < minY) minY = t.M42;
+            if (t.M43 < minZ) minZ = t.M43;
+            if (t.M41 > maxX) maxX = t.M41;
+            if (t.M42 > maxY) maxY = t.M42;
+            if (t.M43 > maxZ) maxZ = t.M43;
+        }
+        Console.WriteLine($"World extent      : ({minX,8:F1}, {minY,8:F1}, {minZ,8:F1}) .. ({maxX,8:F1}, {maxY,8:F1}, {maxZ,8:F1})");
+    }
+
+    var showOffsets = Math.Min(5, world.RegionOffsets.Count);
+    if (showOffsets > 0) Console.WriteLine("Region offsets (first few):");
+    var shown = 0;
+    foreach (var (region, offset) in world.RegionOffsets)
+    {
+        if (shown >= showOffsets) break;
+        Console.WriteLine($"  t=({offset.M41,8:F1},{offset.M42,8:F1},{offset.M43,8:F1})  {region}");
+        shown++;
+    }
+
+    return parseFailures == 0 ? 0 : 4;
 }
 
 // Re-walks the door graph with verbose per-edge logging. The idea is to surface edges
