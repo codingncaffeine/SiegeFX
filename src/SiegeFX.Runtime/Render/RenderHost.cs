@@ -1465,15 +1465,11 @@ void main()
             return;
         }
 
-        // Use the PC's real stats when available (DamageMax > 0). Otherwise use
-        // a hero-baseline profile: DS1 hero templates author damage=0 because it's
-        // derived from the equipped weapon at spawn/equip time (Phase 14 work).
-        // 1-3 dmg matches a farmboy swinging bare fists / a rusty club — low enough
-        // that a 12 HP krug_scout takes ~4-5 hits instead of dying instantly.
-        var pcStats = _player.Actor.Stats;
-        var attacker = pcStats.DamageMax > 0f
-            ? pcStats
-            : HeroBaselineStats;
+        // Phase 14c: damage derives from the equipped weapon when es_weapon_hand is
+        // populated; otherwise the 1-3 HeroBaselineStats fallback stands in for
+        // bare-fisted swings. DS1 hero templates author damage=0 because the real
+        // number is the weapon's own attack.damage_min/max.
+        var attacker = GetPlayerAttackStats();
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
             attacker, best.Actor.Stats, rng);
@@ -1523,11 +1519,10 @@ void main()
             return;
         }
 
-        // Hero-baseline attacker — same 1-3 dmg profile as the click-attack path
-        // (see TryClickToAttack). F-key debug attack stays in the codebase as a
-        // camera-forward fallback; using the same profile so feedback is consistent
-        // between the two input surfaces.
-        var attacker = HeroBaselineStats;
+        // Same equipped-weapon resolution as TryClickToAttack. F-key debug attack
+        // stays as a camera-forward fallback so feedback is consistent between
+        // the two input surfaces.
+        var attacker = GetPlayerAttackStats();
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
             attacker, best.Actor.Stats, rng);
@@ -1574,6 +1569,49 @@ void main()
         _lootPiles.Add(new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops)));
     }
 
+    // Phase 14c — a dropped "weapon_hand" entry is an upgrade iff its template has
+    // a non-zero damage_max AND that max beats what the PC currently wields. DS1
+    // drops non-weapon equipment (boots, capes) into other es_ slots; we auto-equip
+    // those unconditionally on pickup and only gate the weapon swap by damage.
+    private bool IsWeaponUpgrade(SiegeFX.Core.Actors.LootEntry entry)
+    {
+        if (!string.Equals(entry.Slot, "weapon_hand", StringComparison.OrdinalIgnoreCase))
+            return true; // non-weapon slot -> always accept
+
+        if (_templateStore is null) return false;
+        if (!_templateStore.TryGet(entry.Reference, out var tpl)) return false;
+        var dmaxStr = _templateStore.GetAttribute(tpl!, "attack", "damage_max");
+        if (!float.TryParse(dmaxStr, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var newMax)) return false;
+        if (newMax <= 0f) return false;
+
+        var currentMax = GetPlayerAttackStats().DamageMax;
+        return newMax > currentMax;
+    }
+
+    // Phase 14c — resolve the PC's effective attacker stats. If es_weapon_hand is
+    // equipped and the referenced template has an [attack] block with damage_min/max,
+    // use those; otherwise fall back to HeroBaselineStats. The rest of the attacker
+    // stats (defense, attack range, walk speed, etc.) stay on the hero baseline —
+    // we only override the two damage numbers the weapon dictates.
+    private SiegeFX.Core.Actors.ActorStats GetPlayerAttackStats()
+    {
+        if (_templateStore is null) return HeroBaselineStats;
+        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef))
+            return HeroBaselineStats;
+        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return HeroBaselineStats;
+
+        var dminStr = _templateStore.GetAttribute(weaponTpl!, "attack", "damage_min");
+        var dmaxStr = _templateStore.GetAttribute(weaponTpl!, "attack", "damage_max");
+        if (!float.TryParse(dminStr, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var dmin)) return HeroBaselineStats;
+        if (!float.TryParse(dmaxStr, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var dmax)) return HeroBaselineStats;
+        if (dmax <= 0f) return HeroBaselineStats;
+
+        return HeroBaselineStats with { DamageMin = dmin, DamageMax = dmax };
+    }
+
     // Phase 14a — PC auto-pickup. Called each logic tick after the player follower
     // advances. Any pile within PickupRadius (XZ) of the PC is emptied into the
     // inventory list; the pile is removed so its cube despawns. Iterating backwards
@@ -1596,6 +1634,21 @@ void main()
             }
             Console.WriteLine(
                 $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+
+            // Phase 14c — auto-equip dropped weapons. If the loot entry came from
+            // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
+            // and the new item has a non-zero damage_max, swap it into the PC's
+            // matching es_ slot. Keeps the kill -> loot -> stronger-hit loop
+            // visible without a real inventory UI.
+            foreach (var it in pile.Items)
+            {
+                if (!it.IsEquipped) continue;
+                if (!IsWeaponUpgrade(it)) continue;
+                var slotKey = "es_" + it.Slot;
+                _playerEquipment[slotKey] = it.Reference;
+                Console.WriteLine($"  equipped: [{slotKey}] <- {it.Reference}");
+            }
+
             _lootPiles.RemoveAt(i);
         }
     }
