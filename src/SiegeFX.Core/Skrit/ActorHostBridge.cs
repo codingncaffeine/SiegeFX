@@ -29,9 +29,9 @@ public sealed class ActorHostBridge : IHostBridge
     /// real clip list so <c>Math.RandomInt(0, num-1)</c> picks a valid index.</summary>
     public int NumSubAnims { get; set; } = 1;
 
-    public ActorHostBridge(int rngSeed = 0)
+    public ActorHostBridge(int? rngSeed = null)
     {
-        _rng = rngSeed == 0 ? new Random() : new Random(rngSeed);
+        _rng = rngSeed is int s ? new Random(s) : new Random();
 
         // Seed a tiny WorldState enum so shipped auto-skrits ("auto/jipper.skrit" etc.)
         // don't stall on LoadExtern miss. Values are arbitrary placeholders; a real
@@ -61,6 +61,16 @@ public sealed class ActorHostBridge : IHostBridge
             _externs[name] = SkritValue.FromInt(1L << bit);
             return _externs[name];
         }
+        // Math / Report / GpConsole / StringTool / WorldState — materialise a tag string so
+        // the subsequent CallMember / GetMember can dispatch without relying on null-receiver
+        // fallthroughs.
+        foreach (var root in KnownRoots)
+            if (string.Equals(name, root, StringComparison.OrdinalIgnoreCase))
+            {
+                var tag = SkritValue.FromString("<" + root.ToLowerInvariant() + ">");
+                _externs[name] = tag;
+                return tag;
+            }
         return SkritValue.Null;
     }
 
@@ -95,12 +105,20 @@ public sealed class ActorHostBridge : IHostBridge
         return SkritValue.Null;
     }
 
+    /// <summary>Map top-level receiver names to internal dispatch tags. Skrits write
+    /// <c>Math.RandomInt(...)</c> as <c>LoadExtern "Math"; CallMember "RandomInt"</c> —
+    /// the extern returns the tag string so CallMember can route without relying on a
+    /// null-receiver fallthrough (which would silently answer RandomInt on *any* undefined
+    /// identifier and mask binder gaps).</summary>
+    static readonly string[] KnownRoots = { "Math", "Report", "GpConsole", "StringTool", "WorldState" };
+
     public void SetMember(SkritValue receiver, string member, SkritValue value) { }
 
     public SkritValue CallMember(SkritValue receiver, string member, SkritValue[] args)
     {
-        // Math.RandomInt(lo, hi) — inclusive range.
-        if (receiver.Tag == SkritValueTag.Null || receiver.Tag == SkritValueTag.String)
+        // `<math>.X(...)` — random helpers. Gated on the explicit tag so an undefined
+        // identifier doesn't silently answer RandomInt and mask binder gaps.
+        if (IsTag(receiver, "<math>"))
         {
             if (string.Equals(member, "RandomInt", StringComparison.OrdinalIgnoreCase) && args.Length >= 2)
             {
@@ -114,14 +132,14 @@ public sealed class ActorHostBridge : IHostBridge
                 double hi = args.Length > 1 ? args[1].AsFloat : 1.0;
                 return SkritValue.FromFloat(lo + _rng.NextDouble() * (hi - lo));
             }
+            return SkritValue.Null;
         }
 
         // `<blender>.X(...)` — capture blend operations.
-        if (receiver.Tag == SkritValueTag.String && string.Equals(receiver.AsString, "<blender>", StringComparison.Ordinal))
+        if (IsTag(receiver, "<blender>"))
             return BlenderCall(member, args);
 
-        // `owner.blender.X` was already bridged above; `owner.UpdateBlender(dt)` etc.
-        // route through the "blender" tag because receiver on those calls is "<blender>".
+        // `owner.UpdateBlender(dt)` and friends — owner is null-extern so receiver is Null.
         if (string.Equals(member, "UpdateBlender", StringComparison.OrdinalIgnoreCase))
             return SkritValue.FromInt(0); // zero event bits — shipped anim handlers loop cleanly
 
@@ -130,6 +148,9 @@ public sealed class ActorHostBridge : IHostBridge
 
         return SkritValue.Null;
     }
+
+    static bool IsTag(SkritValue v, string tag)
+        => v.Tag == SkritValueTag.String && string.Equals(v.AsString, tag, StringComparison.Ordinal);
 
     public void SetState(string stateName) => Instance?.RequestSetState(stateName);
 
