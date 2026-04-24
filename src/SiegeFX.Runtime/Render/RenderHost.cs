@@ -4,6 +4,7 @@ using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using SiegeFX.Core.Assets;
+using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
 
 namespace SiegeFX.Runtime.Render;
@@ -27,6 +28,19 @@ public sealed class RenderHost : IDisposable
     private readonly string? _animAspPath;
     private readonly string? _animPrsPath;
     private readonly string? _animTexturePath;
+    private readonly string? _skritPath;
+    private readonly IReadOnlyList<string>? _skritClipPaths;
+
+    // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
+    // frame; OnStartChore$ sets the blender's "current anim" index, which we watch via
+    // ActorHostBridge.CurrentAnimIndex to pick the PRS clip to play. Replaces the hardcoded
+    // single-clip _anim pipeline when --skrit-anim is used.
+    private SkritRuntime? _skritRuntime;
+    private SkritInstance? _skritInstance;
+    private ActorHostBridge? _skritHost;
+    private PrsAnimation[]? _skritClips;
+    private int _skritCurrentClip = -1;
+    private double _skritTickAccumulator;
     private GL? _gl;
     private IInputContext? _input;
     private Shader? _gridShader;
@@ -157,7 +171,8 @@ void main()
         string? meshPath = null, string? texturePath = null,
         string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null,
         string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null,
-        string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null)
+        string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null,
+        string? skritPath = null, IReadOnlyList<string>? skritClipPaths = null)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
@@ -170,6 +185,8 @@ void main()
         _animAspPath = animAspPath;
         _animPrsPath = animPrsPath;
         _animTexturePath = animTexturePath;
+        _skritPath = skritPath;
+        _skritClipPaths = skritClipPaths;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -289,6 +306,81 @@ void main()
 
         if (_animAspPath is not null && _animPrsPath is not null)
             LoadAnim(_animAspPath, _animPrsPath, _animTexturePath);
+
+        if (_animAspPath is not null && _skritPath is not null && _skritClipPaths is not null)
+            LoadSkrit(_animAspPath, _skritPath, _skritClipPaths, _animTexturePath);
+    }
+
+    /// <summary>Phase 9a entry: load a rigged ASP + a skrit + N PRS clips, then let the
+    /// skrit pick which clip plays. The skrit's <c>OnStartChore$</c> handler calls
+    /// <c>owner.blender.AddAnimToBlendGroup(idx, w)</c>; we capture idx via
+    /// <see cref="ActorHostBridge.CurrentAnimIndex"/> and swap <see cref="_anim"/> to
+    /// <paramref name="clipPaths"/>[idx]. Only the first blend slot is honored — proper
+    /// multi-slot blending is Phase 10+.</summary>
+    private void LoadSkrit(string aspPath, string skritPath, IReadOnlyList<string> clipPaths, string? texturePath)
+    {
+        if (_gl is null) return;
+        if (!File.Exists(skritPath)) { Console.Error.WriteLine($"skrit '{skritPath}' not found"); return; }
+        if (clipPaths.Count == 0) { Console.Error.WriteLine("--skrit-anim requires at least one clip"); return; }
+
+        // If LoadAnim didn't already run, stand up the skinned mesh ourselves.
+        if (_skinnedAsp is null || _skinnedMesh is null)
+        {
+            _skinnedAsp = AspMesh.Load(File.ReadAllBytes(aspPath));
+            if (!_skinnedAsp.HasSkin) { Console.Error.WriteLine($"asp '{aspPath}' has no WCRN skin data"); _skinnedAsp = null; return; }
+            _skinnedMesh = new SkinnedMesh(_gl, _skinnedAsp);
+            if (texturePath is not null && File.Exists(texturePath))
+                _animTexture = new GlTexture(_gl, RawImage.Load(File.ReadAllBytes(texturePath)));
+            _camera.Position = _skinnedMesh.Center + new Vector3(0, 0, MathF.Max(_skinnedMesh.Radius, 0.5f) * 3f);
+            _camera.Yaw = 0;
+            _camera.Pitch = 0;
+        }
+
+        _skritClips = new PrsAnimation[clipPaths.Count];
+        for (int i = 0; i < clipPaths.Count; i++)
+        {
+            if (!File.Exists(clipPaths[i]))
+            {
+                Console.Error.WriteLine($"clip '{clipPaths[i]}' not found — anim index {i} will fall back to clip 0");
+                continue;
+            }
+            _skritClips[i] = PrsAnimation.Load(File.ReadAllBytes(clipPaths[i]));
+        }
+        // Guarantee clip 0 is present so CurrentAnimIndex == -1 / unresolved defaults cleanly.
+        if (_skritClips[0] is null)
+        {
+            Console.Error.WriteLine("clip 0 must exist");
+            _skritClips = null;
+            return;
+        }
+
+        // Compile the skrit. Shipped content carries real binder diagnostics (see project
+        // memory); surface them but don't abort — the VM can still run the handlers we need.
+        var src = File.ReadAllText(skritPath);
+        var script = SkritParser.Parse(src);
+        var bind = new SkritBinder(script).Bind();
+        if (bind.Diagnostics.Count > 0)
+        {
+            Console.WriteLine($"skrit '{skritPath}': {bind.Diagnostics.Count} bind diagnostic(s):");
+            foreach (var d in bind.Diagnostics) Console.WriteLine($"  !! {d}");
+        }
+        var program = new SkritCompiler(script, bind).Compile();
+
+        _skritHost = new ActorHostBridge(rngSeed: 1) { NumSubAnims = clipPaths.Count };
+        _skritRuntime = new SkritRuntime();
+        _skritInstance = _skritRuntime.Add(new SkritInstance(program, _skritHost));
+        _skritHost.Instance = _skritInstance;
+        _skritInstance.Start();
+        // Anim skrits conventionally enter through OnStartChore$( subanim, flags ).
+        _skritInstance.Dispatch("OnStartChore$", SkritValue.FromInt(0), SkritValue.FromInt(0));
+
+        _skritCurrentClip = Math.Max(0, _skritHost.CurrentAnimIndex);
+        _anim = _skritClips[_skritCurrentClip] ?? _skritClips[0];
+        _animTime = 0;
+
+        Console.WriteLine($"skrit '{skritPath}' driving animation: state={_skritInstance.CurrentState}, " +
+                          $"clip={_skritCurrentClip} ({clipPaths[_skritCurrentClip]}), " +
+                          $"blender-log={_skritHost.BlenderLog.Count} call(s)");
     }
 
     /// <summary>Loads a rigged ASP and a PRS clip, builds a SkinnedMesh, frames the camera,
@@ -658,6 +750,34 @@ void main()
 
         if (_anim is not null && _anim.AnimLength > 0f)
             _animTime += dt;
+
+        // Phase 9a: advance the skrit runtime at a fixed 20 Hz logic tick (DS1's authoritative
+        // rate for `at ( N frames )` scheduling). Render dt is variable-rate — we accumulate
+        // and drain in fixed steps, matching the deterministic-loop pattern we settled on in
+        // 8d. After each tick, poll the host bridge's CurrentAnimIndex; a change means the
+        // skrit picked a new sub-anim and we swap clips (reset _animTime so the new clip
+        // starts from its first keyframe).
+        if (_skritRuntime is not null && _skritHost is not null && _skritClips is not null)
+        {
+            _skritTickAccumulator += dt;
+            const double stepSec = 1.0 / SkritInstance.FramesPerSecond;
+            while (_skritTickAccumulator >= stepSec)
+            {
+                _skritTickAccumulator -= stepSec;
+                _skritRuntime.Tick(stepSec);
+            }
+            int idx = _skritHost.CurrentAnimIndex;
+            if (idx >= 0 && idx < _skritClips.Length && idx != _skritCurrentClip)
+            {
+                var nextClip = _skritClips[idx] ?? _skritClips[0];
+                if (nextClip is not null)
+                {
+                    _anim = nextClip;
+                    _skritCurrentClip = idx;
+                    _animTime = 0;
+                }
+            }
+        }
     }
 
     private void OnRender(double _)
