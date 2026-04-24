@@ -97,6 +97,15 @@ public sealed class PrsAnimation
         // Defensive: if the text blob over-ran (rare), snap to the declared end.
         r.Position = textEnd;
 
+        // The text blob must yield exactly numBones names; a mismatch would desync the
+        // BoneNames index space from the bone-keyed KLST chunks below. Downstream
+        // AnimationRuntime maps ASP bone names to PRS indices via BoneNames, so a short
+        // read would silently drop keyed bones; a long read would index past the KLST
+        // key array. Either is an asset bug worth failing loud.
+        if (boneNames.Count != numBones)
+            throw new InvalidDataException(
+                $"prs: bone-name blob yielded {boneNames.Count} names but header declared {numBones}");
+
         var notes = new List<NoteEvent>();
         KeyList? rootKeys = null;
         var boneKeys = new KeyList?[numBones];

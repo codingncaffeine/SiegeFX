@@ -38,6 +38,13 @@ public sealed class AspMesh
     /// <see cref="BindPose"/> (dataRPOS[2]) for the actual skeleton; kept here for diag.</summary>
     public Transform[] BindPoseAlt { get; init; } = Array.Empty<Transform>();
 
+    /// <summary>Precomputed <c>inverse(worldBind[i])</c> for each bone, where <c>worldBind</c>
+    /// is the hierarchy-composed bind pose. Populated at load for rigged meshes; empty for
+    /// static meshes. Exposed so the per-frame skinning path doesn't re-invert every bone
+    /// matrix every time — bind pose doesn't change, so this work amortises over the
+    /// lifetime of the asset.</summary>
+    public Matrix4x4[] InverseBindMatrices { get; init; } = Array.Empty<Matrix4x4>();
+
     /// <summary>Vertex positions (BVTX). Shared by all corners of the same vertex.</summary>
     public Vector3[] Positions { get; init; } = Array.Empty<Vector3>();
 
@@ -101,6 +108,12 @@ public sealed class AspMesh
         int[] tris;
         int vertPosBase = 0, cornerBase = 0;
         int declaredNumBones = 0;
+        // BMSH must appear once, before any chunk that depends on its declared counts
+        // (BONH/RPOS size against numBones; the submesh cycle BVTX/BCRN/WCRN/BTRI assumes
+        // the bone table is already populated). Shipping assets always put it first, but
+        // a guard turns an out-of-order file into a diagnosable error instead of a silent
+        // reparse against stale counts.
+        bool sawBmsh = false;
         // numSubTextures for the *current* submesh, carried from the most recent BSMM into
         // the following BTRI so we can skip its version-dependent subtexture header. BSMM
         // always precedes BTRI in the per-submesh cycle, and the default 1 covers the
@@ -116,6 +129,8 @@ public sealed class AspMesh
 
             if (id == new FourCC('B','M','S','H'))
             {
+                if (sawBmsh) throw new InvalidDataException("ASP has more than one BMSH chunk");
+                sawBmsh = true;
                 verMajor = chunk.VersionRaw & 0xFF;
                 verMinor = (chunk.VersionRaw >> 8) & 0xFF;
                 // Canonical BMSH per ASPImport.ms: 6*u32 counts (sizeTextField, numBones,
@@ -146,6 +161,7 @@ public sealed class AspMesh
             }
             else if (id == new FourCC('B','O','N','H'))
             {
+                if (!sawBmsh) throw new InvalidDataException("ASP BONH before BMSH");
                 if (declaredNumBones == 0) continue; // static mesh with no skeleton
                 // Each entry: (idx, parent, textOffset) u32s. Entries may be out of order —
                 // idx is the explicit array slot they populate. Parent == idx is the root
@@ -167,6 +183,7 @@ public sealed class AspMesh
             }
             else if (id == new FourCC('R','P','O','S'))
             {
+                if (!sawBmsh) throw new InvalidDataException("ASP RPOS before BMSH");
                 if (declaredNumBones == 0) continue;
                 // RPOS stores two transforms per bone: dataRPOS[1] and dataRPOS[2] in
                 // ASPImport.ms. Interleaved on disk as (rot1, pos1, rot2, pos2) per bone.
@@ -248,6 +265,7 @@ public sealed class AspMesh
                 // for V2_x and we subtract 1 to get a 0-based index; V4_0+ (>40) stores
                 // 0-based values already. WCRN entries align with the most recent BCRN
                 // submesh block, so the write target is cornerBase .. cornerBase+count.
+                // Decimal version form: low byte is major, high byte is minor (major*10+minor).
                 var count = ReadChunkCount(body, stride: 56, chunkName: "WCRN");
                 if (cornerBase + count > skinWeightList.Count)
                     throw new InvalidDataException(
@@ -287,8 +305,10 @@ public sealed class AspMesh
                 //   version-dependent subtexture header (see below), sized by numSubTextures
                 //   numFaces × (u32 a, u32 b, u32 c)   — flat triangle indices into the submesh BCRN
                 //
-                // VersionOf(v) maps (major<<8|minor) → decimal "minor*10 + major"; shipping DS1
-                // assets are all V2_2/V2_3/V4_0 → 22/23/40. The header rule:
+                // On disk the version raw is stored little-endian as (major, minor), so
+                // `raw & 0xFF` is the major digit and `(raw >> 8) & 0xFF` is the minor: the
+                // decimal form computed here is (major * 10 + minor). Shipping DS1 assets
+                // are all V2_2/V2_3/V4_0 → 22/23/40. The header rule:
                 //   decimal == 22   : numSubTextures × (cornerSpan:u32)
                 //   decimal > 22    : numSubTextures × (cornerStart:u32, cornerSpan:u32)
                 //   decimal < 22    : no header (single implicit subtexture covers the whole mesh)
@@ -363,22 +383,54 @@ public sealed class AspMesh
         var skinWeights = sawWcrn ? skinWeightList.ToArray() : Array.Empty<Vector4>();
         var skinBones   = sawWcrn ? skinBoneList.ToArray()   : Array.Empty<uint>();
 
+        // Precompute inv(worldBind[i]) for rigged meshes. The composition assumes parents
+        // precede children in BoneParents; the skinning path asserts the same invariant at
+        // runtime, so we check once here at load and emit a diagnosable error instead.
+        var inverseBind = ComputeInverseBindMatrices(bindPose, boneParents);
+
         return new AspMesh
         {
-            MeshName        = meshName,
-            AspVersionMajor = verMajor,
-            AspVersionMinor = verMinor,
-            TextureNames    = textureNames,
-            BoneNames       = boneNames,
-            BoneParents     = boneParents,
-            BindPose        = bindPose,
-            BindPoseAlt     = bindPoseAlt,
-            Positions       = positions,
-            Corners         = corners,
-            TriangleIndices = tris,
-            SkinWeights     = skinWeights,
-            SkinBones       = skinBones,
+            MeshName            = meshName,
+            AspVersionMajor     = verMajor,
+            AspVersionMinor     = verMinor,
+            TextureNames        = textureNames,
+            BoneNames           = boneNames,
+            BoneParents         = boneParents,
+            BindPose            = bindPose,
+            BindPoseAlt         = bindPoseAlt,
+            InverseBindMatrices = inverseBind,
+            Positions           = positions,
+            Corners             = corners,
+            TriangleIndices     = tris,
+            SkinWeights         = skinWeights,
+            SkinBones           = skinBones,
         };
+    }
+
+    private static Matrix4x4[] ComputeInverseBindMatrices(Transform[] bindPose, int[] boneParents)
+    {
+        if (bindPose.Length == 0) return Array.Empty<Matrix4x4>();
+        var worldBind = new Matrix4x4[bindPose.Length];
+        for (var i = 0; i < bindPose.Length; i++)
+        {
+            var local = Matrix4x4.CreateFromQuaternion(bindPose[i].Rotation) * Matrix4x4.CreateTranslation(bindPose[i].Translation);
+            var p = boneParents[i];
+            if (p < 0)
+                worldBind[i] = local;
+            else
+            {
+                if (p >= i)
+                    throw new InvalidDataException($"ASP bone {i} parent {p} is not parent-first; cannot precompute bind pose");
+                worldBind[i] = local * worldBind[p];
+            }
+        }
+        var inv = new Matrix4x4[bindPose.Length];
+        for (var i = 0; i < bindPose.Length; i++)
+        {
+            if (!Matrix4x4.Invert(worldBind[i], out inv[i]))
+                throw new InvalidDataException($"ASP bone {i} bind pose is non-invertible");
+        }
+        return inv;
     }
 
     private static Transform ReadTransform(ReadOnlySpan<byte> b)
