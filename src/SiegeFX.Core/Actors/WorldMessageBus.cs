@@ -28,6 +28,10 @@ public sealed class WorldMessageBus
 
     readonly Dictionary<uint, SkritInstance> _byScid = new();
     readonly Queue<Message> _queue = new();
+    // Scratch buffer reused across deliveries — broadcast to 181 actors with one post
+    // would otherwise allocate 181× SkritValue[4]. Bus is single-threaded per region by
+    // contract (Deliver runs on the 20 Hz tick), so reuse is safe.
+    readonly SkritValue[] _argScratch = new SkritValue[4];
 
     public IReadOnlyDictionary<uint, SkritInstance> Registered => _byScid;
 
@@ -60,21 +64,21 @@ public sealed class WorldMessageBus
         while (_queue.Count > 0)
         {
             var m = _queue.Dequeue();
-            var args = new[]
-            {
-                SkritValue.FromInt(m.FromScid),
-                SkritValue.FromInt(m.ToScid),
-                SkritValue.FromInt(m.Arg1),
-                SkritValue.FromInt(m.Arg2),
-            };
+            // SkritVm.Run copies args into its locals frame before bytecode executes, so
+            // the buffer is free to reuse across dispatches — including a broadcast fan-out
+            // where every registered actor sees the same payload.
+            _argScratch[0] = SkritValue.FromInt(m.FromScid);
+            _argScratch[1] = SkritValue.FromInt(m.ToScid);
+            _argScratch[2] = SkritValue.FromInt(m.Arg1);
+            _argScratch[3] = SkritValue.FromInt(m.Arg2);
             if (m.ToScid == 0)
             {
                 foreach (var inst in _byScid.Values)
-                    if (inst.Dispatch(m.Name, args)) delivered++;
+                    if (inst.Dispatch(m.Name, _argScratch)) delivered++;
             }
             else if (_byScid.TryGetValue(m.ToScid, out var target))
             {
-                if (target.Dispatch(m.Name, args)) delivered++;
+                if (target.Dispatch(m.Name, _argScratch)) delivered++;
                 else UndeliveredCount++;
             }
             else UndeliveredCount++;
