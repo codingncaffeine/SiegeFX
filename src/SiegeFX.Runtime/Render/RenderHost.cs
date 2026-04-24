@@ -76,6 +76,12 @@ public sealed class RenderHost : IDisposable
     private StaticMesh? _weaponMesh;
     private GlTexture? _weaponTexture;
     private int _weaponGripBoneIdx = -1;
+    // Phase 14d — inverse bind-pose of the weapon ASP's grip bone (bone 0 for DS1
+    // weapons; every corner weights to it). Pre-multiplied into uModel so the
+    // weapon's grip bone origin snaps to the player's hand bone. Without this
+    // the dagger draws at the weapon ASP's mesh origin, which is nowhere near
+    // the grip — blade tip usually, judging by how DS1 weapons are authored.
+    private Matrix4x4 _weaponBindInv = Matrix4x4.Identity;
 
     private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
@@ -1399,6 +1405,9 @@ void main()
 
         _weaponMesh?.Dispose();
         _weaponMesh = new StaticMesh(_gl, asp);
+        _weaponBindInv = asp.InverseBindMatrices.Length > 0
+            ? asp.InverseBindMatrices[0]
+            : Matrix4x4.Identity;
 
         _weaponTexture?.Dispose();
         _weaponTexture = null;
@@ -1835,9 +1844,10 @@ void main()
         // Phase 14d — render the PC's equipped weapon attached to the weapon_grip
         // bone. We recompute the animated bone worlds for the PC (cheap — the bone
         // walk already happened inside ComputeSkinMatrices, we just didn't surface
-        // the intermediate array). weaponWorld = player.CurrentTransform *
-        // worldAnim[weapon_grip]. Drawn with the static-mesh pipeline because
-        // DS1 weapon ASPs weight every corner to bone 0 (effectively rigid).
+        // the intermediate array). weaponWorld = weaponBindInv * worldAnim[weapon_grip]
+        // * player.CurrentTransform. Drawn with the static-mesh pipeline because
+        // DS1 weapon ASPs weight every corner to bone 0 (effectively rigid); the
+        // bind-inverse pre-multiply is what snaps the ASP's grip bone onto the hand.
         if (_meshShader is not null && _weaponMesh is not null && _player is not null
             && !_player.IsDead && _weaponGripBoneIdx >= 0)
         {
@@ -1859,7 +1869,11 @@ void main()
             if (_weaponGripBoneIdx < boneWorlds.Length)
             {
                 var gripLocal = boneWorlds[_weaponGripBoneIdx];
-                var weaponModel = gripLocal * _player.CurrentTransform;
+                // weaponBindInv cancels the weapon ASP's own grip-bone bind offset
+                // so the grip sits at the hand bone's world origin, then gripLocal
+                // places it in the player mesh frame, then CurrentTransform moves
+                // the whole rig to world space.
+                var weaponModel = _weaponBindInv * gripLocal * _player.CurrentTransform;
 
                 _meshShader.Use();
                 _meshShader.SetMatrix4("uViewProj", vp);
