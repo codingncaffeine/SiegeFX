@@ -114,8 +114,17 @@ public sealed class SkritCompiler
                 case SkritScheduledBlock sb:
                     emit(CompileFunction($"{prefix}/sched/{sb.Name}", Array.Empty<SkritParam>(), sb.Body));
                     break;
+                case SkritTransition tr when tr.Body is not null:
+                    // Edge-fire bodies compile into their own chunk. Multiple transitions
+                    // can target the same state, so the event name disambiguates them —
+                    // `OnBotHandleMessage$` + line-number tag keeps names unique when the
+                    // same (target, event) pair appears twice in a state.
+                    emit(CompileFunction(
+                        $"{prefix}/trans/{tr.TargetState}/{tr.EventName}@{tr.Line}",
+                        Array.Empty<SkritParam>(), tr.Body));
+                    break;
                 // State fields have no bytecode (initialisers are handled elsewhere).
-                // Transitions are declarative; bodyless entries aren't compiled here.
+                // Transitions without bodies are declarative only — no chunk to emit.
             }
         }
     }

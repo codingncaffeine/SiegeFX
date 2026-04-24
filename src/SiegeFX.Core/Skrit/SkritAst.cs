@@ -83,10 +83,13 @@ public sealed record SkritTriggerHandler(
     string Name, IReadOnlyList<SkritExpr> Args, SkritBlock Body, int Line, int Column)
     : SkritStateMember(Line, Column);
 
-/// <summary>`transition -> StateName$ : EventName$(args);` — declarative state edge.</summary>
+/// <summary>`transition -> StateName$ : EventName$(args) [= { body }];` — declarative state
+/// edge. When the edge fires the optional <see cref="Body"/> runs before the state change,
+/// letting shipped skrits (jipper, mp, rotatex) emit log lines / UI messages on transition.
+/// <c>null</c> when the source has no body clause.</summary>
 public sealed record SkritTransition(
     string TargetState, string EventName, IReadOnlyList<SkritExpr> EventArgs,
-    int Line, int Column) : SkritStateMember(Line, Column);
+    SkritBlock? Body, int Line, int Column) : SkritStateMember(Line, Column);
 
 /// <summary>`ChoreName$ at ( count frames|seconds ) { body }` — delayed coroutine.</summary>
 public sealed record SkritScheduledBlock(

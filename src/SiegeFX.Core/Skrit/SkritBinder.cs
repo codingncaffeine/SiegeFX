@@ -20,8 +20,10 @@ public sealed class SkritBinder
     readonly HashSet<string> _externs = new(System.StringComparer.Ordinal);
     readonly List<SkritDiagnostic> _diags = new();
 
-    // Identifiers that are always resolved, never flagged as extern.
-    static readonly HashSet<string> PredefinedRoots = new(System.StringComparer.Ordinal)
+    // Identifiers that are always resolved, never flagged as extern. Skrit is case-
+    // insensitive for keywords and predefined names (shipped code uses both `owner` and
+    // `Owner`, `NULL` and `null`), so lookup ignores case here too.
+    static readonly HashSet<string> PredefinedRoots = new(System.StringComparer.OrdinalIgnoreCase)
     {
         "owner", "self", "this", "NULL",
     };
@@ -236,6 +238,7 @@ public sealed class SkritBinder
                 CheckStateTarget(tr.TargetState, tr.Line, tr.Column);
                 PushScope();
                 foreach (var a in tr.EventArgs) WalkExpr(a);
+                if (tr.Body is not null) WalkBlock(tr.Body);
                 PopScope();
                 break;
             case SkritScheduledBlock sb:
