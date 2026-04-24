@@ -31,6 +31,12 @@ public sealed class SnoModel
     public Corner[]  Corners  { get; init; } = Array.Empty<Corner>();
     public Surface[] Surfaces { get; init; } = Array.Empty<Surface>();
 
+    /// <summary>Pre-classified nav-surface groups that DS1 tools bake into the SNO. Each
+    /// grouping is a contiguous region of floor carrying a <see cref="FloorFlag"/> (walkable,
+    /// water, or explicitly ignored). Phase 11a uses <see cref="FloorFlag.Floor"/> groupings
+    /// to seed the pathfinding mesh.</summary>
+    public LogicalGrouping[] LogicalGroupings { get; init; } = Array.Empty<LogicalGrouping>();
+
     /// <summary>A 4x3 affine transform: 3x3 rotation (rows 0-2) + 3-vector translation (row 3).</summary>
     public readonly record struct Xform4x3(
         Vector3 Row0, Vector3 Row1, Vector3 Row2, Vector3 Translation);
@@ -46,6 +52,35 @@ public sealed class SnoModel
     /// <summary>Vertex record in the flat corner pool. Per-surface triangle indices index
     /// into this pool, offset by that surface's <see cref="Surface.StartCorner"/>.</summary>
     public readonly record struct Corner(Vector3 Position, Vector3 Normal, uint Rgba, Vector2 Uv);
+
+    /// <summary>Classification bits DS1 bakes onto each logical grouping. Raw values
+    /// come from the SNO disk layout — they aren't flag bits you OR together, despite
+    /// the name, so compare with <c>==</c>.</summary>
+    public enum FloorFlag : uint
+    {
+        Ignored = 0x20000000u,       // 536_870_912 — not part of the nav surface
+        Floor   = 0x40000001u,       // 1_073_741_825 — walkable
+        Water   = 0x80000000u,       // 2_147_483_648 — swim/wade zone; not walkable as floor
+    }
+
+    /// <summary>A single nav-mesh face in SNO-local space. DS1 stores full a/b/c triangle
+    /// vertices rather than indices into the render corner pool — the nav triangles don't
+    /// always coincide with render triangles (tool-side welding/simplification).</summary>
+    public readonly record struct NavFace(Vector3 A, Vector3 B, Vector3 C, Vector3 Normal);
+
+    /// <summary>Pre-classified walkable-surface subregion. Groupings are the input to the
+    /// Phase 11b pathfinder: FloorFlag.Floor groupings contribute walkable triangles,
+    /// Water contributes swim zones, Ignored is skipped entirely. <see cref="BoundsMin"/>
+    /// / <see cref="BoundsMax"/> give a coarse SNO-local AABB for culling before picking
+    /// into <see cref="Faces"/>.</summary>
+    public sealed class LogicalGrouping
+    {
+        public byte Id { get; init; }
+        public Vector3 BoundsMin { get; init; }
+        public Vector3 BoundsMax { get; init; }
+        public FloorFlag Flag { get; init; }
+        public NavFace[] Faces { get; init; } = Array.Empty<NavFace>();
+    }
 
     /// <summary>One material subset: a name (matches a .raw texture) and a range of
     /// triangles whose indices are local (0..SpanCorner-1) and must be resolved against
@@ -111,18 +146,103 @@ public sealed class SnoModel
         foreach (var s in surfaces) summedFaces += s.TriangleCount;
         _ = summedFaces; _ = faceCount;
 
+        // Logical-grouping / nav section follows the render surfaces. Not every SNO has
+        // one — older map tiles ship without it — so short-circuit if we hit EOF cleanly.
+        var groupings = r.AtEnd ? Array.Empty<LogicalGrouping>() : ReadLogicalGroupings(r);
+
         return new SnoModel
         {
-            Magic       = magic,
-            Version     = version,
-            MinBounds   = minBounds,
-            MaxBounds   = maxBounds,
-            DataCrc32   = dataCrc32,
-            Spots       = spots,
-            Doors       = doors,
-            Corners     = corners,
-            Surfaces    = surfaces,
+            Magic             = magic,
+            Version           = version,
+            MinBounds         = minBounds,
+            MaxBounds         = maxBounds,
+            DataCrc32         = dataCrc32,
+            Spots             = spots,
+            Doors             = doors,
+            Corners           = corners,
+            Surfaces          = surfaces,
+            LogicalGroupings  = groupings,
         };
+    }
+
+    /// <summary>Parses the post-surfaces nav section verbatim from OpenSiege's
+    /// <c>ReaderWriterSNO.cpp</c>. DS1 bakes per-grouping bookkeeping (indices, unknown
+    /// rotations, short-pair arrays) that we skip but must walk precisely or the final
+    /// triangle list desyncs. Each grouping terminates in a <c>recurse_unknown_section</c>
+    /// tail that nests an arbitrary number of child sections — we mirror that recursion
+    /// exactly.</summary>
+    private static LogicalGrouping[] ReadLogicalGroupings(Reader r)
+    {
+        var count = r.ReadU32();
+        if (count == 0) return Array.Empty<LogicalGrouping>();
+
+        var result = new LogicalGrouping[count];
+        for (var i = 0; i < count; i++)
+        {
+            var id = r.ReadU8();
+            var bMin = r.ReadVec3();
+            var bMax = r.ReadVec3();
+            var flag = (FloorFlag)r.ReadU32();
+
+            // Per-grouping unknown "rotation + shorts + shorts" array. Nothing we need
+            // for nav — just stride past.
+            var unkCount1 = r.ReadU32();
+            for (var j = 0; j < unkCount1; j++)
+            {
+                r.ReadU16();                                 // index
+                for (var k = 0; k < 9; k++) r.ReadF32();     // 3x3 rotation
+                var shortArr1 = r.ReadU16();
+                r.Skip(shortArr1 * 2);
+                var shortArr2 = r.ReadU32();
+                r.Skip(shortArr2 * 2);
+            }
+
+            // "Short-pair" sub-section — length is u32, each entry u8 + u32 + that-many u16 pairs.
+            var pairSectionCount = r.ReadU32();
+            for (var j = 0; j < pairSectionCount; j++)
+            {
+                r.ReadU8();
+                var pairCount = r.ReadU32();
+                r.Skip(pairCount * 4);                       // two u16s per pair
+            }
+
+            // The payload we actually want.
+            var triCount = r.ReadU32();
+            var faces = new NavFace[triCount];
+            for (var j = 0; j < triCount; j++)
+            {
+                var a = r.ReadVec3();
+                var b = r.ReadVec3();
+                var c = r.ReadVec3();
+                var n = r.ReadVec3();
+                faces[j] = new NavFace(a, b, c, n);
+            }
+
+            SkipUnknownSection(r);
+
+            result[i] = new LogicalGrouping
+            {
+                Id = id,
+                BoundsMin = bMin,
+                BoundsMax = bMax,
+                Flag = flag,
+                Faces = faces,
+            };
+        }
+        return result;
+    }
+
+    /// <summary>Recursive "unknown" trailer that appears after each logical-grouping face
+    /// list. Structure: 6 floats (bbox), u8, u16 count + that-many u16s, u8 recurse-count,
+    /// then that-many nested copies of itself. OpenSiege reads but ignores it — we do too.</summary>
+    private static void SkipUnknownSection(Reader r)
+    {
+        r.Skip(6 * 4);                                       // bbox min/max f32s
+        r.ReadU8();
+        var shortCount = r.ReadU16();
+        r.Skip(shortCount * 2);
+        var recurseCount = r.ReadU8();
+        for (var i = 0; i < recurseCount; i++) SkipUnknownSection(r);
     }
 
     private static Spot[] ReadSpots(Reader r, uint count)
@@ -235,10 +355,18 @@ public sealed class SnoModel
 
         public Reader(byte[] data) { _data = data; }
 
+        public bool AtEnd => Position >= _data.Length;
+
         public void EnsureSpace(long bytes, string context)
         {
             if (Position + bytes > _data.Length)
                 throw new InvalidDataException($"SNO truncated reading {context} at 0x{Position:X8}");
+        }
+
+        public void Skip(long bytes)
+        {
+            EnsureSpace(bytes, "skip");
+            Position += (int)bytes;
         }
 
         public byte ReadU8()
