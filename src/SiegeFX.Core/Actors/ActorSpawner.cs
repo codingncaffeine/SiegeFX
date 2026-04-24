@@ -138,7 +138,8 @@ public sealed class ActorSpawner
         skrit.Dispatch("OnStartChore$", SkritValue.FromInt(0), SkritValue.FromInt(0));
 
         var world = ComposeWorldTransform(inst.Placement);
-        return new Actor(inst, template, world, mesh, clips, skrit, host);
+        var stats = ActorStats.FromTemplate(_store, template);
+        return new Actor(inst, template, world, mesh, clips, skrit, host, stats);
     }
 
     Matrix4x4 ComposeWorldTransform(NodePlacement p)

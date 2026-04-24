@@ -29,6 +29,11 @@ public sealed class Actor
     public SkritInstance Skrit { get; }
     public ActorHostBridge Host { get; }
 
+    /// <summary>Combat-relevant stats pulled from the specializes chain at spawn
+    /// (Phase 12a). Non-combatants (chickens, props) come through with
+    /// <see cref="ActorStats.IsCombatant"/> false; the combat pipeline skips them.</summary>
+    public ActorStats Stats { get; }
+
     /// <summary>Current blender-selected clip. Clamped to the legal range so the caller
     /// can index <see cref="Clips"/> blindly; defaults to 0 before the first dispatch
     /// resolves.</summary>
@@ -42,7 +47,8 @@ public sealed class Actor
         AspMesh mesh,
         PrsAnimation[] clips,
         SkritInstance skrit,
-        ActorHostBridge host)
+        ActorHostBridge host,
+        ActorStats stats)
     {
         Instance = instance;
         Template = template;
@@ -51,6 +57,7 @@ public sealed class Actor
         Clips = clips;
         Skrit = skrit;
         Host = host;
+        Stats = stats;
     }
 
     public override string ToString() =>
