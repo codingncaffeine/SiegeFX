@@ -39,7 +39,7 @@ echo   19. Phase 12b - Combat sim (1000 duels: grunt vs grunt, guard vs grunt)
 echo   20. Phase 12c - Debug attack in fh_r1 (press F to hit nearest goblin)
 echo   21. Phase 12d - Loot table (grunt + krug scout, 10000-roll distribution)
 echo   22. Phase 13a-e - Farmboy PC + chase cam + LMB move + RMB attack + fair-fight stats (fh_r1)
-echo   23. Phase 14a - Auto-pickup loot piles into PC inventory (fh_r1)
+echo   23. Phase 14a-d - Pickup + equipment + weapon render (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -282,10 +282,11 @@ goto MENU
 
 :T23
 echo.
-echo --- Phase 14a: Auto-pickup loot piles (fh_r1) ---
-echo [kill a goblin, walk Farmboy onto the beige cube]
-echo [expect: 'pickup: acquired ...' log + cube despawns]
-echo [pickup radius = 1.8u; piles accumulate until stepped on]
+echo --- Phase 14a-d: Pickup + equipment + weapon render (fh_r1) ---
+echo [Farmboy spawns visibly wielding dg_g_d_1h_fun (fun dagger, 2-4 dmg)]
+echo [kill a goblin, walk onto the beige pile cube to auto-pickup]
+echo [upgraded weapons auto-equip and swap the rendered model on the hand]
+echo [console logs equipment, pickup, equipped, and weapon-load events]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU

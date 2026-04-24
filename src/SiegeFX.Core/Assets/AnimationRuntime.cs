@@ -81,6 +81,48 @@ public static class AnimationRuntime
         return skin;
     }
 
+    /// <summary>Compose the per-bone animated world matrices (mesh-local) for the given
+    /// clip at <paramref name="timeSec"/>. Returns one matrix per ASP bone: the bone's
+    /// animated parent-space local transform walked up the hierarchy. Used by weapon/
+    /// shield attach logic that needs the bone's pose directly (skin matrices, which
+    /// pre-multiply an inverse bind, don't carry that.) Same complexity as
+    /// <see cref="ComputeSkinMatrices"/>; we walk the hierarchy once here too.</summary>
+    public static Matrix4x4[] ComputeAnimatedBoneWorlds(AspMesh mesh, PrsAnimation? anim, float timeSec)
+    {
+        if (mesh.BoneCount == 0) return Array.Empty<Matrix4x4>();
+
+        var localRot = new Quaternion[mesh.BoneCount];
+        var localPos = new Vector3[mesh.BoneCount];
+        for (var i = 0; i < mesh.BoneCount; i++)
+        {
+            localRot[i] = mesh.BindPose[i].Rotation;
+            localPos[i] = mesh.BindPose[i].Translation;
+        }
+        if (anim is not null)
+        {
+            var prsIndexByName = new Dictionary<string, int>(anim.BoneNames.Count);
+            for (var i = 0; i < anim.BoneNames.Count; i++)
+                prsIndexByName[anim.BoneNames[i]] = i;
+            for (var i = 0; i < mesh.BoneCount; i++)
+            {
+                if (!prsIndexByName.TryGetValue(mesh.BoneNames[i], out var prsIdx)) continue;
+                var keys = anim.BoneKeys[prsIdx];
+                if (keys is null) continue;
+                if (keys.RotKeys.Count > 0) localRot[i] = SampleRotation(keys, anim.AnimLength, timeSec);
+                if (keys.PosKeys.Count > 0) localPos[i] = SamplePosition(keys, anim.AnimLength, timeSec);
+            }
+        }
+
+        var world = new Matrix4x4[mesh.BoneCount];
+        for (var i = 0; i < mesh.BoneCount; i++)
+        {
+            var local = Matrix4x4.CreateFromQuaternion(localRot[i]) * Matrix4x4.CreateTranslation(localPos[i]);
+            var p = mesh.BoneParents[i];
+            world[i] = p < 0 ? local : local * world[p];
+        }
+        return world;
+    }
+
     /// <summary>Pose every corner in <paramref name="mesh"/> using the given skin matrices.
     /// Output is parallel to <see cref="AspMesh.Corners"/>; static meshes (no WCRN) fall
     /// back to the unposed vertex positions.</summary>
