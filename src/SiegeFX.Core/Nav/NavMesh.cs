@@ -49,6 +49,12 @@ public sealed class NavMesh
     /// DS1 data; non-zero means the weld tolerance was too loose for this region.</summary>
     public int DegenerateFaceCount { get; }
 
+    /// <summary>Edges shared by three or more triangles (T-junctions, stacked ramps).
+    /// These are treated as boundaries in the adjacency table — better no adjacency than
+    /// an arbitrary pair — so the pathfinder can't walk through a non-manifold seam
+    /// and pop out on the wrong surface.</summary>
+    public int NonManifoldEdgeCount { get; }
+
     public int TriangleCount => Indices.Length / 3;
 
     private NavMesh(
@@ -58,7 +64,8 @@ public sealed class NavMesh
         SnoModel.FloorKind[] kinds,
         Vector3[] centroids,
         int sourceSnodeCount,
-        int degenerateFaceCount)
+        int degenerateFaceCount,
+        int nonManifoldEdgeCount)
     {
         Vertices = vertices;
         Indices = indices;
@@ -67,6 +74,7 @@ public sealed class NavMesh
         Centroids = centroids;
         SourceSnodeCount = sourceSnodeCount;
         DegenerateFaceCount = degenerateFaceCount;
+        NonManifoldEdgeCount = nonManifoldEdgeCount;
     }
 
     /// <summary>Weld tolerance in game units. DS1 authoring snaps to ~integer grids, so
@@ -146,10 +154,15 @@ public sealed class NavMesh
         var neighbors = new int[indices.Length];
         for (int i = 0; i < neighbors.Length; i++) neighbors[i] = -1;
 
-        // Edge → (triIndex, slot). Two triangles sharing an edge meet when the second one
-        // probes the dictionary and finds the first. Canonicalize the edge by sorting
-        // (min,max) so (a,b) and (b,a) match.
-        var edgeMap = new Dictionary<(int, int), (int tri, int slot)>(capacity: indices.Length);
+        // Edge → occurrence state. The first triangle touching an edge stores (tri, slot)
+        // with occurrence count 1. The second triangle promotes the entry to count 2 and
+        // wires both sides' neighbors. A third or later triangle (T-junction, stacked
+        // ramp) flips the edge to "non-manifold" — both previously-wired sides get
+        // reset to -1 so we never hand the pathfinder an arbitrary adjacency. Keeping
+        // the entry in the dictionary (rather than removing after pair-up) is what lets
+        // us detect the third hit.
+        var edgeMap = new Dictionary<(int, int), (int tri, int slot, int count)>(capacity: indices.Length);
+        int nonManifoldEdges = 0;
         for (int t = 0; t < triCount; t++)
         {
             int v0 = indices[3 * t + 0], v1 = indices[3 * t + 1], v2 = indices[3 * t + 2];
@@ -160,17 +173,42 @@ public sealed class NavMesh
             {
                 int a = slotA[s], b = slotB[s];
                 var key = a < b ? (a, b) : (b, a);
-                if (edgeMap.TryGetValue(key, out var other))
+                if (!edgeMap.TryGetValue(key, out var other))
+                {
+                    edgeMap[key] = (t, s, 1);
+                }
+                else if (other.count == 1)
                 {
                     neighbors[3 * t + s] = other.tri;
                     neighbors[3 * other.tri + other.slot] = t;
-                    edgeMap.Remove(key);
+                    edgeMap[key] = (other.tri, other.slot, 2);
                 }
                 else
                 {
-                    edgeMap[key] = (t, s);
+                    // Third (or later) incidence: mark and defer the actual teardown
+                    // to the post-pass. Counting once on the 2→3 transition gives one
+                    // tally per non-manifold edge regardless of how many faces touch it.
+                    if (other.count == 2) nonManifoldEdges++;
+                    edgeMap[key] = (other.tri, other.slot, other.count + 1);
                 }
             }
+        }
+        // Second pass: edges whose occurrence count exceeded 2 need their pair-up undone.
+        // The dictionary entry still points at the first triangle (triA, slotA); its
+        // mate was wired during the count==1→2 transition and lives at
+        // neighbors[3*triA + slotA]. Clear both sides and leave the edge as a boundary.
+        foreach (var kv in edgeMap)
+        {
+            if (kv.Value.count <= 2) continue;
+            int triA = kv.Value.tri;
+            int slotA = kv.Value.slot;
+            int triB = neighbors[3 * triA + slotA];
+            neighbors[3 * triA + slotA] = -1;
+            if (triB < 0) continue;
+            // Find triA's back-reference in triB's slots — the slot whose neighbor is
+            // triA is the one we wired up.
+            for (int ss = 0; ss < 3; ss++)
+                if (neighbors[3 * triB + ss] == triA) { neighbors[3 * triB + ss] = -1; break; }
         }
 
         var centroids = new Vector3[triCount];
@@ -190,7 +228,8 @@ public sealed class NavMesh
             kinds.ToArray(),
             centroids,
             sourceSnodes,
-            degenerate);
+            degenerate,
+            nonManifoldEdges);
     }
 
     /// <summary>Finds the triangle containing <paramref name="worldPos"/> by XZ

@@ -978,47 +978,55 @@ static int CmdRegionPathFuzz(string[] a)
 
     const int SamplesPerRegion = 20;
     var rng = new Random(unchecked((int)0xDEADBEEF));
-    int regions = 0, emptyMeshes = 0, probes = 0, solved = 0, intraBigProbes = 0, intraBigSolved = 0;
-    long totalTris = 0, totalComponents = 0, totalBiggest = 0;
+    int regions = 0, emptyMeshes = 0, failedRegions = 0, probes = 0, solved = 0, intraBigProbes = 0, intraBigSolved = 0;
+    long totalTris = 0, totalComponents = 0, totalBiggest = 0, totalNonManifold = 0;
     foreach (var rnodePath in mapReader.ListFiles())
     {
         if (!rnodePath.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
         regions++;
-        RegionGraph graph;
-        try { graph = RegionGraph.Load(mapReader.ExtractToMemory(rnodePath)); }
-        catch { continue; }
-        var layout = RegionLayout.Build(graph, Resolve);
-        var mesh = NavMesh.BuildForRegion(graph, layout, Resolve);
-        if (mesh.TriangleCount == 0) { emptyMeshes++; continue; }
-        totalTris += mesh.TriangleCount;
-        var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
-        totalComponents += components;
-        totalBiggest += bigSize;
-        for (int s = 0; s < SamplesPerRegion; s++)
+        try
         {
-            probes++;
-            int a0 = rng.Next(mesh.TriangleCount);
-            int b0 = rng.Next(mesh.TriangleCount);
-            if (NavPathfinder.TryFindPath(mesh, a0, b0, out _)) solved++;
-            // Control probe: both endpoints forced into the biggest component. Exercises
-            // the pathfinder on the mesh's "real" walkable surface rather than measuring
-            // topology disconnectedness. Expect ~100%.
-            int ia = bigComponent[rng.Next(bigComponent.Count)];
-            int ib = bigComponent[rng.Next(bigComponent.Count)];
-            intraBigProbes++;
-            if (NavPathfinder.TryFindPath(mesh, ia, ib, out _)) intraBigSolved++;
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(rnodePath));
+            var layout = RegionLayout.Build(graph, Resolve);
+            var mesh = NavMesh.BuildForRegion(graph, layout, Resolve);
+            if (mesh.TriangleCount == 0) { emptyMeshes++; continue; }
+            totalTris += mesh.TriangleCount;
+            totalNonManifold += mesh.NonManifoldEdgeCount;
+            var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
+            totalComponents += components;
+            totalBiggest += bigSize;
+            for (int s = 0; s < SamplesPerRegion; s++)
+            {
+                probes++;
+                int a0 = rng.Next(mesh.TriangleCount);
+                int b0 = rng.Next(mesh.TriangleCount);
+                if (NavPathfinder.TryFindPath(mesh, a0, b0, out _)) solved++;
+                // Control probe: both endpoints forced into the biggest component.
+                // Exercises the pathfinder on the mesh's "real" walkable surface rather
+                // than measuring topology disconnectedness. Expect ~100%.
+                int ia = bigComponent[rng.Next(bigComponent.Count)];
+                int ib = bigComponent[rng.Next(bigComponent.Count)];
+                intraBigProbes++;
+                if (NavPathfinder.TryFindPath(mesh, ia, ib, out _)) intraBigSolved++;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [region fail] {rnodePath}: {ex.Message}");
+            failedRegions++;
         }
     }
-    int meshed = regions - emptyMeshes;
+    int meshed = regions - emptyMeshes - failedRegions;
     double solveRate = probes == 0 ? 0 : 100.0 * solved / probes;
     double bigSolveRate = intraBigProbes == 0 ? 0 : 100.0 * intraBigSolved / intraBigProbes;
-    Console.WriteLine($"Regions              : {regions} ({emptyMeshes} with empty nav mesh)");
+    Console.WriteLine($"Regions              : {regions} ({emptyMeshes} empty, {failedRegions} failed)");
     Console.WriteLine($"Avg tris / mesh      : {(meshed == 0 ? 0 : totalTris / meshed):N0}");
     Console.WriteLine($"Avg comps / mesh     : {(meshed == 0 ? 0 : totalComponents / meshed)}");
     Console.WriteLine($"Avg biggest / mesh   : {(meshed == 0 ? 0 : totalBiggest / meshed):N0} ({(totalTris == 0 ? 0 : 100.0 * totalBiggest / totalTris):F1}% of all tris)");
+    Console.WriteLine($"Total non-manifold   : {totalNonManifold:N0} edge(s) across all regions");
     Console.WriteLine($"Random-pair A*       : {probes} probes, {solved} solved = {solveRate:F1}%  (measures topology, not pathfinder health)");
     Console.WriteLine($"Biggest-component A* : {intraBigProbes} probes, {intraBigSolved} solved = {bigSolveRate:F1}%  (should be ~100%)");
-    return 0;
+    return failedRegions == 0 ? 0 : 4;
 }
 
 // Flood-fills connected components over triangle adjacency. Returns the total
@@ -1053,7 +1061,9 @@ static (int components, List<int> bigComponent, int bigSize) AnalyzeComponents(N
         }
         if (current.Count > biggest.Count)
         {
-            biggest = new List<int>(current);
+            // Swap-then-clear avoids copying the component list. `current` will be
+            // re-used for the next seed; whatever was in `biggest` gets scrubbed below.
+            (biggest, current) = (current, biggest);
         }
     }
     return (components, biggest, biggest.Count);
