@@ -38,7 +38,7 @@ echo   18. Phase 12a - Template stats (goblin grunt + all 3W_goblin_* prefix)
 echo   19. Phase 12b - Combat sim (1000 duels: grunt vs grunt, guard vs grunt)
 echo   20. Phase 12c - Debug attack in fh_r1 (press F to hit nearest goblin)
 echo   21. Phase 12d - Loot table (grunt + krug scout, 10000-roll distribution)
-echo   22. Phase 13a-d - Farmboy PC spawn + chase cam + LMB move + RMB attack (fh_r1)
+echo   22. Phase 13a-e - Farmboy PC + chase cam + LMB move + RMB attack + fair-fight stats (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -268,11 +268,12 @@ goto MENU
 
 :T22
 echo.
-echo --- Phase 13a-d: Farmboy PC + chase cam + LMB move + RMB attack (fh_r1) ---
+echo --- Phase 13a-e: Farmboy PC + chase cam + LMB move + RMB attack + fair-fight stats (fh_r1) ---
 echo [expect: one Farmboy (male human) spawns at the NPC centroid]
 echo [LMB on terrain to move; RMB-tap on a goblin to attack]
 echo [RMB-drag still orbits the yaw — tap vs drag split by pixel drift]
 echo [C toggles chase/fly cam; F still fires the camera-forward debug attack]
+echo [13e: NPCs move at template walk_velocity; Farmboy hits with 1-3 dmg (multi-hit kills)]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU

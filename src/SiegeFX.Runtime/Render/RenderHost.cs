@@ -939,16 +939,22 @@ void main()
                     Y = navMesh.SampleYOnTriangle(startTri, actor.WorldTransform.Translation),
                 };
                 // Scid makes the per-actor RNG deterministic across runs so two launches
-                // on the same region play out the same. Speed = 4 u/s is the DS1 walk
-                // gait ballpark; overridable later per-template when we wire gait.
+                // on the same region play out the same.
+                //
+                // Phase 13e — speed from template.body.avg_move_velocity (ActorStats.WalkSpeed).
+                // Krug scouts amble at 3.1u/s, chickens scurry at ~1.9, butterflies float fast.
+                // A template that didn't resolve a gait falls back to ActorStats's own 4u/s
+                // default. Clamp non-positive values (dead/prop templates) up to 0.5 so the
+                // follower still moves visibly when the author left a zero in by mistake.
                 //
                 // Authored facing = Actor.WorldTransform's local +Z direction in world
                 // space (DS1 convention — characters look down +Z in their local frame).
                 // Extracted with a forward-vector transform, then projected to XZ by
                 // the follower ctor so actors stalled at spawn don't snap to +Z.
                 var authoredFacing = Vector3.TransformNormal(Vector3.UnitZ, actor.WorldTransform);
+                var gait = actor.Stats.WalkSpeed > 0.5f ? actor.Stats.WalkSpeed : 4f;
                 follower = new SiegeFX.Core.Actors.ActorFollower(
-                    navMesh, snapped, speed: 4f, rngSeed: (int)actor.Instance.Scid,
+                    navMesh, snapped, speed: gait, rngSeed: (int)actor.Instance.Scid,
                     initialFacing: authoredFacing);
                 actorsOnMesh++;
             }
@@ -1361,6 +1367,15 @@ void main()
     // profile as DebugAttackNearestActor to keep the kill loop playable until the
     // stat fix lands in Phase 13e.
     private const float ClickAttackRadius = 3f;
+    // Phase 13e — fallback attacker profile used when the PC template didn't
+    // resolve real damage stats (hero templates author damage=0 and derive it
+    // from the equipped weapon — Phase 14). 1-3 matches a bare-fisted level-1
+    // hero swinging at farmhouse krug_scouts: ~4-5 hits per kill instead of
+    // the instant kills the old 200-300 placeholder gave.
+    private static readonly SiegeFX.Core.Actors.ActorStats HeroBaselineStats = new(
+        MaxLife: 50f, MaxMana: 0f,
+        DamageMin: 1f, DamageMax: 3f,
+        Defense: 0f, AttackRange: 0.5f, WalkSpeed: 4.5f, ExperienceValue: 0);
     private void TryClickToAttack(Vector2 cursorPx)
     {
         if (_player is null || _window is null || _actors.Count == 0) return;
@@ -1411,16 +1426,15 @@ void main()
             return;
         }
 
-        // Use the PC's real stats when available (DamageMax > 0). Otherwise swap
-        // in the 12c placeholder profile so a zero-damage farmboy still produces
-        // a visible kill loop.
+        // Use the PC's real stats when available (DamageMax > 0). Otherwise use
+        // a hero-baseline profile: DS1 hero templates author damage=0 because it's
+        // derived from the equipped weapon at spawn/equip time (Phase 14 work).
+        // 1-3 dmg matches a farmboy swinging bare fists / a rusty club — low enough
+        // that a 12 HP krug_scout takes ~4-5 hits instead of dying instantly.
         var pcStats = _player.Actor.Stats;
         var attacker = pcStats.DamageMax > 0f
             ? pcStats
-            : new SiegeFX.Core.Actors.ActorStats(
-                MaxLife: 1000f, MaxMana: 0f,
-                DamageMin: 200f, DamageMax: 300f,
-                Defense: 0f, AttackRange: 0f, WalkSpeed: 0f, ExperienceValue: 0);
+            : HeroBaselineStats;
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
             attacker, best.Actor.Stats, rng);
@@ -1470,13 +1484,11 @@ void main()
             return;
         }
 
-        // Synthetic attacker profile — placeholder until Phase 13 PC lands. Picks
-        // a damage band that crit-one-shots a chicken but takes 4-6 hits on a
-        // goblin grunt, which gives useful combat feedback in the viewer.
-        var attacker = new SiegeFX.Core.Actors.ActorStats(
-            MaxLife: 1000f, MaxMana: 0f,
-            DamageMin: 200f, DamageMax: 300f,
-            Defense: 0f, AttackRange: 0f, WalkSpeed: 0f, ExperienceValue: 0);
+        // Hero-baseline attacker — same 1-3 dmg profile as the click-attack path
+        // (see TryClickToAttack). F-key debug attack stays in the codebase as a
+        // camera-forward fallback; using the same profile so feedback is consistent
+        // between the two input surfaces.
+        var attacker = HeroBaselineStats;
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
             attacker, best.Actor.Stats, rng);
