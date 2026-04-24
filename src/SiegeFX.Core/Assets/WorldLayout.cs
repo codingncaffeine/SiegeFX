@@ -170,7 +170,6 @@ public sealed class WorldLayout
                 if (!stitchIndex.TryGetValue(destLeaf, out var farStitchByDest)) { dangling += curPairs.Count; continue; }
                 if (!farStitchByDest.TryGetValue(curLeaf, out var farPairs)) { dangling += curPairs.Count; continue; }
 
-                var placed = false;
                 foreach (var (pairId, curSide) in curPairs)
                 {
                     if (!farPairs.TryGetValue(pairId, out var farSide)) { dangling++; continue; }
@@ -208,12 +207,8 @@ public sealed class WorldLayout
                         transforms[g] = farOffset * local;
 
                     queue.Enqueue(farRegionPath);
-                    placed = true;
                     break; // first good pair wins — other pairs are redundant checks.
                 }
-
-                // If no pair composed, every one of them failed; don't double-count dangling.
-                _ = placed;
             }
         }
 
