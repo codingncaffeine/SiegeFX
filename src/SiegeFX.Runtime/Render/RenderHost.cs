@@ -3,6 +3,7 @@ using Silk.NET.Input;
 using Silk.NET.Maths;
 using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
+using SiegeFX.Core.Actors;
 using SiegeFX.Core.Assets;
 using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
@@ -30,6 +31,28 @@ public sealed class RenderHost : IDisposable
     private readonly string? _animTexturePath;
     private readonly string? _skritPath;
     private readonly IReadOnlyList<string>? _skritClipPaths;
+    private readonly string? _playLogicTankPath;
+    private readonly string? _playObjectsTankPath;
+
+    // Phase 10e — play-region mode. Populated by LoadPlayActors from a spawned ActorSpawner;
+    // OnUpdate ticks the runtime + drains the bus each 20 Hz step, OnRender issues a skinned
+    // draw per actor with its own animTime + skrit-chosen clip. The region-layout stash
+    // below keeps LoadRegion's node transforms available so actor node-anchored positions
+    // compose against the same world frame as the terrain.
+    private RegionLayout? _regionLayout;
+    private readonly List<ActorRenderState> _actors = new();
+    private readonly Dictionary<AspMesh, SkinnedMesh> _actorMeshCache = new();
+    private SkritRuntime? _actorRuntime;
+    private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
+    private double _actorTickAccumulator;
+
+    private sealed class ActorRenderState
+    {
+        public Actor Actor = null!;
+        public SkinnedMesh GlMesh = null!;
+        public double AnimTime;
+        public int LastClipIndex;
+    }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
     // frame; OnStartChore$ sets the blender's "current anim" index, which we watch via
@@ -172,7 +195,8 @@ void main()
         string? regionMapTankPath = null, string? regionTerrainTankPath = null, string? regionPath = null,
         string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null,
         string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null,
-        string? skritPath = null, IReadOnlyList<string>? skritClipPaths = null)
+        string? skritPath = null, IReadOnlyList<string>? skritClipPaths = null,
+        string? playLogicTankPath = null, string? playObjectsTankPath = null)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
@@ -187,6 +211,8 @@ void main()
         _animTexturePath = animTexturePath;
         _skritPath = skritPath;
         _skritClipPaths = skritClipPaths;
+        _playLogicTankPath = playLogicTankPath;
+        _playObjectsTankPath = playObjectsTankPath;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -303,6 +329,10 @@ void main()
 
         if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
             LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint);
+
+        if (_regionMapTankPath is not null && _playLogicTankPath is not null
+            && _playObjectsTankPath is not null && _regionPath is not null)
+            LoadPlayActors(_regionMapTankPath, _playLogicTankPath, _playObjectsTankPath, _regionPath);
 
         if (_animAspPath is not null && _animPrsPath is not null)
             LoadAnim(_animAspPath, _animPrsPath, _animTexturePath);
@@ -601,6 +631,7 @@ void main()
         }
 
         var layout = RegionLayout.Build(graph, ResolveModel);
+        _regionLayout = layout;
 
         // Build a bare-filename → full-path .raw index on demand (same pattern as
         // LoadSnoTexturesFromTank), used every time a subset's texture is first seen.
@@ -682,6 +713,102 @@ void main()
         Console.WriteLine($"  subsets: {resolvedSubsets} textured, {missingSubsets} missing");
         if (missingSample.Count > 0)
             Console.WriteLine($"  missing samples: {string.Join(", ", missingSample)}");
+    }
+
+    /// <summary>Phase 10e — spawn every shipped actor in a region and attach each one to the
+    /// skinned-mesh draw loop. Terrain already loaded by <see cref="LoadRegion"/> populated
+    /// <see cref="_regionLayout"/> so actor node-anchored positions compose against the same
+    /// world frame. One <see cref="SkritRuntime"/> + one <see cref="SiegeFX.Core.Actors.WorldMessageBus"/>
+    /// are shared across all actors; OnUpdate drains them at the 20 Hz logical tick so actor
+    /// skrits can self-swap clips the same way the single-actor <see cref="_skritRuntime"/>
+    /// path does. Untextured for now — the skinned fragment shader falls back to the
+    /// neutral-sand color when uHasTexture=0, which is fine for "do the 181 fleshy shapes
+    /// actually stand where the game places them" verification.</summary>
+    private void LoadPlayActors(string mapTankPath, string logicTankPath, string objectsTankPath, string regionPath)
+    {
+        if (_gl is null) return;
+        if (_regionLayout is null)
+        {
+            Console.Error.WriteLine("--play-region: region did not load; cannot place actors");
+            return;
+        }
+
+        using var mapTank     = TankFile.Open(mapTankPath);
+        using var logicTank   = TankFile.Open(logicTankPath);
+        using var objectsTank = TankFile.Open(objectsTankPath);
+        var mapReader     = new TankReader(mapTank);
+        var logicReader   = new TankReader(logicTank);
+        var objectsReader = new TankReader(objectsTank);
+
+        var (store, storeDiags)    = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+        var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
+
+        // Objects.dsres carries more recent asset overrides than Logic.dsres in shipped DS1
+        // content (patch-tank order), so add Logic last — the AssetResolver does last-added-wins
+        // basename indexing and we want Logic's skrit/prs/asp resolution to shadow stale objects
+        // copies. Terrain stays out of the resolver (it's all SNOs and subset rawsnap textures).
+        var resolver = new SiegeFX.Core.Assets.AssetResolver();
+        resolver.Add(objectsReader, "Objects.dsres");
+        resolver.Add(logicReader,   "Logic.dsres");
+
+        var spawner = new ActorSpawner(store, resolver, _regionLayout);
+        var actors  = spawner.Spawn(instances);
+        _actorRuntime = spawner.Runtime;
+        _actorBus     = spawner.MessageBus;
+
+        foreach (var actor in actors)
+        {
+            if (!_actorMeshCache.TryGetValue(actor.Mesh, out var gl))
+            {
+                gl = new SkinnedMesh(_gl, actor.Mesh);
+                _actorMeshCache[actor.Mesh] = gl;
+            }
+            _actors.Add(new ActorRenderState
+            {
+                Actor        = actor,
+                GlMesh       = gl,
+                AnimTime     = 0,
+                LastClipIndex = actor.CurrentClipIndex,
+            });
+        }
+
+        // Frame the camera on the centroid of the spawned actors so the user sees them on
+        // first paint instead of staring at a corner. Lift + pull back by the region-anchor
+        // radius we already computed in LoadRegion (camera position is set there); overwrite
+        // here so "play-region" always frames the actors, not the raw terrain anchor.
+        if (_actors.Count > 0)
+        {
+            var centroid = Vector3.Zero;
+            foreach (var s in _actors) centroid += s.Actor.WorldTransform.Translation;
+            centroid /= _actors.Count;
+            _camera.Position = centroid + new Vector3(0, 15f, 25f);
+            _camera.Yaw = 0;
+            _camera.Pitch = -0.35f;
+        }
+
+        // Diagnostic: actor world-position bounds + how many resolved a node transform vs
+        // fell back to node-local identity. A large chunk falling back means NodeGuids in
+        // actor.gas aren't matching the region's snode guids — actors would then pile at
+        // the scene origin while terrain sprawls outward.
+        int nodeResolved = 0, nodeFallback = 0;
+        Vector3 pmin = new(float.PositiveInfinity), pmax = new(float.NegativeInfinity);
+        foreach (var a in actors)
+        {
+            if (_regionLayout.TryGetTransform(a.Instance.Placement.NodeGuid, out _)) nodeResolved++;
+            else nodeFallback++;
+            var p = a.WorldTransform.Translation;
+            pmin = Vector3.Min(pmin, p);
+            pmax = Vector3.Max(pmax, p);
+        }
+        Console.WriteLine($"play-region '{regionPath}': {actors.Count}/{instances.Count} actor(s) live, " +
+                          $"{_actorMeshCache.Count} unique mesh(es), " +
+                          $"{spawner.Diagnostics.Count} diagnostic(s)");
+        Console.WriteLine($"  actor node xforms: resolved {nodeResolved} / fallback-to-local {nodeFallback}");
+        Console.WriteLine($"  actor world bounds: {pmin} .. {pmax}  (extent {pmax - pmin})");
+        if (storeDiags.Count > 0) Console.WriteLine($"  templates: {storeDiags.Count} diagnostic(s)");
+        if (instDiags.Count  > 0) Console.WriteLine($"  instances: {instDiags.Count} diagnostic(s)");
+        foreach (var d in spawner.Diagnostics.Take(5)) Console.WriteLine($"  !! {d}");
+        if (spawner.Diagnostics.Count > 5) Console.WriteLine($"  ... ({spawner.Diagnostics.Count - 5} more)");
     }
 
     /// <summary>
@@ -780,6 +907,37 @@ void main()
                 }
             }
         }
+
+        // Phase 10e: same 20 Hz accumulator pattern, but one shared runtime ticks every actor
+        // in a region at once and the bus drains after each tick so cross-actor messages
+        // (broadcasts, targeted self-sends) see the updated state. Per-actor AnimTime is
+        // advanced by real dt (not step*stepsDone) to keep the visible anim smooth between
+        // logic ticks — the skrit state only updates at 20 Hz, but the clip plays at render rate.
+        if (_actorRuntime is not null && _actorBus is not null && _actors.Count > 0)
+        {
+            const double stepSec = 1.0 / SkritInstance.FramesPerSecond;
+            _actorTickAccumulator = Math.Min(_actorTickAccumulator + dt, stepSec * 5);
+            while (_actorTickAccumulator >= stepSec)
+            {
+                _actorTickAccumulator -= stepSec;
+                _actorRuntime.Tick(stepSec);
+                _actorBus.Deliver();
+            }
+            foreach (var s in _actors)
+            {
+                int idx = s.Actor.CurrentClipIndex;
+                if (idx != s.LastClipIndex)
+                {
+                    s.LastClipIndex = idx;
+                    s.AnimTime = 0;
+                }
+                if (s.Actor.Clips.Length > 0)
+                {
+                    var clip = s.Actor.Clips[Math.Min(idx, s.Actor.Clips.Length - 1)];
+                    if (clip.AnimLength > 0f) s.AnimTime += dt;
+                }
+            }
+        }
     }
 
     private void OnRender(double _)
@@ -853,6 +1011,41 @@ void main()
             _skinnedMesh.Draw();
         }
 
+        if (_skinShader is not null && _actors.Count > 0)
+        {
+            // One draw call per actor. The mesh cache keeps unique ASPs down (DS1 ships ~12
+            // distinct archetypes per region) but each instance has its own bones, so we
+            // re-upload uBones per actor. This is cheap at 181 actors — can batch per-mesh
+            // later if a 4-region stream pushes the actor count past ~2k.
+            _skinShader.Use();
+            _skinShader.SetMatrix4("uViewProj", vp);
+            _skinShader.SetInt("uAlbedo", 0);
+            _skinShader.SetInt("uHasTexture", 0);
+            foreach (var s in _actors)
+            {
+                var clips = s.Actor.Clips;
+                Matrix4x4[] skin;
+                if (clips.Length == 0)
+                {
+                    // No parsable PRS for this actor (shipped 0x0202 clips we don't support
+                    // yet). Identity per bone = bind-pose pass-through, which renders the
+                    // mesh as authored. Good enough to confirm placement.
+                    skin = new Matrix4x4[s.Actor.Mesh.BoneCount];
+                    for (int i = 0; i < skin.Length; i++) skin[i] = Matrix4x4.Identity;
+                }
+                else
+                {
+                    var idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
+                    var clip = clips[idx];
+                    var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
+                    skin = AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t);
+                }
+                _skinShader.SetMatrix4("uModel", s.Actor.WorldTransform);
+                _skinShader.SetMatrix4Array("uBones[0]", skin);
+                s.GlMesh.Draw();
+            }
+        }
+
         if (_meshShader is not null && _regionInstances.Count > 0)
         {
             _meshShader.Use();
@@ -889,6 +1082,9 @@ void main()
         foreach (var mesh in _regionMeshes.Values) mesh.Dispose();
         _regionMeshes.Clear();
         _regionInstances.Clear();
+        foreach (var mesh in _actorMeshCache.Values) mesh.Dispose();
+        _actorMeshCache.Clear();
+        _actors.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
         _texture?.Dispose();

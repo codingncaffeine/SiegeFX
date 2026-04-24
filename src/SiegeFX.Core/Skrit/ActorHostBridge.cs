@@ -16,6 +16,16 @@ public sealed class ActorHostBridge : IHostBridge
 {
     public SkritInstance? Instance { get; set; }
 
+    /// <summary>Scid of the actor this bridge belongs to. Used as the sender/goid for any
+    /// <c>PostWorldMessage(...)</c> calls whose script says <c>owner.goid</c>. 0 means
+    /// the bridge is running outside an actor (e.g. the standalone skrit-tick harness).</summary>
+    public uint OwnerScid { get; set; }
+
+    /// <summary>Optional world-message bus. When set, <c>PostWorldMessage</c> calls from
+    /// the skrit are routed through it instead of silently discarded. Remains null in
+    /// the single-skrit viewer mode so that path keeps its old stub behavior.</summary>
+    public SiegeFX.Core.Actors.WorldMessageBus? MessageBus { get; set; }
+
     readonly Dictionary<string, SkritValue> _externs = new(StringComparer.OrdinalIgnoreCase);
     readonly Random _rng;
 
@@ -84,7 +94,20 @@ public sealed class ActorHostBridge : IHostBridge
                 if (args.Length < 2) return SkritValue.False;
                 return SkritValue.FromBool((args[0].AsInt & args[1].AsInt) != 0);
             case "PostWorldMessage":
-                // Stub: would route to the world-message bus in Phase 9.
+                // Arg layout per DS1: (messageName, fromGoid, toGoid, arg1, arg2). The
+                // skrit typically passes `owner.goid` for from/to when self-messaging;
+                // our owner.goid returns the string "actor" and the string survives to
+                // here as args[1]/args[2]. Recover the real scid from OwnerScid when the
+                // value isn't an int (== the canonical self-send case).
+                if (MessageBus is not null && args.Length >= 1)
+                {
+                    var msgName = args[0].AsString ?? string.Empty;
+                    uint from = ArgAsScid(args, 1, OwnerScid);
+                    uint to   = ArgAsScid(args, 2, OwnerScid);
+                    long a1   = args.Length > 3 ? args[3].AsInt : 0;
+                    long a2   = args.Length > 4 ? args[4].AsInt : 0;
+                    MessageBus.Post(msgName, from, to, a1, a2);
+                }
                 return SkritValue.Null;
             case "NULL":
                 return SkritValue.Null;
@@ -151,6 +174,18 @@ public sealed class ActorHostBridge : IHostBridge
 
     static bool IsTag(SkritValue v, string tag)
         => v.Tag == SkritValueTag.String && string.Equals(v.AsString, tag, StringComparison.Ordinal);
+
+    // `owner.goid` reads as the string "actor" via GetMember; that value flows into
+    // PostWorldMessage's from/to slots. Treat any non-int arg as "use the owner's scid"
+    // so the self-send case routes correctly. Real integer goids (from targeting code
+    // that already resolved the receiver) pass through unchanged.
+    static uint ArgAsScid(SkritValue[] args, int i, uint fallback)
+    {
+        if (i >= args.Length) return fallback;
+        var v = args[i];
+        if (v.Tag == SkritValueTag.Int) return unchecked((uint)v.AsInt);
+        return fallback;
+    }
 
     public void SetState(string stateName) => Instance?.RequestSetState(stateName);
 
