@@ -37,7 +37,19 @@ public sealed class RenderHost : IDisposable
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
 
-    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh);
+    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr);
+
+    /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
+    /// <c>texset</c> from nodes.gas fills in at load time (e.g. <c>t_xxx_flr_04x04-a</c>
+    /// + texset <c>grs01</c> → <c>t_grs01_flr_04x04-a</c>). Matches OpenSiege's
+    /// <c>ReaderWriterSNO.cpp</c> behavior — the one missing piece that was leaving
+    /// most terrain subsets untextured.</summary>
+    private static string ResolveTexName(string raw, string texsetAbbr)
+    {
+        if (string.IsNullOrEmpty(texsetAbbr)) return raw;
+        var i = raw.IndexOf("_xxx_", StringComparison.OrdinalIgnoreCase);
+        return i < 0 ? raw : string.Concat(raw.AsSpan(0, i + 1), texsetAbbr, raw.AsSpan(i + 4));
+    }
 
     private const string GridVertexSource = @"#version 330 core
 layout (location = 0) in vec3 aPos;
@@ -73,6 +85,9 @@ void main()
     // Cheap N·L lambert plus a constant ambient. Samples uAlbedo when uHasTexture != 0;
     // otherwise falls back to a neutral sand colour so untextured meshes still read as solids.
     // DS1 textures were authored for D3D (V=0 at top), so we flip V on sample for GL.
+    // Vertex colors are parsed (DS1 bakes radiosity into them) but not wired here yet —
+    // trying texture*vertexColor made the visible picture darker overall, suggesting the
+    // color range isn't a straight [0..1] sRGB tint. Needs a data-look before hooking up.
     private const string MeshFragmentSource = @"#version 330 core
 in  vec3 vNormal;
 in  vec2 vUv;
@@ -271,21 +286,26 @@ void main()
             {
                 mesh = new SnoMesh(_gl, model);
                 _regionMeshes[node.MeshGuid] = mesh;
-                foreach (var subset in mesh.Subsets)
-                {
-                    if (string.IsNullOrEmpty(subset.TextureName)) continue;
-                    if (_snoTextures.ContainsKey(subset.TextureName)) continue;
-                    if (!rawIndex.TryGetValue(subset.TextureName, out var texPath)) continue;
-                    try
-                    {
-                        var raw = RawImage.Load(terrainReader.ExtractToMemory(texPath));
-                        _snoTextures[subset.TextureName] = new GlTexture(_gl, raw);
-                    }
-                    catch { /* skip unreadable textures; subset falls back to uHasTexture=0 */ }
-                }
             }
 
-            _regionInstances.Add(new RegionInstance(world, mesh));
+            // Load textures per (subset, node.texset). Different instances of the same
+            // SNO can use different texsets, so keying by resolved name lets one mesh
+            // appear under multiple palettes without reloading raws we already have.
+            foreach (var subset in mesh.Subsets)
+            {
+                if (string.IsNullOrEmpty(subset.TextureName)) continue;
+                var resolved = ResolveTexName(subset.TextureName, node.TexsetAbbr);
+                if (_snoTextures.ContainsKey(resolved)) continue;
+                if (!rawIndex.TryGetValue(resolved, out var texPath)) continue;
+                try
+                {
+                    var raw = RawImage.Load(terrainReader.ExtractToMemory(texPath));
+                    _snoTextures[resolved] = new GlTexture(_gl, raw);
+                }
+                catch { /* skip unreadable textures; subset falls back to uHasTexture=0 */ }
+            }
+
+            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr));
         }
 
         // Frame the camera on the anchor: pull back along +Z by ~3× the anchor SNO's
@@ -301,8 +321,31 @@ void main()
         _camera.Yaw = 0;
         _camera.Pitch = -0.3f;
 
+        // Diagnostic: count resolved vs missing subset texture refs across every placed
+        // instance. A miss means either the subset's resolved name isn't in rawIndex, or
+        // the .raw failed to decode. Shows up as untextured (sand) fallback.
+        var resolvedSubsets = 0;
+        var missingSubsets = 0;
+        var missingSample = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var inst in _regionInstances)
+        {
+            foreach (var subset in inst.Mesh.Subsets)
+            {
+                if (string.IsNullOrEmpty(subset.TextureName)) continue;
+                var resolved = ResolveTexName(subset.TextureName, inst.TexsetAbbr);
+                if (_snoTextures.ContainsKey(resolved)) resolvedSubsets++;
+                else
+                {
+                    missingSubsets++;
+                    if (missingSample.Count < 12) missingSample.Add(resolved);
+                }
+            }
+        }
         Console.WriteLine($"region '{normalized}': placed {_regionInstances.Count} instance(s) " +
                           $"across {_regionMeshes.Count} unique SNO(s), {_snoTextures.Count} texture(s)");
+        Console.WriteLine($"  subsets: {resolvedSubsets} textured, {missingSubsets} missing");
+        if (missingSample.Count > 0)
+            Console.WriteLine($"  missing samples: {string.Join(", ", missingSample)}");
     }
 
     /// <summary>
@@ -430,7 +473,8 @@ void main()
                 for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
                 {
                     var subset = inst.Mesh.Subsets[i];
-                    if (_snoTextures.TryGetValue(subset.TextureName, out var tex))
+                    var resolved = ResolveTexName(subset.TextureName, inst.TexsetAbbr);
+                    if (_snoTextures.TryGetValue(resolved, out var tex))
                     {
                         tex.Bind(TextureUnit.Texture0);
                         _meshShader.SetInt("uHasTexture", 1);

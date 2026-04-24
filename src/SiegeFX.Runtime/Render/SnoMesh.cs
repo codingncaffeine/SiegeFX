@@ -33,25 +33,25 @@ public sealed class SnoMesh : IDisposable
         public required int IndexCount { get; init; }
     }
 
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
+    private struct Vtx { public Vector3 Pos; public Vector3 Nrm; public Vector2 Uv; public uint Rgba; }
+
     public SnoMesh(GL gl, SnoModel model)
     {
         _gl = gl;
 
-        // One flat interleaved vertex buffer: pos3 + normal3 + uv2 = 8 floats.
+        // Interleaved: pos3(12) + normal3(12) + uv2(8) + rgba8(4) = 36 bytes.
+        // Rgba holds DS1's baked radiosity per vertex. Currently uploaded but not read
+        // by the shader — a naive texture × vColor multiply made the scene uniformly
+        // darker, suggesting the bytes aren't a straight [0..1] sRGB tint. Data-side
+        // investigation owed before hooking it up; keeping the upload so the path is
+        // wired the day we figure out the correct interpretation.
         var corners = model.Corners;
-        var vertexData = new float[corners.Length * 8];
+        var vtx = new Vtx[corners.Length];
         for (var i = 0; i < corners.Length; i++)
         {
             var c = corners[i];
-            var o = i * 8;
-            vertexData[o + 0] = c.Position.X;
-            vertexData[o + 1] = c.Position.Y;
-            vertexData[o + 2] = c.Position.Z;
-            vertexData[o + 3] = c.Normal.X;
-            vertexData[o + 4] = c.Normal.Y;
-            vertexData[o + 5] = c.Normal.Z;
-            vertexData[o + 6] = c.Uv.X;
-            vertexData[o + 7] = c.Uv.Y;
+            vtx[i] = new Vtx { Pos = c.Position, Nrm = c.Normal, Uv = c.Uv, Rgba = c.Rgba };
         }
 
         Min = model.MinBounds;
@@ -64,15 +64,18 @@ public sealed class SnoMesh : IDisposable
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vbo);
         unsafe
         {
-            fixed (float* p = vertexData)
-                _gl.BufferData(GLEnum.ArrayBuffer, (nuint)(vertexData.Length * sizeof(float)), p, GLEnum.StaticDraw);
+            var stride = (uint)sizeof(Vtx);
+            fixed (Vtx* p = vtx)
+                _gl.BufferData(GLEnum.ArrayBuffer, (nuint)(vtx.Length * sizeof(Vtx)), p, GLEnum.StaticDraw);
 
             _gl.EnableVertexAttribArray(0);
-            _gl.VertexAttribPointer(0, 3, GLEnum.Float, false, 8 * sizeof(float), (void*)0);
+            _gl.VertexAttribPointer(0, 3, GLEnum.Float, false, stride, (void*)0);
             _gl.EnableVertexAttribArray(1);
-            _gl.VertexAttribPointer(1, 3, GLEnum.Float, false, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+            _gl.VertexAttribPointer(1, 3, GLEnum.Float, false, stride, (void*)12);
             _gl.EnableVertexAttribArray(2);
-            _gl.VertexAttribPointer(2, 2, GLEnum.Float, false, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+            _gl.VertexAttribPointer(2, 2, GLEnum.Float, false, stride, (void*)24);
+            _gl.EnableVertexAttribArray(3);
+            _gl.VertexAttribPointer(3, 4, GLEnum.UnsignedByte, true, stride, (void*)32);
         }
 
         // Unbind the VAO before creating per-surface EBOs. Binding GL_ELEMENT_ARRAY_BUFFER
