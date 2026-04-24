@@ -67,6 +67,15 @@ public sealed class RenderHost : IDisposable
     // chain for `[inventory][equipment]`. 14c reads damage_min/max off the
     // weapon template to replace HeroBaselineStats damage.
     private readonly Dictionary<string, string> _playerEquipment = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 14d — resolver kept alive past LoadPlayActors so weapon swaps at pickup
+    // time can load the new item's ASP + texture on demand. Null outside play-region mode.
+    private SiegeFX.Core.Assets.AssetResolver? _playResolver;
+    // Phase 14d — currently-rendered weapon mesh pinned to the PC's weapon_grip bone.
+    // Null until TrySpawnPlayer resolves the first equipped weapon. Swapped on every
+    // es_weapon_hand change so a pickup upgrade shows up visually.
+    private StaticMesh? _weaponMesh;
+    private GlTexture? _weaponTexture;
+    private int _weaponGripBoneIdx = -1;
 
     private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
@@ -888,6 +897,7 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _templateStore = store;
+        _playResolver = resolver;
 
         // Phase 11d — build a region-scope nav mesh once and hand a follower to every
         // actor that spawns over a walkable triangle. We reuse the terrain tank already
@@ -1346,6 +1356,61 @@ void main()
             foreach (var kv in _playerEquipment) slots.Add($"[{kv.Key}] {kv.Value}");
             Console.WriteLine($"  equipment: {string.Join(", ", slots)}");
         }
+
+        // Phase 14d — cache the weapon_grip bone index from the PC's skeleton and
+        // preload the initial weapon mesh/texture. base_farmboy's body.bone_translator
+        // authors weapon_bone=weapon_grip, which is a bone name on the biped skeleton.
+        _weaponGripBoneIdx = -1;
+        for (int bi = 0; bi < player.Mesh.BoneNames.Count; bi++)
+        {
+            if (string.Equals(player.Mesh.BoneNames[bi], "weapon_grip", StringComparison.OrdinalIgnoreCase))
+            { _weaponGripBoneIdx = bi; break; }
+        }
+        if (_weaponGripBoneIdx < 0)
+            Console.WriteLine("  weapon: no weapon_grip bone on PC skeleton — weapon render disabled");
+        else
+            TryLoadPlayerWeapon();
+    }
+
+    // Phase 14d — load (or replace) the mesh + texture for whatever is currently in
+    // es_weapon_hand. Silent no-op when no resolver / no slot / template missing;
+    // we only render if the full chain resolves. Called on initial spawn and every
+    // time an auto-equip swaps the weapon slot.
+    private void TryLoadPlayerWeapon()
+    {
+        if (_gl is null) return;
+        if (_playResolver is null || _templateStore is null) return;
+        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef)) return;
+        if (!_templateStore.TryGet(weaponRef, out var tpl)) return;
+        var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
+        if (string.IsNullOrEmpty(modelName)) return;
+        if (!_playResolver.TryLoadModel(modelName, out var aspBytes))
+        {
+            Console.WriteLine($"  weapon: model '{modelName}.asp' not in any tank");
+            return;
+        }
+        SiegeFX.Core.Assets.AspMesh asp;
+        try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  weapon: '{modelName}.asp' load failed: {ex.Message}");
+            return;
+        }
+
+        _weaponMesh?.Dispose();
+        _weaponMesh = new StaticMesh(_gl, asp);
+
+        _weaponTexture?.Dispose();
+        _weaponTexture = null;
+        if (asp.TextureNames.Count > 0 &&
+            _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+        {
+            try { _weaponTexture = new GlTexture(_gl, RawImage.Load(texBytes)); }
+            catch (Exception ex) { Console.WriteLine($"  weapon: texture load failed: {ex.Message}"); }
+        }
+        Console.WriteLine(
+            $"  weapon: equipped mesh '{modelName}' ({asp.Corners.Length} corners, " +
+            $"{(_weaponTexture is null ? "untextured" : asp.TextureNames[0])})");
     }
 
     // Phase 13c — LMB click-to-move. Unprojects the screen-space cursor to a
@@ -1640,6 +1705,7 @@ void main()
             // and the new item has a non-zero damage_max, swap it into the PC's
             // matching es_ slot. Keeps the kill -> loot -> stronger-hit loop
             // visible without a real inventory UI.
+            bool weaponSwapped = false;
             foreach (var it in pile.Items)
             {
                 if (!it.IsEquipped) continue;
@@ -1647,7 +1713,10 @@ void main()
                 var slotKey = "es_" + it.Slot;
                 _playerEquipment[slotKey] = it.Reference;
                 Console.WriteLine($"  equipped: [{slotKey}] <- {it.Reference}");
+                if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
+                    weaponSwapped = true;
             }
+            if (weaponSwapped) TryLoadPlayerWeapon();
 
             _lootPiles.RemoveAt(i);
         }
@@ -1760,6 +1829,52 @@ void main()
                 _skinShader.SetMatrix4("uModel", s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
                 s.GlMesh.Draw();
+            }
+        }
+
+        // Phase 14d — render the PC's equipped weapon attached to the weapon_grip
+        // bone. We recompute the animated bone worlds for the PC (cheap — the bone
+        // walk already happened inside ComputeSkinMatrices, we just didn't surface
+        // the intermediate array). weaponWorld = player.CurrentTransform *
+        // worldAnim[weapon_grip]. Drawn with the static-mesh pipeline because
+        // DS1 weapon ASPs weight every corner to bone 0 (effectively rigid).
+        if (_meshShader is not null && _weaponMesh is not null && _player is not null
+            && !_player.IsDead && _weaponGripBoneIdx >= 0)
+        {
+            var pcMesh = _player.Actor.Mesh;
+            var clips = _player.Actor.Clips;
+            Matrix4x4[] boneWorlds;
+            if (clips.Length == 0)
+            {
+                boneWorlds = AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, null, 0f);
+            }
+            else
+            {
+                var cidx = Math.Min(_player.Actor.CurrentClipIndex, clips.Length - 1);
+                var clip = clips[cidx];
+                var t = (float)(clip.AnimLength > 0f ? _player.AnimTime % clip.AnimLength : 0.0);
+                boneWorlds = AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t);
+            }
+
+            if (_weaponGripBoneIdx < boneWorlds.Length)
+            {
+                var gripLocal = boneWorlds[_weaponGripBoneIdx];
+                var weaponModel = gripLocal * _player.CurrentTransform;
+
+                _meshShader.Use();
+                _meshShader.SetMatrix4("uViewProj", vp);
+                _meshShader.SetMatrix4("uModel", weaponModel);
+                _meshShader.SetInt("uAlbedo", 0);
+                if (_weaponTexture is not null)
+                {
+                    _weaponTexture.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else
+                {
+                    _meshShader.SetInt("uHasTexture", 0);
+                }
+                _weaponMesh.Draw();
             }
         }
 
