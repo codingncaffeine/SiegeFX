@@ -47,6 +47,10 @@ public sealed class RenderHost : IDisposable
     private readonly Dictionary<AspMesh, Matrix4x4[]> _actorIdentityBones = new();
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
+    // Phase 12d — kept so DebugAttackNearestActor can build a LootTable for the
+    // dying actor's template chain on demand. Loot tables live in Core and don't
+    // require the render-side resolver, so the store reference is enough.
+    private SiegeFX.Core.Assets.TemplateStore? _templateStore;
     private double _actorTickAccumulator;
 
     private sealed class ActorRenderState
@@ -777,6 +781,7 @@ void main()
         var actors  = spawner.Spawn(instances);
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
+        _templateStore = store;
 
         // Phase 11d — build a region-scope nav mesh once and hand a follower to every
         // actor that spawns over a walkable triangle. We reuse the terrain tank already
@@ -1119,7 +1124,34 @@ void main()
         {
             best.IsDead = true;
             best.Follower = null;
+            LogLootDrop(best.Actor);
         }
+    }
+
+    // Phase 12d — roll the dying actor's loot table and log the outcome. Seeds the
+    // RNG from the actor's scid so every kill of the same instance produces the same
+    // drop (re-attack the same goblin in two sessions, same drop) — helps when we're
+    // debugging whether a template's pcontent parses correctly.
+    private void LogLootDrop(SiegeFX.Core.Actors.Actor actor)
+    {
+        if (_templateStore is null) return;
+        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, actor.Template);
+        if (table.IsEmpty)
+        {
+            Console.WriteLine($"  loot: {actor.Template.Name} has no inventory.pcontent");
+            return;
+        }
+        var rng = new Random((int)actor.Instance.Scid);
+        var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
+        if (drops.Count == 0)
+        {
+            Console.WriteLine($"  loot: {actor.Template.Name} dropped nothing this kill");
+            return;
+        }
+        var parts = new List<string>(drops.Count);
+        foreach (var d in drops)
+            parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
+        Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
     }
 
     private void OnRender(double _)
