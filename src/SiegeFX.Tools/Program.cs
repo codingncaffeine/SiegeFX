@@ -1,5 +1,6 @@
 using SiegeFX.Core.Assets;
 using SiegeFX.Core.IO;
+using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
 
 if (args.Length == 0)
@@ -21,6 +22,7 @@ try
         "region" => DispatchRegion(args[1..]),
         "world"  => DispatchWorld(args[1..]),
         "anim"   => DispatchAnim(args[1..]),
+        "skrit"  => DispatchSkrit(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -344,6 +346,72 @@ static int DispatchWorld(string[] a)
         "layout" => CmdWorldLayout(a[1..]),
         _        => UnknownCommand("world " + a[0]),
     };
+}
+
+static int DispatchSkrit(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|fuzz> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "tokens" => CmdSkritTokens(a[1..]),
+        "fuzz"   => CmdSkritFuzz(a[1..]),
+        _        => UnknownCommand("skrit " + a[0]),
+    };
+}
+
+static int CmdSkritTokens(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit tokens <file.skrit>"); return 1; }
+    var src = File.ReadAllText(a[0]);
+    var toks = SkritLexer.Tokenize(src);
+    foreach (var t in toks) Console.WriteLine(t);
+    Console.WriteLine($"--- {toks.Count} tokens");
+    return 0;
+}
+
+static int CmdSkritFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz <tank.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    int total = 0, ok = 0, fail = 0;
+    long totalTokens = 0;
+    var failures = new List<(string Path, string Msg)>();
+    var seenHashes = new HashSet<string>(StringComparer.Ordinal);
+    int deduped = 0;
+
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".skrit", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex) { fail++; failures.Add((path, "extract: " + ex.Message)); continue; }
+
+        // Dedup by content hash so the 333 animation skrits duplicated across Logic/Objects
+        // only fuzz once.
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA1.HashData(bytes));
+        if (!seenHashes.Add(hash)) { deduped++; continue; }
+
+        try
+        {
+            var src = System.Text.Encoding.UTF8.GetString(bytes);
+            var toks = SkritLexer.Tokenize(src);
+            totalTokens += toks.Count;
+            ok++;
+        }
+        catch (Exception ex)
+        {
+            fail++;
+            failures.Add((path, ex.Message));
+        }
+    }
+
+    Console.WriteLine($"skrit fuzz: {total} found / {deduped} dedup / {ok} OK / {fail} FAIL (total tokens: {totalTokens:N0})");
+    foreach (var (p, m) in failures.Take(20)) Console.WriteLine($"  FAIL {p}: {m}");
+    if (failures.Count > 20) Console.WriteLine($"  (+{failures.Count - 20} more)");
+    return fail == 0 ? 0 : 3;
 }
 
 static int CmdRegionInfo(string[] a)
