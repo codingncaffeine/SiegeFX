@@ -31,9 +31,13 @@ public enum SkritOpcode : byte
     Call,           // (u16 nameIdx, u8 argCount) — host free-call or script function
     CallMember,     // (u16 nameIdx, u8 argCount) — stack: receiver, args → result
 
-    // Arithmetic / logical
+    // Arithmetic / logical. Division and Pow always promote to float (so int 1/0 yields
+    // Infinity, never a crash). Shifts mask the count modulo the operand width — a count
+    // >= 64 wraps, matching C#'s long-shift semantics.
+    // Note: `&&` / `||` compile to short-circuit Dup + JumpIfFalse / JumpIfTrue; there is
+    // no strict boolean `And` / `Or` opcode.
     Add, Sub, Mul, Div, Mod, Pow, Neg,
-    Not, And, Or,
+    Not,
     Eq, NotEq, TildeEq,   // TildeEq = case-insensitive string compare (~= operator)
     Lt, LtEq, Gt, GtEq,
     BitAnd, BitOr, BitXor, BitNot, Shl, Shr,

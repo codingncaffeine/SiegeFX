@@ -549,15 +549,14 @@ public sealed class SkritParser
         }
         // Optional `= { body }` clause attached to the transition entry. When present the
         // trailing `;` is optional (block form omits it); when absent the `;` is required.
-        bool hadBlock = false;
+        SkritBlock? body = null;
         if (Match(SkritTokenKind.Assign))
         {
-            _ = ParseBlock();
-            hadBlock = true;
+            body = ParseBlock();
         }
-        if (hadBlock) Match(SkritTokenKind.Semicolon);
+        if (body is not null) Match(SkritTokenKind.Semicolon);
         else Expect(SkritTokenKind.Semicolon);
-        return new SkritTransition(target, evtName, eargs, start.Line, start.Column);
+        return new SkritTransition(target, evtName, eargs, body, start.Line, start.Column);
     }
 
     // ----- statements -------------------------------------------------------------------
