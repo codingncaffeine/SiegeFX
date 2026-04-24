@@ -286,6 +286,7 @@ public static class SkritLexer
                     break;
                 case '*':
                     if (i + 1 < n && source[i + 1] == '=') { kindP = SkritTokenKind.StarAssign; span = 2; }
+                    else if (i + 1 < n && source[i + 1] == '*') { kindP = SkritTokenKind.StarStar; span = 2; }
                     else kindP = SkritTokenKind.Star;
                     break;
                 case '/':

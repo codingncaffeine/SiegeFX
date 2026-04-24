@@ -350,10 +350,11 @@ static int DispatchWorld(string[] a)
 
 static int DispatchSkrit(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "tokens" => CmdSkritTokens(a[1..]),
+        "parse"  => CmdSkritParse(a[1..]),
         "fuzz"   => CmdSkritFuzz(a[1..]),
         _        => UnknownCommand("skrit " + a[0]),
     };
@@ -369,10 +370,39 @@ static int CmdSkritTokens(string[] a)
     return 0;
 }
 
+static int CmdSkritParse(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit parse <file.skrit>"); return 1; }
+    var src = File.ReadAllText(a[0]);
+    var script = SkritParser.Parse(src);
+    Console.WriteLine($"script: {script.TopLevels.Count} top-levels");
+    foreach (var top in script.TopLevels)
+    {
+        switch (top)
+        {
+            case SkritPreprocessorDecl p: Console.WriteLine($"  preprocessor: {p.Directive.Trim()}"); break;
+            case SkritPropertyDecl p: Console.WriteLine($"  property {p.Type} {p.Name}"); break;
+            case SkritOwnerDecl o: Console.WriteLine($"  owner = {o.Owner}"); break;
+            case SkritFieldDecl f: Console.WriteLine($"  field {f.Type} {f.Name}"); break;
+            case SkritFunctionDecl fn: Console.WriteLine($"  fn {fn.ReturnType ?? "<void>"} {fn.Name}({fn.Params.Count} params) body={fn.Body.Statements.Count} stmts"); break;
+            case SkritStateDecl s: Console.WriteLine($"  state{(s.IsStartup ? "[startup]" : "")} {s.Name} ({s.Body.Count} members)"); break;
+        }
+    }
+    return 0;
+}
+
 static int CmdSkritFuzz(string[] a)
 {
-    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz <tank.dsres>"); return 1; }
-    using var tank = TankFile.Open(a[0]);
+    // Optional --stage={lex|parse} flag (default: parse, which implies lex).
+    string stage = "parse";
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--stage=", StringComparison.Ordinal)) stage = x["--stage=".Length..].ToLowerInvariant();
+        else rest.Add(x);
+    }
+    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx skrit fuzz [--stage=lex|parse] <tank.dsres>"); return 1; }
+    using var tank = TankFile.Open(rest[0]);
     var reader = new TankReader(tank);
 
     int total = 0, ok = 0, fail = 0;
@@ -399,6 +429,10 @@ static int CmdSkritFuzz(string[] a)
             var src = System.Text.Encoding.UTF8.GetString(bytes);
             var toks = SkritLexer.Tokenize(src);
             totalTokens += toks.Count;
+            if (stage == "parse")
+            {
+                _ = new SkritParser(toks).ParseScript();
+            }
             ok++;
         }
         catch (Exception ex)
@@ -408,7 +442,7 @@ static int CmdSkritFuzz(string[] a)
         }
     }
 
-    Console.WriteLine($"skrit fuzz: {total} found / {deduped} dedup / {ok} OK / {fail} FAIL (total tokens: {totalTokens:N0})");
+    Console.WriteLine($"skrit fuzz [{stage}]: {total} found / {deduped} dedup / {ok} OK / {fail} FAIL (total tokens: {totalTokens:N0})");
     foreach (var (p, m) in failures.Take(20)) Console.WriteLine($"  FAIL {p}: {m}");
     if (failures.Count > 20) Console.WriteLine($"  (+{failures.Count - 20} more)");
     return fail == 0 ? 0 : 3;
