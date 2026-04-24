@@ -120,11 +120,13 @@ static int DispatchRaw(string[] a)
 
 static int DispatchAsp(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info|skeleton|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "info" => CmdAspInfo(a[1..]),
-        _      => UnknownCommand("asp " + a[0]),
+        "info"     => CmdAspInfo(a[1..]),
+        "skeleton" => CmdAspSkeleton(a[1..]),
+        "fuzz"     => CmdAspFuzz(a[1..]),
+        _          => UnknownCommand("asp " + a[0]),
     };
 }
 
@@ -930,8 +932,9 @@ static int CmdAspInfo(string[] a)
 
     var mesh = AspMesh.Load(data);
     Console.WriteLine($"Version   : {mesh.AspVersionMajor}.{mesh.AspVersionMinor}");
-    Console.WriteLine($"Skeleton  : {mesh.SkeletonName}");
     Console.WriteLine($"Mesh      : {mesh.MeshName}");
+    Console.WriteLine($"Textures  : {mesh.TextureNames.Count}" + (mesh.TextureNames.Count > 0 ? $"  ({string.Join(", ", mesh.TextureNames)})" : ""));
+    Console.WriteLine($"Bones     : {mesh.BoneCount}");
     Console.WriteLine($"Vertices  : {mesh.Positions.Length}");
     Console.WriteLine($"Corners   : {mesh.Corners.Length}");
     Console.WriteLine($"Triangles : {mesh.TriangleCount}");
@@ -941,6 +944,78 @@ static int CmdAspInfo(string[] a)
     foreach (var c in chunks)
         Console.WriteLine($"  0x{c.Offset:X8}  {c.Id}  v{c.Version}");
     return 0;
+}
+
+static int CmdAspSkeleton(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp skeleton <file.asp>"); return 1; }
+    var mesh = AspMesh.Load(File.ReadAllBytes(a[0]));
+    Console.WriteLine($"File   : {a[0]}");
+    Console.WriteLine($"Mesh   : {mesh.MeshName}");
+    Console.WriteLine($"Bones  : {mesh.BoneCount}");
+    if (mesh.BoneCount == 0) return 0;
+
+    // Print the hierarchy as an indented tree. Orphans (parent out-of-range, pointing at
+    // a bone we somehow haven't emitted, cycles) fall through to an "orphans" section
+    // so asset bugs surface instead of silently missing bones.
+    var children = new List<int>[mesh.BoneCount];
+    for (var i = 0; i < mesh.BoneCount; i++) children[i] = new List<int>();
+    var roots = new List<int>();
+    for (var i = 0; i < mesh.BoneCount; i++)
+    {
+        var p = mesh.BoneParents[i];
+        if (p < 0 || p >= mesh.BoneCount || p == i) roots.Add(i);
+        else children[p].Add(i);
+    }
+    var emitted = new bool[mesh.BoneCount];
+    void Walk(int idx, int depth)
+    {
+        if (emitted[idx]) return;
+        emitted[idx] = true;
+        var t = mesh.BindPose[idx];
+        var tr = t.Translation;
+        Console.WriteLine($"  {new string(' ', depth * 2)}[{idx,3}] {mesh.BoneNames[idx]}  pos=({tr.X:F2},{tr.Y:F2},{tr.Z:F2})");
+        foreach (var c in children[idx]) Walk(c, depth + 1);
+    }
+    foreach (var r in roots) Walk(r, 0);
+    var orphans = Enumerable.Range(0, mesh.BoneCount).Where(i => !emitted[i]).ToArray();
+    if (orphans.Length > 0)
+    {
+        Console.WriteLine($"Orphans: {orphans.Length}");
+        foreach (var o in orphans)
+            Console.WriteLine($"  [{o,3}] {mesh.BoneNames[o]}  parent={mesh.BoneParents[o]}");
+    }
+    return 0;
+}
+
+static int CmdAspFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    int total = 0, failed = 0, skinned = 0;
+    long totalBytes = 0;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".asp", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex) { Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}"); failed++; continue; }
+        totalBytes += bytes.Length;
+        try
+        {
+            var mesh = AspMesh.Load(bytes);
+            if (mesh.BoneCount > 0) skinned++;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [parse-fail] {path}: {ex.Message}");
+            failed++;
+        }
+    }
+    Console.WriteLine($"fuzzed {total} .asp file(s), {totalBytes:N0} bytes; {failed} failure(s), {skinned} with skeleton");
+    return failed == 0 ? 0 : 4;
 }
 
 static int CmdTankInfo(string[] a)
