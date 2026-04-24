@@ -38,6 +38,7 @@ echo   18. Phase 12a - Template stats (goblin grunt + all 3W_goblin_* prefix)
 echo   19. Phase 12b - Combat sim (1000 duels: grunt vs grunt, guard vs grunt)
 echo   20. Phase 12c - Debug attack in fh_r1 (press F to hit nearest goblin)
 echo   21. Phase 12d - Loot table (grunt + krug scout, 10000-roll distribution)
+echo   22. Phase 13a+b - Farmboy PC spawn + chase camera (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -65,6 +66,7 @@ if /i "%CHOICE%"=="18" goto T18
 if /i "%CHOICE%"=="19" goto T19
 if /i "%CHOICE%"=="20" goto T20
 if /i "%CHOICE%"=="21" goto T21
+if /i "%CHOICE%"=="22" goto T22
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -262,6 +264,16 @@ echo [expect: 100%% equipped dg_g_c_1h_fun, ~12%% drop one of melee/potion/mana]
 echo.
 "%TOOL%" templates loot "%DS1%\Resources\Logic.dsres" krug_scout --rolls=1000 --seed=42
 pause
+goto MENU
+
+:T22
+echo.
+echo --- Phase 13a+b: Farmboy PC spawn + chase camera in fh_r1 ---
+echo [expect: one Farmboy (male human) spawns at the NPC centroid]
+echo [camera defaults to chase mode behind him; RMB-drag orbits the yaw]
+echo [C toggles chase/fly cam; F still debug-attacks the nearest goblin]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU
 
 :BUILD

@@ -119,6 +119,24 @@ public sealed class RenderHost : IDisposable
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
 
+    // Phase 13b — camera modes. Fly is the free RMB+WASD debug cam from earlier
+    // phases; Chase locks the camera behind the player with RMB-drag to orbit the
+    // yaw around him. Default is Fly so viewer modes without a PC (mesh/region
+    // probes) keep their old behavior; TrySpawnPlayer flips to Chase.
+    private enum CameraMode { Fly, Chase }
+    private CameraMode _cameraMode = CameraMode.Fly;
+    // Yaw of the camera *around* the player in Chase mode. Independent from
+    // Camera.Yaw because we overwrite Camera.Yaw/Pitch every frame to make Forward
+    // point at the player (so DebugAttackNearestActor still picks whatever the
+    // camera is aimed at).
+    private float _chaseYaw;
+    private float _chaseDistance = 12f;
+    private float _chaseHeight   = 7f;
+    // Head-height offset so the camera looks at the torso/head of the ~5-foot
+    // Farmboy model instead of his feet. Rough guess; tune when the real PC
+    // camera appears in Phase 14+.
+    private const float ChaseLookTargetY = 1.5f;
+
     private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr);
 
     /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
@@ -275,6 +293,13 @@ void main()
                 // with its own template and equipped weapon. Logs each hit to the
                 // console so the damage math is visible without a HUD overlay.
                 else if (key == Key.F) DebugAttackNearestActor();
+                // Phase 13b: C flips between chase cam (follows the PC) and fly cam
+                // (free WASD+RMB). No-op if there's no player.
+                else if (key == Key.C && _player is not null)
+                {
+                    _cameraMode = _cameraMode == CameraMode.Chase ? CameraMode.Fly : CameraMode.Chase;
+                    Console.WriteLine($"camera: {_cameraMode}");
+                }
             };
 
         foreach (var mouse in _input.Mice)
@@ -301,7 +326,18 @@ void main()
             {
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
-                    _camera.LookDelta(pos.X - last.X, pos.Y - last.Y);
+                {
+                    if (_cameraMode == CameraMode.Chase)
+                    {
+                        // Orbit only (no pitch change) — chase pitch is derived from the
+                        // look-at target each frame so mouse-Y would fight that logic.
+                        _chaseYaw += (pos.X - last.X) * _camera.MouseSens;
+                    }
+                    else
+                    {
+                        _camera.LookDelta(pos.X - last.X, pos.Y - last.Y);
+                    }
+                }
                 _lastMousePos = pos;
             };
         }
@@ -1007,7 +1043,26 @@ void main()
             if (kb.IsKeyPressed(Key.Q) || kb.IsKeyPressed(Key.ControlLeft)) vert -= 1f;
             if (kb.IsKeyPressed(Key.ShiftLeft)) sprint = true;
         }
-        _camera.Move(forward, strafe, vert, (float)dt, sprint);
+        // Fly mode keeps WASD. Chase mode ignores it (PC movement is 13c) so the
+        // camera can't drift off the player — cleaner than silently re-snapping
+        // every frame.
+        if (_cameraMode == CameraMode.Fly)
+            _camera.Move(forward, strafe, vert, (float)dt, sprint);
+
+        // Phase 13b — in chase mode, snap the camera behind the player and aim at
+        // him. _chaseYaw is the orbit angle around the player's +Y axis; yaw=0
+        // puts the camera on +Z so the player is seen looking down -Z (screen
+        // "forward"). Yaw/pitch of Camera are overwritten here so DebugAttackNearestActor
+        // still works in chase mode — its "in front of camera" test reads Camera.Forward.
+        if (_cameraMode == CameraMode.Chase && _player is not null)
+        {
+            var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
+            var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * _chaseDistance;
+            _camera.Position = target + offset + new Vector3(0, _chaseHeight, 0);
+            var dir = Vector3.Normalize(target - _camera.Position);
+            _camera.Yaw   = MathF.Atan2(dir.X, -dir.Z);
+            _camera.Pitch = MathF.Asin(Math.Clamp(dir.Y, -0.999f, 0.999f));
+        }
 
         if (_anim is not null && _anim.AnimLength > 0f)
             _animTime += dt;
@@ -1156,6 +1211,9 @@ void main()
         };
         _actors.Add(state);
         _player = state;
+        // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
+        // user wants to fly around for debugging.
+        _cameraMode = CameraMode.Chase;
 
         Console.WriteLine(
             $"  player: '{playerTemplate}' spawned at " +
