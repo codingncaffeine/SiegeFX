@@ -23,6 +23,7 @@ try
         "world"  => DispatchWorld(args[1..]),
         "anim"   => DispatchAnim(args[1..]),
         "skrit"  => DispatchSkrit(args[1..]),
+        "templates" => DispatchTemplates(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -74,6 +75,9 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region layout      <map-tank> <terrain-tank> <region-path>");
     Console.WriteLine("  siegefx region layout-fuzz <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx world  layout      <map-tank> <terrain-tank> [root-region]");
+    Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
+    Console.WriteLine("  siegefx templates show     <tank> <name>");
+    Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -326,7 +330,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -334,6 +338,7 @@ static int DispatchRegion(string[] a)
         "layout"      => CmdRegionLayout(a[1..]),
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
         "layout-diag" => CmdRegionLayoutDiag(a[1..]),
+        "actors"      => CmdRegionActors(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -1582,4 +1587,137 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
     using var fs = File.Create(destPath);
     Png.EncodeRgba(fs, rgba, w, h);
+}
+
+static int DispatchTemplates(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "list" => CmdTemplatesList(a[1..]),
+        "show" => CmdTemplatesShow(a[1..]),
+        _      => UnknownCommand("templates " + a[0]),
+    };
+}
+
+static int CmdTemplatesList(string[] a)
+{
+    string? prefix = null;
+    string? tagFilter = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--prefix=", StringComparison.Ordinal)) prefix = x["--prefix=".Length..];
+        else if (x.StartsWith("--tag=", StringComparison.Ordinal)) tagFilter = x["--tag=".Length..];
+        else rest.Add(x);
+    }
+    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx templates list <tank> [--prefix=P] [--tag=T]"); return 1; }
+
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, diags) = TemplateStore.LoadFromTank(reader);
+
+    Console.WriteLine($"loaded {store.Count} templates from {rest[0]}");
+    if (diags.Count > 0)
+    {
+        Console.WriteLine($"{diags.Count} diagnostic(s):");
+        foreach (var d in diags.Take(8)) Console.WriteLine($"  !! {d}");
+        if (diags.Count > 8) Console.WriteLine($"  ... +{diags.Count - 8} more");
+    }
+
+    var shown = 0;
+    foreach (var t in store.All.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+    {
+        if (tagFilter is not null && !string.Equals(t.TypeTag, tagFilter, StringComparison.OrdinalIgnoreCase)) continue;
+        if (prefix is not null && !t.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+        var parent = t.SpecializesName is null ? "" : $"  : {t.SpecializesName}";
+        Console.WriteLine($"  [{t.TypeTag}] {t.Name}{parent}");
+        shown++;
+        if (shown >= 60) { Console.WriteLine($"  ... (showing first 60; {store.Count - shown}+ more)"); break; }
+    }
+    return 0;
+}
+
+static int CmdTemplatesShow(string[] a)
+{
+    if (a.Length != 2) { Console.Error.WriteLine("usage: siegefx templates show <tank> <name>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, diags) = TemplateStore.LoadFromTank(reader);
+    if (!store.TryGet(a[1], out var t))
+    {
+        Console.Error.WriteLine($"template '{a[1]}' not found (store has {store.Count} templates; {diags.Count} diagnostic[s])");
+        return 1;
+    }
+
+    Console.WriteLine($"name       : {t.Name}");
+    Console.WriteLine($"tag        : [t:{t.TypeTag}]");
+    Console.WriteLine($"source     : {t.SourcePath}");
+    // Chain is useful because DS1 uses inheritance heavily — e.g. 3W_goblin_grunt →
+    // 3W_base_goblin → actor_evil → actor — and callers will walk it to find fields.
+    Console.Write("chain      :");
+    for (var cur = t; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
+    Console.WriteLine();
+
+    // Quick peek at commonly-queried resolved fields so we can tell visually that the
+    // chain walker actually found an ancestor-defined attribute.
+    Console.WriteLine();
+    Console.WriteLine("resolved (chain-walked):");
+    Print("  aspect.model        =", store.GetAttribute(t, "aspect", "model"));
+    Print("  aspect.life         =", store.GetAttribute(t, "aspect", "life"));
+    Print("  common.screen_name  =", store.GetAttribute(t, "common", "screen_name"));
+    Print("  body.chore_dictionary.chore_prefix =",
+        store.GetAttribute(t, "body", "chore_dictionary", "chore_prefix"));
+
+    var chores = store.GetSection(t, "body", "chore_dictionary");
+    if (chores is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"chore dictionary ({chores.Children.Count} entries):");
+        foreach (var c in chores.Children)
+        {
+            var skrit = TemplateStore.FindAttr(c, "skrit") ?? "?";
+            Console.WriteLine($"  [{c.Header}] skrit={skrit}");
+        }
+    }
+    return 0;
+
+    static void Print(string label, string? val) =>
+        Console.WriteLine(val is null ? $"{label} <none>" : $"{label} {val}");
+}
+
+static int CmdRegionActors(string[] a)
+{
+    if (a.Length != 2) { Console.Error.WriteLine("usage: siegefx region actors <map-tank> <region-path>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (actors, diags) = RegionObjects.LoadActors(reader, a[1]);
+
+    Console.WriteLine($"region    : {a[1]}");
+    Console.WriteLine($"actors    : {actors.Count}");
+    if (diags.Count > 0)
+    {
+        Console.WriteLine($"diagnostics: {diags.Count}");
+        foreach (var d in diags.Take(5)) Console.WriteLine($"  !! {d}");
+        if (diags.Count > 5) Console.WriteLine($"  ... +{diags.Count - 5} more");
+    }
+
+    // Tally by template so we can see the archetype distribution at a glance.
+    var byTemplate = actors
+        .GroupBy(x => x.TemplateName, StringComparer.OrdinalIgnoreCase)
+        .OrderByDescending(g => g.Count())
+        .ToList();
+    Console.WriteLine();
+    Console.WriteLine($"by template ({byTemplate.Count} distinct):");
+    foreach (var g in byTemplate.Take(15)) Console.WriteLine($"  {g.Count(),4}  {g.Key}");
+    if (byTemplate.Count > 15) Console.WriteLine($"  ... +{byTemplate.Count - 15} more templates");
+
+    Console.WriteLine();
+    Console.WriteLine("first 8 placements:");
+    foreach (var act in actors.Take(8))
+    {
+        var p = act.Placement;
+        Console.WriteLine($"  {act}  pos=({p.LocalPosition.X:F2},{p.LocalPosition.Y:F2},{p.LocalPosition.Z:F2}) node=0x{p.NodeGuid:x8}");
+    }
+    return 0;
 }
