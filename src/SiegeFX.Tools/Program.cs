@@ -83,6 +83,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates show     <tank> <name>");
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
+    Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -2057,13 +2058,14 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "list"   => CmdTemplatesList(a[1..]),
         "show"   => CmdTemplatesShow(a[1..]),
         "stats"  => CmdTemplatesStats(a[1..]),
         "combat" => CmdTemplatesCombat(a[1..]),
+        "loot"   => CmdTemplatesLoot(a[1..]),
         _        => UnknownCommand("templates " + a[0]),
     };
 }
@@ -2287,6 +2289,77 @@ static int CmdTemplatesCombat(string[] a)
     Console.WriteLine($"  mean hits to kill : {meanHits:F1}");
     Console.WriteLine($"  mean damage / hit : {meanDmg:F1}");
     return 0;
+}
+
+static int CmdTemplatesLoot(string[] a)
+{
+    int rolls = 0;
+    int? rngSeed = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--rolls=", StringComparison.Ordinal)) int.TryParse(x["--rolls=".Length..], out rolls);
+        else if (x.StartsWith("--seed=", StringComparison.Ordinal)) { if (int.TryParse(x["--seed=".Length..], out var s)) rngSeed = s; }
+        else rest.Add(x);
+    }
+    if (rest.Count != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx templates loot <tank> <name> [--rolls=N] [--seed=K]");
+        return 1;
+    }
+
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    if (!store.TryGet(rest[1], out var template)) { Console.Error.WriteLine($"template '{rest[1]}' not found"); return 1; }
+
+    var table = LootTable.FromTemplate(store, template);
+    Console.WriteLine($"template  : {template.Name}");
+    if (table.IsEmpty) { Console.WriteLine("(no inventory.pcontent in chain)"); return 0; }
+
+    Console.WriteLine($"equipped  : {table.Equipped.Count} bucket(s)");
+    for (int i = 0; i < table.Equipped.Count; i++) PrintBucket(table.Equipped[i], "  ");
+    Console.WriteLine($"drops     : {table.Drops.Count} bucket(s)");
+    for (int i = 0; i < table.Drops.Count; i++) PrintBucket(table.Drops[i], "  ");
+
+    if (rolls <= 0) return 0;
+
+    Console.WriteLine();
+    Console.WriteLine($"rolling {rolls} kill(s){(rngSeed is null ? "" : $", seed={rngSeed}")}:");
+    var rng = new Random(rngSeed ?? Environment.TickCount);
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+    int totalDrops = 0;
+    int emptyRolls = 0;
+    for (int i = 0; i < rolls; i++)
+    {
+        var drops = LootRoller.Roll(table, rng);
+        if (drops.Count == 0) emptyRolls++;
+        totalDrops += drops.Count;
+        foreach (var d in drops)
+        {
+            var key = d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference;
+            counts[key] = counts.TryGetValue(key, out var c) ? c + 1 : 1;
+        }
+    }
+    Console.WriteLine($"  total drops        : {totalDrops}");
+    Console.WriteLine($"  empty-handed rolls : {emptyRolls}/{rolls}");
+    Console.WriteLine($"  distinct outputs   : {counts.Count}");
+    foreach (var kv in counts.OrderByDescending(k => k.Value).Take(20))
+        Console.WriteLine($"    {kv.Value,5}  {kv.Key}");
+    if (counts.Count > 20) Console.WriteLine($"    ... +{counts.Count - 20} more");
+    return 0;
+}
+
+static void PrintBucket(LootBucket bucket, string indent)
+{
+    var chanceStr = bucket.Chance < 1f ? $" chance={bucket.Chance:P1}" : "";
+    Console.WriteLine($"{indent}[oneof*]{chanceStr}");
+    foreach (var e in bucket.Entries)
+    {
+        var tag = e.IsEquipped ? $"es_{e.Slot}" : "il_main";
+        Console.WriteLine($"{indent}  {tag} = {e.Reference}");
+    }
+    foreach (var c in bucket.Children) PrintBucket(c, indent + "  ");
 }
 
 static int CmdRegionActors(string[] a)
