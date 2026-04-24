@@ -130,6 +130,12 @@ public sealed class RenderHost : IDisposable
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
+    // Phase 13d — RMB does double duty: drag to orbit, tap-click to attack. We
+    // latch the screen position at RMB-down and measure pixel drift on MouseUp;
+    // below _rmbClickDriftPx it's a click (→ attack), otherwise just end orbit.
+    private Vector2 _rmbDownPos;
+    private float _rmbDrift;
+    private const float RmbClickDriftPx = 4f;
 
     // Phase 13b — camera modes. Fly is the free RMB+WASD debug cam from earlier
     // phases; Chase locks the camera behind the player with RMB-drag to orbit the
@@ -322,6 +328,8 @@ void main()
                 {
                     _mouseLookActive = true;
                     _lastMousePos = null;
+                    _rmbDownPos = m.Position;
+                    _rmbDrift = 0f;
                     m.Cursor.CursorMode = CursorMode.Raw;
                 }
                 // Phase 13c — LMB click-to-move. Unproject the cursor onto the
@@ -339,6 +347,14 @@ void main()
                     _mouseLookActive = false;
                     _lastMousePos = null;
                     m.Cursor.CursorMode = CursorMode.Normal;
+                    // Phase 13d — tap-click discrimination. In Raw cursor mode
+                    // m.Position is unreliable on mouse-up (driver snaps it back),
+                    // so we use the drift accumulated while RMB was held instead.
+                    // A nearly-zero drift means the user tapped without dragging;
+                    // anything past the threshold was an orbit gesture.
+                    if (_rmbDrift <= RmbClickDriftPx)
+                        TryClickToAttack(_rmbDownPos);
+                    _rmbDrift = 0f;
                 }
             };
             mouse.MouseMove += (_, pos) =>
@@ -346,15 +362,21 @@ void main()
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
+                    float dx = pos.X - last.X;
+                    float dy = pos.Y - last.Y;
+                    // Phase 13d — accumulate L1 pixel drift so MouseUp can tell a
+                    // tap from a drag. L1 (abs sum) instead of L2 so a dead-slow
+                    // diagonal scrub still accumulates past the click threshold.
+                    _rmbDrift += MathF.Abs(dx) + MathF.Abs(dy);
                     if (_cameraMode == CameraMode.Chase)
                     {
                         // Orbit only (no pitch change) — chase pitch is derived from the
                         // look-at target each frame so mouse-Y would fight that logic.
-                        _chaseYaw += (pos.X - last.X) * _camera.MouseSens;
+                        _chaseYaw += dx * _camera.MouseSens;
                     }
                     else
                     {
-                        _camera.LookDelta(pos.X - last.X, pos.Y - last.Y);
+                        _camera.LookDelta(dx, dy);
                     }
                 }
                 _lastMousePos = pos;
@@ -1328,6 +1350,93 @@ void main()
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
         _playerFollower.SetTarget(hit);
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
+    }
+
+    // Phase 13d — RMB click-to-target attack. Same unproject math as
+    // TryClickToMove, but instead of retargeting the follower we look for the
+    // closest living combatant near the click point (XZ radius <see cref="ClickAttackRadius"/>).
+    // Damage uses the player's stats when the template chain resolves non-zero
+    // values; farmboy currently has 0 damage in stats (max_life formula bug,
+    // project_siegefx_max_life_formula.md), so we fall back to the same synthetic
+    // profile as DebugAttackNearestActor to keep the kill loop playable until the
+    // stat fix lands in Phase 13e.
+    private const float ClickAttackRadius = 3f;
+    private void TryClickToAttack(Vector2 cursorPx)
+    {
+        if (_player is null || _window is null || _actors.Count == 0) return;
+        if (_player.IsDead) return;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return;
+
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        float aspect = (float)size.X / size.Y;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+        var dir  = far_ - near;
+        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
+
+        float planeY = _player.CurrentTransform.Translation.Y;
+        float t = (planeY - near.Y) / dir.Y;
+        if (t < 0f) return;
+        var groundHit = near + dir * t;
+
+        // Closest-combatant-to-click in XZ. DS1's selection is more of a screen-
+        // picking test, but on DS1's shallow terrain a planar radius at the click
+        // point is indistinguishable from "the actor you clicked on" for 99% of
+        // cases. Revisit if we start getting mis-picks behind tall props.
+        ActorRenderState? best = null;
+        float bestDist = ClickAttackRadius;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead) continue;
+            if (s.IsPlayer) continue;
+            if (!s.Actor.Stats.IsCombatant) continue;
+            var pos = s.CurrentTransform.Translation;
+            float dx = pos.X - groundHit.X;
+            float dz = pos.Z - groundHit.Z;
+            float d  = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = s; }
+        }
+        if (best is null)
+        {
+            Console.WriteLine(
+                $"click-attack: no combatant within {ClickAttackRadius:F1}u of " +
+                $"({groundHit.X:F1}, {groundHit.Z:F1})");
+            return;
+        }
+
+        // Use the PC's real stats when available (DamageMax > 0). Otherwise swap
+        // in the 12c placeholder profile so a zero-damage farmboy still produces
+        // a visible kill loop.
+        var pcStats = _player.Actor.Stats;
+        var attacker = pcStats.DamageMax > 0f
+            ? pcStats
+            : new SiegeFX.Core.Actors.ActorStats(
+                MaxLife: 1000f, MaxMana: 0f,
+                DamageMin: 200f, DamageMax: 300f,
+                Defense: 0f, AttackRange: 0f, WalkSpeed: 0f, ExperienceValue: 0);
+        var rng = new Random();
+        float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
+            attacker, best.Actor.Stats, rng);
+        float dealt = best.Actor.Combat.ApplyDamage(raw);
+        float life = best.Actor.Combat.CurrentLife;
+        float maxLife = best.Actor.Stats.MaxLife;
+        Console.WriteLine(
+            $"click-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
+            $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+
+        if (best.Actor.Combat.ConsumeJustDied())
+        {
+            best.IsDead = true;
+            best.Follower = null;
+            LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+        }
     }
 
     private void DebugAttackNearestActor()
