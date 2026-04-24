@@ -61,6 +61,11 @@ public sealed class RenderHost : IDisposable
         // Follower=null and just render at their authored spawn pose via CurrentTransform.
         public SiegeFX.Core.Actors.ActorFollower? Follower;
         public Matrix4x4 CurrentTransform;
+
+        // Phase 12c — once the actor dies (CurrentLife hits 0), the follower is
+        // nulled, the anim accumulator stops advancing, and the last skin matrices
+        // effectively freeze the body mid-pose. Phase 12d will swap to chore_die.
+        public bool IsDead;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -243,7 +248,15 @@ void main()
         _input = _window.CreateInput();
 
         foreach (var kb in _input.Keyboards)
-            kb.KeyDown += (_, key, _) => { if (key == Key.Escape) _window.Close(); };
+            kb.KeyDown += (_, key, _) =>
+            {
+                if (key == Key.Escape) _window.Close();
+                // Phase 12c: F key strikes the nearest living actor in front of the
+                // camera. Placeholder player-stand-in until Phase 13 brings a real PC
+                // with its own template and equipped weapon. Logs each hit to the
+                // console so the damage math is visible without a HUD overlay.
+                else if (key == Key.F) DebugAttackNearestActor();
+            };
 
         foreach (var mouse in _input.Mice)
         {
@@ -1018,6 +1031,7 @@ void main()
                 // of framerate — an actor walks at exactly `speed` u/s wall-clock.
                 foreach (var s in _actors)
                 {
+                    if (s.IsDead) continue;
                     if (s.Follower is null) continue;
                     s.Follower.Tick((float)stepSec);
                     // Compose CurrentTransform = rotate-to-facing * translate-to-pos.
@@ -1033,6 +1047,7 @@ void main()
             }
             foreach (var s in _actors)
             {
+                if (s.IsDead) continue;
                 int idx = s.Actor.CurrentClipIndex;
                 if (idx != s.LastClipIndex)
                 {
@@ -1045,6 +1060,65 @@ void main()
                     if (clip.AnimLength > 0f) s.AnimTime += dt;
                 }
             }
+        }
+    }
+
+    // Phase 12c — placeholder player attack. Picks the nearest living combatant in
+    // front of the camera (XZ distance ≤ 30u, dot(fwd, actor-ray) > 0) and applies
+    // one melee hit with a fixed 250-damage profile. This stands in for the PC's
+    // weapon stats until Phase 13 wires a real player character.
+    private void DebugAttackNearestActor()
+    {
+        if (_actors.Count == 0) return;
+        var camPos = _camera.Position;
+        var camFwd = _camera.Forward;
+
+        ActorRenderState? best = null;
+        float bestDist = float.PositiveInfinity;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead) continue;
+            if (!s.Actor.Stats.IsCombatant) continue;
+            var pos = s.CurrentTransform.Translation;
+            float dx = pos.X - camPos.X;
+            float dz = pos.Z - camPos.Z;
+            float distXZ = MathF.Sqrt(dx * dx + dz * dz);
+            if (distXZ > 30f) continue;
+            // Cone cull: only hit what you're roughly looking at. The follower's
+            // forward is exported by Camera via Forward (unit vec). A dot > 0 means
+            // the actor is in front of the camera's hemisphere — cheap and good
+            // enough for a debug stand-in, not a real targeting reticle.
+            float fwdDot = camFwd.X * dx + camFwd.Z * dz;
+            if (fwdDot <= 0f) continue;
+            if (distXZ < bestDist) { bestDist = distXZ; best = s; }
+        }
+        if (best is null)
+        {
+            Console.WriteLine("debug-attack: no combatant in range (30u cone in front)");
+            return;
+        }
+
+        // Synthetic attacker profile — placeholder until Phase 13 PC lands. Picks
+        // a damage band that crit-one-shots a chicken but takes 4-6 hits on a
+        // goblin grunt, which gives useful combat feedback in the viewer.
+        var attacker = new SiegeFX.Core.Actors.ActorStats(
+            MaxLife: 1000f, MaxMana: 0f,
+            DamageMin: 200f, DamageMax: 300f,
+            Defense: 0f, AttackRange: 0f, WalkSpeed: 0f, ExperienceValue: 0);
+        var rng = new Random();
+        float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
+            attacker, best.Actor.Stats, rng);
+        float dealt = best.Actor.Combat.ApplyDamage(raw);
+        float life = best.Actor.Combat.CurrentLife;
+        float maxLife = best.Actor.Stats.MaxLife;
+        Console.WriteLine(
+            $"debug-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
+            $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+
+        if (best.Actor.Combat.ConsumeJustDied())
+        {
+            best.IsDead = true;
+            best.Follower = null;
         }
     }
 

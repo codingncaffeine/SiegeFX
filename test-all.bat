@@ -36,6 +36,7 @@ echo   16. Phase 11c - Nav follower (walk fh_r1 corridor tick-by-tick)
 echo   17. Phase 11d - Actors wander fh_r1 (181 followers on nav mesh)
 echo   18. Phase 12a - Template stats (goblin grunt + all 3W_goblin_* prefix)
 echo   19. Phase 12b - Combat sim (1000 duels: grunt vs grunt, guard vs grunt)
+echo   20. Phase 12c - Debug attack in fh_r1 (press F to hit nearest goblin)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -61,6 +62,7 @@ if /i "%CHOICE%"=="16" goto T16
 if /i "%CHOICE%"=="17" goto T17
 if /i "%CHOICE%"=="18" goto T18
 if /i "%CHOICE%"=="19" goto T19
+if /i "%CHOICE%"=="20" goto T20
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -234,6 +236,16 @@ echo [expect: 1000/1000 kills, mean hits ~4, mean damage ~284]
 echo.
 "%TOOL%" templates combat "%DS1%\Resources\Logic.dsres" 3W_goblin_guard 3W_goblin_grunt --duels=1000 --seed=42
 pause
+goto MENU
+
+:T20
+echo.
+echo --- Phase 12c: debug attack in fh_r1 ---
+echo [walk up to a goblin, press F — expect "debug-attack: hit ... for ~N (M/1163)"]
+echo [after ~5-6 hits the actor freezes in place with *** DEAD *** log]
+echo [RMB+WASD to fly, F to attack nearest combatant in front, Esc to quit]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU
 
 :BUILD
