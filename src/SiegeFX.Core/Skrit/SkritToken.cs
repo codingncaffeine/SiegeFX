@@ -32,7 +32,7 @@ public enum SkritTokenKind
 
     // Operators
     Assign, EqEq, NotEq, TildeEq, Lt, LtEq, Gt, GtEq,
-    Plus, Minus, Star, Slash, Percent,
+    Plus, Minus, Star, Slash, Percent, StarStar,
     PlusAssign, MinusAssign, StarAssign, SlashAssign,
     AndAnd, OrOr, Bang,
     Pipe, Ampersand, Caret, Tilde,
