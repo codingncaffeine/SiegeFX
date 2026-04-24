@@ -6,17 +6,18 @@ namespace SiegeFX.Core.Nav;
 /// <summary>
 /// Region-scope navigation mesh: all <see cref="SnoModel.FloorKind.Floor"/> triangles
 /// from every placed SNO in a region, lifted into region-space, welded across SNO
-/// boundaries, and wired with per-triangle edge adjacency for A* in Phase 11b.
+/// boundaries, and wired with per-triangle edge adjacency.
 ///
 /// DS1 stores nav triangles as three unshared <c>Vector3</c>s per face — even neighboring
 /// triangles inside a single SNO don't reuse vertices, and different SNOs have entirely
 /// separate pools. We reconcile both at build time by quantizing each world-space vertex
-/// to a <c>0.01</c>-unit grid and interning it; two triangles then count as edge-adjacent
-/// when they share a canonical undirected edge (pair of interned vertex ids).
+/// to a small grid (<see cref="WeldToleranceUnits"/>) and interning it; two triangles
+/// then count as edge-adjacent when they share a canonical undirected edge (pair of
+/// interned vertex ids).
 ///
-/// The mesh is region-scope on purpose: Phase 11c will chain region nav-meshes together
-/// through door portals the same way <see cref="WorldLayout"/> already handles snode
-/// offsets. Cross-region pathing lands in that phase, not this one.
+/// The mesh is region-scope on purpose. Cross-region pathing stitches adjacent meshes
+/// through door portals the same way <see cref="Assets.WorldLayout"/> already handles
+/// snode offsets.
 /// </summary>
 public sealed class NavMesh
 {
@@ -57,6 +58,18 @@ public sealed class NavMesh
 
     public int TriangleCount => Indices.Length / 3;
 
+    // XZ uniform-grid spatial index. Built once at construction and queried by
+    // TryFindTriangle. A cell size of 4 units is a compromise for DS1 scale: SNO nav
+    // triangles are typically 1-3 units per side, so most cells hold 4-20 triangles,
+    // and a query visits one cell on average.
+    private const float GridCellSize = 4f;
+    private readonly float _gridMinX;
+    private readonly float _gridMinZ;
+    private readonly int _gridCellsX;
+    private readonly int _gridCellsZ;
+    // Row-major flat grid of int[] buckets. Null means "no triangles overlap this cell".
+    private readonly int[]?[] _grid;
+
     private NavMesh(
         Vector3[] vertices,
         int[] indices,
@@ -65,7 +78,12 @@ public sealed class NavMesh
         Vector3[] centroids,
         int sourceSnodeCount,
         int degenerateFaceCount,
-        int nonManifoldEdgeCount)
+        int nonManifoldEdgeCount,
+        float gridMinX,
+        float gridMinZ,
+        int gridCellsX,
+        int gridCellsZ,
+        int[]?[] grid)
     {
         Vertices = vertices;
         Indices = indices;
@@ -75,6 +93,11 @@ public sealed class NavMesh
         SourceSnodeCount = sourceSnodeCount;
         DegenerateFaceCount = degenerateFaceCount;
         NonManifoldEdgeCount = nonManifoldEdgeCount;
+        _gridMinX = gridMinX;
+        _gridMinZ = gridMinZ;
+        _gridCellsX = gridCellsX;
+        _gridCellsZ = gridCellsZ;
+        _grid = grid;
     }
 
     /// <summary>Weld tolerance in game units. DS1 authoring snaps to ~integer grids, so
@@ -213,12 +236,70 @@ public sealed class NavMesh
 
         var centroids = new Vector3[triCount];
         var vertsArr = verts.ToArray();
+        float gMinX = float.PositiveInfinity, gMinZ = float.PositiveInfinity;
+        float gMaxX = float.NegativeInfinity, gMaxZ = float.NegativeInfinity;
         for (int t = 0; t < triCount; t++)
         {
             var p0 = vertsArr[indices[3 * t + 0]];
             var p1 = vertsArr[indices[3 * t + 1]];
             var p2 = vertsArr[indices[3 * t + 2]];
             centroids[t] = (p0 + p1 + p2) / 3f;
+            float minX = MathF.Min(p0.X, MathF.Min(p1.X, p2.X));
+            float maxX = MathF.Max(p0.X, MathF.Max(p1.X, p2.X));
+            float minZ = MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z));
+            float maxZ = MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z));
+            if (minX < gMinX) gMinX = minX;
+            if (minZ < gMinZ) gMinZ = minZ;
+            if (maxX > gMaxX) gMaxX = maxX;
+            if (maxZ > gMaxZ) gMaxZ = maxZ;
+        }
+
+        // Build the XZ uniform grid. Empty mesh → 1x1 grid with one null cell.
+        int cellsX, cellsZ;
+        float originX, originZ;
+        int[]?[] grid;
+        if (triCount == 0)
+        {
+            cellsX = cellsZ = 1;
+            originX = originZ = 0f;
+            grid = new int[]?[1];
+        }
+        else
+        {
+            originX = gMinX;
+            originZ = gMinZ;
+            cellsX = Math.Max(1, (int)MathF.Ceiling((gMaxX - gMinX) / GridCellSize) + 1);
+            cellsZ = Math.Max(1, (int)MathF.Ceiling((gMaxZ - gMinZ) / GridCellSize) + 1);
+            // First pass counts per-cell; second pass fills. Temporary List<int> arena
+            // keeps the final int[] buckets tight (no List<int> overhead per cell).
+            var buckets = new List<int>?[cellsX * cellsZ];
+            for (int t = 0; t < triCount; t++)
+            {
+                var p0 = vertsArr[indices[3 * t + 0]];
+                var p1 = vertsArr[indices[3 * t + 1]];
+                var p2 = vertsArr[indices[3 * t + 2]];
+                float minX = MathF.Min(p0.X, MathF.Min(p1.X, p2.X));
+                float maxX = MathF.Max(p0.X, MathF.Max(p1.X, p2.X));
+                float minZ = MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z));
+                float maxZ = MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z));
+                int cx0 = (int)((minX - originX) / GridCellSize);
+                int cx1 = (int)((maxX - originX) / GridCellSize);
+                int cz0 = (int)((minZ - originZ) / GridCellSize);
+                int cz1 = (int)((maxZ - originZ) / GridCellSize);
+                cx0 = Math.Clamp(cx0, 0, cellsX - 1);
+                cx1 = Math.Clamp(cx1, 0, cellsX - 1);
+                cz0 = Math.Clamp(cz0, 0, cellsZ - 1);
+                cz1 = Math.Clamp(cz1, 0, cellsZ - 1);
+                for (int cz = cz0; cz <= cz1; cz++)
+                for (int cx = cx0; cx <= cx1; cx++)
+                {
+                    int cell = cz * cellsX + cx;
+                    (buckets[cell] ??= new List<int>()).Add(t);
+                }
+            }
+            grid = new int[]?[buckets.Length];
+            for (int i = 0; i < buckets.Length; i++)
+                grid[i] = buckets[i]?.ToArray();
         }
 
         return new NavMesh(
@@ -229,7 +310,12 @@ public sealed class NavMesh
             centroids,
             sourceSnodes,
             degenerate,
-            nonManifoldEdges);
+            nonManifoldEdges,
+            originX,
+            originZ,
+            cellsX,
+            cellsZ,
+            grid);
     }
 
     /// <summary>Finds the triangle containing <paramref name="worldPos"/> by XZ
@@ -238,21 +324,39 @@ public sealed class NavMesh
     /// vertical distance when multiple tiles overlap in XZ (overpasses / stairs).</summary>
     public bool TryFindTriangle(Vector3 worldPos, out int triIndex)
     {
+        triIndex = -1;
+        if (TriangleCount == 0) return false;
+        int cx = (int)((worldPos.X - _gridMinX) / GridCellSize);
+        int cz = (int)((worldPos.Z - _gridMinZ) / GridCellSize);
+        if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return false;
+        var bucket = _grid[cz * _gridCellsX + cx];
+        if (bucket is null) return false;
         int bestTri = -1;
         float bestDy = float.PositiveInfinity;
-        for (int t = 0; t < TriangleCount; t++)
+        for (int i = 0; i < bucket.Length; i++)
         {
+            int t = bucket[i];
             var a = Vertices[Indices[3 * t + 0]];
             var b = Vertices[Indices[3 * t + 1]];
             var c = Vertices[Indices[3 * t + 2]];
             if (!PointInTriangleXZ(worldPos, a, b, c)) continue;
-            // Interpolate Y on the triangle plane via barycentrics, pick closest.
             float triY = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
             float dy = MathF.Abs(triY - worldPos.Y);
             if (dy < bestDy) { bestDy = dy; bestTri = t; }
         }
         triIndex = bestTri;
         return bestTri >= 0;
+    }
+
+    /// <summary>Projects <paramref name="worldPos"/> onto triangle <paramref name="tri"/>'s
+    /// plane in XZ and returns its world Y. Falls back to the triangle centroid Y when the
+    /// triangle is edge-on. Used by the follower to keep the actor glued to the terrain.</summary>
+    public float SampleYOnTriangle(int tri, Vector3 worldPos)
+    {
+        var a = Vertices[Indices[3 * tri + 0]];
+        var b = Vertices[Indices[3 * tri + 1]];
+        var c = Vertices[Indices[3 * tri + 2]];
+        return InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
     }
 
     private static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)

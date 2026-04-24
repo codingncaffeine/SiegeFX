@@ -32,6 +32,7 @@ echo   12. Phase 10c+d - Spawn 181 actors, tick + broadcast (fh_r1)
 echo   13. Phase 10e - Play region (walk into fh_r1, 181 actors idling)
 echo   14. Phase 11a - Walkable-surface nav (fh_r1 stats + world-wide fuzz)
 echo   15. Phase 11b - A* pathfinding (fh_r1 hand path + world-wide fuzz)
+echo   16. Phase 11c - Nav follower (walk fh_r1 corridor tick-by-tick)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -53,6 +54,7 @@ if /i "%CHOICE%"=="12" goto T12
 if /i "%CHOICE%"=="13" goto T13
 if /i "%CHOICE%"=="14" goto T14
 if /i "%CHOICE%"=="15" goto T15
+if /i "%CHOICE%"=="16" goto T16
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -180,6 +182,15 @@ echo --- Phase 11b: world-wide A* fuzz (81 regions, 20 samples each) ---
 echo [expect: biggest-component A* = 100%%; random-pair ~40%% reflects topology]
 echo.
 "%TOOL%" region path-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
+pause
+goto MENU
+
+:T16
+echo.
+echo --- Phase 11c: nav follower walks fh_r1 corridor (10,0,10 to 30,0,30 at 6 u/s) ---
+echo [expect: reaches goal in ~100 ticks (20 Hz), ~32 units walked vs ~28 straight-line]
+echo.
+"%TOOL%" region follow "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1 "10,0,10" "30,0,30"
 pause
 goto MENU
 
