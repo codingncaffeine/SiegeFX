@@ -52,38 +52,32 @@ public static class AnimationRuntime
             if (keys.PosKeys.Count > 0) localPos[i] = SamplePosition(keys, anim.AnimLength, timeSec);
         }
 
-        // Walk the hierarchy twice — once for the animated pose, once for the bind pose.
-        // Both walks assume parents precede children in BoneParents[], which is how DS1
-        // ships rigs; a defensive check below catches the contract violation if we ever
-        // parse a file with a reversed ordering instead of silently skinning garbage.
+        // Walk the hierarchy once for the animated pose. The bind pose equivalent is
+        // already cached on the mesh as InverseBindMatrices (computed at load), so we
+        // don't repeat that work every frame. Parents must precede children in
+        // BoneParents[] — shipping DS1 rigs satisfy this and AspMesh.Load already
+        // asserted it when populating the cache, but the same guard stays here for
+        // meshes constructed by other means (tests, synthetic fixtures).
         var worldAnim = new Matrix4x4[mesh.BoneCount];
-        var worldBind = new Matrix4x4[mesh.BoneCount];
         for (var i = 0; i < mesh.BoneCount; i++)
         {
             var localAnim = Matrix4x4.CreateFromQuaternion(localRot[i]) * Matrix4x4.CreateTranslation(localPos[i]);
-            var localBind = Matrix4x4.CreateFromQuaternion(mesh.BindPose[i].Rotation) * Matrix4x4.CreateTranslation(mesh.BindPose[i].Translation);
             var p = mesh.BoneParents[i];
             if (p < 0)
-            {
                 worldAnim[i] = localAnim;
-                worldBind[i] = localBind;
-            }
             else
             {
                 if (p >= i)
                     throw new InvalidDataException($"ASP bone {i} parent {p} is not parent-first; cannot compose skin");
                 worldAnim[i] = localAnim * worldAnim[p];
-                worldBind[i] = localBind * worldBind[p];
             }
         }
 
         var skin = new Matrix4x4[mesh.BoneCount];
+        if (mesh.InverseBindMatrices.Length != mesh.BoneCount)
+            throw new InvalidDataException("AspMesh InverseBindMatrices length does not match BoneCount");
         for (var i = 0; i < mesh.BoneCount; i++)
-        {
-            if (!Matrix4x4.Invert(worldBind[i], out var invBind))
-                throw new InvalidDataException($"ASP bone {i} bind pose is non-invertible");
-            skin[i] = invBind * worldAnim[i];
-        }
+            skin[i] = mesh.InverseBindMatrices[i] * worldAnim[i];
         return skin;
     }
 

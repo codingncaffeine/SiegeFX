@@ -245,9 +245,10 @@ static int CmdPrsFuzz(string[] a)
         }
         catch (NotSupportedException)
         {
-            // TRCR chunks — known gap. Counted separately so they don't inflate the failure metric.
+            // TRCR chunks — known gap. Counted separately so they don't inflate the
+            // failure metric. Don't also bump versionsOk: a TRCR bail is a partial parse,
+            // not a successful one, and double-counting muddles the "files handled" signal.
             tracers++;
-            versionsOk[ver] = versionsOk.GetValueOrDefault(ver) + 1;
         }
         catch (Exception ex)
         {
