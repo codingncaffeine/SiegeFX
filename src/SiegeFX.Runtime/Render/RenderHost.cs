@@ -57,11 +57,16 @@ public sealed class RenderHost : IDisposable
     // so the pickup path can transfer the actual rolled items into PC inventory.
     private readonly List<LootPile> _lootPiles = new();
     private DebugCubeMesh? _lootCube;
-    // Phase 14a — PC inventory. Flat list for now; grid/equip-slot wiring lands in
-    // 14b/14c. Populated by auto-pickup when the Farmboy walks within PickupRadius
-    // of a pile during the 20 Hz tick.
+    // Phase 14a — PC inventory. Flat list for now; grid wiring lands with the HUD
+    // in Phase 15. Populated by auto-pickup when the Farmboy walks within
+    // PickupRadius of a pile during the 20 Hz tick.
     private readonly List<SiegeFX.Core.Actors.LootEntry> _playerInventory = new();
     private const float PickupRadius = 1.8f;
+    // Phase 14b — PC equipment slots keyed by DS1 slot tag (es_weapon_hand,
+    // es_feet, es_spellbook, etc.). Populated at spawn by walking the specializes
+    // chain for `[inventory][equipment]`. 14c reads damage_min/max off the
+    // weapon template to replace HeroBaselineStats damage.
+    private readonly Dictionary<string, string> _playerEquipment = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
@@ -1311,11 +1316,36 @@ void main()
         }
         _playerFacing = Vector3.UnitZ;
 
+        // Phase 14b — seed PC equipment from the template's [inventory][equipment]
+        // block. base_farmboy authors es_weapon_hand=dg_g_d_1h_fun (fun dagger),
+        // es_feet=bo_bo_le_light, es_spellbook=book_glb_magic_01. Any attribute
+        // whose name starts with es_ is treated as an equip slot -> item ref.
+        _playerEquipment.Clear();
+        if (_templateStore is not null)
+        {
+            var eq = _templateStore.GetSection(player.Template, "inventory", "equipment");
+            if (eq is not null)
+            {
+                foreach (var a in eq.Attributes)
+                {
+                    if (!a.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.IsNullOrWhiteSpace(a.Value)) continue;
+                    _playerEquipment[a.Name] = a.Value.Trim();
+                }
+            }
+        }
+
         Console.WriteLine(
             $"  player: '{playerTemplate}' spawned at " +
             $"({spawnPos.X:F1}, {spawnPos.Y:F1}, {spawnPos.Z:F1})  " +
             $"life={player.Stats.MaxLife:F0} " +
             $"walk={player.Stats.WalkSpeed:F1}u/s");
+        if (_playerEquipment.Count > 0)
+        {
+            var slots = new List<string>(_playerEquipment.Count);
+            foreach (var kv in _playerEquipment) slots.Add($"[{kv.Key}] {kv.Value}");
+            Console.WriteLine($"  equipment: {string.Join(", ", slots)}");
+        }
     }
 
     // Phase 13c — LMB click-to-move. Unprojects the screen-space cursor to a
