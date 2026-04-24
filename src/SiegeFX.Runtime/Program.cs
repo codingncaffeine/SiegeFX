@@ -6,6 +6,7 @@ using SiegeFX.Runtime.Render;
 //   SiegeFX.Runtime --world  <map-tank> <terrain-tank> [root-region]
 //   SiegeFX.Runtime --anim   <rigged.asp> <clip.prs> [texture.raw]
 //   SiegeFX.Runtime --skrit-anim <rigged.asp> <skrit> <clip0.prs> [clip1.prs ...] [--texture <raw>]
+//   SiegeFX.Runtime --play-region <map-tank> <terrain-tank> <logic-tank> <objects-tank> <region-path>
 string? meshPath = null;
 string? texturePath = null;
 string? regionMap = null;
@@ -19,6 +20,8 @@ string? animPrs = null;
 string? animTexture = null;
 string? skritPath = null;
 List<string>? skritClips = null;
+string? playLogic = null;
+string? playObjects = null;
 
 if (args.Length >= 1 && args[0] == "--region")
 {
@@ -52,6 +55,22 @@ else if (args.Length >= 1 && args[0] == "--anim")
     animAsp = args[1];
     animPrs = args[2];
     animTexture = args.Length >= 4 ? args[3] : null;
+}
+else if (args.Length >= 1 && args[0] == "--play-region")
+{
+    // Phase 10e. Full region scene: terrain + every shipped actor placed at its gas-authored
+    // position, each driven by its own skrit. Same map+terrain tanks as --region; adds
+    // logic + objects tanks so template + skrit + model + clip resolution can find assets.
+    if (args.Length < 6)
+    {
+        Console.Error.WriteLine("usage: SiegeFX.Runtime --play-region <map-tank> <terrain-tank> <logic-tank> <objects-tank> <region-path>");
+        return 1;
+    }
+    regionMap     = args[1];
+    regionTerrain = args[2];
+    playLogic     = args[3];
+    playObjects   = args[4];
+    regionPath    = args[5];
 }
 else if (args.Length >= 1 && args[0] == "--skrit-anim")
 {
@@ -97,6 +116,8 @@ using var host = new RenderHost(
     animPrsPath: animPrs,
     animTexturePath: animTexture,
     skritPath: skritPath,
-    skritClipPaths: skritClips);
+    skritClipPaths: skritClips,
+    playLogicTankPath: playLogic,
+    playObjectsTankPath: playObjects);
 host.Run();
 return 0;

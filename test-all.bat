@@ -28,6 +28,8 @@ echo   8.  Phase 9a - Skrit-driven animation (basic_walk)
 echo   9.  Phase 8d - Skrit tick harness (CLI, no viewer)
 echo   10. Phase 10a - Template store (goblin grunt archetype resolution)
 echo   11. Phase 10b - Region actor instance loader (fh_r1)
+echo   12. Phase 10c+d - Spawn 181 actors, tick + broadcast (fh_r1)
+echo   13. Phase 10e - Play region (walk into fh_r1, 181 actors idling)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -45,6 +47,8 @@ if /i "%CHOICE%"=="8" goto T8
 if /i "%CHOICE%"=="9" goto T9
 if /i "%CHOICE%"=="10" goto T10
 if /i "%CHOICE%"=="11" goto T11
+if /i "%CHOICE%"=="12" goto T12
+if /i "%CHOICE%"=="13" goto T13
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -104,7 +108,7 @@ goto MENU
 :T9
 echo.
 echo --- Phase 8d: tick basic_walk.skrit for 40 logic frames ---
-"%TOOL%" skrit tick "%REFS%\skrit\basic_walk.skrit" --ticks=40 --subanims=1 --event=OnStartChore
+"%TOOL%" skrit tick "%REFS%\skrit\basic_walk.skrit" --ticks=40 --subanims=1 --event=OnStartChore$
 pause
 goto MENU
 
@@ -128,6 +132,23 @@ echo [expect: ~181 actors, templates include krug_scout/phrak/gremal/chicken]
 echo.
 "%TOOL%" region actors "%DS1%\Maps\World.dsmap" /world/maps/map_world/regions/fh_r1
 pause
+goto MENU
+
+:T12
+echo.
+echo --- Phase 10c+d: spawn 181 actors in fh_r1, broadcast OnStartChore$ via bus ---
+echo [expect: spawned 181/181, all in LoopForever$, bus posted 1 / delivered 181]
+echo.
+"%TOOL%" region spawn "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --broadcast=OnStartChore$
+pause
+goto MENU
+
+:T13
+echo.
+echo --- Phase 10e: fh_r1 with terrain + 181 actors, skrit-driven ---
+echo [RMB+WASD to fly, Esc to quit]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU
 
 :BUILD

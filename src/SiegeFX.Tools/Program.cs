@@ -78,6 +78,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
     Console.WriteLine("  siegefx templates show     <tank> <name>");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
+    Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -339,6 +340,8 @@ static int DispatchRegion(string[] a)
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
         "layout-diag" => CmdRegionLayoutDiag(a[1..]),
         "actors"      => CmdRegionActors(a[1..]),
+        "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
+        "spawn"       => CmdRegionSpawn(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -1718,6 +1721,206 @@ static int CmdRegionActors(string[] a)
     {
         var p = act.Placement;
         Console.WriteLine($"  {act}  pos=({p.LocalPosition.X:F2},{p.LocalPosition.Y:F2},{p.LocalPosition.Z:F2}) node=0x{p.NodeGuid:x8}");
+    }
+    return 0;
+}
+
+static int CmdRegionSpawnProbe(string[] a)
+{
+    if (a.Length != 4) { Console.Error.WriteLine("usage: siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>"); return 1; }
+    using var mapTank     = TankFile.Open(a[0]);
+    using var logicTank   = TankFile.Open(a[1]);
+    using var objectsTank = TankFile.Open(a[2]);
+    var mapReader     = new TankReader(mapTank);
+    var logicReader   = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+
+    // Template store reads from Logic.dsres (where all templates live).
+    var (store, tdiags) = TemplateStore.LoadFromTank(logicReader);
+    Console.WriteLine($"templates : {store.Count} (diagnostics: {tdiags.Count})");
+
+    var (actors, adiags) = RegionObjects.LoadActors(mapReader, a[3]);
+    Console.WriteLine($"actors    : {actors.Count} (diagnostics: {adiags.Count})");
+
+    // Resolver spans Objects.dsres (models + anims) and Logic.dsres (skrits).
+    var resolver = new AssetResolver();
+    resolver.Add(objectsReader, "Objects.dsres");
+    resolver.Add(logicReader,   "Logic.dsres");
+
+    // Walk actor list, try to resolve (template, model, chore_default skrit, chore_default
+    // anim) for each. Tally hits vs misses so we can see if the conventions hold up.
+    int tResolved = 0, tMissing = 0;
+    int mHit = 0, mMiss = 0;
+    int sHit = 0, sMiss = 0;
+    int aHit = 0, aMiss = 0;
+    var missTemplates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    var perTemplate = actors.GroupBy(x => x.TemplateName, StringComparer.OrdinalIgnoreCase);
+    foreach (var g in perTemplate)
+    {
+        if (!store.TryGet(g.Key, out var t))
+        {
+            tMissing += g.Count();
+            missTemplates.Add(g.Key);
+            continue;
+        }
+        tResolved += g.Count();
+
+        var model = store.GetAttribute(t, "aspect", "model");
+        if (model is not null && resolver.TryLoadModel(model, out _)) mHit += g.Count(); else mMiss += g.Count();
+
+        var chorePrefix = store.GetAttribute(t, "body", "chore_dictionary", "chore_prefix");
+        var defaultSection = store.GetSection(t, "body", "chore_dictionary", "chore_default");
+        var skritName = defaultSection is null ? null : TemplateStore.FindAttr(defaultSection, "skrit");
+        var animFiles = defaultSection is null ? null : TemplateStore.FindChild(defaultSection, "anim_files");
+        var animSuffix = animFiles?.Attributes.FirstOrDefault().Value;
+        var stances = ParseChoreStances(defaultSection is null ? null : TemplateStore.FindAttr(defaultSection, "chore_stances"));
+
+        if (skritName is not null && resolver.TryLoadSkrit(skritName, out _)) sHit += g.Count(); else sMiss += g.Count();
+        if (chorePrefix is not null && animSuffix is not null
+            && TryResolveAnyStance(resolver, chorePrefix, stances, animSuffix)) aHit += g.Count(); else aMiss += g.Count();
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("resolution tallies (per actor, weighted by count):");
+    Console.WriteLine($"  template resolved  : {tResolved}/{actors.Count}");
+    if (tMissing > 0) Console.WriteLine($"    missing templates: {string.Join(", ", missTemplates.Take(6))}{(missTemplates.Count > 6 ? ", ..." : "")}");
+    Console.WriteLine($"  model .asp found   : {mHit}/{actors.Count}  (miss {mMiss})");
+    Console.WriteLine($"  chore_default skrit: {sHit}/{actors.Count}  (miss {sMiss})");
+    Console.WriteLine($"  chore_default anim : {aHit}/{actors.Count}  (miss {aMiss})");
+
+    // Pick the three most popular templates and fully resolve them so we can eyeball
+    // the final asset paths the spawner will use.
+    Console.WriteLine();
+    Console.WriteLine("sample resolutions (top 3 templates in region):");
+    foreach (var g in actors.GroupBy(x => x.TemplateName).OrderByDescending(x => x.Count()).Take(3))
+    {
+        Console.WriteLine($"  [{g.Key}] x{g.Count()}");
+        if (!store.TryGet(g.Key, out var t)) { Console.WriteLine("    <template not in store>"); continue; }
+
+        var model = store.GetAttribute(t, "aspect", "model") ?? "<none>";
+        var chorePrefix = store.GetAttribute(t, "body", "chore_dictionary", "chore_prefix") ?? "<none>";
+        var defaultSection = store.GetSection(t, "body", "chore_dictionary", "chore_default");
+        var skritName = defaultSection is null ? "<none>" : TemplateStore.FindAttr(defaultSection, "skrit") ?? "<none>";
+        var animFiles = defaultSection is null ? null : TemplateStore.FindChild(defaultSection, "anim_files");
+        var animSuffix = animFiles?.Attributes.FirstOrDefault().Value ?? "<none>";
+        var stancesAttr = defaultSection is null ? "<none>" : TemplateStore.FindAttr(defaultSection, "chore_stances") ?? "<none>";
+
+        Console.WriteLine($"    model = {model}.asp   prefix = {chorePrefix}   stances = {stancesAttr}   skrit = {skritName}   anim_suffix = {animSuffix}");
+    }
+    return 0;
+}
+
+// DS1 template chore sections carry `chore_stances = 0,1,3,6;` — a comma-separated list
+// of stance numbers (weapon/combat postures). For each listed stance, a corresponding
+// animation file {prefix}{stance}_{suffix}.prs exists. We parse the list and drop any
+// tokens that don't parse as ints; empty/null yields {0} so the legacy probe still runs.
+static int[] ParseChoreStances(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return new[] { 0 };
+    var parts = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    var list = new List<int>(parts.Length);
+    foreach (var p in parts) if (int.TryParse(p, out var n)) list.Add(n);
+    return list.Count == 0 ? new[] { 0 } : list.ToArray();
+}
+
+// Tries each candidate stance in order; first hit wins. Template lists stances from
+// most-common to less, so first-hit approximates what DS1 would pick for the default
+// idle state before combat changes stance.
+static bool TryResolveAnyStance(AssetResolver resolver, string prefix, int[] stances, string suffix)
+{
+    foreach (var s in stances)
+        if (resolver.TryLoadChoreAnim(prefix, s, suffix, out _)) return true;
+    return false;
+}
+
+// End-to-end spawn harness: resolve everything, build real Actors, tick the shared
+// SkritRuntime for N logic frames, and print summary state. Proves the full pipeline
+// (template → mesh + clip + skrit → per-actor VM driving a blender) runs headless
+// before the viewer wires into it in Phase 10e.
+static int CmdRegionSpawn(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region spawn <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
+        return 1;
+    }
+    int ticks = 40;
+    string? broadcast = null;
+    for (int i = 4; i < a.Length; i++)
+    {
+        const string ticksPrefix = "--ticks=";
+        const string bcastPrefix = "--broadcast=";
+        if (a[i].StartsWith(ticksPrefix) && int.TryParse(a[i][ticksPrefix.Length..], out var t)) ticks = t;
+        else if (a[i].StartsWith(bcastPrefix)) broadcast = a[i][bcastPrefix.Length..];
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var mapTank     = TankFile.Open(a[0]);
+    using var logicTank   = TankFile.Open(a[1]);
+    using var objectsTank = TankFile.Open(a[2]);
+    var mapReader     = new TankReader(mapTank);
+    var logicReader   = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    var (instances, _) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, a[3]);
+
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    resolver.Add(objectsReader, "Objects.dsres");
+    resolver.Add(logicReader,   "Logic.dsres");
+
+    var spawner = new SiegeFX.Core.Actors.ActorSpawner(store, resolver);
+    var actors = spawner.Spawn(instances);
+
+    Console.WriteLine($"templates : {store.Count}");
+    Console.WriteLine($"instances : {instances.Count}");
+    Console.WriteLine($"spawned   : {actors.Count}  (diagnostics {spawner.Diagnostics.Count})");
+    foreach (var d in spawner.Diagnostics.Take(5)) Console.WriteLine($"  !! {d}");
+    if (spawner.Diagnostics.Count > 5) Console.WriteLine($"  ... ({spawner.Diagnostics.Count - 5} more)");
+
+    Console.WriteLine();
+    Console.WriteLine($"ticking runtime for {ticks} frames ({ticks / 20.0:0.0}s logical)...");
+    const double stepSec = 1.0 / SiegeFX.Core.Skrit.SkritInstance.FramesPerSecond;
+    int delivered = 0;
+    if (broadcast is not null)
+    {
+        // Post at t=0 so it drains on the very first deliver pass. Usage is diagnostic:
+        // `--broadcast=WE_ENTERED_WORLD` exercises the fan-out path and counts how many
+        // actors actually have a handler for it. Most shipped skrits don't, which is fine
+        // — we're measuring the bus, not the handlers.
+        spawner.MessageBus.Post(broadcast, fromScid: 0, toScid: 0, arg1: 0, arg2: 0);
+        Console.WriteLine($"  (broadcasting {broadcast} to all {actors.Count} actors)");
+    }
+    for (int i = 0; i < ticks; i++)
+    {
+        spawner.Runtime.Tick(stepSec);
+        delivered += spawner.MessageBus.Deliver();
+    }
+
+    int withAnim = 0, withState = 0;
+    var clipPicks = new Dictionary<int, int>();
+    foreach (var actor in actors)
+    {
+        if (actor.Host.CurrentAnimIndex >= 0) withAnim++;
+        if (actor.Skrit.CurrentState is not null) withState++;
+        clipPicks[actor.CurrentClipIndex] = clipPicks.GetValueOrDefault(actor.CurrentClipIndex) + 1;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"after tick:");
+    Console.WriteLine($"  in a skrit state   : {withState}/{actors.Count}");
+    Console.WriteLine($"  picked a clip      : {withAnim}/{actors.Count}");
+    Console.WriteLine($"  clip-index tally   : {string.Join(", ", clipPicks.OrderBy(kv => kv.Key).Select(kv => $"#{kv.Key}×{kv.Value}"))}");
+    Console.WriteLine($"  bus posted         : {spawner.MessageBus.PostedCount}");
+    Console.WriteLine($"  bus delivered      : {delivered}   (undelivered: {spawner.MessageBus.UndeliveredCount})");
+
+    Console.WriteLine();
+    Console.WriteLine("sample actors (first 5):");
+    foreach (var actor in actors.Take(5))
+    {
+        var t = actor.WorldTransform.Translation;
+        Console.WriteLine($"  {actor.Template.Name,-22} scid=0x{actor.Instance.Scid:x8}  pos=({t.X,8:0.00},{t.Y,6:0.00},{t.Z,8:0.00})  state={actor.Skrit.CurrentState}  clip=#{actor.CurrentClipIndex}");
     }
     return 0;
 }
