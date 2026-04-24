@@ -16,6 +16,7 @@ try
         "raw"  => DispatchRaw(args[1..]),
         "asp"  => DispatchAsp(args[1..]),
         "sno"  => DispatchSno(args[1..]),
+        "prs"  => DispatchPrs(args[1..]),
         "gas"  => DispatchGas(args[1..]),
         "region" => DispatchRegion(args[1..]),
         "world"  => DispatchWorld(args[1..]),
@@ -60,6 +61,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
     Console.WriteLine("  siegefx asp  info    <file.asp>");
     Console.WriteLine("  siegefx sno  info    <file.sno>");
+    Console.WriteLine("  siegefx prs  info    <file.prs>");
+    Console.WriteLine("  siegefx prs  fuzz    <tank>");
     Console.WriteLine("  siegefx gas  info    <file.gas>");
     Console.WriteLine("  siegefx gas  dump    <file.gas>");
     Console.WriteLine("  siegefx gas  fuzz    <tank>");
@@ -133,6 +136,116 @@ static int DispatchSno(string[] a)
         "info" => CmdSnoInfo(a[1..]),
         _      => UnknownCommand("sno " + a[0]),
     };
+}
+
+static int DispatchPrs(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx prs <info|fuzz> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "info" => CmdPrsInfo(a[1..]),
+        "fuzz" => CmdPrsFuzz(a[1..]),
+        _      => UnknownCommand("prs " + a[0]),
+    };
+}
+
+static int CmdPrsInfo(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx prs info <file.prs>"); return 1; }
+    var bytes = File.ReadAllBytes(a[0]);
+    var prs = PrsAnimation.Load(bytes);
+    Console.WriteLine($"File        : {a[0]}");
+    Console.WriteLine($"Size        : {bytes.Length:N0} bytes");
+    Console.WriteLine($"Anim version: {prs.AnimVersion}");
+    Console.WriteLine($"Bones       : {prs.NumBones}");
+    Console.WriteLine($"Length      : {prs.AnimLength:F4} s");
+    Console.WriteLine($"Root travel : ({prs.RootTravel.X:F2}, {prs.RootTravel.Y:F2}, {prs.RootTravel.Z:F2})");
+    Console.WriteLine($"Notes       : {prs.Notes.Count}");
+    Console.WriteLine($"Tracers     : {prs.TracerCount}");
+
+    int bonesKeyed = 0, totalRot = 0, totalPos = 0;
+    foreach (var k in prs.BoneKeys)
+    {
+        if (k is null) continue;
+        bonesKeyed++;
+        totalRot += k.RotKeys.Count;
+        totalPos += k.PosKeys.Count;
+    }
+    Console.WriteLine($"Bones keyed : {bonesKeyed} of {prs.NumBones} (rot keys {totalRot:N0}, pos keys {totalPos:N0})");
+    if (prs.RootKeys is not null)
+        Console.WriteLine($"Root keys   : rot {prs.RootKeys.RotKeys.Count}, pos {prs.RootKeys.PosKeys.Count}");
+
+    var showBones = Math.Min(8, prs.BoneNames.Count);
+    for (var i = 0; i < showBones; i++)
+    {
+        var k = prs.BoneKeys[i];
+        var counts = k is null ? "no keys" : $"rot={k.RotKeys.Count} pos={k.PosKeys.Count}";
+        Console.WriteLine($"  [{i,3}] {prs.BoneNames[i],-28} {counts}");
+    }
+    if (prs.BoneNames.Count > showBones) Console.WriteLine($"  ... {prs.BoneNames.Count - showBones} more bones");
+
+    if (prs.InfoStrings.Count > 0)
+    {
+        Console.WriteLine($"INFO        :");
+        foreach (var s in prs.InfoStrings) Console.WriteLine($"  {s}");
+    }
+    return 0;
+}
+
+static int CmdPrsFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx prs fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    int total = 0, failed = 0, tracers = 0, oldVersion = 0;
+    long totalBytes = 0;
+    var versionsOk = new Dictionary<uint, int>();
+    var versionsFail = new Dictionary<uint, int>();
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".prs", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}");
+            failed++;
+            continue;
+        }
+        totalBytes += bytes.Length;
+        // Peek anim version so we can histogram successes/failures by format revision.
+        uint ver = bytes.Length >= 8 ? BitConverter.ToUInt32(bytes, 4) : 0xFFFFFFFF;
+        try
+        {
+            var prs = PrsAnimation.Load(bytes);
+            if (prs.TracerCount > 0) tracers++;
+            versionsOk[ver] = versionsOk.GetValueOrDefault(ver) + 1;
+        }
+        catch (NotSupportedException ex) when (ex.Message.Contains("anim version"))
+        {
+            // Legacy PRS versions (~5.5% of shipped DS1); explicitly punted. Counted
+            // separately so the true failure metric stays focused on v3 regressions.
+            oldVersion++;
+        }
+        catch (NotSupportedException)
+        {
+            // TRCR chunks — known gap. Counted separately so they don't inflate the failure metric.
+            tracers++;
+            versionsOk[ver] = versionsOk.GetValueOrDefault(ver) + 1;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [parse-fail v0x{ver:X}] {path}: {ex.Message}");
+            failed++;
+            versionsFail[ver] = versionsFail.GetValueOrDefault(ver) + 1;
+        }
+    }
+    Console.WriteLine($"fuzzed {total} .prs file(s), {totalBytes:N0} bytes total; {failed} failure(s), {tracers} with tracers, {oldVersion} legacy-version skipped");
+    Console.WriteLine("versions (ok):    " + string.Join(", ", versionsOk.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    Console.WriteLine("versions (fail):  " + string.Join(", ", versionsFail.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    return failed == 0 ? 0 : 4;
 }
 
 static int DispatchGas(string[] a)
