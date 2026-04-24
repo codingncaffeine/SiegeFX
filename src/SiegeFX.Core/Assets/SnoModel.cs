@@ -32,8 +32,8 @@ public sealed class SnoModel
     public Surface[] Surfaces { get; init; } = Array.Empty<Surface>();
 
     /// <summary>Pre-classified nav-surface groups that DS1 tools bake into the SNO. Each
-    /// grouping is a contiguous region of floor carrying a <see cref="FloorFlag"/> (walkable,
-    /// water, or explicitly ignored). Phase 11a uses <see cref="FloorFlag.Floor"/> groupings
+    /// grouping is a contiguous region of floor carrying a <see cref="FloorKind"/> (walkable,
+    /// water, or explicitly ignored). Phase 11a uses <see cref="FloorKind.Floor"/> groupings
     /// to seed the pathfinding mesh.</summary>
     public LogicalGrouping[] LogicalGroupings { get; init; } = Array.Empty<LogicalGrouping>();
 
@@ -56,7 +56,7 @@ public sealed class SnoModel
     /// <summary>Classification bits DS1 bakes onto each logical grouping. Raw values
     /// come from the SNO disk layout — they aren't flag bits you OR together, despite
     /// the name, so compare with <c>==</c>.</summary>
-    public enum FloorFlag : uint
+    public enum FloorKind : uint
     {
         Ignored = 0x20000000u,       // 536_870_912 — not part of the nav surface
         Floor   = 0x40000001u,       // 1_073_741_825 — walkable
@@ -65,20 +65,24 @@ public sealed class SnoModel
 
     /// <summary>A single nav-mesh face in SNO-local space. DS1 stores full a/b/c triangle
     /// vertices rather than indices into the render corner pool — the nav triangles don't
-    /// always coincide with render triangles (tool-side welding/simplification).</summary>
+    /// always coincide with render triangles (tool-side welding/simplification). The
+    /// <see cref="Normal"/> field is read verbatim from disk; shipped DS1 data is already
+    /// unit-normalized in every file spot-checked so Phase 11b's cost function uses it raw,
+    /// but renormalize if you ever load third-party/modded SNOs.</summary>
     public readonly record struct NavFace(Vector3 A, Vector3 B, Vector3 C, Vector3 Normal);
 
     /// <summary>Pre-classified walkable-surface subregion. Groupings are the input to the
-    /// Phase 11b pathfinder: FloorFlag.Floor groupings contribute walkable triangles,
-    /// Water contributes swim zones, Ignored is skipped entirely. <see cref="BoundsMin"/>
-    /// / <see cref="BoundsMax"/> give a coarse SNO-local AABB for culling before picking
+    /// Phase 11b pathfinder: <see cref="FloorKind.Floor"/> groupings contribute walkable
+    /// triangles, <see cref="FloorKind.Water"/> contributes swim zones,
+    /// <see cref="FloorKind.Ignored"/> is skipped entirely. <see cref="BoundsMin"/> /
+    /// <see cref="BoundsMax"/> give a coarse SNO-local AABB for culling before picking
     /// into <see cref="Faces"/>.</summary>
     public sealed class LogicalGrouping
     {
         public byte Id { get; init; }
         public Vector3 BoundsMin { get; init; }
         public Vector3 BoundsMax { get; init; }
-        public FloorFlag Flag { get; init; }
+        public FloorKind Kind { get; init; }
         public NavFace[] Faces { get; init; } = Array.Empty<NavFace>();
     }
 
@@ -182,7 +186,7 @@ public sealed class SnoModel
             var id = r.ReadU8();
             var bMin = r.ReadVec3();
             var bMax = r.ReadVec3();
-            var flag = (FloorFlag)r.ReadU32();
+            var kind = (FloorKind)r.ReadU32();
 
             // Per-grouping unknown "rotation + shorts + shorts" array. Nothing we need
             // for nav — just stride past.
@@ -218,14 +222,14 @@ public sealed class SnoModel
                 faces[j] = new NavFace(a, b, c, n);
             }
 
-            SkipUnknownSection(r);
+            SkipUnknownSection(r, depth: 0);
 
             result[i] = new LogicalGrouping
             {
                 Id = id,
                 BoundsMin = bMin,
                 BoundsMax = bMax,
-                Flag = flag,
+                Kind = kind,
                 Faces = faces,
             };
         }
@@ -234,15 +238,21 @@ public sealed class SnoModel
 
     /// <summary>Recursive "unknown" trailer that appears after each logical-grouping face
     /// list. Structure: 6 floats (bbox), u8, u16 count + that-many u16s, u8 recurse-count,
-    /// then that-many nested copies of itself. OpenSiege reads but ignores it — we do too.</summary>
-    private static void SkipUnknownSection(Reader r)
+    /// then that-many nested copies of itself. OpenSiege reads but ignores it — we do too.
+    /// Shipped DS1 data has never exceeded a couple of levels in fuzz runs, so a 32-frame
+    /// cap is cheap insurance against a corrupt or modded file blowing the managed stack.</summary>
+    private const int MaxUnknownSectionDepth = 32;
+    private static void SkipUnknownSection(Reader r, int depth)
     {
+        if (depth > MaxUnknownSectionDepth)
+            throw new InvalidDataException(
+                $"SNO unknown-section recursion exceeded {MaxUnknownSectionDepth} levels at 0x{r.Position:X8}");
         r.Skip(6 * 4);                                       // bbox min/max f32s
         r.ReadU8();
         var shortCount = r.ReadU16();
         r.Skip(shortCount * 2);
         var recurseCount = r.ReadU8();
-        for (var i = 0; i < recurseCount; i++) SkipUnknownSection(r);
+        for (var i = 0; i < recurseCount; i++) SkipUnknownSection(r, depth + 1);
     }
 
     private static Spot[] ReadSpots(Reader r, uint count)

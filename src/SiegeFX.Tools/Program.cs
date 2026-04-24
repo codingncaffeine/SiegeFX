@@ -812,11 +812,11 @@ static int CmdRegionNav(string[] a)
         foreach (var g in sno.LogicalGroupings)
         {
             groupTotal++;
-            switch (g.Flag)
+            switch (g.Kind)
             {
-                case SnoModel.FloorFlag.Floor:   floorGroups++;   floorFaces   += g.Faces.Length; break;
-                case SnoModel.FloorFlag.Water:   waterGroups++;   waterFaces   += g.Faces.Length; break;
-                case SnoModel.FloorFlag.Ignored: ignoredGroups++; ignoredFaces += g.Faces.Length; break;
+                case SnoModel.FloorKind.Floor:   floorGroups++;   floorFaces   += g.Faces.Length; break;
+                case SnoModel.FloorKind.Water:   waterGroups++;   waterFaces   += g.Faces.Length; break;
+                case SnoModel.FloorKind.Ignored: ignoredGroups++; ignoredFaces += g.Faces.Length; break;
             }
         }
     }
@@ -882,11 +882,11 @@ static int CmdRegionNavFuzz(string[] a)
                 snosWithNav++;
                 foreach (var g in sno.LogicalGroupings)
                 {
-                    switch (g.Flag)
+                    switch (g.Kind)
                     {
-                        case SnoModel.FloorFlag.Floor:   floorFaces   += g.Faces.Length; break;
-                        case SnoModel.FloorFlag.Water:   waterFaces   += g.Faces.Length; break;
-                        case SnoModel.FloorFlag.Ignored: ignoredFaces += g.Faces.Length; break;
+                        case SnoModel.FloorKind.Floor:   floorFaces   += g.Faces.Length; break;
+                        case SnoModel.FloorKind.Water:   waterFaces   += g.Faces.Length; break;
+                        case SnoModel.FloorKind.Ignored: ignoredFaces += g.Faces.Length; break;
                     }
                 }
             }
@@ -1358,9 +1358,9 @@ static int CmdSnoInfo(string[] a)
         int floor = 0, water = 0, ignored = 0, navFaces = 0;
         foreach (var g in sno.LogicalGroupings)
         {
-            if (g.Flag == SnoModel.FloorFlag.Floor) floor++;
-            else if (g.Flag == SnoModel.FloorFlag.Water) water++;
-            else if (g.Flag == SnoModel.FloorFlag.Ignored) ignored++;
+            if (g.Kind == SnoModel.FloorKind.Floor) floor++;
+            else if (g.Kind == SnoModel.FloorKind.Water) water++;
+            else if (g.Kind == SnoModel.FloorKind.Ignored) ignored++;
             navFaces += g.Faces.Length;
         }
         Console.WriteLine($"Nav groups: {sno.LogicalGroupings.Length} (floor={floor} water={water} ignored={ignored}), {navFaces} nav faces");
@@ -1385,16 +1385,16 @@ static int CmdSnoNav(string[] a)
     for (var i = 0; i < sno.LogicalGroupings.Length; i++)
     {
         var g = sno.LogicalGroupings[i];
-        var tag = g.Flag switch
+        var tag = g.Kind switch
         {
-            SnoModel.FloorFlag.Floor   => "FLOOR  ",
-            SnoModel.FloorFlag.Water   => "WATER  ",
-            SnoModel.FloorFlag.Ignored => "IGNORED",
-            _                          => $"0x{(uint)g.Flag:X8}",
+            SnoModel.FloorKind.Floor   => "FLOOR  ",
+            SnoModel.FloorKind.Water   => "WATER  ",
+            SnoModel.FloorKind.Ignored => "IGNORED",
+            _                          => $"0x{(uint)g.Kind:X8}",
         };
-        if (g.Flag == SnoModel.FloorFlag.Floor) totalFloor += g.Faces.Length;
-        else if (g.Flag == SnoModel.FloorFlag.Water) totalWater += g.Faces.Length;
-        else if (g.Flag == SnoModel.FloorFlag.Ignored) totalIgnored += g.Faces.Length;
+        if (g.Kind == SnoModel.FloorKind.Floor) totalFloor += g.Faces.Length;
+        else if (g.Kind == SnoModel.FloorKind.Water) totalWater += g.Faces.Length;
+        else if (g.Kind == SnoModel.FloorKind.Ignored) totalIgnored += g.Faces.Length;
         Console.WriteLine($"  [{i,3}] id={g.Id,3} {tag}  bbox=({g.BoundsMin.X,7:F1},{g.BoundsMin.Y,7:F1},{g.BoundsMin.Z,7:F1}) .. ({g.BoundsMax.X,7:F1},{g.BoundsMax.Y,7:F1},{g.BoundsMax.Z,7:F1})  faces={g.Faces.Length}");
     }
     Console.WriteLine($"Totals  : floor={totalFloor}, water={totalWater}, ignored={totalIgnored}");
