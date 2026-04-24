@@ -1,4 +1,5 @@
 using System.Numerics;
+using SiegeFX.Core.Actors;
 using SiegeFX.Core.Assets;
 using SiegeFX.Core.IO;
 using SiegeFX.Core.Nav;
@@ -80,6 +81,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx world  layout      <map-tank> <terrain-tank> [root-region]");
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
     Console.WriteLine("  siegefx templates show     <tank> <name>");
+    Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -2054,12 +2056,13 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list" => CmdTemplatesList(a[1..]),
-        "show" => CmdTemplatesShow(a[1..]),
-        _      => UnknownCommand("templates " + a[0]),
+        "list"  => CmdTemplatesList(a[1..]),
+        "show"  => CmdTemplatesShow(a[1..]),
+        "stats" => CmdTemplatesStats(a[1..]),
+        _       => UnknownCommand("templates " + a[0]),
     };
 }
 
@@ -2147,6 +2150,70 @@ static int CmdTemplatesShow(string[] a)
 
     static void Print(string label, string? val) =>
         Console.WriteLine(val is null ? $"{label} <none>" : $"{label} {val}");
+}
+
+// Phase 12a: resolve combat stats from a template's specializes chain.
+// Accepts either a single --prefix filter to dump a group, or a bare name to show
+// one archetype. The chain-walk means stats defined on 3W_base_goblin bleed down
+// into every descendant that doesn't override, which is how DS1 authors it.
+static int CmdTemplatesStats(string[] a)
+{
+    string? prefix = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--prefix=", StringComparison.Ordinal)) prefix = x["--prefix=".Length..];
+        else rest.Add(x);
+    }
+    if (rest.Count == 0 || rest.Count > 2 || (prefix is null && rest.Count < 2))
+    {
+        Console.Error.WriteLine("usage: siegefx templates stats <tank> <name>");
+        Console.Error.WriteLine("   or: siegefx templates stats <tank> --prefix=P");
+        return 1;
+    }
+
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+
+    if (prefix is not null)
+    {
+        int combatants = 0, inert = 0, shown = 0;
+        Console.WriteLine($"{"template",-32}  {"life",8} {"dmg",-12} {"def",6} {"rng",5} {"spd",5} {"xp",8}");
+        Console.WriteLine(new string('-', 80));
+        foreach (var t in store.All.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!t.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var s = ActorStats.FromTemplate(store, t);
+            if (s.IsCombatant) combatants++; else inert++;
+            if (shown++ < 40)
+                Console.WriteLine(
+                    $"{t.Name,-32}  {s.MaxLife,8:F1} {s.DamageMin,5:F0}-{s.DamageMax,-5:F0} {s.Defense,6:F1} {s.AttackRange,5:F1} {s.WalkSpeed,5:F2} {s.ExperienceValue,8}");
+        }
+        if (shown > 40) Console.WriteLine($"... (showed 40 of {shown} matching; prefix='{prefix}')");
+        Console.WriteLine($"summary: {combatants} combatant(s), {inert} inert (max_life<=0 or damage_max<=0)");
+        return 0;
+    }
+
+    if (!store.TryGet(rest[1], out var tpl))
+    {
+        Console.Error.WriteLine($"template '{rest[1]}' not found (store has {store.Count})");
+        return 1;
+    }
+    var stats = ActorStats.FromTemplate(store, tpl);
+    Console.WriteLine($"name              : {tpl.Name}");
+    Console.Write    ("chain             :");
+    for (var cur = tpl; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
+    Console.WriteLine();
+    Console.WriteLine($"max life          : {stats.MaxLife:F2}");
+    Console.WriteLine($"max mana          : {stats.MaxMana:F2}");
+    Console.WriteLine($"damage            : {stats.DamageMin:F1} – {stats.DamageMax:F1}");
+    Console.WriteLine($"defense           : {stats.Defense:F2}");
+    Console.WriteLine($"attack range      : {stats.AttackRange:F2}");
+    Console.WriteLine($"walk speed        : {stats.WalkSpeed:F2} u/s");
+    Console.WriteLine($"experience value  : {stats.ExperienceValue:N0}");
+    Console.WriteLine($"combatant         : {(stats.IsCombatant ? "yes" : "no (non-combat archetype)")}");
+    return 0;
 }
 
 static int CmdRegionActors(string[] a)

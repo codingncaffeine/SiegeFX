@@ -34,6 +34,7 @@ echo   14. Phase 11a - Walkable-surface nav (fh_r1 stats + world-wide fuzz)
 echo   15. Phase 11b - A* pathfinding (fh_r1 hand path + world-wide fuzz)
 echo   16. Phase 11c - Nav follower (walk fh_r1 corridor tick-by-tick)
 echo   17. Phase 11d - Actors wander fh_r1 (181 followers on nav mesh)
+echo   18. Phase 12a - Template stats (goblin grunt + all 3W_goblin_* prefix)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -57,6 +58,7 @@ if /i "%CHOICE%"=="14" goto T14
 if /i "%CHOICE%"=="15" goto T15
 if /i "%CHOICE%"=="16" goto T16
 if /i "%CHOICE%"=="17" goto T17
+if /i "%CHOICE%"=="18" goto T18
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -203,6 +205,19 @@ echo [expect: nav mesh ~27k tri / 0 non-manifold; 181 followers wandering]
 echo [RMB+WASD to fly, Esc to quit — watch actors pathing around obstacles]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+goto MENU
+
+:T18
+echo.
+echo --- Phase 12a: combat stats for 3W_goblin_grunt ---
+echo [expect: life 1162, damage 142-204, defense 554, walk 2.51, combatant=yes]
+echo.
+"%TOOL%" templates stats "%DS1%\Resources\Logic.dsres" 3W_goblin_grunt
+echo.
+echo --- Phase 12a: all 3W_goblin_* variants (3 combatants, 5 inert parts) ---
+echo.
+"%TOOL%" templates stats "%DS1%\Resources\Logic.dsres" --prefix=3W_goblin
+pause
 goto MENU
 
 :BUILD
