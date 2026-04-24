@@ -350,7 +350,7 @@ static int DispatchWorld(string[] a)
 
 static int DispatchSkrit(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|bind|compile|run|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx skrit <tokens|parse|bind|compile|run|tick|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "tokens"  => CmdSkritTokens(a[1..]),
@@ -358,6 +358,7 @@ static int DispatchSkrit(string[] a)
         "bind"    => CmdSkritBind(a[1..]),
         "compile" => CmdSkritCompile(a[1..]),
         "run"     => CmdSkritRun(a[1..]),
+        "tick"    => CmdSkritTick(a[1..]),
         "fuzz"    => CmdSkritFuzz(a[1..]),
         _         => UnknownCommand("skrit " + a[0]),
     };
@@ -451,6 +452,75 @@ static int CmdSkritRun(string[] a)
     }
     var result = vm.Run(a[1]);
     Console.WriteLine($"result: {result}");
+    return 0;
+}
+
+static int CmdSkritTick(string[] a)
+{
+    int ticks = 60;
+    int seed = 1;
+    int subAnims = 4;
+    string? file = null;
+    var startEvents = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--ticks=", StringComparison.Ordinal)) ticks = int.Parse(x["--ticks=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+        else if (x.StartsWith("--seed=", StringComparison.Ordinal)) seed = int.Parse(x["--seed=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+        else if (x.StartsWith("--subanims=", StringComparison.Ordinal)) subAnims = int.Parse(x["--subanims=".Length..], System.Globalization.CultureInfo.InvariantCulture);
+        else if (x.StartsWith("--event=", StringComparison.Ordinal)) startEvents.Add(x["--event=".Length..]);
+        else if (!x.StartsWith("--", StringComparison.Ordinal)) file = x;
+    }
+    if (file is null)
+    {
+        Console.Error.WriteLine("usage: siegefx skrit tick <file.skrit> [--ticks=N] [--seed=S] [--subanims=N] [--event=Name ...]");
+        return 1;
+    }
+
+    var src = File.ReadAllText(file);
+    var script = SkritParser.Parse(src);
+    var bind = new SkritBinder(script).Bind();
+    if (bind.Diagnostics.Count > 0)
+    {
+        // Shipped DS1 skrits carry real bugs (duplicate states, unknown transitions).
+        // Surface them but keep running — the binder still produces a usable scope
+        // table by keeping the first of each duplicate.
+        Console.WriteLine($"bind: {bind.Diagnostics.Count} diagnostic(s) (continuing):");
+        foreach (var d in bind.Diagnostics) Console.WriteLine($"  !! {d}");
+    }
+    var program = new SkritCompiler(script, bind).Compile();
+
+    var host = new ActorHostBridge(seed) { NumSubAnims = subAnims };
+    var runtime = new SkritRuntime();
+    var inst = runtime.Add(new SkritInstance(program, host));
+    host.Instance = inst;
+    inst.Start();
+    Console.WriteLine($"start: state={inst.CurrentState ?? "<none>"}, chores={inst.Chores.Count}");
+    foreach (var ev in startEvents)
+    {
+        // Anim skrits conventionally enter via OnStartChore$( subanim, flags ).
+        bool fired = inst.Dispatch(ev, SkritValue.FromInt(0), SkritValue.FromInt(0));
+        Console.WriteLine($"dispatch {ev}: {(fired ? "ran" : "no handler")}");
+    }
+
+    // Fixed-step tick at 20 Hz (SkritInstance.FramesPerSecond) so `frames` units map 1:1.
+    double dt = 1.0 / SkritInstance.FramesPerSecond;
+    string? lastState = inst.CurrentState;
+    int firedChores = 0;
+    for (int t = 0; t < ticks; t++)
+    {
+        int beforeChoreCount = inst.Chores.Count;
+        runtime.Tick(dt);
+        int afterChoreCount = inst.Chores.Count;
+        if (afterChoreCount < beforeChoreCount) firedChores += beforeChoreCount - afterChoreCount;
+        if (inst.CurrentState != lastState)
+        {
+            Console.WriteLine($"tick {t,3}: state {lastState ?? "<none>"} -> {inst.CurrentState ?? "<none>"}, chores={afterChoreCount}");
+            lastState = inst.CurrentState;
+        }
+    }
+    Console.WriteLine($"end: state={inst.CurrentState ?? "<none>"}, chores-remaining={inst.Chores.Count}, chores-fired≥{firedChores}");
+    Console.WriteLine($"blender: anim={host.CurrentAnimIndex}, log={host.BlenderLog.Count} call(s)");
+    foreach (var line in host.BlenderLog) Console.WriteLine($"  {line}");
     return 0;
 }
 
