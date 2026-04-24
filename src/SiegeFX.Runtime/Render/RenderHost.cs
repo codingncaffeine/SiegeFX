@@ -55,6 +55,12 @@ public sealed class RenderHost : IDisposable
         public SkinnedMesh GlMesh = null!;
         public double AnimTime;
         public int LastClipIndex;
+
+        // Phase 11d — actors that spawn over the nav mesh get a follower and wander
+        // around it. Those that land off-mesh (pens inside buildings, props) have
+        // Follower=null and just render at their authored spawn pose via CurrentTransform.
+        public SiegeFX.Core.Actors.ActorFollower? Follower;
+        public Matrix4x4 CurrentTransform;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -759,6 +765,50 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
 
+        // Phase 11d — build a region-scope nav mesh once and hand a follower to every
+        // actor that spawns over a walkable triangle. We reuse the terrain tank already
+        // opened at LoadRegion time but re-resolve SNOs into our own cache to keep the
+        // nav mesh's lifetime decoupled from the render-mesh cache.
+        SiegeFX.Core.Nav.NavMesh? navMesh = null;
+        if (_regionTerrainTankPath is not null)
+        {
+            try
+            {
+                using var terrainTank = TankFile.Open(_regionTerrainTankPath);
+                var terrainReader = new TankReader(terrainTank);
+                var navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+                var meshIdx = SnoMeshIndex.Build(terrainReader);
+                var navCache = new Dictionary<uint, SnoModel?>();
+                SnoModel? ResolveNav(uint meshGuid)
+                {
+                    if (navCache.TryGetValue(meshGuid, out var hit)) return hit;
+                    SnoModel? m = null;
+                    if (meshIdx.TryResolve(meshGuid, out var p))
+                    {
+                        try { m = SnoModel.Load(terrainReader.ExtractToMemory(p)); }
+                        catch { m = null; }
+                    }
+                    navCache[meshGuid] = m;
+                    return m;
+                }
+                // Re-use the already-built RegionLayout: it's the same graph, same
+                // resolver output, just with the render-side SnoModel cache. Building
+                // a second layout would redo door-chain composition for no reason.
+                navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+                Console.WriteLine($"  nav mesh: {navMesh.TriangleCount} tri(s), " +
+                                  $"{navMesh.Vertices.Length} welded vert(s), " +
+                                  $"{navMesh.SourceSnodeCount} snode(s), " +
+                                  $"{navMesh.NonManifoldEdgeCount} non-manifold edge(s)");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  !! nav mesh build failed: {ex.Message} — actors will stand still");
+                navMesh = null;
+            }
+        }
+
+        int actorsOnMesh = 0;
+        int actorsOffMesh = 0;
         foreach (var actor in actors)
         {
             if (!_actorMeshCache.TryGetValue(actor.Mesh, out var gl))
@@ -766,13 +816,42 @@ void main()
                 gl = new SkinnedMesh(_gl, actor.Mesh);
                 _actorMeshCache[actor.Mesh] = gl;
             }
+
+            SiegeFX.Core.Actors.ActorFollower? follower = null;
+            if (navMesh is not null &&
+                navMesh.TryFindTriangle(actor.WorldTransform.Translation, out var startTri))
+            {
+                // Snap the starting Y to the mesh surface so the first tick doesn't
+                // lift the actor up off a ramp or drop it through a floor.
+                var snapped = actor.WorldTransform.Translation with
+                {
+                    Y = navMesh.SampleYOnTriangle(startTri, actor.WorldTransform.Translation),
+                };
+                // Scid makes the per-actor RNG deterministic across runs so two launches
+                // on the same region play out the same. Speed = 4 u/s is the DS1 walk
+                // gait ballpark; overridable later per-template when we wire gait.
+                follower = new SiegeFX.Core.Actors.ActorFollower(navMesh, snapped, speed: 4f, rngSeed: (int)actor.Instance.Scid);
+                actorsOnMesh++;
+            }
+            else
+            {
+                actorsOffMesh++;
+            }
+
             _actors.Add(new ActorRenderState
             {
-                Actor        = actor,
-                GlMesh       = gl,
-                AnimTime     = 0,
-                LastClipIndex = actor.CurrentClipIndex,
+                Actor             = actor,
+                GlMesh            = gl,
+                AnimTime          = 0,
+                LastClipIndex     = actor.CurrentClipIndex,
+                Follower          = follower,
+                CurrentTransform  = actor.WorldTransform,
             });
+        }
+
+        if (navMesh is not null)
+        {
+            Console.WriteLine($"  followers: {actorsOnMesh} wandering / {actorsOffMesh} pinned (off-mesh spawn)");
         }
 
         // Frame the camera on the centroid of the spawned actors so the user sees them on
@@ -925,6 +1004,24 @@ void main()
                 _actorTickAccumulator -= stepSec;
                 _actorRuntime.Tick(stepSec);
                 _actorBus.Deliver();
+                // Phase 11d — drive each follower at the same fixed cadence as the
+                // skrit runtime. Stepping movement inside the accumulator loop (not
+                // once per render frame) keeps translation deterministic regardless
+                // of framerate — an actor walks at exactly `speed` u/s wall-clock.
+                foreach (var s in _actors)
+                {
+                    if (s.Follower is null) continue;
+                    s.Follower.Tick((float)stepSec);
+                    // Compose CurrentTransform = rotate-to-facing * translate-to-pos.
+                    // We drop the authored spawn orientation once the follower owns
+                    // movement; the mesh's local forward in DS1 is +Z, so facing into
+                    // the XZ heading means rotating around Y by atan2(dx, dz).
+                    var facing = s.Follower.Facing;
+                    float yaw = MathF.Atan2(facing.X, facing.Z);
+                    s.CurrentTransform =
+                        Matrix4x4.CreateRotationY(yaw) *
+                        Matrix4x4.CreateTranslation(s.Follower.Position);
+                }
             }
             foreach (var s in _actors)
             {
@@ -1047,7 +1144,7 @@ void main()
                     var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
                     skin = AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t);
                 }
-                _skinShader.SetMatrix4("uModel", s.Actor.WorldTransform);
+                _skinShader.SetMatrix4("uModel", s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
                 s.GlMesh.Draw();
             }

@@ -33,6 +33,7 @@ echo   13. Phase 10e - Play region (walk into fh_r1, 181 actors idling)
 echo   14. Phase 11a - Walkable-surface nav (fh_r1 stats + world-wide fuzz)
 echo   15. Phase 11b - A* pathfinding (fh_r1 hand path + world-wide fuzz)
 echo   16. Phase 11c - Nav follower (walk fh_r1 corridor tick-by-tick)
+echo   17. Phase 11d - Actors wander fh_r1 (181 followers on nav mesh)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -55,6 +56,7 @@ if /i "%CHOICE%"=="13" goto T13
 if /i "%CHOICE%"=="14" goto T14
 if /i "%CHOICE%"=="15" goto T15
 if /i "%CHOICE%"=="16" goto T16
+if /i "%CHOICE%"=="17" goto T17
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -192,6 +194,15 @@ echo [expect: reaches goal in ~100 ticks (20 Hz), ~32 units walked vs ~28 straig
 echo.
 "%TOOL%" region follow "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1 "10,0,10" "30,0,30"
 pause
+goto MENU
+
+:T17
+echo.
+echo --- Phase 11d: fh_r1 with 181 wandering actors on nav mesh ---
+echo [expect: nav mesh ~27k tri / 0 non-manifold; 181 followers wandering]
+echo [RMB+WASD to fly, Esc to quit — watch actors pathing around obstacles]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU
 
 :BUILD
