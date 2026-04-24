@@ -35,6 +35,7 @@ echo   15. Phase 11b - A* pathfinding (fh_r1 hand path + world-wide fuzz)
 echo   16. Phase 11c - Nav follower (walk fh_r1 corridor tick-by-tick)
 echo   17. Phase 11d - Actors wander fh_r1 (181 followers on nav mesh)
 echo   18. Phase 12a - Template stats (goblin grunt + all 3W_goblin_* prefix)
+echo   19. Phase 12b - Combat sim (1000 duels: grunt vs grunt, guard vs grunt)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -59,6 +60,7 @@ if /i "%CHOICE%"=="15" goto T15
 if /i "%CHOICE%"=="16" goto T16
 if /i "%CHOICE%"=="17" goto T17
 if /i "%CHOICE%"=="18" goto T18
+if /i "%CHOICE%"=="19" goto T19
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -217,6 +219,20 @@ echo.
 echo --- Phase 12a: all 3W_goblin_* variants (3 combatants, 5 inert parts) ---
 echo.
 "%TOOL%" templates stats "%DS1%\Resources\Logic.dsres" --prefix=3W_goblin
+pause
+goto MENU
+
+:T19
+echo.
+echo --- Phase 12b: grunt vs grunt, 1000 duels, seed=42 ---
+echo [expect: 1000/1000 kills, mean hits ~10, mean damage ~112]
+echo.
+"%TOOL%" templates combat "%DS1%\Resources\Logic.dsres" 3W_goblin_grunt 3W_goblin_grunt --duels=1000 --seed=42
+echo.
+echo --- Phase 12b: guard vs grunt, 1000 duels, seed=42 ---
+echo [expect: 1000/1000 kills, mean hits ~4, mean damage ~284]
+echo.
+"%TOOL%" templates combat "%DS1%\Resources\Logic.dsres" 3W_goblin_guard 3W_goblin_grunt --duels=1000 --seed=42
 pause
 goto MENU
 

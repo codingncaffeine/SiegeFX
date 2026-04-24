@@ -82,6 +82,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
     Console.WriteLine("  siegefx templates show     <tank> <name>");
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
+    Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -2056,13 +2057,14 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list"  => CmdTemplatesList(a[1..]),
-        "show"  => CmdTemplatesShow(a[1..]),
-        "stats" => CmdTemplatesStats(a[1..]),
-        _       => UnknownCommand("templates " + a[0]),
+        "list"   => CmdTemplatesList(a[1..]),
+        "show"   => CmdTemplatesShow(a[1..]),
+        "stats"  => CmdTemplatesStats(a[1..]),
+        "combat" => CmdTemplatesCombat(a[1..]),
+        _        => UnknownCommand("templates " + a[0]),
     };
 }
 
@@ -2220,6 +2222,70 @@ static int CmdTemplatesStats(string[] a)
     Console.WriteLine($"walk speed        : {stats.WalkSpeed:F2} u/s");
     Console.WriteLine($"experience value  : {stats.ExperienceValue:N0}");
     Console.WriteLine($"combatant         : {(stats.IsCombatant ? "yes" : "no (non-combat archetype)")}");
+    return 0;
+}
+
+// Phase 12b: simulate a melee fight between two named templates. Sanity check that
+// the stats + resolver combine into DS1-feeling combat: not a one-shot, not 100+
+// rolls, consistent across RNG runs. Rolls until one side dies; reports hits,
+// mean damage dealt per hit, and remaining life on the winner.
+static int CmdTemplatesCombat(string[] a)
+{
+    int duels = 1;
+    int? rngSeed = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--duels=", StringComparison.Ordinal)) int.TryParse(x["--duels=".Length..], out duels);
+        else if (x.StartsWith("--seed=", StringComparison.Ordinal)) { if (int.TryParse(x["--seed=".Length..], out var s)) rngSeed = s; }
+        else rest.Add(x);
+    }
+    if (rest.Count != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx templates combat <tank> <attacker> <target> [--duels=N] [--seed=K]");
+        return 1;
+    }
+
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    if (!store.TryGet(rest[1], out var attackerT)) { Console.Error.WriteLine($"template '{rest[1]}' not found"); return 1; }
+    if (!store.TryGet(rest[2], out var targetT))   { Console.Error.WriteLine($"template '{rest[2]}' not found"); return 1; }
+
+    var atkStats = ActorStats.FromTemplate(store, attackerT);
+    var tgtStats = ActorStats.FromTemplate(store, targetT);
+    if (!atkStats.IsCombatant) { Console.Error.WriteLine($"{attackerT.Name}: not a combatant (no life/damage)"); return 1; }
+
+    Console.WriteLine($"attacker  : {attackerT.Name}  life={atkStats.MaxLife:F0} dmg={atkStats.DamageMin:F0}-{atkStats.DamageMax:F0} def={atkStats.Defense:F0}");
+    Console.WriteLine($"target    : {targetT.Name}  life={tgtStats.MaxLife:F0} def={tgtStats.Defense:F0}");
+    Console.WriteLine($"duels     : {duels}{(rngSeed is null ? "" : $"  seed={rngSeed}")}");
+    Console.WriteLine();
+
+    var rng = new Random(rngSeed ?? Environment.TickCount);
+    int totalHits = 0;
+    double totalDmg = 0;
+    int kills = 0;
+    int capHits = 200; // safety cap — a zero-damage resolver would otherwise loop forever
+    for (int d = 0; d < duels; d++)
+    {
+        var target = new ActorCombatState(tgtStats);
+        int hits = 0;
+        while (!target.IsDead && hits < capHits)
+        {
+            float dmg = CombatResolver.RollMeleeDamage(atkStats, tgtStats, rng);
+            float actual = target.ApplyDamage(dmg);
+            totalDmg += actual;
+            hits++;
+        }
+        totalHits += hits;
+        if (target.IsDead) kills++;
+    }
+
+    double meanHits = totalHits / (double)duels;
+    double meanDmg  = totalDmg / totalHits;
+    Console.WriteLine($"result    : {kills}/{duels} duel(s) reached a kill");
+    Console.WriteLine($"  mean hits to kill : {meanHits:F1}");
+    Console.WriteLine($"  mean damage / hit : {meanDmg:F1}");
     return 0;
 }
 

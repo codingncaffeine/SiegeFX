@@ -34,6 +34,11 @@ public sealed class Actor
     /// <see cref="ActorStats.IsCombatant"/> false; the combat pipeline skips them.</summary>
     public ActorStats Stats { get; }
 
+    /// <summary>Mutable combat runtime (Phase 12b). Current life/mana + death edge.
+    /// Seeded from <see cref="Stats"/> so every actor starts at full health; combat
+    /// code mutates via <see cref="ActorCombatState.ApplyDamage"/>.</summary>
+    public ActorCombatState Combat { get; }
+
     /// <summary>Current blender-selected clip. Clamped to the legal range so the caller
     /// can index <see cref="Clips"/> blindly; defaults to 0 before the first dispatch
     /// resolves.</summary>
@@ -58,6 +63,7 @@ public sealed class Actor
         Skrit = skrit;
         Host = host;
         Stats = stats;
+        Combat = new ActorCombatState(stats);
     }
 
     public override string ToString() =>
