@@ -30,6 +30,7 @@ echo   10. Phase 10a - Template store (goblin grunt archetype resolution)
 echo   11. Phase 10b - Region actor instance loader (fh_r1)
 echo   12. Phase 10c+d - Spawn 181 actors, tick + broadcast (fh_r1)
 echo   13. Phase 10e - Play region (walk into fh_r1, 181 actors idling)
+echo   14. Phase 11a - Walkable-surface nav (fh_r1 stats + world-wide fuzz)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -49,6 +50,7 @@ if /i "%CHOICE%"=="10" goto T10
 if /i "%CHOICE%"=="11" goto T11
 if /i "%CHOICE%"=="12" goto T12
 if /i "%CHOICE%"=="13" goto T13
+if /i "%CHOICE%"=="14" goto T14
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -149,6 +151,20 @@ echo --- Phase 10e: fh_r1 with terrain + 181 actors, skrit-driven ---
 echo [RMB+WASD to fly, Esc to quit]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+goto MENU
+
+:T14
+echo.
+echo --- Phase 11a: fh_r1 walkable-surface nav stats ---
+echo [expect: ~1700 snodes placed, ~2400 floor groupings, ~27k floor faces]
+echo.
+"%TOOL%" region nav "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+echo --- Phase 11a: world-wide nav fuzz (81 regions, ~7400 unique SNOs) ---
+echo [expect: 0 region failures, floor ~160k, water ~20k, ignored ~430k]
+echo.
+"%TOOL%" region nav-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
+pause
 goto MENU
 
 :BUILD

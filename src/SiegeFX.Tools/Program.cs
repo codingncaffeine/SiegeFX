@@ -65,6 +65,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
     Console.WriteLine("  siegefx asp  info    <file.asp>");
     Console.WriteLine("  siegefx sno  info    <file.sno>");
+    Console.WriteLine("  siegefx sno  nav     <file.sno>");
     Console.WriteLine("  siegefx prs  info    <file.prs>");
     Console.WriteLine("  siegefx prs  fuzz    <tank>");
     Console.WriteLine("  siegefx gas  info    <file.gas>");
@@ -80,6 +81,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
+    Console.WriteLine("  siegefx region nav         <map-tank> <terrain-tank> <region-path>");
+    Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -152,10 +155,11 @@ static int DispatchAnim(string[] a)
 
 static int DispatchSno(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sno <info> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sno <info|nav> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info" => CmdSnoInfo(a[1..]),
+        "nav"  => CmdSnoNav(a[1..]),
         _      => UnknownCommand("sno " + a[0]),
     };
 }
@@ -332,7 +336,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -343,6 +347,8 @@ static int DispatchRegion(string[] a)
         "actors"      => CmdRegionActors(a[1..]),
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
+        "nav"         => CmdRegionNav(a[1..]),
+        "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -754,6 +760,153 @@ static int CmdRegionLayout(string[] a)
         show++;
     }
     return 0;
+}
+
+static int CmdRegionNav(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region nav <map-tank> <terrain-tank> <region-path>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var regionPath = a[2].Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+
+    var graph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var layout = RegionLayout.Build(graph, Resolve);
+
+    int placedSnodes = 0, snosWithNav = 0, snosNoNav = 0;
+    int groupTotal = 0, floorGroups = 0, waterGroups = 0, ignoredGroups = 0;
+    long floorFaces = 0, waterFaces = 0, ignoredFaces = 0;
+
+    foreach (var n in graph.Nodes)
+    {
+        if (!layout.TryGetTransform(n.Guid, out _)) continue;
+        placedSnodes++;
+        var sno = Resolve(n.MeshGuid);
+        if (sno is null) continue;
+        if (sno.LogicalGroupings.Length == 0) { snosNoNav++; continue; }
+        snosWithNav++;
+        foreach (var g in sno.LogicalGroupings)
+        {
+            groupTotal++;
+            switch (g.Flag)
+            {
+                case SnoModel.FloorFlag.Floor:   floorGroups++;   floorFaces   += g.Faces.Length; break;
+                case SnoModel.FloorFlag.Water:   waterGroups++;   waterFaces   += g.Faces.Length; break;
+                case SnoModel.FloorFlag.Ignored: ignoredGroups++; ignoredFaces += g.Faces.Length; break;
+            }
+        }
+    }
+
+    Console.WriteLine($"Region         : {regionPath}");
+    Console.WriteLine($"Snodes placed  : {placedSnodes} of {graph.Nodes.Count}");
+    Console.WriteLine($"Snodes w/  nav : {snosWithNav}");
+    Console.WriteLine($"Snodes w/o nav : {snosNoNav}");
+    Console.WriteLine($"Nav groupings  : {groupTotal}  (floor={floorGroups}, water={waterGroups}, ignored={ignoredGroups})");
+    Console.WriteLine($"Nav faces      : floor={floorFaces:N0}  water={waterFaces:N0}  ignored={ignoredFaces:N0}");
+    if (floorFaces == 0)
+        Console.WriteLine("WARNING: no walkable floor faces — region is nav-empty");
+    return 0;
+}
+
+static int CmdRegionNavFuzz(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region nav-fuzz <map-tank> <terrain-tank>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    var snoFails = new List<string>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch (Exception ex) { snoFails.Add($"{path}: {ex.Message}"); sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    int regionCount = 0, regionFails = 0;
+    int snosScanned = 0, snosWithNav = 0, snosNoNav = 0, snosBad = 0;
+    long floorFaces = 0, waterFaces = 0, ignoredFaces = 0;
+    foreach (var path in mapReader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        regionCount++;
+        try
+        {
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
+            var seen = new HashSet<uint>();
+            foreach (var n in graph.Nodes)
+            {
+                if (!seen.Add(n.MeshGuid)) continue;
+                var sno = Resolve(n.MeshGuid);
+                snosScanned++;
+                if (sno is null) { snosBad++; continue; }
+                if (sno.LogicalGroupings.Length == 0) { snosNoNav++; continue; }
+                snosWithNav++;
+                foreach (var g in sno.LogicalGroupings)
+                {
+                    switch (g.Flag)
+                    {
+                        case SnoModel.FloorFlag.Floor:   floorFaces   += g.Faces.Length; break;
+                        case SnoModel.FloorFlag.Water:   waterFaces   += g.Faces.Length; break;
+                        case SnoModel.FloorFlag.Ignored: ignoredFaces += g.Faces.Length; break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [region fail] {path}: {ex.Message}");
+            regionFails++;
+        }
+    }
+    Console.WriteLine($"Regions scanned: {regionCount}  ({regionFails} region failure(s))");
+    Console.WriteLine($"Unique SNOs    : {snosScanned}  (with-nav={snosWithNav}, no-nav={snosNoNav}, bad={snosBad})");
+    Console.WriteLine($"Nav faces      : floor={floorFaces:N0}  water={waterFaces:N0}  ignored={ignoredFaces:N0}");
+    if (snoFails.Count > 0)
+    {
+        Console.WriteLine($"SNO parse failures ({snoFails.Count}):");
+        foreach (var msg in snoFails.Take(20)) Console.WriteLine($"  {msg}");
+        if (snoFails.Count > 20) Console.WriteLine($"  ... {snoFails.Count - 20} more");
+    }
+    return (regionFails == 0 && snoFails.Count == 0) ? 0 : 4;
 }
 
 static int CmdRegionLayoutFuzz(string[] a)
@@ -1200,6 +1353,51 @@ static int CmdSnoInfo(string[] a)
     {
         Console.WriteLine($"  spot[{i}] name='{sno.Spots[i].Name}'");
     }
+    if (sno.LogicalGroupings.Length > 0)
+    {
+        int floor = 0, water = 0, ignored = 0, navFaces = 0;
+        foreach (var g in sno.LogicalGroupings)
+        {
+            if (g.Flag == SnoModel.FloorFlag.Floor) floor++;
+            else if (g.Flag == SnoModel.FloorFlag.Water) water++;
+            else if (g.Flag == SnoModel.FloorFlag.Ignored) ignored++;
+            navFaces += g.Faces.Length;
+        }
+        Console.WriteLine($"Nav groups: {sno.LogicalGroupings.Length} (floor={floor} water={water} ignored={ignored}), {navFaces} nav faces");
+    }
+    return 0;
+}
+
+static int CmdSnoNav(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx sno nav <file.sno>"); return 1; }
+    var data = File.ReadAllBytes(a[0]);
+    var sno = SnoModel.Load(data);
+    Console.WriteLine($"File    : {a[0]}");
+    Console.WriteLine($"Bounds  : {sno.MinBounds} .. {sno.MaxBounds}");
+    Console.WriteLine($"Groups  : {sno.LogicalGroupings.Length}");
+    if (sno.LogicalGroupings.Length == 0)
+    {
+        Console.WriteLine("(no logical-grouping nav section — SNO predates nav bake or was stripped)");
+        return 0;
+    }
+    int totalFloor = 0, totalWater = 0, totalIgnored = 0;
+    for (var i = 0; i < sno.LogicalGroupings.Length; i++)
+    {
+        var g = sno.LogicalGroupings[i];
+        var tag = g.Flag switch
+        {
+            SnoModel.FloorFlag.Floor   => "FLOOR  ",
+            SnoModel.FloorFlag.Water   => "WATER  ",
+            SnoModel.FloorFlag.Ignored => "IGNORED",
+            _                          => $"0x{(uint)g.Flag:X8}",
+        };
+        if (g.Flag == SnoModel.FloorFlag.Floor) totalFloor += g.Faces.Length;
+        else if (g.Flag == SnoModel.FloorFlag.Water) totalWater += g.Faces.Length;
+        else if (g.Flag == SnoModel.FloorFlag.Ignored) totalIgnored += g.Faces.Length;
+        Console.WriteLine($"  [{i,3}] id={g.Id,3} {tag}  bbox=({g.BoundsMin.X,7:F1},{g.BoundsMin.Y,7:F1},{g.BoundsMin.Z,7:F1}) .. ({g.BoundsMax.X,7:F1},{g.BoundsMax.Y,7:F1},{g.BoundsMax.Z,7:F1})  faces={g.Faces.Length}");
+    }
+    Console.WriteLine($"Totals  : floor={totalFloor}, water={totalWater}, ignored={totalIgnored}");
     return 0;
 }
 
