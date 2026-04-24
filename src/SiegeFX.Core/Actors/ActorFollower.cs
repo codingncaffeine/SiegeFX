@@ -32,7 +32,11 @@ public sealed class ActorFollower
     /// have a tiny walkable footprint where ~3-4 samples miss in a row.</summary>
     public int MaxRetries { get; set; } = 6;
 
-    Vector3 _facing = Vector3.UnitZ;
+    // Initial facing is caller-supplied (from the actor's authored orientation) so a
+    // follower whose first pick stalls or whose path is briefly blocked doesn't visibly
+    // snap all 181 actors to +Z at spawn. Once movement actually produces a nonzero XZ
+    // delta, this gets overwritten from the tick-to-tick direction vector.
+    Vector3 _facing;
     readonly Random _rng;
 
     // After a failed target pick or a blocked path, wait this many ticks before
@@ -42,10 +46,14 @@ public sealed class ActorFollower
     int _idleTicksRemaining;
     const int IdleAfterFail = 20;
 
-    public ActorFollower(NavMesh mesh, Vector3 startPos, float speed, int rngSeed)
+    public ActorFollower(NavMesh mesh, Vector3 startPos, float speed, int rngSeed, Vector3 initialFacing)
     {
         Follower = new NavFollower(mesh, startPos, speed);
         _rng = new Random(rngSeed);
+        // Collapse to XZ unit vector; degenerate input (Y-only or zero) falls back to +Z.
+        var flat = new Vector3(initialFacing.X, 0f, initialFacing.Z);
+        float len = flat.Length();
+        _facing = len > 1e-4f ? flat / len : Vector3.UnitZ;
         PickNewTarget();
     }
 

@@ -830,7 +830,15 @@ void main()
                 // Scid makes the per-actor RNG deterministic across runs so two launches
                 // on the same region play out the same. Speed = 4 u/s is the DS1 walk
                 // gait ballpark; overridable later per-template when we wire gait.
-                follower = new SiegeFX.Core.Actors.ActorFollower(navMesh, snapped, speed: 4f, rngSeed: (int)actor.Instance.Scid);
+                //
+                // Authored facing = Actor.WorldTransform's local +Z direction in world
+                // space (DS1 convention — characters look down +Z in their local frame).
+                // Extracted with a forward-vector transform, then projected to XZ by
+                // the follower ctor so actors stalled at spawn don't snap to +Z.
+                var authoredFacing = Vector3.TransformNormal(Vector3.UnitZ, actor.WorldTransform);
+                follower = new SiegeFX.Core.Actors.ActorFollower(
+                    navMesh, snapped, speed: 4f, rngSeed: (int)actor.Instance.Scid,
+                    initialFacing: authoredFacing);
                 actorsOnMesh++;
             }
             else
