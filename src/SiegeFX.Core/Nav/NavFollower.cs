@@ -13,6 +13,11 @@ namespace SiegeFX.Core.Nav;
 /// path, which produces a visibly lumpy route across wide corridors. Good enough to
 /// prove the wiring works before the first actor integration; replace with a funnel
 /// when lumpy paths start showing up in the viewer.
+///
+/// <b>Not reentrant.</b> <see cref="Tick"/> and <see cref="SetTarget"/> share the
+/// pathfinder workspace; calling SetTarget from inside a Tick-driven callback (e.g. a
+/// skrit event handler fired by the actor) will stomp the in-flight A* scratch. Keep
+/// the follower single-threaded per actor and defer retargeting to the next tick.
 /// </summary>
 public sealed class NavFollower
 {
@@ -140,11 +145,29 @@ public sealed class NavFollower
             float step = MathF.Min(remaining, distXZ);
             float nx = Position.X + dx / distXZ * step;
             float nz = Position.Z + dz / distXZ * step;
-            // Resample Y on whichever triangle the new XZ position lands on; falls back
-            // to the current triangle when the step stays inside it.
+            // Resample Y on whichever triangle the new XZ position lands on. We only
+            // trust the hit when it's on our path corridor: stepping across a seam can
+            // briefly land us on an adjacent non-path tile (float precision at edges),
+            // and if we re-rooted CurrentTriangle there the follower would chase a
+            // stale centroid forever without advancing the path. Accept the hit only
+            // if it's _path[pathIdx], _path[pathIdx+1] (advance in that case), or
+            // fall through silently and keep trusting the A* result.
             int standing = CurrentTriangle;
             if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit))
-                standing = hit;
+            {
+                if (hit == _path[_pathIdx])
+                {
+                    standing = hit;
+                }
+                else if (_pathIdx + 1 < _path.Count && hit == _path[_pathIdx + 1])
+                {
+                    _pathIdx++;
+                    standing = hit;
+                }
+                // else: drifted into a neighbor that's not on the path; ignore the
+                // hit and keep standing on _path[_pathIdx] — the next waypoint-chase
+                // iteration will pull us back into the corridor.
+            }
             float ny = standing >= 0 ? Mesh.SampleYOnTriangle(standing, new Vector3(nx, 0f, nz)) : Position.Y;
             Position = new Vector3(nx, ny, nz);
             CurrentTriangle = standing;
