@@ -78,16 +78,21 @@ public sealed class SpellTemplate
     }
 
     /// <summary>Mana to charge for a cast at <paramref name="magicLevel"/>.
-    /// In DS1 the <c>mana_cost_modifier</c> expression IS the absolute mana
-    /// cost when present — <c>mana_cost</c> is just the default for spells
-    /// that don't scale by level. Phase 17a happened to produce correct
-    /// numbers via base*modifier because zap's base is 1 and its modifier
-    /// crosses 1 near L1; heals (base 0) exposed the bug in 17c.</summary>
+    /// Returns <c>MathF.Max(BaseManaCost, modifier)</c> when a modifier is
+    /// present — DS1 templates split into two patterns, both of which the max
+    /// preserves: (a) zap-style with base=1 and a modifier crossing 1 near L1
+    /// (max picks the modifier on the way up), and (b) healing_wind-style
+    /// with base=0 and the modifier as the absolute cost. The pure
+    /// multiplicative reading (Phase 17a's first pass) double-charged spells
+    /// like spell_leech_life (base=3, modifier=#magic*2) by treating the
+    /// modifier as a multiplier; the pure modifier-wins reading (17c first
+    /// pass) under-charged the same template at low levels (mod=2 &lt; 3).</summary>
     public float ManaCost(float magicLevel)
     {
         if (string.IsNullOrEmpty(ManaCostModifierExpr)) return BaseManaCost;
         float mod = SpellExpr.Eval(ManaCostModifierExpr, magicLevel);
-        return mod > 0f ? mod : BaseManaCost;
+        if (mod <= 0f) return BaseManaCost;
+        return MathF.Max(BaseManaCost, mod);
     }
 
     /// <summary>Roll a damage value in [min, max] resolved at the caster's
