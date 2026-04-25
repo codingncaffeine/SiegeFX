@@ -45,21 +45,45 @@ public sealed class ActorInstance
     public override string ToString() => $"[t:{TemplateName},n:0x{Scid:x8}]";
 }
 
-/// <summary>Loads a region's <c>objects/actor.gas</c> into a flat list of
-/// <see cref="ActorInstance"/> records. Other object files (containers, interactives,
-/// etc.) live alongside but aren't needed for Phase 10's actor-spawn slice.</summary>
+/// <summary>Loads region object files (<c>objects/actor.gas</c>,
+/// <c>non_interactive.gas</c>, <c>container.gas</c>, etc.) into a flat list of
+/// <see cref="ActorInstance"/> records. Every DS1 object .gas shares the
+/// <c>[t:T,n:SCID] { [placement] { q,p } }</c> shape, so the same parser
+/// handles them all — callers route by which file they pass.</summary>
 public static class RegionObjects
 {
+    /// <summary>Filenames (under <c>objects/</c>) that carry visible static
+    /// props alongside the actor list. <c>command.gas</c>, <c>special.gas</c>,
+    /// and <c>generator.gas</c> are pure logic and are intentionally excluded.</summary>
+    public static readonly IReadOnlyList<string> StaticPropFiles = new[]
+    {
+        "non_interactive.gas",
+        "container.gas",
+        "inventory.gas",
+        "interactive.gas",
+        "emitter.gas",
+    };
+
     public static (IReadOnlyList<ActorInstance> Actors, IReadOnlyList<string> Diagnostics) LoadActors(
-        TankReader tank, string regionPath)
+        TankReader tank, string regionPath) =>
+        LoadPlacements(tank, regionPath, "actor.gas");
+
+    /// <summary>Generic placement loader. Reads <c>{regionPath}/objects/{fileName}</c>
+    /// and parses every <c>[t:T,n:SCID]</c> root block as an <see cref="ActorInstance"/>.
+    /// "ActorInstance" is a misnomer for non-actor files (it just stores the placement
+    /// + template name + scid + raw node) but the type already serves as the shared
+    /// placement record so we keep one shape across the runtime.</summary>
+    public static (IReadOnlyList<ActorInstance> Placements, IReadOnlyList<string> Diagnostics) LoadPlacements(
+        TankReader tank, string regionPath, string fileName)
     {
         var diags = new List<string>();
         var norm = regionPath.TrimEnd('/');
-        var actorPath = norm + "/objects/actor.gas";
+        var actorPath = norm + "/objects/" + fileName;
 
         if (!tank.TryGetFile(actorPath, out _))
         {
-            diags.Add($"{actorPath}: not present — region has no scripted actors");
+            // Quiet: most region/file combos are simply absent (e.g. trap.gas is
+            // empty in fh_r1, elevator.gas only exists in towns). Caller filters.
             return (Array.Empty<ActorInstance>(), diags);
         }
 
