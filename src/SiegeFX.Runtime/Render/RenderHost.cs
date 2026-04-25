@@ -157,6 +157,7 @@ public sealed class RenderHost : IDisposable
     // alpha-blended pass.
     private TextRenderer? _textRenderer;
     private BarRenderer? _barRenderer;
+    private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -360,6 +361,8 @@ void main()
                     _cameraMode = _cameraMode == CameraMode.Chase ? CameraMode.Fly : CameraMode.Chase;
                     Console.WriteLine($"camera: {_cameraMode}");
                 }
+                // Phase 15c: 'I' toggles the grid inventory panel.
+                else if (key == Key.I) _inventoryOpen = !_inventoryOpen;
             };
 
         foreach (var mouse in _input.Mice)
@@ -2013,6 +2016,14 @@ void main()
                         combat.CurrentMana, stats.MaxMana,
                         new Vector4(0.18f, 0.40f, 0.90f, 1f), "MP");
                 }
+            }
+
+            // Phase 15c: grid inventory panel (toggled by 'I'). Drawn last so it
+            // sits above the bars/coords; the panel draws its own backdrop dim
+            // so the world behind reads as "paused/modal" while open.
+            if (_inventoryOpen && _barRenderer is not null)
+            {
+                InventoryPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _playerInventory);
             }
             _textRenderer.EndPass();
         }
