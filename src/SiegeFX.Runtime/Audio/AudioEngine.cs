@@ -1,3 +1,4 @@
+using System.Numerics;
 using Silk.NET.OpenAL;
 
 namespace SiegeFX.Runtime.Audio;
@@ -80,7 +81,17 @@ public sealed unsafe class AudioEngine : IDisposable
             var sources = new uint[voices];
             fixed (uint* p = sources) al.GenSources(voices, p);
 
-            Console.WriteLine($"  audio: OpenAL Soft up ({voices} voices)");
+            // Phase 18c — clamped inverse-distance attenuation. Past
+            // MaxDistance the source contributes 0 gain rather than
+            // continuing to fade slowly, which keeps a goblin scream
+            // 200 units away from leaking into the mix as a faint hiss.
+            // Per-source ReferenceDistance/MaxDistance/RolloffFactor are
+            // still set in PlayAt so different SFX can have different
+            // audible ranges later (footsteps shorter than spell casts).
+            al.DistanceModel(DistanceModel.InverseDistanceClamped);
+
+            Console.WriteLine($"  audio: OpenAL Soft up ({voices} voices, " +
+                              $"InverseDistanceClamped attenuation)");
             return new AudioEngine(al, alc, device, context, sources);
         }
         catch (Exception ex)
@@ -156,29 +167,86 @@ public sealed unsafe class AudioEngine : IDisposable
     }
 
     /// <summary>Play a registered clip (or random member of a registered
-    /// group) on the next pool source (round-robin). If the source is
-    /// currently busy, OpenAL replaces its buffer and starts over —
-    /// that's the desired behavior for cast SFX (rapid-fire keys
-    /// shouldn't queue, the latest cast wins).</summary>
+    /// group) on the next pool source (round-robin). 2D playback —
+    /// SourceRelative=true with position (0,0,0) keeps the SFX
+    /// listener-locked, which is what we want for "this comes from the
+    /// player" cues (cast, level-up, swing). For "this happens out
+    /// there in the world" cues, see <see cref="PlayAt"/>.</summary>
     public void Play(string id, float gain = 1f)
     {
-        if (_disposed) return;
-        // Group lookup first so a same-named single clip doesn't shadow it.
-        uint buf;
-        if (_variantsByGroup.TryGetValue(id, out var variants))
-        {
-            var pick = variants[_variantRng.Next(variants.Count)];
-            if (!_bufferByClip.TryGetValue(pick, out buf)) return;
-        }
-        else if (!_bufferByClip.TryGetValue(id, out buf)) return;
-
-        uint src = _sourcePool[_nextSource];
-        _nextSource = (_nextSource + 1) % _sourcePool.Length;
-
+        if (!Resolve(id, out uint buf)) return;
+        uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
         _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        // Listener-relative + zero position = always centered, no falloff.
+        _al.SetSourceProperty(src, SourceBoolean.SourceRelative, true);
+        _al.SetSourceProperty(src, SourceVector3.Position, 0f, 0f, 0f);
         _al.SourcePlay(src);
+    }
+
+    /// <summary>Phase 18c — play with a world-space position. The source
+    /// pans + attenuates against the listener pose set via
+    /// <see cref="UpdateListener"/>. Reference and max distance are
+    /// chosen for the DS1 unit scale (≈1 unit = 1 ft): full volume out
+    /// to ~6 units, audible to ~40 units, silent past that.</summary>
+    public void PlayAt(string id, Vector3 worldPos, float gain = 1f,
+                       float refDistance = 6f, float maxDistance = 40f)
+    {
+        if (!Resolve(id, out uint buf)) return;
+        uint src = NextSource();
+        _al.SourceStop(src);
+        _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
+        _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
+        _al.SetSourceProperty(src, SourceFloat.MaxDistance, maxDistance);
+        _al.SetSourceProperty(src, SourceFloat.RolloffFactor, 1.0f);
+        // OpenAL is right-handed (+X right, +Y up, -Z forward). SiegeFX
+        // is left-handed (+Z forward). Flip Z so a goblin "in front" of
+        // the player sounds in front, not behind. (Without this swords
+        // landing forward of the camera pan to the rear speaker.)
+        _al.SetSourceProperty(src, SourceVector3.Position,
+                              worldPos.X, worldPos.Y, -worldPos.Z);
+        _al.SourcePlay(src);
+    }
+
+    /// <summary>Phase 18c — listener pose for spatial mixing. Call once
+    /// per render frame from RenderHost with the player's position +
+    /// facing. Up vector is fixed Y-up; pitch/roll get sampled from the
+    /// camera, not the player. Idempotent — OpenAL just stores the new
+    /// pose against the next mix.</summary>
+    public void UpdateListener(Vector3 pos, Vector3 forward, Vector3 up)
+    {
+        if (_disposed) return;
+        _al.SetListenerProperty(ListenerVector3.Position, pos.X, pos.Y, -pos.Z);
+        // Orientation is at-vector then up-vector, contiguous. Same Z
+        // flip as PlayAt so the listener and source axes stay consistent.
+        Span<float> ori = stackalloc float[6]
+        {
+            forward.X, forward.Y, -forward.Z,
+            up.X,      up.Y,      -up.Z,
+        };
+        fixed (float* p = ori) _al.SetListenerProperty(ListenerFloatArray.Orientation, p);
+    }
+
+    bool Resolve(string id, out uint buf)
+    {
+        buf = 0;
+        if (_disposed) return false;
+        if (_variantsByGroup.TryGetValue(id, out var variants))
+        {
+            var pick = variants[_variantRng.Next(variants.Count)];
+            return _bufferByClip.TryGetValue(pick, out buf);
+        }
+        return _bufferByClip.TryGetValue(id, out buf);
+    }
+
+    uint NextSource()
+    {
+        uint src = _sourcePool[_nextSource];
+        _nextSource = (_nextSource + 1) % _sourcePool.Length;
+        return src;
     }
 
     public void Dispose()
