@@ -242,6 +242,12 @@ public sealed class RenderHost : IDisposable
     // into PlayerProgression + the journal.
     private readonly DialoguePanel _dialogue = new();
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.ConversationDef>? _conversations;
+
+    // Phase 20a (follow-up) — authored player spawn. info/start_positions.gas
+    // names a default start group ("farmhouse" in the shipped main map); we
+    // resolve its first slot through _regionLayout so the PC drops in next
+    // to Norick instead of at the centroid of every NPC in fh_r1.
+    private Vector3? _authoredSpawn;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -294,6 +300,18 @@ public sealed class RenderHost : IDisposable
         if (string.IsNullOrEmpty(texsetAbbr)) return raw;
         var i = raw.IndexOf("_xxx_", StringComparison.OrdinalIgnoreCase);
         return i < 0 ? raw : string.Concat(raw.AsSpan(0, i + 1), texsetAbbr, raw.AsSpan(i + 4));
+    }
+
+    /// <summary>Region paths look like <c>/world/maps/&lt;map&gt;/regions/&lt;region&gt;</c>.
+    /// Strip the trailing <c>regions/&lt;region&gt;</c> and append <c>info</c> so callers
+    /// can locate map-scoped files like <c>start_positions.gas</c>. Returns null on a
+    /// shape we don't recognise so the caller can fall back gracefully.</summary>
+    private static string? DeriveMapInfoPath(string regionPath)
+    {
+        var norm = regionPath.Trim().TrimEnd('/');
+        var idx = norm.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+        if (idx <= 0) return null;
+        return norm[..idx] + "/info";
     }
 
     private const string GridVertexSource = @"#version 330 core
@@ -1164,6 +1182,37 @@ void main()
         }
         catch (Exception ex) { Console.WriteLine($"  conversations load failed: {ex.Message}"); }
 
+        // Phase 20a (follow-up) — authored start position. The path
+        // /world/maps/<map>/regions/<region> shares the prefix
+        // /world/maps/<map>/info with start_positions.gas, so we walk back
+        // up two segments from the region path to find it.
+        try
+        {
+            var infoPath = DeriveMapInfoPath(regionPath);
+            if (infoPath is not null)
+            {
+                var (groups, spDiags) = SiegeFX.Core.Assets.StartPositionsStore.Load(mapReader, infoPath);
+                foreach (var d in spDiags) Console.WriteLine("  " + d);
+                var def = SiegeFX.Core.Assets.StartPositionsStore.FindDefault(groups);
+                if (def is not null && _regionLayout is not null
+                    && _regionLayout.TryGetTransform(def.NodeGuid, out var nodeWorld))
+                {
+                    var world = Vector3.Transform(def.LocalPosition, nodeWorld);
+                    _authoredSpawn = world;
+                    Console.WriteLine(
+                        $"  start position: default group, node 0x{def.NodeGuid:x8}, " +
+                        $"world ({world.X:F2}, {world.Y:F2}, {world.Z:F2})");
+                }
+                else if (def is not null)
+                {
+                    Console.WriteLine(
+                        $"  start position: default group resolved but node 0x{def.NodeGuid:x8} " +
+                        $"not in this region's layout — falling back to centroid spawn");
+                }
+            }
+        }
+        catch (Exception ex) { Console.WriteLine($"  start position load failed: {ex.Message}"); }
+
         // Phase 17a — build the spell catalog from the same template store. Cheap
         // (~150 instant-hit templates filter out of ~7300 total) and one-shot.
         // Failure here just leaves _spellCatalog null; cast attempts then no-op
@@ -1664,9 +1713,12 @@ void main()
         foreach (var s in _actors) centroid += s.Actor.WorldTransform.Translation;
         centroid /= _actors.Count;
 
-        var spawnPos = centroid;
-        if (navMesh is not null && navMesh.TryFindTriangle(centroid, out var tri))
-            spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, centroid) };
+        // Prefer the authored start_positions.gas slot (puts the PC at the
+        // farmhouse next to Norick on fh_r1). Centroid is a fallback so
+        // play-region of an info-less region still works.
+        var spawnPos = _authoredSpawn ?? centroid;
+        if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
+            spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
 
         const string playerTemplate = "farmboy";
         // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
