@@ -1929,6 +1929,25 @@ static int CmdAspInfo(string[] a)
         Console.WriteLine($"Skin      : {mesh.SkinWeights.Length} weighted corner(s), avg {avg:F2} influences/corner, max bone={maxBone}");
     }
 
+    if (mesh.Positions.Length > 0)
+    {
+        var min = mesh.Positions[0]; var max = mesh.Positions[0];
+        for (var i = 1; i < mesh.Positions.Length; i++)
+        {
+            min = Vector3.Min(min, mesh.Positions[i]);
+            max = Vector3.Max(max, mesh.Positions[i]);
+        }
+        var size = max - min;
+        Console.WriteLine($"Extents   : min=({min.X:F2},{min.Y:F2},{min.Z:F2}) max=({max.X:F2},{max.Y:F2},{max.Z:F2}) size=({size.X:F2},{size.Y:F2},{size.Z:F2})");
+    }
+    if (mesh.BindPose.Length > 0)
+    {
+        for (var i = 0; i < Math.Min(4, mesh.BindPose.Length); i++)
+        {
+            var bp = mesh.BindPose[i];
+            Console.WriteLine($"BindPose[{i}] : rot=({bp.Rotation.X:F3},{bp.Rotation.Y:F3},{bp.Rotation.Z:F3},{bp.Rotation.W:F3}) tr=({bp.Translation.X:F2},{bp.Translation.Y:F2},{bp.Translation.Z:F2})");
+        }
+    }
     var chunks = AspScanner.Scan(data);
     Console.WriteLine($"Chunks    : {chunks.Count}");
     foreach (var c in chunks)

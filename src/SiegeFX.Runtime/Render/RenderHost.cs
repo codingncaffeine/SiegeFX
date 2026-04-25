@@ -85,6 +85,16 @@ public sealed class RenderHost : IDisposable
     // Bind-pose bone array cached per unique mesh — reused every frame for zero-clip actors
     // so the hot render loop doesn't allocate 181× Matrix4x4[BoneCount] under GC.
     private readonly Dictionary<AspMesh, Matrix4x4[]> _actorIdentityBones = new();
+    // Phase 21c — albedo texture cached per AspMesh (NPCs + props share the same cache
+    // because the lookup key is the mesh's own TextureNames[0]). null entries memoize
+    // misses so we don't retry resolution every frame for assets with no texture.
+    private readonly Dictionary<AspMesh, GlTexture?> _aspTextureCache = new();
+    // Phase 21c — static props streamed from non_interactive/container/inventory/
+    // interactive/emitter .gas. No skrit, no animation, no nav — just transform +
+    // mesh + (optional) texture, drawn through the static-mesh pipeline.
+    private readonly List<StaticPropInstance> _staticProps = new();
+    private readonly Dictionary<string, AspMesh?> _propAspCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<AspMesh, StaticMesh> _propGlMeshCache = new();
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     // Phase 12d — kept so DebugAttackNearestActor can build a LootTable for the
@@ -266,6 +276,16 @@ public sealed class RenderHost : IDisposable
         // one actor without scanning all 181. Also gates off the random-wander
         // follower: the player stands still until the user clicks somewhere.
         public bool IsPlayer;
+    }
+
+    // Phase 21c — one placed prop (tree, barrel, fence, crop, candle, etc.).
+    // Drawn via the static-mesh pipeline; no per-frame state besides the bake.
+    private sealed class StaticPropInstance
+    {
+        public StaticMesh Mesh = null!;
+        public GlTexture? Texture;
+        public Matrix4x4 World;
+        public string Template = "";
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -1998,6 +2018,19 @@ void main()
         foreach (var d in spawner.Diagnostics.Take(5)) Console.WriteLine($"  !! {d}");
         if (spawner.Diagnostics.Count > 5) Console.WriteLine($"  ... ({spawner.Diagnostics.Count - 5} more)");
 
+        // Phase 21c — populate the static-prop layer (trees, barrels, fences,
+        // chairs, candles, foliage, crops, etc.) across the player region and
+        // every preloaded neighbor. Without this DS1 regions render as bare
+        // terrain dotted with NPCs — the densification this pass adds is what
+        // makes a region feel like the original game.
+        var allLoaded = new List<string> { regionPath };
+        if (_worldRegionGraphs.Count > 1)
+        {
+            foreach (var (path, _) in _worldRegionGraphs)
+                if (path != regionPath) allLoaded.Add(path);
+        }
+        LoadStaticProps(allLoaded);
+
         // Phase 20a (follow-up) — print every talkable NPC's name + world
         // position so the visual walkthrough doesn't require hunting the
         // map. Anything with a [conversation] block whose first key resolves
@@ -2135,6 +2168,206 @@ void main()
         Console.WriteLine($"  rolling spawn: {newActors.Count}/{newInstances.Count} actor(s) live " +
                           $"({onMesh} wandering / {offMesh} pinned)" +
                           (convsAdded > 0 ? $", +{convsAdded} dialogue tree(s)" : ""));
+
+        // Phase 21c — densify the freshly-streamed regions with their static
+        // props too. Existing props from previously-loaded regions stay in
+        // _staticProps untouched (world coords are pinned).
+        LoadStaticProps(newlyLoaded);
+    }
+
+    /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
+    /// prop ASP. Mirrors the weapon path in LoadEquippedWeapon: the mesh's first
+    /// TextureNames entry plus ".raw", looked up via the play-mode resolver.
+    /// Misses are memoized as null so repeated lookups don't re-scan the tank.
+    /// Returns null when the resolver isn't initialized (viewer modes), the mesh
+    /// declared no texture, or the .raw isn't in any indexed tank.</summary>
+    private GlTexture? ResolveAspTexture(AspMesh mesh)
+    {
+        if (_aspTextureCache.TryGetValue(mesh, out var cached)) return cached;
+        if (_gl is null || _playResolver is null || mesh.TextureNames.Count == 0)
+        {
+            _aspTextureCache[mesh] = null;
+            return null;
+        }
+        var basename = mesh.TextureNames[0] + ".raw";
+        if (!_playResolver.TryLoadByBasename(basename, out var texBytes))
+        {
+            _aspTextureCache[mesh] = null;
+            return null;
+        }
+        try
+        {
+            var tex = new GlTexture(_gl, RawImage.Load(texBytes));
+            _aspTextureCache[mesh] = tex;
+            return tex;
+        }
+        catch
+        {
+            _aspTextureCache[mesh] = null;
+            return null;
+        }
+    }
+
+    /// <summary>Phase 21c — spawn the static-prop layer for the player region and
+    /// every preloaded neighbor. Walks each region's <see cref="RegionObjects.StaticPropFiles"/>,
+    /// looks up <c>aspect.model</c> off the template, loads the .asp +
+    /// .raw albedo, and bakes a world transform via <see cref="_regionLayout"/>.
+    /// Skips placements whose template carries no aspect.model (logic-only
+    /// templates — triggers, generators, sound emitters that landed in
+    /// non_interactive). One-shot at LoadPlayActors; re-fires from
+    /// OnPlayerRegionChanged when new regions stream in.</summary>
+    private void LoadStaticProps(IEnumerable<string> regionPaths)
+    {
+        if (_gl is null || _playResolver is null || _templateStore is null
+            || _regionLayout is null || _playMapTank is null) return;
+
+        var mapReader = new TankReader(_playMapTank);
+        int considered = 0, spawned = 0, missingTemplate = 0, missingModel = 0,
+            missingMesh = 0, parseFail = 0;
+        // Group skips by template (and missing meshes by model name) so the diag
+        // surfaces which content is silently absent — the user should not have
+        // to spot missing trees by eye.
+        var skippedNoTemplate = new SortedDictionary<string, int>();
+        var skippedNoModel    = new SortedDictionary<string, int>();
+        var skippedNoMesh     = new SortedDictionary<string, int>();
+
+        foreach (var rp in regionPaths)
+        {
+            foreach (var fileName in SiegeFX.Core.Assets.RegionObjects.StaticPropFiles)
+            {
+                var (placements, diags) =
+                    SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, fileName);
+                foreach (var d in diags) Console.WriteLine("  " + d);
+
+                foreach (var p in placements)
+                {
+                    considered++;
+                    if (!_templateStore.TryGet(p.TemplateName, out var template))
+                    {
+                        missingTemplate++;
+                        skippedNoTemplate.TryGetValue(p.TemplateName, out var n);
+                        skippedNoTemplate[p.TemplateName] = n + 1;
+                        continue;
+                    }
+                    var modelName = _templateStore.GetAttribute(template, "aspect", "model");
+                    if (string.IsNullOrEmpty(modelName))
+                    {
+                        // Many entries in non_interactive.gas / special.gas reference
+                        // pure-logic templates (sound emitters, triggers) that have no
+                        // mesh on purpose. Counted but not loud.
+                        missingModel++;
+                        skippedNoModel.TryGetValue(p.TemplateName, out var n);
+                        skippedNoModel[p.TemplateName] = n + 1;
+                        continue;
+                    }
+
+                    var asp = GetOrLoadPropAsp(modelName);
+                    if (asp is null)
+                    {
+                        missingMesh++;
+                        skippedNoMesh.TryGetValue(modelName, out var n);
+                        skippedNoMesh[modelName] = n + 1;
+                        continue;
+                    }
+
+                    StaticMesh glMesh;
+                    if (!_propGlMeshCache.TryGetValue(asp, out glMesh!))
+                    {
+                        try { glMesh = new StaticMesh(_gl, asp); }
+                        catch { parseFail++; continue; }
+                        _propGlMeshCache[asp] = glMesh;
+                    }
+
+                    var tex = ResolveAspTexture(asp);
+                    var world = ComposePlacementWorld(asp, p.Placement);
+
+                    _staticProps.Add(new StaticPropInstance
+                    {
+                        Mesh     = glMesh,
+                        Texture  = tex,
+                        World    = world,
+                        Template = p.TemplateName,
+                    });
+                    spawned++;
+                }
+            }
+        }
+
+        Console.WriteLine($"  static props: {spawned}/{considered} placed " +
+                          $"({_propGlMeshCache.Count} unique mesh(es); " +
+                          $"skipped {missingTemplate} no-template, {missingModel} no-model, " +
+                          $"{missingMesh} no-mesh-in-tank, {parseFail} parse-fail)");
+        if (skippedNoMesh.Count > 0)
+        {
+            Console.WriteLine("  no-mesh-in-tank (top by count):");
+            foreach (var kv in skippedNoMesh.OrderByDescending(kv => kv.Value).Take(20))
+                Console.WriteLine($"    {kv.Value,4}x  model={kv.Key}");
+        }
+        if (skippedNoTemplate.Count > 0)
+        {
+            Console.WriteLine("  no-template (top by count):");
+            foreach (var kv in skippedNoTemplate.OrderByDescending(kv => kv.Value).Take(20))
+                Console.WriteLine($"    {kv.Value,4}x  template={kv.Key}");
+        }
+    }
+
+    private AspMesh? GetOrLoadPropAsp(string modelName)
+    {
+        if (_propAspCache.TryGetValue(modelName, out var cached)) return cached;
+        if (_playResolver is null) { _propAspCache[modelName] = null; return null; }
+        if (!_playResolver.TryLoadModel(modelName, out var bytes))
+        {
+            _propAspCache[modelName] = null;
+            return null;
+        }
+        try
+        {
+            var asp = AspMesh.Load(bytes);
+            _propAspCache[modelName] = asp;
+            return asp;
+        }
+        catch
+        {
+            _propAspCache[modelName] = null;
+            return null;
+        }
+    }
+
+    /// <summary>Phase 21c — same world-transform composition ActorSpawner uses
+    /// (rotate by quat, translate by node-local position, then post-multiply by
+    /// the SNO node's world transform), with a critical extra step for static
+    /// props: pre-multiply the mesh's bone-0 root bind pose for single-bone
+    /// rigid props. DS1 V2.3/V2.4 prop ASPs (barrels, jugs, fences, crops, etc.)
+    /// author vertices in 3DS Max's Z-up modeling space and ship a bone-0
+    /// BindPose that rotates Z-up → Y-up; the animated actor pipeline does this
+    /// implicitly through skinning, but static props skipped it before — which
+    /// is why barrels rendered lying flat. Multi-bone V2.5 props (animated
+    /// trees, etc.) author vertices in world-bind space already, so applying
+    /// BindPose[0] would lay THEM flat — we render those at vertex-pose, no
+    /// pre-multiply.</summary>
+    private Matrix4x4 ComposePlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
+    {
+        var bindRoot = ComputeRootBindPose(asp);
+        var local = bindRoot *
+                    Matrix4x4.CreateFromQuaternion(p.Orientation) *
+                    Matrix4x4.CreateTranslation(p.LocalPosition);
+        if (_regionLayout is null) return local;
+        if (!_regionLayout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
+        return local * nodeWorld;
+    }
+
+    /// <summary>Phase 21c — bone-0's world bind pose for a static prop, used to
+    /// rotate Z-up authoring space into the engine's Y-up convention. Returns
+    /// identity for unrigged meshes (no BindPose entries) AND for multi-bone
+    /// meshes (V2.5+ skinned props that ship vertices in world-bind space).
+    /// Detection by bone count is reliable: every shipped V2.3/V2.4 static prop
+    /// is rigid (1 bone), every shipped V2.5 animated prop is multi-bone.</summary>
+    private static Matrix4x4 ComputeRootBindPose(AspMesh asp)
+    {
+        if (asp.BindPose.Length != 1) return Matrix4x4.Identity;
+        var bp = asp.BindPose[0];
+        return Matrix4x4.CreateFromQuaternion(bp.Rotation) *
+               Matrix4x4.CreateTranslation(bp.Translation);
     }
 
     /// <summary>Phase 21a-3 — rebuild the nav mesh against the current unified
@@ -3721,7 +3954,10 @@ void main()
             _skinShader.Use();
             _skinShader.SetMatrix4("uViewProj", vp);
             _skinShader.SetInt("uAlbedo", 0);
-            _skinShader.SetInt("uHasTexture", 0);
+            // Phase 21c — track the currently-bound albedo so we don't rebind for runs
+            // of actors sharing the same mesh (DS1 regions ship ~12 unique archetypes
+            // for ~180 actors, so most adjacent draws hit the cache).
+            AspMesh? lastTexMesh = null;
             foreach (var s in _actors)
             {
                 var clips = s.Actor.Clips;
@@ -3745,9 +3981,55 @@ void main()
                     var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
                     skin = AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t);
                 }
+                if (!ReferenceEquals(s.Actor.Mesh, lastTexMesh))
+                {
+                    var tex = ResolveAspTexture(s.Actor.Mesh);
+                    if (tex is not null)
+                    {
+                        tex.Bind(TextureUnit.Texture0);
+                        _skinShader.SetInt("uHasTexture", 1);
+                    }
+                    else
+                    {
+                        _skinShader.SetInt("uHasTexture", 0);
+                    }
+                    lastTexMesh = s.Actor.Mesh;
+                }
                 _skinShader.SetMatrix4("uModel", s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
                 s.GlMesh.Draw();
+            }
+        }
+
+        // Phase 21c — static prop layer (trees, barrels, fences, crops, candles,
+        // chairs, etc. from non_interactive/container/inventory/interactive/emitter
+        // .gas). Drawn through the same static-mesh pipeline weapons use; one draw
+        // call per placement, with the texture cached per AspMesh so adjacent props
+        // sharing a model only rebind once.
+        if (_meshShader is not null && _staticProps.Count > 0)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetInt("uAlbedo", 0);
+            GlTexture? lastTex = null;
+            int lastHas = -1;
+            foreach (var prop in _staticProps)
+            {
+                if (!ReferenceEquals(prop.Texture, lastTex))
+                {
+                    if (prop.Texture is not null)
+                    {
+                        prop.Texture.Bind(TextureUnit.Texture0);
+                        if (lastHas != 1) { _meshShader.SetInt("uHasTexture", 1); lastHas = 1; }
+                    }
+                    else
+                    {
+                        if (lastHas != 0) { _meshShader.SetInt("uHasTexture", 0); lastHas = 0; }
+                    }
+                    lastTex = prop.Texture;
+                }
+                _meshShader.SetMatrix4("uModel", prop.World);
+                prop.Mesh.Draw();
             }
         }
 
@@ -4062,6 +4344,14 @@ void main()
         _actorMeshCache.Clear();
         _actorIdentityBones.Clear();
         _actors.Clear();
+        // Phase 21c — release prop GL resources. Texture cache is shared with the
+        // actor draw path so it covers both populations in one sweep.
+        foreach (var mesh in _propGlMeshCache.Values) mesh.Dispose();
+        _propGlMeshCache.Clear();
+        _propAspCache.Clear();
+        _staticProps.Clear();
+        foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
+        _aspTextureCache.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
         _texture?.Dispose();
