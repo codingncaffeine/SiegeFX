@@ -61,6 +61,7 @@ echo   41. Phase 20a   - Dialogue parser self-test + RMB-talk to Edgaar in fh_r1
 echo   42. Phase 20b   - Quest log overlay (Accept Edgaar quest, press L, fh_r1)
 echo   43. Phase 20c   - Kill objectives + goal markers (kill 5 krug for Edgaar, fh_r1)
 echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh_r1)
+echo   45. Phase 21a-1 - Neighbor terrain preload (fh_r1 + first-ring neighbors visible)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -111,6 +112,7 @@ if /i "%CHOICE%"=="41" goto T41
 if /i "%CHOICE%"=="42" goto T42
 if /i "%CHOICE%"=="43" goto T43
 if /i "%CHOICE%"=="44" goto T44
+if /i "%CHOICE%"=="45" goto T45
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -746,6 +748,28 @@ echo [Buying a weapon_hand item also auto-equips it via the existing pickup path
 echo [Click Sell on any inventory row — gold credits half list price (5g for unknowns)]
 echo [Insufficient gold: console logs "trade: cannot afford ..." and the trade is rejected]
 echo [Esc closes the vendor panel without firing the pause menu]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T45
+echo.
+echo --- Phase 21a-1: Neighbor terrain preload (fh_r1) ---
+echo [Launch log shows "neighbor preload: N/M region(s) (X instance(s) ...)"]
+echo [Expect M (declared) ~= 2-4 for fh_r1; N (placed) should equal M]
+echo [unresolved + dangling stitch counts should be 0 for shipped fh_r1]
+echo [In-game: fly to the south/east edge of fh_r1 — neighbor terrain is visible]
+echo [WITHOUT this load, the world would just end at the region boundary]
+echo [Actors / nav / dialogue still operate only inside fh_r1 — that's 21a-2]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

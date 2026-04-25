@@ -775,7 +775,16 @@ void main()
         }
 
         if (_regionMapTankPath is not null && _regionTerrainTankPath is not null && _regionPath is not null)
+        {
             LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+            // Phase 21a-1 — pre-load every door-graph neighbor's terrain right
+            // after the player region. Pure visual additive: composes against
+            // the same region-mesh + texture caches and pins offsets via the
+            // same WorldLayout machinery LoadWorld uses, but limited to the
+            // player region's first ring of stitches. Nav mesh + actor merge
+            // come in 21a-2; eviction comes in 21a-3.
+            LoadNeighborTerrain(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+        }
 
         if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
             LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint);
@@ -1163,6 +1172,193 @@ void main()
         Console.WriteLine($"  subsets: {resolvedSubsets} textured, {missingSubsets} missing");
         if (missingSample.Count > 0)
             Console.WriteLine($"  missing samples: {string.Join(", ", missingSample)}");
+    }
+
+    /// <summary>Phase 21a-1 — neighbor terrain preload. Walks the player region's
+    /// stitch helper to discover its door-graph neighbors, then composes a partial
+    /// <see cref="WorldLayout"/> rooted at the player region (so the player keeps
+    /// its identity offset and existing instances stay valid). Each neighbor's
+    /// snodes are emitted as additional <see cref="RegionInstance"/>s at their
+    /// composed world transforms, sharing the same <see cref="_regionMeshes"/>
+    /// and <see cref="_snoTextures"/> caches the player region populated.
+    ///
+    /// Pure-additive: no existing field is rewritten. The player's
+    /// <see cref="_regionLayout"/> is unchanged, so 21a-2 (nav + actor merge)
+    /// can still index into it without confusion.
+    /// </summary>
+    private void LoadNeighborTerrain(string mapTankPath, string terrainTankPath, string regionPath)
+    {
+        if (_gl is null) return;
+
+        var normalized = regionPath.Replace('\\', '/');
+        if (!normalized.StartsWith('/')) normalized = "/" + normalized;
+        if (normalized.EndsWith('/')) normalized = normalized[..^1];
+
+        using var mapTank = TankFile.Open(mapTankPath);
+        var mapReader = new TankReader(mapTank);
+        using var terrainTank = TankFile.Open(terrainTankPath);
+        var terrainReader = new TankReader(terrainTank);
+
+        // Player's stitch helper drives the neighbor list. No file = standalone
+        // region (test fixtures, demo regions) → no neighbors to preload.
+        var playerStitchPath = normalized + "/editor/stitch_helper.gas";
+        if (!mapReader.TryGetFile(playerStitchPath, out _))
+        {
+            Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
+            return;
+        }
+        RegionStitchHelper playerStitches;
+        try { playerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(playerStitchPath)); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  neighbor preload: stitch parse failed ({ex.Message}) — skipping");
+            return;
+        }
+        if (playerStitches.ByDestination.Count == 0)
+        {
+            Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
+            return;
+        }
+
+        // Map every region's leaf name to its full tank path so we can resolve
+        // dest_region values like "fh_r2" → "/world/maps/multiplayer_world/regions/fh_r2".
+        var pathByLeaf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in mapReader.ListFiles())
+        {
+            if (!p.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+            var rp = p[..^"/terrain_nodes/nodes.gas".Length];
+            pathByLeaf[LeafName(rp)] = rp;
+        }
+
+        var neighborPaths = new List<string>();
+        foreach (var destLeaf in playerStitches.ByDestination.Keys)
+        {
+            if (pathByLeaf.TryGetValue(destLeaf, out var np) && np != normalized)
+                neighborPaths.Add(np);
+        }
+        if (neighborPaths.Count == 0)
+        {
+            Console.WriteLine("  neighbor preload: 0 neighbor region(s) resolved in tank");
+            return;
+        }
+
+        // Shared model cache across player + neighbors so a SNO referenced by
+        // both regions only loads once. WorldLayout.Build also uses this resolver
+        // when computing door-pair compositions across the boundary.
+        var meshIndex = SnoMeshIndex.Build(terrainReader);
+        var modelCache = new Dictionary<uint, SnoModel?>();
+        SnoModel? ResolveModel(uint meshGuid)
+        {
+            if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
+            SnoModel? sno = null;
+            if (meshIndex.TryResolve(meshGuid, out var path))
+            {
+                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                catch { sno = null; }
+            }
+            modelCache[meshGuid] = sno;
+            return sno;
+        }
+
+        var entries = new List<WorldLayout.RegionEntry>();
+        bool TryBuildEntry(string rp, out WorldLayout.RegionEntry entry)
+        {
+            entry = default;
+            try
+            {
+                var graph = RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+                var layout = RegionLayout.Build(graph, ResolveModel);
+                RegionStitchHelper? stitches = null;
+                var sp = rp + "/editor/stitch_helper.gas";
+                if (mapReader.TryGetFile(sp, out _))
+                {
+                    try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(sp)); }
+                    catch { /* a bad stitch file just makes that region un-stitchable */ }
+                }
+                entry = new WorldLayout.RegionEntry(rp, graph, layout, stitches);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        // Player region MUST go in the entry list (root) so WorldLayout pins it
+        // at identity and walks stitches outward. If the player's own graph fails
+        // to load here, we bail rather than render neighbors floating in space.
+        if (!TryBuildEntry(normalized, out var playerEntry))
+        {
+            Console.WriteLine("  neighbor preload: player region rebuild failed — skipping");
+            return;
+        }
+        entries.Add(playerEntry);
+        foreach (var np in neighborPaths)
+            if (TryBuildEntry(np, out var ne)) entries.Add(ne);
+
+        var world = WorldLayout.Build(entries, ResolveModel, rootHint: normalized);
+
+        // .raw index for neighbor texture loads. Subsets the player region
+        // already loaded short-circuit on _snoTextures.ContainsKey so we don't
+        // re-decode anything; new neighbor textures land in the same dict.
+        var rawIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in terrainReader.ListFiles())
+        {
+            if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+            var bare = Path.GetFileNameWithoutExtension(p);
+            if (!rawIndex.ContainsKey(bare)) rawIndex[bare] = p;
+        }
+
+        int placedNeighbors = 0;
+        int neighborInstancesAdded = 0;
+        int unreachableNeighbors = 0;
+        foreach (var entry in entries)
+        {
+            if (entry.Path == normalized) continue; // player already drawn
+            if (!world.RegionOffsets.ContainsKey(entry.Path)) { unreachableNeighbors++; continue; }
+            placedNeighbors++;
+
+            foreach (var node in entry.Graph.Nodes)
+            {
+                if (!world.Transforms.TryGetValue(node.Guid, out var worldXf)) continue;
+                var model = ResolveModel(node.MeshGuid);
+                if (model is null) continue;
+
+                if (!_regionMeshes.TryGetValue(node.MeshGuid, out var mesh))
+                {
+                    mesh = new SnoMesh(_gl, model);
+                    _regionMeshes[node.MeshGuid] = mesh;
+                }
+
+                foreach (var subset in mesh.Subsets)
+                {
+                    if (string.IsNullOrEmpty(subset.TextureName)) continue;
+                    var resolved = ResolveTexName(subset.TextureName, node.TexsetAbbr);
+                    if (_snoTextures.ContainsKey(resolved)) continue;
+                    if (!rawIndex.TryGetValue(resolved, out var texPath)) continue;
+                    try
+                    {
+                        var raw = RawImage.Load(terrainReader.ExtractToMemory(texPath));
+                        _snoTextures[resolved] = new GlTexture(_gl, raw);
+                    }
+                    catch { /* skip unreadable textures */ }
+                }
+
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr));
+                neighborInstancesAdded++;
+            }
+        }
+
+        Console.WriteLine($"  neighbor preload: {placedNeighbors}/{neighborPaths.Count} region(s) " +
+                          $"({neighborInstancesAdded:N0} instance(s)" +
+                          (unreachableNeighbors > 0 ? $", {unreachableNeighbors} unreachable" : "") +
+                          $", world layout: unresolved={world.UnresolvedStitchCount} dangling={world.DanglingStitchCount})");
+    }
+
+    private static string LeafName(string path)
+    {
+        var i = path.LastIndexOf('/');
+        return i < 0 ? path : path[(i + 1)..];
     }
 
     /// <summary>Phase 10e — spawn every shipped actor in a region and attach each one to the
@@ -2076,6 +2272,7 @@ void main()
 
         ActorRenderState? best = null;
         SiegeFX.Core.Assets.ConversationDef? bestConv = null;
+        SiegeFX.Core.Actors.VendorDefinition? bestVendor = null;
         float bestDist = ClickTalkRadius;
         foreach (var s in _actors)
         {
@@ -2086,7 +2283,6 @@ void main()
             // template inherits combat stats but is meant to be a static
             // talker outside NIS scenes, and would otherwise be filtered out.
             var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
-            if (keys.Count == 0) continue;
 
             SiegeFX.Core.Assets.ConversationDef? conv = null;
             foreach (var k in keys)
@@ -2094,15 +2290,31 @@ void main()
                 if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0)
                 { conv = hit; break; }
             }
-            if (conv is null) continue;
+
+            // Phase 20d follow-up — vendors in DS1 ship with an EMPTY
+            // [conversation] block (Norick is the canonical example). They
+            // don't chat; clicking opens trade. Treat a vendor-catalog match
+            // as talkable too, so RMB on an empty-conversation vendor still
+            // resolves; the open-time branch picks dialogue vs trade.
+            var vdef = SiegeFX.Core.Actors.VendorCatalog.Find(s.Actor.Template.Name);
+            if (conv is null && vdef is null) continue;
 
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
             float dz = pos.Z - groundHit.Z;
             float d  = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; }
+            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; bestVendor = vdef; }
         }
-        if (best is null || bestConv is null) return false;
+        if (best is null) return false;
+        // No dialogue tree but the actor is a vendor — open trade directly.
+        if (bestConv is null && bestVendor is not null)
+        {
+            _lastTalkedTemplate = best.Actor.Template.Name;
+            _vendor.Open(bestVendor);
+            Console.WriteLine($"trade: opened vendor panel for {bestVendor.ScreenName} (no dialogue)");
+            return true;
+        }
+        if (bestConv is null) return false;
 
         var screenName = _templateStore?.GetAttribute(best.Actor.Template, "common", "screen_name");
         if (!string.IsNullOrWhiteSpace(screenName))
