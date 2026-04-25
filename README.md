@@ -1,5 +1,7 @@
 # SiegeFX
 
+![SiegeFX](siegeFX_logo.png)
+
 An open-source reimplementation of **Dungeon Siege** (Gas Powered Games, 2002), written in C# / .NET 8.
 
 The goal is to run Dungeon Siege natively on modern Windows at any resolution, with clean, moddable architecture — the same thing KeeperFX did for Dungeon Keeper 1.
@@ -8,7 +10,7 @@ The goal is to run Dungeon Siege natively on modern Windows at any resolution, w
 
 ## Status
 
-**v0.8.0** — Skrit VM drives rigged actors. You can fly a first-person camera across streamed SNO regions, view skeletal `.asp` meshes animating from `.prs` clips, and run shipped `.skrit` scripts against a live rig via `--skrit-anim`. Actor system, combat, UI, and gameplay are next.
+**v0.13.0** — Playable. Farmboy spawns in fh_r1, click-to-move and click-to-attack route through the live nav mesh, equipped weapons render on the hand bone, and the HUD draws DS1-bitmap-font text, HP/MP bars derived from STR/DEX/INT, a toggleable 8×5 grid inventory (`I`), and a pause menu (`Esc`) with Resume/Quit. 181 NPCs wander the region on the same nav mesh. Spells + leveling are next.
 
 ## Roadmap
 
@@ -29,7 +31,7 @@ The goal is to run Dungeon Siege natively on modern Windows at any resolution, w
 | 12 | Combat + stats | Melee kills goblin; corpse drops loot pile | → v0.10.0 |
 | 13 | Player character + input | Playable Farmboy engaging goblins (RMB target / LMB move) | → v0.11.0 |
 | 14 | Inventory + items | Grid inventory, equip slots, pickup from drops | → v0.12.0 |
-| 15 | UI / HUD | Bitmap font, HUD, inventory/options/main-menu screens | → v0.13.0 |
+| 15 | UI / HUD | Bitmap font, HP/MP bars, grid inventory, pause menu | ✅ v0.13.0 |
 | 16 | Spells + effect scripts | Fire-bolt casts, hits goblin for spell damage | → v0.14.0 |
 | 17 | Audio | 3D positional SFX, music streaming, anim-event hooks | → v0.15.0 |
 | 18 | Save / load | Quit-and-resume in mid-dungeon | → v0.16.0 |
