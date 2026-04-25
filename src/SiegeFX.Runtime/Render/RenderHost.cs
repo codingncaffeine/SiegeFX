@@ -136,6 +136,23 @@ public sealed class RenderHost : IDisposable
     // in one place from silently disabling a sound.
     const string SfxZapCast         = "spell_zap_cast";
     const string SfxHealingWindCast = "spell_healing_wind_cast";
+    // Phase 18b — combat-feedback SFX. Singles + per-group ids. The
+    // group ids are what RenderHost calls Play() with; the singles are
+    // the underlying variants (registered first, then grouped).
+    const string SfxMeleeSwingGroup = "melee_swing";
+    const string SfxMeleeHitGroup   = "melee_hit";
+    const string SfxMeleeMiss       = "melee_miss";
+    const string SfxLevelUp         = "level_up";
+    // Death SFX live as direct ids — looked up by template species so
+    // we don't grow a death-species enum in the render layer.
+    static readonly Dictionary<string, string> SpeciesDeathSfx = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["goblin"]      = "die_goblin",
+        ["gremal"]      = "die_gremal",
+        ["krug"]        = "die_krug_scout",
+        ["krug_scout"]  = "die_krug_scout",
+        ["krug_dog"]    = "die_krug_dog",
+    };
     // Phase 14d — currently-rendered weapon mesh pinned to the PC's weapon_grip bone.
     // Null until TrySpawnPlayer resolves the first equipped weapon. Swapped on every
     // es_weapon_hand change so a pickup upgrade shows up visually.
@@ -1080,6 +1097,33 @@ void main()
                         "/sound/effects/s_e_spell_zap_cast.wav");
                     TryRegisterSfx(soundReader, SfxHealingWindCast,
                         "/sound/effects/s_e_spell_healing_wind_cast.wav");
+
+                    // Phase 18b — combat-feedback library. Swings + hits ship
+                    // as 4-5 wav variants each so a sustained fight doesn't
+                    // sound like one .wav looping; we group them and let
+                    // AudioEngine pick at random per Play() call.
+                    TryRegisterSfx(soundReader, "swing_01", "/sound/effects/s_e_swing_01.wav");
+                    TryRegisterSfx(soundReader, "swing_02", "/sound/effects/s_e_swing_02.wav");
+                    TryRegisterSfx(soundReader, "swing_03", "/sound/effects/s_e_swing_03.wav");
+                    TryRegisterSfx(soundReader, "swing_04", "/sound/effects/s_e_swing_04.wav");
+                    _audio.RegisterGroup(SfxMeleeSwingGroup,
+                        "swing_01", "swing_02", "swing_03", "swing_04");
+
+                    TryRegisterSfx(soundReader, "hit_flesh_1", "/sound/effects/s_e_hit_steelsword_flesh1.wav");
+                    TryRegisterSfx(soundReader, "hit_flesh_2", "/sound/effects/s_e_hit_steelsword_flesh2.wav");
+                    TryRegisterSfx(soundReader, "hit_flesh_3", "/sound/effects/s_e_hit_steelsword_flesh3.wav");
+                    TryRegisterSfx(soundReader, "hit_flesh_4", "/sound/effects/s_e_hit_steelsword_flesh4.wav");
+                    TryRegisterSfx(soundReader, "hit_flesh_5", "/sound/effects/s_e_hit_steelsword_flesh5.wav");
+                    _audio.RegisterGroup(SfxMeleeHitGroup,
+                        "hit_flesh_1", "hit_flesh_2", "hit_flesh_3", "hit_flesh_4", "hit_flesh_5");
+
+                    TryRegisterSfx(soundReader, SfxMeleeMiss, "/sound/effects/s_e_miss_melee.wav");
+                    TryRegisterSfx(soundReader, SfxLevelUp,   "/sound/effects/s_e_level_up_melee.wav");
+
+                    TryRegisterSfx(soundReader, "die_goblin",     "/sound/effects/s_e_die_goblin.wav");
+                    TryRegisterSfx(soundReader, "die_gremal",     "/sound/effects/s_e_die_gremal.wav");
+                    TryRegisterSfx(soundReader, "die_krug_scout", "/sound/effects/s_e_die_krug_scout.wav");
+                    TryRegisterSfx(soundReader, "die_krug_dog",   "/sound/effects/s_e_die_krug_dog.wav");
                 }
             }
             else
@@ -1830,6 +1874,14 @@ void main()
             $"click-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
             $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
 
+        // Phase 18b — every swing makes the swing sound; only swings that
+        // land also play the flesh-hit variant. Whiff condition (dealt <=
+        // 0) hits the miss SFX instead, which mirrors DS1's "hit/whiff
+        // pair" behavior on melee.
+        _audio?.Play(SfxMeleeSwingGroup);
+        if (dealt > 0f) _audio?.Play(SfxMeleeHitGroup);
+        else            _audio?.Play(SfxMeleeMiss);
+
         // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
         // Melee skill is hardcoded for now (the only swing flavor we have); when
         // ranged/spells land they pick their own SkillKind at the call site.
@@ -1840,8 +1892,30 @@ void main()
         {
             best.IsDead = true;
             best.Brain = null;
+            // Phase 18b — pick the species-matching death SFX off the
+            // template name. Generic "die_*" for the species; nothing if
+            // the species isn't in our shipped table (chickens go quietly).
+            PlayDeathSfx(best.Actor.Template.Name);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
+    }
+
+    /// <summary>Phase 18b — resolve a template name to the matching death
+    /// .wav. Heuristic substring match — DS1 names goblins as
+    /// 3W_goblin_grunt etc., krug as krug_scout/krug_dog/etc., so a
+    /// substring scan covers the variants without a per-template table.</summary>
+    private void PlayDeathSfx(string templateName)
+    {
+        if (_audio is null || string.IsNullOrEmpty(templateName)) return;
+        // Order matters: krug_dog before krug, krug_scout before krug, so
+        // the more-specific match wins. The dictionary itself is ordered
+        // insertion-stable, so the most-specific keys come last in the list.
+        string lower = templateName.ToLowerInvariant();
+        string? bestKey = null;
+        foreach (var key in SpeciesDeathSfx.Keys)
+            if (lower.Contains(key) && (bestKey is null || key.Length > bestKey.Length))
+                bestKey = key;
+        if (bestKey is not null) _audio.Play(SpeciesDeathSfx[bestKey]);
     }
 
     /// <summary>Pull a .wav blob out of <paramref name="reader"/> and hand
@@ -2026,6 +2100,8 @@ void main()
                     {
                         best.IsDead = true;
                         best.Brain = null;
+                        // Phase 18b — death scream from the matching species.
+                        PlayDeathSfx(best.Actor.Template.Name);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
                     }
                 }
@@ -2090,6 +2166,11 @@ void main()
                 $"life={s.MaxLife:F0} mana={s.MaxMana:F0} ***");
             _levelUpToastRemaining = LevelUpToastDuration;
             _levelUpToastLevel = _progression.Level;
+            // Phase 18b — punctuate the toast with the matching DS1 jingle.
+            // Single shared melee-flavored cue for now; per-skill cues
+            // (magic_nature/magic_dark/ranged) can land in 18c next to the
+            // skill-flavored XP bar.
+            _audio?.Play(SfxLevelUp);
         }
     }
 
@@ -2145,6 +2226,9 @@ void main()
         {
             best.IsDead = true;
             best.Brain = null;
+            // Phase 18b — death SFX in the F-key debug path too, so the
+            // dev shortcut still feels alive when audio's plumbed through.
+            PlayDeathSfx(best.Actor.Template.Name);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
