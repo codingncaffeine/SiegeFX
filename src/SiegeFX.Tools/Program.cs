@@ -350,7 +350,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|load-fuzz|actors|spawn|nav|path|follow> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|load-fuzz|neighbors|actors|spawn|nav|path|follow> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -359,6 +359,7 @@ static int DispatchRegion(string[] a)
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
         "layout-diag" => CmdRegionLayoutDiag(a[1..]),
         "load-fuzz"   => CmdRegionLoadFuzz(a[1..]),
+        "neighbors"   => CmdRegionNeighbors(a[1..]),
         "actors"      => CmdRegionActors(a[1..]),
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
@@ -1341,6 +1342,129 @@ static int CmdRegionLoadFuzz(string[] a)
 
     static string Truncate(string s, int max)
         => s.Length <= max ? s : s[..max] + "...";
+}
+
+// Phase 21a-1 — discovery + composition probe for neighbor preload. Mirrors
+// RenderHost.LoadNeighborTerrain without touching GL: parses the player
+// region's stitch helper, resolves each declared dest_region to its tank
+// path, builds a partial WorldLayout rooted at the player, and prints
+// per-neighbor placement + a per-region instance count. Lets the runtime
+// path be self-verified in CI before the user opens a window.
+static int CmdRegionNeighbors(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region neighbors <map-tank> <terrain-tank> <region-path>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var normalized = a[2].Replace('\\', '/');
+    if (!normalized.StartsWith('/')) normalized = "/" + normalized;
+    if (normalized.EndsWith('/')) normalized = normalized[..^1];
+
+    var stitchPath = normalized + "/editor/stitch_helper.gas";
+    if (!mapReader.TryGetFile(stitchPath, out _))
+    {
+        Console.WriteLine($"region '{normalized}': no stitch_helper.gas (standalone region)");
+        return 0;
+    }
+
+    SiegeFX.Core.Assets.RegionStitchHelper stitches;
+    try { stitches = SiegeFX.Core.Assets.RegionStitchHelper.Load(mapReader.ExtractToMemory(stitchPath)); }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"stitch parse failed: {ex.Message}");
+        return 2;
+    }
+
+    var pathByLeaf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var p in mapReader.ListFiles())
+    {
+        if (!p.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        var rp = p[..^"/terrain_nodes/nodes.gas".Length];
+        var leaf = rp[(rp.LastIndexOf('/') + 1)..];
+        pathByLeaf[leaf] = rp;
+    }
+
+    var declared = stitches.ByDestination.Keys.ToList();
+    var resolvedPaths = new List<string>();
+    var unresolved = new List<string>();
+    foreach (var d in declared)
+    {
+        if (pathByLeaf.TryGetValue(d, out var np) && np != normalized) resolvedPaths.Add(np);
+        else if (!pathByLeaf.ContainsKey(d)) unresolved.Add(d);
+    }
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var entries = new List<WorldLayout.RegionEntry>();
+    bool TryEntry(string rp, out WorldLayout.RegionEntry entry)
+    {
+        entry = default;
+        try
+        {
+            var graph = SiegeFX.Core.Assets.RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+            var layout = SiegeFX.Core.Assets.RegionLayout.Build(graph, Resolve);
+            SiegeFX.Core.Assets.RegionStitchHelper? stitch = null;
+            var sp = rp + "/editor/stitch_helper.gas";
+            if (mapReader.TryGetFile(sp, out _))
+            {
+                try { stitch = SiegeFX.Core.Assets.RegionStitchHelper.Load(mapReader.ExtractToMemory(sp)); }
+                catch { }
+            }
+            entry = new WorldLayout.RegionEntry(rp, graph, layout, stitch);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    if (!TryEntry(normalized, out var playerEntry))
+    {
+        Console.Error.WriteLine($"player region '{normalized}' failed to load — cannot probe neighbors");
+        return 3;
+    }
+    entries.Add(playerEntry);
+    foreach (var rp in resolvedPaths)
+        if (TryEntry(rp, out var ne)) entries.Add(ne);
+
+    var world = WorldLayout.Build(entries, Resolve, rootHint: normalized);
+
+    int placed = 0;
+    long totalInstances = 0;
+    Console.WriteLine($"region '{normalized}': {declared.Count} declared, {resolvedPaths.Count} resolved");
+    foreach (var entry in entries)
+    {
+        if (entry.Path == normalized) continue;
+        bool ok = world.RegionOffsets.ContainsKey(entry.Path);
+        int instCount = entry.Graph.Nodes.Count(n => world.Transforms.ContainsKey(n.Guid));
+        if (ok) { placed++; totalInstances += instCount; }
+        Console.WriteLine($"  {(ok ? "[ok]" : "[--]")}  {entry.Path}  ({instCount} instance(s))");
+    }
+    foreach (var u in unresolved)
+        Console.WriteLine($"  [??]  {u}  (declared but no nodes.gas in tank)");
+
+    Console.WriteLine($"summary: placed {placed}/{resolvedPaths.Count} neighbor(s), " +
+                      $"{totalInstances:N0} instance(s); " +
+                      $"unresolved={world.UnresolvedStitchCount} dangling={world.DanglingStitchCount}");
+    return placed == resolvedPaths.Count && unresolved.Count == 0 ? 0 : 5;
 }
 
 static int CmdWorldLayout(string[] a)
