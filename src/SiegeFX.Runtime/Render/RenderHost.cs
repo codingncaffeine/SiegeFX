@@ -156,6 +156,7 @@ public sealed class RenderHost : IDisposable
     // Drawn after the 3D scene each frame inside its own depth-disabled,
     // alpha-blended pass.
     private TextRenderer? _textRenderer;
+    private BarRenderer? _barRenderer;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -436,6 +437,7 @@ void main()
         _grid       = new GridMesh(_gl);
         _lootCube   = new DebugCubeMesh(_gl);
         _textRenderer = new TextRenderer(_gl);
+        _barRenderer  = new BarRenderer(_gl);
 
         if (_meshPath is not null)
         {
@@ -1527,9 +1529,10 @@ void main()
     // hero swinging at farmhouse krug_scouts: ~4-5 hits per kill instead of
     // the instant kills the old 200-300 placeholder gave.
     private static readonly SiegeFX.Core.Actors.ActorStats HeroBaselineStats = new(
-        MaxLife: 50f, MaxMana: 0f,
+        MaxLife: 49f, MaxMana: 30f,
         DamageMin: 1f, DamageMax: 3f,
-        Defense: 0f, AttackRange: 0.5f, WalkSpeed: 4.5f, ExperienceValue: 0);
+        Defense: 0f, AttackRange: 0.5f, WalkSpeed: 4.5f, ExperienceValue: 0,
+        Strength: 10f, Dexterity: 10f, Intelligence: 10f);
     private void TryClickToAttack(Vector2 cursorPx)
     {
         if (_player is null || _window is null || _actors.Count == 0) return;
@@ -1986,16 +1989,56 @@ void main()
         if (_textRenderer is not null && _textRenderer.HasFont)
         {
             _textRenderer.BeginPass();
-            var col = new Vector4(1f, 1f, 1f, 1f);
+            var col   = new Vector4(1f, 1f, 1f, 1f);
+            var dim   = new Vector4(0.7f, 0.7f, 0.7f, 1f);
             _textRenderer.DrawString(size.X, size.Y, "SiegeFX", 12, 12, col);
             if (_player is not null)
             {
                 var p = _player.CurrentTransform.Translation;
                 var line = $"x={p.X,7:F1}  y={p.Y,6:F1}  z={p.Z,7:F1}";
                 _textRenderer.DrawString(size.X, size.Y, line, 12, 30, col);
+
+                // HP/MP bars + numeric readout. ActorRenderState wraps the live
+                // Combat/Stats blocks so we can pull current/max directly. Every
+                // PC in DS1 is multiclass, so the mana bar is always shown — a
+                // fresh hero starts with 30 MP from the (str/dex/int) formula.
+                if (_barRenderer is not null)
+                {
+                    var combat = _player.Actor.Combat;
+                    var stats  = _player.Actor.Stats;
+                    DrawHudBar(size.X, size.Y, 12, 50, 200, 12,
+                        combat.CurrentLife, stats.MaxLife,
+                        new Vector4(0.78f, 0.10f, 0.10f, 1f), "HP");
+                    DrawHudBar(size.X, size.Y, 12, 68, 200, 12,
+                        combat.CurrentMana, stats.MaxMana,
+                        new Vector4(0.18f, 0.40f, 0.90f, 1f), "MP");
+                }
             }
             _textRenderer.EndPass();
         }
+    }
+
+    /// <summary>Draws a single HP/MP-style bar at (<paramref name="x"/>,<paramref name="y"/>):
+    /// dark background, fill scaled to current/max, 1-pixel border, and a label like
+    /// "HP 38/50" laid alongside via <see cref="TextRenderer"/>.</summary>
+    private void DrawHudBar(int viewportW, int viewportH, int x, int y, int w, int h,
+                            float current, float max, Vector4 fillColor, string label)
+    {
+        if (_barRenderer is null || _textRenderer is null) return;
+        if (max <= 0f) return;
+        float pct = Math.Clamp(current / max, 0f, 1f);
+        int fillW = (int)MathF.Round(pct * (w - 2));
+        var bg     = new Vector4(0.10f, 0.10f, 0.10f, 0.82f);
+        var border = new Vector4(0.85f, 0.85f, 0.85f, 0.85f);
+        var text   = new Vector4(1f, 1f, 1f, 1f);
+
+        _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, bg);
+        if (fillW > 0)
+            _barRenderer.DrawRect(viewportW, viewportH, x + 1, y + 1, fillW, h - 2, fillColor);
+        _barRenderer.DrawBorder(viewportW, viewportH, x, y, w, h, border);
+
+        var caption = $"{label} {(int)MathF.Round(current)}/{(int)MathF.Round(max)}";
+        _textRenderer.DrawString(viewportW, viewportH, caption, x + w + 8, y - 1, text);
     }
 
     private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
@@ -2019,6 +2062,7 @@ void main()
         _lootCube?.Dispose();
         _grid?.Dispose();
         _textRenderer?.Dispose();
+        _barRenderer?.Dispose();
         _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
