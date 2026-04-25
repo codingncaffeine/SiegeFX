@@ -350,7 +350,7 @@ static int CmdGasDump(string[] a)
 
 static int DispatchRegion(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|actors|spawn|nav|path|follow> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx region <info|fuzz|layout|layout-fuzz|load-fuzz|actors|spawn|nav|path|follow> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdRegionInfo(a[1..]),
@@ -358,6 +358,7 @@ static int DispatchRegion(string[] a)
         "layout"      => CmdRegionLayout(a[1..]),
         "layout-fuzz" => CmdRegionLayoutFuzz(a[1..]),
         "layout-diag" => CmdRegionLayoutDiag(a[1..]),
+        "load-fuzz"   => CmdRegionLoadFuzz(a[1..]),
         "actors"      => CmdRegionActors(a[1..]),
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
@@ -1239,6 +1240,107 @@ static int CmdRegionLayoutFuzz(string[] a)
                       $"{crossRegionDoors:N0} cross-region door(s), {unresolvedDoors:N0} unresolved door(s), " +
                       $"{missingMeshes:N0} missing mesh(es); {failed} failure(s)");
     return failed == 0 ? 0 : 4;
+}
+
+// Phase 21a — full-asset region load fuzzer. Walks every region in the map
+// tank and runs the same loader stack the play-region path uses (graph +
+// layout + actor.gas + conversation pool), so an asset variant that only
+// chokes mid-play surfaces here in CI instead. Aggregates per-region failure
+// counts plus per-error-class counts so the worst offenders rise to the top
+// of the report rather than getting buried in a wall of stack traces.
+static int CmdRegionLoadFuzz(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region load-fuzz <map-tank> <terrain-tank>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    int regionCount = 0, fullySucceeded = 0;
+    int graphFails = 0, layoutFails = 0, actorFails = 0, convFails = 0;
+    int totalActors = 0, totalConvs = 0, totalDiags = 0;
+    var errorBuckets = new Dictionary<string, int>(StringComparer.Ordinal);
+
+    void Bucket(string stage, Exception ex)
+    {
+        var key = $"{stage}: {ex.GetType().Name}: {Truncate(ex.Message, 80)}";
+        errorBuckets[key] = errorBuckets.GetValueOrDefault(key) + 1;
+    }
+
+    foreach (var path in mapReader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        regionCount++;
+        var regionPath = path[..^"/terrain_nodes/nodes.gas".Length];
+        bool ok = true;
+
+        SiegeFX.Core.Assets.RegionGraph? graph = null;
+        try { graph = SiegeFX.Core.Assets.RegionGraph.Load(mapReader.ExtractToMemory(path)); }
+        catch (Exception ex) { graphFails++; Bucket("graph", ex); ok = false; }
+
+        if (graph is not null)
+        {
+            try { _ = SiegeFX.Core.Assets.RegionLayout.Build(graph, Resolve); }
+            catch (Exception ex) { layoutFails++; Bucket("layout", ex); ok = false; }
+        }
+
+        try
+        {
+            var (actors, diags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
+            totalActors += actors.Count;
+            totalDiags  += diags.Count;
+        }
+        catch (Exception ex) { actorFails++; Bucket("actors", ex); ok = false; }
+
+        try
+        {
+            var (convs, diags) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, regionPath);
+            totalConvs += convs.Count;
+            totalDiags += diags.Count;
+        }
+        catch (Exception ex) { convFails++; Bucket("conversations", ex); ok = false; }
+
+        if (ok) fullySucceeded++;
+    }
+
+    Console.WriteLine($"load-fuzzed {regionCount} region(s): {fullySucceeded} clean, " +
+                      $"{regionCount - fullySucceeded} with at least one stage failure");
+    Console.WriteLine($"  totals: {totalActors:N0} actor instance(s), {totalConvs:N0} conversation tree(s), " +
+                      $"{totalDiags:N0} per-region diagnostic(s)");
+    Console.WriteLine($"  per-stage hard failures: graph={graphFails} layout={layoutFails} " +
+                      $"actors={actorFails} conversations={convFails}");
+
+    if (errorBuckets.Count > 0)
+    {
+        Console.WriteLine("  top error classes:");
+        foreach (var kv in errorBuckets.OrderByDescending(kv => kv.Value).Take(8))
+            Console.WriteLine($"    {kv.Value,4}x  {kv.Key}");
+    }
+
+    return (graphFails + layoutFails + actorFails + convFails) == 0 ? 0 : 4;
+
+    static string Truncate(string s, int max)
+        => s.Length <= max ? s : s[..max] + "...";
 }
 
 static int CmdWorldLayout(string[] a)
