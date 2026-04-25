@@ -39,6 +39,23 @@ string? skritPath = null;
 List<string>? skritClips = null;
 string? playLogic = null;
 string? playObjects = null;
+bool diagMode = false;
+
+// Phase 21b-1 — `--diag` is a top-level flag that pairs with any other
+// invocation. It enables: per-stage Stopwatch timing inside OnLoad and a
+// rolling frame-time histogram printed once per second. We strip it from
+// argv before the per-mode parser runs so existing positional layouts
+// (--region MAP TERRAIN PATH, etc.) keep working without `--diag` shifting
+// indices.
+{
+    var filtered = new List<string>(args.Length);
+    foreach (var a in args)
+    {
+        if (string.Equals(a, "--diag", StringComparison.OrdinalIgnoreCase)) diagMode = true;
+        else filtered.Add(a);
+    }
+    args = filtered.ToArray();
+}
 
 if (args.Length >= 1 && args[0] == "--region")
 {
@@ -150,7 +167,8 @@ using var host = new RenderHost(
     skritPath: skritPath,
     skritClipPaths: skritClips,
     playLogicTankPath: playLogic,
-    playObjectsTankPath: playObjects);
+    playObjectsTankPath: playObjects,
+    diagMode: diagMode);
 try
 {
     host.Run();
