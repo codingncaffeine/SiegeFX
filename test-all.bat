@@ -44,9 +44,10 @@ echo   24. Phase 15a   - Text overlay (DS1 copperplate font, fh_r1)
 echo   25. Phase 15b   - HP/MP HUD bars (live values, fh_r1)
 echo   26. Phase 15c   - Grid inventory panel (press I to toggle, fh_r1)
 echo   27. Phase 15d   - Pause menu (Esc to open; Resume / Quit, fh_r1)
-echo   28. Phase 16a   - Formulas dump (formulas.gas -> typed values)
+echo   28. Phase 16a   - Formulas dump (formulas.gas -^> typed values)
 echo   29. Phase 16b   - HP/MP regen (~0.25/0.333 per sec at 10/10/10, fh_r1)
 echo   30. Phase 16c   - NPC aggro: walk into a krug, watch HP drop + regen (fh_r1)
+echo   31. Phase 16d   - XP + level: kill goblins, watch Lv/XP line on HUD (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -83,6 +84,7 @@ if /i "%CHOICE%"=="27" goto T27
 if /i "%CHOICE%"=="28" goto T28
 if /i "%CHOICE%"=="29" goto T29
 if /i "%CHOICE%"=="30" goto T30
+if /i "%CHOICE%"=="31" goto T31
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -413,6 +415,27 @@ echo [then sit still and watch the bars climb back up]
 echo [at 10/10/10 a fresh hero recovers ~0.25 HP/sec and ~0.333 MP/sec]
 echo [full HP from 0 takes ~3 min; full MP from 0 takes ~90 sec]
 echo [also tests the shutdown-crash fix on Esc-^>Quit and window X]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T31
+echo.
+echo --- Phase 16d: XP + level (fh_r1) ---
+echo [HUD shows "Lv 1  XP 0/N" under the HP/MP bars on spawn]
+echo [click goblins to attack; XP ticks up by damage dealt + kill bonus]
+echo [level 2 fires around ~150-200 xp; console prints "*** LEVEL UP! ***"]
+echo [on level-up: STR/DEX/INT auto-grow by Melee proportional gains (0.64/0.27/0.09)]
+echo [HP bar max grows on level-up; current HP unchanged (DS1 doesn't auto-heal)]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

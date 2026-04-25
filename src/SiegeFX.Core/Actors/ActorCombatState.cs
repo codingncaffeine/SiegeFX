@@ -10,7 +10,7 @@ namespace SiegeFX.Core.Actors;
 /// </summary>
 public sealed class ActorCombatState
 {
-    readonly ActorStats _stats;
+    ActorStats _stats;
 
     public float CurrentLife { get; private set; }
     public float CurrentMana { get; private set; }
@@ -98,5 +98,18 @@ public sealed class ActorCombatState
         float actual = MathF.Min(amount, CurrentMana);
         CurrentMana -= actual;
         return actual;
+    }
+
+    /// <summary>Swap the underlying stats reference so subsequent <see cref="Heal"/>
+    /// and <see cref="RestoreMana"/> calls clamp against the new MaxLife/MaxMana.
+    /// Called from <see cref="Actor.ResyncStats"/> after a level-up. Current life
+    /// and mana are left alone — DS1 doesn't auto-heal on level-up — but if the new
+    /// max happens to be lower than current (a synthetic test case), we clamp down
+    /// rather than carry an over-cap value that subsequent heals would never trim.</summary>
+    public void ResyncStats(ActorStats newStats)
+    {
+        _stats = newStats;
+        if (CurrentLife > newStats.MaxLife) CurrentLife = newStats.MaxLife;
+        if (CurrentMana > newStats.MaxMana) CurrentMana = newStats.MaxMana;
     }
 }
