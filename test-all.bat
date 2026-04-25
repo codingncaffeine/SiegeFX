@@ -48,6 +48,8 @@ echo   28. Phase 16a   - Formulas dump (formulas.gas -^> typed values)
 echo   29. Phase 16b   - HP/MP regen (~0.25/0.333 per sec at 10/10/10, fh_r1)
 echo   30. Phase 16c   - NPC aggro: walk into a krug, watch HP drop + regen (fh_r1)
 echo   31. Phase 16d   - XP + level: kill goblins, watch Lv/XP line on HUD (fh_r1)
+echo   32. Phase 17a   - Spells: dump catalog + show spell_zap by magic level
+echo   33. Phase 17a   - Spells: cast spell_zap with Q (mana 1, dmg 4-7 at L1, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -85,6 +87,8 @@ if /i "%CHOICE%"=="28" goto T28
 if /i "%CHOICE%"=="29" goto T29
 if /i "%CHOICE%"=="30" goto T30
 if /i "%CHOICE%"=="31" goto T31
+if /i "%CHOICE%"=="32" goto T32
+if /i "%CHOICE%"=="33" goto T33
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -436,6 +440,36 @@ echo [click goblins to attack; XP ticks up by damage dealt + kill bonus]
 echo [level 2 fires around ~150-200 xp; console prints "*** LEVEL UP! ***"]
 echo [on level-up: STR/DEX/INT auto-grow by Melee proportional gains (0.64/0.27/0.09)]
 echo [HP bar max grows on level-up; current HP unchanged (DS1 doesn't auto-heal)]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T32
+echo.
+echo --- Phase 17a: Spells dump + spell_zap evaluated ---
+"%TOOL%" spells dump "%DS1%\Resources\Logic.dsres"
+echo.
+"%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_zap
+pause
+goto MENU
+
+:T33
+echo.
+echo --- Phase 17a: Cast spell_zap (fh_r1) ---
+echo [HUD shows "spellbook: primary <- spell_zap" in the launch log]
+echo [aim cursor at a krug, press Q to cast: mana drops by 1, target takes 4-7 dmg]
+echo [outside 8u range: "out of range" floats up; no mana: "no mana" floats up]
+echo [cooldown is 0.15s so spam-Q just rate-limits to ~6 casts/sec]
+echo [kills via spell credit XP under SkillKind.CombatMagic]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

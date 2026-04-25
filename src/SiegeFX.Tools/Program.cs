@@ -28,6 +28,7 @@ try
         "skrit"  => DispatchSkrit(args[1..]),
         "templates" => DispatchTemplates(args[1..]),
         "formulas"  => DispatchFormulas(args[1..]),
+        "spells"    => DispatchSpells(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -93,6 +94,9 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
     Console.WriteLine("  siegefx region path-fuzz   <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region follow      <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
+    Console.WriteLine("  siegefx formulas dump      <Logic.dsres>");
+    Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
+    Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -2638,5 +2642,63 @@ static int CmdFormulasDump(string[] a)
 
     Console.WriteLine($"experience_table: {f.XpTable.Count} entries  (lvl 1: {f.XpForLevel(1):N0}, lvl 10: {f.XpForLevel(10):N0}, lvl 50: {f.XpForLevel(50):N0}, lvl 100: {f.XpForLevel(100):N0}, lvl 160: {f.XpForLevel(160):N0})");
     Console.WriteLine($"  reverse: 1000 xp -> level {f.LevelForXp(1000)}, 50000 -> {f.LevelForXp(50000)}, 1000000 -> {f.LevelForXp(1000000)}");
+    return 0;
+}
+
+static int DispatchSpells(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdSpellsDump(a[1..]),
+        "show" => CmdSpellsShow(a[1..]),
+        _      => UnknownCommand("spells " + a[0]),
+    };
+}
+
+static int CmdSpellsDump(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx spells dump <Logic.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, diags) = TemplateStore.LoadFromTank(reader);
+    var cat = SpellCatalog.Build(store);
+    Console.WriteLine($"templates: {store.Count} loaded ({diags.Count} diagnostics)");
+    Console.WriteLine($"spells (instant-hit, parsed [magic] block): {cat.Count}");
+    foreach (var s in cat.All.OrderBy(s => s.Name).Take(40))
+    {
+        Console.WriteLine($"  {s.Name,-32} \"{s.ScreenName,-22}\"  range={s.CastRange,5:0.0}  cd={s.CastReloadDelay,4:0.00}  cost={s.BaseManaCost,4:0.0}");
+    }
+    if (cat.Count > 40) Console.WriteLine($"  ... ({cat.Count - 40} more)");
+    return 0;
+}
+
+static int CmdSpellsShow(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx spells show <Logic.dsres> <spell_name> [magic_level]"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    var cat = SpellCatalog.Build(store);
+    if (!cat.TryGet(a[1], out var s)) { Console.Error.WriteLine($"no spell named '{a[1]}' in catalog"); return 4; }
+    Console.WriteLine($"{s.Name}  \"{s.ScreenName}\"");
+    Console.WriteLine($"  cast_range          = {s.CastRange}");
+    Console.WriteLine($"  cast_reload_delay   = {s.CastReloadDelay}");
+    Console.WriteLine($"  base mana_cost      = {s.BaseManaCost}");
+    Console.WriteLine($"  mana_cost_modifier  = {s.ManaCostModifierExpr}");
+    Console.WriteLine($"  damage_min expr     = {s.AttackDamageMinExpr}");
+    Console.WriteLine($"  damage_max expr     = {s.AttackDamageMaxExpr}");
+    Console.WriteLine();
+    Console.WriteLine("evaluated by magic level (lo / hi damage, mana cost):");
+    int[] levels = a.Length >= 3 && int.TryParse(a[2], out var only) ? new[] { only } : new[] { 1, 5, 10, 25, 50, 100 };
+    var rng = new Random(1);
+    foreach (var lv in levels)
+    {
+        float lo = SpellExpr.Eval(s.AttackDamageMinExpr, lv);
+        float hi = SpellExpr.Eval(s.AttackDamageMaxExpr, lv);
+        float cost = s.ManaCost(lv);
+        float sample = s.RollDamage(lv, rng);
+        Console.WriteLine($"  L{lv,-3}  dmg [{lo,7:0.00} .. {hi,7:0.00}]  sample={sample,6:0.00}  mana={cost,5:0.0}");
+    }
     return 0;
 }
