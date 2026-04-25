@@ -44,6 +44,7 @@ echo   24. Phase 15a   - Text overlay (DS1 copperplate font, fh_r1)
 echo   25. Phase 15b   - HP/MP HUD bars (live values, fh_r1)
 echo   26. Phase 15c   - Grid inventory panel (press I to toggle, fh_r1)
 echo   27. Phase 15d   - Pause menu (Esc to open; Resume / Quit, fh_r1)
+echo   28. Phase 16a   - Formulas dump (formulas.gas -> typed values)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -77,6 +78,7 @@ if /i "%CHOICE%"=="24" goto T24
 if /i "%CHOICE%"=="25" goto T25
 if /i "%CHOICE%"=="26" goto T26
 if /i "%CHOICE%"=="27" goto T27
+if /i "%CHOICE%"=="28" goto T28
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -385,6 +387,17 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T28
+echo.
+echo --- Phase 16a: Formulas dump (Logic.dsres -^> formulas.gas) ---
+echo [expect: 10/10/10 -^> MaxLife=49.0  MaxMana=30.0]
+echo [expect: gains rows sum to 1.00; XP table ~151 entries]
+echo [expect: lr 1/4 -^> 0.250 HP/sec at str=10; mr 1/3 -^> 0.333 MP/sec at int=10]
+echo.
+"%TOOL%" formulas dump "%DS1%\Resources\Logic.dsres"
 pause
 goto MENU
 
