@@ -57,6 +57,7 @@ echo   37. Phase 18b   - Audio: melee swing/hit/miss + monster death + level-up 
 echo   38. Phase 18c   - Audio: 3D positional pan + falloff (walk away from a kill, listen, fh_r1)
 echo   39. Phase 19a   - Save: SaveFile JSON round-trip self-test (no window)
 echo   40. Phase 19c   - Save/Load: F5 quicksave + F9 quickload (kill stuff, F5, kill more, F9, fh_r1)
+echo   41. Phase 20a   - Dialogue parser self-test + RMB-talk to Edgaar in fh_r1
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -103,6 +104,7 @@ if /i "%CHOICE%"=="37" goto T37
 if /i "%CHOICE%"=="38" goto T38
 if /i "%CHOICE%"=="39" goto T39
 if /i "%CHOICE%"=="40" goto T40
+if /i "%CHOICE%"=="41" goto T41
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -622,6 +624,37 @@ echo [Press F9: scene snaps back to F5 state — dead krug revive (if alive at s
 echo [or stay dead (if dead at save); HP/MP/XP/Level revert; piles return]
 echo [Save lives at: %%LOCALAPPDATA%%\SiegeFX\Saves\quicksave.save]
 echo [Region check: a save from a different region path is refused on F9]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T41
+echo.
+echo --- Phase 20a: dialogue parser self-test (no window) ---
+echo [expect: "[selftest-dialogue] OK - edgaar branching tree (3 nodes...) parsed correctly"]
+echo [exits 0 on success, 1 with field diffs on failure]
+echo.
+dotnet "%RUN%" --selftest-dialogue
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === selftest exited with code %EXITCODE% ===
+echo.
+echo --- Phase 20a: visual walkthrough (fh_r1) ---
+echo [Walk to Edgaar (the farmer) and right-click him: dialogue panel opens.]
+echo [Node 1 has a "More" button: click to advance.]
+echo [Node 2 is the quest fork with "Accept" / "Decline":]
+echo [  Accept   -^> console logs "talk: quest_edgaar_basement activated"]
+echo [  Decline  -^> jumps to the polite-tail node, then "Continue" closes.]
+echo [Esc while open closes the panel without firing the quest.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
