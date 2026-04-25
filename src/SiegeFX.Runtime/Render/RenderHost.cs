@@ -69,7 +69,8 @@ public sealed class RenderHost : IDisposable
     // viewer modes that bypass play-region loading.
     private SiegeFX.Core.Assets.SpellCatalog? _spellCatalog;
     private SiegeFX.Core.Actors.PlayerSpellbook? _playerSpellbook;
-    private const string DefaultPrimarySpellName = "spell_zap";
+    private const string DefaultPrimarySpellName   = "spell_zap";
+    private const string DefaultSecondarySpellName = "spell_healing_wind";
     // Phase 17a — short-lived floating world-anchored text (cast feedback like
     // "ZAP -7", "no mana", "out of range"). One render-frame timer per entry;
     // entries with Remaining<=0 are pruned at the start of OnRender.
@@ -438,7 +439,14 @@ void main()
                 // render layer just supplies the candidate target + distance.
                 else if (key == Key.Q && _player is not null && !_player.IsDead)
                 {
-                    TryClickToCast();
+                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
+                }
+                // Phase 17c — W casts the secondary slot. Defaults to a self
+                // heal so a single key keeps the loop simple; when a real
+                // hotbar lands the user picks per-slot bindings.
+                else if (key == Key.W && _player is not null && !_player.IsDead)
+                {
+                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
                 }
             };
 
@@ -1530,9 +1538,20 @@ void main()
         {
             _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
                 player, new Random(unchecked((int)0x5C617AC1u)));
-            _playerSpellbook.Slot(primary);
+            _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, primary);
             Console.WriteLine($"  spellbook: primary <- {primary.Name} (\"{primary.ScreenName}\") " +
                               $"range={primary.CastRange:F1} cd={primary.CastReloadDelay:F2}s");
+            // Phase 17c — slot a self-heal into Secondary so 'W' has something
+            // to fire. spell_healing_wind has a simple `(#magic+1)*5.15` mana
+            // formula and a tractable alter_life enchantment value our
+            // SpellExpr resolver handles without hitting the ternary syntax
+            // the more complex heal templates use.
+            if (_spellCatalog.TryGet(DefaultSecondarySpellName, out var secondary))
+            {
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, secondary);
+                Console.WriteLine($"  spellbook: secondary <- {secondary.Name} (\"{secondary.ScreenName}\") " +
+                                  $"kind={secondary.Kind} cd={secondary.CastReloadDelay:F2}s");
+            }
         }
         // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
         // user wants to fly around for debugging.
@@ -1791,66 +1810,81 @@ void main()
     /// then-pick-nearest-combatant logic so casting and clicking share one
     /// targeting model. The spellbook owns range/mana/cooldown gating; this
     /// method just routes the result into the floating-text + XP pipelines.</summary>
-    private void TryClickToCast()
+    private void TryClickToCast(SiegeFX.Core.Actors.SpellSlot slot)
     {
         if (_player is null || _window is null || _input is null) return;
-        if (_playerSpellbook is null || _playerSpellbook.Primary is null) return;
-        if (_actors.Count == 0) return;
+        if (_playerSpellbook is null) return;
+        var spell = slot == SiegeFX.Core.Actors.SpellSlot.Primary
+            ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
+        if (spell is null) return;
         if (_input.Mice.Count == 0) return;
 
-        var cursor = _input.Mice[0].Position;
-        var size = _window.FramebufferSize;
-        if (size.X <= 0 || size.Y <= 0) return;
-
-        float ndcX = (cursor.X / size.X) * 2f - 1f;
-        float ndcY = 1f - (cursor.Y / size.Y) * 2f;
-        float aspect = (float)size.X / size.Y;
-        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
-
-        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
-        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
-        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
-        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
-        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
-        var dir  = far_ - near;
-        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
-
-        float planeY = _player.CurrentTransform.Translation.Y;
-        float t = (planeY - near.Y) / dir.Y;
-        if (t < 0f) return;
-        var groundHit = near + dir * t;
-
-        ActorRenderState? best = null;
-        float bestDist = ClickAttackRadius;
-        foreach (var s in _actors)
-        {
-            if (s.IsDead) continue;
-            if (s.IsPlayer) continue;
-            if (!s.Actor.Stats.IsCombatant) continue;
-            var pos = s.CurrentTransform.Translation;
-            float dx = pos.X - groundHit.X;
-            float dz = pos.Z - groundHit.Z;
-            float d  = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestDist) { bestDist = d; best = s; }
-        }
-
         var playerPos = _player.CurrentTransform.Translation;
-        var spell = _playerSpellbook.Primary;
         // Phase 16d ships one combined skill pool, so the player's progression
         // level is the only "magic level" we have to feed into the spell formula.
         // 17b+ replaces this with the dedicated CombatMagic / NatureMagic level.
         float magicLevel = _progression?.Level ?? 1;
-        SiegeFX.Core.Actors.CastResult result;
-        if (best is null)
+
+        ActorRenderState? best = null;
+        // Phase 17c — self-heal spells skip target picking entirely. The
+        // spellbook ignores the target arg for SpellKind.SelfHeal, but we
+        // also skip the unproject math so the cast still fires when the
+        // cursor is hovering empty terrain.
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.OffensiveInstantHit)
         {
-            result = new SiegeFX.Core.Actors.CastResult(SiegeFX.Core.Actors.CastOutcome.NoTarget, spell, 0, 0, false);
+            if (_actors.Count == 0) return;
+            var cursor = _input.Mice[0].Position;
+            var size = _window.FramebufferSize;
+            if (size.X <= 0 || size.Y <= 0) return;
+
+            float ndcX = (cursor.X / size.X) * 2f - 1f;
+            float ndcY = 1f - (cursor.Y / size.Y) * 2f;
+            float aspect = (float)size.X / size.Y;
+            if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+
+            var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+            var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+            if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+            var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+            var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+            var dir  = far_ - near;
+            if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
+
+            float planeY = _player.CurrentTransform.Translation.Y;
+            float t = (planeY - near.Y) / dir.Y;
+            if (t < 0f) return;
+            var groundHit = near + dir * t;
+
+            float bestDist = ClickAttackRadius;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead) continue;
+                if (s.IsPlayer) continue;
+                if (!s.Actor.Stats.IsCombatant) continue;
+                var pos = s.CurrentTransform.Translation;
+                float dx = pos.X - groundHit.X;
+                float dz = pos.Z - groundHit.Z;
+                float d  = MathF.Sqrt(dx * dx + dz * dz);
+                if (d < bestDist) { bestDist = d; best = s; }
+            }
+        }
+
+        SiegeFX.Core.Actors.CastResult result;
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
+        {
+            result = _playerSpellbook.TryCast(slot, _player.Actor, 0f, magicLevel);
+        }
+        else if (best is null)
+        {
+            result = new SiegeFX.Core.Actors.CastResult(
+                SiegeFX.Core.Actors.CastOutcome.NoTarget, spell, 0, 0, 0, false);
         }
         else
         {
             float dx = best.CurrentTransform.Translation.X - playerPos.X;
             float dz = best.CurrentTransform.Translation.Z - playerPos.Z;
             float dist = MathF.Sqrt(dx * dx + dz * dz);
-            result = _playerSpellbook.TryCast(best.Actor, dist, magicLevel);
+            result = _playerSpellbook.TryCast(slot, best.Actor, dist, magicLevel);
         }
 
         // Cast feedback. Console line is the canonical record (matches the
@@ -1861,15 +1895,29 @@ void main()
         switch (result.Outcome)
         {
             case SiegeFX.Core.Actors.CastOutcome.Cast:
-                Console.WriteLine(
-                    $"cast {spell!.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
-                    $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
-                // Phase 17b — snap PC facing toward the target so the cast at
-                // least visually originates *toward* the victim. _playerFacing
-                // normally only updates from movement deltas; without this, a
-                // player who casts while standing still would shoot bolts out
-                // of his back.
+                if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
+                    // Phase 17c — self-heal cast: no target, no bolt, green
+                    // restore popup over the player. Heal is applied inside
+                    // the spellbook so the HP bar is already updated by the
+                    // time this branch runs.
+                    Console.WriteLine(
+                        $"cast {spell.ScreenName}: heal +{result.HealAmount:F0} " +
+                        $"(mana -{result.ManaSpent:F1})");
+                    AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
+                                    playerPos + new Vector3(0f, 2.2f, 0f),
+                                    new Vector4(0.40f, 0.95f, 0.40f, 1f));
+                }
+                else
+                {
+                    Console.WriteLine(
+                        $"cast {spell.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
+                        $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                    // Phase 17b — snap PC facing toward the target so the cast
+                    // at least visually originates *toward* the victim.
+                    // _playerFacing normally only updates from movement deltas;
+                    // without this, a player who casts while standing still
+                    // would shoot bolts out of his back.
                     var tp = best.CurrentTransform.Translation;
                     float fx = tp.X - playerPos.X;
                     float fz = tp.Z - playerPos.Z;
@@ -1883,9 +1931,6 @@ void main()
                             Matrix4x4.CreateRotationY(pyaw) *
                             Matrix4x4.CreateTranslation(playerPos);
                     }
-                    // Source ~chest height of the caster; target ~chest height
-                    // of the victim. Hardcoded offsets are fine — DS1 PCs and
-                    // typical mobs are within 0.3m of each other in stature.
                     var src = playerPos + new Vector3(0f, 1.2f, 0f);
                     var dst = tp        + new Vector3(0f, 1.0f, 0f);
                     _spellBolts.Add(new SpellBolt
@@ -1894,18 +1939,18 @@ void main()
                         Color = new Vector4(0.55f, 0.85f, 1.00f, 1f),
                         Remaining = SpellBoltDuration, Total = SpellBoltDuration,
                     });
-                }
-                AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
-                                anchor + new Vector3(0f, 1.8f, 0f),
-                                new Vector4(0.55f, 0.80f, 1.00f, 1f));
-                AwardCombatXp((long)result.Damage,
-                              result.TargetKilled ? best!.Actor.Stats.ExperienceValue : 0,
-                              SiegeFX.Core.Assets.SkillKind.CombatMagic);
-                if (result.TargetKilled && best!.Actor.Combat.ConsumeJustDied())
-                {
-                    best.IsDead = true;
-                    best.Brain = null;
-                    LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+                    AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
+                                    anchor + new Vector3(0f, 1.8f, 0f),
+                                    new Vector4(0.55f, 0.80f, 1.00f, 1f));
+                    AwardCombatXp((long)result.Damage,
+                                  result.TargetKilled ? best.Actor.Stats.ExperienceValue : 0,
+                                  SiegeFX.Core.Assets.SkillKind.CombatMagic);
+                    if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
+                    {
+                        best.IsDead = true;
+                        best.Brain = null;
+                        LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+                    }
                 }
                 break;
             case SiegeFX.Core.Actors.CastOutcome.NoTarget:
@@ -1923,6 +1968,10 @@ void main()
                 break;
             case SiegeFX.Core.Actors.CastOutcome.TargetDead:
                 AddFloatingText("already dead", anchor + new Vector3(0f, 1.8f, 0f), new Vector4(0.7f, 0.7f, 0.7f, 1f));
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.AlreadyFull:
+                AddFloatingText("at full health", playerPos + new Vector3(0f, 2.1f, 0f),
+                                new Vector4(0.40f, 0.95f, 0.40f, 1f));
                 break;
         }
     }
