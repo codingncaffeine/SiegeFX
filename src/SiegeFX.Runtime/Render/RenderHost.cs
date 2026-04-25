@@ -471,6 +471,12 @@ void main()
     // Vertex colors are parsed (DS1 bakes radiosity into them) but not wired here yet —
     // trying texture*vertexColor made the visible picture darker overall, suggesting the
     // color range isn't a straight [0..1] sRGB tint. Needs a data-look before hooking up.
+    // Alpha test (discard < 0.5) is essential for foliage. DS1 trees, shrubs,
+    // and grass clumps are rendered as textured quad clusters with the leaf
+    // shape masked into the alpha channel — without the discard, every leaf
+    // card draws as a solid opaque rectangle and trees look like the blocky
+    // sprite-billboards of pre-2000 games. Threshold 0.5 matches the original
+    // engine's hard-edged cutout (no premultiplied alpha blending in DS1).
     private const string MeshFragmentSource = @"#version 330 core
 in  vec3 vNormal;
 in  vec2 vUv;
@@ -481,10 +487,11 @@ void main()
 {
     vec3 L = normalize(vec3(0.4, 0.9, 0.3));
     float ndl = max(dot(normalize(vNormal), L), 0.0);
-    vec3 base = (uHasTexture != 0)
-        ? texture(uAlbedo, vec2(vUv.x, 1.0 - vUv.y)).rgb
-        : vec3(0.85, 0.78, 0.62);
-    vec3 lit  = base * (0.25 + 0.75 * ndl);
+    vec4 sampled = (uHasTexture != 0)
+        ? texture(uAlbedo, vec2(vUv.x, 1.0 - vUv.y))
+        : vec4(0.85, 0.78, 0.62, 1.0);
+    if (uHasTexture != 0 && sampled.a < 0.5) discard;
+    vec3 lit  = sampled.rgb * (0.25 + 0.75 * ndl);
     FragColor = vec4(lit, 1.0);
 }";
 
@@ -4005,9 +4012,14 @@ void main()
         // chairs, etc. from non_interactive/container/inventory/interactive/emitter
         // .gas). Drawn through the same static-mesh pipeline weapons use; one draw
         // call per placement, with the texture cached per AspMesh so adjacent props
-        // sharing a model only rebind once.
+        // sharing a model only rebind once. Cull-face is disabled for the pass so
+        // foliage leaf cards render from both sides (DS1 trees/shrubs/crops are
+        // alpha-cutout single-sided quads; backface culling makes half the leaves
+        // disappear). The fragment shader handles the alpha discard; no blend
+        // state needed for hard cutout.
         if (_meshShader is not null && _staticProps.Count > 0)
         {
+            _gl!.Disable(GLEnum.CullFace);
             _meshShader.Use();
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
@@ -4031,6 +4043,7 @@ void main()
                 _meshShader.SetMatrix4("uModel", prop.World);
                 prop.Mesh.Draw();
             }
+            _gl.Enable(GLEnum.CullFace);
         }
 
         // Phase 14d — render the PC's equipped weapon attached to the weapon_grip
