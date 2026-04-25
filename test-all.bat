@@ -56,6 +56,7 @@ echo   36. Phase 18a   - Audio: cast SFX (Q = zap_cast.wav, W = healing_wind_cas
 echo   37. Phase 18b   - Audio: melee swing/hit/miss + monster death + level-up SFX (fh_r1)
 echo   38. Phase 18c   - Audio: 3D positional pan + falloff (walk away from a kill, listen, fh_r1)
 echo   39. Phase 19a   - Save: SaveFile JSON round-trip self-test (no window)
+echo   40. Phase 19c   - Save/Load: F5 quicksave + F9 quickload (kill stuff, F5, kill more, F9, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -101,6 +102,7 @@ if /i "%CHOICE%"=="36" goto T36
 if /i "%CHOICE%"=="37" goto T37
 if /i "%CHOICE%"=="38" goto T38
 if /i "%CHOICE%"=="39" goto T39
+if /i "%CHOICE%"=="40" goto T40
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -607,6 +609,29 @@ dotnet "%RUN%" --selftest-save
 set EXITCODE=%ERRORLEVEL%
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+pause
+goto MENU
+
+:T40
+echo.
+echo --- Phase 19c: F5 quicksave + F9 quickload (fh_r1) ---
+echo [Pre-save: kill 1-2 krug or take HP damage to make state interesting]
+echo [Press F5: console logs "save: wrote N actor(s) + M pile(s) -^> ...quicksave.save"]
+echo [Continue: kill more stuff, pick up loot, walk around, level up]
+echo [Press F9: scene snaps back to F5 state — dead krug revive (if alive at save)]
+echo [or stay dead (if dead at save); HP/MP/XP/Level revert; piles return]
+echo [Save lives at: %%LOCALAPPDATA%%\SiegeFX\Saves\quicksave.save]
+echo [Region check: a save from a different region path is refused on F9]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
 pause
 goto MENU
 
