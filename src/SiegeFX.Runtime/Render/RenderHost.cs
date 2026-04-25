@@ -158,6 +158,7 @@ public sealed class RenderHost : IDisposable
     private TextRenderer? _textRenderer;
     private BarRenderer? _barRenderer;
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
+    private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -348,7 +349,10 @@ void main()
         foreach (var kb in _input.Keyboards)
             kb.KeyDown += (_, key, _) =>
             {
-                if (key == Key.Escape) _window.Close();
+                // Phase 15d: Esc opens/closes the pause menu instead of slamming the
+                // window shut. Quit-from-menu still routes through _window.Close, so
+                // there's a one-button-press exit (Esc, click Quit).
+                if (key == Key.Escape) _pauseMenu.Toggle();
                 // Phase 12c: F key strikes the nearest living actor in front of the
                 // camera. Placeholder player-stand-in until Phase 13 brings a real PC
                 // with its own template and equipped weapon. Logs each hit to the
@@ -369,6 +373,13 @@ void main()
         {
             mouse.MouseDown += (m, btn) =>
             {
+                // Phase 15d — pause menu eats LMB while it's open so a click on
+                // a button doesn't also retarget the follower behind the panel.
+                if (_pauseMenu.IsOpen && btn == MouseButton.Left)
+                {
+                    _pauseMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                    return;
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = true;
@@ -387,6 +398,12 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                if (_pauseMenu.IsOpen && btn == MouseButton.Left)
+                {
+                    _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                    if (_pauseMenu.QuitRequested) _window.Close();
+                    return;
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = false;
@@ -404,6 +421,10 @@ void main()
             };
             mouse.MouseMove += (_, pos) =>
             {
+                // Phase 15d — feed the pause menu so its buttons can light up on
+                // hover. Cheap rect tests; no-op when the menu is closed.
+                if (_pauseMenu.IsOpen)
+                    _pauseMenu.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -2024,6 +2045,12 @@ void main()
             if (_inventoryOpen && _barRenderer is not null)
             {
                 InventoryPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _playerInventory);
+            }
+            // Phase 15d: pause menu (Esc). Drawn after the inventory so its
+            // backdrop dims the inventory grid too — pause is the topmost UI.
+            if (_pauseMenu.IsOpen && _barRenderer is not null)
+            {
+                _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
             }
             _textRenderer.EndPass();
         }
