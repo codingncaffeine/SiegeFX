@@ -20,7 +20,7 @@ public sealed class ActorSpawner
 {
     readonly TemplateStore _store;
     readonly AssetResolver _resolver;
-    readonly RegionLayout? _layout;
+    RegionLayout? _layout;
     readonly SkritRuntime _runtime;
     readonly WorldMessageBus _bus;
 
@@ -30,6 +30,17 @@ public sealed class ActorSpawner
 
     public SkritRuntime Runtime => _runtime;
     public WorldMessageBus MessageBus => _bus;
+
+    /// <summary>Phase 21a-3 — re-anchor support. When the world layout is rebuilt
+    /// (rolling preload after the player crosses into a new region), the spawner
+    /// needs the new transform table for actors authored in newly-loaded regions.
+    /// Re-pointing is safe because the spawner's caches (mesh/clip/skrit) are
+    /// keyed by name, not by layout, so a layout swap doesn't invalidate them.</summary>
+    public RegionLayout? Layout
+    {
+        get => _layout;
+        set => _layout = value;
+    }
 
     /// <summary>Reasons individual actors were skipped — malformed templates, missing
     /// assets, failed skrit compile. Inspect after <see cref="Spawn"/> returns.</summary>
