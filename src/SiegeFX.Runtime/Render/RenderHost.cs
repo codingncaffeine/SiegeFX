@@ -1907,6 +1907,11 @@ void main()
                     AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
                                     playerPos + new Vector3(0f, 2.2f, 0f),
                                     new Vector4(0.40f, 0.95f, 0.40f, 1f));
+                    // Heals award NatureMagic XP proportional to HP restored,
+                    // matching DS1's "cast_experience grows with effect" rule.
+                    // Without this the heal slot is progression-dead.
+                    AwardCombatXp((long)result.HealAmount, 0,
+                                  SiegeFX.Core.Assets.SkillKind.NatureMagic);
                 }
                 else
                 {
