@@ -51,6 +51,35 @@ public sealed class RenderHost : IDisposable
     // behavior.
     private readonly List<(string Path, RegionGraph Graph)> _worldRegionGraphs = new();
     private WorldLayout? _worldLayout;
+    // Phase 21a-3 — rolling preload state. _loadedRegions caches every
+    // (graph, layout, stitches) entry the loader has parsed so far so the
+    // re-anchor path (PreloadAroundRegion) can rebuild WorldLayout without
+    // re-parsing already-loaded regions. _worldRootRegion stays pinned at the
+    // launch region forever so re-anchor never shifts world coordinates.
+    // _currentPlayerRegion tracks the player's containing region (updated
+    // every ~0.5s in OnUpdate); when it changes, PreloadAroundRegion fires
+    // to extend the loaded ring. _snodeRegionLookup is a flat array of
+    // (snode XZ origin, region path) used for fast nearest-snode region
+    // detection from the player's current world position.
+    private readonly Dictionary<string, WorldLayout.RegionEntry> _loadedRegions =
+        new(StringComparer.OrdinalIgnoreCase);
+    private string? _worldRootRegion;
+    private string? _currentPlayerRegion;
+    private (Vector3 OriginXZ, string RegionPath)[] _snodeRegionLookup =
+        Array.Empty<(Vector3, string)>();
+    private float _regionCheckAccumulator;
+    private const float RegionCheckIntervalSec = 0.5f;
+    // Phase 21a-3 — kept past LoadPlayActors so PreloadAroundRegion can
+    // call Spawn() again with new neighbor instances. The spawner's caches
+    // (mesh/clip/skrit) are reused across calls; only the RegionLayout
+    // gets re-pointed via the public setter when world layout rebuilds.
+    private SiegeFX.Core.Actors.ActorSpawner? _actorSpawner;
+    // Phase 21a-3 — mutable backing for the IReadOnlyDictionary the
+    // dialogue UI consumes via _conversations. Lets PreloadAroundRegion
+    // append newly-loaded regions' dialogue trees without rebuilding the
+    // dictionary (and without invalidating the IReadOnly view, which
+    // points at this same dict instance).
+    private Dictionary<string, SiegeFX.Core.Assets.ConversationDef>? _conversationsMutable;
     private readonly List<ActorRenderState> _actors = new();
     private readonly Dictionary<AspMesh, SkinnedMesh> _actorMeshCache = new();
     // Bind-pose bone array cached per unique mesh — reused every frame for zero-clip actors
@@ -787,13 +816,13 @@ void main()
         if (_regionMapTankPath is not null && _regionTerrainTankPath is not null && _regionPath is not null)
         {
             LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
-            // Phase 21a-1 — pre-load every door-graph neighbor's terrain right
-            // after the player region. Pure visual additive: composes against
-            // the same region-mesh + texture caches and pins offsets via the
-            // same WorldLayout machinery LoadWorld uses, but limited to the
-            // player region's first ring of stitches. Nav mesh + actor merge
-            // come in 21a-2; eviction comes in 21a-3.
-            LoadNeighborTerrain(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+            // Phase 21a-1/2/3 — pre-load every door-graph neighbor's terrain
+            // right after the player region. Pure visual additive on the
+            // initial call; LoadPlayActors then unifies graph + nav mesh +
+            // actors + dialogue across the ring. As the player walks into a
+            // new region, OnPlayerRegionChanged calls back here with the new
+            // center to extend the loaded ring without shifting world coords.
+            PreloadAroundRegion(_regionPath);
         }
 
         if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
@@ -1196,42 +1225,56 @@ void main()
     /// <see cref="_regionLayout"/> is unchanged, so 21a-2 (nav + actor merge)
     /// can still index into it without confusion.
     /// </summary>
-    private void LoadNeighborTerrain(string mapTankPath, string terrainTankPath, string regionPath)
+    /// <summary>Phase 21a-3 — incremental region preload. The first call (from
+    /// OnLoad) seeds <see cref="_loadedRegions"/> with the launch region + its
+    /// first ring and pins <see cref="_worldRootRegion"/>. Subsequent calls
+    /// (from <see cref="OnPlayerRegionChanged"/> when the player walks into a
+    /// new region) extend the loaded set with that new region's first ring.
+    /// Already-loaded regions are preserved — no re-parse, no re-instantiate,
+    /// no coordinate shift, since the world root stays pinned forever. Returns
+    /// the list of newly-loaded region paths so the caller can spawn their
+    /// actors and merge their conversation pools.</summary>
+    private List<string> PreloadAroundRegion(string centerRegion)
     {
-        if (_gl is null) return;
+        var newlyLoaded = new List<string>();
+        if (_gl is null || _regionMapTankPath is null || _regionTerrainTankPath is null)
+            return newlyLoaded;
 
-        var normalized = regionPath.Replace('\\', '/');
-        if (!normalized.StartsWith('/')) normalized = "/" + normalized;
-        if (normalized.EndsWith('/')) normalized = normalized[..^1];
+        var center = centerRegion.Replace('\\', '/');
+        if (!center.StartsWith('/')) center = "/" + center;
+        if (center.EndsWith('/')) center = center[..^1];
 
-        using var mapTank = TankFile.Open(mapTankPath);
+        bool isInitial = _worldRootRegion is null;
+        if (isInitial) _worldRootRegion = center;
+
+        using var mapTank = TankFile.Open(_regionMapTankPath);
         var mapReader = new TankReader(mapTank);
-        using var terrainTank = TankFile.Open(terrainTankPath);
+        using var terrainTank = TankFile.Open(_regionTerrainTankPath);
         var terrainReader = new TankReader(terrainTank);
 
-        // Player's stitch helper drives the neighbor list. No file = standalone
-        // region (test fixtures, demo regions) → no neighbors to preload.
-        var playerStitchPath = normalized + "/editor/stitch_helper.gas";
-        if (!mapReader.TryGetFile(playerStitchPath, out _))
+        // Center's stitch helper drives the new neighbor list. No file =
+        // standalone region (test fixtures) → nothing to extend with.
+        var centerStitchPath = center + "/editor/stitch_helper.gas";
+        if (!mapReader.TryGetFile(centerStitchPath, out _))
         {
-            Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
-            return;
+            if (isInitial)
+                Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
+            return newlyLoaded;
         }
-        RegionStitchHelper playerStitches;
-        try { playerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(playerStitchPath)); }
+        RegionStitchHelper centerStitches;
+        try { centerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(centerStitchPath)); }
         catch (Exception ex)
         {
-            Console.WriteLine($"  neighbor preload: stitch parse failed ({ex.Message}) — skipping");
-            return;
+            Console.WriteLine($"  neighbor preload: stitch parse failed for {center} ({ex.Message}) — skipping");
+            return newlyLoaded;
         }
-        if (playerStitches.ByDestination.Count == 0)
+        if (centerStitches.ByDestination.Count == 0)
         {
-            Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
-            return;
+            if (isInitial) Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
+            return newlyLoaded;
         }
 
-        // Map every region's leaf name to its full tank path so we can resolve
-        // dest_region values like "fh_r2" → "/world/maps/multiplayer_world/regions/fh_r2".
+        // Map leaf names ("fh_r2") to full tank paths.
         var pathByLeaf = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in mapReader.ListFiles())
         {
@@ -1240,21 +1283,27 @@ void main()
             pathByLeaf[LeafName(rp)] = rp;
         }
 
-        var neighborPaths = new List<string>();
-        foreach (var destLeaf in playerStitches.ByDestination.Keys)
+        // Build the to-load list: center (only on initial call — mid-game the
+        // center is already loaded by definition), plus any first-ring neighbor
+        // not currently in _loadedRegions.
+        var toLoad = new List<string>();
+        if (!_loadedRegions.ContainsKey(center)) toLoad.Add(center);
+        foreach (var destLeaf in centerStitches.ByDestination.Keys)
         {
-            if (pathByLeaf.TryGetValue(destLeaf, out var np) && np != normalized)
-                neighborPaths.Add(np);
-        }
-        if (neighborPaths.Count == 0)
-        {
-            Console.WriteLine("  neighbor preload: 0 neighbor region(s) resolved in tank");
-            return;
+            if (!pathByLeaf.TryGetValue(destLeaf, out var np)) continue;
+            if (np == center) continue;
+            if (!_loadedRegions.ContainsKey(np)) toLoad.Add(np);
         }
 
-        // Shared model cache across player + neighbors so a SNO referenced by
-        // both regions only loads once. WorldLayout.Build also uses this resolver
-        // when computing door-pair compositions across the boundary.
+        // Mid-game with no new regions to add: nothing to do. (Initial call
+        // always has at least the player region in toLoad — this branch is
+        // reachable only on a mid-game re-anchor where the player walked
+        // back into a region whose ring is fully loaded already.)
+        if (toLoad.Count == 0 && !isInitial) return newlyLoaded;
+
+        // SNO resolver shared across all the parses we're about to do, so
+        // a SNO referenced by both player and neighbors only loads once.
+        // Also reused below for WorldLayout.Build's door composition.
         var meshIndex = SnoMeshIndex.Build(terrainReader);
         var modelCache = new Dictionary<uint, SnoModel?>();
         SnoModel? ResolveModel(uint meshGuid)
@@ -1270,7 +1319,6 @@ void main()
             return sno;
         }
 
-        var entries = new List<WorldLayout.RegionEntry>();
         bool TryBuildEntry(string rp, out WorldLayout.RegionEntry entry)
         {
             entry = default;
@@ -1294,33 +1342,57 @@ void main()
             }
         }
 
-        // Player region MUST go in the entry list (root) so WorldLayout pins it
-        // at identity and walks stitches outward. If the player's own graph fails
-        // to load here, we bail rather than render neighbors floating in space.
-        if (!TryBuildEntry(normalized, out var playerEntry))
+        foreach (var rp in toLoad)
         {
-            Console.WriteLine("  neighbor preload: player region rebuild failed — skipping");
-            return;
+            if (!TryBuildEntry(rp, out var entry))
+            {
+                Console.WriteLine($"  neighbor preload: failed to parse {rp} — skipping");
+                continue;
+            }
+            _loadedRegions[rp] = entry;
+            newlyLoaded.Add(rp);
         }
-        entries.Add(playerEntry);
-        foreach (var np in neighborPaths)
-            if (TryBuildEntry(np, out var ne)) entries.Add(ne);
 
-        var world = WorldLayout.Build(entries, ResolveModel, rootHint: normalized);
+        if (newlyLoaded.Count == 0 && !isInitial) return newlyLoaded;
 
-        // Phase 21a-2 stash: LoadPlayActors consumes both to build a unified
-        // RegionLayout (world-space transforms) + a unified RegionGraph
-        // (player + neighbor nodes), so the nav mesh and actor pool span the
-        // boundary instead of stopping at it.
+        // Rebuild WorldLayout from the full loaded set so newly-loaded regions
+        // get composed into the same world frame as already-loaded ones. Root
+        // is pinned to _worldRootRegion (the launch region) forever, so world
+        // coordinates of the player + already-spawned actors never shift on
+        // a re-anchor.
+        var entries = new List<WorldLayout.RegionEntry>(_loadedRegions.Count);
+        foreach (var kv in _loadedRegions) entries.Add(kv.Value);
+        var rootHint = (_worldRootRegion != null && _loadedRegions.ContainsKey(_worldRootRegion))
+            ? _worldRootRegion : center;
+        var world = WorldLayout.Build(entries, ResolveModel, rootHint);
         _worldLayout = world;
-        _worldRegionGraphs.Clear();
-        foreach (var entry in entries)
-            if (world.RegionOffsets.ContainsKey(entry.Path))
-                _worldRegionGraphs.Add((entry.Path, entry.Graph));
 
-        // .raw index for neighbor texture loads. Subsets the player region
-        // already loaded short-circuit on _snoTextures.ContainsKey so we don't
-        // re-decode anything; new neighbor textures land in the same dict.
+        // Refresh the legacy _worldRegionGraphs view (root region first to
+        // preserve LoadPlayActors's "graphs[0] is the player region" idiom)
+        // and the snode → region lookup table used by RegionLocator.
+        _worldRegionGraphs.Clear();
+        var lookup = new List<(Vector3, string)>(world.Transforms.Count);
+        void AppendRegion(string rp, RegionGraph g)
+        {
+            if (!world.RegionOffsets.ContainsKey(rp)) return;
+            _worldRegionGraphs.Add((rp, g));
+            foreach (var n in g.Nodes)
+            {
+                if (world.Transforms.TryGetValue(n.Guid, out var xf))
+                    lookup.Add((new Vector3(xf.M41, 0f, xf.M43), rp));
+            }
+        }
+        if (_worldRootRegion is not null && _loadedRegions.TryGetValue(_worldRootRegion, out var rootEntry))
+            AppendRegion(_worldRootRegion, rootEntry.Graph);
+        foreach (var kv in _loadedRegions)
+        {
+            if (kv.Key == _worldRootRegion) continue;
+            AppendRegion(kv.Key, kv.Value.Graph);
+        }
+        _snodeRegionLookup = lookup.ToArray();
+
+        // .raw texture index for new terrain. Already-decoded textures
+        // short-circuit on _snoTextures.ContainsKey.
         var rawIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var p in terrainReader.ListFiles())
         {
@@ -1329,14 +1401,18 @@ void main()
             if (!rawIndex.ContainsKey(bare)) rawIndex[bare] = p;
         }
 
-        int placedNeighbors = 0;
-        int neighborInstancesAdded = 0;
-        int unreachableNeighbors = 0;
-        foreach (var entry in entries)
+        int placedNew = 0;
+        int instancesAdded = 0;
+        foreach (var rp in newlyLoaded)
         {
-            if (entry.Path == normalized) continue; // player already drawn
-            if (!world.RegionOffsets.ContainsKey(entry.Path)) { unreachableNeighbors++; continue; }
-            placedNeighbors++;
+            // Initial call: skip the player region — LoadRegion already added
+            // its RegionInstances. Mid-game: every newly-loaded region is new,
+            // so include them all.
+            if (isInitial && rp == center) continue;
+
+            if (!_loadedRegions.TryGetValue(rp, out var entry)) continue;
+            if (!world.RegionOffsets.ContainsKey(rp)) continue;
+            placedNew++;
 
             foreach (var node in entry.Graph.Nodes)
             {
@@ -1365,14 +1441,23 @@ void main()
                 }
 
                 _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr));
-                neighborInstancesAdded++;
+                instancesAdded++;
             }
         }
 
-        Console.WriteLine($"  neighbor preload: {placedNeighbors}/{neighborPaths.Count} region(s) " +
-                          $"({neighborInstancesAdded:N0} instance(s)" +
-                          (unreachableNeighbors > 0 ? $", {unreachableNeighbors} unreachable" : "") +
-                          $", world layout: unresolved={world.UnresolvedStitchCount} dangling={world.DanglingStitchCount})");
+        if (isInitial)
+        {
+            Console.WriteLine($"  neighbor preload: {placedNew}/{toLoad.Count - 1} region(s) " +
+                              $"({instancesAdded:N0} instance(s)" +
+                              $", world layout: unresolved={world.UnresolvedStitchCount} dangling={world.DanglingStitchCount})");
+        }
+        else
+        {
+            Console.WriteLine($"  rolling preload: +{newlyLoaded.Count} region(s) (now {_loadedRegions.Count} total, " +
+                              $"+{instancesAdded:N0} terrain instance(s))");
+        }
+
+        return newlyLoaded;
     }
 
     private static string LeafName(string path)
@@ -1467,6 +1552,13 @@ void main()
         _actorBus     = spawner.MessageBus;
         _templateStore = store;
         _playResolver = resolver;
+        // Phase 21a-3 — promote spawner so OnPlayerRegionChanged can call
+        // Spawn() again with the newly-loaded regions' actors. Track the
+        // player's launch region as the initial _currentPlayerRegion; the
+        // OnUpdate region check fires re-anchor the moment the player walks
+        // out of it.
+        _actorSpawner = spawner;
+        _currentPlayerRegion = regionPath;
 
         // Phase 16a — load formulas.gas once. Combat regen, level-up math, and
         // future spell costs all key off this. Failure is non-fatal: shipped data
@@ -1485,6 +1577,9 @@ void main()
             // Build a mutable merged pool then assign (the field is IReadOnly).
             // First-loaded wins on key collisions: matches DS1's region-local
             // priority (cross-region dialogue goes through quest_state.gas).
+            // Stored on _conversationsMutable too so Phase 21a-3's rolling
+            // preload can append newly-loaded regions' dialogue trees in
+            // place without breaking the IReadOnly view.
             var merged = new Dictionary<string, SiegeFX.Core.Assets.ConversationDef>(convs);
             int neighborConvs = 0;
             if (_worldRegionGraphs.Count > 1)
@@ -1505,6 +1600,7 @@ void main()
                     }
                 }
             }
+            _conversationsMutable = merged;
             _conversations = merged;
             if (_conversations.Count > 0)
                 Console.WriteLine($"  conversations: {_conversations.Count} dialogue tree(s) loaded" +
@@ -1858,6 +1954,247 @@ void main()
         }
     }
 
+    /// <summary>Phase 21a-3 — fired from <see cref="OnUpdate"/> when the player's
+    /// nearest snode lies in a region different from <see cref="_currentPlayerRegion"/>.
+    /// Extends the loaded ring around <paramref name="newRegion"/> via
+    /// <see cref="PreloadAroundRegion"/>, then for each newly-loaded region: loads
+    /// its actor instances, merges its conversation pool, and attaches its actors
+    /// to the render/tick lists. Finally, rebuilds the nav mesh against the now-
+    /// larger unified scope and re-points the player's NavFollower at it so the PC
+    /// can walk into the freshly-streamed terrain. World coordinates of every
+    /// already-spawned actor (including the player) are preserved because
+    /// <see cref="_worldRootRegion"/> stays pinned across re-anchors.</summary>
+    private void OnPlayerRegionChanged(string newRegion)
+    {
+        if (_actorSpawner is null || _gl is null) return;
+        if (_regionMapTankPath is null) return;
+        if (_playMapTank is null) return; // play-region mode required
+
+        var prev = _currentPlayerRegion;
+        _currentPlayerRegion = newRegion;
+
+        var newlyLoaded = PreloadAroundRegion(newRegion);
+        if (newlyLoaded.Count == 0)
+        {
+            // Player walked into an already-loaded region — no streaming work to
+            // do, just remember we're there so the next outward step can fire.
+            Console.WriteLine($"  region change: {prev} -> {newRegion} (already loaded; no preload needed)");
+            return;
+        }
+
+        Console.WriteLine($"  region change: {prev} -> {newRegion} (+{newlyLoaded.Count} region(s) streamed)");
+
+        // Re-point the spawner + region layout at the new world transforms so
+        // newly-spawned actors compose against the unified table. Spawner's
+        // mesh/clip/skrit caches are keyed by name, not layout, so re-pointing
+        // doesn't invalidate them.
+        if (_worldLayout is not null && _regionLayout is not null)
+        {
+            _regionLayout = SiegeFX.Core.Assets.RegionLayout.FromTransforms(
+                _regionLayout.AnchorGuid, _worldLayout.Transforms);
+            _actorSpawner.Layout = _regionLayout;
+        }
+
+        // Load each new region's actors + conversations. We reuse the pinned
+        // _playMapTank reader (the same tank we opened in LoadPlayActors).
+        var mapReader = new TankReader(_playMapTank);
+        var newInstances = new List<SiegeFX.Core.Assets.ActorInstance>();
+        int convsAdded = 0;
+        foreach (var rp in newlyLoaded)
+        {
+            try
+            {
+                var (more, _) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, rp);
+                newInstances.AddRange(more);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  rolling actors load failed for {rp}: {ex.Message}");
+            }
+
+            if (_conversationsMutable is not null)
+            {
+                try
+                {
+                    var (nconvs, _) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, rp);
+                    foreach (var kv in nconvs)
+                        if (_conversationsMutable.TryAdd(kv.Key, kv.Value)) convsAdded++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  rolling conversations load failed for {rp}: {ex.Message}");
+                }
+            }
+        }
+
+        // Rebuild the nav mesh against the full unified scope so newly-loaded
+        // floor tris weld to the original ring. Existing NPC followers keep
+        // their old mesh reference (they only wander locally so loss of the
+        // newest tris is fine); the player follower is reseated below so the
+        // PC can walk onto the new terrain.
+        var newNav = RebuildNavMesh();
+        if (newNav is not null) _navMesh = newNav;
+
+        // Spawn new actors and attach them to the render/tick lists with the
+        // new nav mesh so their wander followers see the freshly-streamed floor.
+        var newActors = _actorSpawner.Spawn(newInstances);
+        var (onMesh, offMesh) = AttachActorsToScene(newActors, newNav);
+
+        // Re-create the player's NavFollower against the new unified mesh so
+        // the next click can route across into the new terrain. Position +
+        // speed are preserved from the live follower.
+        if (newNav is not null && _player is not null && _playerFollower is not null)
+        {
+            var pos = _playerFollower.Position;
+            var speed = _playerFollower.Speed;
+            _playerFollower = new SiegeFX.Core.Nav.NavFollower(newNav, pos, speed);
+        }
+
+        Console.WriteLine($"  rolling spawn: {newActors.Count}/{newInstances.Count} actor(s) live " +
+                          $"({onMesh} wandering / {offMesh} pinned)" +
+                          (convsAdded > 0 ? $", +{convsAdded} dialogue tree(s)" : ""));
+    }
+
+    /// <summary>Phase 21a-3 — rebuild the nav mesh against the current unified
+    /// region scope (player + all preloaded neighbors). Called both at the
+    /// initial play-region load (via LoadPlayActors's nav block) and after a
+    /// rolling preload so freshly-streamed floor tris weld to the prior ring.
+    /// Returns null if terrain tank isn't available — callers fall back to
+    /// keeping the existing _navMesh.</summary>
+    private SiegeFX.Core.Nav.NavMesh? RebuildNavMesh()
+    {
+        if (_regionTerrainTankPath is null || _regionLayout is null) return null;
+        try
+        {
+            using var terrainTank = TankFile.Open(_regionTerrainTankPath);
+            var terrainReader = new TankReader(terrainTank);
+            var meshIdx = SnoMeshIndex.Build(terrainReader);
+            var navCache = new Dictionary<uint, SnoModel?>();
+            SnoModel? ResolveNav(uint meshGuid)
+            {
+                if (navCache.TryGetValue(meshGuid, out var hit)) return hit;
+                SnoModel? m = null;
+                if (meshIdx.TryResolve(meshGuid, out var p))
+                {
+                    try { m = SnoModel.Load(terrainReader.ExtractToMemory(p)); }
+                    catch { m = null; }
+                }
+                navCache[meshGuid] = m;
+                return m;
+            }
+
+            RegionGraph navGraph;
+            if (_worldRegionGraphs.Count > 1)
+            {
+                var graphList = new List<RegionGraph>(_worldRegionGraphs.Count);
+                foreach (var (_, g) in _worldRegionGraphs) graphList.Add(g);
+                navGraph = RegionGraph.Combine(graphList);
+            }
+            else if (_worldRegionGraphs.Count == 1)
+            {
+                navGraph = _worldRegionGraphs[0].Graph;
+            }
+            else
+            {
+                return null;
+            }
+
+            var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+            Console.WriteLine($"  nav mesh rebuild: {nav.TriangleCount} tri(s), " +
+                              $"{nav.Vertices.Length} welded vert(s), " +
+                              $"{nav.SourceSnodeCount} snode(s) across {_worldRegionGraphs.Count} region(s)");
+            return nav;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  !! nav mesh rebuild failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Phase 21a-3 — attach a freshly-spawned batch of actors to the
+    /// render/tick lists. Mirrors the per-actor work LoadPlayActors does in its
+    /// own actor loop: GlMesh cache, talkable bypass, on-mesh snap + brain
+    /// creation, _actors.Add. Returns (wandering, pinned) counts so the caller
+    /// can log a one-line summary. Used by <see cref="OnPlayerRegionChanged"/>
+    /// to wire up newly-streamed regions' actors without re-running the full
+    /// LoadPlayActors path.</summary>
+    private (int OnMesh, int OffMesh) AttachActorsToScene(
+        IReadOnlyList<Actor> actors, SiegeFX.Core.Nav.NavMesh? navMesh)
+    {
+        if (_gl is null) return (0, 0);
+        int onMesh = 0, offMesh = 0;
+        foreach (var actor in actors)
+        {
+            if (!_actorMeshCache.TryGetValue(actor.Mesh, out var gl))
+            {
+                gl = new SkinnedMesh(_gl, actor.Mesh);
+                _actorMeshCache[actor.Mesh] = gl;
+            }
+
+            SiegeFX.Core.Actors.ActorBrain? brain = null;
+            bool isTalkable = SiegeFX.Core.Assets.ConversationStore
+                .KeysFromInstance(actor.Instance.Node).Count > 0;
+            if (isTalkable)
+            {
+                offMesh++;
+            }
+            else if (navMesh is not null &&
+                navMesh.TryFindTriangle(actor.WorldTransform.Translation, out var startTri))
+            {
+                var snapped = actor.WorldTransform.Translation with
+                {
+                    Y = navMesh.SampleYOnTriangle(startTri, actor.WorldTransform.Translation),
+                };
+                var authoredFacing = Vector3.TransformNormal(Vector3.UnitZ, actor.WorldTransform);
+                var gait = actor.Stats.WalkSpeed > 0.5f ? actor.Stats.WalkSpeed : 4f;
+                var follower = new SiegeFX.Core.Actors.ActorFollower(
+                    navMesh, snapped, speed: gait, rngSeed: (int)actor.Instance.Scid,
+                    initialFacing: authoredFacing);
+                brain = new SiegeFX.Core.Actors.ActorBrain(
+                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu));
+                onMesh++;
+            }
+            else
+            {
+                offMesh++;
+            }
+
+            _actors.Add(new ActorRenderState
+            {
+                Actor             = actor,
+                GlMesh            = gl,
+                AnimTime          = 0,
+                LastClipIndex     = actor.CurrentClipIndex,
+                Brain             = brain,
+                CurrentTransform  = actor.WorldTransform,
+            });
+        }
+        return (onMesh, offMesh);
+    }
+
+    /// <summary>Phase 21a-3 — find the nearest snode (in XZ) to <paramref name="worldPos"/>
+    /// and return its containing region path. Linear scan over <see cref="_snodeRegionLookup"/>
+    /// — DS1 regions average ~600 snodes, the loaded ring caps around ~3-5k entries,
+    /// 60-iter check at 2 Hz. Cheap; no spatial index needed at this scale. Returns
+    /// null if the lookup is empty (no regions loaded yet, or single-region test
+    /// fixture without a stitch helper).</summary>
+    private string? RegionAtWorldPos(Vector3 worldPos)
+    {
+        if (_snodeRegionLookup.Length == 0) return null;
+        float bestSq = float.PositiveInfinity;
+        string? best = null;
+        for (int i = 0; i < _snodeRegionLookup.Length; i++)
+        {
+            var entry = _snodeRegionLookup[i];
+            float dx = entry.OriginXZ.X - worldPos.X;
+            float dz = entry.OriginXZ.Z - worldPos.Z;
+            float sq = dx * dx + dz * dz;
+            if (sq < bestSq) { bestSq = sq; best = entry.RegionPath; }
+        }
+        return best;
+    }
+
     /// <summary>
     /// Resolves each unique <see cref="SnoModel.Surface.TextureName"/> against a tank
     /// by matching bare filename (case-insensitive) against every <c>*.raw</c> entry.
@@ -2081,6 +2418,27 @@ void main()
                 {
                     var clip = s.Actor.Clips[Math.Min(idx, s.Actor.Clips.Length - 1)];
                     if (clip.AnimLength > 0f) s.AnimTime += dt;
+                }
+            }
+        }
+
+        // Phase 21a-3 — periodic region-membership check. We scan only every
+        // RegionCheckIntervalSec because the per-snode XZ scan is O(N) over
+        // every loaded snode; firing it from every render frame would burn
+        // ~3-5k distance comparisons at 60Hz for a payoff that only matters
+        // on a region crossing (a once-per-minute event in normal play). When
+        // the player's nearest snode resolves to a different region than
+        // _currentPlayerRegion, OnPlayerRegionChanged extends the loaded ring.
+        if (_player is not null && _snodeRegionLookup.Length > 0)
+        {
+            _regionCheckAccumulator += (float)dt;
+            if (_regionCheckAccumulator >= RegionCheckIntervalSec)
+            {
+                _regionCheckAccumulator = 0f;
+                var here = RegionAtWorldPos(_player.CurrentTransform.Translation);
+                if (here is not null && !string.Equals(here, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
+                {
+                    OnPlayerRegionChanged(here);
                 }
             }
         }

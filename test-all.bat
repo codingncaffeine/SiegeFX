@@ -63,6 +63,7 @@ echo   43. Phase 20c   - Kill objectives + goal markers (kill 5 krug for Edgaar,
 echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh_r1)
 echo   45. Phase 21a-1 - Neighbor terrain preload (fh_r1 + first-ring neighbors visible)
 echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neighbor regions)
+echo   47. Phase 21a-3 - Rolling preload (no more invisible wall, walk arbitrarily far)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -115,6 +116,7 @@ if /i "%CHOICE%"=="43" goto T43
 if /i "%CHOICE%"=="44" goto T44
 if /i "%CHOICE%"=="45" goto T45
 if /i "%CHOICE%"=="46" goto T46
+if /i "%CHOICE%"=="47" goto T47
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -796,6 +798,30 @@ echo [Neighbor actors (krug/goblins beyond the boundary) are alive and aggro you
 echo [RMB an NPC living in a neighbor region — their dialogue tree opens normally]
 echo [If you fly past the *outer* edge of the preloaded ring you'll still hit a wall]
 echo [That's expected — eviction + rolling preload is 21a-3]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T47
+echo.
+echo --- Phase 21a-3: Rolling preload (no invisible wall) ---
+echo [Builds on 21a-2: ring extends as the player crosses into new regions]
+echo [Launch log: "neighbor preload..." for the initial fh_r1 ring]
+echo [Walk south/east past the boundary — log shows "region change: ... -> ..."]
+echo [Then "rolling preload: +N region(s)" + "rolling spawn: M actor(s) live"]
+echo [The PC's nav follower is reseated onto the new mesh — clicks route into new terrain]
+echo [Already-spawned actors (NPCs + player) keep their world coords across re-anchors]
+echo [Walk far enough and the ring keeps extending — no fixed outer wall anymore]
+echo [Memory grows monotonically (no eviction in MVP) — fine for ~150-region single sessions]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
