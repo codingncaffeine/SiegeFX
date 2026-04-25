@@ -55,6 +55,7 @@ echo   35. Phase 17c   - Heal spell + W slot: spell_healing_wind self-cast (fh_r
 echo   36. Phase 18a   - Audio: cast SFX (Q = zap_cast.wav, W = healing_wind_cast.wav, fh_r1)
 echo   37. Phase 18b   - Audio: melee swing/hit/miss + monster death + level-up SFX (fh_r1)
 echo   38. Phase 18c   - Audio: 3D positional pan + falloff (walk away from a kill, listen, fh_r1)
+echo   39. Phase 19a   - Save: SaveFile JSON round-trip self-test (no window)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -99,6 +100,7 @@ if /i "%CHOICE%"=="35" goto T35
 if /i "%CHOICE%"=="36" goto T36
 if /i "%CHOICE%"=="37" goto T37
 if /i "%CHOICE%"=="38" goto T38
+if /i "%CHOICE%"=="39" goto T39
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -592,6 +594,19 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T39
+echo.
+echo --- Phase 19a: SaveFile JSON round-trip (no window) ---
+echo [expect: "[selftest-save] OK - 3 actor(s), player + camera, schema v1 round-tripped at <path>"]
+echo [exits 0 on success, 1 with field-by-field diffs on failure]
+echo.
+dotnet "%RUN%" --selftest-save
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 pause
 goto MENU
 

@@ -89,6 +89,14 @@ else if (args.Length >= 1 && args[0] == "--play-region")
     playObjects   = args[4];
     regionPath    = args[5];
 }
+else if (args.Length >= 1 && args[0] == "--selftest-save")
+{
+    // Phase 19a self-test. Builds a synthetic SaveFile, writes it through
+    // SaveStore.Save (atomic temp+replace), reads it back through Load,
+    // and asserts every field round-tripped. No window, no GL — pure
+    // JSON-correctness check, suitable for test-all.bat.
+    return SiegeFX.Runtime.SaveSelfTest.Run() ? 0 : 1;
+}
 else if (args.Length >= 1 && args[0] == "--skrit-anim")
 {
     // Phase 9a. Rigged ASP + skrit that decides which clip plays. Optional trailing
