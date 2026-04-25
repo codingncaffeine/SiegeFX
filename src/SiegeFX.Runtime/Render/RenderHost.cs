@@ -476,6 +476,48 @@ void main()
                 {
                     TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
                 }
+                // Phase 19c — F5 quicksaves to a single slot under the user
+                // profile; F9 reloads the same slot. No confirmation prompt
+                // and no multi-slot UI yet — that's a save-screen job that
+                // lands when the rest of the menu system does. F5 is silent
+                // on a viewer-mode boot (no player, no region) since
+                // CaptureSave still produces a file but ApplySave's region
+                // check would refuse it on the next F9 anyway.
+                else if (key == Key.F5)
+                {
+                    var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
+                    try
+                    {
+                        var save = CaptureSave();
+                        SiegeFX.Core.Save.SaveStore.Save(path, save);
+                        Console.WriteLine($"  save: wrote {save.Actors.Count} actor(s) + " +
+                                          $"{save.LootPiles.Count} pile(s) -> {path}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  save: failed -- {ex.Message}");
+                    }
+                }
+                else if (key == Key.F9)
+                {
+                    var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
+                    try
+                    {
+                        if (!File.Exists(path))
+                        {
+                            Console.WriteLine($"  load: no quicksave at {path}");
+                        }
+                        else
+                        {
+                            var save = SiegeFX.Core.Save.SaveStore.Load(path);
+                            ApplySave(save);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"  load: failed -- {ex.Message}");
+                    }
+                }
             };
 
         foreach (var mouse in _input.Mice)
