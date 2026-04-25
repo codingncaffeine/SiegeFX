@@ -50,6 +50,7 @@ echo   30. Phase 16c   - NPC aggro: walk into a krug, watch HP drop + regen (fh_
 echo   31. Phase 16d   - XP + level: kill goblins, watch Lv/XP line on HUD (fh_r1)
 echo   32. Phase 17a   - Spells: dump catalog + show spell_zap by magic level
 echo   33. Phase 17a   - Spells: cast spell_zap with Q (mana 1, dmg 4-7 at L1, fh_r1)
+echo   34. Phase 17b   - Spell visuals: cyan bolt + face-snap on Q-cast (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -89,6 +90,7 @@ if /i "%CHOICE%"=="30" goto T30
 if /i "%CHOICE%"=="31" goto T31
 if /i "%CHOICE%"=="32" goto T32
 if /i "%CHOICE%"=="33" goto T33
+if /i "%CHOICE%"=="34" goto T34
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -470,6 +472,26 @@ echo [aim cursor at a krug, press Q to cast: mana drops by 1, target takes 4-7 d
 echo [outside 8u range: "out of range" floats up; no mana: "no mana" floats up]
 echo [cooldown is 0.15s so spam-Q just rate-limits to ~6 casts/sec]
 echo [kills via spell credit XP under SkillKind.CombatMagic]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T34
+echo.
+echo --- Phase 17b: Spell visuals (fh_r1) ---
+echo [press Q on a krug; a cyan bolt streaks from your chest to the target]
+echo [bolt lasts ~0.3s with a 5-dot fading trail]
+echo [PC snaps to face the target on cast (no more shooting out of his back)]
+echo [damage popup + mana drain are unchanged from 17a]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
