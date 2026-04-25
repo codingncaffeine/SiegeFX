@@ -15,10 +15,10 @@ namespace SiegeFX.Core.Save;
 /// </summary>
 public sealed class SaveFile
 {
-    /// <summary>v3 — added <see cref="QuestSnapshot.KillProgress"/>. Old v1/v2
+    /// <summary>v4 — added <see cref="PlayerSnapshot.Gold"/>. Old v1/v2/v3
     /// files load fine: <see cref="SaveStore"/> stamps the new version and the
-    /// missing field deserializes to default 0 (no kills credited).</summary>
-    public const int CurrentSchemaVersion = 3;
+    /// missing field deserializes to default 0 (player starts broke on load).</summary>
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -129,6 +129,10 @@ public sealed class PlayerSnapshot
     /// <summary>Phase 20b — quest journal entries. Empty when no quests have
     /// ever been activated (the common case for first-region saves).</summary>
     public List<QuestSnapshot> Quests { get; set; } = new();
+
+    /// <summary>Phase 20d — player gold purse. Defaults to 0 so old v3 saves
+    /// (which lacked the field) load with a broke PC, matching the v3 contract.</summary>
+    public long Gold { get; set; }
 }
 
 /// <summary>One journal entry as stored in a save. Mirrors

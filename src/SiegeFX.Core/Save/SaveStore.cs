@@ -40,10 +40,11 @@ public static class SaveStore
         // Forward migrations.
         //   v1 -> v2 : added PlayerSnapshot.Quests (empty list default).
         //   v2 -> v3 : added QuestSnapshot.KillProgress (default 0).
-        // Both migrations are deserializer-friendly — missing fields just hit
-        // their defaults — so the work here is only the version-stamp bump.
-        // Pre-v1 shapes still get rejected below.
-        if (file.SchemaVersion is 1 or 2)
+        //   v3 -> v4 : added PlayerSnapshot.Gold (default 0).
+        // All deserializer-friendly — missing fields just hit their defaults —
+        // so the work here is only the version-stamp bump. Pre-v1 shapes still
+        // get rejected below.
+        if (file.SchemaVersion is 1 or 2 or 3)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }
