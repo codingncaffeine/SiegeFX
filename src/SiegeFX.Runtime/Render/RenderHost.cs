@@ -224,6 +224,23 @@ public sealed class RenderHost : IDisposable
     private Vector3 _playerFacing = Vector3.UnitZ;
     private double _actorTickAccumulator;
 
+    // Phase 21b-1 — `--diag` performance instrumentation. _diagMode is set
+    // from the CLI flag and gates every block in this file that prints
+    // perf data, so a non-diag run pays nothing beyond a few branch
+    // predictions. Stage timings live as a list of (label, ms) pairs so
+    // the OnLoad summary can be one consolidated table at the end. The
+    // frame-time ring is fixed-size so the histogram cost is O(N) over
+    // a known buffer, not O(frames-since-launch).
+    private readonly bool _diagMode;
+    private readonly List<(string Label, double Ms)> _diagStageTimings = new();
+    private readonly System.Diagnostics.Stopwatch _diagBootStopwatch = new();
+    private const int FrameRingSize = 240;     // 4 sec at 60 Hz
+    private readonly double[] _diagFrameMs = new double[FrameRingSize];
+    private int _diagFrameRingHead;
+    private int _diagFrameRingFill;
+    private double _diagFrameAccumulator;
+    private const double FrameReportIntervalSec = 1.0;
+
     private sealed class ActorRenderState
     {
         public Actor Actor = null!;
@@ -457,7 +474,8 @@ void main()
         string? worldMapTankPath = null, string? worldTerrainTankPath = null, string? worldRootHint = null,
         string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null,
         string? skritPath = null, IReadOnlyList<string>? skritClipPaths = null,
-        string? playLogicTankPath = null, string? playObjectsTankPath = null)
+        string? playLogicTankPath = null, string? playObjectsTankPath = null,
+        bool diagMode = false)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
@@ -474,6 +492,7 @@ void main()
         _skritClipPaths = skritClipPaths;
         _playLogicTankPath = playLogicTankPath;
         _playObjectsTankPath = playObjectsTankPath;
+        _diagMode = diagMode;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -496,6 +515,7 @@ void main()
 
     private void OnLoad()
     {
+        if (_diagMode) _diagBootStopwatch.Start();
         _gl = GL.GetApi(_window);
         _input = _window.CreateInput();
 
@@ -815,28 +835,90 @@ void main()
 
         if (_regionMapTankPath is not null && _regionTerrainTankPath is not null && _regionPath is not null)
         {
-            LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath);
+            DiagTime("region", () => LoadRegion(_regionMapTankPath, _regionTerrainTankPath, _regionPath));
             // Phase 21a-1/2/3 — pre-load every door-graph neighbor's terrain
             // right after the player region. Pure visual additive on the
             // initial call; LoadPlayActors then unifies graph + nav mesh +
             // actors + dialogue across the ring. As the player walks into a
             // new region, OnPlayerRegionChanged calls back here with the new
             // center to extend the loaded ring without shifting world coords.
-            PreloadAroundRegion(_regionPath);
+            DiagTime("neighbor preload", () => PreloadAroundRegion(_regionPath));
         }
 
         if (_worldMapTankPath is not null && _worldTerrainTankPath is not null)
-            LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint);
+            DiagTime("world", () => LoadWorld(_worldMapTankPath, _worldTerrainTankPath, _worldRootHint));
 
         if (_regionMapTankPath is not null && _playLogicTankPath is not null
             && _playObjectsTankPath is not null && _regionPath is not null)
-            LoadPlayActors(_regionMapTankPath, _playLogicTankPath, _playObjectsTankPath, _regionPath);
+            DiagTime("play actors", () => LoadPlayActors(_regionMapTankPath, _playLogicTankPath, _playObjectsTankPath, _regionPath));
 
         if (_animAspPath is not null && _animPrsPath is not null)
-            LoadAnim(_animAspPath, _animPrsPath, _animTexturePath);
+            DiagTime("anim", () => LoadAnim(_animAspPath, _animPrsPath, _animTexturePath));
 
         if (_animAspPath is not null && _skritPath is not null && _skritClipPaths is not null)
-            LoadSkrit(_animAspPath, _skritPath, _skritClipPaths, _animTexturePath);
+            DiagTime("skrit", () => LoadSkrit(_animAspPath, _skritPath, _skritClipPaths, _animTexturePath));
+
+        if (_diagMode)
+        {
+            _diagBootStopwatch.Stop();
+            Console.WriteLine();
+            Console.WriteLine("--- diag: startup timings ---");
+            double total = 0;
+            foreach (var (label, ms) in _diagStageTimings)
+            {
+                Console.WriteLine($"  {label,-20} {ms,8:F1} ms");
+                total += ms;
+            }
+            Console.WriteLine($"  {"(measured stages)",-20} {total,8:F1} ms");
+            Console.WriteLine($"  {"OnLoad wall clock",-20} {_diagBootStopwatch.Elapsed.TotalMilliseconds,8:F1} ms");
+            Console.WriteLine("-----------------------------");
+        }
+    }
+
+    /// <summary>Phase 21b-1 — wrap a startup stage in Stopwatch timing when
+    /// diag mode is on, otherwise run it inline with no overhead. Recorded
+    /// timings are summed + dumped at the end of OnLoad.</summary>
+    private void DiagTime(string label, Action body)
+    {
+        if (!_diagMode) { body(); return; }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        body();
+        sw.Stop();
+        _diagStageTimings.Add((label, sw.Elapsed.TotalMilliseconds));
+    }
+
+    /// <summary>Phase 21b-1 — record one frame's wall-clock dt into the ring
+    /// buffer and, every <see cref="FrameReportIntervalSec"/>, print a
+    /// one-line histogram (avg / p50 / p99 / max) plus current actor count.
+    /// The buffer is fixed-size so report cost stays O(FrameRingSize)
+    /// regardless of session length. Only fires when <see cref="_diagMode"/>
+    /// is on, so non-diag runs pay nothing.</summary>
+    private void DiagRecordFrame(double dt)
+    {
+        _diagFrameMs[_diagFrameRingHead] = dt * 1000.0;
+        _diagFrameRingHead = (_diagFrameRingHead + 1) % FrameRingSize;
+        if (_diagFrameRingFill < FrameRingSize) _diagFrameRingFill++;
+
+        _diagFrameAccumulator += dt;
+        if (_diagFrameAccumulator < FrameReportIntervalSec) return;
+        _diagFrameAccumulator = 0;
+        if (_diagFrameRingFill < 8) return; // need a meaningful sample size
+
+        // Copy + sort the populated portion. ~240 doubles, sub-microsecond.
+        Span<double> sample = stackalloc double[_diagFrameRingFill];
+        for (int i = 0; i < _diagFrameRingFill; i++) sample[i] = _diagFrameMs[i];
+        sample.Sort();
+
+        double sum = 0;
+        for (int i = 0; i < sample.Length; i++) sum += sample[i];
+        double avg = sum / sample.Length;
+        double p50 = sample[sample.Length / 2];
+        double p99 = sample[Math.Min(sample.Length - 1, (int)(sample.Length * 0.99))];
+        double max = sample[^1];
+        double fps = avg > 0 ? 1000.0 / avg : 0;
+
+        Console.WriteLine($"diag: frame avg={avg:F2}ms p50={p50:F2} p99={p99:F2} max={max:F2}  ({fps:F0} fps, " +
+                          $"actors={_actors.Count}, regions={_loadedRegions.Count})");
     }
 
     /// <summary>Phase 9a entry: load a rigged ASP + a skrit + N PRS clips, then let the
@@ -3536,6 +3618,7 @@ void main()
     private void OnRender(double dt)
     {
         if (_gl is null) return;
+        if (_diagMode) DiagRecordFrame(dt);
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
         // Phase 18c — listener follows the PC every frame. We use camera
         // forward (not _playerFacing) so the audio image rotates with

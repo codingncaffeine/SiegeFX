@@ -64,6 +64,7 @@ echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh
 echo   45. Phase 21a-1 - Neighbor terrain preload (fh_r1 + first-ring neighbors visible)
 echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neighbor regions)
 echo   47. Phase 21a-3 - Rolling preload (no more invisible wall, walk arbitrarily far)
+echo   48. Phase 21b-1 - --diag mode (startup timings + per-second frame histogram)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -117,6 +118,7 @@ if /i "%CHOICE%"=="44" goto T44
 if /i "%CHOICE%"=="45" goto T45
 if /i "%CHOICE%"=="46" goto T46
 if /i "%CHOICE%"=="47" goto T47
+if /i "%CHOICE%"=="48" goto T48
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -800,6 +802,27 @@ echo [If you fly past the *outer* edge of the preloaded ring you'll still hit a 
 echo [That's expected — eviction + rolling preload is 21a-3]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T48
+echo.
+echo --- Phase 21b-1: --diag startup timings + frame histogram ---
+echo [Boots fh_r1 with --diag; expect a "diag: startup timings" table at end of OnLoad]
+echo [Then a per-second "diag: frame avg=... p50=... p99=... max=..." line during play]
+echo [Stages measured: region, neighbor preload, world, play actors, anim, skrit]
+echo [Per-frame stats: avg, p50, p99, max in ms; FPS; live actor + region counts]
+echo [21b-2/3 will use this output to target the actual hotspots]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --diag
 set EXITCODE=%ERRORLEVEL%
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
