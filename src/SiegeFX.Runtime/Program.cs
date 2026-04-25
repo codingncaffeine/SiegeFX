@@ -97,6 +97,13 @@ else if (args.Length >= 1 && args[0] == "--selftest-save")
     // JSON-correctness check, suitable for test-all.bat.
     return SiegeFX.Runtime.SaveSelfTest.Run() ? 0 : 1;
 }
+else if (args.Length >= 1 && args[0] == "--selftest-dialogue")
+{
+    // Phase 20a self-test. Parses a synthetic conversations.gas (mirroring
+    // fh_r1's edgaar branching shape) and asserts ConversationStore picks
+    // up choice=more / quest_dialog / no-order-tail correctly.
+    return SiegeFX.Runtime.DialogueSelfTest.Run() ? 0 : 1;
+}
 else if (args.Length >= 1 && args[0] == "--skrit-anim")
 {
     // Phase 9a. Rigged ASP + skrit that decides which clip plays. Optional trailing

@@ -236,6 +236,12 @@ public sealed class RenderHost : IDisposable
     private BarRenderer? _barRenderer;
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
+    // Phase 20a — dialogue overlay. Per-region conversation pool loaded with the
+    // actor list; RMB on a talkable NPC opens the panel against that NPC's first
+    // conversation key. Activated quests just log for now — Phase 20b folds them
+    // into PlayerProgression + the journal.
+    private readonly DialoguePanel _dialogue = new();
+    private IReadOnlyDictionary<string, SiegeFX.Core.Assets.ConversationDef>? _conversations;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -434,7 +440,13 @@ void main()
                 // Phase 15d: Esc opens/closes the pause menu instead of slamming the
                 // window shut. Quit-from-menu still routes through _window.Close, so
                 // there's a one-button-press exit (Esc, click Quit).
-                if (key == Key.Escape) _pauseMenu.Toggle();
+                if (key == Key.Escape)
+                {
+                    // Phase 20a: dialogue swallows Esc first so closing a chat
+                    // doesn't double up into the pause menu.
+                    if (_dialogue.IsOpen) _dialogue.Close();
+                    else _pauseMenu.Toggle();
+                }
                 // Phase 12c: F key strikes the nearest living actor in front of the
                 // camera. Placeholder player-stand-in until Phase 13 brings a real PC
                 // with its own template and equipped weapon. Logs each hit to the
@@ -531,6 +543,16 @@ void main()
                     _pauseMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
                     return;
                 }
+                // Phase 20a — dialogue panel ranks above everything except pause.
+                // While open, LMB lands on its buttons and never falls through to
+                // click-to-move; RMB is also swallowed so a "talk again" RMB-tap
+                // doesn't attack the friendly NPC behind the panel.
+                if (_dialogue.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                        _dialogue.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                    return;
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = true;
@@ -555,6 +577,17 @@ void main()
                     if (_pauseMenu.QuitRequested) _window.Close();
                     return;
                 }
+                if (_dialogue.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                    {
+                        _dialogue.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                        var quest = _dialogue.ConsumePendingQuestActivation();
+                        if (quest is not null)
+                            Console.WriteLine($"[dialogue] quest activated: {quest}");
+                    }
+                    return;
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = false;
@@ -566,7 +599,14 @@ void main()
                     // A nearly-zero drift means the user tapped without dragging;
                     // anything past the threshold was an orbit gesture.
                     if (_rmbDrift <= RmbClickDriftPx)
-                        TryClickToAttack(_rmbDownPos);
+                    {
+                        // Phase 20a — talk before attack. If the click landed on
+                        // a talkable NPC, open dialogue; otherwise fall through
+                        // to the combat path. Hostile actors don't get talkable
+                        // even if they happen to have a [conversation] block.
+                        if (!TryClickToTalk(_rmbDownPos))
+                            TryClickToAttack(_rmbDownPos);
+                    }
                     _rmbDrift = 0f;
                 }
             };
@@ -576,6 +616,8 @@ void main()
                 // hover. Cheap rect tests; no-op when the menu is closed.
                 if (_pauseMenu.IsOpen)
                     _pauseMenu.OnMouseMove((int)pos.X, (int)pos.Y);
+                if (_dialogue.IsOpen)
+                    _dialogue.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -1108,6 +1150,19 @@ void main()
         // engine should still render the world without leveling.
         try { _formulas = SiegeFX.Core.Assets.FormulasStore.LoadFromTank(logicReader); }
         catch (Exception ex) { Console.WriteLine($"  formulas.gas load failed: {ex.Message} (regen disabled)"); }
+
+        // Phase 20a — load the region's conversation pool. Region-scoped (one
+        // gas file per region) so the dictionary stays small. Missing file is
+        // graceful-fail: the dialogue panel just never opens.
+        try
+        {
+            var (convs, convDiags) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, regionPath);
+            _conversations = convs;
+            foreach (var d in convDiags) Console.WriteLine("  " + d);
+            if (convs.Count > 0)
+                Console.WriteLine($"  conversations: {convs.Count} dialogue tree(s) loaded");
+        }
+        catch (Exception ex) { Console.WriteLine($"  conversations load failed: {ex.Message}"); }
 
         // Phase 17a — build the spell catalog from the same template store. Cheap
         // (~150 instant-hit templates filter out of ~7300 total) and one-shot.
@@ -1830,6 +1885,89 @@ void main()
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
         _playerFollower.SetTarget(hit);
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
+    }
+
+    // Phase 20a — RMB-on-talkable. Same unproject + closest-actor pick as
+    // TryClickToAttack, but the candidate set is "actors with at least one
+    // conversation key whose first key resolves in the region's pool" — which
+    // is what makes Edward et al. talkable while goblins ignore the click.
+    // Returns true if the click consumed by opening dialogue; caller then
+    // skips the attack path. Hostile-aligned actors (alignment_evil) never
+    // open dialogue even if a template author left a stub conversation block.
+    private const float ClickTalkRadius = 3f;
+    private bool TryClickToTalk(Vector2 cursorPx)
+    {
+        if (_player is null || _window is null || _actors.Count == 0) return false;
+        if (_player.IsDead) return false;
+        if (_conversations is null || _conversations.Count == 0) return false;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return false;
+
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        float aspect = (float)size.X / size.Y;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return false;
+
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return false;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+        var dir  = far_ - near;
+        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return false;
+
+        float planeY = _player.CurrentTransform.Translation.Y;
+        float t = (planeY - near.Y) / dir.Y;
+        if (t < 0f) return false;
+        var groundHit = near + dir * t;
+
+        ActorRenderState? best = null;
+        SiegeFX.Core.Assets.ConversationDef? bestConv = null;
+        float bestDist = ClickTalkRadius;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead) continue;
+            if (s.IsPlayer) continue;
+            // Hostile? Skip — DS1 doesn't let you chat with the krug. The
+            // alignment field on actors is stable across the chain so the
+            // resolved Stats expose it indirectly via IsCombatant + faction.
+            // Pragmatic proxy: a non-combatant with a conversation block is
+            // talkable; everyone else falls through to combat.
+            if (s.Actor.Stats.IsCombatant) continue;
+
+            var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
+            if (keys.Count == 0) continue;
+
+            SiegeFX.Core.Assets.ConversationDef? conv = null;
+            foreach (var k in keys)
+            {
+                if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0)
+                { conv = hit; break; }
+            }
+            if (conv is null) continue;
+
+            var pos = s.CurrentTransform.Translation;
+            float dx = pos.X - groundHit.X;
+            float dz = pos.Z - groundHit.Z;
+            float d  = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; }
+        }
+        if (best is null || bestConv is null) return false;
+
+        var screenName = _templateStore?.GetAttribute(best.Actor.Template, "common", "screen_name");
+        if (!string.IsNullOrWhiteSpace(screenName))
+        {
+            // common.screen_name comes through quoted in the gas; strip the
+            // wrapping pair if present so the title bar doesn't read "Edward".
+            screenName = screenName.Trim();
+            if (screenName.Length >= 2 && screenName[0] == '"' && screenName[^1] == '"')
+                screenName = screenName[1..^1];
+        }
+        if (string.IsNullOrWhiteSpace(screenName)) screenName = best.Actor.Template.Name;
+        _dialogue.Open(screenName, bestConv);
+        Console.WriteLine(
+            $"talk: opened '{bestConv.Key}' with {screenName} ({bestConv.Nodes.Count} node(s))");
+        return true;
     }
 
     // Phase 13d — RMB click-to-target attack. Same unproject math as
@@ -2693,6 +2831,13 @@ void main()
             if (_inventoryOpen && _barRenderer is not null)
             {
                 InventoryPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _playerInventory);
+            }
+            // Phase 20a: dialogue panel. Sits above the inventory but under the
+            // pause menu, so pressing Esc while talking still surfaces the pause
+            // overlay if the dialogue close-on-Esc somehow misses.
+            if (_dialogue.IsOpen && _barRenderer is not null)
+            {
+                _dialogue.Draw(_barRenderer, _textRenderer, size.X, size.Y);
             }
             // Phase 15d: pause menu (Esc). Drawn after the inventory so its
             // backdrop dims the inventory grid too — pause is the topmost UI.
