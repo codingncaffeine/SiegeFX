@@ -57,6 +57,12 @@ public sealed class RenderHost : IDisposable
     // _formulas is also live; null-guarded everywhere because viewer modes that
     // don't TrySpawnPlayer leave both at null and we still want the world to load.
     private SiegeFX.Core.Actors.PlayerProgression? _progression;
+    // Phase 16d — seconds the "LEVEL UP!" banner stays on screen after a
+    // threshold crossing. Counts down each render frame; >0 means banner
+    // is currently being drawn near the top of the HUD.
+    private float _levelUpToastRemaining;
+    private int _levelUpToastLevel;
+    private const float LevelUpToastDuration = 3f;
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -1722,14 +1728,15 @@ void main()
         _progression.AwardXp(total, skill);
         if (_progression.Level > oldLevel)
         {
-            // Level-up announce. Once Phase 17+ adds a HUD toast/sound this becomes
-            // visible feedback; for now the console line + the bar growth on the
-            // HP/MP rails are the only confirmation.
+            // Level-up announce: console line for diagnostics + on-screen banner
+            // so the user actually notices. The toast fades after 3 seconds.
             var s = _player!.Actor.Stats;
             Console.WriteLine(
                 $"  *** LEVEL UP! L{oldLevel}->L{_progression.Level} " +
                 $"str={s.Strength:F2} dex={s.Dexterity:F2} int={s.Intelligence:F2} " +
                 $"life={s.MaxLife:F0} mana={s.MaxMana:F0} ***");
+            _levelUpToastRemaining = LevelUpToastDuration;
+            _levelUpToastLevel = _progression.Level;
         }
     }
 
@@ -1905,9 +1912,10 @@ void main()
         }
     }
 
-    private void OnRender(double _)
+    private void OnRender(double dt)
     {
         if (_gl is null) return;
+        if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
         var size = _window.FramebufferSize;
@@ -2152,6 +2160,23 @@ void main()
                     long into = _progression.XpIntoCurrentLevel;
                     string xpLine = $"Lv {_progression.Level}  XP {into}/{span}";
                     _textRenderer.DrawString(size.X, size.Y, xpLine, 12, 86, col);
+                }
+                // Phase 16d — level-up toast. Big banner near top-center while
+                // _levelUpToastRemaining > 0; a yellow-on-black backdrop grabs
+                // the eye even with a busy 3D scene behind. Console line stays
+                // for diagnostics; this is the player-facing signal.
+                if (_levelUpToastRemaining > 0f && _barRenderer is not null)
+                {
+                    string banner = $"** LEVEL UP!  Lv {_levelUpToastLevel} **";
+                    int textW = banner.Length * 7;  // 7px per glyph approx
+                    int padX = 16, padY = 6;
+                    int boxW = textW + padX * 2;
+                    int boxH = 24;
+                    int boxX = (size.X - boxW) / 2;
+                    int boxY = 60;
+                    _barRenderer.DrawRect (size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(0.10f, 0.08f, 0.02f, 0.85f));
+                    _barRenderer.DrawBorder(size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(1.00f, 0.85f, 0.20f, 1f));
+                    _textRenderer.DrawString(size.X, size.Y, banner, boxX + padX, boxY + padY, new Vector4(1f, 0.92f, 0.40f, 1f));
                 }
             }
 
