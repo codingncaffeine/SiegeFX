@@ -37,11 +37,13 @@ public static class SaveStore
         var json = File.ReadAllText(path);
         var file = JsonSerializer.Deserialize<SaveFile>(json, Json)
                    ?? throw new InvalidDataException($"save '{path}' deserialized to null");
-        // Forward migrations: v1 -> v2 added PlayerSnapshot.Quests as an empty
-        // list. The deserializer already produced an empty list for files
-        // that didn't contain the field, so the migration is just a version
-        // stamp bump. Older shapes (pre-v1) get rejected.
-        if (file.SchemaVersion == 1)
+        // Forward migrations.
+        //   v1 -> v2 : added PlayerSnapshot.Quests (empty list default).
+        //   v2 -> v3 : added QuestSnapshot.KillProgress (default 0).
+        // Both migrations are deserializer-friendly — missing fields just hit
+        // their defaults — so the work here is only the version-stamp bump.
+        // Pre-v1 shapes still get rejected below.
+        if (file.SchemaVersion is 1 or 2)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }

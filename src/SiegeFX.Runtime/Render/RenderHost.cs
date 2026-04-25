@@ -2190,6 +2190,114 @@ void main()
             // the species isn't in our shipped table (chickens go quietly).
             PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+        }
+    }
+
+    /// <summary>Phase 20c — single funnel for "an actor just died". Credits
+    /// the kill against any active quest objectives and queues a HUD toast for
+    /// each quest that just completed. Called from all three player-kill paths
+    /// (melee click, spell zap, debug F-key) so the loop is consistent across
+    /// input surfaces. Future trap / ally-kill credit can hit the same funnel.</summary>
+    private void OnActorKilled(string templateName, Vector3 worldPos)
+    {
+        if (_progression is null || string.IsNullOrEmpty(templateName)) return;
+        var completed = _progression.Journal.RegisterKill(templateName);
+        if (completed.Count == 0) return;
+        foreach (var key in completed)
+        {
+            string label = _progression.Journal.TryGet(key, out var entry) && entry?.Definition is { } d
+                ? d.ScreenName : key;
+            Console.WriteLine($"[quest] completed: {label} ({key})");
+            AddFloatingText($"Quest complete: {label}",
+                            (_player?.CurrentTransform.Translation ?? worldPos) + new Vector3(0f, 2.4f, 0f),
+                            new Vector4(1.00f, 0.85f, 0.40f, 1f));
+        }
+    }
+
+    /// <summary>Phase 20c — render a chevron pointing at the active quest's
+    /// nearest live target. Two cases: on-screen target gets a chevron drawn at
+    /// the projected screen position (above the actor's head); off-screen or
+    /// behind-camera target gets the chevron clamped to a 28-px margin around
+    /// the viewport, rotated to point outward. Draws nothing when no active
+    /// quest has a kill objective or no live target matches.</summary>
+    private void DrawQuestGoalMarker(int viewportW, int viewportH, Matrix4x4 vp)
+    {
+        if (_progression is null || _barRenderer is null) return;
+
+        // Pick the first active quest with an unmet kill objective. Stable
+        // pick (enumeration order in the Dictionary is insertion order in
+        // .NET's implementation) so the marker doesn't strobe between quests.
+        SiegeFX.Core.Actors.QuestEntry? questEntry = null;
+        foreach (var e in _progression.Journal.Active)
+        {
+            if (e.Definition is null) continue;
+            if (e.Definition.KillCountGoal <= 0) continue;
+            if (e.KillProgress >= e.Definition.KillCountGoal) continue;
+            questEntry = e; break;
+        }
+        if (questEntry?.Definition is not { } qdef) return;
+
+        // Find nearest live actor whose template matches the goal substring.
+        var anchor = _player?.CurrentTransform.Translation ?? _camera.Position;
+        ActorRenderState? best = null;
+        float bestDist = float.MaxValue;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.Actor.Combat.IsDead) continue;
+            if (s.Actor.Template.Name.IndexOf(qdef.KillTargetTemplate,
+                StringComparison.OrdinalIgnoreCase) < 0) continue;
+            float d = Vector3.DistanceSquared(s.CurrentTransform.Translation, anchor);
+            if (d < bestDist) { bestDist = d; best = s; }
+        }
+        if (best is null) return;
+
+        // Project the target's head to clip space. Behind the camera handling:
+        // we still want to show an off-screen arrow pointing toward it, so when
+        // W<=0 we flip the projected NDC by negating both axes — that yields an
+        // off-screen point in roughly the right direction once clamped.
+        var headPos = best.CurrentTransform.Translation + new Vector3(0f, 2.4f, 0f);
+        var clip    = Vector4.Transform(new Vector4(headPos, 1f), vp);
+        bool behind = clip.W <= 0.001f;
+        float ndcX  = clip.X / (behind ? -clip.W : clip.W);
+        float ndcY  = clip.Y / (behind ? -clip.W : clip.W);
+        if (behind) { ndcX = -ndcX; ndcY = -ndcY; }
+
+        float sx = (ndcX * 0.5f + 0.5f) * viewportW;
+        float sy = (1f - (ndcY * 0.5f + 0.5f)) * viewportH;
+
+        const int margin = 28;
+        bool offscreen = behind || sx < margin || sx > viewportW - margin
+                                || sy < margin || sy > viewportH - margin;
+
+        var marker = new Vector4(1.00f, 0.85f, 0.40f, 0.95f);
+        if (!offscreen)
+        {
+            // On-screen: chevron above the actor's head — small downward
+            // triangle (3 stacked rects) so we don't need a triangle batcher.
+            int cx = (int)sx, cy = (int)sy;
+            _barRenderer.DrawRect(viewportW, viewportH, cx - 7, cy - 14, 14, 3, marker);
+            _barRenderer.DrawRect(viewportW, viewportH, cx - 4, cy - 10, 8,  3, marker);
+            _barRenderer.DrawRect(viewportW, viewportH, cx - 1, cy -  6, 2,  3, marker);
+        }
+        else
+        {
+            // Off-screen: clamp to a margin rectangle around the viewport so
+            // the player can still see "the quest target is over there".
+            float cxF = MathF.Min(MathF.Max(sx, margin), viewportW - margin);
+            float cyF = MathF.Min(MathF.Max(sy, margin), viewportH - margin);
+            int cx = (int)cxF, cy = (int)cyF;
+            // 12px square pip with a 4px tail toward the off-screen direction.
+            _barRenderer.DrawRect(viewportW, viewportH, cx - 6, cy - 6, 12, 12, marker);
+            float dx = sx - viewportW * 0.5f;
+            float dy = sy - viewportH * 0.5f;
+            float len = MathF.Sqrt(dx * dx + dy * dy);
+            if (len > 0.001f)
+            {
+                int tx = cx + (int)(dx / len * 10f);
+                int ty = cy + (int)(dy / len * 10f);
+                _barRenderer.DrawRect(viewportW, viewportH, tx - 2, ty - 2, 4, 4, marker);
+            }
         }
     }
 
@@ -2397,6 +2505,7 @@ void main()
                         // Phase 18b — death scream from the matching species.
                         PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+                        OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
                     }
                 }
                 break;
@@ -2524,6 +2633,7 @@ void main()
             // dev shortcut still feels alive when audio's plumbed through.
             PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
         }
     }
 
@@ -2992,6 +3102,15 @@ void main()
                     }
                 }
             }
+            // Phase 20c — quest goal marker. Picks the first active quest with
+            // an unmet kill objective, finds the nearest live target actor whose
+            // template name contains the goal template substring, and either
+            // drops a chevron over its head (on-screen) or clamps a chevron to
+            // the viewport edge pointing toward it (off-screen). Drawn before
+            // floating text so combat numerics layer on top — the marker is
+            // ambient, the float is feedback.
+            DrawQuestGoalMarker(size.X, size.Y, vp);
+
             // Phase 17a — floating cast-feedback labels. World-anchored, so we
             // project each WorldPos through the same VP used for the 3D pass.
             // Behind the camera (clip-space w<=0) entries skip silently.
@@ -3185,8 +3304,9 @@ void main()
                 foreach (var entry in _progression.Journal.Entries)
                     p.Quests.Add(new SiegeFX.Core.Save.QuestSnapshot
                     {
-                        Key   = entry.Key,
-                        State = entry.State,
+                        Key          = entry.Key,
+                        State        = entry.State,
+                        KillProgress = entry.KillProgress,
                     });
             }
             save.Player = p;
@@ -3265,7 +3385,7 @@ void main()
             {
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
                 _progression.Journal.RestoreFromSave(
-                    ps.Quests.Select(q => (q.Key, q.State)));
+                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress)));
             }
             _playerFacing = ps.Facing.ToVector3();
             _cameraMode   = (CameraMode)ps.CameraMode;

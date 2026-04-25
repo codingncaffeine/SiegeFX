@@ -63,8 +63,15 @@ public static class QuestLogPanel
             foreach (var e in journal.Active)
             {
                 if (y + lineH > maxY) break;
-                text.DrawString(viewportW, viewportH, "  • " + Pretty(e.Key), x, y, ink);
+                var label = e.Definition?.ScreenName is { Length: > 0 } sn ? sn : Pretty(e.Key);
+                text.DrawString(viewportW, viewportH, "  • " + label, x, y, ink);
                 y += lineH;
+                if (e.Definition is { } def && def.KillCountGoal > 0 && y + lineH <= maxY)
+                {
+                    var line = $"      {def.ObjectiveText}  ({e.KillProgress}/{def.KillCountGoal})";
+                    text.DrawString(viewportW, viewportH, line, x, y, dimInk);
+                    y += lineH;
+                }
             }
             y += LineGap;
         }
@@ -78,7 +85,8 @@ public static class QuestLogPanel
                 if (e.State != QuestState.Completed && e.State != QuestState.Failed) continue;
                 if (y + lineH > maxY) break;
                 var prefix = e.State == QuestState.Failed ? "  ✗ " : "  ✓ ";
-                text.DrawString(viewportW, viewportH, prefix + Pretty(e.Key), x, y, dimInk);
+                var label = e.Definition?.ScreenName is { Length: > 0 } sn ? sn : Pretty(e.Key);
+                text.DrawString(viewportW, viewportH, prefix + label, x, y, dimInk);
                 y += lineH;
             }
         }
