@@ -125,6 +125,17 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Tank.TankFile? _playMapTank;
     private SiegeFX.Core.Tank.TankFile? _playLogicTank;
     private SiegeFX.Core.Tank.TankFile? _playObjectsTank;
+    // Phase 18a — Sound.dsres pinned for the audio engine's clip lifetime.
+    // We only read .wav blobs out at LoadPlayActors time, but keeping the
+    // tank open is harmless and lets later sub-phases lazy-load extra SFX
+    // (hit, death, level-up) without re-opening the file.
+    private SiegeFX.Core.Tank.TankFile? _playSoundTank;
+    private SiegeFX.Runtime.Audio.AudioEngine? _audio;
+    // Clip-id constants — tying RenderHost call sites to the AudioEngine
+    // dictionary keys through symbols rather than magic strings keeps a typo
+    // in one place from silently disabling a sound.
+    const string SfxZapCast         = "spell_zap_cast";
+    const string SfxHealingWindCast = "spell_healing_wind_cast";
     // Phase 14d — currently-rendered weapon mesh pinned to the PC's weapon_grip bone.
     // Null until TrySpawnPlayer resolves the first equipped weapon. Swapped on every
     // es_weapon_hand change so a pickup upgrade shows up visually.
@@ -1050,6 +1061,34 @@ void main()
         }
         catch (Exception ex) { Console.WriteLine($"  spell catalog build failed: {ex.Message}"); }
 
+        // Phase 18a — bootstrap the audio engine and pre-register the two
+        // shipped cast SFX. Sound.dsres lives next to Logic.dsres in the
+        // Resources folder; if it's missing (very-stripped install) we
+        // silently skip — TryCreate / RegisterClip never throw upward.
+        try
+        {
+            string soundTankPath = Path.Combine(Path.GetDirectoryName(logicTankPath) ?? "",
+                                                "Sound.dsres");
+            if (File.Exists(soundTankPath))
+            {
+                _playSoundTank = TankFile.Open(soundTankPath);
+                var soundReader = new TankReader(_playSoundTank);
+                _audio = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
+                if (_audio is not null)
+                {
+                    TryRegisterSfx(soundReader, SfxZapCast,
+                        "/sound/effects/s_e_spell_zap_cast.wav");
+                    TryRegisterSfx(soundReader, SfxHealingWindCast,
+                        "/sound/effects/s_e_spell_healing_wind_cast.wav");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"  audio: Sound.dsres not at {soundTankPath} — SFX disabled");
+            }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"  audio init failed: {ex.Message}"); }
+
         // Phase 15a — load DS1's small UI font and hand it to the text overlay.
         // copperplate-light is the body font DS1 uses for HP/MP readouts and
         // tooltip text; it covers ASCII 0x20..0x7F at 12px which is plenty for
@@ -1805,6 +1844,31 @@ void main()
         }
     }
 
+    /// <summary>Pull a .wav blob out of <paramref name="reader"/> and hand
+    /// it to the audio engine. One-time call at LoadPlayActors. Logs and
+    /// keeps going on failure so a missing/corrupt asset doesn't tank the
+    /// scene load.</summary>
+    private void TryRegisterSfx(SiegeFX.Core.Tank.TankReader reader,
+                                string clipId, string tankPath)
+    {
+        if (_audio is null) return;
+        try
+        {
+            if (!reader.TryGetFile(tankPath, out _))
+            {
+                Console.Error.WriteLine($"  audio: '{tankPath}' missing in Sound.dsres");
+                return;
+            }
+            var bytes = reader.ExtractToMemory(tankPath);
+            if (_audio.RegisterClip(clipId, bytes))
+                Console.WriteLine($"  audio: '{clipId}' ← {tankPath} ({bytes.Length} B)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  audio: '{clipId}' load threw — {ex.Message}");
+        }
+    }
+
     /// <summary>Phase 17a — cast the slotted spell at whatever the cursor's
     /// currently picking. Mirrors <see cref="TryClickToAttack"/>'s unproject-
     /// then-pick-nearest-combatant logic so casting and clicking share one
@@ -1907,6 +1971,9 @@ void main()
                     AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
                                     playerPos + new Vector3(0f, 2.2f, 0f),
                                     new Vector4(0.40f, 0.95f, 0.40f, 1f));
+                    // Phase 18a — DS1's healing-wind cast SFX. 2D playback for
+                    // now; 18b will switch to per-source positional audio.
+                    _audio?.Play(SfxHealingWindCast);
                     // Heals award NatureMagic XP proportional to HP restored,
                     // matching DS1's "cast_experience grows with effect" rule.
                     // Without this the heal slot is progression-dead.
@@ -1944,6 +2011,11 @@ void main()
                         Color = new Vector4(0.55f, 0.85f, 1.00f, 1f),
                         Remaining = SpellBoltDuration, Total = SpellBoltDuration,
                     });
+                    // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
+                    // heal branch; only the clip id differs because we still
+                    // hardcode the spell→sound mapping (full sfx_script
+                    // resolution is the Phase 18b job).
+                    _audio?.Play(SfxZapCast);
                     AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
                                     anchor + new Vector3(0f, 1.8f, 0f),
                                     new Vector4(0.55f, 0.80f, 1.00f, 1f));
@@ -2611,6 +2683,11 @@ void main()
         // during Run), GL resources leak with the process. Don't try to
         // re-release them post-context here; the OS will reclaim everything.
         _input?.Dispose();
+        // Audio first — DeleteSources/Buffers before tearing down the
+        // Sound.dsres handle isn't required (we already extracted bytes),
+        // but the OpenAL context wants to outlive any pending playback.
+        _audio?.Dispose();
+        _playSoundTank?.Dispose();
         _playMapTank?.Dispose();
         _playLogicTank?.Dispose();
         _playObjectsTank?.Dispose();
