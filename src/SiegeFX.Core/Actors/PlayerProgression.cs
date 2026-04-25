@@ -37,6 +37,11 @@ public sealed class PlayerProgression
     /// Lets the HUD flash a "Level Up!" toast or play a chime exactly once.</summary>
     public bool JustLeveledUp { get; private set; }
 
+    /// <summary>Phase 20b — quest journal. Owned here because progression is the
+    /// player-lifetime state bag and the journal is per-PC (it rides through the
+    /// save with the rest of the player snapshot).</summary>
+    public QuestJournal Journal { get; } = new();
+
     public long XpForCurrentLevel => _formulas.XpForLevel(Level);
     public long XpForNextLevel    => _formulas.XpForLevel(Level + 1);
     public long XpIntoCurrentLevel => TotalXp - XpForCurrentLevel;

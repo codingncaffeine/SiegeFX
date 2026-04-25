@@ -235,6 +235,7 @@ public sealed class RenderHost : IDisposable
     private TextRenderer? _textRenderer;
     private BarRenderer? _barRenderer;
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
+    private bool _questLogOpen;  // 'L' toggles; sibling overlay to inventory
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
     // Phase 20a — dialogue overlay. Per-region conversation pool loaded with the
     // actor list; RMB on a talkable NPC opens the panel against that NPC's first
@@ -479,6 +480,8 @@ void main()
                 }
                 // Phase 15c: 'I' toggles the grid inventory panel.
                 else if (key == Key.I) _inventoryOpen = !_inventoryOpen;
+                // Phase 20b: 'L' toggles the quest log overlay.
+                else if (key == Key.L) _questLogOpen = !_questLogOpen;
                 // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
                 // until enemy aggro lands in a later phase, this is the only way
                 // to drain the bars to verify regen is ticking).
@@ -602,7 +605,16 @@ void main()
                         _dialogue.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
                         var quest = _dialogue.ConsumePendingQuestActivation();
                         if (quest is not null)
-                            Console.WriteLine($"[dialogue] quest activated: {quest}");
+                        {
+                            // Phase 20b — fold the activation into the journal.
+                            // AddActive is idempotent so re-pitches don't reset
+                            // a completed entry; the bool tells us whether this
+                            // is the first acceptance for the log line.
+                            bool added = _progression?.Journal.AddActive(quest) ?? false;
+                            Console.WriteLine(added
+                                ? $"[dialogue] quest activated: {quest}"
+                                : $"[dialogue] quest re-pitched (already in journal): {quest}");
+                        }
                     }
                     return;
                 }
@@ -2930,6 +2942,13 @@ void main()
             {
                 InventoryPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _playerInventory);
             }
+            // Phase 20b — quest log overlay (toggled by 'L'). Sits at the same
+            // z-tier as the inventory; both can be open without conflict but
+            // visually overlap if so. The pause menu still draws on top.
+            if (_questLogOpen && _barRenderer is not null && _progression is not null)
+            {
+                QuestLogPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _progression.Journal);
+            }
             // Phase 20a: dialogue panel. Sits above the inventory but under the
             // pause menu, so pressing Esc while talking still surfaces the pause
             // overlay if the dialogue close-on-Esc somehow misses.
@@ -3160,6 +3179,16 @@ void main()
                     SecondaryCooldown = _playerSpellbook.SecondaryCooldownRemaining,
                 };
             }
+
+            if (_progression is not null)
+            {
+                foreach (var entry in _progression.Journal.Entries)
+                    p.Quests.Add(new SiegeFX.Core.Save.QuestSnapshot
+                    {
+                        Key   = entry.Key,
+                        State = entry.State,
+                    });
+            }
             save.Player = p;
         }
         return save;
@@ -3235,6 +3264,8 @@ void main()
             if (_progression is not null)
             {
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
+                _progression.Journal.RestoreFromSave(
+                    ps.Quests.Select(q => (q.Key, q.State)));
             }
             _playerFacing = ps.Facing.ToVector3();
             _cameraMode   = (CameraMode)ps.CameraMode;
