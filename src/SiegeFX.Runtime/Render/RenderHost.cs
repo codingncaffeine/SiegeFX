@@ -63,6 +63,26 @@ public sealed class RenderHost : IDisposable
     private float _levelUpToastRemaining;
     private int _levelUpToastLevel;
     private const float LevelUpToastDuration = 3f;
+    // Phase 17a — instant-hit spell catalog (parsed from spl_spell.gas via the
+    // template store) and the player's single-slot spellbook. Built after the
+    // template store is populated and the player has spawned. Both are null in
+    // viewer modes that bypass play-region loading.
+    private SiegeFX.Core.Assets.SpellCatalog? _spellCatalog;
+    private SiegeFX.Core.Actors.PlayerSpellbook? _playerSpellbook;
+    private const string DefaultPrimarySpellName = "spell_zap";
+    // Phase 17a — short-lived floating world-anchored text (cast feedback like
+    // "ZAP -7", "no mana", "out of range"). One render-frame timer per entry;
+    // entries with Remaining<=0 are pruned at the start of OnRender.
+    private readonly List<FloatingText> _floatingTexts = new();
+    private const float FloatingTextDuration = 1.6f;
+    private sealed class FloatingText
+    {
+        public string Text = "";
+        public Vector3 WorldPos;
+        public Vector4 Color;
+        public float Remaining;
+        public float Total;
+    }
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -395,6 +415,15 @@ void main()
                     // supported (Heal clamps), so we'll just call the formula path
                     // when spells land. For now drain via a direct method.
                     _player.Actor.Combat.SpendMana(5f);
+                }
+                // Phase 17a — Q casts the slotted primary spell at whatever the
+                // cursor is currently pointing at. Picks the same way RMB does:
+                // unproject, find the closest combatant in XZ to the ground hit.
+                // The spellbook owns the gating (range, mana, cooldown) — the
+                // render layer just supplies the candidate target + distance.
+                else if (key == Key.Q && _player is not null && !_player.IsDead)
+                {
+                    TryClickToCast();
                 }
             };
 
@@ -987,6 +1016,17 @@ void main()
         try { _formulas = SiegeFX.Core.Assets.FormulasStore.LoadFromTank(logicReader); }
         catch (Exception ex) { Console.WriteLine($"  formulas.gas load failed: {ex.Message} (regen disabled)"); }
 
+        // Phase 17a — build the spell catalog from the same template store. Cheap
+        // (~150 instant-hit templates filter out of ~7300 total) and one-shot.
+        // Failure here just leaves _spellCatalog null; cast attempts then no-op
+        // through the null guard in TryClickToCast.
+        try
+        {
+            _spellCatalog = SiegeFX.Core.Assets.SpellCatalog.Build(store);
+            Console.WriteLine($"  spell catalog: {_spellCatalog.Count} instant-hit spells loaded");
+        }
+        catch (Exception ex) { Console.WriteLine($"  spell catalog build failed: {ex.Message}"); }
+
         // Phase 15a — load DS1's small UI font and hand it to the text overlay.
         // copperplate-light is the body font DS1 uses for HP/MP readouts and
         // tooltip text; it covers ASCII 0x20..0x7F at 12px which is plenty for
@@ -1375,6 +1415,10 @@ void main()
                         combat.Heal       (_formulas.LifeRecoveryRate(stats.Strength)    * (float)stepSec);
                         combat.RestoreMana(_formulas.ManaRecoveryRate(stats.Intelligence) * (float)stepSec);
                     }
+                    // Phase 17a — countdown the spell cooldown on the same 20Hz
+                    // tick the rest of player state runs on. Trip-key checks in
+                    // TryClickToCast read CooldownRemaining off the spellbook.
+                    _playerSpellbook?.Tick((float)stepSec);
                 }
             }
             foreach (var s in _actors)
@@ -1463,6 +1507,18 @@ void main()
         // template authoring (DS1 PCs always start fresh).
         if (_formulas is not null)
             _progression = new SiegeFX.Core.Actors.PlayerProgression(player, _formulas);
+        // Phase 17a — slot the canonical spell_zap into the player's primary
+        // book slot. Future inventory/learn UI will populate this from the
+        // spellbook items in the PC's [inventory][equipment]; for now zap is
+        // the always-on starter so 'Q' has something to fire.
+        if (_spellCatalog is not null && _spellCatalog.TryGet(DefaultPrimarySpellName, out var primary))
+        {
+            _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
+                player, new Random(unchecked((int)0x5C617AC1u)));
+            _playerSpellbook.Slot(primary);
+            Console.WriteLine($"  spellbook: primary <- {primary.Name} (\"{primary.ScreenName}\") " +
+                              $"range={primary.CastRange:F1} cd={primary.CastReloadDelay:F2}s");
+        }
         // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
         // user wants to fly around for debugging.
         _cameraMode = CameraMode.Chase;
@@ -1715,6 +1771,131 @@ void main()
         }
     }
 
+    /// <summary>Phase 17a — cast the slotted spell at whatever the cursor's
+    /// currently picking. Mirrors <see cref="TryClickToAttack"/>'s unproject-
+    /// then-pick-nearest-combatant logic so casting and clicking share one
+    /// targeting model. The spellbook owns range/mana/cooldown gating; this
+    /// method just routes the result into the floating-text + XP pipelines.</summary>
+    private void TryClickToCast()
+    {
+        if (_player is null || _window is null || _input is null) return;
+        if (_playerSpellbook is null || _playerSpellbook.Primary is null) return;
+        if (_actors.Count == 0) return;
+        if (_input.Mice.Count == 0) return;
+
+        var cursor = _input.Mice[0].Position;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return;
+
+        float ndcX = (cursor.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursor.Y / size.Y) * 2f;
+        float aspect = (float)size.X / size.Y;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+        var dir  = far_ - near;
+        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
+
+        float planeY = _player.CurrentTransform.Translation.Y;
+        float t = (planeY - near.Y) / dir.Y;
+        if (t < 0f) return;
+        var groundHit = near + dir * t;
+
+        ActorRenderState? best = null;
+        float bestDist = ClickAttackRadius;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead) continue;
+            if (s.IsPlayer) continue;
+            if (!s.Actor.Stats.IsCombatant) continue;
+            var pos = s.CurrentTransform.Translation;
+            float dx = pos.X - groundHit.X;
+            float dz = pos.Z - groundHit.Z;
+            float d  = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = s; }
+        }
+
+        var playerPos = _player.CurrentTransform.Translation;
+        var spell = _playerSpellbook.Primary;
+        // Phase 16d ships one combined skill pool, so the player's progression
+        // level is the only "magic level" we have to feed into the spell formula.
+        // 17b+ replaces this with the dedicated CombatMagic / NatureMagic level.
+        float magicLevel = _progression?.Level ?? 1;
+        SiegeFX.Core.Actors.CastResult result;
+        if (best is null)
+        {
+            result = new SiegeFX.Core.Actors.CastResult(SiegeFX.Core.Actors.CastOutcome.NoTarget, spell, 0, 0, false);
+        }
+        else
+        {
+            float dx = best.CurrentTransform.Translation.X - playerPos.X;
+            float dz = best.CurrentTransform.Translation.Z - playerPos.Z;
+            float dist = MathF.Sqrt(dx * dx + dz * dz);
+            result = _playerSpellbook.TryCast(best.Actor, dist, magicLevel);
+        }
+
+        // Cast feedback. Console line is the canonical record (matches the
+        // melee log shape); the floating text gives the player the at-a-glance
+        // "did it land" cue — anchored in world space at the target so big
+        // sprawl battles don't blur the hit count.
+        var anchor = best?.CurrentTransform.Translation ?? (playerPos + new Vector3(0f, 1.5f, 0f));
+        switch (result.Outcome)
+        {
+            case SiegeFX.Core.Actors.CastOutcome.Cast:
+                Console.WriteLine(
+                    $"cast {spell!.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
+                    $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
+                                anchor + new Vector3(0f, 1.8f, 0f),
+                                new Vector4(0.55f, 0.80f, 1.00f, 1f));
+                AwardCombatXp((long)result.Damage,
+                              result.TargetKilled ? best!.Actor.Stats.ExperienceValue : 0,
+                              SiegeFX.Core.Assets.SkillKind.CombatMagic);
+                if (result.TargetKilled && best!.Actor.Combat.ConsumeJustDied())
+                {
+                    best.IsDead = true;
+                    best.Brain = null;
+                    LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+                }
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.NoTarget:
+                AddFloatingText("no target", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.85f, 0.85f, 0.85f, 1f));
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.OutOfRange:
+                AddFloatingText("out of range", anchor + new Vector3(0f, 1.8f, 0f), new Vector4(0.95f, 0.65f, 0.20f, 1f));
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.NoMana:
+                AddFloatingText("no mana", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.45f, 0.65f, 1.00f, 1f));
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.OnCooldown:
+                // Cooldown is short (zap = 0.15s) — silent miss feels right rather
+                // than spamming feedback for the player just leaning on the key.
+                break;
+            case SiegeFX.Core.Actors.CastOutcome.TargetDead:
+                AddFloatingText("already dead", anchor + new Vector3(0f, 1.8f, 0f), new Vector4(0.7f, 0.7f, 0.7f, 1f));
+                break;
+        }
+    }
+
+    /// <summary>Push a world-anchored short-lived label onto the floating-text
+    /// list. Drawn in the HUD pass each frame, projected from world to screen
+    /// so it tracks the actor as the camera moves and fades over its lifetime.</summary>
+    private void AddFloatingText(string text, Vector3 worldPos, Vector4 color)
+    {
+        _floatingTexts.Add(new FloatingText
+        {
+            Text = text,
+            WorldPos = worldPos,
+            Color = color,
+            Remaining = FloatingTextDuration,
+            Total = FloatingTextDuration,
+        });
+    }
+
     /// <summary>Phase 16d — fold a damage roll + kill bonus into the player's
     /// progression. Pulled out so the click-attack and F-key debug paths share
     /// identical XP awarding (and the eventual ranged/spell attacks just call
@@ -1916,6 +2097,13 @@ void main()
     {
         if (_gl is null) return;
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
+        // Phase 17a — tick + prune floating cast feedback. Reverse-iterate so
+        // RemoveAt is O(1) per kill and the list compacts in-place.
+        for (int i = _floatingTexts.Count - 1; i >= 0; i--)
+        {
+            _floatingTexts[i].Remaining -= (float)dt;
+            if (_floatingTexts[i].Remaining <= 0f) _floatingTexts.RemoveAt(i);
+        }
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
         var size = _window.FramebufferSize;
@@ -2192,6 +2380,32 @@ void main()
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
                 _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+            }
+            // Phase 17a — floating cast-feedback labels. World-anchored, so we
+            // project each WorldPos through the same VP used for the 3D pass.
+            // Behind the camera (clip-space w<=0) entries skip silently.
+            if (_floatingTexts.Count > 0)
+            {
+                foreach (var ft in _floatingTexts)
+                {
+                    var wp = new Vector4(ft.WorldPos, 1f);
+                    var clip = Vector4.Transform(wp, vp);
+                    if (clip.W <= 0.001f) continue;
+                    float ndcXX = clip.X / clip.W;
+                    float ndcYY = clip.Y / clip.W;
+                    int sx = (int)((ndcXX * 0.5f + 0.5f) * size.X);
+                    int sy = (int)((1f - (ndcYY * 0.5f + 0.5f)) * size.Y);
+                    // Lifecycle: rise ~12px over its life and fade alpha in
+                    // the last third — float-up popup behavior.
+                    float t01 = 1f - (ft.Remaining / MathF.Max(0.0001f, ft.Total));
+                    sy -= (int)(t01 * 12f);
+                    float a = ft.Remaining > ft.Total * 0.33f
+                        ? 1f
+                        : ft.Remaining / (ft.Total * 0.33f);
+                    var c = ft.Color; c.W *= a;
+                    int textW = ft.Text.Length * 7;
+                    _textRenderer.DrawString(size.X, size.Y, ft.Text, sx - textW / 2, sy, c);
+                }
             }
             _textRenderer.EndPass();
         }
