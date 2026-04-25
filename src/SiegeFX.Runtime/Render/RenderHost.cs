@@ -1473,6 +1473,43 @@ void main()
         if (instDiags.Count  > 0) Console.WriteLine($"  instances: {instDiags.Count} diagnostic(s)");
         foreach (var d in spawner.Diagnostics.Take(5)) Console.WriteLine($"  !! {d}");
         if (spawner.Diagnostics.Count > 5) Console.WriteLine($"  ... ({spawner.Diagnostics.Count - 5} more)");
+
+        // Phase 20a (follow-up) — print every talkable NPC's name + world
+        // position so the visual walkthrough doesn't require hunting the
+        // map. Anything with a [conversation] block whose first key resolves
+        // in the conversation pool counts.
+        if (_conversations is not null && _conversations.Count > 0)
+        {
+            var talkables = new List<(string Name, string Key, Vector3 Pos)>();
+            foreach (var s in _actors)
+            {
+                if (s.IsPlayer) continue;
+                var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
+                if (keys.Count == 0) continue;
+                string? firstKey = null;
+                foreach (var k in keys)
+                {
+                    if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0)
+                    { firstKey = k; break; }
+                }
+                if (firstKey is null) continue;
+                var name = _templateStore?.GetAttribute(s.Actor.Template, "common", "screen_name");
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    name = name.Trim();
+                    if (name.Length >= 2 && name[0] == '"' && name[^1] == '"') name = name[1..^1];
+                }
+                if (string.IsNullOrWhiteSpace(name)) name = s.Actor.Template.Name;
+                talkables.Add((name, firstKey, s.CurrentTransform.Translation));
+            }
+            if (talkables.Count > 0)
+            {
+                Console.WriteLine($"  talkable NPCs ({talkables.Count}):");
+                foreach (var t in talkables)
+                    Console.WriteLine(
+                        $"    {t.Name,-18} {t.Key,-40} world ({t.Pos.X:F1}, {t.Pos.Y:F1}, {t.Pos.Z:F1})");
+            }
+        }
     }
 
     /// <summary>
