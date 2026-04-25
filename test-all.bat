@@ -62,6 +62,7 @@ echo   42. Phase 20b   - Quest log overlay (Accept Edgaar quest, press L, fh_r1)
 echo   43. Phase 20c   - Kill objectives + goal markers (kill 5 krug for Edgaar, fh_r1)
 echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh_r1)
 echo   45. Phase 21a-1 - Neighbor terrain preload (fh_r1 + first-ring neighbors visible)
+echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neighbor regions)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -113,6 +114,7 @@ if /i "%CHOICE%"=="42" goto T42
 if /i "%CHOICE%"=="43" goto T43
 if /i "%CHOICE%"=="44" goto T44
 if /i "%CHOICE%"=="45" goto T45
+if /i "%CHOICE%"=="46" goto T46
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -770,6 +772,30 @@ echo [unresolved + dangling stitch counts should be 0 for shipped fh_r1]
 echo [In-game: fly to the south/east edge of fh_r1 — neighbor terrain is visible]
 echo [WITHOUT this load, the world would just end at the region boundary]
 echo [Actors / nav / dialogue still operate only inside fh_r1 — that's 21a-2]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T46
+echo.
+echo --- Phase 21a-2: Cross-boundary nav + actors + dialogue (fh_r1 + neighbors) ---
+echo [Builds on 21a-1: neighbor regions are now first-class for gameplay too]
+echo [Launch log: "neighbor preload..." THEN actor + nav line includes neighbors]
+echo [In-game: walk south/east past the old fh_r1 boundary — no more invisible wall]
+echo [Nav mesh now spans player region + first-ring neighbors as one graph]
+echo [Neighbor actors (krug/goblins beyond the boundary) are alive and aggro you]
+echo [RMB an NPC living in a neighbor region — their dialogue tree opens normally]
+echo [If you fly past the *outer* edge of the preloaded ring you'll still hit a wall]
+echo [That's expected — eviction + rolling preload is 21a-3]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

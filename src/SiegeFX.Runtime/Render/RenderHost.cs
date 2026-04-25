@@ -41,6 +41,16 @@ public sealed class RenderHost : IDisposable
     // below keeps LoadRegion's node transforms available so actor node-anchored positions
     // compose against the same world frame as the terrain.
     private RegionLayout? _regionLayout;
+    // Phase 21a-2 — neighbor-aware loading state. LoadNeighborTerrain populates
+    // these so LoadPlayActors can build a unified RegionGraph + RegionLayout
+    // spanning player + first-ring neighbors without re-walking stitch helpers
+    // or re-composing the WorldLayout. Each entry's Path is the neighbor's
+    // tank path so RegionObjects + ConversationStore can be re-loaded against
+    // the right scope. Empty when LoadRegion ran without a stitch helper
+    // (standalone test regions); LoadPlayActors then falls back to single-region
+    // behavior.
+    private readonly List<(string Path, RegionGraph Graph)> _worldRegionGraphs = new();
+    private WorldLayout? _worldLayout;
     private readonly List<ActorRenderState> _actors = new();
     private readonly Dictionary<AspMesh, SkinnedMesh> _actorMeshCache = new();
     // Bind-pose bone array cached per unique mesh — reused every frame for zero-clip actors
@@ -1298,6 +1308,16 @@ void main()
 
         var world = WorldLayout.Build(entries, ResolveModel, rootHint: normalized);
 
+        // Phase 21a-2 stash: LoadPlayActors consumes both to build a unified
+        // RegionLayout (world-space transforms) + a unified RegionGraph
+        // (player + neighbor nodes), so the nav mesh and actor pool span the
+        // boundary instead of stopping at it.
+        _worldLayout = world;
+        _worldRegionGraphs.Clear();
+        foreach (var entry in entries)
+            if (world.RegionOffsets.ContainsKey(entry.Path))
+                _worldRegionGraphs.Add((entry.Path, entry.Graph));
+
         // .raw index for neighbor texture loads. Subsets the player region
         // already loaded short-circuit on _snoTextures.ContainsKey so we don't
         // re-decode anything; new neighbor textures land in the same dict.
@@ -1395,6 +1415,44 @@ void main()
         var (store, storeDiags)    = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
         var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
 
+        // Phase 21a-2 — when LoadNeighborTerrain stashed a world layout +
+        // per-region graphs, swap _regionLayout for a unified world-space
+        // layout (so cross-boundary node guids resolve) and merge each
+        // neighbor's actor instances into the spawn list. The player
+        // region is at identity in WorldLayout by construction, so swapping
+        // the layout doesn't shift the player's own actors. Without
+        // neighbors (standalone regions, test fixtures) we fall through
+        // to single-region behavior unchanged.
+        var allInstances = new List<SiegeFX.Core.Assets.ActorInstance>(instances);
+        var neighborInstanceCount = 0;
+        if (_worldLayout is not null && _worldRegionGraphs.Count > 1)
+        {
+            var graphs = new List<SiegeFX.Core.Assets.RegionGraph>(_worldRegionGraphs.Count);
+            foreach (var (_, g) in _worldRegionGraphs) graphs.Add(g);
+            var unifiedGraph  = SiegeFX.Core.Assets.RegionGraph.Combine(graphs);
+            var unifiedLayout = SiegeFX.Core.Assets.RegionLayout.FromTransforms(
+                _regionLayout.AnchorGuid, _worldLayout.Transforms);
+            _regionLayout = unifiedLayout;
+
+            foreach (var (path, _) in _worldRegionGraphs)
+            {
+                if (path == regionPath) continue;
+                try
+                {
+                    var (more, moreDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, path);
+                    allInstances.AddRange(more);
+                    neighborInstanceCount += more.Count;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  neighbor actors load failed for {path}: {ex.Message}");
+                }
+            }
+            Console.WriteLine($"  unified region scope: {graphs.Count} region(s), " +
+                              $"{unifiedGraph.Nodes.Count:N0} snode(s), " +
+                              $"{neighborInstanceCount:N0} neighbor actor instance(s)");
+        }
+
         // Objects.dsres carries more recent asset overrides than Logic.dsres in shipped DS1
         // content (patch-tank order), so add Logic last — the AssetResolver does last-added-wins
         // basename indexing and we want Logic's skrit/prs/asp resolution to shadow stale objects
@@ -1404,7 +1462,7 @@ void main()
         resolver.Add(logicReader,   "Logic.dsres");
 
         var spawner = new ActorSpawner(store, resolver, _regionLayout);
-        var actors  = spawner.Spawn(instances);
+        var actors  = spawner.Spawn(allInstances);
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _templateStore = store;
@@ -1423,10 +1481,34 @@ void main()
         try
         {
             var (convs, convDiags) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, regionPath);
-            _conversations = convs;
             foreach (var d in convDiags) Console.WriteLine("  " + d);
-            if (convs.Count > 0)
-                Console.WriteLine($"  conversations: {convs.Count} dialogue tree(s) loaded");
+            // Build a mutable merged pool then assign (the field is IReadOnly).
+            // First-loaded wins on key collisions: matches DS1's region-local
+            // priority (cross-region dialogue goes through quest_state.gas).
+            var merged = new Dictionary<string, SiegeFX.Core.Assets.ConversationDef>(convs);
+            int neighborConvs = 0;
+            if (_worldRegionGraphs.Count > 1)
+            {
+                foreach (var (path, _) in _worldRegionGraphs)
+                {
+                    if (path == regionPath) continue;
+                    try
+                    {
+                        var (nconvs, ndiags) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, path);
+                        foreach (var d in ndiags) Console.WriteLine("  " + d);
+                        foreach (var kv in nconvs)
+                            if (merged.TryAdd(kv.Key, kv.Value)) neighborConvs++;
+                    }
+                    catch (Exception nex)
+                    {
+                        Console.WriteLine($"  neighbor conversations load failed for {path}: {nex.Message}");
+                    }
+                }
+            }
+            _conversations = merged;
+            if (_conversations.Count > 0)
+                Console.WriteLine($"  conversations: {_conversations.Count} dialogue tree(s) loaded" +
+                                  (neighborConvs > 0 ? $" (+{neighborConvs} from neighbors)" : ""));
         }
         catch (Exception ex) { Console.WriteLine($"  conversations load failed: {ex.Message}"); }
 
@@ -1559,7 +1641,6 @@ void main()
             {
                 using var terrainTank = TankFile.Open(_regionTerrainTankPath);
                 var terrainReader = new TankReader(terrainTank);
-                var navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
                 var meshIdx = SnoMeshIndex.Build(terrainReader);
                 var navCache = new Dictionary<uint, SnoModel?>();
                 SnoModel? ResolveNav(uint meshGuid)
@@ -1574,14 +1655,31 @@ void main()
                     navCache[meshGuid] = m;
                     return m;
                 }
-                // Re-use the already-built RegionLayout: it's the same graph, same
-                // resolver output, just with the render-side SnoModel cache. Building
-                // a second layout would redo door-chain composition for no reason.
+                // Phase 21a-2 — when neighbors were preloaded, use the unified
+                // RegionGraph (player + neighbors) so the nav mesh spans the
+                // boundary. Vertex welding inside NavMesh.BuildForRegion uses
+                // world-space positions (transforms here are already world-space
+                // via _worldLayout), so adjacent regions' floor edges weld
+                // together where they touch.
+                RegionGraph navGraph;
+                if (_worldRegionGraphs.Count > 1)
+                {
+                    var graphList = new List<RegionGraph>(_worldRegionGraphs.Count);
+                    foreach (var (_, g) in _worldRegionGraphs) graphList.Add(g);
+                    navGraph = RegionGraph.Combine(graphList);
+                }
+                else
+                {
+                    navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+                }
                 navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
                 Console.WriteLine($"  nav mesh: {navMesh.TriangleCount} tri(s), " +
                                   $"{navMesh.Vertices.Length} welded vert(s), " +
                                   $"{navMesh.SourceSnodeCount} snode(s), " +
-                                  $"{navMesh.NonManifoldEdgeCount} non-manifold edge(s)");
+                                  $"{navMesh.NonManifoldEdgeCount} non-manifold edge(s)" +
+                                  (_worldRegionGraphs.Count > 1
+                                       ? $" — unified across {_worldRegionGraphs.Count} region(s)"
+                                       : ""));
             }
             catch (Exception ex)
             {
