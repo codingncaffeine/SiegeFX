@@ -2681,24 +2681,42 @@ static int CmdSpellsShow(string[] a)
     var (store, _) = TemplateStore.LoadFromTank(reader);
     var cat = SpellCatalog.Build(store);
     if (!cat.TryGet(a[1], out var s)) { Console.Error.WriteLine($"no spell named '{a[1]}' in catalog"); return 4; }
-    Console.WriteLine($"{s.Name}  \"{s.ScreenName}\"");
+    Console.WriteLine($"{s.Name}  \"{s.ScreenName}\"  (kind={s.Kind})");
     Console.WriteLine($"  cast_range          = {s.CastRange}");
     Console.WriteLine($"  cast_reload_delay   = {s.CastReloadDelay}");
     Console.WriteLine($"  base mana_cost      = {s.BaseManaCost}");
     Console.WriteLine($"  mana_cost_modifier  = {s.ManaCostModifierExpr}");
-    Console.WriteLine($"  damage_min expr     = {s.AttackDamageMinExpr}");
-    Console.WriteLine($"  damage_max expr     = {s.AttackDamageMaxExpr}");
+    if (s.Kind == SpellKind.SelfHeal)
+        Console.WriteLine($"  heal_amount expr    = {s.HealAmountExpr}");
+    else
+    {
+        Console.WriteLine($"  damage_min expr     = {s.AttackDamageMinExpr}");
+        Console.WriteLine($"  damage_max expr     = {s.AttackDamageMaxExpr}");
+    }
     Console.WriteLine();
-    Console.WriteLine("evaluated by magic level (lo / hi damage, mana cost):");
     int[] levels = a.Length >= 3 && int.TryParse(a[2], out var only) ? new[] { only } : new[] { 1, 5, 10, 25, 50, 100 };
     var rng = new Random(1);
-    foreach (var lv in levels)
+    if (s.Kind == SpellKind.SelfHeal)
     {
-        float lo = SpellExpr.Eval(s.AttackDamageMinExpr, lv);
-        float hi = SpellExpr.Eval(s.AttackDamageMaxExpr, lv);
-        float cost = s.ManaCost(lv);
-        float sample = s.RollDamage(lv, rng);
-        Console.WriteLine($"  L{lv,-3}  dmg [{lo,7:0.00} .. {hi,7:0.00}]  sample={sample,6:0.00}  mana={cost,5:0.0}");
+        Console.WriteLine("evaluated by magic level (heal amount, mana cost):");
+        foreach (var lv in levels)
+        {
+            float heal = s.HealAmount(lv);
+            float cost = s.ManaCost(lv);
+            Console.WriteLine($"  L{lv,-3}  heal={heal,6:0.00}  mana={cost,5:0.0}");
+        }
+    }
+    else
+    {
+        Console.WriteLine("evaluated by magic level (lo / hi damage, mana cost):");
+        foreach (var lv in levels)
+        {
+            float lo = SpellExpr.Eval(s.AttackDamageMinExpr, lv);
+            float hi = SpellExpr.Eval(s.AttackDamageMaxExpr, lv);
+            float cost = s.ManaCost(lv);
+            float sample = s.RollDamage(lv, rng);
+            Console.WriteLine($"  L{lv,-3}  dmg [{lo,7:0.00} .. {hi,7:0.00}]  sample={sample,6:0.00}  mana={cost,5:0.0}");
+        }
     }
     return 0;
 }

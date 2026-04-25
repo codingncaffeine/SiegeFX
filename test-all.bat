@@ -51,6 +51,7 @@ echo   31. Phase 16d   - XP + level: kill goblins, watch Lv/XP line on HUD (fh_r
 echo   32. Phase 17a   - Spells: dump catalog + show spell_zap by magic level
 echo   33. Phase 17a   - Spells: cast spell_zap with Q (mana 1, dmg 4-7 at L1, fh_r1)
 echo   34. Phase 17b   - Spell visuals: cyan bolt + face-snap on Q-cast (fh_r1)
+echo   35. Phase 17c   - Heal spell + W slot: spell_healing_wind self-cast (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -91,6 +92,7 @@ if /i "%CHOICE%"=="31" goto T31
 if /i "%CHOICE%"=="32" goto T32
 if /i "%CHOICE%"=="33" goto T33
 if /i "%CHOICE%"=="34" goto T34
+if /i "%CHOICE%"=="35" goto T35
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -492,6 +494,27 @@ echo [press Q on a krug; a cyan bolt streaks from your chest to the target]
 echo [bolt lasts ~0.3s with a 5-dot fading trail]
 echo [PC snaps to face the target on cast (no more shooting out of his back)]
 echo [damage popup + mana drain are unchanged from 17a]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T35
+echo.
+echo --- Phase 17c: Heal spell + W slot (fh_r1) ---
+echo [Q casts spell_zap (offensive instant-hit, primary slot)]
+echo [W casts spell_healing_wind (self-target heal, secondary slot)]
+echo [W is silent at full HP ("at full health"); take damage from a krug first]
+echo [L1 heal: ~3.77 HP for 10.3 mana (so a fresh hero gets ~3 casts)]
+echo [3-second cooldown on the heal slot, independent from the Q cooldown]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

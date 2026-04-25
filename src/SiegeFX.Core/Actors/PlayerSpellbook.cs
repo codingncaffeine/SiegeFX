@@ -13,29 +13,43 @@ public enum CastOutcome
     OutOfRange,
     NoMana,
     OnCooldown,
+    AlreadyFull,
+}
+
+/// <summary>Identifier for a slot in the player's hotbar. Phase 17a was a
+/// single primary slot; 17c added Secondary so a heal can sit alongside the
+/// attack spell. Multi-slot hotbar UI ships when the spellbook GUI lands.</summary>
+public enum SpellSlot
+{
+    Primary,
+    Secondary,
 }
 
 /// <summary>Result of a <see cref="PlayerSpellbook.TryCast"/> call. <see cref="Damage"/>
-/// is meaningful only when <see cref="Outcome"/> is <see cref="CastOutcome.Cast"/>.</summary>
+/// is meaningful for offensive spells; <see cref="HealAmount"/> for self-heals.
+/// Both are zero unless <see cref="Outcome"/> is <see cref="CastOutcome.Cast"/>.</summary>
 public readonly record struct CastResult(
     CastOutcome Outcome,
     SpellTemplate? Spell,
     float ManaSpent,
     float Damage,
+    float HealAmount,
     bool TargetKilled);
 
 /// <summary>
-/// Single-slot spellbook attached to the player actor. Owns the slotted spell,
-/// the running cooldown clock, and the cast-validation pipeline. Phase 17a
-/// keeps just one slot — primary spell — so 'Q' has a fixed binding; multi-slot
-/// hotbars are a later UI/inventory job once the spell book GUI lands.
+/// Two-slot spellbook attached to the player actor. Owns the slotted spells,
+/// per-slot cooldown clocks, and the cast-validation pipeline. Phase 17c
+/// keeps two slots — primary attack + secondary heal — so 'Q' and 'W' have
+/// fixed bindings; multi-slot hotbars are a later UI/inventory job once the
+/// spell book GUI lands.
 ///
-/// All gating (target alive, in range, mana, cooldown) lives here so the
-/// render layer's job is purely "press key → see message + side effects".
-/// Damage is rolled by <see cref="SpellTemplate.RollDamage"/> using the
-/// player's <see cref="ActorStats.Intelligence"/> as the proxy magic level
-/// — DS1 distinguishes nature/combat magic skill levels per pool, which is
-/// the Phase 17b+ split (matches the four-skill spread parked in
+/// All gating (target alive, in range, mana, cooldown, full-life skip) lives
+/// here so the render layer's job is purely "press key → see message + side
+/// effects". Damage is rolled by <see cref="SpellTemplate.RollDamage"/>;
+/// heals by <see cref="SpellTemplate.HealAmount"/>. The caller passes the
+/// effective magic level — DS1 spell formulas substitute it for <c>#magic</c>.
+/// Until per-skill pools land, the render layer passes the player's overall
+/// progression level (the four-skill spread is parked in
 /// <see cref="PlayerProgression"/>).
 /// </summary>
 public sealed class PlayerSpellbook
@@ -44,11 +58,17 @@ public sealed class PlayerSpellbook
     readonly Random _rng;
 
     public SpellTemplate? Primary { get; private set; }
+    public SpellTemplate? Secondary { get; private set; }
 
     /// <summary>Seconds remaining until the slot can be cast again. Counts
     /// down inside <see cref="Tick"/>; a fresh cast resets it from the
     /// spell's <see cref="SpellTemplate.CastReloadDelay"/>.</summary>
-    public float CooldownRemaining { get; private set; }
+    public float PrimaryCooldownRemaining { get; private set; }
+    public float SecondaryCooldownRemaining { get; private set; }
+
+    /// <summary>Phase 17a back-compat alias — the only slot that existed
+    /// when <see cref="CooldownRemaining"/> was the public surface.</summary>
+    public float CooldownRemaining => PrimaryCooldownRemaining;
 
     public PlayerSpellbook(Actor player, Random rng)
     {
@@ -56,41 +76,86 @@ public sealed class PlayerSpellbook
         _rng = rng;
     }
 
-    public void Slot(SpellTemplate? spell)
+    public void Slot(SpellTemplate? spell) => Slot(SpellSlot.Primary, spell);
+
+    public void Slot(SpellSlot slot, SpellTemplate? spell)
     {
-        Primary = spell;
-        CooldownRemaining = 0f;
+        switch (slot)
+        {
+            case SpellSlot.Primary:
+                Primary = spell;
+                PrimaryCooldownRemaining = 0f;
+                break;
+            case SpellSlot.Secondary:
+                Secondary = spell;
+                SecondaryCooldownRemaining = 0f;
+                break;
+        }
     }
 
     public void Tick(float dt)
     {
-        if (CooldownRemaining > 0f) CooldownRemaining = MathF.Max(0f, CooldownRemaining - dt);
+        if (PrimaryCooldownRemaining   > 0f) PrimaryCooldownRemaining   = MathF.Max(0f, PrimaryCooldownRemaining   - dt);
+        if (SecondaryCooldownRemaining > 0f) SecondaryCooldownRemaining = MathF.Max(0f, SecondaryCooldownRemaining - dt);
     }
 
-    /// <summary>Try to cast the slotted spell at <paramref name="target"/>.
-    /// <paramref name="distance"/> is the world-space gap between caster and
-    /// target (XZ distance, computed at the call site since this class is
-    /// math-only and doesn't reach into transforms). <paramref name="magicLevel"/>
-    /// is the caster's effective magic skill level — DS1 spell formulas
-    /// substitute it for <c>#magic</c>. Until per-skill pools land in 17b+,
-    /// the render layer passes the player's progression level.</summary>
+    /// <summary>Try to cast the primary-slot spell at <paramref name="target"/>.
+    /// Phase 17a back-compat overload — defaults to <see cref="SpellSlot.Primary"/>.</summary>
     public CastResult TryCast(Actor? target, float distance, float magicLevel)
-    {
-        if (Primary is null) return new CastResult(CastOutcome.NoSpell, null, 0, 0, false);
-        if (target is null) return new CastResult(CastOutcome.NoTarget, Primary, 0, 0, false);
-        if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, Primary, 0, 0, false);
-        if (CooldownRemaining > 0f) return new CastResult(CastOutcome.OnCooldown, Primary, 0, 0, false);
-        if (distance > Primary.CastRange) return new CastResult(CastOutcome.OutOfRange, Primary, 0, 0, false);
+        => TryCast(SpellSlot.Primary, target, distance, magicLevel);
 
-        float cost = Primary.ManaCost(magicLevel);
-        if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, Primary, 0, 0, false);
+    /// <summary>Try to cast the spell in <paramref name="slot"/> at
+    /// <paramref name="target"/>. <paramref name="distance"/> is the world-space
+    /// XZ gap between caster and target. Self-target heals ignore both target
+    /// and distance and apply to the caster.</summary>
+    public CastResult TryCast(SpellSlot slot, Actor? target, float distance, float magicLevel)
+    {
+        var spell = slot == SpellSlot.Primary ? Primary : Secondary;
+        if (spell is null) return new CastResult(CastOutcome.NoSpell, null, 0, 0, 0, false);
+
+        float cd = slot == SpellSlot.Primary ? PrimaryCooldownRemaining : SecondaryCooldownRemaining;
+        if (cd > 0f) return new CastResult(CastOutcome.OnCooldown, spell, 0, 0, 0, false);
+
+        if (spell.Kind == SpellKind.SelfHeal)
+            return TryCastSelfHeal(slot, spell, magicLevel);
+
+        if (target is null) return new CastResult(CastOutcome.NoTarget, spell, 0, 0, 0, false);
+        if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, spell, 0, 0, 0, false);
+        if (distance > spell.CastRange) return new CastResult(CastOutcome.OutOfRange, spell, 0, 0, 0, false);
+
+        float cost = spell.ManaCost(magicLevel);
+        if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
 
         float spent = _player.Combat.SpendMana(cost);
-        float damage = Primary.RollDamage(magicLevel, _rng);
-        float dealt = damage > 0f ? target.Combat.ApplyDamage(damage) : 0f;
-        bool killed = target.Combat.IsDead;
+        float damage = spell.RollDamage(magicLevel, _rng);
+        float dealt  = damage > 0f ? target.Combat.ApplyDamage(damage) : 0f;
+        bool killed  = target.Combat.IsDead;
 
-        CooldownRemaining = Primary.CastReloadDelay;
-        return new CastResult(CastOutcome.Cast, Primary, spent, dealt, killed);
+        StartCooldown(slot, spell.CastReloadDelay);
+        return new CastResult(CastOutcome.Cast, spell, spent, dealt, 0f, killed);
+    }
+
+    CastResult TryCastSelfHeal(SpellSlot slot, SpellTemplate spell, float magicLevel)
+    {
+        // No-op when already at full life — DS1 grays out heal icons in that
+        // state. Better to refund the cast than to spend mana for nothing.
+        if (_player.Combat.CurrentLife >= _player.Stats.MaxLife)
+            return new CastResult(CastOutcome.AlreadyFull, spell, 0, 0, 0, false);
+
+        float cost = spell.ManaCost(magicLevel);
+        if (_player.Combat.CurrentMana < cost)
+            return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
+
+        float spent = _player.Combat.SpendMana(cost);
+        float heal  = spell.HealAmount(magicLevel);
+        if (heal > 0f) _player.Combat.Heal(heal);
+        StartCooldown(slot, spell.CastReloadDelay);
+        return new CastResult(CastOutcome.Cast, spell, spent, 0f, heal, false);
+    }
+
+    void StartCooldown(SpellSlot slot, float seconds)
+    {
+        if (slot == SpellSlot.Primary) PrimaryCooldownRemaining = seconds;
+        else                            SecondaryCooldownRemaining = seconds;
     }
 }
