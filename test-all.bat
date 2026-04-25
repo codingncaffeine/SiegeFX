@@ -58,6 +58,9 @@ echo   38. Phase 18c   - Audio: 3D positional pan + falloff (walk away from a ki
 echo   39. Phase 19a   - Save: SaveFile JSON round-trip self-test (no window)
 echo   40. Phase 19c   - Save/Load: F5 quicksave + F9 quickload (kill stuff, F5, kill more, F9, fh_r1)
 echo   41. Phase 20a   - Dialogue parser self-test + RMB-talk to Edgaar in fh_r1
+echo   42. Phase 20b   - Quest log overlay (Accept Edgaar quest, press L, fh_r1)
+echo   43. Phase 20c   - Kill objectives + goal markers (kill 5 krug for Edgaar, fh_r1)
+echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -105,6 +108,9 @@ if /i "%CHOICE%"=="38" goto T38
 if /i "%CHOICE%"=="39" goto T39
 if /i "%CHOICE%"=="40" goto T40
 if /i "%CHOICE%"=="41" goto T41
+if /i "%CHOICE%"=="42" goto T42
+if /i "%CHOICE%"=="43" goto T43
+if /i "%CHOICE%"=="44" goto T44
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -675,6 +681,71 @@ echo [walk into a krug pen and stop within ~8u; the krug should chase]
 echo [once they're adjacent (~1.8u) they swing every 1.5s and chip ~4-8 HP]
 echo [step away past ~14u to disengage; HP regen kicks back in]
 echo [chickens should still wander uninterested - they have no [attack] block]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T42
+echo.
+echo --- Phase 20b: Quest log overlay (fh_r1) ---
+echo [RMB Edgaar, click "More", click "Accept" — console logs activation]
+echo [Press L: quest log opens, "Edgaar Basement" listed under ACTIVE]
+echo [Re-pitch: RMB Edgaar, Accept again — log says "re-pitched (already in journal)"]
+echo [F5 quicksave + F9 quickload: quest survives the round-trip]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T43
+echo.
+echo --- Phase 20c: Kill objectives + goal markers (fh_r1) ---
+echo [Accept Edgaar's basement quest — krug-kill objective: 0/5]
+echo [Quest log (L) shows "(0/5)" beside the objective line]
+echo [Yellow chevron paints above the nearest live krug; clamps to screen edge if behind]
+echo [Each krug kill increments progress + a "+gold" floats off the corpse]
+echo [On the 5th kill the entry flips to COMPLETED and the marker disappears]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T44
+echo.
+echo --- Phase 20d: Vendor trade + gold purse (fh_r1) ---
+echo [Persistent "Gold: N" line under the Lv/XP readout, gold-tinted]
+echo [RMB Norick (the trader NPC) — dialogue panel opens]
+echo [Walk through dialogue to close it; vendor panel auto-opens (FOR SALE / YOUR ITEMS)]
+echo [Click Buy on Iron Two-Handed Sword (50g) — gold debits, item lands in inventory]
+echo [Buying a weapon_hand item also auto-equips it via the existing pickup path]
+echo [Click Sell on any inventory row — gold credits half list price (5g for unknowns)]
+echo [Insufficient gold: console logs "trade: cannot afford ..." and the trade is rejected]
+echo [Esc closes the vendor panel without firing the pause menu]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

@@ -244,6 +244,13 @@ public sealed class RenderHost : IDisposable
     private readonly DialoguePanel _dialogue = new();
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.ConversationDef>? _conversations;
 
+    // Phase 20d — vendor trade overlay. Opens when the player closes a
+    // dialogue with an NPC whose template is in the VendorCatalog. Esc
+    // closes; LMB on row buttons drives buy/sell. Tracked alongside
+    // _lastTalkedTemplate so the close edge knows which vendor to open.
+    private readonly VendorPanel _vendor = new();
+    private string? _lastTalkedTemplate;
+
     // Phase 20a (follow-up) — authored player spawn. info/start_positions.gas
     // names a default start group ("farmhouse" in the shipped main map); we
     // resolve its first slot through _regionLayout so the PC drops in next
@@ -461,9 +468,10 @@ void main()
                 // there's a one-button-press exit (Esc, click Quit).
                 if (key == Key.Escape)
                 {
-                    // Phase 20a: dialogue swallows Esc first so closing a chat
-                    // doesn't double up into the pause menu.
-                    if (_dialogue.IsOpen) _dialogue.Close();
+                    // Phase 20a/d: dialogue + vendor swallow Esc first so closing
+                    // a chat or trade doesn't double up into the pause menu.
+                    if (_vendor.IsOpen) _vendor.Close();
+                    else if (_dialogue.IsOpen) _dialogue.Close();
                     else _pauseMenu.Toggle();
                 }
                 // Phase 12c: F key strikes the nearest living actor in front of the
@@ -564,6 +572,17 @@ void main()
                     _pauseMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
                     return;
                 }
+                // Phase 20d — vendor trade overlay; same modal rules as dialogue.
+                // Latches a Buy/Sell press on LMB-down; RMB is swallowed so a
+                // stray right-click behind the panel can't retarget the camera
+                // mid-trade.
+                if (_vendor.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                        _vendor.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
+                                            _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                    return;
+                }
                 // Phase 20a — dialogue panel ranks above everything except pause.
                 // While open, LMB lands on its buttons and never falls through to
                 // click-to-move; RMB is also swallowed so a "talk again" RMB-tap
@@ -598,6 +617,20 @@ void main()
                     if (_pauseMenu.QuitRequested) _window.Close();
                     return;
                 }
+                // Phase 20d — vendor LMB-up. Resolve the press to a Buy/Sell
+                // action and apply gold + inventory mutations here so the
+                // trade authority lives in one place; the panel is purely
+                // display+intent.
+                if (_vendor.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                    {
+                        var act = _vendor.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
+                                                    _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                        if (!act.IsNone) ApplyVendorAction(act);
+                    }
+                    return;
+                }
                 if (_dialogue.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
@@ -615,6 +648,10 @@ void main()
                                 ? $"[dialogue] quest activated: {quest}"
                                 : $"[dialogue] quest re-pitched (already in journal): {quest}");
                         }
+                        // Phase 20d — if dialogue just closed and the talked actor
+                        // is a vendor, surface the trade panel automatically. No-op
+                        // if the panel is still open or the NPC isn't in the catalog.
+                        TryOpenVendorAfterTalk();
                     }
                     return;
                 }
@@ -648,6 +685,9 @@ void main()
                     _pauseMenu.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (_dialogue.IsOpen)
                     _dialogue.OnMouseMove((int)pos.X, (int)pos.Y);
+                if (_vendor.IsOpen)
+                    _vendor.OnMouseMove((int)pos.X, (int)pos.Y,
+                                        _playerInventory.Count, _window.Size.X, _window.Size.Y);
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -2074,10 +2114,61 @@ void main()
                 screenName = screenName[1..^1];
         }
         if (string.IsNullOrWhiteSpace(screenName)) screenName = best.Actor.Template.Name;
+        _lastTalkedTemplate = best.Actor.Template.Name;
         _dialogue.Open(screenName, bestConv);
         Console.WriteLine(
             $"talk: opened '{bestConv.Key}' with {screenName} ({bestConv.Nodes.Count} node(s))");
         return true;
+    }
+
+    /// <summary>Phase 20d — call after every interaction that might have
+    /// closed the dialogue panel. If the last talked actor matches a vendor
+    /// catalog entry, open the trade overlay; otherwise no-op. Idempotent —
+    /// runs unconditionally each tick the panel is open is fine because the
+    /// guard checks are O(catalog).</summary>
+    private void TryOpenVendorAfterTalk()
+    {
+        if (_dialogue.IsOpen) return;
+        if (_vendor.IsOpen) return;
+        if (string.IsNullOrEmpty(_lastTalkedTemplate)) return;
+        var def = SiegeFX.Core.Actors.VendorCatalog.Find(_lastTalkedTemplate);
+        if (def is null) return;
+        _vendor.Open(def);
+        Console.WriteLine($"trade: opened vendor panel for {def.ScreenName}");
+        _lastTalkedTemplate = null; // one-shot per talk
+    }
+
+    /// <summary>Phase 20d — apply a Buy/Sell intent emitted by the vendor
+    /// panel. Buy debits gold (rejects if short) and appends a LootEntry to
+    /// the player inventory; Sell removes the inventory row and credits the
+    /// resolved sell price. The panel itself is purely intent — all stat
+    /// mutation happens here so future vendor sources (other catalogs, hot
+    /// reload) can fan in without duplicating economy code.</summary>
+    private void ApplyVendorAction(SiegeFX.Runtime.Render.Hud.VendorAction act)
+    {
+        if (_progression is null) return;
+        if (act.Kind == SiegeFX.Runtime.Render.Hud.VendorActionKind.Buy)
+        {
+            var def = _vendor.OpenVendor;
+            if (def is null || act.Index < 0 || act.Index >= def.Stock.Count) return;
+            var row = def.Stock[act.Index];
+            if (!_progression.TryDebitGold(row.Price))
+            {
+                Console.WriteLine($"trade: cannot afford {row.ScreenName} ({row.Price}g, have {_progression.Gold}g)");
+                return;
+            }
+            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(row.Slot, row.ItemReference));
+            Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g (gold now {_progression.Gold})");
+        }
+        else if (act.Kind == SiegeFX.Runtime.Render.Hud.VendorActionKind.Sell)
+        {
+            if (act.Index < 0 || act.Index >= _playerInventory.Count) return;
+            var entry = _playerInventory[act.Index];
+            long price = SiegeFX.Runtime.Render.Hud.VendorPanel.ResolveSellPrice(entry.Reference);
+            _playerInventory.RemoveAt(act.Index);
+            _progression.CreditGold(price);
+            Console.WriteLine($"trade: sold {entry.Reference} for {price}g (gold now {_progression.Gold})");
+        }
     }
 
     // Phase 13d — RMB click-to-target attack. Same unproject math as
@@ -2191,6 +2282,7 @@ void main()
             PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
         }
     }
 
@@ -2203,7 +2295,6 @@ void main()
     {
         if (_progression is null || string.IsNullOrEmpty(templateName)) return;
         var completed = _progression.Journal.RegisterKill(templateName);
-        if (completed.Count == 0) return;
         foreach (var key in completed)
         {
             string label = _progression.Journal.TryGet(key, out var entry) && entry?.Definition is { } d
@@ -2213,6 +2304,25 @@ void main()
                             (_player?.CurrentTransform.Translation ?? worldPos) + new Vector3(0f, 2.4f, 0f),
                             new Vector4(1.00f, 0.85f, 0.40f, 1f));
         }
+    }
+
+    /// <summary>Phase 20d — credit a gold drop. Pulled out of the death funnel
+    /// so the spell zap, melee click, and debug F-key can all hand the same
+    /// (template, worldPos) shape down. DS1 rolls a per-template gold range
+    /// off treasure_set.gas; until that's wired we proxy off the dead actor's
+    /// experience value (a stable proxy for "how dangerous was this kill"),
+    /// scaled and floored so a low-XP chicken never drops 0 and a juggernaut
+    /// doesn't dump the entire economy in one shot.</summary>
+    private void CreditGoldFromKill(int experienceValue, Vector3 worldPos)
+    {
+        if (_progression is null || experienceValue <= 0) return;
+        // Proxy formula: half the XP value, +25% jitter, floored at 1. The
+        // caller already gated on "actor died this frame" so per-kill firing
+        // is implicit — no need for a kill-edge guard here.
+        long drop = Math.Max(1, experienceValue / 2);
+        _progression.CreditGold(drop);
+        AddFloatingText($"+{drop} gold", worldPos + new Vector3(0f, 1.6f, 0f),
+                        new Vector4(1.00f, 0.92f, 0.40f, 1f));
     }
 
     /// <summary>Phase 20c — render a chevron pointing at the active quest's
@@ -2506,6 +2616,7 @@ void main()
                         PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
                         OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+                        CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
                     }
                 }
                 break;
@@ -2634,6 +2745,7 @@ void main()
             PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
         }
     }
 
@@ -3025,6 +3137,12 @@ void main()
                     long into = _progression.XpIntoCurrentLevel;
                     string xpLine = $"Lv {_progression.Level}  XP {into}/{span}";
                     _textRenderer.DrawString(size.X, size.Y, xpLine, 12, 86, col);
+                    // Phase 20d — gold purse readout. Sits under the XP line in
+                    // the same column, gold-tinted so it reads as currency at a
+                    // glance without competing with the HP/MP/XP numbers.
+                    string goldLine = $"Gold: {_progression.Gold}";
+                    _textRenderer.DrawString(size.X, size.Y, goldLine, 12, 102,
+                                             new Vector4(1.00f, 0.85f, 0.40f, 1f));
                 }
                 // Phase 16d — level-up toast. Big banner near top-center while
                 // _levelUpToastRemaining > 0; a yellow-on-black backdrop grabs
@@ -3065,6 +3183,14 @@ void main()
             if (_dialogue.IsOpen && _barRenderer is not null)
             {
                 _dialogue.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+            }
+            // Phase 20d: vendor trade overlay. Same z-tier as the dialogue —
+            // they're mutually exclusive in practice (vendor only opens once
+            // dialogue closes) but the explicit draw keeps both branches local.
+            if (_vendor.IsOpen && _barRenderer is not null)
+            {
+                _vendor.Draw(_barRenderer, _textRenderer, size.X, size.Y,
+                             _playerInventory, _progression?.Gold ?? 0);
             }
             // Phase 15d: pause menu (Esc). Drawn after the inventory so its
             // backdrop dims the inventory grid too — pause is the topmost UI.
@@ -3308,6 +3434,7 @@ void main()
                         State        = entry.State,
                         KillProgress = entry.KillProgress,
                     });
+                p.Gold = _progression.Gold;
             }
             save.Player = p;
         }
@@ -3386,6 +3513,7 @@ void main()
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
                 _progression.Journal.RestoreFromSave(
                     ps.Quests.Select(q => (q.Key, q.State, q.KillProgress)));
+                _progression.RestoreGoldFromSave(ps.Gold);
             }
             _playerFacing = ps.Facing.ToVector3();
             _cameraMode   = (CameraMode)ps.CameraMode;

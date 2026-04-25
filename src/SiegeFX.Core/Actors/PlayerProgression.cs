@@ -42,6 +42,34 @@ public sealed class PlayerProgression
     /// save with the rest of the player snapshot).</summary>
     public QuestJournal Journal { get; } = new();
 
+    /// <summary>Phase 20d — gold purse. Drops from kills credit here, vendor
+    /// transactions debit/credit here. Long because DS1's late-game prices run
+    /// six digits and we don't want to shave cap headroom for no reason.</summary>
+    public long Gold { get; private set; }
+
+    /// <summary>Returns true if the debit succeeded (i.e. funds were available).
+    /// Failed debits leave the purse untouched so the caller can show a
+    /// "not enough gold" toast without rolling back state.</summary>
+    public bool TryDebitGold(long amount)
+    {
+        if (amount <= 0) return true;
+        if (Gold < amount) return false;
+        Gold -= amount;
+        return true;
+    }
+
+    /// <summary>Add gold to the purse. Negative or zero amounts are no-ops so
+    /// kill-drop callsites don't have to guard their own zero rolls.</summary>
+    public void CreditGold(long amount)
+    {
+        if (amount <= 0) return;
+        Gold += amount;
+    }
+
+    /// <summary>Phase 20d — set the player gold from a save snapshot, bypassing
+    /// the debit/credit guards (those are for in-session txns, not load).</summary>
+    public void RestoreGoldFromSave(long gold) => Gold = Math.Max(0, gold);
+
     public long XpForCurrentLevel => _formulas.XpForLevel(Level);
     public long XpForNextLevel    => _formulas.XpForLevel(Level + 1);
     public long XpIntoCurrentLevel => TotalXp - XpForCurrentLevel;
