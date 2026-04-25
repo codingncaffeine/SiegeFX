@@ -20,8 +20,17 @@ public sealed unsafe class AudioEngine : IDisposable
     readonly Device* _device;
     readonly Context* _context;
     readonly Dictionary<string, uint> _bufferByClip = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 18b — variant groups (e.g. "melee_swing" → 4 swing wavs).
+    // Play(group) picks a random member; degenerates to a single id if
+    // only one was registered. The dictionary is _separate_ from
+    // _bufferByClip so simple ids and group ids can share namespace
+    // without colliding (e.g. "melee_swing" group vs "melee_swing_01"
+    // single — Play looks up groups first, falls back to single).
+    readonly Dictionary<string, List<string>> _variantsByGroup =
+        new(StringComparer.OrdinalIgnoreCase);
     readonly uint[] _sourcePool;
     int _nextSource;
+    readonly Random _variantRng = new();
     bool _disposed;
 
     AudioEngine(AL al, ALContext alc, Device* device, Context* context, uint[] sources)
@@ -126,14 +135,42 @@ public sealed unsafe class AudioEngine : IDisposable
         }
     }
 
-    /// <summary>Play a registered clip on the next pool source (round-robin).
-    /// If the source is currently busy, OpenAL replaces its buffer and starts
-    /// over — that's the desired behavior for cast SFX (rapid-fire keys
+    /// <summary>Phase 18b — register a list of clip ids as one named group.
+    /// <see cref="Play(string,float)"/> with the group id picks a random
+    /// member each call. Used for "this happens often" SFX where DS1 ships
+    /// 4-5 variants to avoid a single-asset machine-gun feel (swings,
+    /// flesh hits). Per-variant clips must already be registered via
+    /// <see cref="RegisterClip"/> before being grouped.</summary>
+    public void RegisterGroup(string groupId, params string[] clipIds)
+    {
+        if (_disposed) return;
+        var alive = new List<string>(clipIds.Length);
+        foreach (var id in clipIds)
+            if (_bufferByClip.ContainsKey(id)) alive.Add(id);
+        if (alive.Count == 0)
+        {
+            Console.Error.WriteLine($"  audio: group '{groupId}' empty — skipping");
+            return;
+        }
+        _variantsByGroup[groupId] = alive;
+    }
+
+    /// <summary>Play a registered clip (or random member of a registered
+    /// group) on the next pool source (round-robin). If the source is
+    /// currently busy, OpenAL replaces its buffer and starts over —
+    /// that's the desired behavior for cast SFX (rapid-fire keys
     /// shouldn't queue, the latest cast wins).</summary>
     public void Play(string id, float gain = 1f)
     {
         if (_disposed) return;
-        if (!_bufferByClip.TryGetValue(id, out var buf)) return;
+        // Group lookup first so a same-named single clip doesn't shadow it.
+        uint buf;
+        if (_variantsByGroup.TryGetValue(id, out var variants))
+        {
+            var pick = variants[_variantRng.Next(variants.Count)];
+            if (!_bufferByClip.TryGetValue(pick, out buf)) return;
+        }
+        else if (!_bufferByClip.TryGetValue(id, out buf)) return;
 
         uint src = _sourcePool[_nextSource];
         _nextSource = (_nextSource + 1) % _sourcePool.Length;
