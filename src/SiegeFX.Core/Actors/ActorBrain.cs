@@ -117,6 +117,19 @@ public sealed class ActorBrain
         }
     }
 
+    /// <summary>Phase 19b — drop the actor at <paramref name="pos"/> and reset
+    /// the brain back to Wander with cooldowns cleared. Saved+loaded actors
+    /// always come back as Wander; chase/attack states are mid-fight bookkeeping
+    /// not worth persisting (the AI will re-aggro on the next tick if the PC
+    /// is still in radius).</summary>
+    public void Teleport(Vector3 pos)
+    {
+        Wander.Teleport(pos);
+        State = BrainState.Wander;
+        _attackFacing = null;
+        _swingCooldown = 0f;
+    }
+
     void EnterChase(Vector3 targetPos)
     {
         State = BrainState.Chase;

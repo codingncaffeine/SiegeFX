@@ -2776,6 +2776,225 @@ void main()
         _gridShader?.Dispose();
     }
 
+    // Phase 19b — capture every piece of mid-session state worth restoring
+    // and bake it into a SaveFile. Everything Apply re-derives from the GAS
+    // (mesh, animation, skrit, region layout) is left out; only the things
+    // that drift during play (life/mana/dead/positions/inventory/spellbook
+    // cooldowns/camera/XP) live in the save. RegionPath stamps the snapshot
+    // so the load path can refuse a save written for a different region.
+    internal SiegeFX.Core.Save.SaveFile CaptureSave()
+    {
+        var save = new SiegeFX.Core.Save.SaveFile
+        {
+            SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
+            SavedAt       = DateTime.UtcNow,
+            RegionPath    = _regionPath ?? "",
+        };
+
+        foreach (var s in _actors)
+        {
+            // CurrentTransform tracks the live position (brain / follower
+            // updates it each tick); WorldTransform is the spawn pose and
+            // would mis-restore an actor that wandered.
+            var pos = s.CurrentTransform.Translation;
+            save.Actors.Add(new SiegeFX.Core.Save.ActorSnapshot
+            {
+                Scid         = s.Actor.Instance.Scid,
+                TemplateName = s.Actor.Template.Name,
+                Position     = SiegeFX.Core.Save.Vec3.From(pos),
+                CurrentLife  = s.Actor.Combat.CurrentLife,
+                CurrentMana  = s.Actor.Combat.CurrentMana,
+                IsDead       = s.IsDead || s.Actor.Combat.IsDead,
+            });
+        }
+
+        foreach (var pile in _lootPiles)
+        {
+            var pileSnap = new SiegeFX.Core.Save.LootPileSnapshot
+            {
+                Position = SiegeFX.Core.Save.Vec3.From(pile.Position),
+            };
+            foreach (var it in pile.Items)
+                pileSnap.Entries.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                {
+                    Slot      = it.Slot,
+                    Reference = it.Reference,
+                });
+            save.LootPiles.Add(pileSnap);
+        }
+
+        if (_player is not null)
+        {
+            var p = new SiegeFX.Core.Save.PlayerSnapshot
+            {
+                Scid          = _player.Actor.Instance.Scid,
+                TotalXp       = _progression?.TotalXp ?? 0,
+                Level         = _progression?.Level ?? 1,
+                Strength      = _player.Actor.Stats.Strength,
+                Dexterity     = _player.Actor.Stats.Dexterity,
+                Intelligence  = _player.Actor.Stats.Intelligence,
+                Facing        = SiegeFX.Core.Save.Vec3.From(_playerFacing),
+                CameraMode    = (int)_cameraMode,
+                ChaseYaw      = _chaseYaw,
+                ChaseDistance = _chaseDistance,
+                ChaseHeight   = _chaseHeight,
+                CameraPos     = SiegeFX.Core.Save.Vec3.From(_camera.Position),
+                CameraYaw     = _camera.Yaw,
+                CameraPitch   = _camera.Pitch,
+            };
+            // Inventory + equipment fold into the same flat list the loot
+            // path uses. On load, equipped items get re-wired by walking
+            // entries with es_-style slots; non-equipped items stay as
+            // inventory rows. Equipment lives in _playerEquipment as
+            // (es_slot -> ref); convert each to an entry whose Slot drops
+            // the es_ prefix so the round-trip matches LootEntry shape.
+            foreach (var item in _playerInventory)
+                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                {
+                    Slot      = item.Slot,
+                    Reference = item.Reference,
+                });
+            foreach (var kv in _playerEquipment)
+            {
+                var slot = kv.Key.StartsWith("es_", StringComparison.OrdinalIgnoreCase)
+                    ? kv.Key.Substring(3) : kv.Key;
+                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                {
+                    Slot      = "equipped:" + slot,
+                    Reference = kv.Value,
+                });
+            }
+
+            if (_playerSpellbook is not null)
+            {
+                p.Spellbook = new SiegeFX.Core.Save.SpellbookSnapshot
+                {
+                    PrimarySpell      = _playerSpellbook.Primary?.Name,
+                    SecondarySpell    = _playerSpellbook.Secondary?.Name,
+                    PrimaryCooldown   = _playerSpellbook.PrimaryCooldownRemaining,
+                    SecondaryCooldown = _playerSpellbook.SecondaryCooldownRemaining,
+                };
+            }
+            save.Player = p;
+        }
+        return save;
+    }
+
+    // Phase 19b — patch a captured SaveFile back onto the live scene. Assumes
+    // the same region is loaded (LoadPlayActors already ran), and the live
+    // _actors list overlaps with save.Actors by Scid. Actors present in the
+    // save but missing from the scene are skipped with a log; ones present
+    // in the scene but missing from the save are left untouched at their
+    // current state (treats them as "spawned after this save" — same as a
+    // patch that adds NPCs).
+    internal void ApplySave(SiegeFX.Core.Save.SaveFile save)
+    {
+        if (!string.Equals(save.RegionPath, _regionPath ?? "", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                $"  load: region mismatch — save was '{save.RegionPath}', live region is '{_regionPath}'");
+            return;
+        }
+
+        // Index live actors by scid so the patch loop is O(N+M) not O(N*M).
+        var byScid = new Dictionary<uint, ActorRenderState>(_actors.Count);
+        foreach (var s in _actors) byScid[s.Actor.Instance.Scid] = s;
+
+        int patched = 0, missing = 0;
+        foreach (var snap in save.Actors)
+        {
+            if (!byScid.TryGetValue(snap.Scid, out var s)) { missing++; continue; }
+            s.Actor.Combat.RestoreFromSave(snap.CurrentLife, snap.CurrentMana, snap.IsDead);
+            s.IsDead = snap.IsDead;
+            // Position restore: actors with a brain (on-mesh) teleport via
+            // the follower; off-mesh pinned actors get their CurrentTransform
+            // updated directly since they have no follower to drive movement.
+            var pos = snap.Position.ToVector3();
+            if (s.Brain is not null) s.Brain.Teleport(pos);
+            s.CurrentTransform = Matrix4x4.CreateTranslation(pos);
+            patched++;
+        }
+
+        _lootPiles.Clear();
+        foreach (var pileSnap in save.LootPiles)
+        {
+            var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
+            foreach (var e in pileSnap.Entries)
+                items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+            _lootPiles.Add(new LootPile(pileSnap.Position.ToVector3(), items));
+        }
+
+        if (save.Player is not null && _player is not null)
+        {
+            var ps = save.Player;
+            // Republish auto-grown attributes through ResyncStats so MaxLife/
+            // MaxMana track what the player actually had at save time, not the
+            // template's L1 values. Then RestoreFromSave on the combat state
+            // reapplies current life/mana under the new caps.
+            if (_formulas is not null)
+            {
+                var current = _player.Actor.Stats;
+                var newMaxLife = _formulas.MaxLife(ps.Strength, ps.Dexterity, ps.Intelligence);
+                var newMaxMana = _formulas.MaxMana(ps.Strength, ps.Dexterity, ps.Intelligence);
+                _player.Actor.ResyncStats(current with
+                {
+                    Strength = ps.Strength,
+                    Dexterity = ps.Dexterity,
+                    Intelligence = ps.Intelligence,
+                    MaxLife = newMaxLife,
+                    MaxMana = newMaxMana,
+                });
+                // The actor snapshot already reapplied CurrentLife/Mana above;
+                // running RestoreFromSave again would only hit the new caps.
+            }
+            if (_progression is not null)
+            {
+                _progression.RestoreFromSave(ps.TotalXp, ps.Level);
+            }
+            _playerFacing = ps.Facing.ToVector3();
+            _cameraMode   = (CameraMode)ps.CameraMode;
+            _chaseYaw     = ps.ChaseYaw;
+            _chaseDistance = ps.ChaseDistance;
+            _chaseHeight  = ps.ChaseHeight;
+            _camera.Position = ps.CameraPos.ToVector3();
+            _camera.Yaw   = ps.CameraYaw;
+            _camera.Pitch = ps.CameraPitch;
+
+            _playerInventory.Clear();
+            _playerEquipment.Clear();
+            foreach (var e in ps.Inventory)
+            {
+                if (e.Slot.StartsWith("equipped:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var slotKey = "es_" + e.Slot.Substring("equipped:".Length);
+                    _playerEquipment[slotKey] = e.Reference;
+                }
+                else
+                {
+                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                }
+            }
+            // Re-render the equipped weapon mesh so the visible model matches
+            // the restored es_weapon_hand entry. Safe even when no weapon was
+            // saved — TryLoadPlayerWeapon early-outs on a missing slot.
+            TryLoadPlayerWeapon();
+
+            if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
+            {
+                if (ps.Spellbook.PrimarySpell is { } pn && _spellCatalog.TryGet(pn, out var ps1))
+                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, ps1);
+                if (ps.Spellbook.SecondarySpell is { } sn && _spellCatalog.TryGet(sn, out var ps2))
+                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, ps2);
+                _playerSpellbook.RestoreCooldowns(
+                    ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
+            }
+        }
+
+        Console.WriteLine($"  load: patched {patched}/{save.Actors.Count} actor(s), " +
+                          $"{(missing > 0 ? $"{missing} missing from scene, " : "")}" +
+                          $"{save.LootPiles.Count} loot pile(s) restored");
+    }
+
     public void Dispose()
     {
         // Belt-and-braces — if Closing didn't fire (process kill, exception

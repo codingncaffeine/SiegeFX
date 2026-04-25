@@ -44,6 +44,31 @@ internal static class SaveSelfTest
                 CameraPos     = new Vec3(-42.5f, 18.25f, -113.75f),
                 CameraYaw     = -2.34f,
                 CameraPitch   = -0.42f,
+                Inventory = new List<LootEntrySnapshot>
+                {
+                    new() { Slot = "weapon_hand", Reference = "dg_g_d_1h_fun" },
+                    new() { Slot = "potion",      Reference = "potion_health_minor" },
+                    new() { Slot = "armor_chest", Reference = "ar_c_l_pad" },
+                },
+                Spellbook = new SpellbookSnapshot
+                {
+                    PrimarySpell      = "spell_zap",
+                    SecondarySpell    = "spell_healing_wind",
+                    PrimaryCooldown   = 0.08f,
+                    SecondaryCooldown = 1.42f,
+                },
+            },
+            LootPiles = new List<LootPileSnapshot>
+            {
+                new()
+                {
+                    Position = new Vec3(-5.5f, 0.25f, 12.0f),
+                    Entries = new List<LootEntrySnapshot>
+                    {
+                        new() { Slot = "weapon_hand", Reference = "hm_g_c_1h1m_low" },
+                        new() { Slot = "gold",        Reference = "gold_pile_small" },
+                    },
+                },
             },
             Actors = new List<ActorSnapshot>
             {
@@ -89,6 +114,35 @@ internal static class SaveSelfTest
             Check(failures, "Player.CameraPos",     a.CameraPos,    b.CameraPos);
             Check(failures, "Player.CameraYaw",     a.CameraYaw,    b.CameraYaw);
             Check(failures, "Player.CameraPitch",   a.CameraPitch,  b.CameraPitch);
+            Check(failures, "Player.Inventory.Count", a.Inventory.Count, b.Inventory.Count);
+            for (int i = 0; i < Math.Min(a.Inventory.Count, b.Inventory.Count); i++)
+            {
+                Check(failures, $"Player.Inventory[{i}].Slot",      a.Inventory[i].Slot,      b.Inventory[i].Slot);
+                Check(failures, $"Player.Inventory[{i}].Reference", a.Inventory[i].Reference, b.Inventory[i].Reference);
+            }
+            if (a.Spellbook is null) Check(failures, "Player.Spellbook (orig null)", true, b.Spellbook is null);
+            else if (b.Spellbook is null) failures.Add("Player.Spellbook null after round-trip");
+            else
+            {
+                Check(failures, "Spellbook.PrimarySpell",      a.Spellbook.PrimarySpell,      b.Spellbook.PrimarySpell);
+                Check(failures, "Spellbook.SecondarySpell",    a.Spellbook.SecondarySpell,    b.Spellbook.SecondarySpell);
+                Check(failures, "Spellbook.PrimaryCooldown",   a.Spellbook.PrimaryCooldown,   b.Spellbook.PrimaryCooldown);
+                Check(failures, "Spellbook.SecondaryCooldown", a.Spellbook.SecondaryCooldown, b.Spellbook.SecondaryCooldown);
+            }
+        }
+        Check(failures, "LootPiles.Count", original.LootPiles.Count, loaded.LootPiles.Count);
+        for (int i = 0; i < Math.Min(original.LootPiles.Count, loaded.LootPiles.Count); i++)
+        {
+            var op = original.LootPiles[i]; var lp = loaded.LootPiles[i];
+            Check(failures, $"LootPiles[{i}].Position", op.Position, lp.Position);
+            Check(failures, $"LootPiles[{i}].Entries.Count", op.Entries.Count, lp.Entries.Count);
+            for (int j = 0; j < Math.Min(op.Entries.Count, lp.Entries.Count); j++)
+            {
+                Check(failures, $"LootPiles[{i}].Entries[{j}].Slot",
+                      op.Entries[j].Slot, lp.Entries[j].Slot);
+                Check(failures, $"LootPiles[{i}].Entries[{j}].Reference",
+                      op.Entries[j].Reference, lp.Entries[j].Reference);
+            }
         }
         Check(failures, "Actors.Count", original.Actors.Count, loaded.Actors.Count);
         for (int i = 0; i < Math.Min(original.Actors.Count, loaded.Actors.Count); i++)

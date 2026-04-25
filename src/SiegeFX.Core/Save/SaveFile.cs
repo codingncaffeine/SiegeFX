@@ -38,6 +38,38 @@ public sealed class SaveFile
     /// the loader can patch the right actor even if the spawn order
     /// changes between runs.</summary>
     public List<ActorSnapshot> Actors { get; set; } = new();
+
+    /// <summary>Loot piles still on the ground at save time. Re-spawned in
+    /// place on load so an unpicked drop doesn't vanish.</summary>
+    public List<LootPileSnapshot> LootPiles { get; set; } = new();
+}
+
+/// <summary>One unpicked loot pile. Position + the same template-ref + slot
+/// pairs that <c>LootEntry</c> uses. We only persist the references — the
+/// actual item templates are looked up fresh on load against the active
+/// template store, so a save that's half-imported into a future content
+/// patch picks up any data updates instead of freezing the old payload.</summary>
+public sealed class LootPileSnapshot
+{
+    public Vec3 Position { get; set; }
+    public List<LootEntrySnapshot> Entries { get; set; } = new();
+}
+
+public sealed class LootEntrySnapshot
+{
+    public string Slot { get; set; } = "";
+    public string Reference { get; set; } = "";
+}
+
+/// <summary>Spellbook state. Slots are the template names of the slotted
+/// spells (resolved against <c>SpellCatalog</c> on load); cooldowns are
+/// the live remaining-second counters.</summary>
+public sealed class SpellbookSnapshot
+{
+    public string? PrimarySpell        { get; set; }
+    public string? SecondarySpell      { get; set; }
+    public float   PrimaryCooldown     { get; set; }
+    public float   SecondaryCooldown   { get; set; }
 }
 
 /// <summary>Per-actor mutable state. Position is the world-space root the
@@ -79,6 +111,16 @@ public sealed class PlayerSnapshot
     public Vec3  CameraPos       { get; set; }
     public float CameraYaw       { get; set; }
     public float CameraPitch     { get; set; }
+
+    /// <summary>PC inventory contents — flat list of slot+template-ref pairs,
+    /// same shape as drop-pile entries. Equipment lives in this list too;
+    /// re-equipping happens on load by walking entries with a slot starting
+    /// with <c>weapon_</c> through the equipment path.</summary>
+    public List<LootEntrySnapshot> Inventory { get; set; } = new();
+
+    /// <summary>Spellbook state (slotted spells + cooldowns). Null when no
+    /// spellbook was active (a viewer-mode boot, headless test).</summary>
+    public SpellbookSnapshot? Spellbook { get; set; }
 }
 
 /// <summary>JSON-serializable Vector3 stand-in. <see cref="System.Numerics.Vector3"/>

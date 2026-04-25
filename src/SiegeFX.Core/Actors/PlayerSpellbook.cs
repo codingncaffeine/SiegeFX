@@ -153,6 +153,17 @@ public sealed class PlayerSpellbook
         return new CastResult(CastOutcome.Cast, spell, spent, 0f, heal, false);
     }
 
+    /// <summary>Phase 19b — restore both per-slot cooldowns from a save
+    /// snapshot. Clamps to non-negative so a corrupt save can't drive the
+    /// counter below zero (which Tick wouldn't recover from). Replaces
+    /// the value rather than adding so a re-load from the same save is
+    /// idempotent.</summary>
+    public void RestoreCooldowns(float primary, float secondary)
+    {
+        PrimaryCooldownRemaining   = MathF.Max(0f, primary);
+        SecondaryCooldownRemaining = MathF.Max(0f, secondary);
+    }
+
     void StartCooldown(SpellSlot slot, float seconds)
     {
         if (slot == SpellSlot.Primary) PrimaryCooldownRemaining = seconds;
