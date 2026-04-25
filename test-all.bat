@@ -42,6 +42,7 @@ echo   22. Phase 13a-e - Farmboy PC + chase cam + LMB move + RMB attack + fair-f
 echo   23. Phase 14a-d - Pickup + equipment + weapon render (fh_r1)
 echo   24. Phase 15a   - Text overlay (DS1 copperplate font, fh_r1)
 echo   25. Phase 15b   - HP/MP HUD bars (live values, fh_r1)
+echo   26. Phase 15c   - Grid inventory panel (press I to toggle, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -73,6 +74,7 @@ if /i "%CHOICE%"=="22" goto T22
 if /i "%CHOICE%"=="23" goto T23
 if /i "%CHOICE%"=="24" goto T24
 if /i "%CHOICE%"=="25" goto T25
+if /i "%CHOICE%"=="26" goto T26
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -331,6 +333,26 @@ echo [expect: red HP bar under the SiegeFX/coords text in the top-left]
 echo [bar is 200px wide, captioned "HP 50/50" (Farmboy starts full)]
 echo [no MP bar — Farmboy template has max_mana=0 so it stays hidden]
 echo [walk into a krug and let it hit you to see the HP bar drain]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T26
+echo.
+echo --- Phase 15c: Grid inventory panel (fh_r1) ---
+echo [press I to toggle a centered 8x5 inventory grid]
+echo [picked-up items fill cells left-to-right, top-to-bottom]
+echo [each cell shows the trimmed template ref (icons land in a later phase)]
+echo [press I again or Esc to dismiss the panel]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
