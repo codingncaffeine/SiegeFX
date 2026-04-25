@@ -118,10 +118,12 @@ public sealed class RenderHost : IDisposable
         public double AnimTime;
         public int LastClipIndex;
 
-        // Phase 11d — actors that spawn over the nav mesh get a follower and wander
-        // around it. Those that land off-mesh (pens inside buildings, props) have
-        // Follower=null and just render at their authored spawn pose via CurrentTransform.
-        public SiegeFX.Core.Actors.ActorFollower? Follower;
+        // Phase 11d — actors that spawn over the nav mesh get a brain (wander + aggro)
+        // and roam/chase. Those that land off-mesh (pens inside buildings, props) have
+        // Brain=null and just render at their authored spawn pose via CurrentTransform.
+        // The brain wraps the wander follower; aggro / chase / swing on top of pure
+        // wander landed in Phase 16c.
+        public SiegeFX.Core.Actors.ActorBrain? Brain;
         public Matrix4x4 CurrentTransform;
 
         // Phase 12c — once the actor dies (CurrentLife hits 0), the follower is
@@ -1048,7 +1050,7 @@ void main()
                 _actorMeshCache[actor.Mesh] = gl;
             }
 
-            SiegeFX.Core.Actors.ActorFollower? follower = null;
+            SiegeFX.Core.Actors.ActorBrain? brain = null;
             if (navMesh is not null &&
                 navMesh.TryFindTriangle(actor.WorldTransform.Translation, out var startTri))
             {
@@ -1073,9 +1075,15 @@ void main()
                 // the follower ctor so actors stalled at spawn don't snap to +Z.
                 var authoredFacing = Vector3.TransformNormal(Vector3.UnitZ, actor.WorldTransform);
                 var gait = actor.Stats.WalkSpeed > 0.5f ? actor.Stats.WalkSpeed : 4f;
-                follower = new SiegeFX.Core.Actors.ActorFollower(
+                var follower = new SiegeFX.Core.Actors.ActorFollower(
                     navMesh, snapped, speed: gait, rngSeed: (int)actor.Instance.Scid,
                     initialFacing: authoredFacing);
+                // Phase 16c — wrap the wander follower in a brain so combatants
+                // can chase + swing at the player. Non-combatants (chickens) keep
+                // the same brain class but never receive a target during Tick, so
+                // their state machine stays parked in Wander.
+                brain = new SiegeFX.Core.Actors.ActorBrain(
+                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu));
                 actorsOnMesh++;
             }
             else
@@ -1089,7 +1097,7 @@ void main()
                 GlMesh            = gl,
                 AnimTime          = 0,
                 LastClipIndex     = actor.CurrentClipIndex,
-                Follower          = follower,
+                Brain             = brain,
                 CurrentTransform  = actor.WorldTransform,
             });
         }
@@ -1283,24 +1291,41 @@ void main()
                 _actorTickAccumulator -= stepSec;
                 _actorRuntime.Tick(stepSec);
                 _actorBus.Deliver();
-                // Phase 11d — drive each follower at the same fixed cadence as the
+                // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
                 // of framerate — an actor walks at exactly `speed` u/s wall-clock.
+                // The brain wraps wander + aggro: combatants get the player as a
+                // target so they chase and swing; non-combatants get null and stay
+                // in Wander forever.
+                Vector3? npcTargetPos = null;
+                SiegeFX.Core.Actors.ActorCombatState? npcTargetCombat = null;
+                SiegeFX.Core.Actors.ActorStats? npcTargetStats = null;
+                if (_player is not null && !_player.IsDead)
+                {
+                    npcTargetPos    = _player.CurrentTransform.Translation;
+                    npcTargetCombat = _player.Actor.Combat;
+                    npcTargetStats  = _player.Actor.Stats;
+                }
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
-                    if (s.Follower is null) continue;
-                    s.Follower.Tick((float)stepSec);
+                    if (s.Brain is null) continue;
+                    bool hostile = s.Actor.Stats.IsCombatant;
+                    s.Brain.Tick(
+                        (float)stepSec,
+                        hostile ? npcTargetPos    : null,
+                        hostile ? npcTargetCombat : null,
+                        hostile ? npcTargetStats  : null);
                     // Compose CurrentTransform = rotate-to-facing * translate-to-pos.
-                    // We drop the authored spawn orientation once the follower owns
+                    // We drop the authored spawn orientation once the brain owns
                     // movement; the mesh's local forward in DS1 is +Z, so facing into
                     // the XZ heading means rotating around Y by atan2(dx, dz).
-                    var facing = s.Follower.Facing;
+                    var facing = s.Brain.Facing;
                     float yaw = MathF.Atan2(facing.X, facing.Z);
                     s.CurrentTransform =
                         Matrix4x4.CreateRotationY(yaw) *
-                        Matrix4x4.CreateTranslation(s.Follower.Position);
+                        Matrix4x4.CreateTranslation(s.Brain.Position);
                 }
                 // Phase 13c — tick the player follower on the same cadence. The PC
                 // has no ActorFollower (no wander), so its movement lives here. When
@@ -1416,7 +1441,7 @@ void main()
             GlMesh            = gl,
             AnimTime          = 0,
             LastClipIndex     = player.CurrentClipIndex,
-            Follower          = null,
+            Brain             = null,
             CurrentTransform  = player.WorldTransform,
             IsPlayer          = true,
         };
@@ -1663,7 +1688,7 @@ void main()
         if (best.Actor.Combat.ConsumeJustDied())
         {
             best.IsDead = true;
-            best.Follower = null;
+            best.Brain = null;
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
@@ -1716,7 +1741,7 @@ void main()
         if (best.Actor.Combat.ConsumeJustDied())
         {
             best.IsDead = true;
-            best.Follower = null;
+            best.Brain = null;
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
