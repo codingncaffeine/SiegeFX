@@ -31,9 +31,17 @@ public sealed record ActorStats(
     float Dexterity,
     float Intelligence)
 {
-    /// <summary>Chickens, props, and mood actors come through with zero life. The
-    /// rest of the combat pipeline uses this to skip hit resolution on them.</summary>
+    /// <summary>Can deal damage. Filters chickens/props (zero life) AND non-combat
+    /// archetypes (mood actors with life but no [attack] block) out of the
+    /// "nearest enemy to swing at" pickers.</summary>
     public bool IsCombatant => MaxLife > 0f && DamageMax > 0f;
+
+    /// <summary>Can be hit. Used by <see cref="ActorCombatState.ApplyDamage"/> so
+    /// player characters — who have no [attack] block on the template (DS1 derives
+    /// PC damage from the equipped weapon) — still take damage. The chicken filter
+    /// is <c>MaxLife &gt; 0</c> alone; <see cref="IsCombatant"/> additionally requires
+    /// <c>DamageMax &gt; 0</c> which excludes PCs.</summary>
+    public bool CanTakeDamage => MaxLife > 0f;
 
     public static ActorStats FromTemplate(TemplateStore store, Template template)
     {

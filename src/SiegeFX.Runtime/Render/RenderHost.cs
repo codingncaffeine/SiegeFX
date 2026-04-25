@@ -52,6 +52,7 @@ public sealed class RenderHost : IDisposable
     // dying actor's template chain on demand. Loot tables live in Core and don't
     // require the render-side resolver, so the store reference is enough.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
+    private SiegeFX.Core.Assets.FormulasStore? _formulas;
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -333,10 +334,15 @@ void main()
             VSync = true,
         };
         _window = Window.Create(opts);
-        _window.Load   += OnLoad;
-        _window.Update += OnUpdate;
-        _window.Render += OnRender;
-        _window.Resize += OnResize;
+        _window.Load    += OnLoad;
+        _window.Update  += OnUpdate;
+        _window.Render  += OnRender;
+        _window.Resize  += OnResize;
+        // Phase 16b — release GL resources while the context is still alive.
+        // Silk.NET's Run() returns after the GLFW window is destroyed, so the
+        // outer Dispose() runs with no current context and DeleteTextures
+        // throws "NoContext". Closing fires while the window is still valid.
+        _window.Closing += OnClosing;
     }
 
     public void Run() => _window.Run();
@@ -367,6 +373,17 @@ void main()
                 }
                 // Phase 15c: 'I' toggles the grid inventory panel.
                 else if (key == Key.I) _inventoryOpen = !_inventoryOpen;
+                // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
+                // until enemy aggro lands in a later phase, this is the only way
+                // to drain the bars to verify regen is ticking).
+                else if (key == Key.H && _player is not null && !_player.IsDead)
+                {
+                    _player.Actor.Combat.ApplyDamage(5f);
+                    // Mana drain has no helper yet; nudge MP via heal-negative isn't
+                    // supported (Heal clamps), so we'll just call the formula path
+                    // when spells land. For now drain via a direct method.
+                    _player.Actor.Combat.SpendMana(5f);
+                }
             };
 
         foreach (var mouse in _input.Mice)
@@ -951,6 +968,13 @@ void main()
         _templateStore = store;
         _playResolver = resolver;
 
+        // Phase 16a — load formulas.gas once. Combat regen, level-up math, and
+        // future spell costs all key off this. Failure is non-fatal: shipped data
+        // always has the file, but a heavily-modded install might not, and the
+        // engine should still render the world without leveling.
+        try { _formulas = SiegeFX.Core.Assets.FormulasStore.LoadFromTank(logicReader); }
+        catch (Exception ex) { Console.WriteLine($"  formulas.gas load failed: {ex.Message} (regen disabled)"); }
+
         // Phase 15a — load DS1's small UI font and hand it to the text overlay.
         // copperplate-light is the body font DS1 uses for HP/MP readouts and
         // tooltip text; it covers ASCII 0x20..0x7F at 12px which is plenty for
@@ -1302,6 +1326,20 @@ void main()
                         Matrix4x4.CreateRotationY(pyaw) *
                         Matrix4x4.CreateTranslation(after);
                     TryAutoPickup(after);
+
+                    // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
+                    // (lr_unit/lr_period and mr_unit/mr_period; STR/INT-scaled). At
+                    // 10/10/10 a fresh hero gains 0.25 HP/sec and 0.333 MP/sec, so a
+                    // full HP refill takes ~3min and a full MP refill ~90s — slow
+                    // enough that you can't tank by waiting between hits in a fight,
+                    // fast enough to recover between encounters without a healer.
+                    if (_formulas is not null)
+                    {
+                        var stats  = _player.Actor.Stats;
+                        var combat = _player.Actor.Combat;
+                        combat.Heal       (_formulas.LifeRecoveryRate(stats.Strength)    * (float)stepSec);
+                        combat.RestoreMana(_formulas.ManaRecoveryRate(stats.Intelligence) * (float)stepSec);
+                    }
                 }
             }
             foreach (var s in _actors)
@@ -2081,8 +2119,16 @@ void main()
 
     private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
 
-    public void Dispose()
+    private bool _glDisposed;
+
+    private void OnClosing()
     {
+        // GL context is still current here. Release every GL handle we own
+        // before Silk.NET tears the window down — the outer Dispose() runs
+        // post-context and would crash on DeleteTexture/DeleteBuffer.
+        if (_glDisposed) return;
+        _glDisposed = true;
+
         foreach (var tex in _snoTextures.Values) tex.Dispose();
         _snoTextures.Clear();
         foreach (var mesh in _regionMeshes.Values) mesh.Dispose();
@@ -2104,6 +2150,13 @@ void main()
         _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
+    }
+
+    public void Dispose()
+    {
+        // Belt-and-braces — if Closing didn't fire (process kill, exception
+        // during Run), GL resources leak with the process. Don't try to
+        // re-release them post-context here; the OS will reclaim everything.
         _input?.Dispose();
         _playMapTank?.Dispose();
         _playLogicTank?.Dispose();
