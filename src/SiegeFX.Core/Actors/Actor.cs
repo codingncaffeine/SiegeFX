@@ -31,8 +31,10 @@ public sealed class Actor
 
     /// <summary>Combat-relevant stats pulled from the specializes chain at spawn
     /// (Phase 12a). Non-combatants (chickens, props) come through with
-    /// <see cref="ActorStats.IsCombatant"/> false; the combat pipeline skips them.</summary>
-    public ActorStats Stats { get; }
+    /// <see cref="ActorStats.IsCombatant"/> false; the combat pipeline skips them.
+    /// Mutable via <see cref="ResyncStats"/> so the player's progression layer can
+    /// publish auto-grown attributes after a level-up.</summary>
+    public ActorStats Stats { get; private set; }
 
     /// <summary>Mutable combat runtime (Phase 12b). Current life/mana + death edge.
     /// Seeded from <see cref="Stats"/> so every actor starts at full health; combat
@@ -68,4 +70,14 @@ public sealed class Actor
 
     public override string ToString() =>
         $"Actor({Template.Name} scid=0x{Instance.Scid:x8} pos={WorldTransform.Translation})";
+
+    /// <summary>Replace the actor's stats block. Used by <c>PlayerProgression</c>
+    /// after a level-up to publish new STR/DEX/INT and the recomputed MaxLife/MaxMana.
+    /// Forwarded to <see cref="ActorCombatState"/> so its max clamps see the new
+    /// values immediately. Does not heal — current life/mana ride through unchanged.</summary>
+    public void ResyncStats(ActorStats newStats)
+    {
+        Stats = newStats;
+        Combat.ResyncStats(newStats);
+    }
 }

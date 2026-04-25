@@ -53,6 +53,10 @@ public sealed class RenderHost : IDisposable
     // require the render-side resolver, so the store reference is enough.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
     private SiegeFX.Core.Assets.FormulasStore? _formulas;
+    // Phase 16d — player XP/level state. Created right after the PC spawns once
+    // _formulas is also live; null-guarded everywhere because viewer modes that
+    // don't TrySpawnPlayer leave both at null and we still want the world to load.
+    private SiegeFX.Core.Actors.PlayerProgression? _progression;
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -1447,6 +1451,12 @@ void main()
         };
         _actors.Add(state);
         _player = state;
+        // Phase 16d — XP/level state. Requires the formulas store, which loads
+        // alongside the play-region path; viewer modes that skip TrySpawnPlayer
+        // also skip this. The PC starts at level 1 with zero XP regardless of
+        // template authoring (DS1 PCs always start fresh).
+        if (_formulas is not null)
+            _progression = new SiegeFX.Core.Actors.PlayerProgression(player, _formulas);
         // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
         // user wants to fly around for debugging.
         _cameraMode = CameraMode.Chase;
@@ -1685,11 +1695,41 @@ void main()
             $"click-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
             $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
 
+        // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
+        // Melee skill is hardcoded for now (the only swing flavor we have); when
+        // ranged/spells land they pick their own SkillKind at the call site.
+        AwardCombatXp((long)dealt, best.Actor.Combat.IsDead ? best.Actor.Stats.ExperienceValue : 0,
+                       SiegeFX.Core.Assets.SkillKind.Melee);
+
         if (best.Actor.Combat.ConsumeJustDied())
         {
             best.IsDead = true;
             best.Brain = null;
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+        }
+    }
+
+    /// <summary>Phase 16d — fold a damage roll + kill bonus into the player's
+    /// progression. Pulled out so the click-attack and F-key debug paths share
+    /// identical XP awarding (and the eventual ranged/spell attacks just call
+    /// in with their own <see cref="SiegeFX.Core.Assets.SkillKind"/>).</summary>
+    private void AwardCombatXp(long damageXp, int killBonus, SiegeFX.Core.Assets.SkillKind skill)
+    {
+        if (_progression is null) return;
+        long total = damageXp + killBonus;
+        if (total <= 0) return;
+        int oldLevel = _progression.Level;
+        _progression.AwardXp(total, skill);
+        if (_progression.Level > oldLevel)
+        {
+            // Level-up announce. Once Phase 17+ adds a HUD toast/sound this becomes
+            // visible feedback; for now the console line + the bar growth on the
+            // HP/MP rails are the only confirmation.
+            var s = _player!.Actor.Stats;
+            Console.WriteLine(
+                $"  *** LEVEL UP! L{oldLevel}->L{_progression.Level} " +
+                $"str={s.Strength:F2} dex={s.Dexterity:F2} int={s.Intelligence:F2} " +
+                $"life={s.MaxLife:F0} mana={s.MaxMana:F0} ***");
         }
     }
 
@@ -1737,6 +1777,9 @@ void main()
         Console.WriteLine(
             $"debug-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
             $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+
+        AwardCombatXp((long)dealt, best.Actor.Combat.IsDead ? best.Actor.Stats.ExperienceValue : 0,
+                       SiegeFX.Core.Assets.SkillKind.Melee);
 
         if (best.Actor.Combat.ConsumeJustDied())
         {
@@ -2099,6 +2142,16 @@ void main()
                     DrawHudBar(size.X, size.Y, 12, 68, 200, 12,
                         combat.CurrentMana, stats.MaxMana,
                         new Vector4(0.18f, 0.40f, 0.90f, 1f), "MP");
+                }
+                // Phase 16d — level + XP/next under the bars. Compact one-liner:
+                // "Lv N · XP into-level/level-span" so the player can watch the
+                // pool fill on each kill without juggling absolute numbers.
+                if (_progression is not null)
+                {
+                    long span = _progression.XpForNextLevel - _progression.XpForCurrentLevel;
+                    long into = _progression.XpIntoCurrentLevel;
+                    string xpLine = $"Lv {_progression.Level}  XP {into}/{span}";
+                    _textRenderer.DrawString(size.X, size.Y, xpLine, 12, 86, col);
                 }
             }
 
