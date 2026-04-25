@@ -15,10 +15,10 @@ namespace SiegeFX.Core.Save;
 /// </summary>
 public sealed class SaveFile
 {
-    /// <summary>v2 — added <see cref="PlayerSnapshot.Quests"/>. Old v1 files
-    /// load fine: <see cref="SaveStore"/> rewrites the version on read and the
-    /// missing list deserializes to the default empty.</summary>
-    public const int CurrentSchemaVersion = 2;
+    /// <summary>v3 — added <see cref="QuestSnapshot.KillProgress"/>. Old v1/v2
+    /// files load fine: <see cref="SaveStore"/> stamps the new version and the
+    /// missing field deserializes to default 0 (no kills credited).</summary>
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -132,11 +132,14 @@ public sealed class PlayerSnapshot
 }
 
 /// <summary>One journal entry as stored in a save. Mirrors
-/// <see cref="QuestEntry"/> but only the fields that round-trip through JSON.</summary>
+/// <see cref="QuestEntry"/> but only the fields that round-trip through JSON.
+/// <see cref="Definition"/> isn't persisted — the loader rebinds it from the
+/// live <c>QuestCatalog</c> so a content patch picks up new goal numbers.</summary>
 public sealed class QuestSnapshot
 {
-    public string     Key   { get; set; } = "";
-    public QuestState State { get; set; } = QuestState.Active;
+    public string     Key          { get; set; } = "";
+    public QuestState State        { get; set; } = QuestState.Active;
+    public int        KillProgress { get; set; }
 }
 
 /// <summary>JSON-serializable Vector3 stand-in. <see cref="System.Numerics.Vector3"/>
