@@ -50,6 +50,25 @@ public sealed class RegionGraph
     public static RegionGraph Load(byte[] nodesGasBytes) =>
         FromDocument(GasDocument.Load(nodesGasBytes));
 
+    /// <summary>Phase 21a-2 — concatenate several regions' node lists into one
+    /// graph. Used to feed nav-mesh and actor-spawner code that wants a single
+    /// graph object spanning the player region plus its preloaded neighbors.
+    /// <see cref="TargetNodeGuid"/> is taken from the first graph (the player
+    /// region) since downstream consumers only use it as a fallback anchor.
+    /// Throws if two regions share an snode guid — DS1 ships clean on this
+    /// (verified by <see cref="WorldLayout.Build"/>) so a duplicate is a parser
+    /// or asset-tank problem, not a routine condition.</summary>
+    public static RegionGraph Combine(IReadOnlyList<RegionGraph> graphs)
+    {
+        if (graphs.Count == 0) throw new ArgumentException("Combine requires at least one graph", nameof(graphs));
+        if (graphs.Count == 1) return graphs[0];
+        var total = 0;
+        foreach (var g in graphs) total += g.Nodes.Count;
+        var combined = new List<NodeInstance>(total);
+        foreach (var g in graphs) combined.AddRange(g.Nodes);
+        return new RegionGraph(graphs[0].TargetNodeGuid, combined);
+    }
+
     public static RegionGraph FromDocument(GasDocument doc)
     {
         GasNode? root = null;

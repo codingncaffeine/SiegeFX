@@ -53,6 +53,17 @@ public sealed class RegionLayout
     public bool TryGetTransform(uint guid, out Matrix4x4 world) =>
         Transforms.TryGetValue(guid, out world);
 
+    /// <summary>Phase 21a-2 — wraps a pre-built <c>guid → Matrix4x4</c> table as a
+    /// <see cref="RegionLayout"/>. Lets callers compose a "unified" layout from a
+    /// <see cref="WorldLayout"/>'s world-space transforms (player region + neighbors)
+    /// and feed it to consumers like <see cref="Nav.NavMesh"/> / <c>ActorSpawner</c>
+    /// that already key off <see cref="TryGetTransform"/>. Diagnostic counts are
+    /// zeroed because they apply to graph-walk construction, which we skipped here.</summary>
+    public static RegionLayout FromTransforms(
+        uint anchorGuid,
+        IReadOnlyDictionary<uint, Matrix4x4> transforms)
+        => new(anchorGuid, transforms, 0, 0, 0);
+
     /// <summary>Builds the layout for <paramref name="graph"/>. <paramref name="resolveSno"/>
     /// must return each referenced snode's parsed <see cref="SnoModel"/> (by the snode's
     /// <c>mesh_guid</c>, NOT the instance guid). Returns null for unavailable assets;
