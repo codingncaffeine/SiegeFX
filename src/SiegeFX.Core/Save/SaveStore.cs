@@ -37,6 +37,14 @@ public static class SaveStore
         var json = File.ReadAllText(path);
         var file = JsonSerializer.Deserialize<SaveFile>(json, Json)
                    ?? throw new InvalidDataException($"save '{path}' deserialized to null");
+        // Forward migrations: v1 -> v2 added PlayerSnapshot.Quests as an empty
+        // list. The deserializer already produced an empty list for files
+        // that didn't contain the field, so the migration is just a version
+        // stamp bump. Older shapes (pre-v1) get rejected.
+        if (file.SchemaVersion == 1)
+        {
+            file.SchemaVersion = SaveFile.CurrentSchemaVersion;
+        }
         if (file.SchemaVersion != SaveFile.CurrentSchemaVersion)
             throw new InvalidDataException(
                 $"save '{path}' schema v{file.SchemaVersion} != runtime v{SaveFile.CurrentSchemaVersion}");

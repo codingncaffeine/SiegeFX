@@ -1,4 +1,5 @@
 using System.Numerics;
+using SiegeFX.Core.Actors;
 
 namespace SiegeFX.Core.Save;
 
@@ -14,7 +15,10 @@ namespace SiegeFX.Core.Save;
 /// </summary>
 public sealed class SaveFile
 {
-    public const int CurrentSchemaVersion = 1;
+    /// <summary>v2 — added <see cref="PlayerSnapshot.Quests"/>. Old v1 files
+    /// load fine: <see cref="SaveStore"/> rewrites the version on read and the
+    /// missing list deserializes to the default empty.</summary>
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -121,6 +125,18 @@ public sealed class PlayerSnapshot
     /// <summary>Spellbook state (slotted spells + cooldowns). Null when no
     /// spellbook was active (a viewer-mode boot, headless test).</summary>
     public SpellbookSnapshot? Spellbook { get; set; }
+
+    /// <summary>Phase 20b — quest journal entries. Empty when no quests have
+    /// ever been activated (the common case for first-region saves).</summary>
+    public List<QuestSnapshot> Quests { get; set; } = new();
+}
+
+/// <summary>One journal entry as stored in a save. Mirrors
+/// <see cref="QuestEntry"/> but only the fields that round-trip through JSON.</summary>
+public sealed class QuestSnapshot
+{
+    public string     Key   { get; set; } = "";
+    public QuestState State { get; set; } = QuestState.Active;
 }
 
 /// <summary>JSON-serializable Vector3 stand-in. <see cref="System.Numerics.Vector3"/>
