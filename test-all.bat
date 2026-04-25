@@ -46,6 +46,7 @@ echo   26. Phase 15c   - Grid inventory panel (press I to toggle, fh_r1)
 echo   27. Phase 15d   - Pause menu (Esc to open; Resume / Quit, fh_r1)
 echo   28. Phase 16a   - Formulas dump (formulas.gas -> typed values)
 echo   29. Phase 16b   - HP/MP regen (~0.25/0.333 per sec at 10/10/10, fh_r1)
+echo   30. Phase 16c   - NPC aggro: walk into a krug, watch HP drop + regen (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -81,6 +82,7 @@ if /i "%CHOICE%"=="26" goto T26
 if /i "%CHOICE%"=="27" goto T27
 if /i "%CHOICE%"=="28" goto T28
 if /i "%CHOICE%"=="29" goto T29
+if /i "%CHOICE%"=="30" goto T30
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -406,11 +408,31 @@ goto MENU
 :T29
 echo.
 echo --- Phase 16b: HP/MP regen (fh_r1) ---
-echo [press H to take 5 HP + 5 MP off the player (enemy AI not online yet)]
+echo [press H to take 5 HP + 5 MP off the player (offline regen check)]
 echo [then sit still and watch the bars climb back up]
 echo [at 10/10/10 a fresh hero recovers ~0.25 HP/sec and ~0.333 MP/sec]
 echo [full HP from 0 takes ~3 min; full MP from 0 takes ~90 sec]
 echo [also tests the shutdown-crash fix on Esc-^>Quit and window X]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T30
+echo.
+echo --- Phase 16c: NPC aggro (fh_r1) ---
+echo [walk into a krug pen and stop within ~8u; the krug should chase]
+echo [once they're adjacent (~1.8u) they swing every 1.5s and chip ~4-8 HP]
+echo [step away past ~14u to disengage; HP regen kicks back in]
+echo [chickens should still wander uninterested - they have no [attack] block]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
