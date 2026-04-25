@@ -1353,7 +1353,19 @@ void main()
             }
 
             SiegeFX.Core.Actors.ActorBrain? brain = null;
-            if (navMesh is not null &&
+            // Phase 20a (follow-up) — actors with a [conversation] block are
+            // talkable NPCs (narrator, edgaar, norick). DS1 only ticks their
+            // AI inside NIS cutscenes; outside that, they stand still and
+            // wait for an RMB. We skip the brain entirely so they don't
+            // wander up and start swinging at the player from a default
+            // attack template.
+            bool isTalkable = SiegeFX.Core.Assets.ConversationStore
+                .KeysFromInstance(actor.Instance.Node).Count > 0;
+            if (isTalkable)
+            {
+                actorsOffMesh++;
+            }
+            else if (navMesh is not null &&
                 navMesh.TryFindTriangle(actor.WorldTransform.Translation, out var startTri))
             {
                 // Snap the starting Y to the mesh surface so the first tick doesn't
@@ -1980,13 +1992,10 @@ void main()
         {
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
-            // Hostile? Skip — DS1 doesn't let you chat with the krug. The
-            // alignment field on actors is stable across the chain so the
-            // resolved Stats expose it indirectly via IsCombatant + faction.
-            // Pragmatic proxy: a non-combatant with a conversation block is
-            // talkable; everyone else falls through to combat.
-            if (s.Actor.Stats.IsCombatant) continue;
-
+            // The "has a [conversation] block in the placement" check is a
+            // stronger talkable signal than Stats.IsCombatant: DS1's narrator
+            // template inherits combat stats but is meant to be a static
+            // talker outside NIS scenes, and would otherwise be filtered out.
             var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
             if (keys.Count == 0) continue;
 
