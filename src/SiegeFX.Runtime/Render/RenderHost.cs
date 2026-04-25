@@ -1878,9 +1878,12 @@ void main()
         // land also play the flesh-hit variant. Whiff condition (dealt <=
         // 0) hits the miss SFX instead, which mirrors DS1's "hit/whiff
         // pair" behavior on melee.
+        // Phase 18c — swing stays player-relative (your weapon), but the
+        // hit/miss happens at the target's chest and pans accordingly.
         _audio?.Play(SfxMeleeSwingGroup);
-        if (dealt > 0f) _audio?.Play(SfxMeleeHitGroup);
-        else            _audio?.Play(SfxMeleeMiss);
+        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        if (dealt > 0f) _audio?.PlayAt(SfxMeleeHitGroup, hitPos);
+        else            _audio?.PlayAt(SfxMeleeMiss,     hitPos);
 
         // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
         // Melee skill is hardcoded for now (the only swing flavor we have); when
@@ -1895,7 +1898,7 @@ void main()
             // Phase 18b — pick the species-matching death SFX off the
             // template name. Generic "die_*" for the species; nothing if
             // the species isn't in our shipped table (chickens go quietly).
-            PlayDeathSfx(best.Actor.Template.Name);
+            PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
@@ -1903,19 +1906,20 @@ void main()
     /// <summary>Phase 18b — resolve a template name to the matching death
     /// .wav. Heuristic substring match — DS1 names goblins as
     /// 3W_goblin_grunt etc., krug as krug_scout/krug_dog/etc., so a
-    /// substring scan covers the variants without a per-template table.</summary>
-    private void PlayDeathSfx(string templateName)
+    /// substring scan covers the variants without a per-template table.
+    /// Phase 18c added <paramref name="worldPos"/> so the death scream
+    /// pans + falls off from the corpse's location instead of always
+    /// blasting in the center channel.</summary>
+    private void PlayDeathSfx(string templateName, Vector3 worldPos)
     {
         if (_audio is null || string.IsNullOrEmpty(templateName)) return;
-        // Order matters: krug_dog before krug, krug_scout before krug, so
-        // the more-specific match wins. The dictionary itself is ordered
-        // insertion-stable, so the most-specific keys come last in the list.
         string lower = templateName.ToLowerInvariant();
         string? bestKey = null;
         foreach (var key in SpeciesDeathSfx.Keys)
             if (lower.Contains(key) && (bestKey is null || key.Length > bestKey.Length))
                 bestKey = key;
-        if (bestKey is not null) _audio.Play(SpeciesDeathSfx[bestKey]);
+        if (bestKey is not null)
+            _audio.PlayAt(SpeciesDeathSfx[bestKey], worldPos + new Vector3(0f, 1.0f, 0f));
     }
 
     /// <summary>Pull a .wav blob out of <paramref name="reader"/> and hand
@@ -2101,7 +2105,7 @@ void main()
                         best.IsDead = true;
                         best.Brain = null;
                         // Phase 18b — death scream from the matching species.
-                        PlayDeathSfx(best.Actor.Template.Name);
+                        PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
                     }
                 }
@@ -2228,7 +2232,7 @@ void main()
             best.Brain = null;
             // Phase 18b — death SFX in the F-key debug path too, so the
             // dev shortcut still feels alive when audio's plumbed through.
-            PlayDeathSfx(best.Actor.Template.Name);
+            PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
         }
     }
@@ -2353,6 +2357,17 @@ void main()
     {
         if (_gl is null) return;
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
+        // Phase 18c — listener follows the PC every frame. We use camera
+        // forward (not _playerFacing) so the audio image rotates with
+        // the camera instead of the body — matches what the user is
+        // looking at and avoids weird pans when the PC stands still
+        // facing one way while the user orbits the cam. Falls back to
+        // camera position when no PC has spawned (debug fly-cam mode).
+        if (_audio is not null)
+        {
+            var listenerPos = _player?.CurrentTransform.Translation ?? _camera.Position;
+            _audio.UpdateListener(listenerPos, _camera.Forward, Vector3.UnitY);
+        }
         // Phase 17a — tick + prune floating cast feedback. Reverse-iterate so
         // RemoveAt is O(1) per kill and the list compacts in-place.
         for (int i = _floatingTexts.Count - 1; i >= 0; i--)

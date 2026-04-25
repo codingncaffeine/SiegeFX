@@ -54,6 +54,7 @@ echo   34. Phase 17b   - Spell visuals: cyan bolt + face-snap on Q-cast (fh_r1)
 echo   35. Phase 17c   - Heal spell + W slot: spell_healing_wind self-cast (fh_r1)
 echo   36. Phase 18a   - Audio: cast SFX (Q = zap_cast.wav, W = healing_wind_cast.wav, fh_r1)
 echo   37. Phase 18b   - Audio: melee swing/hit/miss + monster death + level-up SFX (fh_r1)
+echo   38. Phase 18c   - Audio: 3D positional pan + falloff (walk away from a kill, listen, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -97,6 +98,7 @@ if /i "%CHOICE%"=="34" goto T34
 if /i "%CHOICE%"=="35" goto T35
 if /i "%CHOICE%"=="36" goto T36
 if /i "%CHOICE%"=="37" goto T37
+if /i "%CHOICE%"=="38" goto T38
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -519,6 +521,26 @@ echo [W casts spell_healing_wind (self-target heal, secondary slot)]
 echo [W is silent at full HP ("at full health"); take damage from a krug first]
 echo [L1 heal: ~3.77 HP for 10.3 mana (so a fresh hero gets ~3 casts)]
 echo [3-second cooldown on the heal slot, independent from the Q cooldown]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T38
+echo.
+echo --- Phase 18c: 3D positional audio (fh_r1) ---
+echo [Hit a krug to your LEFT: hit/miss sound pans left in headphones]
+echo [Walk ~30 units away from a fight: hits and screams fade out (max=40 units)]
+echo [Cast SFX (Q/W) stay player-locked since they're "your" sounds]
+echo [Console logs: 'audio: ... InverseDistanceClamped attenuation']
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
