@@ -27,6 +27,7 @@ try
         "anim"   => DispatchAnim(args[1..]),
         "skrit"  => DispatchSkrit(args[1..]),
         "templates" => DispatchTemplates(args[1..]),
+        "formulas"  => DispatchFormulas(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -2595,5 +2596,47 @@ static int CmdRegionSpawn(string[] a)
         var t = actor.WorldTransform.Translation;
         Console.WriteLine($"  {actor.Template.Name,-22} scid=0x{actor.Instance.Scid:x8}  pos=({t.X,8:0.00},{t.Y,6:0.00},{t.Z,8:0.00})  state={actor.Skrit.CurrentState}  clip=#{actor.CurrentClipIndex}");
     }
+    return 0;
+}
+
+static int DispatchFormulas(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx formulas <dump> <Logic.dsres>"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdFormulasDump(a[1..]),
+        _      => UnknownCommand("formulas " + a[0]),
+    };
+}
+
+static int CmdFormulasDump(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx formulas dump <Logic.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var f = FormulasStore.LoadFromTank(reader);
+
+    Console.WriteLine("recalculation_constants:");
+    Console.WriteLine($"  max_life   = base {f.MaxLifeBase}, const {f.MaxLifeConstant}, str% {f.MaxLifeStrPct}, dex% {f.MaxLifeDexPct}, int% {f.MaxLifeIntPct}");
+    Console.WriteLine($"  max_mana   = base {f.MaxManaBase}, const {f.MaxManaConstant}, str% {f.MaxManaStrPct}, dex% {f.MaxManaDexPct}, int% {f.MaxManaIntPct}");
+    Console.WriteLine($"  10/10/10   -> MaxLife={f.MaxLife(10,10,10),5:0.0}  MaxMana={f.MaxMana(10,10,10),5:0.0}");
+    Console.WriteLine($"  death_threshold = {f.DeathThreshold}");
+    Console.WriteLine();
+
+    Console.WriteLine("recovery rates (HP/sec, MP/sec):");
+    Console.WriteLine($"  lr unit/period = {f.LifeRecoveryUnit}/{f.LifeRecoveryPeriod}  ->  rate@str=10 = {f.LifeRecoveryRate(10),5:0.000}, str=20 = {f.LifeRecoveryRate(20),5:0.000}");
+    Console.WriteLine($"  mr unit/period = {f.ManaRecoveryUnit}/{f.ManaRecoveryPeriod}  ->  rate@int=10 = {f.ManaRecoveryRate(10),5:0.000}, int=20 = {f.ManaRecoveryRate(20),5:0.000}");
+    Console.WriteLine();
+
+    Console.WriteLine("proportional gains (str / dex / int):");
+    foreach (SkillKind k in Enum.GetValues<SkillKind>())
+    {
+        var g = f.ProportionalGains(k);
+        Console.WriteLine($"  {k,-12} {g.Str,5:0.00} / {g.Dex,5:0.00} / {g.Int,5:0.00}  (sum {g.Str + g.Dex + g.Int:0.00})");
+    }
+    Console.WriteLine();
+
+    Console.WriteLine($"experience_table: {f.XpTable.Count} entries  (lvl 1: {f.XpForLevel(1):N0}, lvl 10: {f.XpForLevel(10):N0}, lvl 50: {f.XpForLevel(50):N0}, lvl 100: {f.XpForLevel(100):N0}, lvl 160: {f.XpForLevel(160):N0})");
+    Console.WriteLine($"  reverse: 1000 xp -> level {f.LevelForXp(1000)}, 50000 -> {f.LevelForXp(50000)}, 1000000 -> {f.LevelForXp(1000000)}");
     return 0;
 }
