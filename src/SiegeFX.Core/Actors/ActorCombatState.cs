@@ -39,7 +39,11 @@ public sealed class ActorCombatState
     public float ApplyDamage(float damage)
     {
         if (IsDead) return 0f;
-        if (!_stats.IsCombatant) return 0f;
+        // Use CanTakeDamage (MaxLife>0), not IsCombatant (also requires DamageMax>0).
+        // Player characters have no template [attack] block — DS1 derives PC damage
+        // from the equipped weapon — so IsCombatant is false even though they
+        // absolutely have HP and absolutely take hits.
+        if (!_stats.CanTakeDamage) return 0f;
         if (damage <= 0f) return 0f;
         float actual = MathF.Min(damage, CurrentLife);
         CurrentLife -= actual;
@@ -74,5 +78,25 @@ public sealed class ActorCombatState
     {
         if (IsDead || amount <= 0f) return;
         CurrentLife = MathF.Min(_stats.MaxLife, CurrentLife + amount);
+    }
+
+    /// <summary>Restore mana up to MaxMana. No-op while dead — DS1 doesn't tick
+    /// recovery on corpses; the caller revives first. Negative amounts are ignored
+    /// (drain goes through dedicated spell-cost paths, not this).</summary>
+    public void RestoreMana(float amount)
+    {
+        if (IsDead || amount <= 0f) return;
+        CurrentMana = MathF.Min(_stats.MaxMana, CurrentMana + amount);
+    }
+
+    /// <summary>Drain mana by <paramref name="amount"/>. Returns the amount actually
+    /// spent (clamped to current mana). Spell casts and debug drains both go
+    /// through here so the accounting is consistent.</summary>
+    public float SpendMana(float amount)
+    {
+        if (amount <= 0f) return 0f;
+        float actual = MathF.Min(amount, CurrentMana);
+        CurrentMana -= actual;
+        return actual;
     }
 }
