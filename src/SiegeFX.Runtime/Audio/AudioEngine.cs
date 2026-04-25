@@ -134,6 +134,21 @@ public sealed unsafe class AudioEngine : IDisposable
 
             if (_bufferByClip.TryGetValue(id, out var prev))
             {
+                // OpenAL refuses DeleteBuffers on a buffer still bound to
+                // a source — would return AL_INVALID_OPERATION and leak.
+                // Walk the pool, stop + unbind any source pointing at the
+                // old buffer, then delete. Re-registration only happens
+                // on re-LoadPlayActors but the guard keeps the contract
+                // clean for a future hot-reload path.
+                for (int i = 0; i < _sourcePool.Length; i++)
+                {
+                    _al.GetSourceProperty(_sourcePool[i], GetSourceInteger.Buffer, out int bound);
+                    if ((uint)bound == prev)
+                    {
+                        _al.SourceStop(_sourcePool[i]);
+                        _al.SetSourceProperty(_sourcePool[i], SourceInteger.Buffer, 0);
+                    }
+                }
                 _al.DeleteBuffers(1, &prev);
             }
             _bufferByClip[id] = buf;
@@ -157,7 +172,11 @@ public sealed unsafe class AudioEngine : IDisposable
         if (_disposed) return;
         var alive = new List<string>(clipIds.Length);
         foreach (var id in clipIds)
+        {
             if (_bufferByClip.ContainsKey(id)) alive.Add(id);
+            else Console.Error.WriteLine(
+                $"  audio: group '{groupId}' missing variant '{id}' — typo or unregistered clip");
+        }
         if (alive.Count == 0)
         {
             Console.Error.WriteLine($"  audio: group '{groupId}' empty — skipping");
@@ -202,12 +221,12 @@ public sealed unsafe class AudioEngine : IDisposable
         _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
         _al.SetSourceProperty(src, SourceFloat.MaxDistance, maxDistance);
         _al.SetSourceProperty(src, SourceFloat.RolloffFactor, 1.0f);
-        // OpenAL is right-handed (+X right, +Y up, -Z forward). SiegeFX
-        // is left-handed (+Z forward). Flip Z so a goblin "in front" of
-        // the player sounds in front, not behind. (Without this swords
-        // landing forward of the camera pan to the rear speaker.)
+        // SiegeFX world coords already match OpenAL's frame: Camera.Forward
+        // at yaw=0 is (0,0,-1), so -Z is forward in both systems. No flip
+        // needed — an early review-fix attempt double-flipped and panned
+        // every spatial cue backwards.
         _al.SetSourceProperty(src, SourceVector3.Position,
-                              worldPos.X, worldPos.Y, -worldPos.Z);
+                              worldPos.X, worldPos.Y, worldPos.Z);
         _al.SourcePlay(src);
     }
 
@@ -219,13 +238,16 @@ public sealed unsafe class AudioEngine : IDisposable
     public void UpdateListener(Vector3 pos, Vector3 forward, Vector3 up)
     {
         if (_disposed) return;
-        _al.SetListenerProperty(ListenerVector3.Position, pos.X, pos.Y, -pos.Z);
-        // Orientation is at-vector then up-vector, contiguous. Same Z
-        // flip as PlayAt so the listener and source axes stay consistent.
+        _al.SetListenerProperty(ListenerVector3.Position, pos.X, pos.Y, pos.Z);
+        // Orientation is at-vector then up-vector, contiguous. No Z flip:
+        // SiegeFX and OpenAL share the -Z=forward convention, so passing
+        // Camera.Forward through verbatim keeps panning consistent with
+        // PlayAt. (An earlier review-fix attempt flipped Z here and in
+        // PlayAt, which made every spatial cue pan backwards.)
         Span<float> ori = stackalloc float[6]
         {
-            forward.X, forward.Y, -forward.Z,
-            up.X,      up.Y,      -up.Z,
+            forward.X, forward.Y, forward.Z,
+            up.X,      up.Y,      up.Z,
         };
         fixed (float* p = ori) _al.SetListenerProperty(ListenerFloatArray.Orientation, p);
     }
