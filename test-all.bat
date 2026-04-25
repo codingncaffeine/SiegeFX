@@ -40,6 +40,7 @@ echo   20. Phase 12c - Debug attack in fh_r1 (press F to hit nearest goblin)
 echo   21. Phase 12d - Loot table (grunt + krug scout, 10000-roll distribution)
 echo   22. Phase 13a-e - Farmboy PC + chase cam + LMB move + RMB attack + fair-fight stats (fh_r1)
 echo   23. Phase 14a-d - Pickup + equipment + weapon render (fh_r1)
+echo   24. Phase 15a   - Text overlay (DS1 copperplate font, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -69,6 +70,7 @@ if /i "%CHOICE%"=="20" goto T20
 if /i "%CHOICE%"=="21" goto T21
 if /i "%CHOICE%"=="22" goto T22
 if /i "%CHOICE%"=="23" goto T23
+if /i "%CHOICE%"=="24" goto T24
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -287,6 +289,26 @@ echo [Farmboy spawns visibly wielding dg_g_d_1h_fun (fun dagger, 2-4 dmg)]
 echo [kill a goblin, walk onto the beige pile cube to auto-pickup]
 echo [upgraded weapons auto-equip and swap the rendered model on the hand]
 echo [console logs equipment, pickup, equipped, and weapon-load events]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T24
+echo.
+echo --- Phase 15a: Text overlay (DS1 copperplate-light, fh_r1) ---
+echo [expect: white "SiegeFX" tag in the top-left corner of the window]
+echo [a second line shows the Farmboy's live x/y/z as he moves]
+echo [text uses DS1's b_gui_fnt_12p_copperplate-light font from Objects.dsres]
+echo [console prints "hud font: ..." once the atlas decodes]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

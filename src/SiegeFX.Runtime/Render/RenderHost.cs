@@ -7,6 +7,7 @@ using SiegeFX.Core.Actors;
 using SiegeFX.Core.Assets;
 using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
+using SiegeFX.Runtime.Render.Hud;
 
 namespace SiegeFX.Runtime.Render;
 
@@ -150,6 +151,11 @@ public sealed class RenderHost : IDisposable
     private Shader? _meshShader;
     private Shader? _skinShader;
     private GridMesh? _grid;
+    // Phase 15a — 2D text overlay. Constructed in OnLoad, font wired in
+    // LoadPlayActors once _playResolver can serve fonts.gas + the .raw atlas.
+    // Drawn after the 3D scene each frame inside its own depth-disabled,
+    // alpha-blended pass.
+    private TextRenderer? _textRenderer;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
     private SkinnedMesh? _skinnedMesh;
@@ -429,6 +435,7 @@ void main()
         _skinShader = new Shader(_gl, SkinnedVertexSource, MeshFragmentSource);
         _grid       = new GridMesh(_gl);
         _lootCube   = new DebugCubeMesh(_gl);
+        _textRenderer = new TextRenderer(_gl);
 
         if (_meshPath is not null)
         {
@@ -917,6 +924,27 @@ void main()
         _actorBus     = spawner.MessageBus;
         _templateStore = store;
         _playResolver = resolver;
+
+        // Phase 15a — load DS1's small UI font and hand it to the text overlay.
+        // copperplate-light is the body font DS1 uses for HP/MP readouts and
+        // tooltip text; it covers ASCII 0x20..0x7F at 12px which is plenty for
+        // a debug "SiegeFX [coords]" tag. Silent no-op if the font's missing
+        // (modded installs that strip the GUI tank still get a working scene).
+        if (_textRenderer is not null)
+        {
+            var font = SiegeFX.Core.Assets.BitmapFont.TryLoadByName(
+                resolver, "b_gui_fnt_12p_copperplate-light");
+            if (font is not null)
+            {
+                _textRenderer.SetFont(font);
+                Console.WriteLine($"  hud font: {font.Name} ({font.Atlas.Width}x{font.Atlas.Height} atlas, " +
+                                  $"glyphs {font.StartRange:X2}..{font.EndRange:X2})");
+            }
+            else
+            {
+                Console.Error.WriteLine("  !! hud font missing — overlay text disabled");
+            }
+        }
 
         // Phase 11d — build a region-scope nav mesh once and hand a follower to every
         // actor that spawns over a walkable triangle. We reuse the terrain tank already
@@ -1950,6 +1978,24 @@ void main()
                 }
             }
         }
+
+        // Phase 15a — 2D text overlay. Drawn last so it sits over the 3D scene;
+        // BeginPass turns off depth + enables alpha blend, EndPass restores both.
+        // Tag string in the top-left, PC coords below it when a player exists —
+        // useful for sanity-checking nav-mesh moves without leaving fly-cam.
+        if (_textRenderer is not null && _textRenderer.HasFont)
+        {
+            _textRenderer.BeginPass();
+            var col = new Vector4(1f, 1f, 1f, 1f);
+            _textRenderer.DrawString(size.X, size.Y, "SiegeFX", 12, 12, col);
+            if (_player is not null)
+            {
+                var p = _player.CurrentTransform.Translation;
+                var line = $"x={p.X,7:F1}  y={p.Y,6:F1}  z={p.Z,7:F1}";
+                _textRenderer.DrawString(size.X, size.Y, line, 12, 30, col);
+            }
+            _textRenderer.EndPass();
+        }
     }
 
     private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
@@ -1972,6 +2018,7 @@ void main()
         _mesh?.Dispose();
         _lootCube?.Dispose();
         _grid?.Dispose();
+        _textRenderer?.Dispose();
         _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
