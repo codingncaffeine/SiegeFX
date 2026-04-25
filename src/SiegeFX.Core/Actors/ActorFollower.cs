@@ -88,6 +88,31 @@ public sealed class ActorFollower
             PickNewTarget();
     }
 
+    /// <summary>Phase 19b — teleport the underlying nav follower to
+    /// <paramref name="pos"/> and force a fresh wander pick on the next tick.
+    /// Used by save/load to restore actor positions; the saved facing is
+    /// re-applied separately so a teleported actor doesn't snap to +Z.</summary>
+    public void Teleport(Vector3 pos)
+    {
+        Follower.Teleport(pos);
+        // Schedule a fresh wander target on the very next tick. PickNewTarget
+        // would re-roll right here, but doing it inline can stall if the new
+        // position lands off-mesh and we have to fall back to the idle path —
+        // letting Tick handle it keeps the timing consistent with regular
+        // wander-end transitions.
+        _idleTicksRemaining = 1;
+    }
+
+    /// <summary>Phase 19b — restore the persistent XZ heading. Pairs with
+    /// <see cref="Teleport"/> so a saved-and-restored actor faces the way
+    /// it was facing at save, not +Z.</summary>
+    public void SetFacing(Vector3 facing)
+    {
+        var flat = new Vector3(facing.X, 0f, facing.Z);
+        float len = flat.Length();
+        if (len > 1e-4f) _facing = flat / len;
+    }
+
     void PickNewTarget()
     {
         var origin = Follower.Position;

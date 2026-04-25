@@ -82,6 +82,22 @@ public sealed class NavFollower
         Replan();
     }
 
+    /// <summary>Phase 19b — drop the follower at <paramref name="pos"/> and clear
+    /// any in-flight path. The next <see cref="Tick"/> is a no-op until
+    /// <see cref="SetTarget"/> assigns a goal. Used by save/load to restore an
+    /// actor's position without dragging in the original target — a saved-then-
+    /// loaded actor should idle until the AI picks a fresh wander leg.</summary>
+    public void Teleport(Vector3 pos)
+    {
+        Position = pos;
+        Target = pos;
+        ReachedGoal = true;
+        PathBlocked = false;
+        _path.Clear();
+        _pathIdx = 0;
+        CurrentTriangle = -1;
+    }
+
     private void Replan()
     {
         _path.Clear();

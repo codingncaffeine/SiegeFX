@@ -84,6 +84,19 @@ public sealed class PlayerProgression
         return true;
     }
 
+    /// <summary>Phase 19b — set XP + level directly from a save snapshot.
+    /// Bypasses <see cref="AwardXp"/>'s level-up math because the auto-grown
+    /// stats were saved separately and re-applied on the actor before this
+    /// call; running AwardXp here would double-apply the gains. Clears
+    /// <see cref="JustLeveledUp"/> so the load doesn't re-fire the level-up
+    /// chime / toast for a level the player crossed mid-session.</summary>
+    public void RestoreFromSave(long totalXp, int level)
+    {
+        TotalXp = totalXp;
+        Level = level;
+        JustLeveledUp = false;
+    }
+
     /// <summary>One-shot edge consumer. Returns true exactly once after a level
     /// gain — meant for a HUD toast / chime hookup. Subsequent reads return false
     /// until the next AwardXp crosses another threshold.</summary>

@@ -100,6 +100,24 @@ public sealed class ActorCombatState
         return actual;
     }
 
+    /// <summary>Phase 19b — set life/mana directly from a save snapshot. Bypasses
+    /// the normal mutators (which gate on IsDead and clamp to max) so a save
+    /// that captured a near-death actor at 0.3 HP comes back at 0.3 HP, not at
+    /// max. <paramref name="dead"/> is honored independently of the life value
+    /// so a "dead with positive HP" inconsistency in a save file (theoretically
+    /// possible after a manual edit) still presents as dead. Clears
+    /// <see cref="JustDied"/> so the load path doesn't re-fire the death edge
+    /// (loot drop, die-chore) for actors that were already dead at save time.</summary>
+    public void RestoreFromSave(float currentLife, float currentMana, bool dead)
+    {
+        // Clamp to [0, max] so a corrupt save can't drive the bars out of range
+        // and trip downstream divide-by-max calculations.
+        CurrentLife = MathF.Max(0f, MathF.Min(_stats.MaxLife, currentLife));
+        CurrentMana = MathF.Max(0f, MathF.Min(_stats.MaxMana, currentMana));
+        if (dead) CurrentLife = 0f;
+        JustDied = false;
+    }
+
     /// <summary>Swap the underlying stats reference so subsequent <see cref="Heal"/>
     /// and <see cref="RestoreMana"/> calls clamp against the new MaxLife/MaxMana.
     /// Called from <see cref="Actor.ResyncStats"/> after a level-up. Current life
