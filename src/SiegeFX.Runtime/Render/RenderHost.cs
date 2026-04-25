@@ -83,6 +83,21 @@ public sealed class RenderHost : IDisposable
         public float Remaining;
         public float Total;
     }
+    // Phase 17b — short-lived projectile glyph traveling source→target. Pure
+    // visual feedback so casting feels like more than a popping number; the
+    // actual damage was already applied at TryClickToCast time. Drawn in the
+    // HUD pass as a head dot + trailing dots projected to screen each frame.
+    private readonly List<SpellBolt> _spellBolts = new();
+    private const float SpellBoltDuration = 0.30f;
+    private const int SpellBoltTrailDots = 5;
+    private sealed class SpellBolt
+    {
+        public Vector3 Source;
+        public Vector3 Target;
+        public Vector4 Color;
+        public float Remaining;
+        public float Total;
+    }
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -1849,6 +1864,37 @@ void main()
                 Console.WriteLine(
                     $"cast {spell!.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
                     $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                // Phase 17b — snap PC facing toward the target so the cast at
+                // least visually originates *toward* the victim. _playerFacing
+                // normally only updates from movement deltas; without this, a
+                // player who casts while standing still would shoot bolts out
+                // of his back.
+                {
+                    var tp = best.CurrentTransform.Translation;
+                    float fx = tp.X - playerPos.X;
+                    float fz = tp.Z - playerPos.Z;
+                    float fl2 = fx * fx + fz * fz;
+                    if (fl2 > 1e-6f)
+                    {
+                        float fl = MathF.Sqrt(fl2);
+                        _playerFacing = new Vector3(fx / fl, 0f, fz / fl);
+                        float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
+                        _player.CurrentTransform =
+                            Matrix4x4.CreateRotationY(pyaw) *
+                            Matrix4x4.CreateTranslation(playerPos);
+                    }
+                    // Source ~chest height of the caster; target ~chest height
+                    // of the victim. Hardcoded offsets are fine — DS1 PCs and
+                    // typical mobs are within 0.3m of each other in stature.
+                    var src = playerPos + new Vector3(0f, 1.2f, 0f);
+                    var dst = tp        + new Vector3(0f, 1.0f, 0f);
+                    _spellBolts.Add(new SpellBolt
+                    {
+                        Source = src, Target = dst,
+                        Color = new Vector4(0.55f, 0.85f, 1.00f, 1f),
+                        Remaining = SpellBoltDuration, Total = SpellBoltDuration,
+                    });
+                }
                 AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
                                 anchor + new Vector3(0f, 1.8f, 0f),
                                 new Vector4(0.55f, 0.80f, 1.00f, 1f));
@@ -2103,6 +2149,12 @@ void main()
         {
             _floatingTexts[i].Remaining -= (float)dt;
             if (_floatingTexts[i].Remaining <= 0f) _floatingTexts.RemoveAt(i);
+        }
+        // Phase 17b — same lifecycle for spell-bolt projectiles.
+        for (int i = _spellBolts.Count - 1; i >= 0; i--)
+        {
+            _spellBolts[i].Remaining -= (float)dt;
+            if (_spellBolts[i].Remaining <= 0f) _spellBolts.RemoveAt(i);
         }
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
@@ -2380,6 +2432,36 @@ void main()
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
                 _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+            }
+            // Phase 17b — projectile bolts. Head dot at lerp(src,dst,progress)
+            // plus a few trailing dots stepped back along the line, alpha
+            // fading per step. All in screen-space via the HUD ortho pass —
+            // cheap and no need to wire a 3D billboard pipeline.
+            if (_spellBolts.Count > 0 && _barRenderer is not null)
+            {
+                foreach (var b in _spellBolts)
+                {
+                    float prog = 1f - (b.Remaining / MathF.Max(0.0001f, b.Total));
+                    if (prog < 0f) prog = 0f; else if (prog > 1f) prog = 1f;
+                    for (int i = 0; i < SpellBoltTrailDots; i++)
+                    {
+                        float ti = prog - i * 0.07f;
+                        if (ti < 0f) break;
+                        var w = Vector3.Lerp(b.Source, b.Target, ti);
+                        var clip = Vector4.Transform(new Vector4(w, 1f), vp);
+                        if (clip.W <= 0.001f) continue;
+                        float ndcXX = clip.X / clip.W;
+                        float ndcYY = clip.Y / clip.W;
+                        int sx = (int)((ndcXX * 0.5f + 0.5f) * size.X);
+                        int sy = (int)((1f - (ndcYY * 0.5f + 0.5f)) * size.Y);
+                        // Head dot is brightest + biggest; trail tapers in
+                        // both alpha and pixel size so it reads as a streak.
+                        float falloff = 1f - i / (float)SpellBoltTrailDots;
+                        int dot = i == 0 ? 6 : Math.Max(2, 6 - i);
+                        var c = b.Color; c.W *= falloff;
+                        _barRenderer.DrawRect(size.X, size.Y, sx - dot / 2, sy - dot / 2, dot, dot, c);
+                    }
+                }
             }
             // Phase 17a — floating cast-feedback labels. World-anchored, so we
             // project each WorldPos through the same VP used for the 3D pass.
