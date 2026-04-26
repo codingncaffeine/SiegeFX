@@ -297,6 +297,13 @@ public sealed class RenderHost : IDisposable
     // TrySpawnPlayer; rebuilt on every equipment change.
     private readonly List<EquippedLayer> _equippedLayers = new();
     private string? _chestTexOverrideName;
+    // 21d-2a-viii — character creator picks resolved at spawn. Skin = body
+    // subset 0 (face/hair/arms); pants = body subset 1 (clothing strip). Both
+    // are nulled out for NPCs and for player templates without a matching env
+    // var override; the renderer's ResolveActorTexture falls through to the
+    // template's authored aspect.textures{0,1} when these are null.
+    private string? _skinTexOverrideName;
+    private string? _pantsTexOverrideName;
     private readonly Dictionary<(string Mesh, string Tex), GlTexture?> _equipTexCache = new();
 
     private sealed class EquippedLayer
@@ -2467,15 +2474,24 @@ void main()
 
     private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
-        // Phase 21d-2a-vii — equipped chest armor overrides the body's slot-1
-        // texture (the pos_a1 clothing strip on the farmboy/farmgirl skin).
-        // Routed through _equipTexCache so swapping armor mid-session re-uses
-        // the previous upload without leaking. Only the player ever has
-        // _chestTexOverrideName set; NPCs fall through.
-        if (textureIndex == 1 && _chestTexOverrideName is not null
-            && _player is not null && ReferenceEquals(actor, _player.Actor))
+        // Player overrides — checked in priority order so equipment beats the
+        // creator pick that would otherwise show through. Only the player ever
+        // has these fields set; NPCs fall through to the texset path below.
+        if (_player is not null && ReferenceEquals(actor, _player.Actor))
         {
-            return LoadEquipmentTexture("__chest__", _chestTexOverrideName);
+            // 21d-2a-vii — equipped chest armor wins over the body's authored
+            // clothing strip AND the creator's pants pick.
+            if (textureIndex == 1 && _chestTexOverrideName is not null)
+                return LoadEquipmentTexture("__chest__", _chestTexOverrideName);
+
+            // 21d-2a-viii — character creator picks. Slot 0 is the body's
+            // face/hair/arms region; slot 1 is the clothing strip below it.
+            // Routed through _equipTexCache (slot-keyed by '__skin__' /
+            // '__pants__') so swapping picks mid-session re-uses prior uploads.
+            if (textureIndex == 0 && _skinTexOverrideName is not null)
+                return LoadEquipmentTexture("__skin__", _skinTexOverrideName);
+            if (textureIndex == 1 && _pantsTexOverrideName is not null)
+                return LoadEquipmentTexture("__pants__", _pantsTexOverrideName);
         }
         var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
@@ -3314,7 +3330,14 @@ void main()
         if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
             spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
 
-        const string playerTemplate = "farmboy";
+        // 21d-2a-viii — character creator quick-pick via env vars (the eventual
+        // UI panel slice will replace these with in-game widgets). Defaults
+        // produce stock farmboy. SIEGEFX_HERO_GENDER picks farmboy/farmgirl.
+        // SIEGEFX_HERO_BODY=1..7 swaps aspect.model to m_c_<av>_pos_aN.
+        // SIEGEFX_HERO_SKIN/_PANTS are NN/NNN suffixes; the variant resolver
+        // composes the full b_c_*_NNN texset name.
+        var pick = HeroVariantPicker.FromEnv();
+        string playerTemplate = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
         // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
         // 0x01xxxxxx); any stable out-of-band value works, this one is easy to spot
         // in the combat log.
@@ -3347,8 +3370,30 @@ void main()
             }
         }
 
+        // Build the variant override (model only — texture overrides flow
+        // through ResolveActorTexture's player-only block via the renderer
+        // fields below). The picker resolves the body's armor_version from
+        // the template so 'a3' picks m_c_gah_fb_pos_a3 for boy, m_c_gah_fg_pos_a3
+        // for girl, etc. — we don't hardcode 'gah_fb'.
+        SiegeFX.Core.Actors.TemplateOverride? heroOverride = null;
+        if (_templateStore is not null
+            && _templateStore.TryGet(playerTemplate, out var pickTpl))
+        {
+            heroOverride = pick.BuildOverride(_templateStore, pickTpl);
+        }
+        _skinTexOverrideName  = heroOverride?.SkinTextureName;
+        _pantsTexOverrideName = heroOverride?.ClothingTextureName;
+        var overrides = heroOverride is null
+            ? null
+            : new Dictionary<string, SiegeFX.Core.Actors.TemplateOverride>(StringComparer.OrdinalIgnoreCase)
+              { [playerTemplate] = heroOverride };
+        Console.WriteLine(
+            $"  player: variant pick gender={pick.Gender} body={pick.BodyTypeIdx + 1} " +
+            $"skin={pick.SkinSuffix ?? "<default>"} pants={pick.PantsSuffix ?? "<default>"} " +
+            $"=> model={heroOverride?.ModelName ?? "<template>"}");
+
         var diagsBefore = spawner.Diagnostics.Count;
-        var spawned = spawner.Spawn(new[] { inst }, preferredStance);
+        var spawned = spawner.Spawn(new[] { inst }, preferredStance, overrides);
         if (spawned.Count == 0)
         {
             Console.WriteLine($"  player: '{playerTemplate}' did not spawn (spawner diagnostics follow)");

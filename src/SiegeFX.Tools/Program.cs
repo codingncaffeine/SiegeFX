@@ -88,6 +88,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
     Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
     Console.WriteLine("  siegefx templates equipment-audit <logic-tank> <objects-tank> <player-template> [--terrain=PATH]");
+    Console.WriteLine("  siegefx templates hero-variants <objects-tank>");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -2447,7 +2448,7 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot|resolve-textures|equipment-audit> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot|resolve-textures|equipment-audit|hero-variants> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "list"   => CmdTemplatesList(a[1..]),
@@ -2457,8 +2458,91 @@ static int DispatchTemplates(string[] a)
         "combat" => CmdTemplatesCombat(a[1..]),
         "loot"   => CmdTemplatesLoot(a[1..]),
         "equipment-audit" => CmdTemplatesEquipmentAudit(a[1..]),
+        "hero-variants"   => CmdTemplatesHeroVariants(a[1..]),
         _        => UnknownCommand("templates " + a[0]),
     };
+}
+
+// 21d-2a-viii — enumerate every shipped variant the character creator picker
+// will be able to expose: body meshes (pos_a1..a7) per gender, skin textures
+// (b_c_gah_<g>_skin_NN), and pants textures (b_c_pos_aN_NNN) per body type.
+// The picker doesn't need this list at runtime — it composes names by string —
+// but the audit confirms each composed name traces back to a real file in the
+// shipped Objects.dsres, so a UI menu built from the audit's output will never
+// list a phantom option.
+static int CmdTemplatesHeroVariants(string[] a)
+{
+    if (a.Length != 1)
+    {
+        Console.Error.WriteLine("usage: siegefx templates hero-variants <objects-tank>");
+        return 1;
+    }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var paths = reader.ListFiles().ToList();
+
+    foreach (var (gender, prefix) in new[] { ("boy", "gah_fb"), ("girl", "gah_fg") })
+    {
+        Console.WriteLine();
+        Console.WriteLine($"== {gender} ({prefix}) ==");
+
+        // Body meshes m_c_<prefix>_pos_aN.asp
+        var bodyTypes = new List<int>();
+        for (int i = 1; i <= 7; i++)
+        {
+            var meshName = $"m_c_{prefix}_pos_a{i}";
+            if (paths.Any(p => p.EndsWith($"/{meshName}.asp", StringComparison.OrdinalIgnoreCase)))
+                bodyTypes.Add(i);
+        }
+        Console.WriteLine($"  body types  : {bodyTypes.Count}/7 shipped — pos_a{string.Join(",pos_a", bodyTypes)}");
+
+        // Skin textures b_c_<prefix>_skin_NN.raw
+        var skinSuffixes = new List<string>();
+        var skinPrefix = $"b_c_{prefix}_skin_";
+        foreach (var p in paths)
+        {
+            var fname = System.IO.Path.GetFileNameWithoutExtension(p);
+            if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!fname.StartsWith(skinPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var suffix = fname[skinPrefix.Length..];
+            if (suffix.Length == 2 && int.TryParse(suffix, out _))
+                skinSuffixes.Add(suffix);
+        }
+        skinSuffixes = skinSuffixes.Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+        Console.WriteLine($"  skin tones  : {skinSuffixes.Count} — {string.Join(",", skinSuffixes)}");
+
+        // Pants textures b_c_pos_aN_NNN.raw, per body type
+        for (int i = 1; i <= 7; i++)
+        {
+            if (!bodyTypes.Contains(i)) continue;
+            var pantsPrefix = $"b_c_pos_a{i}_";
+            var pantsSuffixes = new List<string>();
+            foreach (var p in paths)
+            {
+                var fname = System.IO.Path.GetFileNameWithoutExtension(p);
+                if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!fname.StartsWith(pantsPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                var suffix = fname[pantsPrefix.Length..];
+                if (suffix.Length == 3 && int.TryParse(suffix, out _))
+                    pantsSuffixes.Add(suffix);
+            }
+            pantsSuffixes = pantsSuffixes.Distinct().OrderBy(s => s, StringComparer.Ordinal).ToList();
+            Console.WriteLine($"  pants pos_a{i}: {pantsSuffixes.Count} — {(pantsSuffixes.Count == 0 ? "<none>" : string.Join(",", pantsSuffixes))}");
+        }
+
+        var totalPants = 0;
+        for (int i = 1; i <= 7; i++)
+        {
+            if (!bodyTypes.Contains(i)) continue;
+            var pantsPrefix = $"b_c_pos_a{i}_";
+            totalPants += paths.Count(p => System.IO.Path.GetFileNameWithoutExtension(p)
+                .StartsWith(pantsPrefix, StringComparison.OrdinalIgnoreCase)
+                && p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase));
+        }
+        long combinations = (long)bodyTypes.Count * skinSuffixes.Count * (totalPants == 0 ? 1 : (totalPants / Math.Max(1, bodyTypes.Count)));
+        Console.WriteLine($"  combinations: {bodyTypes.Count} body x {skinSuffixes.Count} skin x ~{(bodyTypes.Count == 0 ? 0 : totalPants / Math.Max(1, bodyTypes.Count))} pants/body = ~{combinations:N0}");
+    }
+    return 0;
 }
 
 // Phase 21d-2a-vii — read-only audit of an actor template's equipment slots.
