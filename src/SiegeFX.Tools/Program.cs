@@ -29,6 +29,7 @@ try
         "templates" => DispatchTemplates(args[1..]),
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
+        "balance"   => DispatchBalance(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -98,6 +99,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx formulas dump      <Logic.dsres>");
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
+    Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -3087,6 +3089,147 @@ static int CmdFormulasDump(string[] a)
     Console.WriteLine($"experience_table: {f.XpTable.Count} entries  (lvl 1: {f.XpForLevel(1):N0}, lvl 10: {f.XpForLevel(10):N0}, lvl 50: {f.XpForLevel(50):N0}, lvl 100: {f.XpForLevel(100):N0}, lvl 160: {f.XpForLevel(160):N0})");
     Console.WriteLine($"  reverse: 1000 xp -> level {f.LevelForXp(1000)}, 50000 -> {f.LevelForXp(50000)}, 1000000 -> {f.LevelForXp(1000000)}");
     return 0;
+}
+
+static int DispatchBalance(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx balance <curve> <Logic.dsres> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "curve" => CmdBalanceCurve(a[1..]),
+        _       => UnknownCommand("balance " + a[0]),
+    };
+}
+
+static int CmdBalanceCurve(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx balance curve <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
+        return 1;
+    }
+
+    int maxLevel = 50;
+    string skillSel = "all";
+    float startStr = 10f, startDex = 10f, startInt = 10f;
+    string? logicPath = null;
+
+    foreach (var arg in a)
+    {
+        if (arg.StartsWith("--max-level=", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!int.TryParse(arg.AsSpan("--max-level=".Length), out maxLevel) || maxLevel < 1)
+                throw new FormatException("--max-level must be a positive integer");
+        }
+        else if (arg.StartsWith("--skill=", StringComparison.OrdinalIgnoreCase))
+        {
+            skillSel = arg["--skill=".Length..].Trim().ToLowerInvariant();
+        }
+        else if (arg.StartsWith("--start=", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = arg["--start=".Length..].Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length != 3
+                || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out startStr)
+                || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out startDex)
+                || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out startInt))
+                throw new FormatException("--start must be 'str,dex,int' (3 floats)");
+        }
+        else if (arg.StartsWith("--", StringComparison.Ordinal))
+        {
+            throw new FormatException($"unknown flag '{arg}'");
+        }
+        else
+        {
+            if (logicPath is not null) throw new FormatException("only one Logic.dsres path expected");
+            logicPath = arg;
+        }
+    }
+
+    if (logicPath is null) { Console.Error.WriteLine("missing <Logic.dsres>"); return 1; }
+
+    using var tank = TankFile.Open(logicPath);
+    var reader = new TankReader(tank);
+    var f = FormulasStore.LoadFromTank(reader);
+
+    SkillKind[] skills;
+    switch (skillSel)
+    {
+        case "all":     skills = Enum.GetValues<SkillKind>(); break;
+        case "melee":   skills = new[] { SkillKind.Melee }; break;
+        case "ranged":  skills = new[] { SkillKind.Ranged }; break;
+        case "nature":  skills = new[] { SkillKind.NatureMagic }; break;
+        case "combat":  skills = new[] { SkillKind.CombatMagic }; break;
+        default: throw new FormatException($"--skill must be melee|ranged|nature|combat|all (got '{skillSel}')");
+    }
+
+    int xpCap = f.XpTable.Count;
+    if (maxLevel > xpCap)
+    {
+        Console.WriteLine($"note: --max-level={maxLevel} exceeds xp table cap ({xpCap}); clamping.");
+        maxLevel = xpCap;
+    }
+
+    int totalWarnings = 0;
+    foreach (var skill in skills)
+    {
+        var gains = f.ProportionalGains(skill);
+        Console.WriteLine();
+        Console.WriteLine($"=== skill: {skill} ===  proportional gains  str {gains.Str:0.00}  dex {gains.Dex:0.00}  int {gains.Int:0.00}  (sum {gains.Str + gains.Dex + gains.Int:0.00})");
+        Console.WriteLine($"starting attrs   str {startStr:0.00}   dex {startDex:0.00}   int {startInt:0.00}");
+        Console.WriteLine();
+        Console.WriteLine($"  Lvl  CumXP            STR     DEX     INT     MaxHP    MaxMP    HP/s    MP/s   T->FullHP T->FullMP");
+        Console.WriteLine($"  ---  ---------------- ------  ------  ------  -------  -------  ------  ------ --------- ---------");
+
+        int warnings = 0;
+        float prevHp = -1f, prevMp = -1f;
+        long prevXp = -1;
+
+        for (int lvl = 1; lvl <= maxLevel; lvl++)
+        {
+            int dlvl = lvl - 1;
+            float str = startStr + gains.Str * dlvl;
+            float dex = startDex + gains.Dex * dlvl;
+            float intl = startInt + gains.Int * dlvl;
+            float hp = f.MaxLife(str, dex, intl);
+            float mp = f.MaxMana(str, dex, intl);
+            float hpRate = f.LifeRecoveryRate(str);
+            float mpRate = f.ManaRecoveryRate(intl);
+            float tFullHp = hpRate > 0 ? hp / hpRate : float.PositiveInfinity;
+            float tFullMp = mp > 0 && mpRate > 0 ? mp / mpRate : (mp <= 0 ? 0f : float.PositiveInfinity);
+            long cumXp = f.XpForLevel(lvl);
+
+            string warn = "";
+            if (prevHp >= 0 && hp < prevHp) { warn += " HP-DROP"; warnings++; }
+            if (prevMp >= 0 && mp < prevMp) { warn += " MP-DROP"; warnings++; }
+            if (prevXp >= 0 && cumXp < prevXp) { warn += " XP-DROP"; warnings++; }
+
+            string mpStr = mp > 0 ? mp.ToString("0.0").PadLeft(7) : "    -- ";
+            string mpRateStr = mp > 0 ? mpRate.ToString("0.000").PadLeft(6) : "   -- ";
+            string tMpStr;
+            if (mp <= 0) tMpStr = "      --";
+            else if (float.IsPositiveInfinity(tFullMp)) tMpStr = "     inf";
+            else tMpStr = tFullMp.ToString("0.0").PadLeft(8);
+
+            string tHpStr = float.IsPositiveInfinity(tFullHp) ? "     inf" : tFullHp.ToString("0.0").PadLeft(8);
+
+            Console.WriteLine(
+                $"  {lvl,3}  {cumXp,16:N0} {str,6:0.00}  {dex,6:0.00}  {intl,6:0.00}  {hp,7:0.0}  {mpStr}  {hpRate,6:0.000}  {mpRateStr} {tHpStr} {tMpStr}{warn}");
+
+            prevHp = hp; prevMp = mp; prevXp = cumXp;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine(warnings == 0
+            ? $"  warnings: none ({skill} curve is monotonic L1..L{maxLevel})"
+            : $"  warnings: {warnings} monotonicity violation(s) on {skill} — see HP-DROP / MP-DROP / XP-DROP rows above");
+        totalWarnings += warnings;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(totalWarnings == 0
+        ? $"OK — all {skills.Length} skill(s) walk L1..L{maxLevel} with monotonic HP/MP/XP."
+        : $"FAIL — {totalWarnings} monotonicity violation(s) across {skills.Length} skill(s).");
+    return totalWarnings == 0 ? 0 : 4;
 }
 
 static int DispatchSpells(string[] a)
