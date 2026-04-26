@@ -250,6 +250,43 @@ public sealed class RenderHost : IDisposable
     // the grip — blade tip usually, judging by how DS1 weapons are authored.
     private Matrix4x4 _weaponBindInv = Matrix4x4.Identity;
 
+    // 21d-2a-vi — live A/B knobs for the weapon_grip prerotation, cycled with F1
+    // while the game runs. Each preset is a quaternion so we can express compound
+    // rotations (e.g. X 180° + Z 180° to flip the dagger end-for-end while keeping
+    // the long-axis along the forearm). Default = X 180° — visually nailed the
+    // orientation but the dagger's handle was visible instead of the tip, so the
+    // surrounding entries below add a "pommel-flip" axis on top of the X 180°.
+    private static readonly (string Label, Quaternion Q)[] s_gripPreRotPresets =
+    {
+        ("X 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
+        ("X 180 + Y 180",        Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI)
+                                  * Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
+        ("X 180 + Z 180",        Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI)
+                                  * Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
+        ("Y 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI)),
+        ("Z 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI)),
+        ("X 0",                  Quaternion.Identity),
+        ("X 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f)),
+        ("X -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI / 2f)),
+        ("Y 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 2f)),
+        ("Y -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 2f)),
+        ("Z 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f)),
+        ("Z -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -MathF.PI / 2f)),
+    };
+    private int _gripPreRotIdx = 0; // default = X 180° (orientation that nailed the forearm-forward pose)
+
+    // 21d-2a-vi — translation offset applied AFTER the prerotation, in the bone-
+    // local frame, so we can nudge the dagger into the palm without re-deriving
+    // bind translations. F2/F3/F4 cycle X/Y/Z; each press steps through the
+    // s_gripPreTransSteps array. ASP grip bone has tr=(0, 0.04, 0) in its bind,
+    // so the natural step size is half of that (0.02) and twice (0.08).
+    private static readonly float[] s_gripPreTransSteps = { -0.08f, -0.04f, -0.02f, 0f, 0.02f, 0.04f, 0.08f };
+    // Defaults visually verified for the fun dagger: (+0.02, +0.04, 0) snaps the
+    // blade into the palm. F2/F3/F4 in-game still cycle for future weapon classes.
+    private int _gripPreTransX = 4; // +0.02
+    private int _gripPreTransY = 5; // +0.04
+    private int _gripPreTransZ = 3; //  0.00
+
     private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
@@ -277,6 +314,11 @@ public sealed class RenderHost : IDisposable
     // frame-time ring is fixed-size so the histogram cost is O(N) over
     // a known buffer, not O(frames-since-launch).
     private readonly bool _diagMode;
+    // Phase 21d-2a-v — env-var-driven flag; when true, the actor loop writes a
+    // per-subset solid color into uSubsetTint and flips uSubsetTintActive=1 for
+    // the duration of the draw, so each ASP subset shows up as a distinct color
+    // on the rendered model.
+    private bool _subsetTintActive;
     private readonly List<(string Label, double Ms)> _diagStageTimings = new();
     private readonly System.Diagnostics.Stopwatch _diagBootStopwatch = new();
     private const int FrameRingSize = 240;     // 4 sec at 60 Hz
@@ -549,6 +591,16 @@ in  vec2 vUv;
 out vec4 FragColor;
 uniform sampler2D uAlbedo;
 uniform int       uHasTexture;
+// Phase 21d-2a-v debug — when set, replaces the no-texture fallback color
+// with bright magenta so we can spot subsets that fall through to the
+// untextured path. Off by default (preserves the sand fallback).
+uniform int       uDebugFallback;
+// Phase 21d-2a-v debug — when uSubsetTintActive=1, output uSubsetTint as the
+// final fragment color (skipping texture sampling and lighting). Used to map
+// each ASP subset to the body region it covers; the host sets uSubsetTint to
+// a palette color per draw before issuing DrawSubset.
+uniform int       uSubsetTintActive;
+uniform vec4      uSubsetTint;
 // Phase 21c-1 — V-flip is now a per-pass switch. NPCs/weapons (skinned pipeline)
 // were authored with UVs that need the D3D→GL flip we used to do unconditionally.
 // Static props (barrels, jugs, fences, foliage) author UVs in the same space the
@@ -567,9 +619,12 @@ uniform float     uAmbient;
 void main()
 {
     vec2 uv = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+    vec4 fallback = (uDebugFallback != 0)
+        ? vec4(1.0, 0.0, 1.0, 1.0)
+        : vec4(0.85, 0.78, 0.62, 1.0);
     vec4 sampled = (uHasTexture != 0)
         ? texture(uAlbedo, uv)
-        : vec4(0.85, 0.78, 0.62, 1.0);
+        : fallback;
     if (uHasTexture != 0 && sampled.a < 0.5) discard;
 
     vec3 N = normalize(vNormal);
@@ -585,7 +640,11 @@ void main()
     // sampled color (no over-bright washout) while shadowed fragments still
     // honor ambient.
     lighting = min(lighting, vec3(1.0));
-    FragColor = vec4(sampled.rgb * lighting, 1.0);
+    if (uSubsetTintActive != 0) {
+        FragColor = uSubsetTint;
+    } else {
+        FragColor = vec4(sampled.rgb * lighting, 1.0);
+    }
 }";
 
     public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
@@ -658,6 +717,34 @@ void main()
                 // with its own template and equipped weapon. Logs each hit to the
                 // console so the damage math is visible without a HUD overlay.
                 else if (key == Key.F) DebugAttackNearestActor();
+                // 21d-2a-vi: F1 cycles weapon_grip prerotation presets so we can
+                // A/B match what DS1's PRSImport "preRot" path actually wants.
+                // Each press steps through (axis, degrees) combos and prints the
+                // current one to console. Visible immediately on the next frame.
+                else if (key == Key.F1)
+                {
+                    _gripPreRotIdx = (_gripPreRotIdx + 1) % s_gripPreRotPresets.Length;
+                    var p = s_gripPreRotPresets[_gripPreRotIdx];
+                    Console.WriteLine($"weapon grip prerot [{_gripPreRotIdx + 1}/{s_gripPreRotPresets.Length}]: {p.Label}");
+                }
+                // 21d-2a-vi: F2/F3/F4 nudge the dagger along bone-local X/Y/Z so we
+                // can find the right "into the palm" offset without rebuilding. Steps
+                // through {-0.08, -0.04, -0.02, 0, +0.02, +0.04, +0.08}.
+                else if (key == Key.F2)
+                {
+                    _gripPreTransX = (_gripPreTransX + 1) % s_gripPreTransSteps.Length;
+                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
+                }
+                else if (key == Key.F3)
+                {
+                    _gripPreTransY = (_gripPreTransY + 1) % s_gripPreTransSteps.Length;
+                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
+                }
+                else if (key == Key.F4)
+                {
+                    _gripPreTransZ = (_gripPreTransZ + 1) % s_gripPreTransSteps.Length;
+                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
+                }
                 // Phase 13b: C flips between chase cam (follows the PC) and fly cam
                 // (free WASD+RMB). No-op if there's no player.
                 else if (key == Key.C && _player is not null)
@@ -900,6 +987,21 @@ void main()
         _gridShader = new Shader(_gl, GridVertexSource, GridFragmentSource);
         _meshShader = new Shader(_gl, MeshVertexSource, MeshFragmentSource);
         _skinShader = new Shader(_gl, SkinnedVertexSource, MeshFragmentSource);
+        // Phase 21d-2a-v — one-shot debug-fallback wiring. The fragment shader
+        // tints uHasTexture=0 fragments bright magenta when this is on, so we
+        // can spot subsets that fail to bind a texture vs. ones that bind a
+        // sand-toned albedo and merely look like skin.
+        int debugFallback = Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_FALLBACK") == "1" ? 1 : 0;
+        _meshShader.Use(); _meshShader.SetInt("uDebugFallback", debugFallback);
+        _skinShader.Use(); _skinShader.SetInt("uDebugFallback", debugFallback);
+        // Phase 21d-2a-v — subset-tint diagnostic. When SIEGEFX_SUBSET_TINT=1, the
+        // skin pipeline overrides each subset's fragment color with a unique solid
+        // hue (palette below) so we can map subset index → body region by eye and
+        // check that the BSMM (textureIndex, faceSpan) carve matches actual geometry.
+        // Off resets uniforms; the actor loop only writes them when the env is on.
+        _subsetTintActive = Environment.GetEnvironmentVariable("SIEGEFX_SUBSET_TINT") == "1";
+        _meshShader.Use(); _meshShader.SetInt("uSubsetTintActive", 0);
+        _skinShader.Use(); _skinShader.SetInt("uSubsetTintActive", 0);
         // Default lighting matches the prior single-white-sun constants so viewer
         // modes (boot.asp, anim viewer, single-mesh) and any pre-LoadStaticProps
         // pass keep working. LoadStaticProps overwrites these from the player
@@ -2322,11 +2424,31 @@ void main()
     /// (<c>b_c_eam_kg</c> / <c>b_c_eam_ksc</c>); without the override, every actor
     /// rendered with the scout texset. Cache key is (template, mesh) so two actors
     /// of the same archetype share one GL upload.</summary>
+    /// <summary>Phase 21d-2a-v — subset diagnostic palette. 8 hand-picked
+    /// hues kept saturated and far apart in HSV so adjacent subsets are easy
+    /// to tell on the rendered model. Wraps for meshes with more than 8
+    /// subsets (none in shipping DS1 — farmboy = 5, krug = 1, max observed = 7).</summary>
+    private static (float R, float G, float B) SubsetTintFor(int subsetIndex)
+    {
+        return (subsetIndex % 8) switch
+        {
+            0 => (1.00f, 0.00f, 0.00f), // red
+            1 => (0.00f, 1.00f, 0.00f), // green
+            2 => (0.20f, 0.40f, 1.00f), // blue
+            3 => (1.00f, 1.00f, 0.00f), // yellow
+            4 => (1.00f, 0.00f, 1.00f), // magenta
+            5 => (0.00f, 1.00f, 1.00f), // cyan
+            6 => (1.00f, 0.55f, 0.00f), // orange
+            _ => (0.65f, 0.20f, 0.85f), // purple
+        };
+    }
+
     private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
         var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
         string? baseName = null;
+        string? source = null;
         if (_templateStore is not null)
         {
             // Templates can override any slot — DS1 uses `[aspect][textures] { 0 = ... }`
@@ -2334,11 +2456,24 @@ void main()
             // characters like farmboy whose clothing strip is a separate subset.
             var slotKey = textureIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
             baseName = _templateStore.GetAttribute(actor.Template, "aspect", "textures", slotKey);
+            if (!string.IsNullOrEmpty(baseName)) source = $"template[aspect][textures][{slotKey}]";
         }
         if (string.IsNullOrEmpty(baseName) && textureIndex >= 0 && textureIndex < actor.Mesh.TextureNames.Count)
+        {
             baseName = actor.Mesh.TextureNames[textureIndex];
+            source = $"mesh.TextureNames[{textureIndex}]";
+        }
         var tex = LoadTexsetTexture(baseName);
         _actorTextureCache[key] = tex;
+        // Phase 21d-2a-v — one-shot diagnostic per (template, slot). Logs the
+        // resolved texset basename + whether it found a .raw, so we can see
+        // for the player exactly which texture slot 1 binds to. Cache means
+        // this fires once per slot per template-instance.
+        if (Environment.GetEnvironmentVariable("SIEGEFX_TEX_RESOLVE_LOG") == "1")
+        {
+            var status = tex is null ? "MISS" : "OK";
+            Console.WriteLine($"[tex-resolve {status}] tpl={actor.Template.Name} mesh={actor.Mesh.MeshName} slot={textureIndex} base={baseName ?? "<null>"} src={source ?? "<none>"}");
+        }
         return tex;
     }
 
@@ -3046,6 +3181,12 @@ void main()
                     _player.CurrentTransform =
                         Matrix4x4.CreateRotationY(pyaw) *
                         Matrix4x4.CreateTranslation(after);
+                    // 21d-2a-vi: the actor draw loop swaps to WalkClipIndex while
+                    // IsMoving is set; without this the PC always played chore_default
+                    // even when click-to-move was translating it. Same XZ-delta
+                    // threshold the NPC brains use (~1u/s minimum) so float noise
+                    // from idle/arrived states doesn't trigger a phantom walk cycle.
+                    _player.IsMoving = len2 > 0.0025f;
                     TryAutoPickup(after);
 
                     // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
@@ -3070,7 +3211,13 @@ void main()
             foreach (var s in _actors)
             {
                 if (s.IsDead) continue;
+                // 21d-2a-vi: compute the EFFECTIVE clip index (same logic the draw
+                // loop uses) so AnimTime resets cleanly on idle↔walk swaps. Reading
+                // only CurrentClipIndex meant the walk cycle started from whatever
+                // phase the idle anim happened to be at, which read as a glitch.
                 int idx = s.Actor.CurrentClipIndex;
+                if (s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
+                    idx = s.Actor.WalkClipIndex;
                 if (idx != s.LastClipIndex)
                 {
                     s.LastClipIndex = idx;
@@ -3143,7 +3290,33 @@ void main()
             playerTemplate, scid: 0xffffff00u, worldPosition: spawnPos,
             orientation: System.Numerics.Quaternion.Identity);
 
-        var spawned = spawner.Spawn(new[] { inst });
+        // 21d-2a-vi — peek at es_weapon_hand to pick the right idle stance.
+        // chore_default lists 0..8; first-loadable wins, which is stance 0
+        // (unarmed) for everyone — wrong for an armed PC because the unarmed
+        // wrist pose doesn't grip a weapon. weapon_melee → stance 1, weapon_ranged
+        // → stance 5. Falls back to whatever loads first when the chain is
+        // unfamiliar (e.g. spell-only PCs).
+        int? preferredStance = null;
+        if (_templateStore is not null && _templateStore.TryGet(playerTemplate, out var pcTpl))
+        {
+            var eqSection = _templateStore.GetSection(pcTpl, "inventory", "equipment");
+            var weaponRef = eqSection is null ? null
+                : SiegeFX.Core.Assets.TemplateStore.FindAttr(eqSection, "es_weapon_hand");
+            if (!string.IsNullOrWhiteSpace(weaponRef)
+                && _templateStore.TryGet(weaponRef!, out var weaponTpl))
+            {
+                for (var t = weaponTpl; t is not null; t = t.Specializes)
+                {
+                    if (string.Equals(t.Name, "weapon_melee", StringComparison.OrdinalIgnoreCase))
+                    { preferredStance = 1; break; }
+                    if (string.Equals(t.Name, "weapon_ranged", StringComparison.OrdinalIgnoreCase))
+                    { preferredStance = 5; break; }
+                }
+            }
+        }
+
+        var diagsBefore = spawner.Diagnostics.Count;
+        var spawned = spawner.Spawn(new[] { inst }, preferredStance);
         if (spawned.Count == 0)
         {
             Console.WriteLine($"  player: '{playerTemplate}' did not spawn (spawner diagnostics follow)");
@@ -3151,6 +3324,9 @@ void main()
                 Console.WriteLine($"    !! {d}");
             return;
         }
+        Console.WriteLine($"  player: stance preference = {(preferredStance.HasValue ? preferredStance.ToString() : "none")}");
+        for (int i = diagsBefore; i < spawner.Diagnostics.Count; i++)
+            Console.WriteLine($"    .. {spawner.Diagnostics[i]}");
 
         var player = spawned[0];
         if (!_actorMeshCache.TryGetValue(player.Mesh, out var gl))
@@ -4319,13 +4495,23 @@ void main()
             // on (template, mesh) because krug_grunt and krug_scout share the same
             // pose mesh but each template overrides the texset name.
             int lastFlipV = -1;
+            // Phase 21d-2a-v — uFlipV is the same for ALL skinned actors. Earlier
+            // analysis (Phase 21c-4) thought v2.5+ ASPs needed the flip. The
+            // subset-tint diagnostic in 21d-2a-v showed otherwise: farmboy's head
+            // subset (asp V[0.01,0.54]) needs to sample the face/hair region of
+            // its skin .raw, which sits at the start of file bytes (= GL V≈0)
+            // because OpenGL puts byte 0 at the bottom-left and ImageSharp dumps
+            // confirm face data is at PNG row 0. With uFlipV=1 those UVs invert
+            // to GL V[0.46,0.99] = top of GL = the brown gradient strip, which
+            // is exactly the "smeared face / no detail" the user reported.
+            // SIEGEFX_FORCE_FLIPV=0|1 overrides for one-off testing.
+            int defaultFlipV = 0;
+            string? forceFlipEnv = Environment.GetEnvironmentVariable("SIEGEFX_FORCE_FLIPV");
+            if (forceFlipEnv == "0") defaultFlipV = 0;
+            else if (forceFlipEnv == "1") defaultFlipV = 1;
             foreach (var s in _actors)
             {
-                // Phase 21c-4 — per-mesh V-flip. v2.5+ ASPs (player farmboy, late
-                // NPCs) author UVs D3D-top-down, v2.3 (krug et al) bottom-up to
-                // match the .raw byte order. One global setting got either crowd
-                // wrong; gate by ASP version.
-                int flipV = (s.Actor.Mesh.AspVersionMajor * 10 + s.Actor.Mesh.AspVersionMinor) >= 25 ? 1 : 0;
+                int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
                     _skinShader.SetInt("uFlipV", flipV);
@@ -4391,6 +4577,7 @@ void main()
                 else
                 {
                     int lastSlot = -1;
+                    int subsetIdx = 0;
                     foreach (var sub in subsets)
                     {
                         if (sub.TextureIndex != lastSlot)
@@ -4400,8 +4587,22 @@ void main()
                             else _skinShader.SetInt("uHasTexture", 0);
                             lastSlot = sub.TextureIndex;
                         }
+                        if (_subsetTintActive)
+                        {
+                            // Phase 21d-2a-v — solid-color tint per subset (red, green,
+                            // blue, yellow, magenta, cyan, orange, purple). Wraps if a
+                            // mesh has more subsets than palette entries; the largest
+                            // shipped DS1 multi-subset mesh tops out at 5 (farmboy body),
+                            // well under the palette length.
+                            var (tr, tg, tb) = SubsetTintFor(subsetIdx);
+                            _skinShader.SetInt("uSubsetTintActive", 1);
+                            _skinShader.SetVec4("uSubsetTint", tr, tg, tb, 1f);
+                        }
                         s.GlMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+                        subsetIdx++;
                     }
+                    if (_subsetTintActive)
+                        _skinShader.SetInt("uSubsetTintActive", 0);
                 }
             }
         }
@@ -4472,7 +4673,15 @@ void main()
             }
             else
             {
-                var cidx = Math.Min(_player.Actor.CurrentClipIndex, clips.Length - 1);
+                // Mirror the body's walk-swap so the weapon's grip bone tracks the same
+                // clip the body is being skinned with. Without this the body uses the
+                // walk clip while the weapon's bone-worlds are still sampled from the
+                // idle clip — symptom: dagger "floats" at the idle wrist position
+                // while the walking arm swings through it.
+                int cidx = _player.Actor.CurrentClipIndex;
+                if (_player.IsMoving && _player.Actor.WalkClipIndex >= 0 && _player.Actor.WalkClipIndex < clips.Length)
+                    cidx = _player.Actor.WalkClipIndex;
+                cidx = Math.Min(cidx, clips.Length - 1);
                 var clip = clips[cidx];
                 var t = (float)(clip.AnimLength > 0f ? _player.AnimTime % clip.AnimLength : 0.0);
                 AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t, _boneWorldsScratch);
@@ -4485,13 +4694,37 @@ void main()
                 // so the grip sits at the hand bone's world origin, then gripLocal
                 // places it in the player mesh frame, then CurrentTransform moves
                 // the whole rig to world space.
-                var weaponModel = _weaponBindInv * gripLocal * _player.CurrentTransform;
+                //
+                // SiegeMax ASPImport.ms ("grips must be prerotated (hack fix)",
+                // line 765) applies an extra `angleAxis 90 [1,0,0]` to weapon_grip /
+                // shield_grip on import. The PRS keys for those bones are authored
+                // against the prerotated frame, so without this rotation the dagger
+                // sits 90° off — blade points down (icepick / "stabbing" grip)
+                // instead of forward (thrust / "piercing" grip). Inserting RotX(90°)
+                // between weaponBindInv and gripLocal applies the rotation in
+                // bone-local space, matching DS1's authored convention.
+                // SIEGEFX_WEAPON_GRIP_DEG overrides the angle (e.g. -90, 0, 180) for
+                // A/B testing alternate weapons; SIEGEFX_WEAPON_GRIP_AXIS picks the
+                // axis (X|Y|Z, default X).
+                var preset = s_gripPreRotPresets[_gripPreRotIdx];
+                var gripPreRot = Matrix4x4.CreateFromQuaternion(preset.Q);
+                var gripPreTrans = Matrix4x4.CreateTranslation(
+                    s_gripPreTransSteps[_gripPreTransX],
+                    s_gripPreTransSteps[_gripPreTransY],
+                    s_gripPreTransSteps[_gripPreTransZ]);
+                var weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
 
                 _meshShader.Use();
                 _meshShader.SetMatrix4("uViewProj", vp);
                 _meshShader.SetMatrix4("uModel", weaponModel);
                 _meshShader.SetInt("uAlbedo", 0);
-                _meshShader.SetInt("uFlipV", 1);
+                // 21d-2a-vi: weapon textures (e.g. b_w_weapons.raw, a 9-mip atlas
+                // covering daggers/swords/axes/staves) are stored bottom-up like
+                // every other DS1 .raw. uFlipV=1 was inverting the dagger's UV
+                // V[0.667,0.998] into V[0.002,0.333], which sampled a magic-staff
+                // glow strip at the bottom of the atlas — visible as a "rainbow"
+                // dagger. Match the skinned-actor / static-prop convention.
+                _meshShader.SetInt("uFlipV", 0);
                 ApplyLightingUniforms(_meshShader);
                 if (_weaponTexture is not null)
                 {
