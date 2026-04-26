@@ -55,6 +55,17 @@ public sealed class AspMesh
     /// <summary>Triangle indices (BTRI). Each triplet indexes into <see cref="Corners"/>.</summary>
     public int[] TriangleIndices { get; init; } = Array.Empty<int>();
 
+    /// <summary>Phase 21d-2a-i — render subsets carved out of the flattened
+    /// <see cref="TriangleIndices"/>. One entry per (BSMM subtexture record × BTRI numFaces match)
+    /// in the source file: a contiguous span of triangles plus the index into
+    /// <see cref="TextureNames"/> they should sample. Multi-subset characters (farmboy =
+    /// 4 subsets across 2 textures) need this to render correctly; krug-style
+    /// single-subset / single-texture meshes degenerate to one entry.
+    /// Always non-empty for any ASP that produced triangles, even if the source
+    /// lacked BSMM records — in that degenerate case there is one subset spanning
+    /// all triangles with TextureIndex = 0.</summary>
+    public Subset[] Subsets { get; init; } = Array.Empty<Subset>();
+
     /// <summary>Per-corner skin weights from WCRN (parallel to <see cref="Corners"/>).
     /// X/Y/Z/W are the four weights; on-disk nulls are preserved as zero, not compacted.
     /// Empty for static meshes without WCRN.</summary>
@@ -75,6 +86,13 @@ public sealed class AspMesh
     public readonly record struct Corner(int VertexIndex, Vector3 Normal, uint Color, Vector2 Uv);
 
     public readonly record struct Transform(Quaternion Rotation, Vector3 Translation);
+
+    /// <summary>A contiguous span of triangles in <see cref="TriangleIndices"/> that
+    /// share the same texture index into <see cref="TextureNames"/>.
+    /// <see cref="FirstTriangle"/> is the triangle ordinal (0-based; multiply by 3
+    /// for the index-buffer offset). <see cref="TriangleCount"/> is the number of
+    /// triangles owned by this subset.</summary>
+    public readonly record struct Subset(int FirstTriangle, int TriangleCount, int TextureIndex);
 
     public static AspMesh Load(byte[] data)
     {
@@ -119,6 +137,13 @@ public sealed class AspMesh
         // always precedes BTRI in the per-submesh cycle, and the default 1 covers the
         // older-format case where BSMM is absent (single-texture meshes).
         int curSubTextures = 1;
+        // Phase 21d-2a-i — per-submesh BSMM (textureIndex, faceSpan) records carried
+        // into the following BTRI. Reset on each BSMM. faceSpan accumulates faceCount
+        // across the records for that submesh; the cumulative sum equals BTRI numFaces.
+        var curBsmmRecords = new List<(int TextureIndex, int FaceSpan)>();
+        // Subsets accumulate across the whole file. Each BTRI emits one Subset per
+        // BSMM record, indexed off the current global triList triangle count.
+        var subsetList = new List<Subset>();
 
         foreach (var chunk in chunks)
         {
@@ -204,11 +229,22 @@ public sealed class AspMesh
             else if (id == new FourCC('B','S','M','M'))
             {
                 // ASPImport.ms ReadBSMM: u32 numSubTextures, then numSubTextures × (textureIndex, faceSpan).
-                // We only care about numSubTextures — it sizes BTRI's header below.
+                // numSubTextures sizes BTRI's per-corner header below; the (textureIndex, faceSpan)
+                // pairs feed Subsets so multi-texture characters render with the right
+                // texture per face span (Phase 21d-2a-i).
                 if (body.Length < 4) throw new InvalidDataException("BSMM body missing numSubTextures");
                 curSubTextures = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
                 if (curSubTextures <= 0 || curSubTextures > 4096)
                     throw new InvalidDataException($"BSMM numSubTextures {curSubTextures} out of plausible range");
+                if (body.Length < 4 + curSubTextures * 8)
+                    throw new InvalidDataException("BSMM body truncated mid-record");
+                curBsmmRecords.Clear();
+                for (var k = 0; k < curSubTextures; k++)
+                {
+                    var ti = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(4 + k * 8));
+                    var fs = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(8 + k * 8));
+                    curBsmmRecords.Add((ti, fs));
+                }
             }
             else if (id == new FourCC('B','V','T','X'))
             {
@@ -328,6 +364,10 @@ public sealed class AspMesh
                 pos += headerBytes;
                 if (pos + numFaces * 12 > body.Length)
                     throw new InvalidDataException($"BTRI face data ({numFaces} faces) past chunk end");
+                // Phase 21d-2a-i — record where this BTRI's faces start in the global
+                // flattened triangle list so we can carve subsets matching the BSMM
+                // (textureIndex, faceSpan) records collected just above.
+                int submeshFirstTri = triList.Count / 3;
                 for (var f = 0; f < numFaces; f++)
                 {
                     var a = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos));
@@ -337,6 +377,31 @@ public sealed class AspMesh
                     triList.Add(a + cornerBase);
                     triList.Add(b + cornerBase);
                     triList.Add(c + cornerBase);
+                }
+                if (curBsmmRecords.Count == 0)
+                {
+                    // Pre-BSMM (or absent-BSMM) submesh: one implicit subset over all faces using texture 0.
+                    if (numFaces > 0)
+                        subsetList.Add(new Subset(submeshFirstTri, numFaces, 0));
+                }
+                else
+                {
+                    int spanSum = 0;
+                    foreach (var rec in curBsmmRecords) spanSum += rec.FaceSpan;
+                    if (spanSum != numFaces)
+                        throw new InvalidDataException(
+                            $"BSMM face spans sum to {spanSum} but BTRI declares {numFaces} faces");
+                    int cursor = submeshFirstTri;
+                    foreach (var rec in curBsmmRecords)
+                    {
+                        if (rec.FaceSpan == 0) continue;
+                        if (rec.TextureIndex < 0)
+                            throw new InvalidDataException($"BSMM record has negative textureIndex {rec.TextureIndex}");
+                        subsetList.Add(new Subset(cursor, rec.FaceSpan, rec.TextureIndex));
+                        cursor += rec.FaceSpan;
+                    }
+                    // Clear so the next submesh's BTRI without a preceding BSMM falls into the implicit-subset branch.
+                    curBsmmRecords.Clear();
                 }
             }
             // BSUB/BSMM/BVMP/BVWL/STCH: preserved for later phases, not consumed here.
@@ -383,6 +448,13 @@ public sealed class AspMesh
         var skinWeights = sawWcrn ? skinWeightList.ToArray() : Array.Empty<Vector4>();
         var skinBones   = sawWcrn ? skinBoneList.ToArray()   : Array.Empty<uint>();
 
+        // Phase 21d-2a-i — if the file produced triangles but no BSMM records (very old
+        // single-texture meshes), emit a single fallback subset covering all faces so
+        // downstream code can iterate Subsets uniformly.
+        var subsets = subsetList.ToArray();
+        if (subsets.Length == 0 && tris.Length > 0)
+            subsets = new[] { new Subset(0, tris.Length / 3, 0) };
+
         // Precompute inv(worldBind[i]) for rigged meshes. The composition assumes parents
         // precede children in BoneParents; the skinning path asserts the same invariant at
         // runtime, so we check once here at load and emit a diagnosable error instead.
@@ -402,6 +474,7 @@ public sealed class AspMesh
             Positions           = positions,
             Corners             = corners,
             TriangleIndices     = tris,
+            Subsets             = subsets,
             SkinWeights         = skinWeights,
             SkinBones           = skinBones,
         };

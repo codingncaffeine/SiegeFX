@@ -68,6 +68,7 @@ echo   48. Phase 21b-1 - --diag mode (startup timings + per-second frame histogr
 echo   49. Phase 21c-1 - NPC textures + static props (trees/barrels/fences/crops/candles in fh_r1)
 echo   50. Phase 21c-5 - Headless prop-texture audit across all 81 regions (CLI, no window)
 echo   51. Phase 21d-1 - Balance curves audit (XP/HP/MP/regen L1..L50, all skills, CLI)
+echo   52. Phase 21d-2a-i - ASP subset fuzz (parse all .asp in Objects.dsres, validate subsets)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -125,6 +126,7 @@ if /i "%CHOICE%"=="48" goto T48
 if /i "%CHOICE%"=="49" goto T49
 if /i "%CHOICE%"=="50" goto T50
 if /i "%CHOICE%"=="51" goto T51
+if /i "%CHOICE%"=="52" goto T52
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -890,6 +892,21 @@ echo.
 set EXITCODE=%ERRORLEVEL%
 echo.
 echo === audit exited with code %EXITCODE% ===
+pause
+goto MENU
+
+:T52
+echo.
+echo --- Phase 21d-2a-i: ASP subset fuzz (CLI, no window) ---
+echo [Parses every .asp in Objects.dsres and validates that the per-submesh]
+echo [BSMM (textureIndex, faceSpan) records sum to BTRI's face count.]
+echo [Histogram shows how many meshes use 1/2/N subsets — confirms farmboy is]
+echo [multi-subset (skin + clothing) while 1-texture creatures stay single-subset.]
+echo.
+"%TOOL%" asp subset-fuzz "%DS1%\Resources\Objects.dsres"
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === fuzz exited with code %EXITCODE% (0 = all clean) ===
 pause
 goto MENU
 
