@@ -70,6 +70,7 @@ echo   50. Phase 21c-5 - Headless prop-texture audit across all 81 regions (CLI,
 echo   51. Phase 21d-1 - Balance curves audit (XP/HP/MP/regen L1..L50, all skills, CLI)
 echo   52. Phase 21d-2a-i - ASP subset fuzz (parse all .asp in Objects.dsres, validate subsets)
 echo   53. Phase 21d-2a-ii - Per-subset texture render (visually verify farmboy clothing in fh_r1)
+echo   54. Phase 21d-2a-iii prep - Actor-coverage audit across all 81 regions (CLI, no window)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -129,6 +130,7 @@ if /i "%CHOICE%"=="50" goto T50
 if /i "%CHOICE%"=="51" goto T51
 if /i "%CHOICE%"=="52" goto T52
 if /i "%CHOICE%"=="53" goto T53
+if /i "%CHOICE%"=="54" goto T54
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -923,6 +925,24 @@ echo [Visually verify: farmboy's torso/legs show fabric pattern, not skin tone.]
 echo [Krug + goblin (single-subset meshes) should render unchanged.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+goto MENU
+
+:T54
+echo.
+echo --- Phase 21d-2a-iii prep: Actor-coverage audit (CLI, no window) ---
+echo [Mirror of `region prop-textures all` for the NPC layer. Walks every]
+echo [actor.gas placement in all 81 shipped regions, resolves the template's]
+echo [aspect.model -> .asp, then walks AspMesh.Subsets and probes each]
+echo [slot's texture via the same (template-override-by-slot, mesh.TextureNames]
+echo [slot) precedence ResolveActorTexture uses at runtime.]
+echo [Catches missing meshes, missing slot textures, and parse breakers BEFORE]
+echo [the Farmhouse -^> Castle Ehb playtest hits them.]
+echo.
+"%TOOL%" region actor-coverage "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" all --terrain="%DS1%\Resources\Terrain.dsres" --top=15
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === audit exited with code %EXITCODE% (0 = all clean) ===
+pause
 goto MENU
 
 :T47

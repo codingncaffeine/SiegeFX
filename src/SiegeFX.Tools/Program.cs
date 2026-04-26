@@ -91,6 +91,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
     Console.WriteLine("  siegefx region prop-textures <map-tank> <logic-tank> <objects-tank> <region-path|all> [--terrain=PATH] [--top=N] [--list-misses]");
+    Console.WriteLine("  siegefx region actor-coverage <map-tank> <logic-tank> <objects-tank> <region-path|all> [--terrain=PATH] [--top=N] [--list-misses]");
     Console.WriteLine("  siegefx region nav         <map-tank> <terrain-tank> <region-path>");
     Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
@@ -422,6 +423,7 @@ static int DispatchRegion(string[] a)
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
         "prop-textures" => CmdRegionPropTextures(a[1..]),
+        "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
         "path"        => CmdRegionPath(a[1..]),
@@ -3020,6 +3022,199 @@ static int CmdRegionPropTextures(string[] a)
     }
     terrainTank?.Dispose();
     return unresolved == 0 ? 0 : 4;
+}
+
+// Phase 21d-2a-iii prep — actor-coverage audit. Mirror of prop-textures but for the
+// NPC layer: walks every region's actor.gas, resolves template -> aspect.model -> .asp,
+// then walks AspMesh.Subsets and checks each subset's texture slot via the same
+// (template-override-by-slot, mesh.TextureNames[slot]) precedence ResolveActorTexture
+// uses at runtime. Catches missing meshes, missing slot textures, and parse breakers
+// before the playtest hits them. Exits non-zero if anything fails to resolve.
+static int CmdRegionActorCoverage(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region actor-coverage <map-tank> <logic-tank> <objects-tank> <region-path|all> [--terrain=PATH] [--top=N] [--list-misses]");
+        return 1;
+    }
+    int top = 25;
+    bool listMisses = false;
+    string? terrainPath = null;
+    for (int i = 4; i < a.Length; i++)
+    {
+        const string topPrefix = "--top=";
+        const string terrPrefix = "--terrain=";
+        if (a[i].StartsWith(topPrefix) && int.TryParse(a[i][topPrefix.Length..], out var n)) top = n;
+        else if (a[i].StartsWith(terrPrefix)) terrainPath = a[i][terrPrefix.Length..];
+        else if (a[i] == "--list-misses") listMisses = true;
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var mapTank     = TankFile.Open(a[0]);
+    using var logicTank   = TankFile.Open(a[1]);
+    using var objectsTank = TankFile.Open(a[2]);
+    SiegeFX.Core.Tank.TankFile? terrainTank = terrainPath is not null ? TankFile.Open(terrainPath) : null;
+    var mapReader     = new TankReader(mapTank);
+    var logicReader   = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    if (terrainTank is not null) resolver.Add(new TankReader(terrainTank), "Terrain.dsres");
+    resolver.Add(objectsReader, "Objects.dsres");
+    resolver.Add(logicReader,   "Logic.dsres");
+
+    var regionPaths = new List<string>();
+    if (a[3].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"auditing {regionPaths.Count} regions...");
+    }
+    else
+    {
+        regionPaths.Add(a[3]);
+    }
+
+    int placements = 0, withMesh = 0, parseFail = 0;
+    int noTemplate = 0, noModel = 0, noMesh = 0;
+    int totalSlots = 0, slotsResolved = 0, slotsMissing = 0;
+    int actorsAllSlotsClean = 0, actorsAnySlotMissing = 0;
+    int multiSubsetActors = 0;
+    var perTpl = new SortedDictionary<string, (int placements, int slotsResolved, int slotsMissing, string? mesh)>(StringComparer.OrdinalIgnoreCase);
+    var unresolvedNames = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var perRegion = new List<(string path, int placements, int slotsMissing)>();
+
+    var aspCache = new Dictionary<string, SiegeFX.Core.Assets.AspMesh?>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var regionPath in regionPaths)
+    {
+        int regPlacements = 0, regSlotsMissing = 0;
+        var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
+        foreach (var p in actors)
+        {
+            placements++;
+            regPlacements++;
+            if (!store.TryGet(p.TemplateName, out var template)) { noTemplate++; continue; }
+            var modelName = store.GetAttribute(template, "aspect", "model");
+            if (string.IsNullOrEmpty(modelName)) { noModel++; continue; }
+
+            if (!aspCache.TryGetValue(modelName, out var asp))
+            {
+                if (!resolver.TryLoadModel(modelName, out var aspBytes)) { aspCache[modelName] = null; }
+                else
+                {
+                    try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); aspCache[modelName] = asp; }
+                    catch { aspCache[modelName] = null; }
+                }
+            }
+            if (asp is null) { if (!resolver.TryLoadModel(modelName, out _)) noMesh++; else parseFail++; continue; }
+            withMesh++;
+            if (asp.Subsets.Length > 1) multiSubsetActors++;
+
+            // Walk each unique slot referenced by the mesh's subsets. Multiple
+            // subsets sharing a TextureIndex resolve once; matches the renderer's
+            // per-slot cache key.
+            var slotsSeen = new HashSet<int>();
+            int actorMissing = 0, actorResolved = 0;
+            var allSubsets = asp.Subsets.Length == 0
+                ? new[] { new SiegeFX.Core.Assets.AspMesh.Subset(0, asp.TriangleCount, 0) }
+                : asp.Subsets;
+            foreach (var sub in allSubsets)
+            {
+                if (!slotsSeen.Add(sub.TextureIndex)) continue;
+                totalSlots++;
+                var slotKey = sub.TextureIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var baseName = store.GetAttribute(template, "aspect", "textures", slotKey);
+                if (string.IsNullOrEmpty(baseName) && sub.TextureIndex >= 0 && sub.TextureIndex < asp.TextureNames.Count)
+                    baseName = asp.TextureNames[sub.TextureIndex];
+
+                bool hit = false;
+                if (!string.IsNullOrEmpty(baseName))
+                {
+                    if (resolver.TryLoadByBasename(baseName + ".raw", out _)) hit = true;
+                    else
+                    {
+                        for (int i = 1; i <= 8 && !hit; i++)
+                            if (resolver.TryLoadByBasename($"{baseName}-{i:D2}.raw", out _)) hit = true;
+                    }
+                }
+                if (hit) { slotsResolved++; actorResolved++; }
+                else
+                {
+                    slotsMissing++; actorMissing++; regSlotsMissing++;
+                    if (!string.IsNullOrEmpty(baseName))
+                    {
+                        unresolvedNames.TryGetValue(baseName, out var nn);
+                        unresolvedNames[baseName] = nn + 1;
+                    }
+                }
+            }
+            if (actorMissing == 0) actorsAllSlotsClean++;
+            else actorsAnySlotMissing++;
+
+            perTpl.TryGetValue(p.TemplateName, out var entry);
+            perTpl[p.TemplateName] = (entry.placements + 1, entry.slotsResolved + actorResolved,
+                                      entry.slotsMissing + actorMissing, modelName);
+        }
+        perRegion.Add((regionPath, regPlacements, regSlotsMissing));
+    }
+
+    bool batch = regionPaths.Count > 1;
+    Console.WriteLine();
+    if (batch) Console.WriteLine($"regions       : {regionPaths.Count}");
+    else       Console.WriteLine($"region        : {a[3]}");
+    Console.WriteLine($"actor placements    : {placements}");
+    Console.WriteLine($"  no template       : {noTemplate}");
+    Console.WriteLine($"  no aspect.model   : {noModel}");
+    Console.WriteLine($"  missing .asp file : {noMesh}");
+    Console.WriteLine($"  asp parse fail    : {parseFail}");
+    Console.WriteLine($"  with mesh         : {withMesh}");
+    Console.WriteLine($"    all slots clean : {actorsAllSlotsClean}");
+    Console.WriteLine($"    any slot missing: {actorsAnySlotMissing}");
+    Console.WriteLine($"    multi-subset    : {multiSubsetActors}");
+    Console.WriteLine($"texture slots       : {totalSlots}");
+    Console.WriteLine($"  resolved          : {slotsResolved}");
+    Console.WriteLine($"  missing           : {slotsMissing}");
+    Console.WriteLine();
+    Console.WriteLine($"templates with un-resolved slots (top {top} by miss count):");
+    var dirty = perTpl.Where(x => x.Value.slotsMissing > 0)
+                      .OrderByDescending(x => x.Value.slotsMissing)
+                      .Take(top);
+    foreach (var kv in dirty)
+    {
+        var v = kv.Value;
+        Console.WriteLine($"  {v.slotsMissing,4}x missing ({v.slotsResolved} resolved) over {v.placements} placement(s)  template={kv.Key}  mesh={v.mesh}");
+    }
+    if (!perTpl.Values.Any(v => v.slotsMissing > 0)) Console.WriteLine("  (none — every actor slot resolves)");
+    if (listMisses && unresolvedNames.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("distinct unresolved texset basenames (count):");
+        foreach (var kv in unresolvedNames.OrderByDescending(x => x.Value))
+            Console.WriteLine($"  {kv.Value,4}x  {kv.Key}");
+    }
+    if (batch)
+    {
+        var dirtyRegions = perRegion.Where(r => r.slotsMissing > 0).ToList();
+        Console.WriteLine();
+        Console.WriteLine($"per-region misses ({dirtyRegions.Count} dirty / {perRegion.Count} total):");
+        if (dirtyRegions.Count == 0) Console.WriteLine("  (all regions clean)");
+        foreach (var r in dirtyRegions.OrderByDescending(r => r.slotsMissing))
+            Console.WriteLine($"  {r.slotsMissing,4}x missing slots / {r.placements,5} placements  {r.path}");
+    }
+    terrainTank?.Dispose();
+    return (slotsMissing == 0 && noMesh == 0 && parseFail == 0) ? 0 : 4;
 }
 
 // End-to-end spawn harness: resolve everything, build real Actors, tick the shared
