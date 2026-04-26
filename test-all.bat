@@ -76,6 +76,7 @@ echo   56. Phase 21d-2a-v  - Farmboy texture diag (magenta fallback + tex-resolv
 echo   57. Phase 21d-2a-v  - Subset-tint diag (each ASP subset = solid color: red/grn/blu/yel/mag)
 echo   58. Phase 21d-2a-v  - Plain play after uFlipV fix (face/hair detail should render)
 echo   59. Phase 21d-2a-vi - Dagger grip (90 deg X prerotation; piercing forward grip vs stab)
+echo   60. Phase 21d-2a-vii - Layered equipment (boots + chest texture override on farmboy)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -141,6 +142,7 @@ if /i "%CHOICE%"=="56" goto T56
 if /i "%CHOICE%"=="57" goto T57
 if /i "%CHOICE%"=="58" goto T58
 if /i "%CHOICE%"=="59" goto T59
+if /i "%CHOICE%"=="60" goto T60
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1062,6 +1064,44 @@ echo [     floating at the idle pose while the arm swings through it.]
 echo.
 echo [F1 in-game cycles 12 grip-prerotation presets (X/Y/Z 180/90/-90 + compounds);]
 echo [active preset prints to console. Default = X 180.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T60
+echo.
+echo --- Phase 21d-2a-vii: layered equipment composition ---
+echo [base_farmboy ships [inventory][equipment]:]
+echo [  es_weapon_hand = dg_g_d_1h_fun (handled by 21d-2a-vi weapon attach)]
+echo [  es_feet        = bo_bo_le_light]
+echo [  es_spellbook   = book_glb_magic_01 (UI-only, no 3D mesh)]
+echo.
+echo [DS1 layers each equipped item as a separate ASP attached to the body via]
+echo [bone names. Boots, helms, gauntlets share the body's biped skeleton; their]
+echo [ASPs use IDENTICAL bone names so AnimationRuntime.ComputeSkinMatrices]
+echo [name-keyed bone map lets us pose them against the body's clip + time.]
+echo.
+echo [Boot mesh derivation:]
+echo [  body.armor_version=gah_fb + body type=a1 (from aspect.model suffix)]
+echo [  + armor_lookup.gas[a1]=(b,b)  + defend.armor_type=type1 (from bo_bo_le_light)]
+echo [  -> m_c_gah_fb_boot_type1_b.asp]
+echo [Boot texture derivation:]
+echo [  defend.armor_style=068 -> b_a_boot_068.raw]
+echo.
+echo [Pre-flight CLI: equipment-audit dumps the resolved layers per slot]
+"%TOOL%" templates equipment-audit "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" farmboy
+echo.
+echo [Visual: launch fh_r1 - farmboy spawns with leather boots + dagger + walk anim]
+echo [Watch console: "equip: layered es_feet = bo_bo_le_light mesh=... bones=37 tex=... OK"]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

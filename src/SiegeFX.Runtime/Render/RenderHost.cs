@@ -287,6 +287,28 @@ public sealed class RenderHost : IDisposable
     private int _gripPreTransY = 5; // +0.04
     private int _gripPreTransZ = 3; //  0.00
 
+    // Phase 21d-2a-vii — layered equipment composition. Each entry is a skinned
+    // ASP that re-uses the body's biped skeleton (boots/helms/gauntlets) and
+    // gets posed against the body's current animation clip, then drawn through
+    // the same _skinShader. The entry's AspMesh holds the per-vertex weights;
+    // SkinnedMesh holds the GL VAO/VBO/EBO; Texture is the resolved albedo.
+    // Body chest "armor" doesn't sit here — it's a slot-1 texture override on
+    // the body subset and lives in _chestTexOverrideName instead. Spawned by
+    // TrySpawnPlayer; rebuilt on every equipment change.
+    private readonly List<EquippedLayer> _equippedLayers = new();
+    private string? _chestTexOverrideName;
+    private readonly Dictionary<(string Mesh, string Tex), GlTexture?> _equipTexCache = new();
+
+    private sealed class EquippedLayer
+    {
+        public required SiegeFX.Core.Assets.AspMesh Asp { get; init; }
+        public required SkinnedMesh Mesh { get; init; }
+        public required GlTexture? Texture { get; init; }
+        public required string SlotName { get; init; }
+        public required string ItemRef { get; init; }
+        public required string MeshBaseName { get; init; }
+    }
+
     private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
     // Phase 13a — the one player-controlled actor's render state. Null until
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
@@ -2445,6 +2467,16 @@ void main()
 
     private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
+        // Phase 21d-2a-vii — equipped chest armor overrides the body's slot-1
+        // texture (the pos_a1 clothing strip on the farmboy/farmgirl skin).
+        // Routed through _equipTexCache so swapping armor mid-session re-uses
+        // the previous upload without leaking. Only the player ever has
+        // _chestTexOverrideName set; NPCs fall through.
+        if (textureIndex == 1 && _chestTexOverrideName is not null
+            && _player is not null && ReferenceEquals(actor, _player.Actor))
+        {
+            return LoadEquipmentTexture("__chest__", _chestTexOverrideName);
+        }
         var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
         string? baseName = null;
@@ -3435,6 +3467,113 @@ void main()
             Console.WriteLine("  weapon: no weapon_grip bone on PC skeleton — weapon render disabled");
         else
             TryLoadPlayerWeapon();
+
+        // Phase 21d-2a-vii — compose layered equipment (boots, helm, gauntlets,
+        // chest texture override) from the same [inventory][equipment] block.
+        TryLoadPlayerEquipment(player.Template);
+    }
+
+    /// <summary>Phase 21d-2a-vii — resolve every <c>[inventory][equipment]</c>
+    /// slot via <see cref="EquipmentResolver"/> and load the layered meshes for
+    /// SkinnedLayer entries (boots/helm/gauntlets). AttachBone (weapon, shield)
+    /// is handled by the dedicated <see cref="TryLoadPlayerWeapon"/> path; this
+    /// pass intentionally skips that strategy. ChestTexture entries set
+    /// <c>_chestTexOverrideName</c> so the body's slot-1 binding swaps to the
+    /// armor's <c>b_c_pos_*</c> texture.</summary>
+    private void TryLoadPlayerEquipment(SiegeFX.Core.Assets.Template playerTemplate)
+    {
+        DisposeEquippedLayers();
+        _chestTexOverrideName = null;
+        if (_gl is null || _playResolver is null || _templateStore is null) return;
+
+        var layers = SiegeFX.Core.Assets.EquipmentResolver.Resolve(
+            _templateStore, _playResolver, playerTemplate);
+        foreach (var layer in layers)
+        {
+            switch (layer.Strategy)
+            {
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.None:
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.AttachBone:
+                    // None = no 3D representation (spellbook/amulet/ring).
+                    // AttachBone = handled by TryLoadPlayerWeapon for now.
+                    break;
+
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.SkinnedLayer:
+                    if (string.IsNullOrEmpty(layer.MeshBaseName)) break;
+                    if (!_playResolver.TryLoadModel(layer.MeshBaseName, out var aspBytes))
+                    {
+                        Console.WriteLine(
+                            $"  equip: '{layer.SlotName}' = '{layer.ItemRef}' mesh '{layer.MeshBaseName}.asp' not in any tank");
+                        break;
+                    }
+                    SiegeFX.Core.Assets.AspMesh asp;
+                    try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  equip: '{layer.MeshBaseName}.asp' load failed: {ex.Message}");
+                        break;
+                    }
+                    if (!asp.HasSkin)
+                    {
+                        Console.WriteLine($"  equip: '{layer.MeshBaseName}.asp' has no skin (rigid?); SkinnedLayer skipped");
+                        break;
+                    }
+                    SkinnedMesh sm;
+                    try { sm = new SkinnedMesh(_gl, asp); }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  equip: SkinnedMesh build failed for '{layer.MeshBaseName}.asp': {ex.Message}");
+                        break;
+                    }
+                    var texName = layer.TextureBaseName;
+                    if (string.IsNullOrEmpty(texName) && asp.TextureNames.Count > 0)
+                        texName = asp.TextureNames[0];
+                    var tex = LoadEquipmentTexture(layer.MeshBaseName, texName);
+                    _equippedLayers.Add(new EquippedLayer
+                    {
+                        Asp = asp, Mesh = sm, Texture = tex,
+                        SlotName = layer.SlotName, ItemRef = layer.ItemRef,
+                        MeshBaseName = layer.MeshBaseName,
+                    });
+                    Console.WriteLine(
+                        $"  equip: layered '{layer.SlotName}' = '{layer.ItemRef}' " +
+                        $"mesh='{layer.MeshBaseName}' bones={asp.BoneCount} tex='{texName}' " +
+                        $"({(tex is null ? "MISS" : "OK")})");
+                    break;
+
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.ChestTexture:
+                    _chestTexOverrideName = layer.OverrideBaseName;
+                    Console.WriteLine(
+                        $"  equip: chest texture override '{layer.SlotName}' = '{layer.ItemRef}' " +
+                        $"slot={layer.OverrideTextureSlot} tex='{layer.OverrideBaseName}'");
+                    break;
+            }
+        }
+    }
+
+    private void DisposeEquippedLayers()
+    {
+        foreach (var l in _equippedLayers)
+        {
+            l.Mesh.Dispose();
+            // Textures are cached in _equipTexCache and may be shared across
+            // layers; defer their disposal to OnClosing.
+        }
+        _equippedLayers.Clear();
+    }
+
+    /// <summary>Phase 21d-2a-vii — load (and cache) the albedo for a layered
+    /// equipment ASP. Cache key is (mesh base name, texture base name) so
+    /// swapping armor that re-uses a previously-loaded texture doesn't pay a
+    /// second round trip + GL upload. Returns null on miss.</summary>
+    private GlTexture? LoadEquipmentTexture(string meshBaseName, string? textureBaseName)
+    {
+        if (string.IsNullOrEmpty(textureBaseName)) return null;
+        var key = (meshBaseName, textureBaseName);
+        if (_equipTexCache.TryGetValue(key, out var hit)) return hit;
+        var tex = LoadTexsetTexture(textureBaseName);
+        _equipTexCache[key] = tex;
+        return tex;
     }
 
     // Phase 14d — load (or replace) the mesh + texture for whatever is currently in
@@ -4605,6 +4744,120 @@ void main()
                         _skinShader.SetInt("uSubsetTintActive", 0);
                 }
             }
+
+            // Phase 21d-2a-vii — layered equipment pass. Each entry is a skinned
+            // ASP that shares the player body's biped skeleton; we re-skin it
+            // against the body's current animation clip + time, then bind the
+            // equipment texture and draw. AnimationRuntime caches its bone-name
+            // → PRS-bone-index map per (asp, anim) pair, so the only per-frame
+            // cost per layer is the skin matrix walk + one DrawSubset per
+            // subset. We reuse _skinScratch — bones get overwritten with the
+            // layer's skin matrices, then the layer issues its draws, then the
+            // weapon-attach pass below recomputes bone worlds from a fresh walk.
+            if (_player is not null && !_player.IsDead && _equippedLayers.Count > 0)
+            {
+                var pcMesh = _player.Actor.Mesh;
+                var pcClips = _player.Actor.Clips;
+                int pcCidx;
+                if (pcClips.Length > 0)
+                {
+                    if (_player.IsMoving && _player.Actor.WalkClipIndex >= 0
+                        && _player.Actor.WalkClipIndex < pcClips.Length)
+                        pcCidx = _player.Actor.WalkClipIndex;
+                    else
+                        pcCidx = Math.Min(_player.Actor.CurrentClipIndex, pcClips.Length - 1);
+                }
+                else pcCidx = -1;
+
+                var pcClip = pcCidx >= 0 ? pcClips[pcCidx] : null;
+                var pcTime = pcClip is not null && pcClip.AnimLength > 0f
+                    ? (float)(_player.AnimTime % pcClip.AnimLength)
+                    : 0f;
+
+                // _skinShader is bound + uViewProj/lighting/uAlbedo are set by
+                // the body actor loop above today; re-set them here defensively
+                // so this block stays correct if a future pass slips between
+                // the two and clobbers the skin-shader state.
+                _skinShader.Use();
+                _skinShader.SetMatrix4("uViewProj", vp);
+                _skinShader.SetInt("uAlbedo", 0);
+                ApplyLightingUniforms(_skinShader);
+                _skinShader.SetMatrix4("uModel", _player.CurrentTransform);
+                int layerFlipV = 0;
+                _skinShader.SetInt("uFlipV", layerFlipV);
+
+                foreach (var layer in _equippedLayers)
+                {
+                    int boneCount = layer.Asp.BoneCount;
+                    if (boneCount == 0) continue;
+                    // Defensive cap: SkinnedMesh ctor already rejects ASPs over
+                    // MaxBones, so reaching here with boneCount>64 means the
+                    // SkinnedMesh and its source ASP have drifted out of sync.
+                    // Skip rather than upload past the uBones[64] array end.
+                    if (boneCount > SkinnedMesh.MaxBones)
+                    {
+                        Console.WriteLine(
+                            $"  equip: '{layer.MeshBaseName}.asp' bones={boneCount} > " +
+                            $"SkinnedMesh.MaxBones={SkinnedMesh.MaxBones}; skipping layer draw");
+                        continue;
+                    }
+                    if (_skinScratch.Length < boneCount)
+                        _skinScratch = new Matrix4x4[Math.Max(boneCount, 64)];
+                    if (pcClip is not null)
+                    {
+                        AnimationRuntime.ComputeSkinMatrices(layer.Asp, pcClip, pcTime, _skinScratch);
+                    }
+                    else
+                    {
+                        for (int i = 0; i < boneCount; i++) _skinScratch[i] = Matrix4x4.Identity;
+                    }
+                    _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, boneCount));
+
+                    var subsets = layer.Asp.Subsets;
+                    if (subsets.Length == 0)
+                    {
+                        if (layer.Texture is not null)
+                        {
+                            layer.Texture.Bind(TextureUnit.Texture0);
+                            _skinShader.SetInt("uHasTexture", 1);
+                        }
+                        else _skinShader.SetInt("uHasTexture", 0);
+                        layer.Mesh.Draw();
+                    }
+                    else
+                    {
+                        // Track first-iteration with a bool, not a sentinel int:
+                        // sub.TextureIndex == -1 is a valid "use BMSH default"
+                        // signal and would silently skip the bind branch if we
+                        // initialised lastSlot to -1.
+                        bool firstSubset = true;
+                        int lastSlot = 0;
+                        foreach (var sub in subsets)
+                        {
+                            if (firstSubset || sub.TextureIndex != lastSlot)
+                            {
+                                // Equipment ASPs ship a single template-driven
+                                // texture (b_a_boot_<style>); when a multi-subset
+                                // boot ASP shows up we bind the same texture for
+                                // every subset since defend.armor_style is one
+                                // value. Fall back to the ASP's BMSH default for
+                                // out-of-range slots.
+                                GlTexture? tex = layer.Texture;
+                                if (tex is null && sub.TextureIndex >= 0
+                                    && sub.TextureIndex < layer.Asp.TextureNames.Count)
+                                {
+                                    tex = LoadTexsetTexture(layer.Asp.TextureNames[sub.TextureIndex]);
+                                }
+                                if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
+                                else _skinShader.SetInt("uHasTexture", 0);
+                                lastSlot = sub.TextureIndex;
+                                firstSubset = false;
+                            }
+                            layer.Mesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+                        }
+                    }
+                }
+            }
         }
 
         // Phase 21c — static prop layer (trees, barrels, fences, crops, candles,
@@ -5020,6 +5273,13 @@ void main()
         foreach (var tex in _actorTextureCache.Values)
             if (tex is not null && disposedActorTex.Add(tex)) tex.Dispose();
         _actorTextureCache.Clear();
+        // Phase 21d-2a-vii — layered equipment GL resources.
+        foreach (var l in _equippedLayers) l.Mesh.Dispose();
+        _equippedLayers.Clear();
+        var disposedEquipTex = new HashSet<GlTexture>(ReferenceEqualityComparer.Instance);
+        foreach (var tex in _equipTexCache.Values)
+            if (tex is not null && disposedEquipTex.Add(tex)) tex.Dispose();
+        _equipTexCache.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
         _texture?.Dispose();
