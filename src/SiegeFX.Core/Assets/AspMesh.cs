@@ -339,7 +339,8 @@ public sealed class AspMesh
                 // ASPImport.ms ReadBTRI body layout (chunk version already consumed by the scanner):
                 //   u32 numFaces
                 //   version-dependent subtexture header (see below), sized by numSubTextures
-                //   numFaces × (u32 a, u32 b, u32 c)   — flat triangle indices into the submesh BCRN
+                //   numFaces × (u32 a, u32 b, u32 c)   — triangle indices RELATIVE to each
+                //                                        subtexture's cornerStart
                 //
                 // On disk the version raw is stored little-endian as (major, minor), so
                 // `raw & 0xFF` is the major digit and `(raw >> 8) & 0xFF` is the minor: the
@@ -348,8 +349,17 @@ public sealed class AspMesh
                 //   decimal == 22   : numSubTextures × (cornerSpan:u32)
                 //   decimal > 22    : numSubTextures × (cornerStart:u32, cornerSpan:u32)
                 //   decimal < 22    : no header (single implicit subtexture covers the whole mesh)
-                // We parse only the byte-count — we don't consume the subtexture table for
-                // anything because BCRN indices already live in a flat submesh-local space.
+                //
+                // Phase 21d-2a-iv — face indices are NOT submesh-local; they are subtexture-
+                // local. Per ASPImport.ms (line 607): the final BCRN index for face f in
+                // subtexture i is `cornerIndex.x + cornerStart[i] + cornOffset - 1`. Skipping
+                // cornerStart only happens to work for single-subtexture submeshes (krug,
+                // every monster) because cornerStart[0] is always 0. Multi-subtexture
+                // characters (farmboy = 2 subtextures in BSUB[0]) need the per-subtexture
+                // offset or their second-subtexture faces reference wrong corners and
+                // render as web-like garbage. The face order in BTRI follows BSMM's
+                // (textureIndex, faceSpan) sequence, so we walk faces with a running
+                // subtexture cursor and pick the right cornerStart per face.
                 if (body.Length < 4)
                     throw new InvalidDataException("BTRI body missing numFaces");
                 var numFaces = (int)BinaryPrimitives.ReadUInt32LittleEndian(body);
@@ -361,22 +371,58 @@ public sealed class AspMesh
                     0;
                 if (pos + headerBytes > body.Length)
                     throw new InvalidDataException("BTRI subtexture header past chunk end");
+
+                // BTRI face indices are subtexture-local for vdec > 22 (DS1 character meshes
+                // v2.5/v4.0). For vdec == 22 (a single GUI mesh in shipping DS1, m_gui_..._rightside)
+                // applying cornerStart pushes face indices past the total corner count even though
+                // OpenSiege and ASPImport.ms both attempt the same offset — the on-disk values for
+                // v22 multi-subtexture do not represent corner counts, so we leave indices submesh-
+                // local for vdec <= 22 and only apply per-subtexture cornerStart for vdec > 22.
+                int[] cornerStartsHdr = new int[Math.Max(curSubTextures, 1)];
+                if (vdec > 22)
+                {
+                    for (int i = 0; i < curSubTextures; i++)
+                        cornerStartsHdr[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + i * 8));
+                }
+                // vdec <= 22: cornerStartsHdr stays all-zero; face indices treated as submesh-local
+                // so cornerBase alone is the offset, matching pre-Phase-21d-2a-iv behavior.
+
                 pos += headerBytes;
                 if (pos + numFaces * 12 > body.Length)
                     throw new InvalidDataException($"BTRI face data ({numFaces} faces) past chunk end");
+
                 // Phase 21d-2a-i — record where this BTRI's faces start in the global
                 // flattened triangle list so we can carve subsets matching the BSMM
                 // (textureIndex, faceSpan) records collected just above.
                 int submeshFirstTri = triList.Count / 3;
+
+                // Walk a parallel cursor over BSMM records to know which subtexture
+                // each face belongs to (so we can apply cornerStartsHdr[that index]).
+                // If BSMM was absent / default-1 we just stick at subtextureIdx=0.
+                int subtextureIdx = 0;
+                int facesIntoCurrent = 0;
+                bool useBsmmBoundary = curBsmmRecords.Count > 0;
                 for (var f = 0; f < numFaces; f++)
                 {
+                    if (useBsmmBoundary)
+                    {
+                        while (subtextureIdx < curBsmmRecords.Count
+                               && facesIntoCurrent >= curBsmmRecords[subtextureIdx].FaceSpan)
+                        {
+                            subtextureIdx++;
+                            facesIntoCurrent = 0;
+                        }
+                    }
+                    int cornerStart = (subtextureIdx >= 0 && subtextureIdx < cornerStartsHdr.Length)
+                        ? cornerStartsHdr[subtextureIdx] : 0;
                     var a = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos));
                     var b = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + 4));
                     var c = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + 8));
                     pos += 12;
-                    triList.Add(a + cornerBase);
-                    triList.Add(b + cornerBase);
-                    triList.Add(c + cornerBase);
+                    triList.Add(a + cornerStart + cornerBase);
+                    triList.Add(b + cornerStart + cornerBase);
+                    triList.Add(c + cornerStart + cornerBase);
+                    facesIntoCurrent++;
                 }
                 if (curBsmmRecords.Count == 0)
                 {

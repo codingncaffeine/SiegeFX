@@ -71,6 +71,7 @@ echo   51. Phase 21d-1 - Balance curves audit (XP/HP/MP/regen L1..L50, all skill
 echo   52. Phase 21d-2a-i - ASP subset fuzz (parse all .asp in Objects.dsres, validate subsets)
 echo   53. Phase 21d-2a-ii - Per-subset texture render (visually verify farmboy clothing in fh_r1)
 echo   54. Phase 21d-2a-iii prep - Actor-coverage audit across all 81 regions (CLI, no window)
+echo   55. Phase 21d-2a-iv - BTRI cornerStart fix (visually verify farmboy webbing gone in fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -131,6 +132,7 @@ if /i "%CHOICE%"=="51" goto T51
 if /i "%CHOICE%"=="52" goto T52
 if /i "%CHOICE%"=="53" goto T53
 if /i "%CHOICE%"=="54" goto T54
+if /i "%CHOICE%"=="55" goto T55
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -943,6 +945,22 @@ set EXITCODE=%ERRORLEVEL%
 echo.
 echo === audit exited with code %EXITCODE% (0 = all clean) ===
 pause
+goto MENU
+
+:T55
+echo.
+echo --- Phase 21d-2a-iv: BTRI cornerStart fix (fh_r1) ---
+echo [BTRI face indices for ASP version ^> 2.2 are subtexture-local, not]
+echo [submesh-local. Without applying per-subtexture cornerStart, multi-]
+echo [subtexture characters (farmboy = 2 subtextures in BSUB[0]) reference]
+echo [wrong corners and render as web-like geometry: webbing between forearms,]
+echo [hammer pants, partial hair, smeared face. Single-subtexture meshes]
+echo [(krug, every monster) are unaffected because cornerStart[0] = 0.]
+echo [Visually verify: farmboy is no longer "web-man" -- arms are detached,]
+echo [body has correct silhouette. Texture coverage on clothing/hair is a]
+echo [separate Phase 21d-2a-v issue.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 goto MENU
 
 :T47
