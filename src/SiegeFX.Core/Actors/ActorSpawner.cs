@@ -80,16 +80,33 @@ public sealed class ActorSpawner
     /// to the authored order if it's missing.</summary>
     public IReadOnlyList<Actor> Spawn(IEnumerable<ActorInstance> instances, int? preferredStance)
     {
+        return Spawn(instances, preferredStance, overrides: null);
+    }
+
+    /// <summary>21d-2a-viii — variant override overload. The character creator
+    /// builds a <see cref="TemplateOverride"/> from the player's body / skin /
+    /// pants picks; this overload feeds those into the per-instance template
+    /// lookup so the spawner picks the chosen <c>pos_aN</c> mesh while every
+    /// other actor in the same Spawn batch uses its authored aspect.model.
+    /// The overrides are dictionary-keyed by template name and apply only to
+    /// matching instances. Pass null to keep the legacy (template-only) path.</summary>
+    public IReadOnlyList<Actor> Spawn(
+        IEnumerable<ActorInstance> instances,
+        int? preferredStance,
+        IReadOnlyDictionary<string, TemplateOverride>? overrides)
+    {
         var spawned = new List<Actor>();
         foreach (var inst in instances)
         {
-            var actor = TrySpawnOne(inst, preferredStance);
+            TemplateOverride? ov = null;
+            overrides?.TryGetValue(inst.TemplateName, out ov);
+            var actor = TrySpawnOne(inst, preferredStance, ov);
             if (actor is not null) spawned.Add(actor);
         }
         return spawned;
     }
 
-    Actor? TrySpawnOne(ActorInstance inst, int? preferredStance)
+    Actor? TrySpawnOne(ActorInstance inst, int? preferredStance, TemplateOverride? overrides = null)
     {
         if (!_store.TryGet(inst.TemplateName, out var template))
         {
@@ -97,7 +114,12 @@ public sealed class ActorSpawner
             return null;
         }
 
-        var modelName = _store.GetAttribute(template, "aspect", "model");
+        // 21d-2a-viii — character creator overrides aspect.model so the picked
+        // pos_aN body mesh wins over the template's authored a1 default. Texture
+        // overrides (skin, pants) flow through the renderer's ResolveActorTexture,
+        // not here — the spawner only cares about the .asp.
+        var modelName = overrides?.ModelName
+            ?? _store.GetAttribute(template, "aspect", "model");
         if (modelName is null)
         {
             Diagnostics.Add($"{inst}: aspect.model missing along specializes chain");

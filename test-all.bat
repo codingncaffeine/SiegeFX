@@ -77,6 +77,7 @@ echo   57. Phase 21d-2a-v  - Subset-tint diag (each ASP subset = solid color: re
 echo   58. Phase 21d-2a-v  - Plain play after uFlipV fix (face/hair detail should render)
 echo   59. Phase 21d-2a-vi - Dagger grip (90 deg X prerotation; piercing forward grip vs stab)
 echo   60. Phase 21d-2a-vii - Layered equipment (boots + chest texture override on farmboy)
+echo   61. Phase 21d-2a-viii-a - Hero variant audit + env-var pick (pos_a3 + skin_07 + pants_015)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -143,6 +144,7 @@ if /i "%CHOICE%"=="57" goto T57
 if /i "%CHOICE%"=="58" goto T58
 if /i "%CHOICE%"=="59" goto T59
 if /i "%CHOICE%"=="60" goto T60
+if /i "%CHOICE%"=="61" goto T61
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1105,6 +1107,45 @@ echo [Watch console: "equip: layered es_feet = bo_bo_le_light mesh=... bones=37 
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T61
+echo.
+echo --- Phase 21d-2a-viii-a: hero variant resolver (env-var quick-pick) ---
+echo [DS1 ships ~18,300 hero variants: 7 body types (pos_a1..a7) x ~32 skin tones]
+echo [x ~41 pants colors per body, gendered into farmboy and farmgirl. The shipped]
+echo [heroes.gas hardcodes a single (a1, skin_04, pants_008) point in that space.]
+echo.
+echo [The full character creator UI ships in slice viii-b (built from the authentic]
+echo [DS1 character_select.gas layout under /ui/interfaces/frontend/). For now,]
+echo [SIEGEFX_HERO_GENDER / _BODY / _SKIN / _PANTS env vars feed the same picker]
+echo [the UI will use, exercising the resolver end-to-end without UI work.]
+echo.
+echo [1/2] Headless audit: enumerate every variant traceable in Objects.dsres
+"%TOOL%" templates hero-variants "%DS1%\Resources\Objects.dsres"
+echo.
+echo [2/2] Visual: pick boy + body 3 + skin 07 + pants 015, spawn into fh_r1]
+echo [Watch console: "  player: variant pick gender=Boy body=3 skin=07 pants=015"]
+echo [Then: "  player: 'farmboy' did spawn" with model=m_c_gah_fb_pos_a3]
+echo.
+set SIEGEFX_HERO_GENDER=boy
+set SIEGEFX_HERO_BODY=3
+set SIEGEFX_HERO_SKIN=07
+set SIEGEFX_HERO_PANTS=015
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_HERO_GENDER=
+set SIEGEFX_HERO_BODY=
+set SIEGEFX_HERO_SKIN=
+set SIEGEFX_HERO_PANTS=
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
