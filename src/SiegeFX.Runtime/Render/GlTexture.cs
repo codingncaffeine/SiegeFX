@@ -12,6 +12,9 @@ public sealed class GlTexture : IDisposable
 {
     private readonly GL _gl;
     public uint Handle { get; }
+    public int Width  { get; }
+    public int Height { get; }
+    public int MipCount { get; }
 
     public GlTexture(GL gl, RawImage image)
     {
@@ -19,6 +22,9 @@ public sealed class GlTexture : IDisposable
             throw new ArgumentException("RawImage has no surfaces to upload", nameof(image));
         _gl = gl;
         Handle = _gl.GenTexture();
+        Width    = image.GetSurfaceWidth(0);
+        Height   = image.GetSurfaceHeight(0);
+        MipCount = image.SurfaceCount;
         _gl.BindTexture(GLEnum.Texture2D, Handle);
 
         for (var level = 0; level < image.SurfaceCount; level++)

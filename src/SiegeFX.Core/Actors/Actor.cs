@@ -23,8 +23,16 @@ public sealed class Actor
     public AspMesh Mesh { get; }
 
     /// <summary>Clip catalogue driven by the skrit. Index 0 is the single chore_default
-    /// clip for Phase 10c; Phase 11+ will layer the rest of the chore dictionary here.</summary>
+    /// clip for Phase 10c; Phase 11+ will layer the rest of the chore dictionary here.
+    /// Phase 21c-4: index 1 (when present) is chore_walk so the renderer can swap to
+    /// the walk cycle while the brain advances the actor along its nav path.</summary>
     public PrsAnimation[] Clips { get; }
+
+    /// <summary>Phase 21c-4 — index into <see cref="Clips"/> for the walk cycle, or -1
+    /// if the template doesn't author a chore_walk (or its PRS failed to load). The
+    /// renderer reads this to decide whether to swap from idle to walk while the
+    /// actor is moving.</summary>
+    public int WalkClipIndex { get; }
 
     public SkritInstance Skrit { get; }
     public ActorHostBridge Host { get; }
@@ -55,7 +63,8 @@ public sealed class Actor
         PrsAnimation[] clips,
         SkritInstance skrit,
         ActorHostBridge host,
-        ActorStats stats)
+        ActorStats stats,
+        int walkClipIndex = -1)
     {
         Instance = instance;
         Template = template;
@@ -66,6 +75,7 @@ public sealed class Actor
         Host = host;
         Stats = stats;
         Combat = new ActorCombatState(stats);
+        WalkClipIndex = walkClipIndex;
     }
 
     public override string ToString() =>

@@ -89,12 +89,33 @@ public sealed class RenderHost : IDisposable
     // because the lookup key is the mesh's own TextureNames[0]). null entries memoize
     // misses so we don't retry resolution every frame for assets with no texture.
     private readonly Dictionary<AspMesh, GlTexture?> _aspTextureCache = new();
+    // Phase 21c-4 — actors apply per-template texset overrides (`[aspect][textures] { 0 = b_c_eam_kg; }`)
+    // so two templates sharing the same mesh (krug_grunt vs krug_scout vs ... all on
+    // m_c_eam_kg_pos_1.asp) render with different skins. Keyed by template+mesh so
+    // identical templates instances reuse one GL upload.
+    private readonly Dictionary<(SiegeFX.Core.Assets.Template, AspMesh), GlTexture?> _actorTextureCache = new();
     // Phase 21c — static props streamed from non_interactive/container/inventory/
     // interactive/emitter .gas. No skrit, no animation, no nav — just transform +
     // mesh + (optional) texture, drawn through the static-mesh pipeline.
     private readonly List<StaticPropInstance> _staticProps = new();
     private readonly Dictionary<string, AspMesh?> _propAspCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<AspMesh, StaticMesh> _propGlMeshCache = new();
+    // Phase 21c-1 — barrel investigation: emit a corner-by-corner dump (UV/normal/color)
+    // for the first placement of selected debug templates so we can confirm UVs cover
+    // the band rows and normals aren't pointing the lit faces inward. One-shot per
+    // template name to keep the load log readable.
+    private readonly HashSet<string> _dumpedPropDiagnostics = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 21c-3 — region directional lighting. Replaces the hardcoded white sun
+    // in MeshFragmentSource with the player region's own [t:directional] lights
+    // from lights/lights.gas. fh_r1 ships a white key + cool-blue fill; without
+    // both, prop tints read flat-warm (the "barrels look slightly off" complaint).
+    // Capped at MaxDirectionalLights — enough for every shipped DS1 region's
+    // outdoor count (regions ship 1–2 directionals; the rest are point torches).
+    private const int MaxDirectionalLights = 4;
+    private readonly Vector3[] _dirLightDirs   = new Vector3[MaxDirectionalLights];
+    private readonly Vector3[] _dirLightColors = new Vector3[MaxDirectionalLights];
+    private int _dirLightCount;
+    private float _ambientLevel = 0.25f;
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     // Phase 12d — kept so DebugAttackNearestActor can build a LootTable for the
@@ -276,6 +297,14 @@ public sealed class RenderHost : IDisposable
         // one actor without scanning all 181. Also gates off the random-wander
         // follower: the player stands still until the user clicks somewhere.
         public bool IsPlayer;
+
+        // Phase 21c-4 — last frame's XZ translation, used to decide whether the
+        // actor is walking (swap to chore_walk clip) or idle (chore_default).
+        // Initialized from the spawn position the first time the renderer sees
+        // the actor; a frame's velocity over a small threshold flips to walk.
+        public Vector3 LastPositionXZ;
+        public bool HasLastPosition;
+        public bool IsMoving;
     }
 
     // Phase 21c — one placed prop (tree, barrel, fence, crop, candle, etc.).
@@ -483,16 +512,43 @@ in  vec2 vUv;
 out vec4 FragColor;
 uniform sampler2D uAlbedo;
 uniform int       uHasTexture;
+// Phase 21c-1 — V-flip is now a per-pass switch. NPCs/weapons (skinned pipeline)
+// were authored with UVs that need the D3D→GL flip we used to do unconditionally.
+// Static props (barrels, jugs, fences, foliage) author UVs in the same space the
+// .raw is stored in — flipping makes their bands and lid views land on the wrong
+// faces. Default = flip (preserves the working NPC look); the static-prop pass
+// sets uFlipV=0 before drawing.
+uniform int       uFlipV;
+// Phase 21c-3 — region directional lighting. Replaces the prior single-white-sun
+// constant. uDirCount may be 0 (no lights file → fall back to ambient-only),
+// 1 (single key sun), or up to 4. uDirColor is pre-multiplied by intensity so
+// the sum is just an unweighted addition.
+uniform int       uDirCount;
+uniform vec3      uDirDir[4];
+uniform vec3      uDirColor[4];
+uniform float     uAmbient;
 void main()
 {
-    vec3 L = normalize(vec3(0.4, 0.9, 0.3));
-    float ndl = max(dot(normalize(vNormal), L), 0.0);
+    vec2 uv = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
     vec4 sampled = (uHasTexture != 0)
-        ? texture(uAlbedo, vec2(vUv.x, 1.0 - vUv.y))
+        ? texture(uAlbedo, uv)
         : vec4(0.85, 0.78, 0.62, 1.0);
     if (uHasTexture != 0 && sampled.a < 0.5) discard;
-    vec3 lit  = sampled.rgb * (0.25 + 0.75 * ndl);
-    FragColor = vec4(lit, 1.0);
+
+    vec3 N = normalize(vNormal);
+    vec3 lighting = vec3(uAmbient);
+    for (int i = 0; i < uDirCount; ++i) {
+        float ndl = max(dot(N, uDirDir[i]), 0.0);
+        lighting += uDirColor[i] * ndl;
+    }
+    // Phase 21c-4 — clamp combined irradiance to 1.0. fh_r1 ships two
+    // directionals (warm-white key + cool-blue fill) plus 0.20 ambient;
+    // unclamped, the lit side of an actor reaches ~1.7 and washes out the
+    // texture. Cap at 1.0 so the most-lit fragments equal the texture's
+    // sampled color (no over-bright washout) while shadowed fragments still
+    // honor ambient.
+    lighting = min(lighting, vec3(1.0));
+    FragColor = vec4(sampled.rgb * lighting, 1.0);
 }";
 
     public RenderHost(string title = "SiegeFX", int width = 1280, int height = 720,
@@ -807,6 +863,11 @@ void main()
         _gridShader = new Shader(_gl, GridVertexSource, GridFragmentSource);
         _meshShader = new Shader(_gl, MeshVertexSource, MeshFragmentSource);
         _skinShader = new Shader(_gl, SkinnedVertexSource, MeshFragmentSource);
+        // Default lighting matches the prior single-white-sun constants so viewer
+        // modes (boot.asp, anim viewer, single-mesh) and any pre-LoadStaticProps
+        // pass keep working. LoadStaticProps overwrites these from the player
+        // region's lights/lights.gas before drawing.
+        SetDefaultLighting();
         _grid       = new GridMesh(_gl);
         _lootCube   = new DebugCubeMesh(_gl);
         _textRenderer = new TextRenderer(_gl);
@@ -2183,36 +2244,64 @@ void main()
     }
 
     /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
-    /// prop ASP. Mirrors the weapon path in LoadEquippedWeapon: the mesh's first
-    /// TextureNames entry plus ".raw", looked up via the play-mode resolver.
-    /// Misses are memoized as null so repeated lookups don't re-scan the tank.
-    /// Returns null when the resolver isn't initialized (viewer modes), the mesh
-    /// declared no texture, or the .raw isn't in any indexed tank.</summary>
+    /// prop ASP. The mesh's first BMSH text token is a *texset base*; for many
+    /// props and weapons it doubles as the literal .raw filename, but actor
+    /// meshes (krug, phrak, gremal, ...) name only the base and ship a swarm of
+    /// variant files (<c>b_c_eam_ksc-01.raw</c>, <c>-02.raw</c>, <c>-dk-01.raw</c>)
+    /// that DS1 picks from at spawn time. We try the direct file first, then
+    /// fall through canonical variant suffixes (<c>-01</c>..<c>-08</c>) so the
+    /// actor renders with the first available skin instead of the untextured
+    /// tan fallback. Picking is deterministic per mesh (lowest variant wins) so
+    /// every instance of an archetype currently shares one skin — cheap
+    /// per-spawn variety is a follow-up. Misses are memoized so a missing texset
+    /// doesn't re-scan the tank index every frame.</summary>
     private GlTexture? ResolveAspTexture(AspMesh mesh)
     {
         if (_aspTextureCache.TryGetValue(mesh, out var cached)) return cached;
-        if (_gl is null || _playResolver is null || mesh.TextureNames.Count == 0)
+        var tex = LoadTexsetTexture(mesh.TextureNames.Count > 0 ? mesh.TextureNames[0] : null);
+        _aspTextureCache[mesh] = tex;
+        return tex;
+    }
+
+    /// <summary>Phase 21c-4 — actor-aware overload. Walks the template's specializes
+    /// chain for an <c>[aspect][textures] { 0 = ...; }</c> override and uses that
+    /// texset name in preference to the mesh's BMSH-stored default. krug_grunt and
+    /// krug_scout both ship pose mesh <c>m_c_eam_kg_pos_1.asp</c> (whose BMSH says
+    /// <c>b_c_eam_ksc</c>) but each template overrides slot 0 to its own skin
+    /// (<c>b_c_eam_kg</c> / <c>b_c_eam_ksc</c>); without the override, every actor
+    /// rendered with the scout texset. Cache key is (template, mesh) so two actors
+    /// of the same archetype share one GL upload.</summary>
+    private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor)
+    {
+        var key = (actor.Template, actor.Mesh);
+        if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
+        string? baseName = null;
+        if (_templateStore is not null)
+            baseName = _templateStore.GetAttribute(actor.Template, "aspect", "textures", "0");
+        if (string.IsNullOrEmpty(baseName) && actor.Mesh.TextureNames.Count > 0)
+            baseName = actor.Mesh.TextureNames[0];
+        var tex = LoadTexsetTexture(baseName);
+        _actorTextureCache[key] = tex;
+        return tex;
+    }
+
+    private GlTexture? LoadTexsetTexture(string? baseName)
+    {
+        if (_gl is null || _playResolver is null || string.IsNullOrEmpty(baseName)) return null;
+        byte[]? texBytes = null;
+        if (_playResolver.TryLoadByBasename(baseName + ".raw", out var direct))
+            texBytes = direct;
+        else
         {
-            _aspTextureCache[mesh] = null;
-            return null;
+            for (int i = 1; i <= 8 && texBytes is null; i++)
+            {
+                if (_playResolver.TryLoadByBasename($"{baseName}-{i:D2}.raw", out var v))
+                    texBytes = v;
+            }
         }
-        var basename = mesh.TextureNames[0] + ".raw";
-        if (!_playResolver.TryLoadByBasename(basename, out var texBytes))
-        {
-            _aspTextureCache[mesh] = null;
-            return null;
-        }
-        try
-        {
-            var tex = new GlTexture(_gl, RawImage.Load(texBytes));
-            _aspTextureCache[mesh] = tex;
-            return tex;
-        }
-        catch
-        {
-            _aspTextureCache[mesh] = null;
-            return null;
-        }
+        if (texBytes is null) return null;
+        try { return new GlTexture(_gl, RawImage.Load(texBytes)); }
+        catch { return null; }
     }
 
     /// <summary>Phase 21c — spawn the static-prop layer for the player region and
@@ -2228,6 +2317,13 @@ void main()
         if (_gl is null || _playResolver is null || _templateStore is null
             || _regionLayout is null || _playMapTank is null) return;
 
+        // Phase 21c-3 — refresh global lighting from the player region's
+        // lights.gas before populating props so the very first prop pass uses
+        // the right colors. Re-fired by OnPlayerRegionChanged when the player
+        // crosses into a neighbor with different time-of-day baking.
+        var firstRegion = regionPaths.FirstOrDefault();
+        if (firstRegion is not null) LoadRegionLighting(firstRegion);
+
         var mapReader = new TankReader(_playMapTank);
         int considered = 0, spawned = 0, missingTemplate = 0, missingModel = 0,
             missingMesh = 0, parseFail = 0;
@@ -2237,6 +2333,11 @@ void main()
         var skippedNoTemplate = new SortedDictionary<string, int>();
         var skippedNoModel    = new SortedDictionary<string, int>();
         var skippedNoMesh     = new SortedDictionary<string, int>();
+        // Per-template counts of placements with vs without a resolved albedo
+        // texture. A row with `0/N textured` is a sure sign the texture .raw
+        // didn't resolve via the play-mode tanks — the prop renders with the
+        // shader's neutral-tan fallback color and looks like a featureless block.
+        var texturedPerTpl = new SortedDictionary<string, (int textured, int untextured, string? texName)>();
 
         foreach (var rp in regionPaths)
         {
@@ -2288,6 +2389,23 @@ void main()
                     var tex = ResolveAspTexture(asp);
                     var world = ComposePlacementWorld(asp, p.Placement);
 
+                    // Phase 21c-1 — barrel-render investigation. Dump per-corner data
+                    // for the first placement of any "barrel" template so we can verify
+                    // UVs hit the band rows, normals point outward, and corner colors
+                    // aren't multiplying the texture down to the dull tone we're seeing.
+                    if (p.TemplateName.Contains("barrel", StringComparison.OrdinalIgnoreCase))
+                        DumpPropDiagnostic(p.TemplateName, modelName, asp, tex);
+
+                    // Track texture-resolution per template so the post-load summary
+                    // shows whether (e.g.) every barrel placement got the right .raw
+                    // bound, vs. silently falling back to the untextured tan colour.
+                    texturedPerTpl.TryGetValue(p.TemplateName, out var entry);
+                    var texName = asp.TextureNames.Count > 0 ? asp.TextureNames[0] : null;
+                    texturedPerTpl[p.TemplateName] = (
+                        entry.textured + (tex is not null ? 1 : 0),
+                        entry.untextured + (tex is null ? 1 : 0),
+                        texName ?? entry.texName);
+
                     _staticProps.Add(new StaticPropInstance
                     {
                         Mesh     = glMesh,
@@ -2316,6 +2434,82 @@ void main()
             foreach (var kv in skippedNoTemplate.OrderByDescending(kv => kv.Value).Take(20))
                 Console.WriteLine($"    {kv.Value,4}x  template={kv.Key}");
         }
+        // Surface untextured placements so a missing .raw shows up in the load log
+        // instead of as an unexplained dark/tan blob in the world.
+        var anyMissingTex = texturedPerTpl.Values.Any(v => v.untextured > 0);
+        if (anyMissingTex)
+        {
+            Console.WriteLine("  prop texture resolution (templates with un-resolved .raw):");
+            foreach (var kv in texturedPerTpl.Where(kv => kv.Value.untextured > 0)
+                                            .OrderByDescending(kv => kv.Value.untextured)
+                                            .Take(20))
+            {
+                var v = kv.Value;
+                Console.WriteLine($"    {v.untextured,4}x untextured ({v.textured} textured)  " +
+                                  $"template={kv.Key}  expected_tex={v.texName ?? "(none)"}");
+            }
+        }
+    }
+
+    /// <summary>Phase 21c-3 — restore the single-white-sun fallback that
+    /// pre-region-light callers (boot.asp viewer, anim viewer, the early
+    /// ticks of LoadPlayActors before LoadStaticProps fires) depend on.
+    /// Numbers match the prior hardcoded shader so visuals don't drift in
+    /// modes that never load a region.</summary>
+    private void SetDefaultLighting()
+    {
+        _dirLightCount = 1;
+        _dirLightDirs[0]   = Vector3.Normalize(new Vector3(0.4f, 0.9f, 0.3f));
+        _dirLightColors[0] = new Vector3(0.75f, 0.75f, 0.75f);
+        _ambientLevel = 0.25f;
+    }
+
+    /// <summary>Phase 21c-3 — pulls every <c>[t:directional]</c> entry out of
+    /// the player region's <c>lights/lights.gas</c>, premultiplies each by its
+    /// intensity, and stages it in the directional uniform arrays. Skips
+    /// lights with <c>affects_actors=false</c> (those typically light terrain
+    /// only). On any miss falls back to <see cref="SetDefaultLighting"/> so
+    /// the world never renders pitch-black just because lights.gas was
+    /// absent or malformed. Point lights are intentionally ignored here —
+    /// they need world-position resolution and attenuation, a separate pass.</summary>
+    private void LoadRegionLighting(string regionPath)
+    {
+        if (_playMapTank is null) { SetDefaultLighting(); return; }
+
+        var (lights, diags) = SiegeFX.Core.Assets.RegionLights.Load(
+            new TankReader(_playMapTank), regionPath);
+        foreach (var d in diags) Console.WriteLine("  " + d);
+
+        int count = 0;
+        foreach (var l in lights)
+        {
+            if (l.Kind != SiegeFX.Core.Assets.RegionLightKind.Directional) continue;
+            if (!l.AffectsActors) continue;
+            if (count >= MaxDirectionalLights) break;
+            var dir = l.DirectionOrPosition;
+            if (dir.LengthSquared() < 1e-6f) continue;
+            _dirLightDirs[count]   = Vector3.Normalize(dir);
+            _dirLightColors[count] = l.Color * l.Intensity;
+            count++;
+        }
+
+        if (count == 0) { SetDefaultLighting(); return; }
+
+        _dirLightCount = count;
+        _ambientLevel = 0.2f;  // a touch lower since multiple directionals add up
+        Console.WriteLine($"  region lighting: {count} directional(s) from {regionPath}/lights/lights.gas");
+    }
+
+    /// <summary>Uploads the current directional-light state to whichever shader
+    /// is currently bound. Cheap (a handful of uniform sets, all GL queries
+    /// are name-cached at the driver level), so we just call it next to every
+    /// existing <c>SetInt("uFlipV", …)</c> site rather than tracking dirty bits.</summary>
+    private void ApplyLightingUniforms(Shader shader)
+    {
+        shader.SetInt("uDirCount", _dirLightCount);
+        shader.SetFloat("uAmbient", _ambientLevel);
+        shader.SetVec3Array("uDirDir",   _dirLightDirs.AsSpan(0, _dirLightCount));
+        shader.SetVec3Array("uDirColor", _dirLightColors.AsSpan(0, _dirLightCount));
     }
 
     private AspMesh? GetOrLoadPropAsp(string modelName)
@@ -2337,6 +2531,80 @@ void main()
         {
             _propAspCache[modelName] = null;
             return null;
+        }
+    }
+
+    /// <summary>Phase 21c-1 barrel investigation: one-shot per-template dump of the
+    /// raw mesh data the GL pipeline will see. Prints UVs, normals, and corner color
+    /// alongside the resolved texture name + dimensions. Also writes the texture's
+    /// mip0 to a PNG under %TEMP%\siegefx_diag\ so we can confirm orientation by eye.
+    /// Skipped after the first placement of a given template so we don't spam the
+    /// load log.</summary>
+    private void DumpPropDiagnostic(string templateName, string modelName, AspMesh asp, GlTexture? tex)
+    {
+        if (!_dumpedPropDiagnostics.Add(templateName)) return;
+
+        // Texture mip0 → PNG. Re-fetch the .raw bytes via the resolver because the
+        // GlTexture has uploaded to GPU and we no longer hold the CPU copy.
+        if (tex is not null && _playResolver is not null && asp.TextureNames.Count > 0)
+        {
+            var basename = asp.TextureNames[0] + ".raw";
+            if (_playResolver.TryLoadByBasename(basename, out var texBytes))
+            {
+                try
+                {
+                    var img   = SiegeFX.Core.Assets.RawImage.Load(texBytes);
+                    var w     = img.GetSurfaceWidth(0);
+                    var h     = img.GetSurfaceHeight(0);
+                    var rgba  = img.GetSurfaceRgba(0);
+                    var dir   = Path.Combine(Path.GetTempPath(), "siegefx_diag");
+                    Directory.CreateDirectory(dir);
+                    var safeTpl = string.Join('_', templateName.Split(Path.GetInvalidFileNameChars()));
+                    var pngPath = Path.Combine(dir, $"{safeTpl}__{asp.TextureNames[0]}_mip0.png");
+                    using (var fs = File.Create(pngPath))
+                        SiegeFX.Core.IO.Png.EncodeRgba(fs, rgba, w, h);
+                    Console.WriteLine($"         dumped mip0 -> {pngPath}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"         mip0 dump failed: {ex.Message}");
+                }
+            }
+        }
+
+        Console.WriteLine($"  [diag] template={templateName}  model={modelName}");
+        Console.WriteLine($"         asp v{asp.AspVersionMajor}.{asp.AspVersionMinor}  " +
+                          $"verts={asp.Positions.Length}  corners={asp.Corners.Length}  " +
+                          $"tris={asp.TriangleCount}  bones={asp.BoneCount}  hasSkin={asp.HasSkin}");
+        var texName = asp.TextureNames.Count > 0 ? asp.TextureNames[0] : "(none)";
+        if (tex is not null)
+            Console.WriteLine($"         tex='{texName}'  size={tex.Width}x{tex.Height}  resolved=YES");
+        else
+            Console.WriteLine($"         tex='{texName}'  resolved=NO (shader fallback)");
+
+        float uMin = float.PositiveInfinity, uMax = float.NegativeInfinity;
+        float vMin = float.PositiveInfinity, vMax = float.NegativeInfinity;
+        for (int i = 0; i < asp.Corners.Length; i++)
+        {
+            var c = asp.Corners[i];
+            if (c.Uv.X < uMin) uMin = c.Uv.X;
+            if (c.Uv.X > uMax) uMax = c.Uv.X;
+            if (c.Uv.Y < vMin) vMin = c.Uv.Y;
+            if (c.Uv.Y > vMax) vMax = c.Uv.Y;
+        }
+        Console.WriteLine($"         uv extents  U=[{uMin:F3}, {uMax:F3}]  V=[{vMin:F3}, {vMax:F3}]");
+
+        int dumpCount = Math.Min(asp.Corners.Length, 24);
+        Console.WriteLine($"         first {dumpCount} corners (idx  vIdx  pos                 normal              uv             color):");
+        for (int i = 0; i < dumpCount; i++)
+        {
+            var c = asp.Corners[i];
+            var p = asp.Positions[c.VertexIndex];
+            Console.WriteLine($"           {i,3}  {c.VertexIndex,4}  " +
+                              $"({p.X,7:F3},{p.Y,7:F3},{p.Z,7:F3})  " +
+                              $"({c.Normal.X,6:F3},{c.Normal.Y,6:F3},{c.Normal.Z,6:F3})  " +
+                              $"({c.Uv.X,6:F3},{c.Uv.Y,6:F3})  " +
+                              $"0x{c.Color:X8}");
         }
     }
 
@@ -2682,6 +2950,21 @@ void main()
                     s.CurrentTransform =
                         Matrix4x4.CreateRotationY(yaw) *
                         Matrix4x4.CreateTranslation(s.Brain.Position);
+                    // Phase 21c-4 — flag walking when the brain actually translated this
+                    // tick. The wander follower idles between picks (and the brain idles
+                    // mid-Attack), so XZ-delta is the cheap, accurate signal — no need to
+                    // distinguish chase vs wander; both translate.
+                    var posXZ = new Vector3(s.Brain.Position.X, 0f, s.Brain.Position.Z);
+                    if (s.HasLastPosition)
+                    {
+                        var dx = posXZ.X - s.LastPositionXZ.X;
+                        var dz = posXZ.Z - s.LastPositionXZ.Z;
+                        // ~0.05 u over a 50ms tick = 1 u/s; well below krug walk speed but
+                        // above floating-point noise from idle followers.
+                        s.IsMoving = (dx * dx + dz * dz) > 0.0025f;
+                    }
+                    s.LastPositionXZ = posXZ;
+                    s.HasLastPosition = true;
                 }
                 // Phase 13c — tick the player follower on the same cadence. The PC
                 // has no ActorFollower (no wander), so its movement lives here. When
@@ -3904,6 +4187,8 @@ void main()
             _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uHasTexture", _texture is null ? 0 : 1);
+            _meshShader.SetInt("uFlipV", 1);
+            ApplyLightingUniforms(_meshShader);
             _texture?.Bind(TextureUnit.Texture0);
             _mesh.Draw();
         }
@@ -3914,6 +4199,8 @@ void main()
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
             _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uFlipV", 1);
+            ApplyLightingUniforms(_meshShader);
             for (var i = 0; i < _sno.Subsets.Count; i++)
             {
                 var subset = _sno.Subsets[i];
@@ -3948,6 +4235,8 @@ void main()
             _skinShader.SetMatrix4Array("uBones[0]", skin);
             _skinShader.SetInt("uAlbedo", 0);
             _skinShader.SetInt("uHasTexture", _animTexture is null ? 0 : 1);
+            _skinShader.SetInt("uFlipV", 1);
+            ApplyLightingUniforms(_skinShader);
             _animTexture?.Bind(TextureUnit.Texture0);
             _skinnedMesh.Draw();
         }
@@ -3961,12 +4250,31 @@ void main()
             _skinShader.Use();
             _skinShader.SetMatrix4("uViewProj", vp);
             _skinShader.SetInt("uAlbedo", 0);
+            ApplyLightingUniforms(_skinShader);
+            // Phase 21c-4 — uFlipV is now per-actor (set inside the loop) because
+            // older ASP versions (v2.3, krug et al) author UVs bottom-up to match
+            // .raw byte order while v2.5+ (player farmboy, late-content NPCs) use
+            // D3D top-down. One global flip got either the krug or the player
+            // wrong. See SetFlipForMesh below.
             // Phase 21c — track the currently-bound albedo so we don't rebind for runs
             // of actors sharing the same mesh (DS1 regions ship ~12 unique archetypes
-            // for ~180 actors, so most adjacent draws hit the cache).
-            AspMesh? lastTexMesh = null;
+            // for ~180 actors, so most adjacent draws hit the cache). Phase 21c-4 keys
+            // on (template, mesh) because krug_grunt and krug_scout share the same
+            // pose mesh but each template overrides the texset name.
+            (SiegeFX.Core.Assets.Template, AspMesh)? lastTexKey = null;
+            int lastFlipV = -1;
             foreach (var s in _actors)
             {
+                // Phase 21c-4 — per-mesh V-flip. v2.5+ ASPs (player farmboy, late
+                // NPCs) author UVs D3D-top-down, v2.3 (krug et al) bottom-up to
+                // match the .raw byte order. One global setting got either crowd
+                // wrong; gate by ASP version.
+                int flipV = (s.Actor.Mesh.AspVersionMajor * 10 + s.Actor.Mesh.AspVersionMinor) >= 25 ? 1 : 0;
+                if (flipV != lastFlipV)
+                {
+                    _skinShader.SetInt("uFlipV", flipV);
+                    lastFlipV = flipV;
+                }
                 var clips = s.Actor.Clips;
                 Matrix4x4[] skin;
                 if (clips.Length == 0)
@@ -3983,14 +4291,22 @@ void main()
                 }
                 else
                 {
-                    var idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
+                    // Phase 21c-4 — pick walk clip (Actor.WalkClipIndex) when the brain
+                    // is translating this actor; otherwise honor the skrit-driven default.
+                    // Without this every NPC played its idle while striding across the map.
+                    int idx;
+                    if (s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length)
+                        idx = s.Actor.WalkClipIndex;
+                    else
+                        idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
                     var clip = clips[idx];
                     var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
                     skin = AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t);
                 }
-                if (!ReferenceEquals(s.Actor.Mesh, lastTexMesh))
+                var texKey = (s.Actor.Template, s.Actor.Mesh);
+                if (lastTexKey is null || lastTexKey.Value != texKey)
                 {
-                    var tex = ResolveAspTexture(s.Actor.Mesh);
+                    var tex = ResolveActorTexture(s.Actor);
                     if (tex is not null)
                     {
                         tex.Bind(TextureUnit.Texture0);
@@ -4000,7 +4316,7 @@ void main()
                     {
                         _skinShader.SetInt("uHasTexture", 0);
                     }
-                    lastTexMesh = s.Actor.Mesh;
+                    lastTexKey = texKey;
                 }
                 _skinShader.SetMatrix4("uModel", s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
@@ -4023,6 +4339,11 @@ void main()
             _meshShader.Use();
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
+            // Static-prop UVs are authored against the same orientation the .raw is
+            // stored in, so the D3D→GL V flip we do for skinned meshes overshoots
+            // here and lands the lid art on the body. Opt out for this pass only.
+            _meshShader.SetInt("uFlipV", 0);
+            ApplyLightingUniforms(_meshShader);
             GlTexture? lastTex = null;
             int lastHas = -1;
             foreach (var prop in _staticProps)
@@ -4084,6 +4405,8 @@ void main()
                 _meshShader.SetMatrix4("uViewProj", vp);
                 _meshShader.SetMatrix4("uModel", weaponModel);
                 _meshShader.SetInt("uAlbedo", 0);
+                _meshShader.SetInt("uFlipV", 1);
+                ApplyLightingUniforms(_meshShader);
                 if (_weaponTexture is not null)
                 {
                     _weaponTexture.Bind(TextureUnit.Texture0);
@@ -4106,6 +4429,8 @@ void main()
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uHasTexture", 0);
+            _meshShader.SetInt("uFlipV", 1);
+            ApplyLightingUniforms(_meshShader);
             const float pileSize = 0.5f;
             foreach (var pile in _lootPiles)
             {
@@ -4122,6 +4447,8 @@ void main()
             _meshShader.Use();
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uFlipV", 1);
+            ApplyLightingUniforms(_meshShader);
             foreach (var inst in _regionInstances)
             {
                 _meshShader.SetMatrix4("uModel", inst.World);
@@ -4365,6 +4692,8 @@ void main()
         _staticProps.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
+        foreach (var tex in _actorTextureCache.Values) tex?.Dispose();
+        _actorTextureCache.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
         _texture?.Dispose();

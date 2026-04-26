@@ -95,5 +95,25 @@ public sealed class Shader : IDisposable
         _gl.Uniform1(loc, value);
     }
 
+    public void SetFloat(string name, float value)
+    {
+        var loc = _gl.GetUniformLocation(Handle, name);
+        if (loc < 0) return;
+        _gl.Uniform1(loc, value);
+    }
+
+    /// <summary>Uploads <paramref name="vectors"/> as a <c>vec3</c> uniform array
+    /// starting at <paramref name="name"/>. Used for the per-region directional
+    /// light arrays (positions/colors) so the shader can loop over a single
+    /// uniform block instead of N+N hand-written setters.</summary>
+    public unsafe void SetVec3Array(string name, ReadOnlySpan<Vector3> vectors)
+    {
+        if (vectors.Length == 0) return;
+        var loc = _gl.GetUniformLocation(Handle, name);
+        if (loc < 0) return;
+        fixed (Vector3* p = vectors)
+            _gl.Uniform3(loc, (uint)vectors.Length, (float*)p);
+    }
+
     public void Dispose() => _gl.DeleteProgram(Handle);
 }
