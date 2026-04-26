@@ -149,14 +149,69 @@ static int DispatchRaw(string[] a)
 
 static int DispatchAsp(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info|skeleton|fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info|skeleton|fuzz|subset-fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "info"     => CmdAspInfo(a[1..]),
-        "skeleton" => CmdAspSkeleton(a[1..]),
-        "fuzz"     => CmdAspFuzz(a[1..]),
-        _          => UnknownCommand("asp " + a[0]),
+        "info"        => CmdAspInfo(a[1..]),
+        "skeleton"    => CmdAspSkeleton(a[1..]),
+        "fuzz"        => CmdAspFuzz(a[1..]),
+        "subset-fuzz" => CmdAspSubsetFuzz(a[1..]),
+        _             => UnknownCommand("asp " + a[0]),
     };
+}
+
+static int CmdAspSubsetFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp subset-fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    int total = 0, parsed = 0, parseFail = 0, mismatched = 0;
+    int oneSubset = 0, multiSubset = 0;
+    int multiTexAcrossSubsets = 0;
+    int maxSubsets = 0;
+    string? maxSubsetsFile = null;
+    var perSubsetCount = new SortedDictionary<int, int>();
+
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".asp", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        AspMesh mesh;
+        try { mesh = AspMesh.Load(reader.ExtractToMemory(path)); }
+        catch (Exception ex)
+        {
+            parseFail++;
+            Console.Error.WriteLine($"  parse fail: {path}  ->  {ex.Message}");
+            continue;
+        }
+        parsed++;
+        int triFromSubsets = 0;
+        var texSet = new HashSet<int>();
+        foreach (var s in mesh.Subsets) { triFromSubsets += s.TriangleCount; texSet.Add(s.TextureIndex); }
+        if (triFromSubsets != mesh.TriangleCount)
+        {
+            mismatched++;
+            Console.Error.WriteLine($"  triangle mismatch in {path}: subsetSum={triFromSubsets} TriangleCount={mesh.TriangleCount}");
+        }
+        if (mesh.Subsets.Length <= 1) oneSubset++; else multiSubset++;
+        if (texSet.Count > 1) multiTexAcrossSubsets++;
+        if (mesh.Subsets.Length > maxSubsets) { maxSubsets = mesh.Subsets.Length; maxSubsetsFile = path; }
+        perSubsetCount.TryGetValue(mesh.Subsets.Length, out var c);
+        perSubsetCount[mesh.Subsets.Length] = c + 1;
+    }
+
+    Console.WriteLine($"asp subset-fuzz: {total} .asp file(s) in tank");
+    Console.WriteLine($"  parsed              : {parsed}");
+    Console.WriteLine($"  parse-fail          : {parseFail}");
+    Console.WriteLine($"  triangle mismatched : {mismatched}");
+    Console.WriteLine($"  single-subset       : {oneSubset}");
+    Console.WriteLine($"  multi-subset        : {multiSubset}");
+    Console.WriteLine($"  multi-texture spans : {multiTexAcrossSubsets}");
+    Console.WriteLine($"  max subsets in file : {maxSubsets} ({maxSubsetsFile})");
+    Console.WriteLine("  histogram (subsetCount -> meshCount):");
+    foreach (var kv in perSubsetCount)
+        Console.WriteLine($"    {kv.Key,3} subsets : {kv.Value,5}");
+    return (parseFail == 0 && mismatched == 0) ? 0 : 4;
 }
 
 static int DispatchAnim(string[] a)
@@ -1916,6 +1971,15 @@ static int CmdAspInfo(string[] a)
     Console.WriteLine($"Vertices  : {mesh.Positions.Length}");
     Console.WriteLine($"Corners   : {mesh.Corners.Length}");
     Console.WriteLine($"Triangles : {mesh.TriangleCount}");
+    Console.WriteLine($"Subsets   : {mesh.Subsets.Length}");
+    for (var i = 0; i < mesh.Subsets.Length; i++)
+    {
+        var s = mesh.Subsets[i];
+        var texName = (s.TextureIndex >= 0 && s.TextureIndex < mesh.TextureNames.Count)
+            ? mesh.TextureNames[s.TextureIndex]
+            : "<out-of-range>";
+        Console.WriteLine($"  [{i}] firstTri={s.FirstTriangle,5}  triCount={s.TriangleCount,5}  texIdx={s.TextureIndex} ({texName})");
+    }
     if (mesh.HasSkin)
     {
         // Average active (non-zero-weight) influences per corner, and the max single bone
