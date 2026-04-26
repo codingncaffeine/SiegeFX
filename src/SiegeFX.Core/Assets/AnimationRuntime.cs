@@ -17,49 +17,75 @@ namespace SiegeFX.Core.Assets;
 /// </summary>
 public static class AnimationRuntime
 {
+    // Phase 21b-2 — bone-index map cache. Resolving "ASP bone i → PRS bone j" by
+    // walking BoneNames was a per-call Dictionary<string,int> allocation, which at
+    // 180 actors × 60 fps was the single largest source of Gen 0 garbage in
+    // OnRender. The mapping is a pure function of (mesh, anim) and both objects
+    // outlive the region they're loaded with, so cache once and reuse.
+    private static readonly Dictionary<(AspMesh, PrsAnimation), int[]> _boneMapCache = new();
+    private static readonly object _boneMapLock = new();
+
+    private static int[] GetBoneMap(AspMesh mesh, PrsAnimation anim)
+    {
+        lock (_boneMapLock)
+        {
+            if (_boneMapCache.TryGetValue((mesh, anim), out var map)) return map;
+            var byName = new Dictionary<string, int>(anim.BoneNames.Count);
+            for (var i = 0; i < anim.BoneNames.Count; i++)
+                byName[anim.BoneNames[i]] = i;
+            map = new int[mesh.BoneCount];
+            for (var i = 0; i < mesh.BoneCount; i++)
+                map[i] = byName.TryGetValue(mesh.BoneNames[i], out var idx) ? idx : -1;
+            _boneMapCache[(mesh, anim)] = map;
+            return map;
+        }
+    }
+
     /// <summary>Compose skin matrices for <paramref name="mesh"/> at <paramref name="timeSec"/>.
     /// Returns one matrix per ASP bone; identity entries appear for bones with no matching
     /// PRS keys (they stay in their bind pose, which yields an identity skin delta).</summary>
     public static Matrix4x4[] ComputeSkinMatrices(AspMesh mesh, PrsAnimation anim, float timeSec)
     {
-        if (mesh.BoneCount == 0)
-            return Array.Empty<Matrix4x4>();
+        if (mesh.BoneCount == 0) return Array.Empty<Matrix4x4>();
+        var skin = new Matrix4x4[mesh.BoneCount];
+        ComputeSkinMatrices(mesh, anim, timeSec, skin);
+        return skin;
+    }
 
-        // Map ASP bone -> PRS bone by name. ASPs typically carry a *subset* of the PRS
-        // skeleton (e.g. a goblin.asp omits spare bones the biped rig keeps), so any ASP
-        // bones not found in the clip just stay at their bind pose.
-        var prsIndexByName = new Dictionary<string, int>(anim.BoneNames.Count);
-        for (var i = 0; i < anim.BoneNames.Count; i++)
-            prsIndexByName[anim.BoneNames[i]] = i;
+    /// <summary>Zero-alloc overload: writes <c>mesh.BoneCount</c> skin matrices into
+    /// <paramref name="skinOut"/>. Hot-path callers (per-frame, per-actor) should
+    /// reuse one scratch buffer across the entire actor list.</summary>
+    public static void ComputeSkinMatrices(AspMesh mesh, PrsAnimation anim, float timeSec, Span<Matrix4x4> skinOut)
+    {
+        var bc = mesh.BoneCount;
+        if (bc == 0) return;
+        if (skinOut.Length < bc)
+            throw new ArgumentException($"skinOut length {skinOut.Length} < BoneCount {bc}", nameof(skinOut));
+        if (mesh.InverseBindMatrices.Length != bc)
+            throw new InvalidDataException("AspMesh InverseBindMatrices length does not match BoneCount");
 
-        // Per-ASP-bone local pose (parent-space). Start from bind pose; overwrite from PRS
-        // where a keyed bone exists. Using the bind pose as the default means bones the
-        // animator didn't key (or that only the ASP knows about) remain rigidly attached
-        // to their parent's animated pose, which is what DS1 does.
-        var localRot = new Quaternion[mesh.BoneCount];
-        var localPos = new Vector3[mesh.BoneCount];
-        for (var i = 0; i < mesh.BoneCount; i++)
+        var map = GetBoneMap(mesh, anim);
+        const int MaxStack = 128;
+        Span<Quaternion> rotBuf   = bc <= MaxStack ? stackalloc Quaternion[MaxStack] : new Quaternion[bc];
+        Span<Vector3>    posBuf   = bc <= MaxStack ? stackalloc Vector3[MaxStack]    : new Vector3[bc];
+        Span<Matrix4x4>  worldBuf = bc <= MaxStack ? stackalloc Matrix4x4[MaxStack]  : new Matrix4x4[bc];
+        var localRot  = rotBuf.Slice(0, bc);
+        var localPos  = posBuf.Slice(0, bc);
+        var worldAnim = worldBuf.Slice(0, bc);
+
+        for (var i = 0; i < bc; i++)
         {
             localRot[i] = mesh.BindPose[i].Rotation;
             localPos[i] = mesh.BindPose[i].Translation;
         }
-        for (var i = 0; i < mesh.BoneCount; i++)
+        for (var i = 0; i < bc; i++)
         {
-            if (!prsIndexByName.TryGetValue(mesh.BoneNames[i], out var prsIdx)) continue;
-            var keys = anim.BoneKeys[prsIdx];
-            if (keys is null) continue;
+            var prs = map[i]; if (prs < 0) continue;
+            var keys = anim.BoneKeys[prs]; if (keys is null) continue;
             if (keys.RotKeys.Count > 0) localRot[i] = SampleRotation(keys, anim.AnimLength, timeSec);
             if (keys.PosKeys.Count > 0) localPos[i] = SamplePosition(keys, anim.AnimLength, timeSec);
         }
-
-        // Walk the hierarchy once for the animated pose. The bind pose equivalent is
-        // already cached on the mesh as InverseBindMatrices (computed at load), so we
-        // don't repeat that work every frame. Parents must precede children in
-        // BoneParents[] — shipping DS1 rigs satisfy this and AspMesh.Load already
-        // asserted it when populating the cache, but the same guard stays here for
-        // meshes constructed by other means (tests, synthetic fixtures).
-        var worldAnim = new Matrix4x4[mesh.BoneCount];
-        for (var i = 0; i < mesh.BoneCount; i++)
+        for (var i = 0; i < bc; i++)
         {
             var localAnim = Matrix4x4.CreateFromQuaternion(localRot[i]) * Matrix4x4.CreateTranslation(localPos[i]);
             var p = mesh.BoneParents[i];
@@ -72,13 +98,8 @@ public static class AnimationRuntime
                 worldAnim[i] = localAnim * worldAnim[p];
             }
         }
-
-        var skin = new Matrix4x4[mesh.BoneCount];
-        if (mesh.InverseBindMatrices.Length != mesh.BoneCount)
-            throw new InvalidDataException("AspMesh InverseBindMatrices length does not match BoneCount");
-        for (var i = 0; i < mesh.BoneCount; i++)
-            skin[i] = mesh.InverseBindMatrices[i] * worldAnim[i];
-        return skin;
+        for (var i = 0; i < bc; i++)
+            skinOut[i] = mesh.InverseBindMatrices[i] * worldAnim[i];
     }
 
     /// <summary>Compose the per-bone animated world matrices (mesh-local) for the given
@@ -86,41 +107,51 @@ public static class AnimationRuntime
     /// animated parent-space local transform walked up the hierarchy. Used by weapon/
     /// shield attach logic that needs the bone's pose directly (skin matrices, which
     /// pre-multiply an inverse bind, don't carry that.) Same complexity as
-    /// <see cref="ComputeSkinMatrices"/>; we walk the hierarchy once here too.</summary>
+    /// <see cref="ComputeSkinMatrices(AspMesh,PrsAnimation,float)"/>; we walk the
+    /// hierarchy once here too.</summary>
     public static Matrix4x4[] ComputeAnimatedBoneWorlds(AspMesh mesh, PrsAnimation? anim, float timeSec)
     {
         if (mesh.BoneCount == 0) return Array.Empty<Matrix4x4>();
+        var world = new Matrix4x4[mesh.BoneCount];
+        ComputeAnimatedBoneWorlds(mesh, anim, timeSec, world);
+        return world;
+    }
 
-        var localRot = new Quaternion[mesh.BoneCount];
-        var localPos = new Vector3[mesh.BoneCount];
-        for (var i = 0; i < mesh.BoneCount; i++)
+    /// <summary>Zero-alloc overload of <see cref="ComputeAnimatedBoneWorlds(AspMesh,PrsAnimation?,float)"/>.</summary>
+    public static void ComputeAnimatedBoneWorlds(AspMesh mesh, PrsAnimation? anim, float timeSec, Span<Matrix4x4> worldOut)
+    {
+        var bc = mesh.BoneCount;
+        if (bc == 0) return;
+        if (worldOut.Length < bc)
+            throw new ArgumentException($"worldOut length {worldOut.Length} < BoneCount {bc}", nameof(worldOut));
+
+        const int MaxStack = 128;
+        Span<Quaternion> rotBuf = bc <= MaxStack ? stackalloc Quaternion[MaxStack] : new Quaternion[bc];
+        Span<Vector3>    posBuf = bc <= MaxStack ? stackalloc Vector3[MaxStack]    : new Vector3[bc];
+        var localRot = rotBuf.Slice(0, bc);
+        var localPos = posBuf.Slice(0, bc);
+        for (var i = 0; i < bc; i++)
         {
             localRot[i] = mesh.BindPose[i].Rotation;
             localPos[i] = mesh.BindPose[i].Translation;
         }
         if (anim is not null)
         {
-            var prsIndexByName = new Dictionary<string, int>(anim.BoneNames.Count);
-            for (var i = 0; i < anim.BoneNames.Count; i++)
-                prsIndexByName[anim.BoneNames[i]] = i;
-            for (var i = 0; i < mesh.BoneCount; i++)
+            var map = GetBoneMap(mesh, anim);
+            for (var i = 0; i < bc; i++)
             {
-                if (!prsIndexByName.TryGetValue(mesh.BoneNames[i], out var prsIdx)) continue;
-                var keys = anim.BoneKeys[prsIdx];
-                if (keys is null) continue;
+                var prs = map[i]; if (prs < 0) continue;
+                var keys = anim.BoneKeys[prs]; if (keys is null) continue;
                 if (keys.RotKeys.Count > 0) localRot[i] = SampleRotation(keys, anim.AnimLength, timeSec);
                 if (keys.PosKeys.Count > 0) localPos[i] = SamplePosition(keys, anim.AnimLength, timeSec);
             }
         }
-
-        var world = new Matrix4x4[mesh.BoneCount];
-        for (var i = 0; i < mesh.BoneCount; i++)
+        for (var i = 0; i < bc; i++)
         {
             var local = Matrix4x4.CreateFromQuaternion(localRot[i]) * Matrix4x4.CreateTranslation(localPos[i]);
             var p = mesh.BoneParents[i];
-            world[i] = p < 0 ? local : local * world[p];
+            worldOut[i] = p < 0 ? local : local * worldOut[p];
         }
-        return world;
     }
 
     /// <summary>Pose every corner in <paramref name="mesh"/> using the given skin matrices.

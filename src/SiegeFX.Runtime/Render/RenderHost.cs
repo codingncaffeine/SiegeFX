@@ -85,6 +85,14 @@ public sealed class RenderHost : IDisposable
     // Bind-pose bone array cached per unique mesh — reused every frame for zero-clip actors
     // so the hot render loop doesn't allocate 181× Matrix4x4[BoneCount] under GC.
     private readonly Dictionary<AspMesh, Matrix4x4[]> _actorIdentityBones = new();
+    // Phase 21b-2 — reusable skin-matrix scratch shared across every actor in the
+    // OnRender draw loop. SetMatrix4Array uploads (or queues) the bytes synchronously
+    // so the next actor can clobber the buffer immediately. Sized lazily to the
+    // largest BoneCount we've seen; zero per-frame allocation once warm.
+    private Matrix4x4[] _skinScratch = Array.Empty<Matrix4x4>();
+    // Same idea for the player's weapon-attach path, which needs animated bone worlds
+    // (not skin matrices) to find the grip bone's frame each render.
+    private Matrix4x4[] _boneWorldsScratch = Array.Empty<Matrix4x4>();
     // Phase 21c — albedo texture cached per AspMesh (NPCs + props share the same cache
     // because the lookup key is the mesh's own TextureNames[0]). null entries memoize
     // misses so we don't retry resolution every frame for assets with no texture.
@@ -378,6 +386,13 @@ public sealed class RenderHost : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
     private readonly List<RegionInstance> _regionInstances = new();
+    // Phase 21b-2 — pre-resolved subset texture names per (mesh, texsetAbbr).
+    // ResolveTexName previously allocated a new string per subset per region
+    // instance per frame (ResolveTexName does string.Concat when the basename
+    // contains "_xxx_"). With ~2k region instances × ~3 subsets, that was
+    // ~6k strings/frame; cached here so it's O(unique mesh+texset pairs)
+    // string-allocs at region load and zero per frame thereafter.
+    private readonly Dictionary<(SnoMesh, string), string[]> _resolvedTexNameCache = new();
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
@@ -418,6 +433,22 @@ public sealed class RenderHost : IDisposable
         if (string.IsNullOrEmpty(texsetAbbr)) return raw;
         var i = raw.IndexOf("_xxx_", StringComparison.OrdinalIgnoreCase);
         return i < 0 ? raw : string.Concat(raw.AsSpan(0, i + 1), texsetAbbr, raw.AsSpan(i + 4));
+    }
+
+    /// <summary>Phase 21b-2 — return the cached array of resolved subset texture
+    /// names for <paramref name="mesh"/> rebound to <paramref name="texsetAbbr"/>.
+    /// Building it costs <c>mesh.Subsets.Count</c> string allocations the first
+    /// time we see this (mesh, abbr) pair; subsequent calls return the cached
+    /// array. Cleared alongside <see cref="_regionInstances"/> on region unload.</summary>
+    private string[] GetResolvedSubsetTexNames(SnoMesh mesh, string texsetAbbr)
+    {
+        var key = (mesh, texsetAbbr);
+        if (_resolvedTexNameCache.TryGetValue(key, out var arr)) return arr;
+        arr = new string[mesh.Subsets.Count];
+        for (var i = 0; i < arr.Length; i++)
+            arr[i] = ResolveTexName(mesh.Subsets[i].TextureName, texsetAbbr);
+        _resolvedTexNameCache[key] = arr;
+        return arr;
     }
 
     /// <summary>Region paths look like <c>/world/maps/&lt;map&gt;/regions/&lt;region&gt;</c>.
@@ -4295,18 +4326,22 @@ void main()
                     lastFlipV = flipV;
                 }
                 var clips = s.Actor.Clips;
-                Matrix4x4[] skin;
+                int boneCount = s.Actor.Mesh.BoneCount;
+                ReadOnlySpan<Matrix4x4> skin;
                 if (clips.Length == 0)
                 {
                     // No parsable PRS for this actor (shipped 0x0202 clips we don't support
                     // yet). Identity per bone = bind-pose pass-through, which renders the
-                    // mesh as authored. Good enough to confirm placement.
-                    if (!_actorIdentityBones.TryGetValue(s.Actor.Mesh, out skin!))
+                    // mesh as authored. Good enough to confirm placement. The cached
+                    // identity array is reused across frames per mesh, so no per-frame
+                    // alloc here either.
+                    if (!_actorIdentityBones.TryGetValue(s.Actor.Mesh, out var identity))
                     {
-                        skin = new Matrix4x4[s.Actor.Mesh.BoneCount];
-                        for (int i = 0; i < skin.Length; i++) skin[i] = Matrix4x4.Identity;
-                        _actorIdentityBones[s.Actor.Mesh] = skin;
+                        identity = new Matrix4x4[boneCount];
+                        for (int i = 0; i < identity.Length; i++) identity[i] = Matrix4x4.Identity;
+                        _actorIdentityBones[s.Actor.Mesh] = identity;
                     }
+                    skin = identity;
                 }
                 else
                 {
@@ -4320,7 +4355,14 @@ void main()
                         idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
                     var clip = clips[idx];
                     var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
-                    skin = AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t);
+                    // Phase 21b-2 — write into the shared scratch buffer instead of
+                    // allocating a fresh Matrix4x4[] per actor per frame. The upload
+                    // below copies the bytes synchronously so the next iteration may
+                    // overwrite the buffer immediately.
+                    if (_skinScratch.Length < boneCount)
+                        _skinScratch = new Matrix4x4[Math.Max(boneCount, 64)];
+                    AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t, _skinScratch);
+                    skin = _skinScratch.AsSpan(0, boneCount);
                 }
                 var texKey = (s.Actor.Template, s.Actor.Mesh);
                 if (lastTexKey is null || lastTexKey.Value != texKey)
@@ -4398,22 +4440,26 @@ void main()
         {
             var pcMesh = _player.Actor.Mesh;
             var clips = _player.Actor.Clips;
-            Matrix4x4[] boneWorlds;
+            int pcBones = pcMesh.BoneCount;
+            // Phase 21b-2 — reuse a shared bone-world scratch instead of allocating
+            // a fresh Matrix4x4[] every frame just to read one element.
+            if (_boneWorldsScratch.Length < pcBones)
+                _boneWorldsScratch = new Matrix4x4[Math.Max(pcBones, 64)];
             if (clips.Length == 0)
             {
-                boneWorlds = AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, null, 0f);
+                AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, null, 0f, _boneWorldsScratch);
             }
             else
             {
                 var cidx = Math.Min(_player.Actor.CurrentClipIndex, clips.Length - 1);
                 var clip = clips[cidx];
                 var t = (float)(clip.AnimLength > 0f ? _player.AnimTime % clip.AnimLength : 0.0);
-                boneWorlds = AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t);
+                AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t, _boneWorldsScratch);
             }
 
-            if (_weaponGripBoneIdx < boneWorlds.Length)
+            if (_weaponGripBoneIdx < pcBones)
             {
-                var gripLocal = boneWorlds[_weaponGripBoneIdx];
+                var gripLocal = _boneWorldsScratch[_weaponGripBoneIdx];
                 // weaponBindInv cancels the weapon ASP's own grip-bone bind offset
                 // so the grip sits at the hand bone's world origin, then gripLocal
                 // places it in the player mesh frame, then CurrentTransform moves
@@ -4471,11 +4517,12 @@ void main()
             foreach (var inst in _regionInstances)
             {
                 _meshShader.SetMatrix4("uModel", inst.World);
+                // Phase 21b-2 — pulled from the (mesh, texsetAbbr) cache so the
+                // inner subset loop allocates zero strings per frame.
+                var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                 for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
                 {
-                    var subset = inst.Mesh.Subsets[i];
-                    var resolved = ResolveTexName(subset.TextureName, inst.TexsetAbbr);
-                    if (_snoTextures.TryGetValue(resolved, out var tex))
+                    if (_snoTextures.TryGetValue(resolvedNames[i], out var tex))
                     {
                         tex.Bind(TextureUnit.Texture0);
                         _meshShader.SetInt("uHasTexture", 1);
@@ -4699,6 +4746,7 @@ void main()
         foreach (var mesh in _regionMeshes.Values) mesh.Dispose();
         _regionMeshes.Clear();
         _regionInstances.Clear();
+        _resolvedTexNameCache.Clear();
         foreach (var mesh in _actorMeshCache.Values) mesh.Dispose();
         _actorMeshCache.Clear();
         _actorIdentityBones.Clear();
