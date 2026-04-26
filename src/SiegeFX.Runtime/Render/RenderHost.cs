@@ -99,9 +99,10 @@ public sealed class RenderHost : IDisposable
     private readonly Dictionary<AspMesh, GlTexture?> _aspTextureCache = new();
     // Phase 21c-4 — actors apply per-template texset overrides (`[aspect][textures] { 0 = b_c_eam_kg; }`)
     // so two templates sharing the same mesh (krug_grunt vs krug_scout vs ... all on
-    // m_c_eam_kg_pos_1.asp) render with different skins. Keyed by template+mesh so
-    // identical templates instances reuse one GL upload.
-    private readonly Dictionary<(SiegeFX.Core.Assets.Template, AspMesh), GlTexture?> _actorTextureCache = new();
+    // m_c_eam_kg_pos_1.asp) render with different skins. Keyed by template+mesh+slot
+    // so identical template instances reuse one GL upload, and multi-subset characters
+    // (farmboy = skin slot + clothing slot) cache each subset's texture independently.
+    private readonly Dictionary<(SiegeFX.Core.Assets.Template, AspMesh, int), GlTexture?> _actorTextureCache = new();
     // Phase 21c — static props streamed from non_interactive/container/inventory/
     // interactive/emitter .gas. No skrit, no animation, no nav — just transform +
     // mesh + (optional) texture, drawn through the static-mesh pipeline.
@@ -2321,15 +2322,21 @@ void main()
     /// (<c>b_c_eam_kg</c> / <c>b_c_eam_ksc</c>); without the override, every actor
     /// rendered with the scout texset. Cache key is (template, mesh) so two actors
     /// of the same archetype share one GL upload.</summary>
-    private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor)
+    private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
-        var key = (actor.Template, actor.Mesh);
+        var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
         string? baseName = null;
         if (_templateStore is not null)
-            baseName = _templateStore.GetAttribute(actor.Template, "aspect", "textures", "0");
-        if (string.IsNullOrEmpty(baseName) && actor.Mesh.TextureNames.Count > 0)
-            baseName = actor.Mesh.TextureNames[0];
+        {
+            // Templates can override any slot — DS1 uses `[aspect][textures] { 0 = ... }`
+            // for body retexturing (krug variants) and may also override slot 1+ for
+            // characters like farmboy whose clothing strip is a separate subset.
+            var slotKey = textureIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            baseName = _templateStore.GetAttribute(actor.Template, "aspect", "textures", slotKey);
+        }
+        if (string.IsNullOrEmpty(baseName) && textureIndex >= 0 && textureIndex < actor.Mesh.TextureNames.Count)
+            baseName = actor.Mesh.TextureNames[textureIndex];
         var tex = LoadTexsetTexture(baseName);
         _actorTextureCache[key] = tex;
         return tex;
@@ -4311,7 +4318,6 @@ void main()
             // for ~180 actors, so most adjacent draws hit the cache). Phase 21c-4 keys
             // on (template, mesh) because krug_grunt and krug_scout share the same
             // pose mesh but each template overrides the texset name.
-            (SiegeFX.Core.Assets.Template, AspMesh)? lastTexKey = null;
             int lastFlipV = -1;
             foreach (var s in _actors)
             {
@@ -4364,24 +4370,39 @@ void main()
                     AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t, _skinScratch);
                     skin = _skinScratch.AsSpan(0, boneCount);
                 }
-                var texKey = (s.Actor.Template, s.Actor.Mesh);
-                if (lastTexKey is null || lastTexKey.Value != texKey)
-                {
-                    var tex = ResolveActorTexture(s.Actor);
-                    if (tex is not null)
-                    {
-                        tex.Bind(TextureUnit.Texture0);
-                        _skinShader.SetInt("uHasTexture", 1);
-                    }
-                    else
-                    {
-                        _skinShader.SetInt("uHasTexture", 0);
-                    }
-                    lastTexKey = texKey;
-                }
                 _skinShader.SetMatrix4("uModel", s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
-                s.GlMesh.Draw();
+
+                // Phase 21d-2a-ii — walk per-mesh subsets emitted by the ASP parser.
+                // Each subset is one BSMM (textureIndex, faceSpan) record carved out
+                // of the flattened triangle list; binding per subset prevents farmboy's
+                // clothing strip (slot 1 = b_c_pos_a1_015) from inheriting the skin
+                // sampler bound for slot 0. Single-subset meshes (krug, goblins, most
+                // monsters) issue one bind + one DrawSubset, identical in cost to the
+                // old single Draw() path.
+                var subsets = s.Actor.Mesh.Subsets;
+                if (subsets.Length == 0)
+                {
+                    var tex = ResolveActorTexture(s.Actor, 0);
+                    if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
+                    else _skinShader.SetInt("uHasTexture", 0);
+                    s.GlMesh.Draw();
+                }
+                else
+                {
+                    int lastSlot = -1;
+                    foreach (var sub in subsets)
+                    {
+                        if (sub.TextureIndex != lastSlot)
+                        {
+                            var tex = ResolveActorTexture(s.Actor, sub.TextureIndex);
+                            if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
+                            else _skinShader.SetInt("uHasTexture", 0);
+                            lastSlot = sub.TextureIndex;
+                        }
+                        s.GlMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+                    }
+                }
             }
         }
 
@@ -4759,7 +4780,12 @@ void main()
         _staticProps.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
-        foreach (var tex in _actorTextureCache.Values) tex?.Dispose();
+        // Phase 21d-2a-ii — multiple slot keys may resolve to the same GlTexture
+        // when a template overrides slot 0 to the same name shipped in slot 1
+        // (or via texset suffix probing). Dispose unique instances only.
+        var disposedActorTex = new HashSet<GlTexture>(ReferenceEqualityComparer.Instance);
+        foreach (var tex in _actorTextureCache.Values)
+            if (tex is not null && disposedActorTex.Add(tex)) tex.Dispose();
         _actorTextureCache.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
