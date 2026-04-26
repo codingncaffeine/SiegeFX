@@ -16,9 +16,9 @@ Most of the work that made this tractable is other people's: **Guilherme Lampert
 
 ## Status
 
-**`v0.14.0`** — Playable. Farmboy spawns in `fh_r1`, click-to-move and click-to-attack route through the live nav mesh, equipped weapons render on the hand bone, the HUD draws DS1 bitmap-font text with HP/MP bars derived from STR/DEX/INT, an 8×5 grid inventory toggles with `I`, the pause menu opens with `Esc`, `Q` and `W` cast the slotted spells, audio plays positionally, and `F5` / `F9` quicksave/quickload restore the world losslessly.
+**`v0.15.0`** — Playable across the world. Farmboy spawns at the authored start position, click-to-move and click-to-attack route through the live nav mesh, equipped weapons render on the hand bone, the HUD draws DS1 bitmap-font text with HP/MP bars derived from STR/DEX/INT, the inventory and pause menu work, `Q` and `W` cast slotted spells, audio plays positionally, and `F5` / `F9` quicksave/quickload restore the world losslessly. RMB on an NPC opens a branching dialogue panel; quests are journaled and persist across saves; vendors stock and trade for gold dropped by enemies.
 
-181 NPCs wander the region on the live nav mesh. Spells, leveling, audio, and save/load are all in.
+All **81 shipped DS1 regions** load through the cross-boundary streamer, with **50,680 static-prop placements** texturing 100% via the runtime resolver. NPCs, dialogue, quests, vendors, spells, leveling, audio, and save/load are all in. Performance pass and end-to-end balance are next.
 
 Full status, roadmap, and development journal live on the [**wiki**](https://github.com/codingncaffeine/SiegeFX/wiki).
 
