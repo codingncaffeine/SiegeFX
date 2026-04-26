@@ -89,7 +89,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
-    Console.WriteLine("  siegefx region prop-textures <map-tank> <logic-tank> <objects-tank> <region-path> [--terrain=PATH] [--top=N] [--list-misses]");
+    Console.WriteLine("  siegefx region prop-textures <map-tank> <logic-tank> <objects-tank> <region-path|all> [--terrain=PATH] [--top=N] [--list-misses]");
     Console.WriteLine("  siegefx region nav         <map-tank> <terrain-tank> <region-path>");
     Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
@@ -2820,64 +2820,106 @@ static int CmdRegionPropTextures(string[] a)
     resolver.Add(objectsReader, "Objects.dsres");
     resolver.Add(logicReader,   "Logic.dsres");
 
+    // "all" as the region arg auto-discovers every /world/maps/.../regions/<name>
+    // path in the map tank and audits each in turn, then prints one summary.
+    // Useful for CI / regression checks: 0 unresolved across all shipped regions.
+    var regionPaths = new List<string>();
+    if (a[3].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"auditing {regionPaths.Count} regions...");
+    }
+    else
+    {
+        regionPaths.Add(a[3]);
+    }
+
     int considered = 0, withMesh = 0, resolved = 0, unresolved = 0;
     int noTemplate = 0, noModel = 0, noMesh = 0;
     var perTpl = new SortedDictionary<string, (int textured, int untextured, string? expected, string? mesh)>(StringComparer.OrdinalIgnoreCase);
     var unresolvedNames = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var perRegion = new List<(string path, int placements, int untextured)>();
 
-    foreach (var fileName in SiegeFX.Core.Assets.RegionObjects.StaticPropFiles)
+    foreach (var regionPath in regionPaths)
     {
-        var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, a[3], fileName);
-        foreach (var p in placements)
+        int regPlacements = 0, regUntex = 0;
+        foreach (var fileName in SiegeFX.Core.Assets.RegionObjects.StaticPropFiles)
         {
-            considered++;
-            if (!store.TryGet(p.TemplateName, out var template)) { noTemplate++; continue; }
-            var modelName = store.GetAttribute(template, "aspect", "model");
-            if (string.IsNullOrEmpty(modelName)) { noModel++; continue; }
-            if (!resolver.TryLoadModel(modelName, out var aspBytes)) { noMesh++; continue; }
-            SiegeFX.Core.Assets.AspMesh asp;
-            try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
-            catch { noMesh++; continue; }
-            withMesh++;
-
-            // Same precedence as ResolveActorTexture: template override slot 0 wins,
-            // then BMSH-stored texture name. Static-prop templates rarely override but
-            // some interactives (chests, doors with state variants) do.
-            var baseName = store.GetAttribute(template, "aspect", "textures", "0");
-            if (string.IsNullOrEmpty(baseName) && asp.TextureNames.Count > 0)
-                baseName = asp.TextureNames[0];
-
-            bool hit = false;
-            if (!string.IsNullOrEmpty(baseName))
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, regionPath, fileName);
+            foreach (var p in placements)
             {
-                if (resolver.TryLoadByBasename(baseName + ".raw", out _)) hit = true;
-                else
-                {
-                    for (int i = 1; i <= 8 && !hit; i++)
-                        if (resolver.TryLoadByBasename($"{baseName}-{i:D2}.raw", out _)) hit = true;
-                }
-            }
+                considered++;
+                regPlacements++;
+                if (!store.TryGet(p.TemplateName, out var template)) { noTemplate++; continue; }
+                var modelName = store.GetAttribute(template, "aspect", "model");
+                if (string.IsNullOrEmpty(modelName)) { noModel++; continue; }
+                if (!resolver.TryLoadModel(modelName, out var aspBytes)) { noMesh++; continue; }
+                SiegeFX.Core.Assets.AspMesh asp;
+                try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
+                catch { noMesh++; continue; }
+                withMesh++;
 
-            perTpl.TryGetValue(p.TemplateName, out var entry);
-            perTpl[p.TemplateName] = (
-                entry.textured + (hit ? 1 : 0),
-                entry.untextured + (hit ? 0 : 1),
-                baseName ?? entry.expected,
-                modelName);
-            if (hit) resolved++;
-            else
-            {
-                unresolved++;
+                // Same precedence as ResolveActorTexture: template override slot 0 wins,
+                // then BMSH-stored texture name. Static-prop templates rarely override but
+                // some interactives (chests, doors with state variants) do.
+                var baseName = store.GetAttribute(template, "aspect", "textures", "0");
+                if (string.IsNullOrEmpty(baseName) && asp.TextureNames.Count > 0)
+                    baseName = asp.TextureNames[0];
+
+                bool hit = false;
                 if (!string.IsNullOrEmpty(baseName))
                 {
-                    unresolvedNames.TryGetValue(baseName, out var nn);
-                    unresolvedNames[baseName] = nn + 1;
+                    if (resolver.TryLoadByBasename(baseName + ".raw", out _)) hit = true;
+                    else
+                    {
+                        for (int i = 1; i <= 8 && !hit; i++)
+                            if (resolver.TryLoadByBasename($"{baseName}-{i:D2}.raw", out _)) hit = true;
+                    }
+                }
+
+                perTpl.TryGetValue(p.TemplateName, out var entry);
+                perTpl[p.TemplateName] = (
+                    entry.textured + (hit ? 1 : 0),
+                    entry.untextured + (hit ? 0 : 1),
+                    baseName ?? entry.expected,
+                    modelName);
+                if (hit) resolved++;
+                else
+                {
+                    unresolved++;
+                    regUntex++;
+                    if (!string.IsNullOrEmpty(baseName))
+                    {
+                        unresolvedNames.TryGetValue(baseName, out var nn);
+                        unresolvedNames[baseName] = nn + 1;
+                    }
                 }
             }
         }
+        perRegion.Add((regionPath, regPlacements, regUntex));
     }
 
-    Console.WriteLine($"region        : {a[3]}");
+    bool batch = regionPaths.Count > 1;
+    Console.WriteLine();
+    if (batch)
+    {
+        Console.WriteLine($"regions       : {regionPaths.Count}");
+    }
+    else
+    {
+        Console.WriteLine($"region        : {a[3]}");
+    }
     Console.WriteLine($"placements    : {considered}");
     Console.WriteLine($"  no template : {noTemplate}");
     Console.WriteLine($"  no aspect.model: {noModel}");
@@ -2901,8 +2943,17 @@ static int CmdRegionPropTextures(string[] a)
         foreach (var kv in unresolvedNames.OrderByDescending(x => x.Value))
             Console.WriteLine($"  {kv.Value,4}x  {kv.Key}");
     }
+    if (batch)
+    {
+        var dirty = perRegion.Where(r => r.untextured > 0).ToList();
+        Console.WriteLine();
+        Console.WriteLine($"per-region misses ({dirty.Count} dirty / {perRegion.Count} total):");
+        if (dirty.Count == 0) Console.WriteLine("  (all regions clean)");
+        foreach (var r in dirty.OrderByDescending(r => r.untextured))
+            Console.WriteLine($"  {r.untextured,4}x untextured / {r.placements,5} placements  {r.path}");
+    }
     terrainTank?.Dispose();
-    return 0;
+    return unresolved == 0 ? 0 : 4;
 }
 
 // End-to-end spawn harness: resolve everything, build real Actors, tick the shared
