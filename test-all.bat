@@ -66,7 +66,7 @@ echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neigh
 echo   47. Phase 21a-3 - Rolling preload (no more invisible wall, walk arbitrarily far)
 echo   48. Phase 21b-1 - --diag mode (startup timings + per-second frame histogram)
 echo   49. Phase 21c-1 - NPC textures + static props (trees/barrels/fences/crops/candles in fh_r1)
-echo   50. Phase 21c-5 - Headless prop-texture audit across every region (CLI, no window)
+echo   50. Phase 21c-5 - Headless prop-texture audit across all 81 regions (CLI, no window)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -840,16 +840,16 @@ goto MENU
 
 :T50
 echo.
-echo --- Phase 21c-5: Headless prop-texture audit ---
-echo [Walks every static-prop placement in fh_r1 + a sample dungeon region]
-echo [through the same texset rules the runtime uses (template override -^>]
-echo [BMSH default -^> -01..-08 variant fallback) and prints per-template]
-echo [misses. With Terrain.dsres in the resolver, expect 0 untextured.]
+echo --- Phase 21c-5: Headless prop-texture audit (all regions) ---
+echo [Walks every static-prop placement in EVERY shipped DS1 region through]
+echo [the same texset rules the runtime uses (template override -^> BMSH]
+echo [default -^> -01..-08 variant fallback) and prints per-template misses.]
+echo [With Terrain.dsres in the resolver, expect 0 untextured + exit code 0.]
 echo.
-"%TOOL%" region prop-textures "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --terrain="%DS1%\Resources\Terrain.dsres" --top=10 --list-misses
+"%TOOL%" region prop-textures "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" all --terrain="%DS1%\Resources\Terrain.dsres" --top=10 --list-misses
+set EXITCODE=%ERRORLEVEL%
 echo.
-"%TOOL%" region prop-textures "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/hc_r1 --terrain="%DS1%\Resources\Terrain.dsres" --top=10 --list-misses
-echo.
+echo === audit exited with code %EXITCODE% ===
 pause
 goto MENU
 
