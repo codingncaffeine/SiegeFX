@@ -132,6 +132,23 @@ public sealed class SkinnedMesh : IDisposable
         _gl.BindVertexArray(0);
     }
 
+    /// <summary>Phase 21d-2a-ii — draw a contiguous span of triangles out of the
+    /// flattened index buffer. Used by the actor renderer to issue one draw per
+    /// ASP subset (BSMM-defined (textureIndex, faceSpan) records) so multi-texture
+    /// characters like farmboy bind the right .raw per submesh instead of letting
+    /// the first-bound texture leak across the clothing strip.</summary>
+    public void DrawSubset(int firstTriangle, int triangleCount)
+    {
+        if (triangleCount <= 0) return;
+        _gl.BindVertexArray(_vao);
+        unsafe
+        {
+            var byteOffset = (nint)(firstTriangle * 3 * sizeof(uint));
+            _gl.DrawElements(GLEnum.Triangles, (uint)(triangleCount * 3), GLEnum.UnsignedInt, (void*)byteOffset);
+        }
+        _gl.BindVertexArray(0);
+    }
+
     public void Dispose()
     {
         _gl.DeleteBuffer(_vbo);
