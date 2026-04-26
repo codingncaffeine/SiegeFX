@@ -195,6 +195,11 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Tank.TankFile? _playMapTank;
     private SiegeFX.Core.Tank.TankFile? _playLogicTank;
     private SiegeFX.Core.Tank.TankFile? _playObjectsTank;
+    // Phase 21c-5 — Terrain.dsres ships the b_t_*.raw bitmaps that interior
+    // props (bookshelves, doors, walls) reference even though they aren't
+    // terrain meshes themselves. Without this in the play resolver, those
+    // props rendered with the neutral fallback color.
+    private SiegeFX.Core.Tank.TankFile? _playTerrainTank;
     // Phase 18a — Sound.dsres pinned for the audio engine's clip lifetime.
     // We only read .wav blobs out at LoadPlayActors time, but keeping the
     // tank open is harmless and lets later sub-phases lazy-load extra SFX
@@ -1711,8 +1716,22 @@ void main()
         // Objects.dsres carries more recent asset overrides than Logic.dsres in shipped DS1
         // content (patch-tank order), so add Logic last — the AssetResolver does last-added-wins
         // basename indexing and we want Logic's skrit/prs/asp resolution to shadow stale objects
-        // copies. Terrain stays out of the resolver (it's all SNOs and subset rawsnap textures).
+        // copies. Phase 21c-5 — Terrain.dsres goes in first as a fallback texture source for
+        // interior props (bookshelves, doors) that reference b_t_*.raw bitmaps shipped alongside
+        // the terrain SNOs; Objects/Logic still win on basename collisions.
         var resolver = new SiegeFX.Core.Assets.AssetResolver();
+        if (_regionTerrainTankPath is not null)
+        {
+            try
+            {
+                _playTerrainTank = TankFile.Open(_regionTerrainTankPath);
+                resolver.Add(new TankReader(_playTerrainTank), "Terrain.dsres");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  Terrain.dsres open failed: {ex.Message} (interior prop textures may miss)");
+            }
+        }
         resolver.Add(objectsReader, "Objects.dsres");
         resolver.Add(logicReader,   "Logic.dsres");
 
@@ -4956,6 +4975,7 @@ void main()
         _playMapTank?.Dispose();
         _playLogicTank?.Dispose();
         _playObjectsTank?.Dispose();
+        _playTerrainTank?.Dispose();
         _window.Dispose();
     }
 }
