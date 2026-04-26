@@ -125,12 +125,26 @@ public sealed class TemplateStore
     /// <summary>Walks the specializes chain looking up an attribute by a dotted path.
     /// For <c>GetAttribute(t, "aspect", "model")</c>: descend <c>aspect</c> in t's node,
     /// then read <c>model</c>; if absent, repeat on t.Specializes. Returns null if no
-    /// ancestor defines the field.</summary>
+    /// ancestor defines the field.
+    ///
+    /// DS1 also accepts a colon-shorthand for nested attributes — <c>aspect:model = X;</c>
+    /// at the template root is equivalent to <c>[aspect] { model = X; }</c>. Foliage
+    /// templates (cornstalk_grs_*, planter_*, fire_charred_template lookups, etc.) use
+    /// the shorthand exclusively, so we check the flat form on each chain link before
+    /// descending — otherwise an inherited <c>[aspect]</c> block on a base template
+    /// (e.g. <c>base_burnable</c>'s life-only aspect) would shadow the leaf's real
+    /// model and the prop would silently fail to render.</summary>
     public string? GetAttribute(Template template, params string[] path)
     {
         if (path.Length == 0) return null;
+        var flatName = path.Length >= 2 ? string.Join(':', path) : null;
         for (var t = template; t is not null; t = t.Specializes)
         {
+            if (flatName is not null)
+            {
+                var flat = FindAttr(t.Node, flatName);
+                if (flat is not null) return flat;
+            }
             var node = t.Node;
             for (int i = 0; i < path.Length - 1; i++)
             {

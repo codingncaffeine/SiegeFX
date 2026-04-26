@@ -125,7 +125,34 @@ public sealed class ActorSpawner
         // blender log reflects what *would* have been selected once the loader catches
         // up. Missing-file vs version-miss is distinguished in diagnostics.
         var clip = TryLoadAnyStanceClip(chorePrefix, stances, animSuffix, inst);
-        var clips = clip is null ? Array.Empty<PrsAnimation>() : new[] { clip };
+
+        // Phase 21c-4 — load chore_walk alongside chore_default so the renderer can
+        // swap to the walk cycle while the brain is moving the actor along nav paths.
+        // Falls back to the idle clip if the walk PRS is missing or version-misses.
+        PrsAnimation? walkClip = null;
+        var walkSection = _store.GetSection(template, "body", "chore_dictionary", "chore_walk");
+        if (walkSection is not null)
+        {
+            var walkAnimFiles = TemplateStore.FindChild(walkSection, "anim_files");
+            var walkSuffix = walkAnimFiles?.Attributes.FirstOrDefault().Value;
+            if (walkSuffix is not null)
+            {
+                var walkStances = ParseChoreStances(TemplateStore.FindAttr(walkSection, "chore_stances"));
+                walkClip = TryLoadAnyStanceClip(chorePrefix, walkStances, walkSuffix, inst);
+            }
+        }
+
+        // Clips[0] = idle (chore_default), Clips[1] = walk if loaded. Order is the
+        // contract Actor.WalkClipIndex publishes to the renderer.
+        var clipList = new List<PrsAnimation>();
+        int walkIdx = -1;
+        if (clip is not null) clipList.Add(clip);
+        if (walkClip is not null)
+        {
+            walkIdx = clipList.Count;
+            clipList.Add(walkClip);
+        }
+        var clips = clipList.ToArray();
 
         var program = GetOrCompileSkrit(skritName);
         if (program is null)
@@ -150,7 +177,7 @@ public sealed class ActorSpawner
 
         var world = ComposeWorldTransform(inst.Placement);
         var stats = ActorStats.FromTemplate(_store, template);
-        return new Actor(inst, template, world, mesh, clips, skrit, host, stats);
+        return new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx);
     }
 
     Matrix4x4 ComposeWorldTransform(NodePlacement p)

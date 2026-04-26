@@ -1948,6 +1948,26 @@ static int CmdAspInfo(string[] a)
             Console.WriteLine($"BindPose[{i}] : rot=({bp.Rotation.X:F3},{bp.Rotation.Y:F3},{bp.Rotation.Z:F3},{bp.Rotation.W:F3}) tr=({bp.Translation.X:F2},{bp.Translation.Y:F2},{bp.Translation.Z:F2})");
         }
     }
+    if (mesh.Corners.Length > 0)
+    {
+        var umin = mesh.Corners[0].Uv.X; var umax = umin;
+        var vmin = mesh.Corners[0].Uv.Y; var vmax = vmin;
+        for (var i = 1; i < mesh.Corners.Length; i++)
+        {
+            var uv = mesh.Corners[i].Uv;
+            if (uv.X < umin) umin = uv.X; if (uv.X > umax) umax = uv.X;
+            if (uv.Y < vmin) vmin = uv.Y; if (uv.Y > vmax) vmax = uv.Y;
+        }
+        Console.WriteLine($"UV extents: U=[{umin:F3},{umax:F3}] V=[{vmin:F3},{vmax:F3}]");
+        if (Environment.GetEnvironmentVariable("SIEGEFX_DUMP_UVS") == "1")
+        {
+            for (var i = 0; i < mesh.Corners.Length; i++)
+            {
+                var c = mesh.Corners[i]; var p = mesh.Positions[c.VertexIndex];
+                Console.WriteLine($"  c[{i,2}] v={c.VertexIndex,2}  uv=({c.Uv.X:F3},{c.Uv.Y:F3})  pos=({p.X:F2},{p.Y:F2},{p.Z:F2})");
+            }
+        }
+    }
     var chunks = AspScanner.Scan(data);
     Console.WriteLine($"Chunks    : {chunks.Count}");
     foreach (var c in chunks)
