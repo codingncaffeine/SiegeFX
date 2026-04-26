@@ -87,6 +87,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
     Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
+    Console.WriteLine("  siegefx templates equipment-audit <logic-tank> <objects-tank> <player-template> [--terrain=PATH]");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -2446,7 +2447,7 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot|resolve-textures> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot|resolve-textures|equipment-audit> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "list"   => CmdTemplatesList(a[1..]),
@@ -2455,8 +2456,203 @@ static int DispatchTemplates(string[] a)
         "stats"  => CmdTemplatesStats(a[1..]),
         "combat" => CmdTemplatesCombat(a[1..]),
         "loot"   => CmdTemplatesLoot(a[1..]),
+        "equipment-audit" => CmdTemplatesEquipmentAudit(a[1..]),
         _        => UnknownCommand("templates " + a[0]),
     };
+}
+
+// Phase 21d-2a-vii — read-only audit of an actor template's equipment slots.
+// For each [inventory][equipment] entry (es_weapon_hand, es_feet, es_chest, ...),
+// resolves the item template, loads its ASP from the resolver, and characterizes
+// the mesh: bone count, skin presence, overlap with the body mesh's bone names.
+//
+// The intent is to confirm — before writing the layered-equipment renderer — which
+// slots use single-bone attachments (like the dagger we wired in 21d-2a-vi) vs
+// full-body skinned meshes that share the actor's skeleton. DS1's eBone enum only
+// lists weapon_bone/shield_bone/kill_bone, so the working hypothesis is that
+// boots/chest/head/forearms are full-body skinned and the spellbook is the only
+// other single-bone attach. This audit verifies that hypothesis against shipped
+// content rather than relying on it.
+static int CmdTemplatesEquipmentAudit(string[] a)
+{
+    string? terrainPath = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--terrain=", StringComparison.Ordinal)) terrainPath = x["--terrain=".Length..];
+        else rest.Add(x);
+    }
+    if (rest.Count != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx templates equipment-audit <logic-tank> <objects-tank> <player-template> [--terrain=PATH]");
+        return 1;
+    }
+
+    using var logicTank   = TankFile.Open(rest[0]);
+    using var objectsTank = TankFile.Open(rest[1]);
+    var playerTemplate = rest[2];
+
+    var logicReader   = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    if (terrainPath is not null)
+    {
+        var terrainTank = TankFile.Open(terrainPath);
+        resolver.Add(new TankReader(terrainTank), "Terrain.dsres");
+    }
+    resolver.Add(objectsReader, "Objects.dsres");
+    resolver.Add(logicReader,   "Logic.dsres");
+
+    if (!store.TryGet(playerTemplate, out var pcTpl))
+    {
+        Console.Error.WriteLine($"player template not found: {playerTemplate}");
+        return 1;
+    }
+
+    Console.WriteLine($"player template : {playerTemplate}");
+    Console.Write    ("chain           :");
+    for (var cur = pcTpl; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
+    Console.WriteLine();
+
+    var bodyModel = store.GetAttribute(pcTpl, "aspect", "model");
+    if (string.IsNullOrEmpty(bodyModel))
+    {
+        Console.Error.WriteLine("player template has no aspect.model — cannot audit");
+        return 2;
+    }
+    if (!resolver.TryLoadModel(bodyModel, out var bodyAspBytes))
+    {
+        Console.Error.WriteLine($"body mesh '{bodyModel}.asp' not in any tank");
+        return 3;
+    }
+    var bodyAsp = SiegeFX.Core.Assets.AspMesh.Load(bodyAspBytes);
+    Console.WriteLine($"body mesh       : {bodyModel}.asp  v{bodyAsp.AspVersionMajor}.{bodyAsp.AspVersionMinor}");
+    Console.WriteLine($"body bones      : {bodyAsp.BoneCount}");
+    if (bodyAsp.BoneCount > 0)
+    {
+        Console.WriteLine("body bone names :");
+        for (int bi = 0; bi < bodyAsp.BoneCount; bi++)
+            Console.WriteLine($"  [{bi,3}] {bodyAsp.BoneNames[bi]}");
+    }
+    var bodyBoneSet = new HashSet<string>(bodyAsp.BoneNames, StringComparer.OrdinalIgnoreCase);
+
+    // body.bone_translator authors weapon_bone=weapon_grip / shield_bone=shield_grip,
+    // mapping the eBone enum slots (weapon_bone=1, shield_bone=2) to actual bone
+    // names on the biped skeleton. Surface what the template authored so the audit
+    // shows exactly which body bones are the documented attach points.
+    var translator = store.GetSection(pcTpl, "body", "bone_translator");
+    if (translator is not null)
+    {
+        Console.WriteLine($"bone_translator : {translator.Attributes.Count} entries");
+        foreach (var attr in translator.Attributes)
+        {
+            var present = bodyBoneSet.Contains(attr.Value) ? "OK" : "MISS";
+            Console.WriteLine($"  {attr.Name,-16} = {attr.Value,-16}  [{present}]");
+        }
+    }
+    else
+    {
+        Console.WriteLine("bone_translator : <none>");
+    }
+
+    // Walk the equipment slots authored on the template (and its specializes chain
+    // via GetSection). DS1's actually-mesh-equipped slots are 7: shield_hand,
+    // weapon_hand, feet, chest, head, forearms, spellbook. Amulet/rings carry no
+    // mesh (UI-only) — anything else surfaces here so we don't quietly skip new slots.
+    var eq = store.GetSection(pcTpl, "inventory", "equipment");
+    if (eq is null)
+    {
+        Console.WriteLine();
+        Console.WriteLine("equipment       : <no [inventory][equipment] block on template chain>");
+        return 0;
+    }
+    var slotEntries = new List<(string Slot, string Item)>();
+    foreach (var attr in eq.Attributes)
+    {
+        if (!attr.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
+        if (string.IsNullOrWhiteSpace(attr.Value)) continue;
+        slotEntries.Add((attr.Name, attr.Value.Trim()));
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"equipment slots : {slotEntries.Count}");
+    foreach (var (slot, itemRef) in slotEntries)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"== [{slot}] {itemRef}");
+        if (!store.TryGet(itemRef, out var itemTpl))
+        {
+            Console.WriteLine("   item template: <not found in store>");
+            continue;
+        }
+        Console.Write("   chain        :");
+        for (var cur = itemTpl; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
+        Console.WriteLine();
+
+        var itemModel = store.GetAttribute(itemTpl, "aspect", "model");
+        Console.WriteLine($"   aspect.model : {itemModel ?? "<none>"}");
+        if (string.IsNullOrEmpty(itemModel)) continue;
+
+        if (!resolver.TryLoadModel(itemModel, out var itemBytes))
+        {
+            Console.WriteLine($"   asp          : <{itemModel}.asp not in any tank>");
+            continue;
+        }
+        SiegeFX.Core.Assets.AspMesh asp;
+        try { asp = SiegeFX.Core.Assets.AspMesh.Load(itemBytes); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"   asp          : <load failed: {ex.Message}>");
+            continue;
+        }
+        Console.WriteLine($"   asp          : {itemModel}.asp  v{asp.AspVersionMajor}.{asp.AspVersionMinor}  " +
+                          $"corners={asp.Corners.Length}  subsets={asp.Subsets.Length}  textures={asp.TextureNames.Count}");
+        Console.WriteLine($"   skin         : {(asp.HasSkin ? $"yes ({asp.SkinWeights.Length} weighted corners)" : "no (rigid)")}");
+        Console.WriteLine($"   bones        : {asp.BoneCount}");
+        if (asp.BoneCount > 0)
+        {
+            for (int bi = 0; bi < Math.Min(asp.BoneCount, 16); bi++)
+                Console.WriteLine($"     [{bi,3}] {asp.BoneNames[bi]}");
+            if (asp.BoneCount > 16) Console.WriteLine($"     ... +{asp.BoneCount - 16} more");
+        }
+
+        // Bone-overlap scoring tells us which render path the slot needs:
+        //   * 0–1 named overlaps with the body skeleton + asp.HasSkin=false
+        //         → single-bone rigid attach (like the dagger in 21d-2a-vi)
+        //   * Most/all bone names match body bones + asp.HasSkin=true
+        //         → full-body skinned, layer over body using shared bone matrices
+        //   * 0 named overlaps + asp.HasSkin=true
+        //         → ASP rigs its own skeleton (rare — would need its own matrices)
+        int matched = 0;
+        var nonMatch = new List<string>();
+        for (int bi = 0; bi < asp.BoneCount; bi++)
+        {
+            if (bodyBoneSet.Contains(asp.BoneNames[bi])) matched++;
+            else nonMatch.Add(asp.BoneNames[bi]);
+        }
+        Console.WriteLine($"   body overlap : {matched} / {asp.BoneCount} bone names match body skeleton");
+        if (nonMatch.Count > 0)
+        {
+            var preview = nonMatch.Count <= 6 ? string.Join(", ", nonMatch) : string.Join(", ", nonMatch.Take(6)) + $" ... +{nonMatch.Count - 6}";
+            Console.WriteLine($"   non-match    : {preview}");
+        }
+
+        string verdict;
+        if (!asp.HasSkin && asp.BoneCount <= 4)
+            verdict = "single-bone rigid attach (probe attach bone via es_*→eBone mapping)";
+        else if (asp.HasSkin && matched == asp.BoneCount)
+            verdict = "full-body skinned, share body bone matrices (1:1 bone-name match)";
+        else if (asp.HasSkin && matched > 0 && matched >= asp.BoneCount / 2)
+            verdict = "skinned subset of body skeleton (partial overlap; map by name)";
+        else if (asp.HasSkin)
+            verdict = "skinned but bones don't match body — needs own skeleton (rare)";
+        else
+            verdict = "rigid multi-bone — uncommon, treat as static prop";
+        Console.WriteLine($"   verdict      : {verdict}");
+    }
+    return 0;
 }
 
 // Phase 21d-2a-v — same resolution logic as RenderHost.ResolveActorTexture +
