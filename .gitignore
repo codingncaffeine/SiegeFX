@@ -487,3 +487,6 @@ $RECYCLE.BIN/
 _ds1refs/
 run-goblin-anim.bat
 anim-diag.log
+
+# Claude Code project-local permissions (per-user, not shared)
+.claude/

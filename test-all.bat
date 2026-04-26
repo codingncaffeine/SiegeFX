@@ -66,6 +66,7 @@ echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neigh
 echo   47. Phase 21a-3 - Rolling preload (no more invisible wall, walk arbitrarily far)
 echo   48. Phase 21b-1 - --diag mode (startup timings + per-second frame histogram)
 echo   49. Phase 21c-1 - NPC textures + static props (trees/barrels/fences/crops/candles in fh_r1)
+echo   50. Phase 21c-5 - Headless prop-texture audit across every region (CLI, no window)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -121,6 +122,7 @@ if /i "%CHOICE%"=="46" goto T46
 if /i "%CHOICE%"=="47" goto T47
 if /i "%CHOICE%"=="48" goto T48
 if /i "%CHOICE%"=="49" goto T49
+if /i "%CHOICE%"=="50" goto T50
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -833,6 +835,21 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T50
+echo.
+echo --- Phase 21c-5: Headless prop-texture audit ---
+echo [Walks every static-prop placement in fh_r1 + a sample dungeon region]
+echo [through the same texset rules the runtime uses (template override -^>]
+echo [BMSH default -^> -01..-08 variant fallback) and prints per-template]
+echo [misses. With Terrain.dsres in the resolver, expect 0 untextured.]
+echo.
+"%TOOL%" region prop-textures "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --terrain="%DS1%\Resources\Terrain.dsres" --top=10 --list-misses
+echo.
+"%TOOL%" region prop-textures "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/hc_r1 --terrain="%DS1%\Resources\Terrain.dsres" --top=10 --list-misses
+echo.
 pause
 goto MENU
 
