@@ -1980,7 +1980,55 @@ static int CmdAspInfo(string[] a)
         var texName = (s.TextureIndex >= 0 && s.TextureIndex < mesh.TextureNames.Count)
             ? mesh.TextureNames[s.TextureIndex]
             : "<out-of-range>";
-        Console.WriteLine($"  [{i}] firstTri={s.FirstTriangle,5}  triCount={s.TriangleCount,5}  texIdx={s.TextureIndex} ({texName})");
+        // Phase 21d-2a-v — per-subset UV extent. Tells which atlas region each
+        // subset samples, so e.g. farmboy clothing-strip not showing up on the
+        // body can be diagnosed by checking whether the subset's UV box lands
+        // in the colored garment region of b_c_pos_a1_*.raw vs the empty
+        // background.
+        float umin = float.PositiveInfinity, umax = float.NegativeInfinity;
+        float vmin = float.PositiveInfinity, vmax = float.NegativeInfinity;
+        int triCorners = 0;
+        if (s.TriangleCount > 0 && mesh.TriangleCount > 0 && mesh.Corners.Length > 0)
+        {
+            int firstIdx = s.FirstTriangle * 3;
+            int endIdx = (s.FirstTriangle + s.TriangleCount) * 3;
+            for (int idx = firstIdx; idx < endIdx; idx++)
+            {
+                int corner = mesh.TriangleIndices[idx];
+                if ((uint)corner >= (uint)mesh.Corners.Length) continue;
+                var uv = mesh.Corners[corner].Uv;
+                if (uv.X < umin) umin = uv.X; if (uv.X > umax) umax = uv.X;
+                if (uv.Y < vmin) vmin = uv.Y; if (uv.Y > vmax) vmax = uv.Y;
+                triCorners++;
+            }
+        }
+        var uvBox = triCorners > 0
+            ? $"  uv=U[{umin:F3},{umax:F3}] V[{vmin:F3},{vmax:F3}]"
+            : "  uv=<n/a>";
+        Console.WriteLine($"  [{i}] firstTri={s.FirstTriangle,5}  triCount={s.TriangleCount,5}  texIdx={s.TextureIndex} ({texName}){uvBox}");
+        // Phase 21d-2a-v — V-band histogram so we can see where the bulk of
+        // a subset's face UVs actually concentrate (the bbox above only tells
+        // the extremes). 10 bands × density chars; helps identify "subset 1
+        // covers full atlas" vs "subset 1 lives in the strip rows".
+        if (Environment.GetEnvironmentVariable("SIEGEFX_UV_HIST") == "1" && triCorners > 0)
+        {
+            var bands = new int[10];
+            int firstIdx2 = s.FirstTriangle * 3;
+            int endIdx2 = (s.FirstTriangle + s.TriangleCount) * 3;
+            for (int idx = firstIdx2; idx < endIdx2; idx++)
+            {
+                int corner = mesh.TriangleIndices[idx];
+                if ((uint)corner >= (uint)mesh.Corners.Length) continue;
+                var v = mesh.Corners[corner].Uv.Y;
+                int band = (int)Math.Clamp(Math.Floor(v * 10f), 0, 9);
+                bands[band]++;
+            }
+            var sb = new System.Text.StringBuilder("        V-hist [");
+            for (int bi = 0; bi < 10; bi++)
+                sb.Append($"{bands[bi],4}");
+            sb.Append(" ]  (V=0.0..0.1, 0.1..0.2, ..., 0.9..1.0)");
+            Console.WriteLine(sb.ToString());
+        }
     }
     if (mesh.HasSkin)
     {
@@ -2398,16 +2446,98 @@ static void WritePng(RawImage img, int surfaceIndex, string destPath)
 
 static int DispatchTemplates(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx templates <list|show|stats|combat|loot|resolve-textures> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "list"   => CmdTemplatesList(a[1..]),
         "show"   => CmdTemplatesShow(a[1..]),
+        "resolve-textures" => CmdTemplatesResolveTextures(a[1..]),
         "stats"  => CmdTemplatesStats(a[1..]),
         "combat" => CmdTemplatesCombat(a[1..]),
         "loot"   => CmdTemplatesLoot(a[1..]),
         _        => UnknownCommand("templates " + a[0]),
     };
+}
+
+// Phase 21d-2a-v — same resolution logic as RenderHost.ResolveActorTexture +
+// CmdRegionActorCoverage, but addressable by template name. Useful when an actor
+// (the player, vendors, NPCs spawned by start_positions instead of actor.gas) is
+// not placed via region actor.gas and therefore not covered by the bulk audit.
+// Walks aspect.model → load .asp → for each unique BSMM TextureIndex slot:
+// look up [aspect][textures][slot] override, fall back to mesh.TextureNames[slot],
+// probe play resolver for {base}.raw and {base}-NN.raw — exactly what the renderer does.
+static int CmdTemplatesResolveTextures(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx templates resolve-textures <logic-tank> <objects-tank> <terrain-tank> <template-name>");
+        return 1;
+    }
+    using var logicTank   = TankFile.Open(a[0]);
+    using var objectsTank = TankFile.Open(a[1]);
+    using var terrainTank = TankFile.Open(a[2]);
+    var templateName = a[3];
+    var logicReader   = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    resolver.Add(new TankReader(terrainTank), "Terrain.dsres");
+    resolver.Add(objectsReader, "Objects.dsres");
+    resolver.Add(logicReader,   "Logic.dsres");
+
+    if (!store.TryGet(templateName, out var template))
+    {
+        Console.Error.WriteLine($"template not found: {templateName}");
+        return 1;
+    }
+    Console.WriteLine($"template      : {templateName}");
+    var modelName = store.GetAttribute(template, "aspect", "model");
+    Console.WriteLine($"aspect.model  : {modelName ?? "<none>"}");
+    if (string.IsNullOrEmpty(modelName))
+    {
+        Console.Error.WriteLine("template has no aspect.model — cannot resolve textures");
+        return 2;
+    }
+    if (!resolver.TryLoadModel(modelName, out var aspBytes))
+    {
+        Console.Error.WriteLine($"could not load mesh '{modelName}' from any tank");
+        return 3;
+    }
+    var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+    Console.WriteLine($"mesh          : {asp.MeshName} (v{asp.AspVersionMajor}.{asp.AspVersionMinor})");
+    Console.WriteLine($"textures      : {asp.TextureNames.Count}  ({string.Join(", ", asp.TextureNames)})");
+    Console.WriteLine($"subsets       : {asp.Subsets.Length}");
+
+    var slotsSeen = new SortedSet<int>();
+    foreach (var s in asp.Subsets) slotsSeen.Add(s.TextureIndex);
+    if (slotsSeen.Count == 0) slotsSeen.Add(0);
+
+    int missing = 0;
+    foreach (var slot in slotsSeen)
+    {
+        var slotKey = slot.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var overrideName = store.GetAttribute(template, "aspect", "textures", slotKey);
+        var fallbackName = (slot >= 0 && slot < asp.TextureNames.Count) ? asp.TextureNames[slot] : null;
+        var baseName = !string.IsNullOrEmpty(overrideName) ? overrideName : fallbackName;
+        var src = !string.IsNullOrEmpty(overrideName) ? "template[aspect][textures]" : "mesh.TextureNames";
+
+        bool hit = false; string? resolvedPath = null;
+        if (!string.IsNullOrEmpty(baseName))
+        {
+            if (resolver.TryLoadByBasename(baseName + ".raw", out _)) { hit = true; resolvedPath = baseName + ".raw"; }
+            else
+            {
+                for (int i = 1; i <= 8 && !hit; i++)
+                    if (resolver.TryLoadByBasename($"{baseName}-{i:D2}.raw", out _))
+                    { hit = true; resolvedPath = $"{baseName}-{i:D2}.raw"; }
+            }
+        }
+        var status = hit ? "OK  " : "MISS";
+        Console.WriteLine($"  slot {slot}: {status}  base={baseName ?? "<null>"}  src={src}  resolved={resolvedPath ?? "<n/a>"}");
+        if (!hit) missing++;
+    }
+    return missing == 0 ? 0 : 4;
 }
 
 static int CmdTemplatesList(string[] a)

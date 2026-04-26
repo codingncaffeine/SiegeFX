@@ -65,13 +65,31 @@ public sealed class ActorSpawner
         var spawned = new List<Actor>();
         foreach (var inst in instances)
         {
-            var actor = TrySpawnOne(inst);
+            var actor = TrySpawnOne(inst, preferredStance: null);
             if (actor is not null) spawned.Add(actor);
         }
         return spawned;
     }
 
-    Actor? TrySpawnOne(ActorInstance inst)
+    /// <summary>21d-2a-vi — preferred-stance overload. DS1's chore_default lists
+    /// chore_stances=0..8 and the FIRST one that loads wins; for the player that's
+    /// stance 0 (unarmed) regardless of equipment, so a dagger-equipped farmboy
+    /// played the unarmed idle and the wrist sat in the wrong place. Callers that
+    /// know the equipped weapon's class (1H melee → stance 1, ranged → 5, etc.)
+    /// pass the matching stance number; the loader tries it first and falls back
+    /// to the authored order if it's missing.</summary>
+    public IReadOnlyList<Actor> Spawn(IEnumerable<ActorInstance> instances, int? preferredStance)
+    {
+        var spawned = new List<Actor>();
+        foreach (var inst in instances)
+        {
+            var actor = TrySpawnOne(inst, preferredStance);
+            if (actor is not null) spawned.Add(actor);
+        }
+        return spawned;
+    }
+
+    Actor? TrySpawnOne(ActorInstance inst, int? preferredStance)
     {
         if (!_store.TryGet(inst.TemplateName, out var template))
         {
@@ -124,7 +142,7 @@ public sealed class ActorSpawner
         // actor still spawns and falls back to rest pose. The skrit still runs so its
         // blender log reflects what *would* have been selected once the loader catches
         // up. Missing-file vs version-miss is distinguished in diagnostics.
-        var clip = TryLoadAnyStanceClip(chorePrefix, stances, animSuffix, inst);
+        var clip = TryLoadAnyStanceClip(chorePrefix, stances, animSuffix, inst, preferredStance);
 
         // Phase 21c-4 — load chore_walk alongside chore_default so the renderer can
         // swap to the walk cycle while the brain is moving the actor along nav paths.
@@ -138,7 +156,7 @@ public sealed class ActorSpawner
             if (walkSuffix is not null)
             {
                 var walkStances = ParseChoreStances(TemplateStore.FindAttr(walkSection, "chore_stances"));
-                walkClip = TryLoadAnyStanceClip(chorePrefix, walkStances, walkSuffix, inst);
+                walkClip = TryLoadAnyStanceClip(chorePrefix, walkStances, walkSuffix, inst, preferredStance);
             }
         }
 
@@ -211,9 +229,21 @@ public sealed class ActorSpawner
         }
     }
 
-    PrsAnimation? TryLoadAnyStanceClip(string prefix, int[] stances, string suffix, ActorInstance inst)
+    PrsAnimation? TryLoadAnyStanceClip(string prefix, int[] stances, string suffix, ActorInstance inst, int? preferredStance = null)
     {
-        foreach (var s in stances)
+        // 21d-2a-vi: try preferredStance first when caller knows the equipped weapon's class.
+        // chore_default lists 0..8 and DS1 takes the first that loads — that's stance 0
+        // (unarmed) for the player regardless of equipment, so a dagger-equipped farmboy
+        // played the unarmed idle and the wrist sat in the wrong place. We try the
+        // preferred stance even when it's NOT in the authored list because chore_walk
+        // often only authors stance 0 yet the fs1 walk PRS still ships on disk — the
+        // template's `chore_stances` is what DS1 *expects to find*, not what's available.
+        IEnumerable<int> order = stances;
+        if (preferredStance is int p)
+        {
+            order = new[] { p }.Concat(stances.Where(s => s != p));
+        }
+        foreach (var s in order)
         {
             var filename = $"{prefix}{s}_{suffix}.prs";
             if (_clipCache.TryGetValue(filename, out var cached))
@@ -226,6 +256,7 @@ public sealed class ActorSpawner
             {
                 var clip = PrsAnimation.Load(bytes);
                 _clipCache[filename] = clip;
+                Diagnostics.Add($"loaded clip: {filename} (stance {s})");
                 return clip;
             }
             catch (Exception ex)

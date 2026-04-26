@@ -72,6 +72,10 @@ echo   52. Phase 21d-2a-i - ASP subset fuzz (parse all .asp in Objects.dsres, va
 echo   53. Phase 21d-2a-ii - Per-subset texture render (visually verify farmboy clothing in fh_r1)
 echo   54. Phase 21d-2a-iii prep - Actor-coverage audit across all 81 regions (CLI, no window)
 echo   55. Phase 21d-2a-iv - BTRI cornerStart fix (visually verify farmboy webbing gone in fh_r1)
+echo   56. Phase 21d-2a-v  - Farmboy texture diag (magenta fallback + tex-resolve log)
+echo   57. Phase 21d-2a-v  - Subset-tint diag (each ASP subset = solid color: red/grn/blu/yel/mag)
+echo   58. Phase 21d-2a-v  - Plain play after uFlipV fix (face/hair detail should render)
+echo   59. Phase 21d-2a-vi - Dagger grip (90 deg X prerotation; piercing forward grip vs stab)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -133,6 +137,10 @@ if /i "%CHOICE%"=="52" goto T52
 if /i "%CHOICE%"=="53" goto T53
 if /i "%CHOICE%"=="54" goto T54
 if /i "%CHOICE%"=="55" goto T55
+if /i "%CHOICE%"=="56" goto T56
+if /i "%CHOICE%"=="57" goto T57
+if /i "%CHOICE%"=="58" goto T58
+if /i "%CHOICE%"=="59" goto T59
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -961,6 +969,110 @@ echo [body has correct silhouette. Texture coverage on clothing/hair is a]
 echo [separate Phase 21d-2a-v issue.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+goto MENU
+
+:T56
+echo.
+echo --- Phase 21d-2a-v diag: farmboy texture binding ---
+echo [Two diagnostic switches active in this run:]
+echo [  SIEGEFX_DEBUG_FALLBACK=1 -- fragment shader paints uHasTexture=0]
+echo [    fragments BRIGHT MAGENTA instead of the sand-toned fallback. If]
+echo [    farmboy's clothing strip turns magenta, slot 1 isn't binding a]
+echo [    texture. If it stays skin/tan, the texture binds but its actual]
+echo [    sampled pixels look skin-colored (texture-content question).]
+echo [  SIEGEFX_TEX_RESOLVE_LOG=1 -- prints one line per (template, slot)]
+echo [    on first resolve, so we can grep "tpl=farmboy" in the log to see]
+echo [    OK/MISS + the resolved basename for each subset.]
+echo.
+echo Please run, eyeball the player, then close the window and copy the]
+echo [console lines starting with "[tex-resolve" plus a one-line description]
+echo [of what farmboy looked like (magenta where? skin tone where?).]
+echo.
+set SIEGEFX_DEBUG_FALLBACK=1
+set SIEGEFX_TEX_RESOLVE_LOG=1
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set SIEGEFX_DEBUG_FALLBACK=
+set SIEGEFX_TEX_RESOLVE_LOG=
+goto MENU
+
+:T57
+echo.
+echo --- Phase 21d-2a-v diag: subset-tint visualizer ---
+echo [Each ASP subset draws as a unique solid color (no texture, no lighting):]
+echo [   subset 0 = RED     subset 1 = GREEN    subset 2 = BLUE]
+echo [   subset 3 = YELLOW  subset 4 = MAGENTA  (cyan/orange/purple if more)]
+echo.
+echo [Look at the player's farmboy. Note which body region is which color.]
+echo [Expected (if BSMM-to-geometry is correct):]
+echo [   subset 0 (RED, 72 tris)    = head/face/hair       -- skin texture]
+echo [   subset 1 (GREEN, 300 tris) = torso/arms/legs      -- clothing texture]
+echo [   subset 2 (BLUE, 142 tris)  = ?                    -- skin texture]
+echo [   subset 3 (YELLOW, 112 tris)= ?                    -- skin texture]
+echo [   subset 4 (MAGENTA, 80 tris)= ?                    -- skin texture]
+echo.
+echo [Also note ALL OTHER NPCs in fh_r1 -- if mismatches show up across many,]
+echo [it's a parser issue, not a farmboy-only quirk.]
+echo.
+set SIEGEFX_SUBSET_TINT=1
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set SIEGEFX_SUBSET_TINT=
+goto MENU
+
+:T58
+echo.
+echo --- Phase 21d-2a-v: plain play after uFlipV fix ---
+echo [Default skinned uFlipV is now 0 (was 1 for v2.5+). Subset-tint diag in]
+echo [option 57 confirmed asp UV V[0.01,0.54] for the head subset must land in]
+echo [GL V near 0 to sample the face/hair region of the .raw — the prior flip]
+echo [pushed those UVs into the bottom-strip brown gradient, hence smeared face.]
+echo.
+echo [Look for: face features visible, hair on top of head, brown leather vest]
+echo [on the chest, white peasant pants on the legs. Forearms/hands SHOULD be]
+echo [skin-toned (sampling the gradient strip in the texture). Boots still]
+echo [missing — that is a separate equipment-composition slice, not a tex bug.]
+echo.
+echo [If other NPCs in fh_r1 (Edgaar, villagers, krug attackers) now look wrong,]
+echo [report which and we'll add per-mesh-version override. SIEGEFX_FORCE_FLIPV=1]
+echo [forces the old behavior back if you want to A/B compare.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+goto MENU
+
+:T59
+echo.
+echo --- Phase 21d-2a-vi: dagger grip + idle stance + walk anim (RESOLVED) ---
+echo [Four fixes layered into this run, all driven by the same farmboy + dagger]
+echo [equip slot:]
+echo.
+echo [  1. Dagger TEXTURE: solid grey blade (was rainbow). Weapon mesh shader]
+echo [     uFlipV flipped 1 -> 0 to match every other DS1 .raw bottom-up convention.]
+echo.
+echo [  2. Dagger GRIP: 180-deg X prerotation on weapon_grip (ASPImport.ms says 90,]
+echo [     but our pipeline empirically needs 180 - likely interaction with bind]
+echo [     180-X + the FlipUp coord-system handling in the BVA path).]
+echo.
+echo [  3. Idle STANCE: ActorSpawner picks fs1 (1H melee) idle when the equipped]
+echo [     weapon specializes weapon_melee; stance is also tried OUTSIDE the]
+echo [     authored chore_stances list so chore_walk picks up fs1 even when its]
+echo [     template only authors fs0.]
+echo.
+echo [  4. WALK animation: weapon-attach loop now mirrors the body's walk-swap]
+echo [     so the dagger tracks the wrist through the walk cycle instead of]
+echo [     floating at the idle pose while the arm swings through it.]
+echo.
+echo [F1 in-game cycles 12 grip-prerotation presets (X/Y/Z 180/90/-90 + compounds);]
+echo [active preset prints to console. Default = X 180.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
 goto MENU
 
 :T47
