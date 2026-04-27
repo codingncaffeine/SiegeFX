@@ -2,10 +2,63 @@
 setlocal
 cd /d "%~dp0"
 
-set DS1=D:\GOG Games\Dungeon Siege
-set TOOL=src\SiegeFX.Tools\bin\Release\net8.0\siegefx.exe
-set RUN=src\SiegeFX.Runtime\bin\Release\net8.0\SiegeFX.Runtime.dll
-set REFS=_ds1refs
+REM Defaults — override any of these by passing --ds1=PATH, --tool=PATH,
+REM --run=PATH, or --refs=PATH on the command line. Examples:
+REM   test-all.bat --ds1="C:\Program Files (x86)\Steam\steamapps\common\Dungeon Siege 1"
+REM   test-all.bat --ds1=D:\GOG\DS --refs=my_refs
+REM Pass --help (or -h, /?) to print the parameter list.
+set "DS1=D:\GOG Games\Dungeon Siege"
+set "TOOL=src\SiegeFX.Tools\bin\Release\net8.0\siegefx.exe"
+set "RUN=src\SiegeFX.Runtime\bin\Release\net8.0\SiegeFX.Runtime.dll"
+set "REFS=_ds1refs"
+
+:parseargs
+if "%~1"=="" goto doneargs
+set "ARG=%~1"
+if /i "%ARG%"=="--help" goto usage
+if /i "%ARG%"=="-h"     goto usage
+if /i "%ARG%"=="/?"     goto usage
+if /i "%ARG:~0,6%"=="--ds1="  goto setds1
+if /i "%ARG:~0,7%"=="--tool=" goto settool
+if /i "%ARG:~0,6%"=="--run="  goto setrun
+if /i "%ARG:~0,7%"=="--refs=" goto setrefs
+echo unknown argument: %~1
+echo run "test-all.bat --help" for the parameter list
+exit /b 1
+
+:setds1
+set "DS1=%ARG:~6%"
+shift
+goto parseargs
+
+:settool
+set "TOOL=%ARG:~7%"
+shift
+goto parseargs
+
+:setrun
+set "RUN=%ARG:~6%"
+shift
+goto parseargs
+
+:setrefs
+set "REFS=%ARG:~7%"
+shift
+goto parseargs
+
+:usage
+echo Usage: test-all.bat [--ds1=PATH] [--tool=PATH] [--run=PATH] [--refs=PATH]
+echo.
+echo   --ds1=PATH   Dungeon Siege install root (default: %DS1%)
+echo   --tool=PATH  siegefx.exe path           (default: %TOOL%)
+echo   --run=PATH   SiegeFX.Runtime.dll path   (default: %RUN%)
+echo   --refs=PATH  local reference assets dir (default: %REFS%)
+echo.
+echo Quote paths that contain spaces, e.g.:
+echo   test-all.bat --ds1="C:\Program Files (x86)\Steam\steamapps\common\Dungeon Siege 1"
+exit /b 0
+
+:doneargs
 
 if not exist "%TOOL%" goto NEEDBUILD
 if not exist "%RUN%"  goto NEEDBUILD
