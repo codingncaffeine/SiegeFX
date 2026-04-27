@@ -78,6 +78,7 @@ echo   58. Phase 21d-2a-v  - Plain play after uFlipV fix (face/hair detail shoul
 echo   59. Phase 21d-2a-vi - Dagger grip (90 deg X prerotation; piercing forward grip vs stab)
 echo   60. Phase 21d-2a-vii - Layered equipment (boots + chest texture override on farmboy)
 echo   61. Phase 21d-2a-viii-a - Hero variant audit + env-var pick (pos_a3 + skin_07 + pants_015)
+echo   62. Phase 21d-2a-viii-b - Character creator UI panel (SIEGEFX_CREATOR=1; Begin to spawn)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -145,6 +146,7 @@ if /i "%CHOICE%"=="58" goto T58
 if /i "%CHOICE%"=="59" goto T59
 if /i "%CHOICE%"=="60" goto T60
 if /i "%CHOICE%"=="61" goto T61
+if /i "%CHOICE%"=="62" goto T62
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1146,6 +1148,32 @@ set SIEGEFX_HERO_GENDER=
 set SIEGEFX_HERO_BODY=
 set SIEGEFX_HERO_SKIN=
 set SIEGEFX_HERO_PANTS=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T62
+echo.
+echo --- Phase 21d-2a-viii-b: character creator UI panel ---
+echo [Reads the gas-authored layout from /ui/interfaces/frontend/character_select/]
+echo [character_select.gas (extracted to _scratch_charsel.gas) so button rects +]
+echo [name edit_box + 3D preview viewport land at the original DS1 coordinates.]
+echo.
+echo [Set SIEGEFX_CREATOR=1 so RenderHost gates TrySpawnPlayer behind the panel.]
+echo [In-window: cycle Gender/Body/Skin/Pants with the L/R arrow buttons; click]
+echo [the name edit_box and type a hero name (max 14 chars); Begin to spawn,]
+echo [Cancel to fall through to env-var defaults.]
+echo.
+set SIEGEFX_CREATOR=1
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_CREATOR=
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (

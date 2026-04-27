@@ -427,6 +427,15 @@ public sealed class RenderHost : IDisposable
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
     private bool _questLogOpen;  // 'L' toggles; sibling overlay to inventory
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
+    // Phase 21d-2a-viii-b — pre-spawn character creator. Opens by default when
+    // a play-region path runs and SIEGEFX_CREATOR != "0"; closes on Begin (then
+    // TrySpawnPlayerWithPicker fires) or Cancel (falls through to env-var-only
+    // pick). Layout sourced from /ui/interfaces/frontend/character_select/character_select.gas.
+    private readonly CharacterCreatorPanel _creator = new();
+    // Args captured on the first frame the creator is open so Begin can re-enter
+    // the spawn path with the panel-mutated picker.
+    private ActorSpawner? _pendingSpawner;
+    private SiegeFX.Core.Nav.NavMesh? _pendingNavMesh;
     // Phase 20a — dialogue overlay. Per-region conversation pool loaded with the
     // actor list; RMB on a talkable NPC opens the panel against that NPC's first
     // conversation key. Activated quests just log for now — Phase 20b folds them
@@ -728,8 +737,32 @@ void main()
         _input = _window.CreateInput();
 
         foreach (var kb in _input.Keyboards)
+        {
+            // Phase 21d-2a-viii-b — typed characters feed the creator's name
+            // edit box. Silk's KeyChar fires once per logical char with shift
+            // already applied, which is what we want — KeyDown gives raw
+            // keycodes that don't disambiguate "a" from "A".
+            kb.KeyChar += (_, c) =>
+            {
+                if (_creator.IsOpen) _creator.OnChar(c);
+            };
             kb.KeyDown += (_, key, _) =>
             {
+                // Backspace is not a printable char, so KeyChar gets the
+                // platform-specific ASCII 0x08 on Windows but not on all
+                // backends — route it through KeyDown explicitly so creator
+                // name editing always works.
+                if (_creator.IsOpen && key == Key.Backspace)
+                {
+                    _creator.OnChar('\b');
+                    return;
+                }
+                // Phase 21d-2a-viii-b — while the creator is up, world hotkeys
+                // (F, F1-F4, C, I, L, H, Q, W, F5/F9) are meaningless and
+                // shouldn't fire on a stray keystroke during name typing.
+                // Esc isn't trapped — gives the user a back-out path even
+                // though there's no formal "creator pause" state.
+                if (_creator.IsOpen) return;
                 // Phase 15d: Esc opens/closes the pause menu instead of slamming the
                 // window shut. Quit-from-menu still routes through _window.Close, so
                 // there's a one-button-press exit (Esc, click Quit).
@@ -855,11 +888,22 @@ void main()
                     }
                 }
             };
+        }
 
         foreach (var mouse in _input.Mice)
         {
             mouse.MouseDown += (m, btn) =>
             {
+                // Phase 21d-2a-viii-b — character creator owns the screen until
+                // Begin/Cancel; LMB lands on its buttons and never falls through
+                // to click-to-move. RMB swallowed too so a stray right-click
+                // doesn't engage mouse-look behind the modal panel.
+                if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                        _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                    return;
+                }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
                 // a button doesn't also retarget the follower behind the panel.
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
@@ -906,6 +950,16 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                // Phase 21d-2a-viii-b — character creator. Begin/Cancel resolve
+                // here; the post-modal world spawn is driven by FlushCreator()
+                // on the next render frame so we don't reenter spawn from inside
+                // an input callback.
+                if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    if (btn == MouseButton.Left)
+                        _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
@@ -974,6 +1028,10 @@ void main()
             };
             mouse.MouseMove += (_, pos) =>
             {
+                // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
+                // highlight under the cursor.
+                if (_creator.IsOpen)
+                    _creator.OnMouseMove((int)pos.X, (int)pos.Y);
                 // Phase 15d — feed the pause menu so its buttons can light up on
                 // hover. Cheap rect tests; no-op when the menu is closed.
                 if (_pauseMenu.IsOpen)
@@ -3072,6 +3130,11 @@ void main()
     private void OnUpdate(double dt)
     {
         if (_input is null) return;
+        // Phase 21d-2a-viii-b — drain the creator's confirm/cancel edge here
+        // so the spawn happens on the main thread (input callbacks fire from
+        // the Silk dispatcher; ActorSpawner + GL resource creation expect the
+        // main thread). Both branches clear the pending args.
+        FlushCreator();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -3311,7 +3374,64 @@ void main()
     // chore_default skrit resolve through the same specializes chain every NPC
     // uses, so no special-casing in spawn. The actor just doesn't get a wander
     // follower — 13c will add click-to-move.
+    /// <summary>21d-2a-viii-b — called from <see cref="OnUpdate"/>. When the
+    /// creator panel resolves (Begin or Cancel), spawns the PC with the picked
+    /// (or env-default) variant and clears the pending args. No-op otherwise.</summary>
+    private void FlushCreator()
+    {
+        if (_pendingSpawner is null) return;
+        if (_creator.IsOpen) return;
+        var spawner = _pendingSpawner;
+        var navMesh = _pendingNavMesh;
+        _pendingSpawner = null;
+        _pendingNavMesh = null;
+        if (_creator.Confirmed)
+        {
+            var name = string.IsNullOrEmpty(_creator.HeroName) ? null : _creator.HeroName;
+            Console.WriteLine($"  creator: Begin — name='{name ?? "<unset>"}'");
+            TrySpawnPlayerWithPicker(spawner, navMesh, _creator.Picker, name);
+        }
+        else if (_creator.Cancelled)
+        {
+            Console.WriteLine("  creator: Cancel — falling through to env-var defaults");
+            TrySpawnPlayerWithPicker(spawner, navMesh, HeroVariantPicker.FromEnv(), heroName: null);
+        }
+    }
+
     private void TrySpawnPlayer(ActorSpawner spawner, SiegeFX.Core.Nav.NavMesh? navMesh)
+    {
+        if (_actors.Count == 0)
+        {
+            Console.WriteLine("  player: no NPCs spawned, skipping player spawn (nothing to anchor against)");
+            return;
+        }
+
+        // 21d-2a-viii-b — gate the spawn behind the character creator UI.
+        // SIEGEFX_CREATOR=0 (or any non-empty value other than "1") bypasses
+        // the panel and uses env-var picks directly — keeps headless flows
+        // (test-all option 61, CI smoke runs) deterministic.
+        var creatorEnv = Environment.GetEnvironmentVariable("SIEGEFX_CREATOR");
+        bool useCreator = string.Equals(creatorEnv, "1", StringComparison.Ordinal);
+        if (useCreator)
+        {
+            _pendingSpawner = spawner;
+            _pendingNavMesh = navMesh;
+            _creator.Reset();
+            Console.WriteLine("  player: character creator open (Begin to spawn, Cancel for env-var defaults)");
+            return;
+        }
+        TrySpawnPlayerWithPicker(spawner, navMesh, HeroVariantPicker.FromEnv(), heroName: null);
+    }
+
+    /// <summary>21d-2a-viii-b — entry point shared by env-var spawn (no UI) and
+    /// the creator's "Begin" path. <paramref name="heroName"/> is the
+    /// player-typed name; null for env-var path. Persistence of the name into
+    /// the save schema is viii-c's concern; viii-b just logs it.</summary>
+    private void TrySpawnPlayerWithPicker(
+        ActorSpawner spawner,
+        SiegeFX.Core.Nav.NavMesh? navMesh,
+        HeroVariantPicker pick,
+        string? heroName)
     {
         if (_actors.Count == 0)
         {
@@ -3330,13 +3450,6 @@ void main()
         if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
             spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
 
-        // 21d-2a-viii — character creator quick-pick via env vars (the eventual
-        // UI panel slice will replace these with in-game widgets). Defaults
-        // produce stock farmboy. SIEGEFX_HERO_GENDER picks farmboy/farmgirl.
-        // SIEGEFX_HERO_BODY=1..7 swaps aspect.model to m_c_<av>_pos_aN.
-        // SIEGEFX_HERO_SKIN/_PANTS are NN/NNN suffixes; the variant resolver
-        // composes the full b_c_*_NNN texset name.
-        var pick = HeroVariantPicker.FromEnv();
         string playerTemplate = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
         // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
         // 0x01xxxxxx); any stable out-of-band value works, this one is easy to spot
@@ -5188,6 +5301,13 @@ void main()
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
                 _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+            }
+            // Phase 21d-2a-viii-b: character creator. Topmost UI when open
+            // (gates player spawn). Sits above pause because Esc-while-creator
+            // is meaningless; the panel owns the screen until Begin/Cancel.
+            if (_creator.IsOpen && _barRenderer is not null)
+            {
+                _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
             }
             // Phase 17b — projectile bolts. Head dot at lerp(src,dst,progress)
             // plus a few trailing dots stepped back along the line, alpha
