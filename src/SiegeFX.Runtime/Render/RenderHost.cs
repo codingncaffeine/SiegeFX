@@ -5232,7 +5232,7 @@ void main()
                 // crowding the HP/MP/XP column. Skipped when empty (env-var path).
                 if (!string.IsNullOrEmpty(_heroName))
                 {
-                    int textW = _heroName.Length * 7;
+                    int textW = _textRenderer.MeasureWidth(_heroName);
                     int hx = (size.X - textW) / 2;
                     _textRenderer.DrawString(size.X, size.Y, _heroName, hx, 12, col);
                 }
@@ -5725,7 +5725,7 @@ void main()
             _heroName = ps.HeroName ?? "";
             if (ps.Variant is not null)
             {
-                _heroVariant = new HeroVariantPicker
+                var restored = new HeroVariantPicker
                 {
                     Gender = string.Equals(ps.Variant.Gender, "girl", StringComparison.OrdinalIgnoreCase)
                              ? HeroGender.Girl : HeroGender.Boy,
@@ -5733,6 +5733,31 @@ void main()
                     SkinSuffix  = ps.Variant.SkinSuffix,
                     PantsSuffix = ps.Variant.PantsSuffix,
                 };
+                // Re-derive the texture overrides so the next ResolveActorTexture
+                // call paints skin/pants from the saved variant, not whichever
+                // override was active at boot. The body mesh itself is whatever
+                // was spawned at startup — re-spawning mid-load is out of scope;
+                // a mismatch only matters when the env-var spawn picker disagrees
+                // with the saved one (cross-session load), in which case the warn
+                // tells the user the model on screen doesn't match the bytes.
+                string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+                if (_templateStore is not null
+                    && _templateStore.TryGet(playerTpl, out var pickTpl))
+                {
+                    var ov = restored.BuildOverride(_templateStore, pickTpl);
+                    _skinTexOverrideName  = ov?.SkinTextureName;
+                    _pantsTexOverrideName = ov?.ClothingTextureName;
+                    if (_heroVariant is not null
+                        && (_heroVariant.BodyTypeIdx != restored.BodyTypeIdx
+                         || _heroVariant.Gender      != restored.Gender))
+                    {
+                        Console.Error.WriteLine(
+                            $"  load: warning — saved hero variant (gender={restored.Gender}, " +
+                            $"body={restored.BodyTypeIdx + 1}) differs from spawned mesh; " +
+                            $"textures updated, body mesh stays as spawned");
+                    }
+                }
+                _heroVariant = restored;
             }
         }
 
