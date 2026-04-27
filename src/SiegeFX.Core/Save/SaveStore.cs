@@ -41,10 +41,12 @@ public static class SaveStore
         //   v1 -> v2 : added PlayerSnapshot.Quests (empty list default).
         //   v2 -> v3 : added QuestSnapshot.KillProgress (default 0).
         //   v3 -> v4 : added PlayerSnapshot.Gold (default 0).
+        //   v4 -> v5 : added PlayerSnapshot.HeroName (empty string) +
+        //              PlayerSnapshot.Variant (null = stock farmboy).
         // All deserializer-friendly — missing fields just hit their defaults —
         // so the work here is only the version-stamp bump. Pre-v1 shapes still
         // get rejected below.
-        if (file.SchemaVersion is 1 or 2 or 3)
+        if (file.SchemaVersion is 1 or 2 or 3 or 4)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }

@@ -436,6 +436,12 @@ public sealed class RenderHost : IDisposable
     // the spawn path with the panel-mutated picker.
     private ActorSpawner? _pendingSpawner;
     private SiegeFX.Core.Nav.NavMesh? _pendingNavMesh;
+    // 21d-2a-viii-c — saved across F5/F9 so the player's chosen name and
+    // variant survive a quicksave roundtrip. Empty / null when the creator
+    // was bypassed (env-var spawn). Persisted into PlayerSnapshot.HeroName /
+    // .Variant; restored from save into these fields by ApplySave.
+    private string _heroName = "";
+    private HeroVariantPicker? _heroVariant;
     // Phase 20a — dialogue overlay. Per-region conversation pool loaded with the
     // actor list; RMB on a talkable NPC opens the panel against that NPC's first
     // conversation key. Activated quests just log for now — Phase 20b folds them
@@ -3450,6 +3456,11 @@ void main()
         if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
             spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
 
+        // 21d-2a-viii-c — remember the variant + name so quicksave persists
+        // them through F5; F9 restores into these fields via ApplySave.
+        _heroName = heroName ?? "";
+        _heroVariant = pick;
+
         string playerTemplate = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
         // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
         // 0x01xxxxxx); any stable out-of-band value works, this one is easy to spot
@@ -5216,6 +5227,15 @@ void main()
                 var p = _player.CurrentTransform.Translation;
                 var line = $"x={p.X,7:F1}  y={p.Y,6:F1}  z={p.Z,7:F1}";
                 _textRenderer.DrawString(size.X, size.Y, line, 12, 30, col);
+                // Phase 21d-2a-viii-c — hero name banner. Sits top-center so the
+                // creator-typed name (or restored save value) is visible without
+                // crowding the HP/MP/XP column. Skipped when empty (env-var path).
+                if (!string.IsNullOrEmpty(_heroName))
+                {
+                    int textW = _heroName.Length * 7;
+                    int hx = (size.X - textW) / 2;
+                    _textRenderer.DrawString(size.X, size.Y, _heroName, hx, 12, col);
+                }
 
                 // HP/MP bars + numeric readout. ActorRenderState wraps the live
                 // Combat/Stats blocks so we can pull current/max directly. Every
@@ -5570,6 +5590,21 @@ void main()
                     });
                 p.Gold = _progression.Gold;
             }
+
+            // 21d-2a-viii-c — hero name + variant pick from the creator (or
+            // env-var spawn). Empty/null when the creator was bypassed; the
+            // load path treats that as "no override" too.
+            p.HeroName = _heroName;
+            if (_heroVariant is not null)
+            {
+                p.Variant = new SiegeFX.Core.Save.HeroVariantSnapshot
+                {
+                    Gender      = _heroVariant.Gender == HeroGender.Girl ? "girl" : "boy",
+                    BodyTypeIdx = _heroVariant.BodyTypeIdx,
+                    SkinSuffix  = _heroVariant.SkinSuffix,
+                    PantsSuffix = _heroVariant.PantsSuffix,
+                };
+            }
             save.Player = p;
         }
         return save;
@@ -5685,6 +5720,19 @@ void main()
                     _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, ps2);
                 _playerSpellbook.RestoreCooldowns(
                     ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
+            }
+
+            _heroName = ps.HeroName ?? "";
+            if (ps.Variant is not null)
+            {
+                _heroVariant = new HeroVariantPicker
+                {
+                    Gender = string.Equals(ps.Variant.Gender, "girl", StringComparison.OrdinalIgnoreCase)
+                             ? HeroGender.Girl : HeroGender.Boy,
+                    BodyTypeIdx = ps.Variant.BodyTypeIdx,
+                    SkinSuffix  = ps.Variant.SkinSuffix,
+                    PantsSuffix = ps.Variant.PantsSuffix,
+                };
             }
         }
 
