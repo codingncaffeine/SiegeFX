@@ -81,6 +81,7 @@ echo   61. Phase 21d-2a-viii-a - Hero variant audit + env-var pick (pos_a3 + ski
 echo   62. Phase 21d-2a-viii-b - Character creator UI panel (SIEGEFX_CREATOR=1; Begin to spawn)
 echo   63. Phase 21d-2a-viii-c - Hero name + variant persistence through quicksave (F5/F9)
 echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + gap report)
+echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-region for in-game loop)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -151,6 +152,7 @@ if /i "%CHOICE%"=="61" goto T61
 if /i "%CHOICE%"=="62" goto T62
 if /i "%CHOICE%"=="63" goto T63
 if /i "%CHOICE%"=="64" goto T64
+if /i "%CHOICE%"=="65" goto T65
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1174,6 +1176,26 @@ echo.
 "%TOOL%" audio coverage "%DS1%\Resources\Sound.dsres"
 echo.
 echo === audit-only command (no game launch) ===
+pause
+goto MENU
+
+:T65
+echo.
+echo --- Phase 21d-2a-xi: mood + region ambient bed audit ---
+echo [Two halves: first a CLI dump of every parsed mood + the per-region default-mood]
+echo [picker the runtime applies on region entry; then a play-region launch where you]
+echo [can hear the looping bed. fh_r1 is intentionally silent (DS1 used positional]
+echo [emitters there, not a mood track) — walk into a region with an audible bed]
+echo [(e.g. cr_r1 crypts -> s_e_ambient_crypt) to confirm the swap. Watch the console:]
+echo [look for "ambient: region 'X' -> mood 'Y' -> 'Z'" lines on each region change.]
+echo.
+"%TOOL%" mood list "%DS1%\Resources\Logic.dsres" --map=world --regions
+echo.
+echo --- launching play-region (Ctrl+C to skip the in-game half) ---
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === xi exited with %EXITCODE% ===
 pause
 goto MENU
 

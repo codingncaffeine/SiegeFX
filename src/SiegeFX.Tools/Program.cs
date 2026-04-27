@@ -31,6 +31,7 @@ try
         "spells"    => DispatchSpells(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
+        "mood"      => DispatchMood(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -105,6 +106,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
+    Console.WriteLine("  siegefx mood list          <Logic.dsres> [--map=world] [--with-bed] [--regions]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -4141,6 +4143,131 @@ static int CmdAudioCoverage(string[] a)
         {
             Console.WriteLine("  (no such category)");
         }
+    }
+
+    return 0;
+}
+
+// ---- mood ----
+//
+// Phase 21d-2a-xi audit: parses every /world/global/moods/<map>/moods*.gas in
+// Logic.dsres, prints mood + ambient_track totals, and (with --regions) the
+// region->default-mood->bed table the runtime applies on region entry.
+
+static int DispatchMood(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx mood list <Logic.dsres> [--map=NAME] [--with-bed] [--regions]"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "list" => CmdMoodList(a[1..]),
+        _      => UnknownCommand("mood " + a[0]),
+    };
+}
+
+static int CmdMoodList(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx mood list <Logic.dsres> [--map=NAME] [--with-bed] [--regions]");
+        return 1;
+    }
+    string? logicPath = null;
+    string? mapFilter = null;
+    bool withBedOnly = false;
+    bool regionsOnly = false;
+    foreach (var arg in a)
+    {
+        if (arg.StartsWith("--map=", StringComparison.OrdinalIgnoreCase))
+            mapFilter = arg["--map=".Length..].Trim().ToLowerInvariant();
+        else if (arg.Equals("--with-bed", StringComparison.OrdinalIgnoreCase))
+            withBedOnly = true;
+        else if (arg.Equals("--regions", StringComparison.OrdinalIgnoreCase))
+            regionsOnly = true;
+        else if (arg.StartsWith("--", StringComparison.Ordinal))
+            throw new FormatException($"unknown flag '{arg}'");
+        else
+        {
+            if (logicPath is not null) throw new FormatException("only one Logic.dsres path expected");
+            logicPath = arg;
+        }
+    }
+    if (logicPath is null) { Console.Error.WriteLine("missing <Logic.dsres>"); return 1; }
+
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(logicPath);
+    var reader = new SiegeFX.Core.Tank.TankReader(tank);
+
+    var (moods, diags) = SiegeFX.Core.Assets.MoodStore.Load(reader);
+    foreach (var d in diags) Console.Error.WriteLine($"  diag: {d}");
+
+    Console.WriteLine($"mood list: {Path.GetFileName(logicPath)}");
+    Console.WriteLine($"  total moods parsed: {moods.Count}");
+    int withBed = moods.Values.Count(m => !string.IsNullOrEmpty(m.AmbientTrack));
+    Console.WriteLine($"  moods with non-empty ambient_track: {withBed}");
+    int withStandard = moods.Values.Count(m => !string.IsNullOrEmpty(m.StandardTrack));
+    int withBattle   = moods.Values.Count(m => !string.IsNullOrEmpty(m.BattleTrack));
+    Console.WriteLine($"  moods with standard music: {withStandard}");
+    Console.WriteLine($"  moods with battle music:   {withBattle}");
+
+    var distinctBeds = moods.Values
+        .Select(m => m.AmbientTrack)
+        .Where(t => !string.IsNullOrEmpty(t))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    Console.WriteLine($"  distinct ambient bed clips: {distinctBeds.Count}");
+    foreach (var b in distinctBeds) Console.WriteLine($"    {b}");
+
+    if (regionsOnly)
+    {
+        // Group moods by inferred (map, region) and resolve each region to its
+        // FindRegionDefault pick. The runtime walks the same path on region
+        // entry, so this report is the authoritative "what the player should
+        // hear in region X" preview.
+        var regions = new SortedDictionary<(string map, string region), List<string>>(
+            Comparer<(string, string)>.Create((a, b) =>
+            {
+                int c = string.Compare(a.Item1, b.Item1, StringComparison.OrdinalIgnoreCase);
+                if (c != 0) return c;
+                return string.Compare(a.Item2, b.Item2, StringComparison.OrdinalIgnoreCase);
+            }));
+        foreach (var key in moods.Keys)
+        {
+            // Mood names are "map_<map>_<region>_<index>[_subindex]"; pull
+            // the map+region prefix and remember each mood as a member.
+            const string head = "map_";
+            if (!key.StartsWith(head, StringComparison.OrdinalIgnoreCase)) continue;
+            // Find the region split: key starts as map_<map>_<region>_..., so
+            // count from the second underscore.
+            int u1 = key.IndexOf('_', head.Length);
+            if (u1 < 0) continue;
+            int u2 = key.IndexOf('_', u1 + 1);
+            if (u2 < 0) continue;
+            int u3 = key.IndexOf('_', u2 + 1);
+            // region runs from u1+1 to u3 (or end). Some moods have only two
+            // underscores (rare); skip those — the run-time picker needs the
+            // numeric tail.
+            if (u3 < 0) continue;
+            var map = key.Substring(head.Length, u1 - head.Length);
+            var region = key.Substring(u1 + 1, u3 - (u1 + 1));
+            // Drop intro-only entries where the region itself starts with intro
+            if (region.StartsWith("intro", StringComparison.OrdinalIgnoreCase)) continue;
+            if (mapFilter is not null && !map.Equals(mapFilter, StringComparison.OrdinalIgnoreCase)) continue;
+            var keyTuple = (map, region);
+            if (!regions.TryGetValue(keyTuple, out var list)) regions[keyTuple] = list = new();
+            list.Add(key);
+        }
+        Console.WriteLine();
+        Console.WriteLine($"  regions (map, region, default-mood, ambient_track):");
+        int regionsWithBed = 0;
+        foreach (var (key, _) in regions)
+        {
+            var pick = SiegeFX.Core.Assets.MoodStore.FindRegionDefault(moods, key.map, key.region);
+            var bed = pick?.AmbientTrack ?? "";
+            if (withBedOnly && string.IsNullOrEmpty(bed)) continue;
+            if (!string.IsNullOrEmpty(bed)) regionsWithBed++;
+            Console.WriteLine($"    map_{key.map} / {key.region,-12}  {pick?.Name ?? "<none>",-40}  {(string.IsNullOrEmpty(bed) ? "<silent>" : bed)}");
+        }
+        Console.WriteLine($"  regions surveyed: {regions.Count}, with audible bed: {regionsWithBed}");
     }
 
     return 0;

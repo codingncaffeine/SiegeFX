@@ -65,6 +65,14 @@ public sealed class RenderHost : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private string? _worldRootRegion;
     private string? _currentPlayerRegion;
+    // Phase 21d-2a-xi — region-default mood lookup. Loaded once during audio
+    // init from /world/global/moods/<map>/moods*.gas; used by
+    // ApplyAmbientForRegion to pick the looping ambient bed each time the
+    // player's containing region changes. Map name (e.g. "world") is derived
+    // off the launch region path.
+    private IReadOnlyDictionary<string, SiegeFX.Core.Assets.MoodSetting>? _moodStore;
+    private string? _moodMapName;
+    private string? _activeBedRegion;
     private (Vector3 OriginXZ, string RegionPath)[] _snodeRegionLookup =
         Array.Empty<(Vector3, string)>();
     private float _regionCheckAccumulator;
@@ -2125,6 +2133,35 @@ void main()
                     TryRegisterSfx(soundReader, "die_gremal",     "/sound/effects/s_e_die_gremal.wav");
                     TryRegisterSfx(soundReader, "die_krug_scout", "/sound/effects/s_e_die_krug_scout.wav");
                     TryRegisterSfx(soundReader, "die_krug_dog",   "/sound/effects/s_e_die_krug_dog.wav");
+
+                    // Phase 21d-2a-xi — load mood definitions, then register
+                    // the looping ambient beds shipped under /sound/effects/
+                    // s_e_ambient_*. We pre-register every distinct
+                    // ambient_track value referenced by any mood so the
+                    // SetAmbientBed swap-on-region-change doesn't need a
+                    // file IO step in the playline. Skipping silently if
+                    // moods didn't parse — bed stays silent rather than
+                    // crashing the player out of a fresh load.
+                    try
+                    {
+                        var (moods, moodDiags) = SiegeFX.Core.Assets.MoodStore.Load(logicReader);
+                        _moodStore = moods;
+                        _moodMapName = DeriveMapName(_regionPath);
+                        int regBeds = 0;
+                        foreach (var track in CollectDistinctAmbientTracks(moods))
+                        {
+                            if (TryRegisterSfx(soundReader, track, $"/sound/effects/{track}.wav"))
+                                regBeds++;
+                        }
+                        Console.WriteLine($"  audio: mood store loaded — {moods.Count} moods, " +
+                                          $"{regBeds} distinct ambient bed clip(s) registered " +
+                                          $"(map='{_moodMapName ?? "<unknown>"}')");
+                        foreach (var d in moodDiags) Console.Error.WriteLine($"  mood: {d}");
+                    }
+                    catch (Exception mex)
+                    {
+                        Console.Error.WriteLine($"  mood store load failed: {mex.Message}");
+                    }
                 }
             }
             else
@@ -2133,6 +2170,11 @@ void main()
             }
         }
         catch (Exception ex) { Console.Error.WriteLine($"  audio init failed: {ex.Message}"); }
+
+        // Phase 21d-2a-xi — kick the looping ambient bed for the launch region
+        // now that mood store + clip registrations have completed. Subsequent
+        // region crossings get re-applied via OnPlayerRegionChanged below.
+        ApplyAmbientForRegion(_regionPath);
 
         // Phase 15a — load DS1's small UI font and hand it to the text overlay.
         // copperplate-light is the body font DS1 uses for HP/MP readouts and
@@ -2414,6 +2456,9 @@ void main()
 
         var prev = _currentPlayerRegion;
         _currentPlayerRegion = newRegion;
+        // Phase 21d-2a-xi — refresh the looping bed first so the soundscape
+        // catches up with the new region even when streaming is a no-op.
+        ApplyAmbientForRegion(newRegion);
 
         var newlyLoaded = PreloadAroundRegion(newRegion);
         if (newlyLoaded.Count == 0)
@@ -4261,25 +4306,103 @@ void main()
     /// it to the audio engine. One-time call at LoadPlayActors. Logs and
     /// keeps going on failure so a missing/corrupt asset doesn't tank the
     /// scene load.</summary>
-    private void TryRegisterSfx(SiegeFX.Core.Tank.TankReader reader,
+    private bool TryRegisterSfx(SiegeFX.Core.Tank.TankReader reader,
                                 string clipId, string tankPath)
     {
-        if (_audio is null) return;
+        if (_audio is null) return false;
         try
         {
             if (!reader.TryGetFile(tankPath, out _))
             {
                 Console.Error.WriteLine($"  audio: '{tankPath}' missing in Sound.dsres");
-                return;
+                return false;
             }
             var bytes = reader.ExtractToMemory(tankPath);
             if (_audio.RegisterClip(clipId, bytes))
+            {
                 Console.WriteLine($"  audio: '{clipId}' ← {tankPath} ({bytes.Length} B)");
+                return true;
+            }
+            return false;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"  audio: '{clipId}' load threw — {ex.Message}");
+            return false;
         }
+    }
+
+    static IEnumerable<string> CollectDistinctAmbientTracks(
+        IReadOnlyDictionary<string, SiegeFX.Core.Assets.MoodSetting> moods)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in moods.Values)
+        {
+            var t = m.AmbientTrack?.Trim();
+            if (string.IsNullOrEmpty(t)) continue;
+            if (seen.Add(t)) yield return t;
+        }
+    }
+
+    /// <summary>Pull the bare region name (e.g. "fh_r1") and map name (e.g.
+    /// "world") off a region path of the shape
+    /// <c>/world/maps/map_&lt;map&gt;/regions/&lt;region&gt;</c>. Returns null
+    /// when the path doesn't match — the launch path always does, but the
+    /// helper guards a custom-mod scenario where regionPath is freelance.</summary>
+    static string? DeriveMapName(string? regionPath)
+    {
+        if (string.IsNullOrEmpty(regionPath)) return null;
+        var norm = regionPath.Replace('\\', '/').TrimEnd('/');
+        const string token = "/maps/map_";
+        int idx = norm.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        int start = idx + token.Length;
+        int end = norm.IndexOf('/', start);
+        if (end < 0) return null;
+        return norm[start..end];
+    }
+
+    static string? DeriveRegionName(string? regionPath)
+    {
+        if (string.IsNullOrEmpty(regionPath)) return null;
+        var norm = regionPath.Replace('\\', '/').TrimEnd('/');
+        const string token = "/regions/";
+        int idx = norm.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        return norm[(idx + token.Length)..];
+    }
+
+    /// <summary>Phase 21d-2a-xi — pick the default mood for the player's
+    /// current region and swap the looping ambient bed to its track. No-op
+    /// when the mood store didn't load, the audio engine is silent, or we've
+    /// already applied this region. The bed selection is mood-name-driven
+    /// (lowest-numbered <c>map_&lt;map&gt;_&lt;region&gt;_N</c> with a non-empty
+    /// ambient_track), which matches DS1's authoring convention even though
+    /// we don't yet honor mood_change() trigger actions.</summary>
+    private void ApplyAmbientForRegion(string? regionPath)
+    {
+        if (_audio is null || _moodStore is null || _moodMapName is null) return;
+        var regionName = DeriveRegionName(regionPath);
+        if (regionName is null) return;
+        if (string.Equals(regionName, _activeBedRegion, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var mood = SiegeFX.Core.Assets.MoodStore.FindRegionDefault(_moodStore, _moodMapName, regionName);
+        _activeBedRegion = regionName;
+        if (mood is null)
+        {
+            Console.WriteLine($"  ambient: region '{regionName}' has no matching mood — bed unchanged");
+            return;
+        }
+        if (string.IsNullOrEmpty(mood.AmbientTrack))
+        {
+            // Mood found but bed is intentionally silent — clear the loop.
+            _audio.SetAmbientBed(null);
+            Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' (silent)");
+            return;
+        }
+        _audio.SetAmbientBed(mood.AmbientTrack);
+        Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' → '{mood.AmbientTrack}'");
     }
 
     /// <summary>Phase 17a — cast the slotted spell at whatever the cursor's
