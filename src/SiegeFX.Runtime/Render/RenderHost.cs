@@ -227,6 +227,14 @@ public sealed class RenderHost : IDisposable
     const string SfxMeleeHitGroup   = "melee_hit";
     const string SfxMeleeMiss       = "melee_miss";
     const string SfxLevelUp         = "level_up";
+    // Phase 21d-2a-ix — GUI feedback. Surgical wires for the three call sites
+    // where DS1 plays a UI cue today: inventory open/close, loot pickup, and
+    // a failed cast for lack of mana. Picked from `audio coverage` audit's
+    // [gui] orphan category — the rest of the put_down_<item> family needs a
+    // real drag/drop inventory before it has a trigger to fire on.
+    const string SfxGuiInventory   = "gui_inventory_sheet";
+    const string SfxGuiPickup      = "gui_pick_up";
+    const string SfxGuiOutOfMana   = "gui_out_of_mana";
     // Death SFX live as direct ids — looked up by template species so
     // we don't grow a death-species enum in the render layer.
     static readonly Dictionary<string, string> SpeciesDeathSfx = new(StringComparer.OrdinalIgnoreCase)
@@ -821,7 +829,7 @@ void main()
                     Console.WriteLine($"camera: {_cameraMode}");
                 }
                 // Phase 15c: 'I' toggles the grid inventory panel.
-                else if (key == Key.I) _inventoryOpen = !_inventoryOpen;
+                else if (key == Key.I) { _inventoryOpen = !_inventoryOpen; _audio?.Play(SfxGuiInventory); }
                 // Phase 20b: 'L' toggles the quest log overlay.
                 else if (key == Key.L) _questLogOpen = !_questLogOpen;
                 // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
@@ -2107,6 +2115,11 @@ void main()
 
                     TryRegisterSfx(soundReader, SfxMeleeMiss, "/sound/effects/s_e_miss_melee.wav");
                     TryRegisterSfx(soundReader, SfxLevelUp,   "/sound/effects/s_e_level_up_melee.wav");
+
+                    // Phase 21d-2a-ix — GUI cue triplet (see Sfx const block above).
+                    TryRegisterSfx(soundReader, SfxGuiInventory, "/sound/effects/s_e_gui_inventory_sheet.wav");
+                    TryRegisterSfx(soundReader, SfxGuiPickup,    "/sound/effects/s_e_gui_pick_up.wav");
+                    TryRegisterSfx(soundReader, SfxGuiOutOfMana, "/sound/effects/s_e_gui_out_of_mana.wav");
 
                     TryRegisterSfx(soundReader, "die_goblin",     "/sound/effects/s_e_die_goblin.wav");
                     TryRegisterSfx(soundReader, "die_gremal",     "/sound/effects/s_e_die_gremal.wav");
@@ -4442,6 +4455,7 @@ void main()
                 break;
             case SiegeFX.Core.Actors.CastOutcome.NoMana:
                 AddFloatingText("no mana", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.45f, 0.65f, 1.00f, 1f));
+                _audio?.Play(SfxGuiOutOfMana);
                 break;
             case SiegeFX.Core.Actors.CastOutcome.OnCooldown:
                 // Cooldown is short (zap = 0.15s) — silent miss feels right rather
@@ -4656,6 +4670,7 @@ void main()
             }
             Console.WriteLine(
                 $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+            _audio?.PlayAt(SfxGuiPickup, pile.Position);
 
             // Phase 14c — auto-equip dropped weapons. If the loot entry came from
             // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)

@@ -30,6 +30,7 @@ try
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
+        "audio"     => DispatchAudio(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -103,6 +104,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
+    Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -3974,5 +3976,172 @@ static int CmdSpellsShow(string[] a)
             Console.WriteLine($"  L{lv,-3}  dmg [{lo,7:0.00} .. {hi,7:0.00}]  sample={sample,6:0.00}  mana={cost,5:0.0}");
         }
     }
+    return 0;
+}
+
+// ---- audio coverage ----
+//
+// Phase 21d-2a-ix audit: walks Sound.dsres, categorises every shipped wav by
+// `s_e_<prefix>` family + buckets music separately, then cross-references the
+// set against the static list of clip ids the runtime currently registers
+// (mirrors RenderHost's Sfx* constants — kept here so SiegeFX.Tools doesn't
+// pull a Runtime ref for one string list). Per-category report:
+//   authored = how many wavs ship in that family
+//   wired    = how many of those a Play()/PlayAt() site actually triggers
+//   gap      = authored - wired (ie unused authored content the runtime never reaches)
+// Surfaces unwired categories (gui, ambient, fidget, call, attack, …) so the
+// punch list for the next slice is observable in one screen instead of buried
+// in a grep.
+
+static int DispatchAudio(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx audio <coverage> <Sound.dsres> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "coverage" => CmdAudioCoverage(a[1..]),
+        _          => UnknownCommand("audio " + a[0]),
+    };
+}
+
+static int CmdAudioCoverage(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx audio coverage <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
+        return 1;
+    }
+    string? soundPath = null;
+    bool listOrphans = false;
+    string? listUnwiredPrefix = null;
+    foreach (var arg in a)
+    {
+        if (arg.Equals("--list-orphan-categories", StringComparison.OrdinalIgnoreCase))
+            listOrphans = true;
+        else if (arg.StartsWith("--list-unwired=", StringComparison.OrdinalIgnoreCase))
+            listUnwiredPrefix = arg["--list-unwired=".Length..].Trim().ToLowerInvariant();
+        else if (arg.StartsWith("--", StringComparison.Ordinal))
+            throw new FormatException($"unknown flag '{arg}'");
+        else
+        {
+            if (soundPath is not null) throw new FormatException("only one Sound.dsres path expected");
+            soundPath = arg;
+        }
+    }
+    if (soundPath is null) { Console.Error.WriteLine("missing <Sound.dsres>"); return 1; }
+
+    // Static wired-id list mirrors RenderHost's Sfx* constants + the inline
+    // clip ids it registers (swing_01..04, hit_flesh_1..5, die_<species>).
+    // When RenderHost grows new TryRegisterSfx calls, append here so the
+    // gap report stays accurate. See feedback_siegefx_diagnostic_clis.md.
+    var wiredPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "/sound/effects/s_e_spell_zap_cast.wav",
+        "/sound/effects/s_e_spell_healing_wind_cast.wav",
+        "/sound/effects/s_e_swing_01.wav",
+        "/sound/effects/s_e_swing_02.wav",
+        "/sound/effects/s_e_swing_03.wav",
+        "/sound/effects/s_e_swing_04.wav",
+        "/sound/effects/s_e_hit_steelsword_flesh1.wav",
+        "/sound/effects/s_e_hit_steelsword_flesh2.wav",
+        "/sound/effects/s_e_hit_steelsword_flesh3.wav",
+        "/sound/effects/s_e_hit_steelsword_flesh4.wav",
+        "/sound/effects/s_e_hit_steelsword_flesh5.wav",
+        "/sound/effects/s_e_miss_melee.wav",
+        "/sound/effects/s_e_level_up_melee.wav",
+        "/sound/effects/s_e_die_goblin.wav",
+        "/sound/effects/s_e_die_gremal.wav",
+        "/sound/effects/s_e_die_krug_scout.wav",
+        "/sound/effects/s_e_die_krug_dog.wav",
+        "/sound/effects/s_e_gui_inventory_sheet.wav",
+        "/sound/effects/s_e_gui_pick_up.wav",
+        "/sound/effects/s_e_gui_out_of_mana.wav",
+    };
+
+    using var tank = TankFile.Open(soundPath);
+    var reader = new TankReader(tank);
+
+    int wavTotal = 0, musicTotal = 0, otherTotal = 0;
+    int wiredFound = 0, wiredMissing = 0;
+    var byCategory = new SortedDictionary<string, (int Authored, int Wired, List<string> Unwired)>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var path in reader.ListFiles())
+    {
+        var lower = path.ToLowerInvariant();
+        if (lower.StartsWith("/sound/music/", StringComparison.Ordinal)) { musicTotal++; continue; }
+        if (!lower.EndsWith(".wav", StringComparison.Ordinal))           { otherTotal++; continue; }
+        if (!lower.StartsWith("/sound/effects/s_e_", StringComparison.Ordinal))
+        {
+            wavTotal++;
+            continue;
+        }
+        wavTotal++;
+
+        // Category = first underscore-delimited token after s_e_, e.g.
+        // s_e_spell_zap_cast.wav -> "spell". Sub-buckets (per-spell, per-creature)
+        // are interesting but would explode the report; leaving that to a future
+        // --by-creature flag if ever needed.
+        var rest = lower.AsSpan("/sound/effects/s_e_".Length);
+        int sep = rest.IndexOfAny(new[] { '_', '.' });
+        string cat = sep < 0 ? rest.ToString() : rest[..sep].ToString();
+
+        if (!byCategory.TryGetValue(cat, out var cell))
+            cell = (0, 0, new List<string>());
+        cell.Authored++;
+        if (wiredPaths.Contains(path)) cell.Wired++;
+        else cell.Unwired.Add(path);
+        byCategory[cat] = cell;
+    }
+
+    foreach (var w in wiredPaths)
+    {
+        if (reader.TryGetFile(w, out _)) wiredFound++;
+        else wiredMissing++;
+    }
+
+    Console.WriteLine($"audio coverage: {Path.GetFileName(soundPath)}");
+    Console.WriteLine($"  totals: {wavTotal} wav(s), {musicTotal} music track(s), {otherTotal} other");
+    Console.WriteLine($"  wired-list health: {wiredFound}/{wiredPaths.Count} resolve in tank ({wiredMissing} missing — report stale runtime constants)");
+    Console.WriteLine();
+    Console.WriteLine($"  {"category",-12}  {"authored",8}  {"wired",5}  gap");
+    Console.WriteLine($"  {new string('-', 12)}  {new string('-', 8)}  {new string('-', 5)}  ---");
+
+    var orphans = new List<string>();
+    foreach (var (cat, cell) in byCategory)
+    {
+        int gap = cell.Authored - cell.Wired;
+        Console.WriteLine($"  {cat,-12}  {cell.Authored,8}  {cell.Wired,5}  {gap,3}");
+        if (cell.Wired == 0) orphans.Add(cat);
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"  unwired categories ({orphans.Count}): {string.Join(", ", orphans)}");
+    Console.WriteLine($"  music: 0/{musicTotal} wired (no music playback path in runtime yet)");
+
+    if (listOrphans && orphans.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("orphan-category samples (first 5 each):");
+        foreach (var cat in orphans)
+        {
+            Console.WriteLine($"  [{cat}]");
+            foreach (var p in byCategory[cat].Unwired.Take(5))
+                Console.WriteLine($"    {p}");
+        }
+    }
+
+    if (listUnwiredPrefix is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"unwired entries in [{listUnwiredPrefix}] (full list):");
+        if (byCategory.TryGetValue(listUnwiredPrefix, out var cellList))
+        {
+            foreach (var p in cellList.Unwired) Console.WriteLine($"  {p}");
+        }
+        else
+        {
+            Console.WriteLine("  (no such category)");
+        }
+    }
+
     return 0;
 }
