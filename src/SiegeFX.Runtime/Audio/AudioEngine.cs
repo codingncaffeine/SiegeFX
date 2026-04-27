@@ -32,15 +32,23 @@ public sealed unsafe class AudioEngine : IDisposable
     readonly uint[] _sourcePool;
     int _nextSource;
     readonly Random _variantRng = new();
+    // Phase 21d-2a-xi — dedicated source for the looping region ambient bed.
+    // Lives outside _sourcePool so the round-robin SFX rotation never evicts
+    // the bed mid-playback. _ambientCurrentClip lets a redundant SetAmbientBed
+    // call no-op when the bed wouldn't change, which keeps region re-streams
+    // (e.g. quickload that reloads the same region) from clipping the loop.
+    uint _ambientSource;
+    string? _ambientCurrentClip;
     bool _disposed;
 
-    AudioEngine(AL al, ALContext alc, Device* device, Context* context, uint[] sources)
+    AudioEngine(AL al, ALContext alc, Device* device, Context* context, uint[] sources, uint ambientSource)
     {
         _al = al;
         _alc = alc;
         _device = device;
         _context = context;
         _sourcePool = sources;
+        _ambientSource = ambientSource;
     }
 
     /// <summary>Open the default device, create + activate a context, and
@@ -81,6 +89,15 @@ public sealed unsafe class AudioEngine : IDisposable
             var sources = new uint[voices];
             fixed (uint* p = sources) al.GenSources(voices, p);
 
+            // Dedicated ambient bed source generated alongside the SFX pool.
+            // Configured listener-relative + zero position so the loop is
+            // always centered (DS1 ambient beds are mood-wide, not positional).
+            uint ambientSrc = 0;
+            al.GenSources(1, &ambientSrc);
+            al.SetSourceProperty(ambientSrc, SourceBoolean.SourceRelative, true);
+            al.SetSourceProperty(ambientSrc, SourceVector3.Position, 0f, 0f, 0f);
+            al.SetSourceProperty(ambientSrc, SourceBoolean.Looping, true);
+
             // Phase 18c — clamped inverse-distance attenuation. Past
             // MaxDistance the source contributes 0 gain rather than
             // continuing to fade slowly, which keeps a goblin scream
@@ -92,7 +109,7 @@ public sealed unsafe class AudioEngine : IDisposable
 
             Console.WriteLine($"  audio: OpenAL Soft up ({voices} voices, " +
                               $"InverseDistanceClamped attenuation)");
-            return new AudioEngine(al, alc, device, context, sources);
+            return new AudioEngine(al, alc, device, context, sources, ambientSrc);
         }
         catch (Exception ex)
         {
@@ -147,6 +164,19 @@ public sealed unsafe class AudioEngine : IDisposable
                     {
                         _al.SourceStop(_sourcePool[i]);
                         _al.SetSourceProperty(_sourcePool[i], SourceInteger.Buffer, 0);
+                    }
+                }
+                // Same guard for the dedicated ambient source — re-registering
+                // a bed clip while it's looping would otherwise leak the
+                // buffer (DeleteBuffers refuses bound buffers).
+                if (_ambientSource != 0)
+                {
+                    _al.GetSourceProperty(_ambientSource, GetSourceInteger.Buffer, out int boundAmb);
+                    if ((uint)boundAmb == prev)
+                    {
+                        _al.SourceStop(_ambientSource);
+                        _al.SetSourceProperty(_ambientSource, SourceInteger.Buffer, 0);
+                        _ambientCurrentClip = null;
                     }
                 }
                 _al.DeleteBuffers(1, &prev);
@@ -252,6 +282,42 @@ public sealed unsafe class AudioEngine : IDisposable
         fixed (float* p = ori) _al.SetListenerProperty(ListenerFloatArray.Orientation, p);
     }
 
+    /// <summary>Phase 21d-2a-xi — swap the looping region ambient bed.
+    /// Pass <c>null</c> or empty to silence (mood without an ambient_track).
+    /// Subsequent calls with the same clip id are no-ops, so the runtime
+    /// can call this every region preload without clipping a still-playing
+    /// loop. Bed plays on a dedicated source outside the SFX pool, so
+    /// regular Play / PlayAt calls never evict it.</summary>
+    public void SetAmbientBed(string? clipId, float gain = 0.55f)
+    {
+        if (_disposed) return;
+        if (string.IsNullOrEmpty(clipId))
+        {
+            if (_ambientCurrentClip is null) return;
+            _al.SourceStop(_ambientSource);
+            _al.SetSourceProperty(_ambientSource, SourceInteger.Buffer, 0);
+            _ambientCurrentClip = null;
+            return;
+        }
+        if (string.Equals(clipId, _ambientCurrentClip, StringComparison.OrdinalIgnoreCase))
+            return; // idempotent — same bed, leave the loop running
+
+        if (!_bufferByClip.TryGetValue(clipId, out var buf))
+        {
+            // Not registered. Caller is expected to RegisterClip() the bed
+            // before this point; log + leave the previous bed alone so the
+            // soundscape isn't silenced by a typo.
+            Console.Error.WriteLine($"  audio: ambient bed '{clipId}' not registered — leaving previous bed");
+            return;
+        }
+        _al.SourceStop(_ambientSource);
+        _al.SetSourceProperty(_ambientSource, SourceInteger.Buffer, (int)buf);
+        _al.SetSourceProperty(_ambientSource, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(_ambientSource, SourceBoolean.Looping, true);
+        _al.SourcePlay(_ambientSource);
+        _ambientCurrentClip = clipId;
+    }
+
     bool Resolve(string id, out uint buf)
     {
         buf = 0;
@@ -280,6 +346,14 @@ public sealed unsafe class AudioEngine : IDisposable
             for (int i = 0; i < _sourcePool.Length; i++)
                 _al.SourceStop(_sourcePool[i]);
             fixed (uint* p = _sourcePool) _al.DeleteSources(_sourcePool.Length, p);
+
+            if (_ambientSource != 0)
+            {
+                _al.SourceStop(_ambientSource);
+                var amb = _ambientSource;
+                _al.DeleteSources(1, &amb);
+                _ambientSource = 0;
+            }
 
             foreach (var buf in _bufferByClip.Values)
             {
