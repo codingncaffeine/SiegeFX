@@ -29,6 +29,14 @@ public sealed unsafe class AudioEngine : IDisposable
     // single — Play looks up groups first, falls back to single).
     readonly Dictionary<string, List<string>> _variantsByGroup =
         new(StringComparer.OrdinalIgnoreCase);
+    // Phase 21d-2a-xii — per-clip playback-rate range from DS1's SED files.
+    // When a clip id has an entry, Play / PlayAt sample a uniform random
+    // pitch in [min, max] each fire (DS1's authored anti-stutter trick).
+    // Default for unknown clips is unity (1.0) so existing behavior is
+    // preserved when a clip has no SED. Keyed by the same clip id used
+    // in _bufferByClip so the lookup is a single dict hit at fire time.
+    readonly Dictionary<string, (float Min, float Max)> _pitchByClip =
+        new(StringComparer.OrdinalIgnoreCase);
     readonly uint[] _sourcePool;
     int _nextSource;
     readonly Random _variantRng = new();
@@ -223,11 +231,12 @@ public sealed unsafe class AudioEngine : IDisposable
     /// there in the world" cues, see <see cref="PlayAt"/>.</summary>
     public void Play(string id, float gain = 1f)
     {
-        if (!Resolve(id, out uint buf)) return;
+        if (!Resolve(id, out uint buf, out string resolvedId)) return;
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
         _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         // Listener-relative + zero position = always centered, no falloff.
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, true);
         _al.SetSourceProperty(src, SourceVector3.Position, 0f, 0f, 0f);
@@ -242,11 +251,12 @@ public sealed unsafe class AudioEngine : IDisposable
     public void PlayAt(string id, Vector3 worldPos, float gain = 1f,
                        float refDistance = 6f, float maxDistance = 40f)
     {
-        if (!Resolve(id, out uint buf)) return;
+        if (!Resolve(id, out uint buf, out string resolvedId)) return;
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
         _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
         _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
         _al.SetSourceProperty(src, SourceFloat.MaxDistance, maxDistance);
@@ -318,13 +328,42 @@ public sealed unsafe class AudioEngine : IDisposable
         _ambientCurrentClip = clipId;
     }
 
-    bool Resolve(string id, out uint buf)
+    /// <summary>Phase 21d-2a-xii — register the per-fire pitch range for
+    /// a clip from its DS1 SED descriptor. Idempotent — a second call
+    /// replaces the previous range. Pass <paramref name="min"/> ==
+    /// <paramref name="max"/> for fixed transposition; pass 1.0/1.0 to
+    /// effectively unregister (Play falls back to unity pitch).</summary>
+    public void RegisterPitch(string clipId, float min, float max)
+    {
+        if (_disposed) return;
+        if (string.IsNullOrEmpty(clipId)) return;
+        // OpenAL Soft pitch is positive. Defensive clamps so a malformed
+        // SED never silences a source (Pitch <= 0 stops playback in AL).
+        if (min <= 0f) min = 0.01f;
+        if (max <= 0f) max = 0.01f;
+        if (min > max) (min, max) = (max, min);
+        _pitchByClip[clipId] = (min, max);
+    }
+
+    /// <summary>Sample the per-fire pitch for <paramref name="resolvedId"/>.
+    /// Returns 1.0 (unity, no transposition) when the clip has no SED.
+    /// Equal min/max yields a fixed transpose with no jitter.</summary>
+    float SamplePitch(string resolvedId)
+    {
+        if (!_pitchByClip.TryGetValue(resolvedId, out var range)) return 1.0f;
+        if (range.Min >= range.Max) return range.Min;
+        return range.Min + (float)_variantRng.NextDouble() * (range.Max - range.Min);
+    }
+
+    bool Resolve(string id, out uint buf, out string resolvedId)
     {
         buf = 0;
+        resolvedId = id;
         if (_disposed) return false;
         if (_variantsByGroup.TryGetValue(id, out var variants))
         {
             var pick = variants[_variantRng.Next(variants.Count)];
+            resolvedId = pick;
             return _bufferByClip.TryGetValue(pick, out buf);
         }
         return _bufferByClip.TryGetValue(id, out buf);

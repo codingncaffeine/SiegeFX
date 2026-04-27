@@ -82,6 +82,7 @@ echo   62. Phase 21d-2a-viii-b - Character creator UI panel (SIEGEFX_CREATOR=1; 
 echo   63. Phase 21d-2a-viii-c - Hero name + variant persistence through quicksave (F5/F9)
 echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + gap report)
 echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-region for in-game loop)
+echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + cap inventory)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -153,6 +154,7 @@ if /i "%CHOICE%"=="62" goto T62
 if /i "%CHOICE%"=="63" goto T63
 if /i "%CHOICE%"=="64" goto T64
 if /i "%CHOICE%"=="65" goto T65
+if /i "%CHOICE%"=="66" goto T66
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1196,6 +1198,32 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 echo.
 echo === xi exited with %EXITCODE% ===
+pause
+goto MENU
+
+:T66
+echo.
+echo --- Phase 21d-2a-xii: SED registry audit ---
+echo [DS1 ships a Sound Effect Descriptor (SED) layer that authors per-fire pitch]
+echo [jitter, fixed transposes, and concurrent-voice caps for every sound that wants]
+echo [variation. Each SED is a *_sed.gas file in /sound/effects/; 165 ship in DS1.]
+echo [The runtime loads them at audio init and applies the rate range when playing.]
+echo.
+echo [Three views below:]
+echo [  1. Default summary - histograms + top-3-category samples]
+echo [  2. Cross-aliases   - SEDs whose key name != their actual wav (sound aliasing)]
+echo [  3. Filter spell    - all 2 spell SEDs (zap_cast + nova_strike_cast)]
+echo.
+echo --- summary ---
+"%TOOL%" audio sed-list "%DS1%\Resources\Sound.dsres"
+echo.
+echo --- cross-aliases ---
+"%TOOL%" audio sed-list "%DS1%\Resources\Sound.dsres" --show-aliases
+echo.
+echo --- filter spell ---
+"%TOOL%" audio sed-list "%DS1%\Resources\Sound.dsres" --filter=spell
+echo.
+echo === xii exited with %ERRORLEVEL% ===
 pause
 goto MENU
 
