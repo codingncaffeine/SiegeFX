@@ -15,11 +15,15 @@ namespace SiegeFX.Core.Save;
 /// </summary>
 public sealed class SaveFile
 {
-    /// <summary>v5 — added <see cref="PlayerSnapshot.HeroName"/> and
-    /// <see cref="PlayerSnapshot.Variant"/> (gender + body/skin/pants picks
-    /// from the character creator). Old v1..v4 files load fine: missing
-    /// fields hit their defaults (empty name, null variant = stock farmboy).
-    /// Old v4 — added <see cref="PlayerSnapshot.Gold"/>.</summary>
+    /// <summary>Schema history (most recent last):
+    ///   v1 -> v2 : added <see cref="PlayerSnapshot.Quests"/>.
+    ///   v2 -> v3 : added <see cref="QuestSnapshot.KillProgress"/>.
+    ///   v3 -> v4 : added <see cref="PlayerSnapshot.Gold"/>.
+    ///   v4 -> v5 : added <see cref="PlayerSnapshot.HeroName"/> and
+    ///              <see cref="PlayerSnapshot.Variant"/> (gender + body/skin/
+    ///              pants picks from the character creator).
+    /// All bumps are deserializer-friendly — missing fields hit their defaults —
+    /// so any v1..v4 file loads as a v5 with the new fields zero-initialized.</summary>
     public const int CurrentSchemaVersion = 5;
 
     /// <summary>Schema version of the file as written. Loader rejects when
