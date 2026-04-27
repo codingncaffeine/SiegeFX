@@ -73,6 +73,12 @@ public sealed class RenderHost : IDisposable
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.MoodSetting>? _moodStore;
     private string? _moodMapName;
     private string? _activeBedRegion;
+    // Phase 21d-2a-xii — DS1 sound effect descriptors. Loaded once at audio
+    // init from Sound.dsres; consulted by TryRegisterSfx so every wired clip
+    // picks up the per-fire pitch jitter the SED authored. Null when audio
+    // init failed or Sound.dsres was absent — TryRegisterSfx no-ops the
+    // pitch lookup in that case.
+    private IReadOnlyDictionary<string, SiegeFX.Core.Assets.SedDescriptor>? _sedStore;
     private (Vector3 OriginXZ, string RegionPath)[] _snodeRegionLookup =
         Array.Empty<(Vector3, string)>();
     private float _regionCheckAccumulator;
@@ -2097,6 +2103,23 @@ void main()
                 _audio = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
                 if (_audio is not null)
                 {
+                    // Phase 21d-2a-xii — load DS1's SED (sound effect descriptor)
+                    // registry up-front so each TryRegisterSfx call below picks
+                    // up its authored playback-rate range. Failure leaves
+                    // _sedStore null and TryRegisterSfx falls back to unity
+                    // pitch — same behavior as pre-xii.
+                    try
+                    {
+                        var (seds, sedDiags) = SiegeFX.Core.Assets.SedStore.Load(soundReader);
+                        _sedStore = seds;
+                        Console.WriteLine($"  audio: SED registry loaded — {seds.Count} descriptors");
+                        foreach (var d in sedDiags) Console.Error.WriteLine($"  sed: {d}");
+                    }
+                    catch (Exception sex)
+                    {
+                        Console.Error.WriteLine($"  SED store load failed: {sex.Message}");
+                    }
+
                     TryRegisterSfx(soundReader, SfxZapCast,
                         "/sound/effects/s_e_spell_zap_cast.wav");
                     TryRegisterSfx(soundReader, SfxHealingWindCast,
@@ -4320,6 +4343,21 @@ void main()
             var bytes = reader.ExtractToMemory(tankPath);
             if (_audio.RegisterClip(clipId, bytes))
             {
+                // Phase 21d-2a-xii — apply DS1 SED playback range if one
+                // exists for this clip's source file. SED keys match the
+                // wav basename (no extension, no path) — e.g. /sound/
+                // effects/s_e_zap_cast.wav → SED "s_e_zap_cast". Skip the
+                // lookup if no SED store loaded or no descriptor found
+                // (clip plays at unity pitch — same as pre-xii).
+                if (_sedStore is not null)
+                {
+                    var basename = Path.GetFileNameWithoutExtension(tankPath);
+                    if (_sedStore.TryGetValue(basename, out var sed)
+                        && (sed.MinPlaybackRate != 1f || sed.MaxPlaybackRate != 1f))
+                    {
+                        _audio.RegisterPitch(clipId, sed.MinPlaybackRate, sed.MaxPlaybackRate);
+                    }
+                }
                 Console.WriteLine($"  audio: '{clipId}' ← {tankPath} ({bytes.Length} B)");
                 return true;
             }

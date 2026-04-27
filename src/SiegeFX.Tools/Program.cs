@@ -106,6 +106,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
+    Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
     Console.WriteLine("  siegefx mood list          <Logic.dsres> [--map=world] [--with-bed] [--regions]");
     Console.WriteLine();
     Console.WriteLine("Examples:");
@@ -3997,12 +3998,157 @@ static int CmdSpellsShow(string[] a)
 
 static int DispatchAudio(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx audio <coverage> <Sound.dsres> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx audio <coverage|sed-list> <Sound.dsres> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "coverage" => CmdAudioCoverage(a[1..]),
+        "sed-list" => CmdAudioSedList(a[1..]),
         _          => UnknownCommand("audio " + a[0]),
     };
+}
+
+static int CmdAudioSedList(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine(
+            "usage: siegefx audio sed-list <Sound.dsres> [--filter=PREFIX] [--show-all] [--show-aliases] [--show-rate-only]");
+        Console.Error.WriteLine("  --filter=PREFIX     restrict to SED keys starting with PREFIX (e.g. spell, call, attack)");
+        Console.Error.WriteLine("  --show-all          print every SED entry (default: histograms + samples only)");
+        Console.Error.WriteLine("  --show-aliases      print SEDs whose sound_effect_file != key (cross-aliasing)");
+        Console.Error.WriteLine("  --show-rate-only    print SEDs with non-unity playback rate range");
+        return 1;
+    }
+    string? soundPath = null;
+    string? filter = null;
+    bool showAll = false, showAliases = false, showRateOnly = false;
+    foreach (var arg in a)
+    {
+        if (arg.StartsWith("--filter=", StringComparison.OrdinalIgnoreCase))
+            filter = arg["--filter=".Length..].Trim().ToLowerInvariant();
+        else if (arg.Equals("--show-all", StringComparison.OrdinalIgnoreCase)) showAll = true;
+        else if (arg.Equals("--show-aliases", StringComparison.OrdinalIgnoreCase)) showAliases = true;
+        else if (arg.Equals("--show-rate-only", StringComparison.OrdinalIgnoreCase)) showRateOnly = true;
+        else if (arg.StartsWith("--", StringComparison.Ordinal))
+            throw new FormatException($"unknown flag '{arg}'");
+        else
+        {
+            if (soundPath is not null) throw new FormatException("only one Sound.dsres path expected");
+            soundPath = arg;
+        }
+    }
+    if (soundPath is null) { Console.Error.WriteLine("missing <Sound.dsres>"); return 1; }
+
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(soundPath);
+    var reader = new SiegeFX.Core.Tank.TankReader(tank);
+    var (seds, diags) = SiegeFX.Core.Assets.SedStore.Load(reader);
+
+    Console.WriteLine($"== SED registry — {seds.Count} descriptors parsed from {Path.GetFileName(soundPath)} ==");
+    foreach (var d in diags) Console.Error.WriteLine($"  diag: {d}");
+
+    var ordered = seds.Values
+        .Where(s => filter is null
+                    || string.Equals(CategoryOf(s.Key), filter, StringComparison.OrdinalIgnoreCase)
+                    || s.Key.StartsWith(filter, StringComparison.OrdinalIgnoreCase))
+        .OrderBy(s => s.Key, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    if (filter is not null)
+        Console.WriteLine($"   ({ordered.Count} match filter prefix '{filter}')");
+
+    // Histograms.
+    int withRateJitter = ordered.Count(s => s.MinPlaybackRate != s.MaxPlaybackRate);
+    int withFixedTrans = ordered.Count(s => s.MinPlaybackRate == s.MaxPlaybackRate && s.MinPlaybackRate != 1f);
+    int unity          = ordered.Count(s => s.MinPlaybackRate == 1f && s.MaxPlaybackRate == 1f);
+    int aliased        = ordered.Count(s => !string.Equals(s.Key, s.SoundEffectFile, StringComparison.OrdinalIgnoreCase));
+    int withCap        = ordered.Count(s => s.MaxSimultaneousSamples > 0);
+
+    Console.WriteLine();
+    Console.WriteLine("Playback-rate distribution:");
+    Console.WriteLine($"  varied (min < max):      {withRateJitter,4} — per-fire pitch jitter");
+    Console.WriteLine($"  fixed transpose (≠1.0):  {withFixedTrans,4} — sound is intentionally re-pitched");
+    Console.WriteLine($"  unity (1.0 / 1.0):       {unity,4} — playback rate fields absent / commented");
+    Console.WriteLine();
+    Console.WriteLine("Other SED features:");
+    Console.WriteLine($"  cross-alias (key != sound_effect_file): {aliased,4}");
+    Console.WriteLine($"  max_simultaneous_samples authored:      {withCap,4}");
+
+    // Distinct underlying wav files.
+    var distinctSounds = ordered
+        .Select(s => s.SoundEffectFile)
+        .Where(s => !string.IsNullOrEmpty(s))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Count();
+    Console.WriteLine($"  distinct sound_effect_file values:      {distinctSounds,4}");
+
+    // Per-prefix breakdown (s_e_<prefix>_).
+    Console.WriteLine();
+    Console.WriteLine("Per-category SED count (top 10):");
+    var perCat = ordered
+        .GroupBy(s => CategoryOf(s.Key))
+        .Select(g => (Cat: g.Key, Count: g.Count()))
+        .OrderByDescending(x => x.Count)
+        .Take(10)
+        .ToList();
+    foreach (var (cat, count) in perCat)
+        Console.WriteLine($"  {cat,-28} {count,4}");
+
+    if (showAll)
+    {
+        Console.WriteLine();
+        Console.WriteLine("All SED entries:");
+        foreach (var s in ordered) PrintSed(s);
+    }
+    else if (showAliases)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Cross-aliasing SEDs (key → sound_effect_file):");
+        foreach (var s in ordered.Where(s =>
+            !string.Equals(s.Key, s.SoundEffectFile, StringComparison.OrdinalIgnoreCase)))
+            PrintSed(s);
+    }
+    else if (showRateOnly)
+    {
+        Console.WriteLine();
+        Console.WriteLine("SEDs with non-unity playback rate:");
+        foreach (var s in ordered.Where(s => s.MinPlaybackRate != 1f || s.MaxPlaybackRate != 1f))
+            PrintSed(s);
+    }
+    else
+    {
+        // Default: 5 sample entries from each of the top 3 categories,
+        // so the user gets a feel for the data without scroll fatigue.
+        Console.WriteLine();
+        Console.WriteLine("Sample entries (first 5 per top category — pass --show-all for the full list):");
+        foreach (var (cat, _) in perCat.Take(3))
+        {
+            Console.WriteLine($"  [{cat}]");
+            foreach (var s in ordered.Where(s => CategoryOf(s.Key) == cat).Take(5))
+                PrintSed(s);
+        }
+    }
+    return 0;
+
+    static string CategoryOf(string key)
+    {
+        // Strip a leading "s_e_" then take the first underscore-separated token.
+        const string prefix = "s_e_";
+        var k = key;
+        if (k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) k = k[prefix.Length..];
+        var us = k.IndexOf('_');
+        return us < 0 ? k : k[..us];
+    }
+
+    static void PrintSed(SiegeFX.Core.Assets.SedDescriptor s)
+    {
+        string rate = s.MinPlaybackRate == s.MaxPlaybackRate
+            ? $"rate {s.MinPlaybackRate:0.00}"
+            : $"rate {s.MinPlaybackRate:0.00}–{s.MaxPlaybackRate:0.00}";
+        string cap  = s.MaxSimultaneousSamples > 0 ? $", cap {s.MaxSimultaneousSamples}" : "";
+        string alias = string.Equals(s.Key, s.SoundEffectFile, StringComparison.OrdinalIgnoreCase)
+            ? "" : $"  → {s.SoundEffectFile}";
+        Console.WriteLine($"    {s.Key,-44}{alias,-44}  {rate}{cap}");
+    }
 }
 
 static int CmdAudioCoverage(string[] a)
