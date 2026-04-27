@@ -80,6 +80,7 @@ echo   60. Phase 21d-2a-vii - Layered equipment (boots + chest texture override 
 echo   61. Phase 21d-2a-viii-a - Hero variant audit + env-var pick (pos_a3 + skin_07 + pants_015)
 echo   62. Phase 21d-2a-viii-b - Character creator UI panel (SIEGEFX_CREATOR=1; Begin to spawn)
 echo   63. Phase 21d-2a-viii-c - Hero name + variant persistence through quicksave (F5/F9)
+echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + gap report)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -149,6 +150,7 @@ if /i "%CHOICE%"=="60" goto T60
 if /i "%CHOICE%"=="61" goto T61
 if /i "%CHOICE%"=="62" goto T62
 if /i "%CHOICE%"=="63" goto T63
+if /i "%CHOICE%"=="64" goto T64
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1157,6 +1159,21 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T64
+echo.
+echo --- Phase 21d-2a-ix: audio coverage audit ---
+echo [Headless histogram of Sound.dsres: 626 wavs across 46 s_e_<prefix> categories,]
+echo [cross-referenced against the static wired-id list in CmdAudioCoverage. Output:]
+echo [per-category authored / wired / gap, plus an "unwired categories" summary.]
+echo [Use --list-unwired=PREFIX to see the full unwired entries for a category.]
+echo [Use --list-orphan-categories for first-5 samples of every zero-wired family.]
+echo.
+"%TOOL%" audio coverage "%DS1%\Resources\Sound.dsres"
+echo.
+echo === audit-only command (no game launch) ===
 pause
 goto MENU
 
