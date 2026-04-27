@@ -15,10 +15,12 @@ namespace SiegeFX.Core.Save;
 /// </summary>
 public sealed class SaveFile
 {
-    /// <summary>v4 — added <see cref="PlayerSnapshot.Gold"/>. Old v1/v2/v3
-    /// files load fine: <see cref="SaveStore"/> stamps the new version and the
-    /// missing field deserializes to default 0 (player starts broke on load).</summary>
-    public const int CurrentSchemaVersion = 4;
+    /// <summary>v5 — added <see cref="PlayerSnapshot.HeroName"/> and
+    /// <see cref="PlayerSnapshot.Variant"/> (gender + body/skin/pants picks
+    /// from the character creator). Old v1..v4 files load fine: missing
+    /// fields hit their defaults (empty name, null variant = stock farmboy).
+    /// Old v4 — added <see cref="PlayerSnapshot.Gold"/>.</summary>
+    public const int CurrentSchemaVersion = 5;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -133,6 +135,37 @@ public sealed class PlayerSnapshot
     /// <summary>Phase 20d — player gold purse. Defaults to 0 so old v3 saves
     /// (which lacked the field) load with a broke PC, matching the v3 contract.</summary>
     public long Gold { get; set; }
+
+    /// <summary>Phase 21d-2a-viii-c — player-typed hero name from the
+    /// character creator. Empty string when the player skipped or cancelled
+    /// the creator (env-var spawn path) or for v4-and-earlier loads.</summary>
+    public string HeroName { get; set; } = "";
+
+    /// <summary>Phase 21d-2a-viii-c — character creator variant pick. Null
+    /// for v4-and-earlier loads or when the player cancelled the creator
+    /// (env-var spawn falls through with no variant record). When present,
+    /// the load path uses these values to rebuild the variant override
+    /// instead of reading the env vars again.</summary>
+    public HeroVariantSnapshot? Variant { get; set; }
+}
+
+/// <summary>Phase 21d-2a-viii-c — frozen snapshot of the character creator's
+/// picker state. Mirrors <c>HeroVariantPicker</c> but lives in Core so the
+/// Runtime-side picker can be rebuilt without a back-reference.</summary>
+public sealed class HeroVariantSnapshot
+{
+    /// <summary>"boy" or "girl" — matches <c>SIEGEFX_HERO_GENDER</c> values.</summary>
+    public string Gender { get; set; } = "boy";
+
+    /// <summary>Body axis index 0..6 corresponding to pos_a1..pos_a7. -1 = no
+    /// override (template default).</summary>
+    public int BodyTypeIdx { get; set; } = -1;
+
+    /// <summary>Two-digit zero-padded skin suffix (e.g. "07"). Null = no override.</summary>
+    public string? SkinSuffix { get; set; }
+
+    /// <summary>Three-digit zero-padded pants suffix (e.g. "015"). Null = no override.</summary>
+    public string? PantsSuffix { get; set; }
 }
 
 /// <summary>One journal entry as stored in a save. Mirrors

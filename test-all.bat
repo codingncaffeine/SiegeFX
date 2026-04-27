@@ -79,6 +79,7 @@ echo   59. Phase 21d-2a-vi - Dagger grip (90 deg X prerotation; piercing forward
 echo   60. Phase 21d-2a-vii - Layered equipment (boots + chest texture override on farmboy)
 echo   61. Phase 21d-2a-viii-a - Hero variant audit + env-var pick (pos_a3 + skin_07 + pants_015)
 echo   62. Phase 21d-2a-viii-b - Character creator UI panel (SIEGEFX_CREATOR=1; Begin to spawn)
+echo   63. Phase 21d-2a-viii-c - Hero name + variant persistence through quicksave (F5/F9)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -147,6 +148,7 @@ if /i "%CHOICE%"=="59" goto T59
 if /i "%CHOICE%"=="60" goto T60
 if /i "%CHOICE%"=="61" goto T61
 if /i "%CHOICE%"=="62" goto T62
+if /i "%CHOICE%"=="63" goto T63
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1148,6 +1150,31 @@ set SIEGEFX_HERO_GENDER=
 set SIEGEFX_HERO_BODY=
 set SIEGEFX_HERO_SKIN=
 set SIEGEFX_HERO_PANTS=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T63
+echo.
+echo --- Phase 21d-2a-viii-c: hero name + variant persistence ---
+echo [Same launch path as 62, but verifies the save schema bump (v4 -> v5).]
+echo [In-window: type a hero name (e.g. "TestHero"), pick a non-default body/skin,]
+echo [Begin to spawn. Hero name banner sits top-center over the 3D scene.]
+echo [Press F5 to quicksave, F9 to reload — name banner + variant persist;]
+echo [the v5 quicksave.save under %%LOCALAPPDATA%%\SiegeFX\Saves carries HeroName +]
+echo [Variant{Gender,BodyTypeIdx,SkinSuffix,PantsSuffix}. v4-and-earlier saves]
+echo [load with empty name + null variant (template defaults), no schema break.]
+echo.
+set SIEGEFX_CREATOR=1
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_CREATOR=
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
