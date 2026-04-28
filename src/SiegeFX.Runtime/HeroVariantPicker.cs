@@ -34,6 +34,15 @@ internal sealed class HeroVariantPicker
     public int BodyTypeIdx { get; init; } = -1;
     /// <summary>Two-digit zero-padded suffix (e.g. "03"). Null = no override.</summary>
     public string? SkinSuffix { get; init; }
+    /// <summary>Three-digit zero-padded suffix (e.g. "001") into
+    /// <c>b_c_gah_*_hair_NNN.raw</c>. Null = no hair override.</summary>
+    public string? HairSuffix { get; init; }
+    /// <summary>Shirt-stride index (0..N) folded into the pants atlas suffix.
+    /// DS1 packs shirt + pants into a single <c>b_c_pos_aN_NNN.raw</c> atlas
+    /// with no separate shirt file, so the shirt button rolls the atlas
+    /// suffix forward by a coprime stride to walk distinct shirt/pant
+    /// combos as the user clicks.</summary>
+    public int ShirtIdx { get; init; }
     /// <summary>Three-digit zero-padded suffix (e.g. "015"). Null = no override.</summary>
     public string? PantsSuffix { get; init; }
 
@@ -78,7 +87,8 @@ internal sealed class HeroVariantPicker
     /// attribute, keeping a single source of truth.</summary>
     public TemplateOverride? BuildOverride(TemplateStore store, Template template)
     {
-        if (BodyTypeIdx < 0 && SkinSuffix is null && PantsSuffix is null) return null;
+        if (BodyTypeIdx < 0 && SkinSuffix is null && HairSuffix is null
+            && PantsSuffix is null && ShirtIdx == 0) return null;
 
         var armorVersion = store.GetAttribute(template, "body", "armor_version");
         if (string.IsNullOrEmpty(armorVersion)) return null;
@@ -92,13 +102,49 @@ internal sealed class HeroVariantPicker
         if (BodyTypeIdx >= 0)
             modelOverride = $"m_c_{armorVersion}_pos_a{bodyChar}";
 
+        // Skin atlas folds Face + Hair together. Each shipped
+        // b_c_gah_*_skin_NN.raw is a baked face+hair+arms atlas, so face and
+        // hair colour vary together file-to-file. Face walks the atlas at
+        // stride 1; Hair walks at a coprime stride of 7 so clicking Hair
+        // jumps to a distant variant (different hair colour) without
+        // trampling Face's neighbour. Both buttons therefore drive a visible
+        // change without runtime atlas composition (which broke face
+        // details when we tried it).
         string? skinOverride = null;
         if (SkinSuffix is not null)
-            skinOverride = $"b_c_{armorVersion}_skin_{SkinSuffix}";
+        {
+            int faceIdx = 1;
+            int.TryParse(SkinSuffix, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out faceIdx);
+            int hairIdx = 1;
+            if (HairSuffix is not null)
+                int.TryParse(HairSuffix, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out hairIdx);
+            const int SkinRange = 32;
+            const int HairStride = 7;
+            int folded = ((faceIdx - 1) + (hairIdx - 1) * HairStride) % SkinRange;
+            if (folded < 0) folded += SkinRange;
+            int finalIdx = folded + 1;
+            string finalSuffix = finalIdx.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(2, '0');
+            skinOverride = $"b_c_{armorVersion}_skin_{finalSuffix}";
+        }
 
+        // Pants atlas folds Shirt and Pants identically — DS1 packs both into
+        // one b_c_pos_aN_NNN.raw with no separate shirt file.
         string? pantsOverride = null;
         if (PantsSuffix is not null)
-            pantsOverride = $"b_c_pos_a{bodyChar}_{PantsSuffix}";
+        {
+            int basePants = 1;
+            int.TryParse(PantsSuffix, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out basePants);
+            const int PantsRange = 41;
+            const int ShirtStride = 7;
+            int folded = ((basePants - 1) + ShirtIdx * ShirtStride) % PantsRange;
+            if (folded < 0) folded += PantsRange;
+            int finalIdx = folded + 1;
+            string finalSuffix = finalIdx.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(3, '0');
+            pantsOverride = $"b_c_pos_a{bodyChar}_{finalSuffix}";
+        }
 
         return new TemplateOverride
         {

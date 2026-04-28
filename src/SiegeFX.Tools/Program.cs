@@ -32,6 +32,7 @@ try
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
+        "ui"        => DispatchUi(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -67,15 +68,22 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("Usage:");
     Console.WriteLine("  siegefx tank info    <tank>");
-    Console.WriteLine("  siegefx tank list    <tank>");
+    Console.WriteLine("  siegefx tank list    <tank> [--prefix=PATH] [--ext=.EXT]");
     Console.WriteLine("  siegefx tank extract <tank> <resource-path> [dest-file]");
+    Console.WriteLine("  siegefx tank fuzz    <tank>");
     Console.WriteLine("  siegefx raw  info    <file.raw>");
     Console.WriteLine("  siegefx raw  decode  <file.raw> [out.png] [--surface N] [--all]");
-    Console.WriteLine("  siegefx asp  info    <file.asp>");
+    Console.WriteLine("  siegefx raw  fuzz    <tank>");
+    Console.WriteLine("  siegefx asp  info       <file.asp>");
+    Console.WriteLine("  siegefx asp  subsets    <file.asp>");
+    Console.WriteLine("  siegefx asp  trace-pose <file.asp> [prs-file] [time-frac]");
     Console.WriteLine("  siegefx sno  info    <file.sno>");
     Console.WriteLine("  siegefx sno  nav     <file.sno>");
+    Console.WriteLine("  siegefx sno  fuzz    <tank>");
     Console.WriteLine("  siegefx prs  info    <file.prs>");
     Console.WriteLine("  siegefx prs  fuzz    <tank>");
+    Console.WriteLine("  siegefx prs  sample  <file.prs> [time-fraction 0..1]");
+    Console.WriteLine("  siegefx prs  compare <a.prs> <b.prs> [threshold]");
     Console.WriteLine("  siegefx gas  info    <file.gas>");
     Console.WriteLine("  siegefx gas  dump    <file.gas>");
     Console.WriteLine("  siegefx gas  fuzz    <tank>");
@@ -108,6 +116,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
     Console.WriteLine("  siegefx mood list          <Logic.dsres> [--map=world] [--with-bed] [--regions]");
+    Console.WriteLine("  siegefx ui mesh-info       <Objects.dsres> <mesh-basename>");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -134,38 +143,250 @@ static int UnknownCommand(string cmd)
 
 static int DispatchTank(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx tank <info|list|extract> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx tank <info|list|extract|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"    => CmdTankInfo(a[1..]),
         "list"    => CmdTankList(a[1..]),
         "extract" => CmdTankExtract(a[1..]),
+        "fuzz"    => CmdTankFuzz(a[1..]),
         _         => UnknownCommand("tank " + a[0]),
     };
 }
 
 static int DispatchRaw(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx raw <info|decode> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx raw <info|decode|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"   => CmdRawInfo(a[1..]),
         "decode" => CmdRawDecode(a[1..]),
+        "fuzz"   => CmdRawFuzz(a[1..]),
         _        => UnknownCommand("raw " + a[0]),
     };
 }
 
 static int DispatchAsp(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info|skeleton|fuzz|subset-fuzz> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx asp <info|skeleton|fuzz|subset-fuzz|subsets|trace-pose|uv-by-bone> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info"        => CmdAspInfo(a[1..]),
         "skeleton"    => CmdAspSkeleton(a[1..]),
         "fuzz"        => CmdAspFuzz(a[1..]),
         "subset-fuzz" => CmdAspSubsetFuzz(a[1..]),
+        "subsets"     => CmdAspSubsets(a[1..]),
+        "trace-pose"  => CmdAspTracePose(a[1..]),
+        "uv-by-bone"  => CmdAspSubsetUvBoneGroups(a[1..]),
         _             => UnknownCommand("asp " + a[0]),
     };
+}
+
+// viii-FE diagnostic: per-subset, group corners by their primary (highest-
+// weight) bone and dump the UV bbox for each group. This reveals how a
+// subset's atlas is sliced across rows — e.g. for mainmenu's text-01L the
+// 5 rows of NEW GAME / SINGLE PLAYER / CHOOSE HERO / LOAD GAME / OPTIONS
+// each weight to one PanelBASE bone, and each bone-group should map to a
+// distinct V strip of the atlas.
+static int CmdAspSubsetUvBoneGroups(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp uv-by-bone <file.asp>"); return 1; }
+    var asp = AspMesh.Load(File.ReadAllBytes(a[0]));
+    Console.WriteLine($"ASP: {a[0]}  ({asp.MeshName} v{asp.AspVersionMajor}.{asp.AspVersionMinor})");
+    for (int s = 0; s < asp.Subsets.Length; s++)
+    {
+        var sub = asp.Subsets[s];
+        if (sub.TriangleCount == 0) continue;
+        var texName = sub.TextureIndex < asp.TextureNames.Count ? asp.TextureNames[sub.TextureIndex] : "<oor>";
+        var perBone = new Dictionary<int, (float umin, float umax, float vmin, float vmax, int n)>();
+        int firstIdx = sub.FirstTriangle * 3;
+        int endIdx = (sub.FirstTriangle + sub.TriangleCount) * 3;
+        for (int idx = firstIdx; idx < endIdx; idx++)
+        {
+            int corner = asp.TriangleIndices[idx];
+            if ((uint)corner >= (uint)asp.Corners.Length) continue;
+            var uv = asp.Corners[corner].Uv;
+            int primary = -1; float primaryW = 0f;
+            if (asp.HasSkin)
+            {
+                var w = asp.SkinWeights[corner];
+                var b = asp.SkinBones[corner];
+                if (w.X > primaryW) { primary = (int)( b        & 0xFF); primaryW = w.X; }
+                if (w.Y > primaryW) { primary = (int)((b >>  8) & 0xFF); primaryW = w.Y; }
+                if (w.Z > primaryW) { primary = (int)((b >> 16) & 0xFF); primaryW = w.Z; }
+                if (w.W > primaryW) { primary = (int)((b >> 24) & 0xFF); primaryW = w.W; }
+            }
+            if (perBone.TryGetValue(primary, out var ext))
+            {
+                ext.umin = MathF.Min(ext.umin, uv.X); ext.umax = MathF.Max(ext.umax, uv.X);
+                ext.vmin = MathF.Min(ext.vmin, uv.Y); ext.vmax = MathF.Max(ext.vmax, uv.Y);
+                ext.n++;
+                perBone[primary] = ext;
+            }
+            else
+                perBone[primary] = (uv.X, uv.X, uv.Y, uv.Y, 1);
+        }
+        Console.WriteLine($"\n[{s}] tris={sub.TriangleCount} tex={texName}");
+        foreach (var kv in perBone.OrderBy(p => p.Key))
+        {
+            var name = kv.Key >= 0 && kv.Key < asp.BoneNames.Count ? asp.BoneNames[kv.Key] : $"#{kv.Key}";
+            var (umin, umax, vmin, vmax, n) = kv.Value;
+            Console.WriteLine($"      bone[{kv.Key,3}] {name,-22}  corners={n,4}  U[{umin,6:F3},{umax,6:F3}] V[{vmin,6:F3},{vmax,6:F3}]");
+        }
+    }
+    return 0;
+}
+
+// viii-FE diagnostic: replicate the GPU vertex pipeline CPU-side for every
+// subset of an ASP at a given PRS clip+time, dumping the post-skinned (mesh-
+// world space) bbox for each subset. This lets us answer questions like
+// "where does PanelBASE3-bound subset 1 (CHOOSE HERO row) actually end up at
+// the cd-state pose?" without rendering. If subset 1 ends up off-screen or
+// degenerate, the rendering pipeline isn't to blame — the wrong clip is.
+//
+// Usage: siegefx asp trace-pose <file.asp> [prs-file] [time-frac]
+//        time-frac defaults to 1.0 (end frame). prs-file omitted = bind pose.
+static int CmdAspTracePose(string[] a)
+{
+    if (a.Length is < 1 or > 3)
+    {
+        Console.Error.WriteLine("usage: siegefx asp trace-pose <file.asp> [prs-file] [time-frac 0..1, default 1]");
+        return 1;
+    }
+    var asp = AspMesh.Load(File.ReadAllBytes(a[0]));
+    PrsAnimation? prs = a.Length >= 2 ? PrsAnimation.Load(File.ReadAllBytes(a[1])) : null;
+    var frac = a.Length == 3 ? float.Parse(a[2], System.Globalization.CultureInfo.InvariantCulture) : 1f;
+
+    Console.WriteLine($"ASP   : {a[0]}  ({asp.MeshName} v{asp.AspVersionMajor}.{asp.AspVersionMinor}, bones={asp.BoneCount}, subsets={asp.Subsets.Length})");
+    if (prs is not null)
+        Console.WriteLine($"PRS   : {a[1]}  (length={prs.AnimLength:F3}s, sample t={prs.AnimLength * frac:F3}s frac={frac:F2})");
+    else
+        Console.WriteLine("Pose  : bind pose (no PRS supplied)");
+
+    Matrix4x4[] skin;
+    if (prs is not null)
+        skin = AnimationRuntime.ComputeSkinMatrices(asp, prs, prs.AnimLength * Math.Clamp(frac, 0f, 1f));
+    else
+    {
+        skin = new Matrix4x4[asp.BoneCount];
+        for (int i = 0; i < skin.Length; i++) skin[i] = Matrix4x4.Identity;
+    }
+
+    // Also report animated world matrix of the root bone — this is what
+    // converts mesh-Z to whatever-axis after axis-swap rotations. With no
+    // PRS, ComputeAnimatedBoneWorlds walks the BIND pose hierarchy so we
+    // see Bone01's bind translation/rotation rather than identity (the bug
+    // I had earlier was forcing identity here, hiding the -90°X bind axis-
+    // swap on Bone01).
+    if (asp.BoneCount > 0)
+    {
+        var worldAnim = AnimationRuntime.ComputeAnimatedBoneWorlds(
+            asp, prs, prs is not null ? prs.AnimLength * Math.Clamp(frac, 0f, 1f) : 0f);
+        Console.WriteLine();
+        Console.WriteLine("Bone world-anim translations (post-hierarchy walk):");
+        for (int i = 0; i < asp.BoneCount; i++)
+        {
+            var name = asp.BoneNames[i];
+            // Filter to interesting bones only — root + everything containing
+            // 'panel', 'gear', 'pole', 'spindle', 'tip', 'base'. Keeps the
+            // dump readable on 30+-bone meshes.
+            var lower = name.ToLowerInvariant();
+            if (i != 0 && !(lower.Contains("panel") || lower.Contains("gear") || lower.Contains("pole")
+                || lower.Contains("spindle") || lower.Contains("tip") || lower.Contains("base")
+                || lower.Contains("titlebar")))
+                continue;
+            var t = worldAnim[i].Translation;
+            Console.WriteLine($"  [{i,3}] {name,-28}  world=({t.X,8:F3},{t.Y,8:F3},{t.Z,8:F3})");
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Per-subset bbox (post-skin, mesh-world space):");
+    for (int s = 0; s < asp.Subsets.Length; s++)
+    {
+        var sub = asp.Subsets[s];
+        if (sub.TriangleCount == 0) { Console.WriteLine($"  [{s}] empty subset"); continue; }
+        var texName = (sub.TextureIndex >= 0 && sub.TextureIndex < asp.TextureNames.Count)
+            ? asp.TextureNames[sub.TextureIndex] : "<oor>";
+        var bindMin = new Vector3(float.PositiveInfinity);
+        var bindMax = new Vector3(float.NegativeInfinity);
+        var skinMin = new Vector3(float.PositiveInfinity);
+        var skinMax = new Vector3(float.NegativeInfinity);
+        var primaryBoneCounts = new Dictionary<int, int>();
+        int firstIdx = sub.FirstTriangle * 3;
+        int endIdx = (sub.FirstTriangle + sub.TriangleCount) * 3;
+        for (int idx = firstIdx; idx < endIdx; idx++)
+        {
+            int corner = asp.TriangleIndices[idx];
+            if ((uint)corner >= (uint)asp.Corners.Length) continue;
+            var src = asp.Positions[asp.Corners[corner].VertexIndex];
+            bindMin = Vector3.Min(bindMin, src);
+            bindMax = Vector3.Max(bindMax, src);
+            var w = asp.HasSkin ? asp.SkinWeights[corner] : new Vector4(1, 0, 0, 0);
+            var b = asp.HasSkin ? asp.SkinBones[corner] : 0u;
+            var acc = Vector3.Zero;
+            int primary = -1; float primaryW = 0f;
+            if (w.X > 0) { var bi = (int)( b        & 0xFF); acc += w.X * Vector3.Transform(src, skin[bi]); if (w.X > primaryW) { primary = bi; primaryW = w.X; } }
+            if (w.Y > 0) { var bi = (int)((b >>  8) & 0xFF); acc += w.Y * Vector3.Transform(src, skin[bi]); if (w.Y > primaryW) { primary = bi; primaryW = w.Y; } }
+            if (w.Z > 0) { var bi = (int)((b >> 16) & 0xFF); acc += w.Z * Vector3.Transform(src, skin[bi]); if (w.Z > primaryW) { primary = bi; primaryW = w.Z; } }
+            if (w.W > 0) { var bi = (int)((b >> 24) & 0xFF); acc += w.W * Vector3.Transform(src, skin[bi]); if (w.W > primaryW) { primary = bi; primaryW = w.W; } }
+            skinMin = Vector3.Min(skinMin, acc);
+            skinMax = Vector3.Max(skinMax, acc);
+            if (primary >= 0) primaryBoneCounts[primary] = primaryBoneCounts.GetValueOrDefault(primary) + 1;
+        }
+        var primaryName = primaryBoneCounts.Count == 0 ? "(none)"
+            : string.Join(",", primaryBoneCounts.OrderByDescending(p => p.Value).Take(2)
+                .Select(p => p.Key < asp.BoneNames.Count ? asp.BoneNames[p.Key] : $"#{p.Key}"));
+        Console.WriteLine($"  [{s,2}] tris={sub.TriangleCount,4} tex={texName,-22} primary={primaryName}");
+        Console.WriteLine($"        bind  X[{bindMin.X,7:F3},{bindMax.X,7:F3}]  Y[{bindMin.Y,7:F3},{bindMax.Y,7:F3}]  Z[{bindMin.Z,7:F3},{bindMax.Z,7:F3}]");
+        Console.WriteLine($"        skin  X[{skinMin.X,7:F3},{skinMax.X,7:F3}]  Y[{skinMin.Y,7:F3},{skinMax.Y,7:F3}]  Z[{skinMin.Z,7:F3},{skinMax.Z,7:F3}]");
+    }
+    return 0;
+}
+
+// viii-FE diagnostic: for each subset, list the bones its corners reference
+// (with weight > 0). Multi-row text atlases like text-01L are scrolled by
+// translating the bones that own those corners — we need to know WHICH bone
+// drives WHICH text subset before we can pick the right cd-state Z values.
+static int CmdAspSubsets(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp subsets <file.asp>"); return 1; }
+    var bytes = File.ReadAllBytes(a[0]);
+    var asp = AspMesh.Load(bytes);
+    Console.WriteLine($"File    : {a[0]}");
+    Console.WriteLine($"Mesh    : {asp.MeshName} (v{asp.AspVersionMajor}.{asp.AspVersionMinor})");
+    Console.WriteLine($"Bones   : {asp.BoneCount}");
+    Console.WriteLine($"Subsets : {asp.Subsets.Length}");
+    for (int s = 0; s < asp.Subsets.Length; s++)
+    {
+        var sub = asp.Subsets[s];
+        var texName = sub.TextureIndex < asp.TextureNames.Count ? asp.TextureNames[sub.TextureIndex] : "(invalid)";
+        var boneCounts = new Dictionary<int, int>();
+        for (int t = 0; t < sub.TriangleCount; t++)
+        {
+            var triBase = (sub.FirstTriangle + t) * 3;
+            for (int corner = 0; corner < 3; corner++)
+            {
+                var ci = asp.TriangleIndices[triBase + corner];
+                if (asp.HasSkin)
+                {
+                    var w = asp.SkinWeights[ci];
+                    var b = asp.SkinBones[ci];
+                    if (w.X > 0) boneCounts[(int)( b        & 0xFF)] = boneCounts.GetValueOrDefault((int)( b        & 0xFF)) + 1;
+                    if (w.Y > 0) boneCounts[(int)((b >>  8) & 0xFF)] = boneCounts.GetValueOrDefault((int)((b >>  8) & 0xFF)) + 1;
+                    if (w.Z > 0) boneCounts[(int)((b >> 16) & 0xFF)] = boneCounts.GetValueOrDefault((int)((b >> 16) & 0xFF)) + 1;
+                    if (w.W > 0) boneCounts[(int)((b >> 24) & 0xFF)] = boneCounts.GetValueOrDefault((int)((b >> 24) & 0xFF)) + 1;
+                }
+            }
+        }
+        Console.WriteLine($"\n[{s}] tris={sub.TriangleCount,4}  tex={texName}");
+        foreach (var kv in boneCounts.OrderByDescending(p => p.Value))
+        {
+            var name = kv.Key < asp.BoneNames.Count ? asp.BoneNames[kv.Key] : "(invalid)";
+            Console.WriteLine($"      bone[{kv.Key,3}] {name,-28}  refs={kv.Value}");
+        }
+    }
+    return 0;
 }
 
 static int CmdAspSubsetFuzz(string[] a)
@@ -235,11 +456,12 @@ static int DispatchAnim(string[] a)
 
 static int DispatchSno(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sno <info|nav> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sno <info|nav|fuzz> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "info" => CmdSnoInfo(a[1..]),
         "nav"  => CmdSnoNav(a[1..]),
+        "fuzz" => CmdSnoFuzz(a[1..]),
         _      => UnknownCommand("sno " + a[0]),
     };
 }
@@ -251,6 +473,8 @@ static int DispatchPrs(string[] a)
     {
         "info" => CmdPrsInfo(a[1..]),
         "fuzz" => CmdPrsFuzz(a[1..]),
+        "sample"  => CmdPrsSample(a[1..]),
+        "compare" => CmdPrsCompare(a[1..]),
         _      => UnknownCommand("prs " + a[0]),
     };
 }
@@ -281,20 +505,100 @@ static int CmdPrsInfo(string[] a)
     if (prs.RootKeys is not null)
         Console.WriteLine($"Root keys   : rot {prs.RootKeys.RotKeys.Count}, pos {prs.RootKeys.PosKeys.Count}");
 
-    var showBones = Math.Min(8, prs.BoneNames.Count);
-    for (var i = 0; i < showBones; i++)
+    // Dump every bone — the truncated 8-bone view hid the bones that
+    // actually drive the title-bar / gear morphs in mainmenu PRS clips
+    // (TitleBar / TitleBarLeftGear etc. live mid-array).
+    for (var i = 0; i < prs.BoneNames.Count; i++)
     {
         var k = prs.BoneKeys[i];
         var counts = k is null ? "no keys" : $"rot={k.RotKeys.Count} pos={k.PosKeys.Count}";
         Console.WriteLine($"  [{i,3}] {prs.BoneNames[i],-28} {counts}");
     }
-    if (prs.BoneNames.Count > showBones) Console.WriteLine($"  ... {prs.BoneNames.Count - showBones} more bones");
 
     if (prs.InfoStrings.Count > 0)
     {
         Console.WriteLine($"INFO        :");
         foreach (var s in prs.InfoStrings) Console.WriteLine($"  {s}");
     }
+    return 0;
+}
+
+// viii-FE clip diagnostics: sample every bone of a PRS clip at a given time
+// fraction (0..1) and dump per-bone Position values. Used to verify what pose
+// the END frame of `mainmenu_sng2cd.prs` actually captures, vs `mainmenu_default`.
+// If the two clips' end-frames yield identical positions, then `_default` IS
+// the cd-state pose (and the title-row bug is elsewhere). If they differ, we
+// know which clip to sample for cd-state.
+static int CmdPrsSample(string[] a)
+{
+    if (a.Length is < 1 or > 2)
+    {
+        Console.Error.WriteLine("usage: siegefx prs sample <file.prs> [time-fraction 0..1, default 1]");
+        return 1;
+    }
+    var bytes = File.ReadAllBytes(a[0]);
+    var prs = PrsAnimation.Load(bytes);
+    var frac = a.Length > 1 ? float.Parse(a[1], System.Globalization.CultureInfo.InvariantCulture) : 1f;
+    var t = prs.AnimLength * Math.Clamp(frac, 0f, 1f);
+    Console.WriteLine($"File   : {a[0]}");
+    Console.WriteLine($"Length : {prs.AnimLength:F4} s ({prs.NumBones} bones)");
+    Console.WriteLine($"Sample : t={t:F4}s (frac={frac:F3})");
+    Console.WriteLine($"  {"idx",3}  {"bone",-28}  {"pos.x",10} {"pos.y",10} {"pos.z",10}  rotKeys posKeys");
+    for (int i = 0; i < prs.NumBones; i++)
+    {
+        var (rot, pos) = AnimationRuntime.EvaluateBone(prs, i, t);
+        var p = pos ?? Vector3.Zero;
+        var k = prs.BoneKeys[i];
+        var rk = k?.RotKeys.Count ?? 0;
+        var pk = k?.PosKeys.Count ?? 0;
+        var posStr = pos.HasValue ? $"{p.X,10:F4} {p.Y,10:F4} {p.Z,10:F4}" : "        --         --         --";
+        Console.WriteLine($"  [{i,3}] {prs.BoneNames[i],-28}  {posStr}   {rk,4}    {pk,4}");
+    }
+    return 0;
+}
+
+static int CmdPrsCompare(string[] a)
+{
+    if (a.Length is < 2 or > 3)
+    {
+        Console.Error.WriteLine("usage: siegefx prs compare <a.prs> <b.prs> [threshold, default 0.001]");
+        return 1;
+    }
+    var pa = PrsAnimation.Load(File.ReadAllBytes(a[0]));
+    var pb = PrsAnimation.Load(File.ReadAllBytes(a[1]));
+    var threshold = a.Length > 2 ? float.Parse(a[2], System.Globalization.CultureInfo.InvariantCulture) : 0.001f;
+
+    Console.WriteLine($"A: {a[0]}  ({pa.NumBones} bones, {pa.AnimLength:F3}s)");
+    Console.WriteLine($"B: {a[1]}  ({pb.NumBones} bones, {pb.AnimLength:F3}s)");
+    Console.WriteLine($"Compare end-frame poses (t = AnimLength); diff threshold = {threshold}");
+
+    // Map bone names → indexes for B so we can compare by name (per-clip
+    // bone-list ordering is not guaranteed identical even between sibling
+    // clips on the same mesh).
+    var byName = new Dictionary<string, int>(pb.NumBones);
+    for (int i = 0; i < pb.NumBones; i++) byName[pb.BoneNames[i]] = i;
+
+    int matched = 0, differ = 0, missing = 0;
+    Console.WriteLine($"  {"bone",-28}  {"Δpos",10}  posA→posB");
+    for (int i = 0; i < pa.NumBones; i++)
+    {
+        if (!byName.TryGetValue(pa.BoneNames[i], out var j))
+        {
+            missing++;
+            continue;
+        }
+        var (_, posA) = AnimationRuntime.EvaluateBone(pa, i, pa.AnimLength);
+        var (_, posB) = AnimationRuntime.EvaluateBone(pb, j, pb.AnimLength);
+        if (!posA.HasValue || !posB.HasValue) continue;
+        var d = (posA.Value - posB.Value).Length();
+        matched++;
+        if (d > threshold)
+        {
+            differ++;
+            Console.WriteLine($"  {pa.BoneNames[i],-28}  {d,10:F4}  ({posA.Value.X:F2},{posA.Value.Y:F2},{posA.Value.Z:F2}) → ({posB.Value.X:F2},{posB.Value.Y:F2},{posB.Value.Z:F2})");
+        }
+    }
+    Console.WriteLine($"\nmatched {matched} bones; {differ} above threshold; {missing} missing in B");
     return 0;
 }
 
@@ -1965,6 +2269,61 @@ static int CmdSnoNav(string[] a)
     return 0;
 }
 
+// Phase 4 audit: corpus-coverage receipt for the SNO loader. Matches the
+// shape of CmdAspFuzz / CmdRawFuzz so test-all.bat can run it the same way.
+// SNO is the most structurally complex of the four binary formats (header +
+// spots + doors + corners + surfaces + recursive nav-grouping unknown sections),
+// so a clean fuzz run is the cheapest "load every shipped tile without throwing"
+// signal we can get.
+static int CmdSnoFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx sno fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    int total = 0, failed = 0, withNav = 0;
+    long totalBytes = 0;
+    long totalCorners = 0, totalTris = 0, totalDoors = 0, totalSpots = 0, totalNavFaces = 0;
+    var byVersion = new SortedDictionary<int, int>();
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".sno", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex) { Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}"); failed++; continue; }
+        totalBytes += bytes.Length;
+        try
+        {
+            var sno = SnoModel.Load(bytes);
+            byVersion[sno.Version] = byVersion.TryGetValue(sno.Version, out var n) ? n + 1 : 1;
+            totalCorners += sno.Corners.Length;
+            totalTris    += sno.TotalTriangleCount;
+            totalDoors   += sno.Doors.Length;
+            totalSpots   += sno.Spots.Length;
+            if (sno.LogicalGroupings.Length > 0)
+            {
+                withNav++;
+                foreach (var g in sno.LogicalGroupings) totalNavFaces += g.Faces.Length;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [parse-fail] {path}: {ex.Message}");
+            failed++;
+        }
+    }
+    Console.WriteLine($"fuzzed {total} .sno file(s), {totalBytes:N0} bytes; {failed} failure(s)");
+    Console.WriteLine($"  corners={totalCorners:N0}  tris={totalTris:N0}  doors={totalDoors:N0}  spots={totalSpots:N0}");
+    Console.WriteLine($"  with nav-grouping section: {withNav}/{total} ({totalNavFaces:N0} nav faces)");
+    if (byVersion.Count > 0)
+    {
+        Console.Write("  versions:");
+        foreach (var kv in byVersion) Console.Write($" v{kv.Key}={kv.Value}");
+        Console.WriteLine();
+    }
+    return failed == 0 ? 0 : 4;
+}
+
 static int CmdAspInfo(string[] a)
 {
     if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp info <file.asp>"); return 1; }
@@ -2149,6 +2508,11 @@ static int CmdAspFuzz(string[] a)
     var reader = new TankReader(tank);
     int total = 0, failed = 0, skeletal = 0, skinned = 0;
     long totalBytes = 0;
+    // Phase 4 audit: track ASP version distribution. The reference doc lists ten+
+    // possible versions (V1_2..V5_0); knowing which actually ship in DS1 anchors
+    // future debugging — a parse-fail on a never-shipped version is a different
+    // problem from a fail on a v2.5 file we should already handle.
+    var byVersion = new SortedDictionary<string, int>();
     foreach (var path in reader.ListFiles())
     {
         if (!path.EndsWith(".asp", StringComparison.OrdinalIgnoreCase)) continue;
@@ -2162,6 +2526,8 @@ static int CmdAspFuzz(string[] a)
             var mesh = AspMesh.Load(bytes);
             if (mesh.BoneCount > 0) skeletal++;
             if (mesh.HasSkin) skinned++;
+            var key = $"v{mesh.AspVersionMajor}.{mesh.AspVersionMinor}";
+            byVersion[key] = byVersion.TryGetValue(key, out var n) ? n + 1 : 1;
         }
         catch (Exception ex)
         {
@@ -2170,6 +2536,12 @@ static int CmdAspFuzz(string[] a)
         }
     }
     Console.WriteLine($"fuzzed {total} .asp file(s), {totalBytes:N0} bytes; {failed} failure(s), {skeletal} w/skeleton, {skinned} w/skin");
+    if (byVersion.Count > 0)
+    {
+        Console.Write("  versions:");
+        foreach (var kv in byVersion) Console.Write($" {kv.Key}={kv.Value}");
+        Console.WriteLine();
+    }
     return failed == 0 ? 0 : 4;
 }
 
@@ -2308,17 +2680,36 @@ static int CmdTankInfo(string[] a)
     var reader = new TankReader(tank);
     Console.WriteLine($"Directories  : {reader.DirCount}");
     Console.WriteLine($"Files        : {reader.FileCount}");
+    if (reader.InvalidFileCount > 0)
+        Console.WriteLine($"Invalid files: {reader.InvalidFileCount}");
     return 0;
 }
 
 static int CmdTankList(string[] a)
 {
-    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx tank list <tank>"); return 1; }
-    using var tank = TankFile.Open(a[0]);
+    string? prefix = null;
+    string? ext = null;
+    string? tankPath = null;
+    foreach (var arg in a)
+    {
+        if      (arg.StartsWith("--prefix=", StringComparison.Ordinal)) prefix = arg["--prefix=".Length..];
+        else if (arg.StartsWith("--ext=",    StringComparison.Ordinal)) ext    = arg["--ext=".Length..];
+        else if (!arg.StartsWith("--"))                                 tankPath ??= arg;
+        else { Console.Error.WriteLine($"unknown option: {arg}"); return 1; }
+    }
+    if (tankPath is null)
+    { Console.Error.WriteLine("usage: siegefx tank list <tank> [--prefix=PATH] [--ext=.EXT]"); return 1; }
+
+    if (ext is not null && !ext.StartsWith('.')) ext = "." + ext;
+
+    using var tank = TankFile.Open(tankPath);
     var reader = new TankReader(tank);
 
+    var matched = 0;
     foreach (var path in reader.ListFiles().OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
     {
+        if (prefix is not null && !path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+        if (ext    is not null && !path.EndsWith  (ext,    StringComparison.OrdinalIgnoreCase)) continue;
         if (!reader.TryGetFile(path, out var file)) continue;
         var tag = file.Format switch
         {
@@ -2329,11 +2720,56 @@ static int CmdTankList(string[] a)
         };
         var invalid = file.IsInvalid ? " [INVALID]" : "";
         Console.WriteLine($"  {tag}  {file.Size,10:N0}  {path}{invalid}");
+        matched++;
     }
 
     Console.WriteLine();
-    Console.WriteLine($"{reader.FileCount} file(s) across {reader.DirCount} dir(s)");
+    if (prefix is null && ext is null)
+        Console.WriteLine($"{reader.FileCount} file(s) across {reader.DirCount} dir(s)");
+    else
+        Console.WriteLine($"{matched} of {reader.FileCount} file(s) matched (prefix={prefix ?? "<any>"}, ext={ext ?? "<any>"})");
     return 0;
+}
+
+// Phase 1 audit follow-up — diagnostic CLI receipt for "DS1 ships zlib only,
+// no LZO" claim. Walks every file entry, builds a compression-format
+// histogram, sums sizes, and reports invalid-flag counts. Catches a corrupt
+// or unexpectedly-LZO'd tank up front rather than at first extract.
+static int CmdTankFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx tank fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    var byFormat = new Dictionary<TankDataFormat, (int count, long totalSize)>();
+    var invalidPaths = new List<string>();
+    foreach (var path in reader.ListFiles())
+    {
+        if (!reader.TryGetFile(path, out var file)) continue;
+        if (file.IsInvalid) invalidPaths.Add(path);
+        if (byFormat.TryGetValue(file.Format, out var t))
+            byFormat[file.Format] = (t.count + 1, t.totalSize + file.Size);
+        else
+            byFormat[file.Format] = (1, file.Size);
+    }
+
+    Console.WriteLine($"tank fuzz: {a[0]}");
+    Console.WriteLine($"  files       : {reader.FileCount}");
+    Console.WriteLine($"  directories : {reader.DirCount}");
+    Console.WriteLine($"  invalid     : {invalidPaths.Count}");
+    Console.WriteLine();
+    Console.WriteLine("Compression formats:");
+    foreach (var kv in byFormat.OrderBy(kv => (int)kv.Key))
+        Console.WriteLine($"  {kv.Key,-6}  {kv.Value.count,6} file(s)  {kv.Value.totalSize,14:N0} bytes");
+
+    if (invalidPaths.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Invalid entries:");
+        foreach (var p in invalidPaths.Take(10)) Console.WriteLine($"  {p}");
+        if (invalidPaths.Count > 10) Console.WriteLine($"  ... +{invalidPaths.Count - 10} more");
+    }
+    return invalidPaths.Count == 0 ? 0 : 4;
 }
 
 static int CmdTankExtract(string[] a)
@@ -2353,6 +2789,55 @@ static int CmdTankExtract(string[] a)
     reader.ExtractToFile(resource, dest);
     Console.WriteLine($"wrote {new FileInfo(dest).Length:N0} bytes -> {dest}");
     return 0;
+}
+
+// Phase 2 audit follow-up — diagnostic CLI receipt for "RAW pipeline handles
+// every shipped texture without parse error". Walks all .raw entries in a
+// tank, decodes each, and reports a dimension histogram + surface-count
+// distribution. A non-zero failure count or any unexpectedly large
+// dimension indicates either a format regression or a fuzzed/corrupt entry.
+static int CmdRawFuzz(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx raw fuzz <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+
+    int total = 0, ok = 0, failed = 0;
+    int maxW = 0, maxH = 0, maxSurfaces = 0;
+    var dimHisto = new Dictionary<(int w, int h), int>();
+    var surfHisto = new Dictionary<int, int>();
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        byte[] bytes;
+        try { bytes = reader.ExtractToMemory(path); }
+        catch (Exception ex) { Console.Error.WriteLine($"  [extract-fail] {path}: {ex.Message}"); failed++; continue; }
+        RawImage img;
+        try { img = RawImage.Load(bytes); }
+        catch (Exception ex) { Console.Error.WriteLine($"  [parse-fail] {path}: {ex.Message}"); failed++; continue; }
+
+        ok++;
+        if (img.Width  > maxW) maxW = img.Width;
+        if (img.Height > maxH) maxH = img.Height;
+        if (img.SurfaceCount > maxSurfaces) maxSurfaces = img.SurfaceCount;
+        var key = (img.Width, img.Height);
+        dimHisto[key] = dimHisto.TryGetValue(key, out var n) ? n + 1 : 1;
+        surfHisto[img.SurfaceCount] = surfHisto.TryGetValue(img.SurfaceCount, out var m) ? m + 1 : 1;
+    }
+
+    Console.WriteLine($"raw fuzz: {total} .raw file(s), {ok} decoded OK, {failed} failure(s)");
+    Console.WriteLine($"  max dim     : {maxW} x {maxH}");
+    Console.WriteLine($"  max surfaces: {maxSurfaces}");
+    Console.WriteLine();
+    Console.WriteLine("Top dimensions (top 8):");
+    foreach (var kv in dimHisto.OrderByDescending(kv => kv.Value).Take(8))
+        Console.WriteLine($"  {kv.Key.w,5} x {kv.Key.h,-5}  {kv.Value,6}");
+    Console.WriteLine();
+    Console.WriteLine("Surface counts:");
+    foreach (var kv in surfHisto.OrderBy(kv => kv.Key))
+        Console.WriteLine($"  {kv.Key,2} surface(s)  {kv.Value,6}");
+    return failed == 0 ? 0 : 4;
 }
 
 static int CmdRawInfo(string[] a)
@@ -4417,4 +4902,126 @@ static int CmdMoodList(string[] a)
     }
 
     return 0;
+}
+
+// Phase 21d-2a-viii-e — frontend-mesh diagnostics. Mirrors `siegefx asp info`
+// but resolves the texture name table against a tank, so the receipt can
+// claim "every BSMM texture slot resolves to a shipped raw" (the runtime's
+// CreatorChrome does the same resolution at GL load time).
+static int DispatchUi(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx ui mesh-info <Objects.dsres> <mesh-basename>"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "mesh-info" => CmdUiMeshInfo(a[1..]),
+        _           => UnknownCommand("ui " + a[0]),
+    };
+}
+
+static int CmdUiMeshInfo(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx ui mesh-info <Objects.dsres> <mesh-basename>");
+        Console.Error.WriteLine("  e.g. siegefx ui mesh-info Objects.dsres m_gui_fe_m_mn_3d_heromenu.asp");
+        return 1;
+    }
+    var tankPath = a[0];
+    var meshName = a[1];
+
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(tankPath);
+    var reader = new SiegeFX.Core.Tank.TankReader(tank);
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    resolver.Add(reader, Path.GetFileName(tankPath));
+
+    if (!resolver.TryLoadByBasename(meshName, out var aspBytes))
+    {
+        Console.Error.WriteLine($"mesh '{meshName}' not found in {Path.GetFileName(tankPath)}");
+        return 2;
+    }
+
+    var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+    Console.WriteLine($"ui mesh-info: {meshName}");
+    Console.WriteLine($"  asp version : {asp.AspVersionMajor}.{asp.AspVersionMinor}");
+    Console.WriteLine($"  bones       : {asp.BoneCount}");
+    Console.WriteLine($"  positions   : {asp.Positions.Length}");
+    Console.WriteLine($"  corners     : {asp.Corners.Length}");
+    Console.WriteLine($"  triangles   : {asp.TriangleCount}");
+    Console.WriteLine($"  subsets     : {asp.Subsets.Length}");
+    Console.WriteLine($"  textures    : {asp.TextureNames.Count}");
+
+    int resolved = 0;
+    int strippedAtlas = 0;
+    Console.WriteLine();
+    Console.WriteLine("  texture-slot resolution against tank:");
+    for (int i = 0; i < asp.TextureNames.Count; i++)
+    {
+        var name  = asp.TextureNames[i];
+        var direct = resolver.TryLoadByBasename(name + ".raw", out _) ? "OK" : "MISS";
+        var alias = StripMapSuffix(name);
+        bool aliasUsed = !string.Equals(alias, name, StringComparison.Ordinal);
+        var aliasResult = aliasUsed
+            ? (resolver.TryLoadByBasename(alias + ".raw", out _) ? "OK" : "MISS")
+            : "-";
+        bool ok = direct == "OK" || (aliasUsed && aliasResult == "OK");
+        if (ok) resolved++;
+        if (aliasUsed && aliasResult == "OK" && direct != "OK") strippedAtlas++;
+        Console.WriteLine($"    [{i,2}] {name,-44} direct={direct}  alias={alias,-32} alias-resolved={aliasResult}");
+    }
+    Console.WriteLine();
+    Console.WriteLine($"  resolved (direct or via -mapN alias): {resolved}/{asp.TextureNames.Count}");
+    Console.WriteLine($"  resolved only via -mapN alias       : {strippedAtlas}");
+
+    Console.WriteLine();
+    Console.WriteLine("  per-subset (firstTri, triCount, texIdx, textureName):");
+    for (int i = 0; i < asp.Subsets.Length; i++)
+    {
+        var s = asp.Subsets[i];
+        var tex = s.TextureIndex >= 0 && s.TextureIndex < asp.TextureNames.Count
+            ? asp.TextureNames[s.TextureIndex] : "<oob>";
+        Console.WriteLine($"    [{i,2}] firstTri={s.FirstTriangle,4}  triCount={s.TriangleCount,4}  texIdx={s.TextureIndex,2}  {tex}");
+    }
+
+    // Per-subset UV + bind-pose XY bounds. Tells us whether each subset is at its
+    // own physical mesh-space position (= mesh handles per-cell layout) or all
+    // stacked at the same position (= engine has to spread them per-row).
+    Console.WriteLine();
+    Console.WriteLine("  per-subset UV + bind-pose XY bounds:");
+    Console.WriteLine($"    {"#",2}  {"uv-min",-18} {"uv-max",-18} {"xy-min",-18} {"xy-max",-18} {"xy-size",-18}");
+    for (int i = 0; i < asp.Subsets.Length; i++)
+    {
+        var s = asp.Subsets[i];
+        var uvMin = new Vector2(float.PositiveInfinity);
+        var uvMax = new Vector2(float.NegativeInfinity);
+        var xyMin = new Vector2(float.PositiveInfinity);
+        var xyMax = new Vector2(float.NegativeInfinity);
+        int triEnd = s.FirstTriangle + s.TriangleCount;
+        for (int t = s.FirstTriangle; t < triEnd; t++)
+        {
+            for (int k = 0; k < 3; k++)
+            {
+                int cornerIdx = asp.TriangleIndices[t * 3 + k];
+                var corner = asp.Corners[cornerIdx];
+                uvMin = Vector2.Min(uvMin, corner.Uv);
+                uvMax = Vector2.Max(uvMax, corner.Uv);
+                var pos = asp.Positions[corner.VertexIndex];
+                xyMin = Vector2.Min(xyMin, new Vector2(pos.X, pos.Y));
+                xyMax = Vector2.Max(xyMax, new Vector2(pos.X, pos.Y));
+            }
+        }
+        var xySize = xyMax - xyMin;
+        Console.WriteLine($"    {i,2}  ({uvMin.X,5:F2},{uvMin.Y,5:F2})    ({uvMax.X,5:F2},{uvMax.Y,5:F2})    ({xyMin.X,6:F2},{xyMin.Y,6:F2})  ({xyMax.X,6:F2},{xyMax.Y,6:F2})  ({xySize.X,6:F2},{xySize.Y,6:F2})");
+    }
+
+    return resolved == asp.TextureNames.Count ? 0 : 4;
+}
+
+static string StripMapSuffix(string name)
+{
+    var dash = name.LastIndexOf("-map", StringComparison.Ordinal);
+    if (dash <= 0) return name;
+    for (int i = dash + 4; i < name.Length; i++)
+        if (!char.IsDigit(name[i])) return name;
+    if (dash + 4 == name.Length) return name;
+    return name[..dash];
 }

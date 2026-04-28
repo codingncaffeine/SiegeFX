@@ -61,13 +61,26 @@ public sealed class TankHeader
         return h;
     }
 
-    public void Validate()
+    public void Validate(long fileSize = 0)
     {
         if (ProductId != TankFourCCs.ProductId_DS1 && ProductId != TankFourCCs.ProductId_DS2)
             throw new TankException($"Unknown Tank product id: '{ProductId}' (expected DSig or DSg2)");
 
         if (TankId != TankFourCCs.TankId)
             throw new TankException($"Tank id mismatch: '{TankId}' (expected 'Tank')");
+
+        // Bounds-check offsets against file size when known. Cheap up-front check
+        // produces a clear error instead of letting the directory walk explode on
+        // a truncated or corrupt tank deep into the read.
+        if (fileSize > 0)
+        {
+            if (DirSetOffset >= (ulong)fileSize)
+                throw new TankException($"DirSetOffset 0x{DirSetOffset:X8} is past EOF (file size {fileSize})");
+            if (FileSetOffset >= (ulong)fileSize)
+                throw new TankException($"FileSetOffset 0x{FileSetOffset:X8} is past EOF (file size {fileSize})");
+            if (DataOffset >= (ulong)fileSize)
+                throw new TankException($"DataOffset 0x{DataOffset:X8} is past EOF (file size {fileSize})");
+        }
     }
 }
 

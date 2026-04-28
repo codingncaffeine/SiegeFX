@@ -481,10 +481,12 @@ goto MENU
 
 :T26
 echo.
-echo --- Phase 15c: Grid inventory panel (fh_r1) ---
+echo --- Phase 15c + SC-9/13/14: Grid inventory panel w/ drag-drop (fh_r1) ---
 echo [press I to toggle a centered 8x5 inventory grid]
-echo [picked-up items fill cells left-to-right, top-to-bottom]
-echo [each cell shows the trimmed template ref (icons land in a later phase)]
+echo [icons land per-template (b_gui_ig_*); multi-cell weapons span 1x2 / 1x3]
+echo [LMB-drag an item to a new cell to relocate it (saved across opens)]
+echo [LMB-drag out of the panel to drop the item back into the world]
+echo [each drop fires the template's [aspect][voice][put_down] *  cue]
 echo [press I again or Esc to dismiss the panel]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1

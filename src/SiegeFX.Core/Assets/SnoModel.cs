@@ -13,7 +13,12 @@ namespace SiegeFX.Core.Assets;
 /// </summary>
 public sealed class SnoModel
 {
-    public const int ExpectedMinVersion = 7;
+    // Lowest major we accept. Per the Kaitai sno.ksy spec the checksum field
+    // becomes optional below v6.2, but the rest of the layout is unchanged. DS1
+    // ships v6.2 (spider_dungeon walls) and v7.0 — both have the checksum, so
+    // dropping the floor to 6 unblocks 120 spider-dungeon tiles in Terrain.dsres
+    // that were rejected at parse time.
+    public const int ExpectedMinVersion = 6;
     public const int HeaderSizeBytes = 88;
     public const int CornerSizeBytes = 36;
     public const int XformSizeBytes  = 48; // float[4][3] — 3x3 rotation + 3-vector translation
@@ -22,6 +27,12 @@ public sealed class SnoModel
 
     public FourCC Magic { get; init; }
     public int Version  { get; init; }
+    /// <summary>Minor of the SNO version word (the u32 that follows major). Tracked
+    /// because the disk layout's checksum field is gated on the (major,minor) pair —
+    /// see <see cref="HasChecksumField"/>.</summary>
+    public int VersionMinor { get; init; }
+    public static bool HasChecksumField(int major, int minor) =>
+        major > 6 || (major == 6 && minor >= 2);
     public Vector3 MinBounds { get; init; }
     public Vector3 MaxBounds { get; init; }
     public uint DataCrc32 { get; init; }
@@ -114,7 +125,12 @@ public sealed class SnoModel
         if (version < ExpectedMinVersion)
             throw new InvalidDataException($"SNO version {version} < {ExpectedMinVersion}");
 
-        r.ReadU32(); // unused0
+        // The u32 immediately after major is the version's minor — Kaitai's sno.ksy
+        // models version as a (major:u4, minor:u4) pair. We previously discarded it
+        // as "unused0", which works because every shipped tile is v6.2 or v7.0 and
+        // the rest of the header doesn't depend on minor. We capture it now so the
+        // optional-checksum decision below can follow the documented rule.
+        var versionMinor = (int)r.ReadU32();
 
         var doorCount    = r.ReadU32();
         var spotCount    = r.ReadU32();
@@ -128,7 +144,9 @@ public sealed class SnoModel
         // unused1..unused7 — purely junk in real files per glampert's RE work.
         for (var i = 0; i < 7; i++) r.ReadU32();
 
-        var dataCrc32 = r.ReadU32();
+        // Checksum is only present at this offset in v6.2+/v7+. Older v6 files
+        // skip it; door data starts where the checksum would have lived.
+        var dataCrc32 = HasChecksumField(version, versionMinor) ? r.ReadU32() : 0u;
 
         // Cornering is the single heaviest allocation — 36 bytes × count — so clamp it
         // eagerly. The other sections have variable-length strings / sub-arrays, so we
@@ -158,6 +176,7 @@ public sealed class SnoModel
         {
             Magic             = magic,
             Version           = version,
+            VersionMinor      = versionMinor,
             MinBounds         = minBounds,
             MaxBounds         = maxBounds,
             DataCrc32         = dataCrc32,

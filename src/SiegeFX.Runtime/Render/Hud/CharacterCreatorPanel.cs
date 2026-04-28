@@ -4,25 +4,30 @@ using SiegeFX.Runtime;
 namespace SiegeFX.Runtime.Render.Hud;
 
 /// <summary>
-/// 21d-2a-viii-b — pre-spawn character creator. Gates <c>TrySpawnPlayer</c>
+/// 21d-2a-viii — pre-spawn character creator. Gates <c>TrySpawnPlayer</c>
 /// until the player picks a variant + name and clicks "Begin".
 ///
 /// <para>Layout is sourced from the shipped DS1
 /// <c>/ui/interfaces/frontend/character_select/character_select.gas</c>
 /// (extracted to <c>_scratch_charsel.gas</c> beside the repo). Reference
 /// resolution is 800×600 — DS1's frontend coordinate space — and rects scale
-/// to the live viewport without letterboxing. The panel does NOT yet bind the
-/// shipped <c>b_gui_heromenu*</c> sprite-atlas cells to the 14 ◄► buttons:
-/// that's a viii-c concern (the per-button sub-cell index lives in
-/// <c>art_mapping.gas</c> and demands an atlas-sampling code path). For now
-/// the buttons are framed rects with TextRenderer ◄► glyphs — gas-authored
-/// rects are the load-bearing authenticity claim of this slice.</para>
+/// to the live viewport without letterboxing. Slice viii-d closed the modal
+/// backdrop, the wood/iron panel chrome, the side decoration pillars, the
+/// stone preview backdrop, and the gas-authentic axis labels. Sprite-atlas
+/// glyphs (◄►) and live character preview remain deferred — both need a
+/// textured-quad renderer BarRenderer doesn't have yet (see
+/// <c>project_siegefx_creator_polish_backlog.md</c>).</para>
 ///
-/// <para>Six axes are exposed (gender, head, face, hair, shirt, pants) but
-/// only gender/body/skin/pants reach <see cref="HeroVariantPicker"/> today —
-/// head/face/hair stay decorative until viii-c proves they map to discrete
-/// shipped meshes rather than baked variants of pos_aN. Body cycles the gas
-/// "head" axis (the row that swaps the pos_aN mesh).</para>
+/// <para>Six axes match DS1's gas-authored buttons. Gender toggles
+/// farmboy/farmgirl. Head cycles pos_a1..pos_a7 (DS1 ships head + body
+/// baked together). Face and Hair both walk the slot-0 skin atlas
+/// (<c>b_c_gah_*_skin_NN.raw</c>) — Face at stride 1, Hair at coprime
+/// stride 7 — because each shipped skin file bakes face + hair + arms
+/// into one image. We tried runtime composition with the separate
+/// <c>b_c_gah_*_hair_NNN.raw</c> overlay files; the result blurred face
+/// details, so we walk shipped variants instead. Shirt and Pants follow
+/// the same pattern on the slot-1 pants atlas (<c>b_c_pos_aN_NNN.raw</c>),
+/// which packs shirt + pants into one image.</para>
 /// </summary>
 internal sealed class CharacterCreatorPanel
 {
@@ -38,10 +43,22 @@ internal sealed class CharacterCreatorPanel
         Gender = HeroGender.Boy,
         BodyTypeIdx = 0,        // pos_a1
         SkinSuffix = "01",
+        HairSuffix = "001",
+        ShirtIdx = 0,
         PantsSuffix = "001",
     };
 
     public string HeroName { get; private set; } = "";
+
+    /// <summary>21d-2a-viii-FE-2 — listener rect in viewport pixels for the
+    /// live hero preview. Hero preview drag/click hit-testing reads this so
+    /// the preview rect's position stays in one source of truth (the gas
+    /// reference rect above) while still scaling to the live viewport.</summary>
+    public (int X, int Y, int W, int H) ListenerRectInViewport(int viewportW, int viewportH)
+    {
+        float sx = viewportW / 800f, sy = viewportH / 600f;
+        return Scale(RectListener, sx, sy);
+    }
 
     // 800×600 reference rects copied verbatim from character_select.gas.
     // (left, top, right, bottom). Note DS1 gas rects are exclusive-end; we
@@ -58,7 +75,11 @@ internal sealed class CharacterCreatorPanel
     private static readonly (int X, int Y, int W, int H) RectShirtR   = R(340, 403, 377, 423);
     private static readonly (int X, int Y, int W, int H) RectPantsL   = R(176, 453, 213, 473);
     private static readonly (int X, int Y, int W, int H) RectPantsR   = R(340, 453, 377, 473);
-    private static readonly (int X, int Y, int W, int H) RectName     = R(297, 518, 530, 542);
+    // Nudged up from the gas-shipped rect (297,518,530,542) to align with the
+    // visible Hero/Name plate mesh; mesh placement diverges from the gas
+    // 800×600 reference because the chrome ASPs are placed by PRS, not by gas
+    // pixel coords. Y top = 450 dialed in by eye against the rendered chrome.
+    private static readonly (int X, int Y, int W, int H) RectName     = R(287, 462, 520, 486);
     private static readonly (int X, int Y, int W, int H) RectListener = R(408,  73, 649, 494);
     private static readonly (int X, int Y, int W, int H) RectPrev     = R(237, 575, 338, 595);
     private static readonly (int X, int Y, int W, int H) RectBegin    = R(461, 575, 562, 595);
@@ -81,15 +102,17 @@ internal sealed class CharacterCreatorPanel
     private readonly MenuButton _begin   = new("Begin",  0, 0, 0, 0);
     private readonly MenuButton _prev    = new("Cancel", 0, 0, 0, 0);
 
-    // Cycle bounds. Skin tones ship 1..32, pants colors 1..41 per body type
-    // (numbers vary; we clamp generously and let the resolver report MISS for
-    // out-of-range — better feedback than guessing the per-body cap here).
+    // Cycle bounds. Skin tones ship 1..32, hair atlases ship 1..29, pants
+    // 1..41 per body type. We clamp generously and let the resolver report
+    // MISS for out-of-range — better feedback than guessing per-body caps.
     private const int SkinMin = 1, SkinMax = 32;
+    private const int HairMin = 1, HairMax = 29;
     private const int PantsMin = 1, PantsMax = 41;
-
-    // Decorative-only axes (see class doc): cycle for visual feedback but no
-    // resolver wiring yet.
-    private int _faceIdx = 1, _hairIdx = 1;
+    // Shirt is a stride into the pants atlas (DS1 packs shirt + pants into
+    // one b_c_pos_aN_NNN file). Six shirt-stride positions × the 7-wide
+    // coprime stride covers most of the pants range so the user sees
+    // distinct shirt/pant combos without re-treading.
+    private const int ShirtMax = 5;
 
     public void Reset()
     {
@@ -101,11 +124,11 @@ internal sealed class CharacterCreatorPanel
             Gender = HeroGender.Boy,
             BodyTypeIdx = 0,
             SkinSuffix = "01",
+            HairSuffix = "001",
+            ShirtIdx = 0,
             PantsSuffix = "001",
         };
         HeroName = "";
-        _faceIdx = 1;
-        _hairIdx = 1;
     }
 
     private static (int X, int Y, int W, int H) Scale(
@@ -172,12 +195,19 @@ internal sealed class CharacterCreatorPanel
         else if (_genderL.Release(px, py)) Picker = With(g: Toggle(Picker.Gender));
         else if (_headR.Release(px, py)) Picker = With(b: Cycle(Picker.BodyTypeIdx, +1, 0, 6));
         else if (_headL.Release(px, py)) Picker = With(b: Cycle(Picker.BodyTypeIdx, -1, 0, 6));
-        else if (_faceR.Release(px, py)) _faceIdx = Cycle(_faceIdx, +1, 1, 8);
-        else if (_faceL.Release(px, py)) _faceIdx = Cycle(_faceIdx, -1, 1, 8);
-        else if (_hairR.Release(px, py)) _hairIdx = Cycle(_hairIdx, +1, 1, 8);
-        else if (_hairL.Release(px, py)) _hairIdx = Cycle(_hairIdx, -1, 1, 8);
-        else if (_shirtR.Release(px, py)) Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, +1, SkinMin, SkinMax), 2));
-        else if (_shirtL.Release(px, py)) Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, -1, SkinMin, SkinMax), 2));
+        // Face cycles SkinSuffix — DS1's slot-0 texture (b_c_*_skin_NN) packs
+        // face + hair + arms into one .raw, so "Face" is the most accurate
+        // label for what changing this axis actually does.
+        else if (_faceR.Release(px, py)) Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, +1, SkinMin, SkinMax), 2));
+        else if (_faceL.Release(px, py)) Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, -1, SkinMin, SkinMax), 2));
+        // Hair cycles HairSuffix → b_c_*_hair_NNN.raw, composed onto the
+        // skin atlas at runtime by RenderHost.LoadComposedSkinHair so the
+        // hero's hair colour changes independently of skin tone.
+        else if (_hairR.Release(px, py)) Picker = With(hh: PadN(CycleStr(Picker.HairSuffix, +1, HairMin, HairMax), 3));
+        else if (_hairL.Release(px, py)) Picker = With(hh: PadN(CycleStr(Picker.HairSuffix, -1, HairMin, HairMax), 3));
+        // Shirt walks the pants atlas by a coprime stride (see picker.BuildOverride).
+        else if (_shirtR.Release(px, py)) Picker = With(si: Cycle(Picker.ShirtIdx, +1, 0, ShirtMax));
+        else if (_shirtL.Release(px, py)) Picker = With(si: Cycle(Picker.ShirtIdx, -1, 0, ShirtMax));
         else if (_pantsR.Release(px, py)) Picker = With(p: PadN(CycleStr(Picker.PantsSuffix, +1, PantsMin, PantsMax), 3));
         else if (_pantsL.Release(px, py)) Picker = With(p: PadN(CycleStr(Picker.PantsSuffix, -1, PantsMin, PantsMax), 3));
         else if (_begin.Release(px, py))
@@ -216,57 +246,178 @@ internal sealed class CharacterCreatorPanel
         HeroName += c;
     }
 
+    /// <summary>Functional overlay drawn ON TOP of the FrontendScene chrome.
+    /// Renders the input controls (axis-cycling arrow buttons, name field
+    /// outline + typed text, Previous / Begin) at their character_select.gas
+    /// positions so the menu is clickable / typeable. No modal backdrop or
+    /// wood-iron card — the chrome supplies that visual layer underneath.
+    /// Pixel-aligned bone-driven button placement is a follow-up; until
+    /// then the gas-authored 800×600 rects sit close enough that clicking
+    /// the visible chrome buttons hits the right axis.</summary>
+    public void DrawTextOverlay(BarRenderer bars, TextRenderer text,
+        int viewportW, int viewportH)
+    {
+        if (!IsOpen) return;
+        Layout(viewportW, viewportH, out var listener, out var name);
+        var ink    = new Vector4(0.92f, 0.88f, 0.78f, 1f);
+        var dimInk = new Vector4(0.65f, 0.60f, 0.50f, 1f);
+        float sx = viewportW / 800f;
+
+        // Hero name — chrome ASP draws the Hero/Name plate; the original DS1
+        // edit_box left-aligns text against the black middle's left edge rather
+        // than centring. Match that: use centred-X minus 40 viewport px so the
+        // typed text starts near the plate's inner left wall. Text colour for
+        // this field is near-white (DS1 edit_box ink) rather than the cream
+        // axis-row ink, so it reads cleanly on the dark plate centre.
+        var shown = string.IsNullOrEmpty(HeroName) ? "Enter Name" : HeroName;
+        var nameInk    = new Vector4(0.96f, 0.96f, 0.94f, 1f);
+        var nameDimInk = new Vector4(0.72f, 0.72f, 0.70f, 1f);
+        var color = string.IsNullOrEmpty(HeroName) ? nameDimInk : nameInk;
+        int tw = text.MeasureWidth(shown);
+        int th = text.HasFont ? text.Font!.Height : 14;
+        text.DrawString(viewportW, viewportH, shown,
+            name.X + Math.Max(0, (name.W - tw) / 2) - 40,
+            name.Y + Math.Max(0, (name.H - th) / 2),
+            color);
+
+        // Axis rows — buttons + live state label between them. Face owns the
+        // skin-texture cycle (face / hair / arms region); Hair and Shirt are
+        // decorative-only counters because DS1 doesn't author separate hair
+        // or shirt textures (see picker docs).
+        DrawAxisRow(bars, text, viewportW, viewportH, _genderL, _genderR,
+            $"Gender: {(Picker.Gender == HeroGender.Girl ? "Farmgirl" : "Farmboy")}", ink);
+        DrawAxisRow(bars, text, viewportW, viewportH, _headL, _headR,
+            $"Head: pos_a{(Picker.BodyTypeIdx < 0 ? 1 : Picker.BodyTypeIdx + 1)}", ink);
+        DrawAxisRow(bars, text, viewportW, viewportH, _faceL, _faceR,
+            $"Face: {Picker.SkinSuffix ?? "--"}", ink);
+        DrawAxisRow(bars, text, viewportW, viewportH, _hairL, _hairR,
+            $"Hair: {Picker.HairSuffix ?? "---"}", ink);
+        DrawAxisRow(bars, text, viewportW, viewportH, _shirtL, _shirtR,
+            $"Shirt: {Picker.ShirtIdx + 1}", ink);
+        DrawAxisRow(bars, text, viewportW, viewportH, _pantsL, _pantsR,
+            $"Pants: {Picker.PantsSuffix ?? "---"}", ink);
+
+        // Begin / Cancel rects are gas-positioned at 461,575 / 237,575 — exactly
+        // where the chrome's backbutton mesh draws the Previous/Next graphics.
+        // Don't draw our solid-colour fills on top; just text labels so the
+        // user can tell which is which until proper bone-projected click rects
+        // come online. Hit testing remains active via the rects in Layout().
+        DrawCentered(text, viewportW, viewportH, _prev.Label,
+            _prev.X, _prev.Y + (_prev.Height - (text.HasFont ? text.Font!.Height : 14)) / 2,
+            _prev.Width, ink);
+        DrawCentered(text, viewportW, viewportH, _begin.Label,
+            _begin.X, _begin.Y + (_begin.Height - (text.HasFont ? text.Font!.Height : 14)) / 2,
+            _begin.Width, ink);
+    }
+
     public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
     {
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out var listener, out var name);
 
-        var dim    = new Vector4(0f, 0f, 0f, 0.70f);
-        var panel  = new Vector4(0.10f, 0.08f, 0.06f, 0.95f);
-        var border = new Vector4(0.78f, 0.66f, 0.42f, 1f);
-        var ink    = new Vector4(0.92f, 0.88f, 0.78f, 1f);
-        var dimInk = new Vector4(0.65f, 0.60f, 0.50f, 1f);
+        // Modal — fully opaque so the world doesn't bleed through. The DS1
+        // creator runs fullscreen with no game behind it.
+        var modalBg   = new Vector4(0.04f, 0.03f, 0.02f, 1f);
+        // Wooden-frame palette (warm browns); iron bands on top/bottom.
+        var wood      = new Vector4(0.18f, 0.13f, 0.08f, 1f);
+        var woodLite  = new Vector4(0.30f, 0.22f, 0.13f, 1f);
+        var iron      = new Vector4(0.22f, 0.20f, 0.18f, 1f);
+        var ironHi    = new Vector4(0.42f, 0.38f, 0.34f, 1f);
+        var border    = new Vector4(0.78f, 0.66f, 0.42f, 1f);
+        var ink       = new Vector4(0.92f, 0.88f, 0.78f, 1f);
+        var dimInk    = new Vector4(0.65f, 0.60f, 0.50f, 1f);
         var fieldFill = new Vector4(0.04f, 0.03f, 0.02f, 1f);
-        var stage     = new Vector4(0.05f, 0.06f, 0.10f, 1f);
+        // Stone backdrop in the preview rect — cold mottled grey so a
+        // future live-render pass reads as a hero-against-stage.
+        var stoneBack = new Vector4(0.16f, 0.16f, 0.18f, 1f);
+        var stoneHi   = new Vector4(0.22f, 0.22f, 0.24f, 1f);
 
-        bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, dim);
+        // Item 1 — Modal backdrop. Fully opaque cover.
+        bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, modalBg);
 
-        // Panel chrome — a single big card with a header. 800×600 base; the
-        // shipped gas doesn't author an explicit panel rect, the menu sits on
-        // the screen background. We frame the controls with a chrome card so
-        // the buttons read as a unit on top of the world (the real DS1 menu
-        // ships a fullscreen background plate; viii-c can swap that in).
         float sx = viewportW / 800f, sy = viewportH / 600f;
+
+        // Item 2 — Wooden frame chrome with iron bands top + bottom.
+        // The card spans the central column of the 800×600 reference layout.
         int cardX = (int)MathF.Round(150 * sx);
-        int cardY = (int)MathF.Round( 50 * sy);
+        int cardY = (int)MathF.Round( 30 * sy);
         int cardW = (int)MathF.Round(530 * sx);
-        int cardH = (int)MathF.Round(520 * sy);
-        bars.DrawRect  (viewportW, viewportH, cardX, cardY, cardW, cardH, panel);
+        int cardH = (int)MathF.Round(560 * sy);
+
+        // Outer wood plate, then a lighter inner bevel for depth.
+        int woodPad = Math.Max(2, (int)MathF.Round(6 * sy));
+        bars.DrawRect(viewportW, viewportH, cardX, cardY, cardW, cardH, wood);
+        bars.DrawRect(viewportW, viewportH,
+            cardX + woodPad, cardY + woodPad,
+            cardW - woodPad * 2, cardH - woodPad * 2, woodLite);
+        // Inner panel where the controls live (recessed look).
+        int innerPad = Math.Max(4, (int)MathF.Round(14 * sy));
+        bars.DrawRect(viewportW, viewportH,
+            cardX + innerPad, cardY + innerPad,
+            cardW - innerPad * 2, cardH - innerPad * 2, modalBg);
         bars.DrawBorder(viewportW, viewportH, cardX, cardY, cardW, cardH, border);
 
-        // Listener frame (3D preview reservation — slice viii-c will mount a
-        // live SkinnedMesh into this rect).
-        bars.DrawRect  (viewportW, viewportH, listener.X, listener.Y, listener.W, listener.H, stage);
+        // Iron bands top + bottom (DS1 chrome riff).
+        int bandH = Math.Max(8, (int)MathF.Round(22 * sy));
+        bars.DrawRect(viewportW, viewportH, cardX, cardY, cardW, bandH, iron);
+        bars.DrawRect(viewportW, viewportH, cardX, cardY + 1, cardW, 2, ironHi);
+        bars.DrawRect(viewportW, viewportH, cardX, cardY + cardH - bandH, cardW, bandH, iron);
+        bars.DrawRect(viewportW, viewportH, cardX, cardY + cardH - 3, cardW, 2, ironHi);
+
+        // Item 3 — Side decorations. Two vertical wood pillars flanking the
+        // card, with iron rivets suggesting massive gear assemblies. We can't
+        // bind the b_gui_heromenu sprite atlas without a textured-quad path
+        // (BarRenderer is solid-color), so this is a stylised stand-in built
+        // from solid bands rather than an authored sprite.
+        int gearW = Math.Max(20, (int)MathF.Round(110 * sx));
+        int gearMargin = (int)MathF.Round(20 * sx);
+        DrawSidePillar(bars, viewportW, viewportH,
+            cardX - gearMargin - gearW, cardY, gearW, cardH, wood, woodLite, iron, ironHi);
+        DrawSidePillar(bars, viewportW, viewportH,
+            cardX + cardW + gearMargin, cardY, gearW, cardH, wood, woodLite, iron, ironHi);
+
+        // Item 4 — Stone backdrop in preview rect (replaces the prior empty
+        // stage colour). Mottled grey + a brighter highlight band suggesting
+        // ground plane. Live render of the picked variant is item 5 — that
+        // requires offscreen FBO infra (see creator polish backlog).
+        bars.DrawRect  (viewportW, viewportH, listener.X, listener.Y, listener.W, listener.H, stoneBack);
+        // Crude horizon band 2/3 down the rect for visual interest.
+        int horizonY = listener.Y + (int)(listener.H * 0.62f);
+        int horizonH = Math.Max(2, (int)MathF.Round(3 * sy));
+        bars.DrawRect(viewportW, viewportH, listener.X, horizonY, listener.W, horizonH, stoneHi);
         bars.DrawBorder(viewportW, viewportH, listener.X, listener.Y, listener.W, listener.H, border);
+        // Placeholder line so the user knows what's going to live there once
+        // the offscreen render lands.
+        var phLabel = "(Hero Preview)";
+        int phW = text.MeasureWidth(phLabel);
+        int phH = text.HasFont ? text.Font!.Height : 14;
+        text.DrawString(viewportW, viewportH, phLabel,
+            listener.X + (listener.W - phW) / 2,
+            listener.Y + (listener.H - phH) / 2, dimInk);
 
         // Name field
         bars.DrawRect  (viewportW, viewportH, name.X, name.Y, name.W, name.H, fieldFill);
         bars.DrawBorder(viewportW, viewportH, name.X, name.Y, name.W, name.H, border);
 
-        // Title + axis labels.
+        // Title sits on the iron band.
         DrawCentered(text, viewportW, viewportH, "Choose Hero",
-            cardX, cardY + (int)(8 * sy), cardW, ink);
+            cardX, cardY + Math.Max(2, bandH / 2 - (text.HasFont ? text.Font!.Height : 14) / 2),
+            cardW, ink);
 
+        // Item 6 — Axis labels match DS1's gas-authored button names
+        // (button_gender / _head / _face / _hair / _shirt / _pants).
+        // The underlying mutations are unchanged: head→pos_aN body, shirt→
+        // skin/shirt texture (b_c_*_skin_NN). Face/hair stay decorative.
         DrawAxisRow(bars, text, viewportW, viewportH, _genderL, _genderR,
             $"Gender: {(Picker.Gender == HeroGender.Girl ? "Farmgirl" : "Farmboy")}", ink);
         DrawAxisRow(bars, text, viewportW, viewportH, _headL, _headR,
-            $"Body: pos_a{(Picker.BodyTypeIdx < 0 ? 1 : Picker.BodyTypeIdx + 1)}", ink);
+            $"Head: pos_a{(Picker.BodyTypeIdx < 0 ? 1 : Picker.BodyTypeIdx + 1)}", ink);
         DrawAxisRow(bars, text, viewportW, viewportH, _faceL, _faceR,
-            $"Face: {_faceIdx}", dimInk);
+            $"Face: {Picker.SkinSuffix ?? "--"}", ink);
         DrawAxisRow(bars, text, viewportW, viewportH, _hairL, _hairR,
-            $"Hair: {_hairIdx}", dimInk);
+            $"Hair: {Picker.HairSuffix ?? "---"}", ink);
         DrawAxisRow(bars, text, viewportW, viewportH, _shirtL, _shirtR,
-            $"Skin: {Picker.SkinSuffix ?? "--"}", ink);
+            $"Shirt: {Picker.ShirtIdx + 1}", ink);
         DrawAxisRow(bars, text, viewportW, viewportH, _pantsL, _pantsR,
             $"Pants: {Picker.PantsSuffix ?? "---"}", ink);
 
@@ -282,12 +433,37 @@ internal sealed class CharacterCreatorPanel
         _prev.Draw (bars, text, viewportW, viewportH);
     }
 
+    /// <summary>Solid-quad rendering of a wooden side pillar with five iron
+    /// "rivet" bands. Stand-in for the shipped gear sprite atlas (which would
+    /// need a textured-quad render path BarRenderer doesn't have yet).</summary>
+    private static void DrawSidePillar(BarRenderer bars, int vw, int vh,
+        int x, int y, int w, int h,
+        Vector4 wood, Vector4 woodLite, Vector4 iron, Vector4 ironHi)
+    {
+        if (w <= 0 || x < 0) return;
+        bars.DrawRect(vw, vh, x, y, w, h, wood);
+        int pad = Math.Max(2, w / 12);
+        bars.DrawRect(vw, vh, x + pad, y + pad, w - pad * 2, h - pad * 2, woodLite);
+        // Five evenly-spaced iron bands suggesting gear-axis rivets.
+        int bandH = Math.Max(8, h / 18);
+        int gap = (h - bandH * 5) / 6;
+        for (int i = 0; i < 5; i++)
+        {
+            int by = y + gap + i * (bandH + gap);
+            bars.DrawRect(vw, vh, x + pad, by, w - pad * 2, bandH, iron);
+            bars.DrawRect(vw, vh, x + pad, by + 1, w - pad * 2, 2, ironHi);
+        }
+    }
+
+    /// <summary>Draws the live spinner state label between the L/R click rects.
+    /// The L/R rects themselves are NOT drawn here — the chrome ASPs (menubars
+    /// / heromenu) supply the visible arrow graphics. Drawing solid-colour
+    /// MenuButton rects on top hides the chrome and looks like an empty UI
+    /// stacked over the real one. The buttons remain hit-testable; only
+    /// their visual fill is suppressed in DrawTextOverlay mode.</summary>
     private static void DrawAxisRow(BarRenderer bars, TextRenderer text,
         int vw, int vh, MenuButton left, MenuButton right, string label, Vector4 ink)
     {
-        left.Draw(bars, text, vw, vh);
-        right.Draw(bars, text, vw, vh);
-        // Label sits between the L/R buttons, centered between their inner edges.
         int innerL = left.X + left.Width;
         int innerR = right.X;
         int lw = text.MeasureWidth(label);
@@ -330,12 +506,15 @@ internal sealed class CharacterCreatorPanel
         => n.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width, '0');
 
     private HeroVariantPicker With(
-        HeroGender? g = null, int? b = null, string? s = null, string? p = null)
+        HeroGender? g = null, int? b = null, string? s = null,
+        string? hh = null, int? si = null, string? p = null)
         => new()
         {
             Gender      = g ?? Picker.Gender,
             BodyTypeIdx = b ?? Picker.BodyTypeIdx,
             SkinSuffix  = s ?? Picker.SkinSuffix,
+            HairSuffix  = hh ?? Picker.HairSuffix,
+            ShirtIdx    = si ?? Picker.ShirtIdx,
             PantsSuffix = p ?? Picker.PantsSuffix,
         };
 }

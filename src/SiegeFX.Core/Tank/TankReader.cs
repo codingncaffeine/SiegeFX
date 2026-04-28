@@ -26,6 +26,11 @@ public sealed class TankReader
     public int DirCount  => _dirs.Length;
     public int FileCount => _files.Length;
 
+    /// <summary>Count of file entries flagged invalid (high-bit set in flags). These
+    /// silently extract to empty bytes; surface the total so a corrupt tank is
+    /// visible at info time rather than discovered by extraction returning nothing.</summary>
+    public int InvalidFileCount => _files.Count(f => f.IsInvalid);
+
     public TankReader(TankFile tank)
     {
         _tank = tank;

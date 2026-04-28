@@ -372,20 +372,23 @@ public sealed class AspMesh
                 if (pos + headerBytes > body.Length)
                     throw new InvalidDataException("BTRI subtexture header past chunk end");
 
-                // BTRI face indices are subtexture-local for vdec > 22 (DS1 character meshes
-                // v2.5/v4.0). For vdec == 22 (a single GUI mesh in shipping DS1, m_gui_..._rightside)
-                // applying cornerStart pushes face indices past the total corner count even though
-                // OpenSiege and ASPImport.ms both attempt the same offset — the on-disk values for
-                // v22 multi-subtexture do not represent corner counts, so we leave indices submesh-
-                // local for vdec <= 22 and only apply per-subtexture cornerStart for vdec > 22.
+                // BTRI face indices are subtexture-local for v >22 (DS1 character meshes
+                // v2.5/v4.0): each (cornerStart, cornerSpan) pair means subset N's faces
+                // are 0-based within its own corner range, so we offset by cornerStart.
+                //
+                // For v2.2 (and earlier) the header bytes exist but cornerStartsHdr stays
+                // all-zero — face indices are absolute into the shared corner pool. An
+                // earlier rev tried to interpret v2.2's header as cornerSpan and accumulate
+                // into starts; that pushed indices past the corner count and crashed
+                // rightside.asp on load. The visible "bottom of the pillar poking out"
+                // symptom isn't a missing cornerStart offset in v2.2, it's somewhere else.
                 int[] cornerStartsHdr = new int[Math.Max(curSubTextures, 1)];
                 if (vdec > 22)
                 {
                     for (int i = 0; i < curSubTextures; i++)
                         cornerStartsHdr[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + i * 8));
                 }
-                // vdec <= 22: cornerStartsHdr stays all-zero; face indices treated as submesh-local
-                // so cornerBase alone is the offset, matching pre-Phase-21d-2a-iv behavior.
+                // vdec <= 22: cornerStartsHdr stays all-zero (face indices absolute).
 
                 pos += headerBytes;
                 if (pos + numFaces * 12 > body.Length)

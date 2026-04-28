@@ -141,10 +141,16 @@ public sealed class RenderHost : IDisposable
     private float _ambientLevel = 0.25f;
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
-    // Phase 12d — kept so DebugAttackNearestActor can build a LootTable for the
-    // dying actor's template chain on demand. Loot tables live in Core and don't
-    // require the render-side resolver, so the store reference is enough.
+    // Template index for the active scene; used everywhere we need to walk a
+    // template's specializes chain (texture resolution, weapon equip, loot
+    // tables, voice cues). Loaded from Logic.dsres at LoadPlayActors.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
+    // Phase 9-SC-7 (Phase A pcontent roller) — resolves drop/equip specs
+    // like "#club/2-3" to a concrete weapon template at render time. Built
+    // alongside _templateStore. Honors weapon class only; tier/rarity
+    // arguments are ignored until SC-16 widens the resolver.
+    private SiegeFX.Core.Actors.PcontentResolver? _pcontentResolver;
+    private readonly Random _pcontentRng = new(0x5165DEF1);
     private SiegeFX.Core.Assets.FormulasStore? _formulas;
     // Phase 16d — player XP/level state. Created right after the PC spawns once
     // _formulas is also live; null-guarded everywhere because viewer modes that
@@ -162,6 +168,11 @@ public sealed class RenderHost : IDisposable
     // viewer modes that bypass play-region loading.
     private SiegeFX.Core.Assets.SpellCatalog? _spellCatalog;
     private SiegeFX.Core.Actors.PlayerSpellbook? _playerSpellbook;
+    // 9-SC-3: DS1 spellbooks are pcontent-rolled containers (book_glb_magic_01
+    // has pcontent_level=0, no authored spell names). These two names are a
+    // SiegeFX stand-in so 'Q'/'W' have something to fire while pcontent
+    // (9-SC-16) is unimplemented. Once pcontent lands, the spellbook walked
+    // off es_spellbook by 9-SC-12 will provide real spells and these go away.
     private const string DefaultPrimarySpellName   = "spell_zap";
     private const string DefaultSecondarySpellName = "spell_healing_wind";
     // Phase 17a — short-lived floating world-anchored text (cast feedback like
@@ -198,9 +209,14 @@ public sealed class RenderHost : IDisposable
     // so the pickup path can transfer the actual rolled items into PC inventory.
     private readonly List<LootPile> _lootPiles = new();
     private DebugCubeMesh? _lootCube;
-    // Phase 14a — PC inventory. Flat list for now; grid wiring lands with the HUD
-    // in Phase 15. Populated by auto-pickup when the Farmboy walks within
-    // PickupRadius of a pile during the 20 Hz tick.
+    // Phase 9-SC-LL — frame-local cache: world position + display name for
+    // each loot pile that resolved to a real item this frame. Built during
+    // the loot mesh-draw loop, consumed by the text-overlay pass below.
+    // Stays a field (not a method local) so we don't reallocate every frame.
+    private readonly List<(Vector3 World, string Label)> _frameLootLabels = new();
+    // Phase 14a — PC inventory backing store; HUD's InventoryPanel lays it out
+    // as the DS1-authentic 8×5 grid. Populated by auto-pickup when the Farmboy
+    // walks within PickupRadius of a pile during the 20 Hz tick.
     private readonly List<SiegeFX.Core.Actors.LootEntry> _playerInventory = new();
     private const float PickupRadius = 1.8f;
     // Phase 14b — PC equipment slots keyed by DS1 slot tag (es_weapon_hand,
@@ -238,7 +254,9 @@ public sealed class RenderHost : IDisposable
     // group ids are what RenderHost calls Play() with; the singles are
     // the underlying variants (registered first, then grouped).
     const string SfxMeleeSwingGroup = "melee_swing";
-    const string SfxMeleeHitGroup   = "melee_hit";
+    // Phase 9-SC-2/SC-8 — hit group is now per weapon material, lazy-registered.
+    // Group ids are formed at runtime as "melee_hit_<material>" (e.g. melee_hit_steelsword).
+    const string SfxMeleeHitGroupPrefix = "melee_hit_";
     const string SfxMeleeMiss       = "melee_miss";
     const string SfxLevelUp         = "level_up";
     // Phase 21d-2a-ix — GUI feedback. Surgical wires for the three call sites
@@ -249,16 +267,19 @@ public sealed class RenderHost : IDisposable
     const string SfxGuiInventory   = "gui_inventory_sheet";
     const string SfxGuiPickup      = "gui_pick_up";
     const string SfxGuiOutOfMana   = "gui_out_of_mana";
-    // Death SFX live as direct ids — looked up by template species so
-    // we don't grow a death-species enum in the render layer.
-    static readonly Dictionary<string, string> SpeciesDeathSfx = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["goblin"]      = "die_goblin",
-        ["gremal"]      = "die_gremal",
-        ["krug"]        = "die_krug_scout",
-        ["krug_scout"]  = "die_krug_scout",
-        ["krug_dog"]    = "die_krug_dog",
-    };
+    // Phase 9-SC-2 — death cues are derived from the actor's template's
+    // [aspect][voice][die] `*` attribute (universal DS1 pattern). Cache the
+    // cue stems we've already pulled out of Sound.dsres so the per-kill
+    // path isn't re-registering the same WAV blob over and over.
+    private readonly HashSet<string> _registeredDeathCues = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 9-SC-8 — track which (material) hit-group ids we've already registered so
+    // EnsureHitGroupRegistered doesn't reload the same WAVs every swing. The actual
+    // group id is "melee_hit_<material>" and contains every shipped flesh-impact
+    // variant for that weapon material.
+    private readonly HashSet<string> _registeredHitGroups = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 9-SC-8 — material from the equipped weapon's [aspect][material]; drives
+    // hit-cue selection. Empty string until TryLoadPlayerWeapon resolves it.
+    private string _playerWeaponMaterial = "steelsword";
     // Phase 14d — currently-rendered weapon mesh pinned to the PC's weapon_grip bone.
     // Null until TrySpawnPlayer resolves the first equipped weapon. Swapped on every
     // es_weapon_hand change so a pickup upgrade shows up visually.
@@ -271,43 +292,32 @@ public sealed class RenderHost : IDisposable
     // the dagger draws at the weapon ASP's mesh origin, which is nowhere near
     // the grip — blade tip usually, judging by how DS1 weapons are authored.
     private Matrix4x4 _weaponBindInv = Matrix4x4.Identity;
+    // Phase 9-SC-7 — item-mesh cache for ground loot. Keyed by item template name
+    // (e.g. "dg_g_d_1h_fun"). Each entry is the loaded ASP mesh + optional first-
+    // texture binding; tracked for sentinel "no mesh authored" so we don't keep
+    // retrying templates that have no [aspect][model] (gold piles, scrolls).
+    private readonly Dictionary<string, ItemMesh?> _itemMeshCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    // Phase 9-SC-7 follow-up — log the cube-fallback reason once per unique
+    // ref so the user can read the cause from the diag output without spam.
+    private readonly HashSet<string> _loggedItemRefMisses =
+        new(StringComparer.OrdinalIgnoreCase);
+    private sealed record ItemMesh(StaticMesh Mesh, GlTexture? Texture, string? DisplayName);
 
-    // 21d-2a-vi — live A/B knobs for the weapon_grip prerotation, cycled with F1
-    // while the game runs. Each preset is a quaternion so we can express compound
-    // rotations (e.g. X 180° + Z 180° to flip the dagger end-for-end while keeping
-    // the long-axis along the forearm). Default = X 180° — visually nailed the
-    // orientation but the dagger's handle was visible instead of the tip, so the
-    // surrounding entries below add a "pommel-flip" axis on top of the X 180°.
-    private static readonly (string Label, Quaternion Q)[] s_gripPreRotPresets =
-    {
-        ("X 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
-        ("X 180 + Y 180",        Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI)
-                                  * Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
-        ("X 180 + Z 180",        Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI)
-                                  * Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI)),
-        ("Y 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI)),
-        ("Z 180",                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI)),
-        ("X 0",                  Quaternion.Identity),
-        ("X 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI / 2f)),
-        ("X -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI / 2f)),
-        ("Y 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI / 2f)),
-        ("Y -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 2f)),
-        ("Z 90",                 Quaternion.CreateFromAxisAngle(Vector3.UnitZ, MathF.PI / 2f)),
-        ("Z -90",                Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -MathF.PI / 2f)),
-    };
-    private int _gripPreRotIdx = 0; // default = X 180° (orientation that nailed the forearm-forward pose)
-
-    // 21d-2a-vi — translation offset applied AFTER the prerotation, in the bone-
-    // local frame, so we can nudge the dagger into the palm without re-deriving
-    // bind translations. F2/F3/F4 cycle X/Y/Z; each press steps through the
-    // s_gripPreTransSteps array. ASP grip bone has tr=(0, 0.04, 0) in its bind,
-    // so the natural step size is half of that (0.02) and twice (0.08).
-    private static readonly float[] s_gripPreTransSteps = { -0.08f, -0.04f, -0.02f, 0f, 0.02f, 0.04f, 0.08f };
-    // Defaults visually verified for the fun dagger: (+0.02, +0.04, 0) snaps the
-    // blade into the palm. F2/F3/F4 in-game still cycle for future weapon classes.
-    private int _gripPreTransX = 4; // +0.02
-    private int _gripPreTransY = 5; // +0.04
-    private int _gripPreTransZ = 3; //  0.00
+    // 21d-2a-vi → 9-SC-1: weapon_grip prerotation. SiegeMax ASPImport.ms applies
+    // an `angleAxis 90 [1,0,0]` to weapon_grip / shield_grip on import; the PRS
+    // keys for those bones are authored against that prerotated frame. Without
+    // the same rotation at draw time the dagger sits 90° off (icepick grip
+    // instead of thrust grip).
+    //
+    // X 180° rotation + (+0.02, +0.04, 0) translation in bone-local space snaps
+    // the fun dagger's blade into the palm — visually signed off in 21d-2a-vi
+    // after F1-F4 A/B cycling. The cycling has been removed now; if other weapon
+    // classes need different offsets they should be authored on the weapon item
+    // template, not knobbed at runtime.
+    private static readonly Quaternion s_gripPreRot =
+        Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI);
+    private static readonly Vector3 s_gripPreTrans = new(0.02f, 0.04f, 0f);
 
     // Phase 21d-2a-vii — layered equipment composition. Each entry is a skinned
     // ASP that re-uses the body's biped skeleton (boots/helms/gauntlets) and
@@ -338,7 +348,30 @@ public sealed class RenderHost : IDisposable
         public required string MeshBaseName { get; init; }
     }
 
-    private sealed record LootPile(Vector3 Position, List<SiegeFX.Core.Actors.LootEntry> Items);
+    // Phase 9-SC-9 — pile holds an optional throw state for items the player
+    // just dropped. While Throw is non-null, the pile lerps from source to
+    // target with a parabolic Y arc (mimics DS1's drop-toss animation), and
+    // auto-pickup skips it so the player can't grab it mid-flight. Cleared
+    // when Elapsed reaches Duration; pile is then a normal pickup target.
+    private sealed class LootPile
+    {
+        public Vector3 Position;
+        public float RotationY; // radians; non-zero only while a throw is in flight
+        public readonly List<SiegeFX.Core.Actors.LootEntry> Items;
+        public LootThrow? Throw;
+        public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
+        { Position = position; Items = items; }
+    }
+    private sealed class LootThrow
+    {
+        public Vector3 Source;
+        public Vector3 Target;
+        public float Duration;
+        public float Elapsed;
+        public float ArcHeight;
+        public float Spins;        // total Y-axis turns over the duration
+        public float StartRotation; // initial yaw so PC vs enemy drops don't all face the same way
+    }
     // Phase 13a — the one player-controlled actor's render state. Null until
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
     // the NPCs); this field is the named handle for the input layer.
@@ -446,7 +479,38 @@ public sealed class RenderHost : IDisposable
     // alpha-blended pass.
     private TextRenderer? _textRenderer;
     private BarRenderer? _barRenderer;
+    // Phase 9-SC-13 — textured-rect HUD primitive used to draw inventory
+    // icons (b_gui_ig_*.raw) inside InventoryPanel cells. Same blend pass
+    // as the other HUD renderers; lifetime parallels them.
+    private IconRenderer? _iconRenderer;
+    // Per-template icon cache. Keyed by the same itemRef that TryGetItemMesh
+    // uses, so pcontent specs and direct template names share one entry.
+    // null sentinel = no [gui][inventory_icon] authored / .raw missing.
+    private readonly Dictionary<string, GlTexture?> _itemIconCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _loggedItemIconMisses =
+        new(StringComparer.OrdinalIgnoreCase);
+    // Phase 9-SC-14 — per-template (gui_grid_w, gui_grid_h) cache. Defaults
+    // to (1,1) when the template omits the attributes; helms / robes / two-
+    // handers ship 2x2 / 2x1 etc. and the panel's first-fit packer needs
+    // these to reserve adjacent cells.
+    private readonly Dictionary<string, (int W, int H)> _itemGridCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    // Phase 9-SC-13 — single source of truth for "this pcontent spec rolls
+    // to that template name." Without this, the mesh path and the icon path
+    // each call PcontentResolver.TryResolve independently and roll different
+    // templates from the bucket — the loot pile would render one weapon, the
+    // inventory cell a different one, and screen_name / inventory_icon would
+    // disagree. Cache lookup must precede any TryResolve call in either path.
+    private readonly Dictionary<string, string> _resolvedSpecCache =
+        new(StringComparer.OrdinalIgnoreCase);
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
+    private readonly InventoryPanel _inventoryPanel = new(); // owns drag state
+    // Phase 9-SC-9 — put_down cues lazy-registered the same way death cues are
+    // (template's [aspect][voice][put_down] *). Cache hits per cue stem; many
+    // templates share the same put_down cue (every steel sword fires the same
+    // s_e_gui_put_down_steelsword) so this keeps the per-drop path one cache hit.
+    private readonly HashSet<string> _registeredPutDownCues = new(StringComparer.OrdinalIgnoreCase);
     private bool _questLogOpen;  // 'L' toggles; sibling overlay to inventory
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
     // Phase 21d-2a-viii-b — pre-spawn character creator. Opens by default when
@@ -454,6 +518,21 @@ public sealed class RenderHost : IDisposable
     // TrySpawnPlayerWithPicker fires) or Cancel (falls through to env-var-only
     // pick). Layout sourced from /ui/interfaces/frontend/character_select/character_select.gas.
     private readonly CharacterCreatorPanel _creator = new();
+    // Phase 21d-2a-viii-FE — full DS1 frontend scene composer. Owns all 8
+    // shipped frontend ASPs (backdrop / leftside / rightside / logo /
+    // mainmenu / menubars / backbutton / heromenu) and animates them into
+    // the character_select (cd) pose by playing the authored PRS clips.
+    // Lazy-loaded once Objects.dsres is open (LoadPlayActors stashes
+    // _playResolver) and disposed on shutdown. Replaces the viii-d
+    // BarRenderer scaffolding + viii-e single-mesh CreatorChrome.
+    private FrontendScene? _frontendScene;
+    // Phase 21d-2a-viii-FE-2 — live 3D hero preview rendered into the
+    // character_select listener rect. Owns its own ActorSpawner +
+    // SkritRuntime + WorldMessageBus so the preview actor never registers
+    // with the play-region bus. Lazy-built on first cd-state frame because
+    // it needs _templateStore + _playResolver + _skinShader, all of which
+    // come online during LoadPlayActors.
+    private HeroPreviewRenderer? _heroPreview;
     // Args captured on the first frame the creator is open so Begin can re-enter
     // the spawn path with the panel-mutated picker.
     private ActorSpawner? _pendingSpawner;
@@ -466,8 +545,8 @@ public sealed class RenderHost : IDisposable
     private HeroVariantPicker? _heroVariant;
     // Phase 20a — dialogue overlay. Per-region conversation pool loaded with the
     // actor list; RMB on a talkable NPC opens the panel against that NPC's first
-    // conversation key. Activated quests just log for now — Phase 20b folds them
-    // into PlayerProgression + the journal.
+    // conversation key. Phase 20b wired dialogue.ConsumePendingQuestActivation()
+    // → PlayerProgression.Journal.AddActive() and the 'L' journal overlay.
     private readonly DialoguePanel _dialogue = new();
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.ConversationDef>? _conversations;
 
@@ -519,9 +598,8 @@ public sealed class RenderHost : IDisposable
     private enum CameraMode { Fly, Chase }
     private CameraMode _cameraMode = CameraMode.Fly;
     // Yaw of the camera *around* the player in Chase mode. Independent from
-    // Camera.Yaw because we overwrite Camera.Yaw/Pitch every frame to make Forward
-    // point at the player (so DebugAttackNearestActor still picks whatever the
-    // camera is aimed at).
+    // Camera.Yaw because we overwrite Camera.Yaw/Pitch every frame to make
+    // Forward point at the player.
     private float _chaseYaw;
     private float _chaseDistance = 12f;
     private float _chaseHeight   = 7f;
@@ -802,39 +880,6 @@ void main()
                     else if (_dialogue.IsOpen) _dialogue.Close();
                     else _pauseMenu.Toggle();
                 }
-                // Phase 12c: F key strikes the nearest living actor in front of the
-                // camera. Placeholder player-stand-in until Phase 13 brings a real PC
-                // with its own template and equipped weapon. Logs each hit to the
-                // console so the damage math is visible without a HUD overlay.
-                else if (key == Key.F) DebugAttackNearestActor();
-                // 21d-2a-vi: F1 cycles weapon_grip prerotation presets so we can
-                // A/B match what DS1's PRSImport "preRot" path actually wants.
-                // Each press steps through (axis, degrees) combos and prints the
-                // current one to console. Visible immediately on the next frame.
-                else if (key == Key.F1)
-                {
-                    _gripPreRotIdx = (_gripPreRotIdx + 1) % s_gripPreRotPresets.Length;
-                    var p = s_gripPreRotPresets[_gripPreRotIdx];
-                    Console.WriteLine($"weapon grip prerot [{_gripPreRotIdx + 1}/{s_gripPreRotPresets.Length}]: {p.Label}");
-                }
-                // 21d-2a-vi: F2/F3/F4 nudge the dagger along bone-local X/Y/Z so we
-                // can find the right "into the palm" offset without rebuilding. Steps
-                // through {-0.08, -0.04, -0.02, 0, +0.02, +0.04, +0.08}.
-                else if (key == Key.F2)
-                {
-                    _gripPreTransX = (_gripPreTransX + 1) % s_gripPreTransSteps.Length;
-                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
-                }
-                else if (key == Key.F3)
-                {
-                    _gripPreTransY = (_gripPreTransY + 1) % s_gripPreTransSteps.Length;
-                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
-                }
-                else if (key == Key.F4)
-                {
-                    _gripPreTransZ = (_gripPreTransZ + 1) % s_gripPreTransSteps.Length;
-                    Console.WriteLine($"weapon grip offset: ({s_gripPreTransSteps[_gripPreTransX]:F2}, {s_gripPreTransSteps[_gripPreTransY]:F2}, {s_gripPreTransSteps[_gripPreTransZ]:F2})");
-                }
                 // Phase 13b: C flips between chase cam (follows the PC) and fly cam
                 // (free WASD+RMB). No-op if there's no player.
                 else if (key == Key.C && _player is not null)
@@ -929,7 +974,23 @@ void main()
                 if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
-                        _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                    {
+                        // 21d-2a-viii-FE-2 — preview-rect drag check first.
+                        // If the click landed inside the listener rect, latch
+                        // the preview's drag state and skip the panel button
+                        // dispatch (otherwise the click also fires axis cycle
+                        // on press, which we don't want).
+                        if (_heroPreview is not null
+                            && _heroPreview.TryStartDrag((int)m.Position.X, (int)m.Position.Y,
+                                _window.Size.X, _window.Size.Y))
+                        {
+                            // drag started — eat the click
+                        }
+                        else
+                        {
+                            _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                        }
+                    }
                     return;
                 }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
@@ -960,6 +1021,22 @@ void main()
                         _dialogue.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
                     return;
                 }
+                // Phase 9-SC-9 — inventory panel owns LMB while open. Latch a
+                // drag if the click lands on an item rect; clicks on empty cells
+                // or the panel chrome are still swallowed so the world below
+                // doesn't see a click-to-move on an inventory backdrop hit.
+                if (_inventoryOpen && btn == MouseButton.Left)
+                {
+                    _inventoryPanel.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
+                        _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                    if (_inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
+                            _window.Size.X, _window.Size.Y))
+                        return;
+                    // LMB outside the panel with inventory still open: skip the
+                    // panel and fall through so a click-to-move still works while
+                    // the grid is up. (No drop-on-LMB-down — drop happens on
+                    // LMB-up so the user has to actively pull an item out.)
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = true;
@@ -985,7 +1062,15 @@ void main()
                 if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
-                        _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                    {
+                        // 21d-2a-viii-FE-2 — drag release is its own path so
+                        // a "drag the hero, release outside the rect" stroke
+                        // doesn't accidentally trip an axis arrow.
+                        if (_heroPreview is not null && _heroPreview.IsDragging)
+                            _heroPreview.EndDrag();
+                        else
+                            _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                    }
                     return;
                 }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
@@ -1032,6 +1117,21 @@ void main()
                     }
                     return;
                 }
+                // Phase 9-SC-9 — resolve a drag release. If the user moved the
+                // item to a different cell inside the panel, the panel updates
+                // its own placement state silently; if the release landed
+                // outside the panel, pop the item out and spawn a loot pile at
+                // the player's feet (then fire the put_down SFX).
+                if (_inventoryOpen && btn == MouseButton.Left)
+                {
+                    var drag = _inventoryPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
+                        _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                    if (drag.Kind == InventoryPanel.ActionKind.DropToWorld)
+                        DropInventoryItem(drag.ItemIndex);
+                    if (_inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
+                            _window.Size.X, _window.Size.Y))
+                        return;
+                }
                 if (btn == MouseButton.Right)
                 {
                     _mouseLookActive = false;
@@ -1059,7 +1159,15 @@ void main()
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
+                {
                     _creator.OnMouseMove((int)pos.X, (int)pos.Y);
+                    // 21d-2a-viii-FE-2 — feed drag delta to the live preview
+                    // when the user is mid-drag (LMB held inside the listener
+                    // rect). Bidirectional yaw so dragging either way spins
+                    // the model the matching way.
+                    if (_heroPreview is not null && _heroPreview.IsDragging)
+                        _heroPreview.OnDragMove((int)pos.X);
+                }
                 // Phase 15d — feed the pause menu so its buttons can light up on
                 // hover. Cheap rect tests; no-op when the menu is closed.
                 if (_pauseMenu.IsOpen)
@@ -1069,6 +1177,8 @@ void main()
                 if (_vendor.IsOpen)
                     _vendor.OnMouseMove((int)pos.X, (int)pos.Y,
                                         _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                if (_inventoryOpen)
+                    _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -1126,6 +1236,7 @@ void main()
         _lootCube   = new DebugCubeMesh(_gl);
         _textRenderer = new TextRenderer(_gl);
         _barRenderer  = new BarRenderer(_gl);
+        _iconRenderer = new IconRenderer(_gl);
 
         if (_meshPath is not null)
         {
@@ -1896,9 +2007,10 @@ void main()
     /// world frame. One <see cref="SkritRuntime"/> + one <see cref="SiegeFX.Core.Actors.WorldMessageBus"/>
     /// are shared across all actors; OnUpdate drains them at the 20 Hz logical tick so actor
     /// skrits can self-swap clips the same way the single-actor <see cref="_skritRuntime"/>
-    /// path does. Untextured for now — the skinned fragment shader falls back to the
-    /// neutral-sand color when uHasTexture=0, which is fine for "do the 181 fleshy shapes
-    /// actually stand where the game places them" verification.</summary>
+    /// path does. Textures resolve through <see cref="ResolveActorTexture"/> (template
+    /// chain → texset override → variant .raw) at draw time; the skinned shader's
+    /// uHasTexture=0 neutral-sand path is now the safety net for templates whose
+    /// chain doesn't surface any texture, not the common case.</summary>
     private void LoadPlayActors(string mapTankPath, string logicTankPath, string objectsTankPath, string regionPath)
     {
         if (_gl is null) return;
@@ -1989,6 +2101,7 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _templateStore = store;
+        _pcontentResolver = new SiegeFX.Core.Actors.PcontentResolver(store);
         _playResolver = resolver;
         // Phase 21a-3 — promote spawner so OnPlayerRegionChanged can call
         // Spawn() again with the newly-loaded regions' actors. Track the
@@ -2136,14 +2249,9 @@ void main()
                     _audio.RegisterGroup(SfxMeleeSwingGroup,
                         "swing_01", "swing_02", "swing_03", "swing_04");
 
-                    TryRegisterSfx(soundReader, "hit_flesh_1", "/sound/effects/s_e_hit_steelsword_flesh1.wav");
-                    TryRegisterSfx(soundReader, "hit_flesh_2", "/sound/effects/s_e_hit_steelsword_flesh2.wav");
-                    TryRegisterSfx(soundReader, "hit_flesh_3", "/sound/effects/s_e_hit_steelsword_flesh3.wav");
-                    TryRegisterSfx(soundReader, "hit_flesh_4", "/sound/effects/s_e_hit_steelsword_flesh4.wav");
-                    TryRegisterSfx(soundReader, "hit_flesh_5", "/sound/effects/s_e_hit_steelsword_flesh5.wav");
-                    _audio.RegisterGroup(SfxMeleeHitGroup,
-                        "hit_flesh_1", "hit_flesh_2", "hit_flesh_3", "hit_flesh_4", "hit_flesh_5");
-
+                    // Phase 9-SC-8 — material-keyed hit cues lazy-registered on first
+                    // swing-that-lands; see EnsureHitGroupRegistered. Replaces the old
+                    // unconditional steelsword-only block that masqueraded as "hit_flesh_*".
                     TryRegisterSfx(soundReader, SfxMeleeMiss, "/sound/effects/s_e_miss_melee.wav");
                     TryRegisterSfx(soundReader, SfxLevelUp,   "/sound/effects/s_e_level_up_melee.wav");
 
@@ -2152,10 +2260,9 @@ void main()
                     TryRegisterSfx(soundReader, SfxGuiPickup,    "/sound/effects/s_e_gui_pick_up.wav");
                     TryRegisterSfx(soundReader, SfxGuiOutOfMana, "/sound/effects/s_e_gui_out_of_mana.wav");
 
-                    TryRegisterSfx(soundReader, "die_goblin",     "/sound/effects/s_e_die_goblin.wav");
-                    TryRegisterSfx(soundReader, "die_gremal",     "/sound/effects/s_e_die_gremal.wav");
-                    TryRegisterSfx(soundReader, "die_krug_scout", "/sound/effects/s_e_die_krug_scout.wav");
-                    TryRegisterSfx(soundReader, "die_krug_dog",   "/sound/effects/s_e_die_krug_dog.wav");
+                    // Phase 9-SC-2 — death cues lazy-registered on first kill,
+                    // sourced from each template's [aspect][voice][die] `*`.
+                    // No per-species table here.
 
                     // Phase 21d-2a-xi — load mood definitions, then register
                     // the looping ambient beds shipped under /sound/effects/
@@ -2225,7 +2332,7 @@ void main()
         // opened at LoadRegion time but re-resolve SNOs into our own cache to keep the
         // nav mesh's lifetime decoupled from the render-mesh cache.
         SiegeFX.Core.Nav.NavMesh? navMesh = null;
-        if (_regionTerrainTankPath is not null)
+        if (_regionTerrainTankPath is not null && _regionLayout is not null)
         {
             try
             {
@@ -2392,9 +2499,10 @@ void main()
         // the scene origin while terrain sprawls outward.
         int nodeResolved = 0, nodeFallback = 0;
         Vector3 pmin = new(float.PositiveInfinity), pmax = new(float.NegativeInfinity);
+        var layoutForLog = _regionLayout;
         foreach (var a in actors)
         {
-            if (_regionLayout.TryGetTransform(a.Instance.Placement.NodeGuid, out _)) nodeResolved++;
+            if (layoutForLog is not null && layoutForLog.TryGetTransform(a.Instance.Placement.NodeGuid, out _)) nodeResolved++;
             else nodeFallback++;
             var p = a.WorldTransform.Translation;
             pmin = Vector3.Min(pmin, p);
@@ -2619,6 +2727,19 @@ void main()
 
     private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
+        // 21d-2a-viii-FE-2 — preview hero (the live 3D char in the creator's
+        // listener rect) gets its own override branch parallel to the player's.
+        // Same slot semantics: 0 = skin (face/hair/arms region), 1 = clothing
+        // strip. Equipment overrides aren't relevant here — the preview hero
+        // never wears authored equipment, the variant pick is the whole story.
+        if (_heroPreview is not null && _heroPreview.Actor is not null
+            && ReferenceEquals(actor, _heroPreview.Actor))
+        {
+            if (textureIndex == 0 && _heroPreview.SkinOverrideName is not null)
+                return LoadEquipmentTexture("__preview_skin__", _heroPreview.SkinOverrideName);
+            if (textureIndex == 1 && _heroPreview.PantsOverrideName is not null)
+                return LoadEquipmentTexture("__preview_pants__", _heroPreview.PantsOverrideName);
+        }
         // Player overrides — checked in priority order so equipment beats the
         // creator pick that would otherwise show through. Only the player ever
         // has these fields set; NPCs fall through to the texset path below.
@@ -3243,11 +3364,10 @@ void main()
         if (_cameraMode == CameraMode.Fly)
             _camera.Move(forward, strafe, vert, (float)dt, sprint);
 
-        // Phase 13b — in chase mode, snap the camera behind the player and aim at
-        // him. _chaseYaw is the orbit angle around the player's +Y axis; yaw=0
-        // puts the camera on +Z so the player is seen looking down -Z (screen
-        // "forward"). Yaw/pitch of Camera are overwritten here so DebugAttackNearestActor
-        // still works in chase mode — its "in front of camera" test reads Camera.Forward.
+        // Phase 13b — in chase mode, snap the camera behind the player and aim
+        // at him. _chaseYaw is the orbit angle around the player's +Y axis;
+        // yaw=0 puts the camera on +Z so the player is seen looking down -Z
+        // (screen "forward"). Yaw/pitch of Camera are overwritten here.
         if (_cameraMode == CameraMode.Chase && _player is not null)
         {
             var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
@@ -3451,10 +3571,6 @@ void main()
         }
     }
 
-    // Phase 12c — placeholder player attack. Picks the nearest living combatant in
-    // front of the camera (XZ distance ≤ 30u, dot(fwd, actor-ray) > 0) and applies
-    // one melee hit with a fixed 250-damage profile. This stands in for the PC's
-    // weapon stats until Phase 13 wires a real player character.
     // Phase 13a — spawn a single Farmboy PC at the NPC centroid (snapped to the
     // nav mesh when present) using the existing ActorSpawner. Template 'farmboy'
     // is the canonical DS1 male-human hero archetype; aspect.model and the usual
@@ -3508,6 +3624,32 @@ void main()
             return;
         }
         TrySpawnPlayerWithPicker(spawner, navMesh, HeroVariantPicker.FromEnv(), heroName: null);
+    }
+
+    /// <summary>Phase 21d-2a-viii-e — lazily build the heromenu chrome the
+    /// first frame the creator wants to draw it. Both pre-conditions
+    /// (<see cref="_playResolver"/> set by <see cref="LoadPlayActors"/> and
+    /// the GL context up via <see cref="_gl"/>) hold by the time the creator
+    /// is open, but the order with respect to <see cref="OnLoad"/> is
+    /// data-flow-driven, not constructor-driven, so the lazy init avoids
+    /// a brittle eager wire-up. A failure to load the chrome (missing
+    /// .raw / .asp in the open tank) surfaces once on stderr and leaves
+    /// <see cref="_frontendScene"/> null — the panel falls back to its
+    /// scaffolded BarRenderer fills.</summary>
+    private void EnsureFrontendScene()
+    {
+        if (_frontendScene is not null) return;
+        if (_gl is null || _playResolver is null) return;
+        try
+        {
+            _frontendScene = new FrontendScene(_gl, _playResolver);
+            _frontendScene.SetState(FrontendScene.ScreenState.CharacterSelect);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  frontend scene load failed: {ex.Message} (falling back to scaffold)");
+            _frontendScene = null;
+        }
     }
 
     /// <summary>21d-2a-viii-b — entry point shared by env-var spawn (no UI) and
@@ -3703,6 +3845,20 @@ void main()
             foreach (var kv in _playerEquipment) slots.Add($"[{kv.Key}] {kv.Value}");
             Console.WriteLine($"  equipment: {string.Join(", ", slots)}");
         }
+        // Phase 9-SC-12 — surface the spellbook reference if the PC carries one.
+        // The book's pcontent_level is logged so the future pcontent roller (SC-16)
+        // has visibility on what to roll. Until SC-16 lands, the runtime still uses
+        // the DefaultPrimary/Secondary stand-ins for Q/W; this just confirms the
+        // data path is alive and correctly seeing es_spellbook.
+        if (_templateStore is not null
+            && _playerEquipment.TryGetValue("es_spellbook", out var bookRef)
+            && _templateStore.TryGet(bookRef, out var bookTpl))
+        {
+            var pcontentLevel = _templateStore.GetAttribute(bookTpl!, "magic", "pcontent_level")
+                              ?? _templateStore.GetAttribute(bookTpl!, "pcontent", "base", "pcontent_level")
+                              ?? "(none)";
+            Console.WriteLine($"  spellbook: book='{bookRef}' pcontent_level={pcontentLevel} (rolling deferred to SC-16)");
+        }
 
         // Phase 14d — cache the weapon_grip bone index from the PC's skeleton and
         // preload the initial weapon mesh/texture. base_farmboy's body.bone_translator
@@ -3826,6 +3982,7 @@ void main()
         return tex;
     }
 
+
     // Phase 14d — load (or replace) the mesh + texture for whatever is currently in
     // es_weapon_hand. Silent no-op when no resolver / no slot / template missing;
     // we only render if the full chain resolves. Called on initial spawn and every
@@ -3838,6 +3995,10 @@ void main()
         if (!_templateStore.TryGet(weaponRef, out var tpl)) return;
         var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
         if (string.IsNullOrEmpty(modelName)) return;
+        // Phase 9-SC-8 — cache weapon material (steelsword, steeledge, wood, etc.)
+        // so the click-attack hit cue can pick the matching impact WAV family.
+        var material = _templateStore.GetAttribute(tpl!, "aspect", "material");
+        if (!string.IsNullOrEmpty(material)) _playerWeaponMaterial = material!;
         if (!_playResolver.TryLoadModel(modelName, out var aspBytes))
         {
             Console.WriteLine($"  weapon: model '{modelName}.asp' not in any tank");
@@ -4053,6 +4214,7 @@ void main()
                 return;
             }
             _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(row.Slot, row.ItemReference));
+            _inventoryPanel.NotifyItemAdded();
             Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g (gold now {_progression.Gold})");
         }
         else if (act.Kind == SiegeFX.Runtime.Render.Hud.VendorActionKind.Sell)
@@ -4060,6 +4222,7 @@ void main()
             if (act.Index < 0 || act.Index >= _playerInventory.Count) return;
             var entry = _playerInventory[act.Index];
             long price = SiegeFX.Runtime.Render.Hud.VendorPanel.ResolveSellPrice(entry.Reference);
+            _inventoryPanel.NotifyItemRemoved(act.Index);
             _playerInventory.RemoveAt(act.Index);
             _progression.CreditGold(price);
             Console.WriteLine($"trade: sold {entry.Reference} for {price}g (gold now {_progression.Gold})");
@@ -4071,9 +4234,9 @@ void main()
     // closest living combatant near the click point (XZ radius <see cref="ClickAttackRadius"/>).
     // Damage uses the player's stats when the template chain resolves non-zero
     // values; farmboy currently has 0 damage in stats (max_life formula bug,
-    // project_siegefx_max_life_formula.md), so we fall back to the same synthetic
-    // profile as DebugAttackNearestActor to keep the kill loop playable until the
-    // stat fix lands in Phase 13e.
+    // project_siegefx_max_life_formula.md), so we fall back to a synthetic
+    // 1-3 profile to keep the kill loop playable until the stat fix lands in
+    // Phase 13e.
     private const float ClickAttackRadius = 3f;
     // Phase 13e — fallback attacker profile used when the PC template didn't
     // resolve real damage stats (hero templates author damage=0 and derive it
@@ -4158,8 +4321,8 @@ void main()
         // hit/miss happens at the target's chest and pans accordingly.
         _audio?.Play(SfxMeleeSwingGroup);
         var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
-        if (dealt > 0f) _audio?.PlayAt(SfxMeleeHitGroup, hitPos);
-        else            _audio?.PlayAt(SfxMeleeMiss,     hitPos);
+        if (dealt > 0f) PlayMeleeHit(hitPos);
+        else            _audio?.PlayAt(SfxMeleeMiss, hitPos);
 
         // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
         // Melee skill is hardcoded for now (the only swing flavor we have); when
@@ -4171,10 +4334,8 @@ void main()
         {
             best.IsDead = true;
             best.Brain = null;
-            // Phase 18b — pick the species-matching death SFX off the
-            // template name. Generic "die_*" for the species; nothing if
-            // the species isn't in our shipped table (chickens go quietly).
-            PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
+            // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
+            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
@@ -4307,22 +4468,317 @@ void main()
     }
 
     /// <summary>Phase 18b — resolve a template name to the matching death
-    /// .wav. Heuristic substring match — DS1 names goblins as
-    /// 3W_goblin_grunt etc., krug as krug_scout/krug_dog/etc., so a
-    /// substring scan covers the variants without a per-template table.
+    /// .wav. Phase 9-SC-2 made this fully data-driven: walk the actor's
+    /// template's specializes chain for <c>[aspect][voice][die] *</c>; that
+    /// attribute's value is the WAV stem (e.g. <c>s_e_die_krug_scout</c>).
+    /// On first encounter, register the clip from Sound.dsres; subsequent
+    /// kills hit the cached buffer. Falls back silently if no ancestor
+    /// authored the cue (chickens go quietly).
     /// Phase 18c added <paramref name="worldPos"/> so the death scream
-    /// pans + falls off from the corpse's location instead of always
-    /// blasting in the center channel.</summary>
-    private void PlayDeathSfx(string templateName, Vector3 worldPos)
+    /// pans + falls off from the corpse's location.</summary>
+    private void PlayDeathSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
     {
-        if (_audio is null || string.IsNullOrEmpty(templateName)) return;
-        string lower = templateName.ToLowerInvariant();
-        string? bestKey = null;
-        foreach (var key in SpeciesDeathSfx.Keys)
-            if (lower.Contains(key) && (bestKey is null || key.Length > bestKey.Length))
-                bestKey = key;
-        if (bestKey is not null)
-            _audio.PlayAt(SpeciesDeathSfx[bestKey], worldPos + new Vector3(0f, 1.0f, 0f));
+        if (_audio is null || template is null || _templateStore is null) return;
+        var cue = _templateStore.GetAttribute(template, "aspect", "voice", "die", "*");
+        if (string.IsNullOrEmpty(cue)) return;
+        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
+        }
+        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+    }
+
+    /// <summary>Phase 9-SC-9 — read the dropped item's
+    /// <c>[aspect][voice][put_down] *</c> off the resolved template, lazy-
+    /// register the WAV from Sound.dsres, and play it positioned at the drop.
+    /// Falls back to the generic gui_inventory_sheet cue if no put_down was
+    /// authored, or if the cue resolves to a SED-only stem (suffix
+    /// <c>_sed</c> — that's a Sound Effect Descriptor with multiple variants,
+    /// no single WAV by that name; full SED→WAV resolution is parked for a
+    /// later phase). Mirrors PlayDeathSfx caching otherwise.</summary>
+    private void PlayPutDownSfx(string itemRef, Vector3 worldPos)
+    {
+        if (_audio is null || _templateStore is null) return;
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null)
+        {
+            _audio.PlayAt(SfxGuiInventory, worldPos);
+            return;
+        }
+        var cue = _templateStore.GetAttribute(tpl, "aspect", "voice", "put_down", "*");
+        if (string.IsNullOrEmpty(cue) || cue.EndsWith("_sed", StringComparison.OrdinalIgnoreCase))
+        {
+            _audio.PlayAt(SfxGuiInventory, worldPos);
+            return;
+        }
+        if (_registeredPutDownCues.Contains(cue))
+        {
+            _audio.PlayAt(cue, worldPos);
+            return;
+        }
+        if (_playSoundTank is null)
+        {
+            _audio.PlayAt(SfxGuiInventory, worldPos);
+            return;
+        }
+        var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+        if (TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav"))
+        {
+            _registeredPutDownCues.Add(cue);
+            _audio.PlayAt(cue, worldPos);
+        }
+        else
+        {
+            _audio.PlayAt(SfxGuiInventory, worldPos);
+        }
+    }
+
+    /// <summary>Phase 9-SC-9 — pop an inventory entry out of the player's bag
+    /// and spawn it back into the world as a one-item loot pile tossed
+    /// forward of the PC by ~3.5u (past <see cref="PickupRadius"/>) so the
+    /// auto-pickup tick doesn't immediately scoop it back up. Mirrors DS1's
+    /// "drop animation tosses the item a step away" behavior — the pile sits
+    /// in front of you until you walk forward into the pickup radius.
+    /// Notifies the inventory panel first so its placement array stays
+    /// indexed against the live list. Triggers the per-template put_down cue.</summary>
+    private void DropInventoryItem(int index)
+    {
+        if (index < 0 || index >= _playerInventory.Count) return;
+        var entry = _playerInventory[index];
+        var feet = _player?.CurrentTransform.Translation ?? _camera.Position;
+
+        // Toss outward in the PC's current facing. Falls back to a fixed +Z
+        // offset when no facing has been recorded yet (immediately after spawn
+        // before any movement input). 3.5u clears the 1.8u pickup radius
+        // with margin, matching DS1's visible "throw" distance.
+        var facing = _playerFacing;
+        if (facing.LengthSquared() < 1e-4f) facing = Vector3.UnitZ;
+        else facing = Vector3.Normalize(facing);
+        var dropPos = feet + facing * 3.5f;
+
+        _inventoryPanel.NotifyItemRemoved(index);
+        _playerInventory.RemoveAt(index);
+        var pile = new LootPile(feet, new List<SiegeFX.Core.Actors.LootEntry>
+        {
+            new SiegeFX.Core.Actors.LootEntry("", entry.Reference)
+        })
+        {
+            Throw = new LootThrow
+            {
+                Source        = feet,
+                Target        = dropPos,
+                Duration      = 0.45f,
+                Elapsed       = 0f,
+                ArcHeight     = 0.6f,
+                Spins         = 1f, // one full turn while in the air
+                StartRotation = MathF.Atan2(facing.X, facing.Z),
+            }
+        };
+        _lootPiles.Add(pile);
+        Console.WriteLine($"  drop: {entry.Reference} at {dropPos.X:F1},{dropPos.Z:F1}");
+        PlayPutDownSfx(entry.Reference, dropPos);
+    }
+
+    /// <summary>Phase 9-SC-13 — pcontent-spec → concrete-template resolver
+    /// shared by every system that needs to look something up off the rolled
+    /// template (mesh, icon, screen_name, equipment swap, save). Returns
+    /// <paramref name="itemRef"/> unchanged when it's already a concrete name
+    /// or when the resolver can't roll it. Logs the resolution once per spec
+    /// so the diagnostic trail still says <c>pcontent: #club/2-3 -> X</c>.</summary>
+    private string ResolveItemRef(string itemRef)
+    {
+        if (string.IsNullOrEmpty(itemRef)) return itemRef;
+        if (_resolvedSpecCache.TryGetValue(itemRef, out var hit)) return hit;
+        if (_pcontentResolver is null
+            || !SiegeFX.Core.Actors.PcontentResolver.IsSpec(itemRef)
+            || !_pcontentResolver.TryResolve(itemRef, _pcontentRng, out var rolled))
+        {
+            _resolvedSpecCache[itemRef] = itemRef;
+            return itemRef;
+        }
+        _resolvedSpecCache[itemRef] = rolled;
+        Console.WriteLine($"  pcontent: {itemRef} -> {rolled}");
+        return rolled;
+    }
+
+    /// <summary>Phase 9-SC-7 — resolve and cache the ASP+RAW for an item
+    /// template name. Returns null when the template has no <c>[aspect][model]</c>
+    /// (e.g. gold-only piles, scroll-less items) or the asset failed to load;
+    /// the negative result is cached too so the lookup is one-shot per name.</summary>
+    private ItemMesh? TryGetItemMesh(string itemRef)
+    {
+        if (_gl is null || _playResolver is null || _templateStore is null) return null;
+        if (_itemMeshCache.TryGetValue(itemRef, out var cached)) return cached;
+
+        var resolvedRef = ResolveItemRef(itemRef);
+
+        ItemMesh? result = null;
+        string? missReason = null;
+        try
+        {
+            if (!_templateStore.TryGet(resolvedRef, out var tpl))
+            {
+                missReason = resolvedRef.StartsWith('#')
+                    ? "pcontent-spec unresolved (class not in resolver index)"
+                    : "no template";
+            }
+            else
+            {
+                var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
+                if (string.IsNullOrEmpty(modelName))
+                {
+                    missReason = "no aspect.model";
+                }
+                else if (!_playResolver.TryLoadModel(modelName!, out var aspBytes))
+                {
+                    missReason = $"model load failed: {modelName} (resolved from {itemRef})";
+                }
+                else
+                {
+                    var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+                    var mesh = new StaticMesh(_gl, asp);
+                    GlTexture? tex = null;
+                    if (asp.TextureNames.Count > 0
+                        && _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+                    {
+                        try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); }
+                        catch { tex = null; }
+                    }
+                    // Phase 9-SC-LL — pull the player-facing label off the
+                    // resolved template's [common][screen_name]. Quote-stripped
+                    // because gas serializes string attributes wrapped in "".
+                    // Falls back to null when the template omits screen_name;
+                    // the world-label code then skips drawing rather than
+                    // exposing the engine name (e.g. "cb_un_2h_troll_rock").
+                    var label = _templateStore.GetAttribute(tpl!, "common", "screen_name");
+                    if (!string.IsNullOrWhiteSpace(label))
+                    {
+                        label = label.Trim();
+                        if (label.Length >= 2 && label[0] == '"' && label[^1] == '"')
+                            label = label[1..^1];
+                    }
+                    if (string.IsNullOrWhiteSpace(label)) label = null;
+                    result = new ItemMesh(mesh, tex, label);
+                }
+            }
+        }
+        catch (Exception ex) { result = null; missReason = $"exception: {ex.GetType().Name}"; }
+
+        if (result is null && missReason is not null && _loggedItemRefMisses.Add(itemRef))
+            Console.WriteLine($"  loot-mesh miss: {itemRef} ({missReason})");
+
+        _itemMeshCache[itemRef] = result;
+        return result;
+    }
+
+    /// <summary>Phase 9-SC-13 — resolve and cache the inventory icon for an
+    /// item template name. Mirrors <see cref="TryGetItemMesh"/>'s
+    /// pcontent-spec-aware path: rolls #specs through the resolver, reads
+    /// <c>[gui][inventory_icon]</c>, loads the matching .raw from the play
+    /// resolver. Returns null when the template omits the icon attribute
+    /// or the .raw is missing — the panel falls back to a text label.</summary>
+    private GlTexture? TryGetItemIcon(string itemRef)
+    {
+        if (_gl is null || _playResolver is null || _templateStore is null) return null;
+        if (_itemIconCache.TryGetValue(itemRef, out var cached)) return cached;
+
+        var resolvedRef = ResolveItemRef(itemRef);
+
+        GlTexture? result = null;
+        string? missReason = null;
+        try
+        {
+            if (!_templateStore.TryGet(resolvedRef, out var tpl))
+            {
+                missReason = "no template";
+            }
+            else
+            {
+                var iconName = _templateStore.GetAttribute(tpl!, "gui", "inventory_icon");
+                if (string.IsNullOrEmpty(iconName))
+                {
+                    missReason = "no gui.inventory_icon";
+                }
+                else if (!_playResolver.TryLoadByBasename(iconName + ".raw", out var iconBytes))
+                {
+                    missReason = $"icon load failed: {iconName}";
+                }
+                else
+                {
+                    try { result = new GlTexture(_gl, RawImage.Load(iconBytes)); }
+                    catch (Exception ex) { missReason = $"icon decode failed: {ex.GetType().Name}"; }
+                }
+            }
+        }
+        catch (Exception ex) { missReason = $"exception: {ex.GetType().Name}"; }
+
+        if (result is null && missReason is not null && _loggedItemIconMisses.Add(itemRef))
+            Console.WriteLine($"  inv-icon miss: {itemRef} ({missReason})");
+
+        _itemIconCache[itemRef] = result;
+        return result;
+    }
+
+    /// <summary>Phase 9-SC-14 — resolve and cache the inventory footprint
+    /// authored on the template's <c>[gui][inventory_width]</c> /
+    /// <c>[gui][inventory_height]</c>. Defaults to (1,1) when either is
+    /// missing or non-positive; clamps to the panel grid so a wildly oversized
+    /// authored value can't break placement. Pcontent specs flow through the
+    /// shared <see cref="ResolveItemRef"/> cache.</summary>
+    private (int W, int H) TryGetItemGridSize(string itemRef)
+    {
+        if (_templateStore is null) return (1, 1);
+        if (_itemGridCache.TryGetValue(itemRef, out var cached)) return cached;
+
+        var resolvedRef = ResolveItemRef(itemRef);
+        int w = 1, h = 1;
+        if (_templateStore.TryGet(resolvedRef, out var tpl))
+        {
+            var ws = _templateStore.GetAttribute(tpl!, "gui", "inventory_width");
+            var hs = _templateStore.GetAttribute(tpl!, "gui", "inventory_height");
+            if (int.TryParse(ws, out var pw) && pw > 0) w = pw;
+            if (int.TryParse(hs, out var ph) && ph > 0) h = ph;
+        }
+        if (w > InventoryPanel.GridCols) w = InventoryPanel.GridCols;
+        if (h > InventoryPanel.GridRows) h = InventoryPanel.GridRows;
+        var result = (w, h);
+        _itemGridCache[itemRef] = result;
+        return result;
+    }
+
+    /// <summary>Phase 9-SC-8 — pick the hit cue based on the equipped
+    /// weapon's material. DS1 ships flesh-impact variants for steelsword
+    /// (5) and steeledge (3); other materials (wood, etc.) currently
+    /// fall back to steelsword. Lazy-registers the WAVs and the group on
+    /// first encounter; subsequent kills hit the cached buffers.</summary>
+    private void PlayMeleeHit(Vector3 worldPos)
+    {
+        if (_audio is null) return;
+        var material = _playerWeaponMaterial;
+        var groupId = SfxMeleeHitGroupPrefix + material;
+        if (!_registeredHitGroups.Contains(groupId))
+        {
+            if (_playSoundTank is null) { _audio.PlayAt(SfxMeleeMiss, worldPos); return; }
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            var registered = new List<string>();
+            for (int i = 1; i <= 5; i++)
+            {
+                var clipId = $"hit_{material}_flesh{i}";
+                var path = $"/sound/effects/s_e_hit_{material}_flesh{i}.wav";
+                if (TryRegisterSfx(reader, clipId, path)) registered.Add(clipId);
+            }
+            if (registered.Count == 0 && !string.Equals(material, "steelsword", StringComparison.OrdinalIgnoreCase))
+            {
+                // Material has no shipped flesh cues — fall back to steelsword's family.
+                _playerWeaponMaterial = "steelsword";
+                PlayMeleeHit(worldPos);
+                return;
+            }
+            if (registered.Count > 0)
+                _audio.RegisterGroup(groupId, registered.ToArray());
+            _registeredHitGroups.Add(groupId);
+        }
+        _audio.PlayAt(groupId, worldPos);
     }
 
     /// <summary>Pull a .wav blob out of <paramref name="reader"/> and hand
@@ -4600,8 +5056,8 @@ void main()
                     {
                         best.IsDead = true;
                         best.Brain = null;
-                        // Phase 18b — death scream from the matching species.
-                        PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
+                        // Phase 9-SC-2 — death scream from template's voice block.
+                        PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
                         OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
                         CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
@@ -4677,67 +5133,6 @@ void main()
         }
     }
 
-    private void DebugAttackNearestActor()
-    {
-        if (_actors.Count == 0) return;
-        var camPos = _camera.Position;
-        var camFwd = _camera.Forward;
-
-        ActorRenderState? best = null;
-        float bestDist = float.PositiveInfinity;
-        foreach (var s in _actors)
-        {
-            if (s.IsDead) continue;
-            if (!s.Actor.Stats.IsCombatant) continue;
-            var pos = s.CurrentTransform.Translation;
-            float dx = pos.X - camPos.X;
-            float dz = pos.Z - camPos.Z;
-            float distXZ = MathF.Sqrt(dx * dx + dz * dz);
-            if (distXZ > 30f) continue;
-            // Cone cull: only hit what you're roughly looking at. The follower's
-            // forward is exported by Camera via Forward (unit vec). A dot > 0 means
-            // the actor is in front of the camera's hemisphere — cheap and good
-            // enough for a debug stand-in, not a real targeting reticle.
-            float fwdDot = camFwd.X * dx + camFwd.Z * dz;
-            if (fwdDot <= 0f) continue;
-            if (distXZ < bestDist) { bestDist = distXZ; best = s; }
-        }
-        if (best is null)
-        {
-            Console.WriteLine("debug-attack: no combatant in range (30u cone in front)");
-            return;
-        }
-
-        // Same equipped-weapon resolution as TryClickToAttack. F-key debug attack
-        // stays as a camera-forward fallback so feedback is consistent between
-        // the two input surfaces.
-        var attacker = GetPlayerAttackStats();
-        var rng = new Random();
-        float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
-            attacker, best.Actor.Stats, rng);
-        float dealt = best.Actor.Combat.ApplyDamage(raw);
-        float life = best.Actor.Combat.CurrentLife;
-        float maxLife = best.Actor.Stats.MaxLife;
-        Console.WriteLine(
-            $"debug-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
-            $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
-
-        AwardCombatXp((long)dealt, best.Actor.Combat.IsDead ? best.Actor.Stats.ExperienceValue : 0,
-                       SiegeFX.Core.Assets.SkillKind.Melee);
-
-        if (best.Actor.Combat.ConsumeJustDied())
-        {
-            best.IsDead = true;
-            best.Brain = null;
-            // Phase 18b — death SFX in the F-key debug path too, so the
-            // dev shortcut still feels alive when audio's plumbed through.
-            PlayDeathSfx(best.Actor.Template.Name, best.CurrentTransform.Translation);
-            LogLootDrop(best.Actor, best.CurrentTransform.Translation);
-            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
-            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
-        }
-    }
-
     // Phase 12d/12e — roll the dying actor's loot table, log the outcome, and place
     // a visible pile at the actor's last known position. RNG is seeded from scid so
     // a given instance's drop is stable across re-kills; the visible pile is added
@@ -4763,7 +5158,30 @@ void main()
         foreach (var d in drops)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
-        _lootPiles.Add(new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops)));
+        // Phase 9-SC-9 — enemy drops get the same toss arc as PC drops so
+        // the kill→loot moment reads as "items flew off the body" instead of
+        // "cube appeared." Random horizontal angle keeps repeated kills from
+        // stacking piles in the exact same spot, and the spin is half what
+        // a player toss does (a body drop, not a deliberate pitch).
+        var dropDir = new Vector2(
+            (float)rng.NextDouble() * 2f - 1f,
+            (float)rng.NextDouble() * 2f - 1f);
+        if (dropDir.LengthSquared() < 1e-4f) dropDir = new Vector2(0f, 1f);
+        else dropDir = Vector2.Normalize(dropDir);
+        var dropTarget = deathPos + new Vector3(dropDir.X * 1.4f, 0f, dropDir.Y * 1.4f);
+        _lootPiles.Add(new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops))
+        {
+            Throw = new LootThrow
+            {
+                Source        = deathPos,
+                Target        = dropTarget,
+                Duration      = 0.55f,
+                Elapsed       = 0f,
+                ArcHeight     = 0.45f,
+                Spins         = 0.5f,
+                StartRotation = (float)rng.NextDouble() * MathF.PI * 2f,
+            }
+        });
     }
 
     // Phase 14c — a dropped "weapon_hand" entry is an upgrade iff its template has
@@ -4819,15 +5237,26 @@ void main()
         for (int i = _lootPiles.Count - 1; i >= 0; i--)
         {
             var pile = _lootPiles[i];
+            // Phase 9-SC-9 — let dropped items finish their toss arc before
+            // auto-pickup is eligible. Without this gate the player drop +
+            // immediate pickup loop would re-acquire on the same tick.
+            if (pile.Throw is not null) continue;
             float dx = pile.Position.X - playerPos.X;
             float dz = pile.Position.Z - playerPos.Z;
             if (dx * dx + dz * dz > PickupRadius * PickupRadius) continue;
 
+            // Phase 9-SC-13 — resolve pcontent specs (#club/2-3) to a concrete
+            // template name at pickup, so the inventory grid sees the same name
+            // the pile rendered on the ground. The shared spec cache means the
+            // mesh, icon, and stored ref all agree.
             var parts = new List<string>(pile.Items.Count);
             foreach (var it in pile.Items)
             {
-                _playerInventory.Add(it);
-                parts.Add(it.IsEquipped ? $"[{it.Slot}] {it.Reference}" : it.Reference);
+                var resolved = ResolveItemRef(it.Reference);
+                var entry = resolved == it.Reference ? it : it with { Reference = resolved };
+                _playerInventory.Add(entry);
+                _inventoryPanel.NotifyItemAdded();
+                parts.Add(entry.IsEquipped ? $"[{entry.Slot}] {entry.Reference}" : entry.Reference);
             }
             Console.WriteLine(
                 $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
@@ -4844,8 +5273,9 @@ void main()
                 if (!it.IsEquipped) continue;
                 if (!IsWeaponUpgrade(it)) continue;
                 var slotKey = "es_" + it.Slot;
-                _playerEquipment[slotKey] = it.Reference;
-                Console.WriteLine($"  equipped: [{slotKey}] <- {it.Reference}");
+                var resolvedRef = ResolveItemRef(it.Reference);
+                _playerEquipment[slotKey] = resolvedRef;
+                Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
                 if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
                     weaponSwapped = true;
             }
@@ -4883,6 +5313,29 @@ void main()
         {
             _spellBolts[i].Remaining -= (float)dt;
             if (_spellBolts[i].Remaining <= 0f) _spellBolts.RemoveAt(i);
+        }
+        // Phase 9-SC-9 — advance toss arcs on freshly-dropped piles. Linear
+        // XZ lerp from feet to target with a parabolic Y arc (0 → ArcHeight
+        // at midpoint → 0 at landing). Once Elapsed reaches Duration the
+        // throw is cleared so auto-pickup becomes eligible.
+        for (int i = 0; i < _lootPiles.Count; i++)
+        {
+            var pile = _lootPiles[i];
+            var th = pile.Throw;
+            if (th is null) continue;
+            th.Elapsed += (float)dt;
+            float t = th.Elapsed / th.Duration;
+            if (t >= 1f)
+            {
+                pile.Position = th.Target;
+                pile.RotationY = 0f;
+                pile.Throw = null;
+                continue;
+            }
+            var basePos = Vector3.Lerp(th.Source, th.Target, t);
+            float arc = th.ArcHeight * 4f * t * (1f - t); // peak at t=0.5
+            pile.Position = new Vector3(basePos.X, basePos.Y + arc, basePos.Z);
+            pile.RotationY = th.StartRotation + th.Spins * MathF.PI * 2f * t;
         }
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
@@ -5294,22 +5747,14 @@ void main()
                 // the whole rig to world space.
                 //
                 // SiegeMax ASPImport.ms ("grips must be prerotated (hack fix)",
-                // line 765) applies an extra `angleAxis 90 [1,0,0]` to weapon_grip /
-                // shield_grip on import. The PRS keys for those bones are authored
-                // against the prerotated frame, so without this rotation the dagger
-                // sits 90° off — blade points down (icepick / "stabbing" grip)
-                // instead of forward (thrust / "piercing" grip). Inserting RotX(90°)
-                // between weaponBindInv and gripLocal applies the rotation in
-                // bone-local space, matching DS1's authored convention.
-                // SIEGEFX_WEAPON_GRIP_DEG overrides the angle (e.g. -90, 0, 180) for
-                // A/B testing alternate weapons; SIEGEFX_WEAPON_GRIP_AXIS picks the
-                // axis (X|Y|Z, default X).
-                var preset = s_gripPreRotPresets[_gripPreRotIdx];
-                var gripPreRot = Matrix4x4.CreateFromQuaternion(preset.Q);
-                var gripPreTrans = Matrix4x4.CreateTranslation(
-                    s_gripPreTransSteps[_gripPreTransX],
-                    s_gripPreTransSteps[_gripPreTransY],
-                    s_gripPreTransSteps[_gripPreTransZ]);
+                // line 765) applies an `angleAxis 90 [1,0,0]` to weapon_grip /
+                // shield_grip on import; PRS keys are authored against that frame.
+                // Without the same rotation at draw time the dagger sits 90° off —
+                // blade points down (icepick / "stabbing" grip) instead of forward
+                // (thrust / "piercing" grip). s_gripPreRot / s_gripPreTrans baked
+                // from 21d-2a-vi A/B work — see field-level comment for context.
+                var gripPreRot = Matrix4x4.CreateFromQuaternion(s_gripPreRot);
+                var gripPreTrans = Matrix4x4.CreateTranslation(s_gripPreTrans);
                 var weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
 
                 _meshShader.Use();
@@ -5337,25 +5782,71 @@ void main()
             }
         }
 
-        // Phase 12e — placeholder loot piles. Untextured cube scaled to ~0.5u lifted
-        // so its base sits on the actor's ground plane; the mesh shader's default
-        // untextured beige fills in as a stand-in for actual DS1 gold/loot models.
-        if (_meshShader is not null && _lootCube is not null && _lootPiles.Count > 0)
+        // Phase 9-SC-7 — render the first item in each loot pile as its real
+        // ASP mesh (and texture, if any). Items without [aspect][model] (gold,
+        // potions whose template is scroll-only, etc.) fall back to the legacy
+        // untextured cube so every pile is still visually distinct from terrain.
+        // Phase 9-SC-LL — same loop captures the per-pile world-space label so
+        // the text-overlay pass can draw "Spiked Club" / "Healing Potion" /
+        // etc. above each pile (gold, red on hover) without re-resolving.
+        _frameLootLabels.Clear();
+        if (_meshShader is not null && _lootPiles.Count > 0)
         {
             _meshShader.Use();
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
-            _meshShader.SetInt("uHasTexture", 0);
-            _meshShader.SetInt("uFlipV", 1);
             ApplyLightingUniforms(_meshShader);
             const float pileSize = 0.5f;
+            const float itemScale = 0.6f; // matches the cube footprint visually
             foreach (var pile in _lootPiles)
             {
                 var pos = pile.Position;
-                var model = Matrix4x4.CreateScale(pileSize)
-                          * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
-                _meshShader.SetMatrix4("uModel", model);
-                _lootCube.Draw();
+                // Walk the pile rather than only trying Items[0] — DS1 mixes
+                // resolvable templates ("wpn_axe_001") with pcontent specs
+                // ("#weapon/9") in the same drop list, and Items[0] is often
+                // the unrollable spec. First resolvable wins; fall through to
+                // the cube only if every entry misses.
+                ItemMesh? itemMesh = null;
+                for (var i = 0; i < pile.Items.Count; i++)
+                {
+                    itemMesh = TryGetItemMesh(pile.Items[i].Reference);
+                    if (itemMesh is not null) break;
+                }
+
+                if (itemMesh is not null)
+                {
+                    var model = Matrix4x4.CreateScale(itemScale)
+                              * Matrix4x4.CreateRotationY(pile.RotationY)
+                              * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
+                    _meshShader.SetMatrix4("uModel", model);
+                    _meshShader.SetInt("uFlipV", 0);
+                    if (itemMesh.Texture is not null)
+                    {
+                        itemMesh.Texture.Bind(TextureUnit.Texture0);
+                        _meshShader.SetInt("uHasTexture", 1);
+                    }
+                    else
+                    {
+                        _meshShader.SetInt("uHasTexture", 0);
+                    }
+                    itemMesh.Mesh.Draw();
+                    if (itemMesh.DisplayName is not null)
+                    {
+                        // Anchor the label slightly above the mesh's top so it
+                        // reads cleanly from the chase-cam angle.
+                        var labelPos = new Vector3(pos.X, pos.Y + pileSize + 0.6f, pos.Z);
+                        _frameLootLabels.Add((labelPos, itemMesh.DisplayName));
+                    }
+                }
+                else if (_lootCube is not null)
+                {
+                    var model = Matrix4x4.CreateScale(pileSize)
+                              * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
+                    _meshShader.SetMatrix4("uModel", model);
+                    _meshShader.SetInt("uFlipV", 1);
+                    _meshShader.SetInt("uHasTexture", 0);
+                    _lootCube.Draw();
+                }
             }
         }
 
@@ -5468,7 +5959,8 @@ void main()
             // so the world behind reads as "paused/modal" while open.
             if (_inventoryOpen && _barRenderer is not null)
             {
-                InventoryPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _playerInventory);
+                _inventoryPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                    size.X, size.Y, _playerInventory, TryGetItemIcon, TryGetItemGridSize);
             }
             // Phase 20b — quest log overlay (toggled by 'L'). Sits at the same
             // z-tier as the inventory; both can be open without conflict but
@@ -5503,7 +5995,63 @@ void main()
             // is meaningless; the panel owns the screen until Begin/Cancel.
             if (_creator.IsOpen && _barRenderer is not null)
             {
-                _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                // Phase 21d-2a-viii-FE — render the full DS1 frontend scene
+                // (8 layered ASPs, cd-state PRS pose). Lazy-loaded on first
+                // open (Objects.dsres handle isn't ready until LoadPlayActors
+                // wires _playResolver). Falls back to the BarRenderer
+                // scaffolded card if any of the meshes / clips fail to load
+                // so the user is never staring at a blank screen during dev.
+                EnsureFrontendScene();
+                if (_frontendScene is not null)
+                {
+                    // Modal backdrop — DS1's frontend is fullscreen with no
+                    // gameplay behind it, but our creator opens against an
+                    // already-rendered region (so the play camera can come
+                    // back instantly on Cancel). Fill the viewport opaque
+                    // before the chrome so the world doesn't bleed through
+                    // gaps in the layered ASPs (backdrop is 9-cell stained
+                    // glass with transparency between cells; leftside /
+                    // rightside don't reach the screen edges; etc).
+                    _barRenderer.DrawRect(size.X, size.Y, 0, 0, size.X, size.Y,
+                        new Vector4(0f, 0f, 0f, 1f));
+                    _frontendScene.Tick((float)dt);
+                    _frontendScene.Draw(size.X, size.Y);
+
+                    // Phase 21d-2a-viii-FE-2 — live hero preview into the
+                    // listener rect. Lazy-built on first cd-state frame
+                    // (needs _templateStore + _playResolver + _skinShader,
+                    // all populated by LoadPlayActors). Renders BEFORE the
+                    // text overlay so typed name + axis labels read on top
+                    // of the rotating model.
+                    if (_heroPreview is null && _gl is not null && _skinShader is not null
+                        && _templateStore is not null && _playResolver is not null)
+                    {
+                        _heroPreview = new HeroPreviewRenderer(
+                            _gl, _skinShader, _templateStore, _playResolver,
+                            ResolveActorTexture);
+                    }
+                    if (_heroPreview is not null)
+                    {
+                        _heroPreview.EnsurePreview(_creator.Picker);
+                        _heroPreview.Tick((float)dt);
+                        _heroPreview.Draw(size.X, size.Y);
+                    }
+
+                    // Hero name typed-text overlay — the chrome's text-small
+                    // atlas carries the STATIC labels (HERO / NAME / GENDER
+                    // / HEAD / etc); the dynamic state (typed name + axis
+                    // values) still needs a TextRenderer pass. Input rects
+                    // remain in CharacterCreatorPanel using the same 800×600
+                    // gas reference layout the meshes are authored against.
+                    _creator.DrawTextOverlay(_barRenderer, _textRenderer, size.X, size.Y);
+                }
+                else
+                {
+                    // Fallback: meshes / clips failed to load. Draw the
+                    // viii-d wooden-card scaffold so the creator stays
+                    // usable rather than presenting an empty screen.
+                    _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                }
             }
             // Phase 17b — projectile bolts. Head dot at lerp(src,dst,progress)
             // plus a few trailing dots stepped back along the line, alpha
@@ -5543,6 +6091,49 @@ void main()
             // floating text so combat numerics layer on top — the marker is
             // ambient, the float is feedback.
             DrawQuestGoalMarker(size.X, size.Y, vp);
+
+            // Phase 9-SC-LL — world-space item-name labels above loot piles.
+            // Drawn before the floating cast labels so a damage popup can
+            // briefly stack on top of a label when both occupy the same area.
+            // Gold by default, red when the mouse pointer is over the label
+            // rect — matches DS1's hover behavior. Backdrop is a thin dark
+            // panel for legibility against busy terrain.
+            if (_frameLootLabels.Count > 0 && _barRenderer is not null)
+            {
+                int mx = -1, my = -1;
+                if (_input is not null && _input.Mice.Count > 0)
+                {
+                    var mp = _input.Mice[0].Position;
+                    mx = (int)mp.X;
+                    my = (int)mp.Y;
+                }
+                var gold  = new Vector4(1.00f, 0.85f, 0.30f, 1f);
+                var red   = new Vector4(1.00f, 0.28f, 0.20f, 1f);
+                var bg    = new Vector4(0.04f, 0.03f, 0.02f, 0.78f);
+                foreach (var (world, label) in _frameLootLabels)
+                {
+                    var wp4 = new Vector4(world, 1f);
+                    var clip = Vector4.Transform(wp4, vp);
+                    if (clip.W <= 0.001f) continue;
+                    float ndcX = clip.X / clip.W;
+                    float ndcY = clip.Y / clip.W;
+                    if (ndcX < -1.2f || ndcX > 1.2f || ndcY < -1.2f || ndcY > 1.2f) continue;
+                    int sx = (int)((ndcX * 0.5f + 0.5f) * size.X);
+                    int sy = (int)((1f - (ndcY * 0.5f + 0.5f)) * size.Y);
+                    int textW = _textRenderer.MeasureWidth(label);
+                    int textH = _textRenderer.Font?.Height ?? 14;
+                    int padX = 4, padY = 2;
+                    int boxW = textW + padX * 2;
+                    int boxH = textH + padY * 2;
+                    int boxX = sx - boxW / 2;
+                    int boxY = sy - boxH;
+                    bool hover = mx >= boxX && mx < boxX + boxW
+                              && my >= boxY && my < boxY + boxH;
+                    _barRenderer.DrawRect(size.X, size.Y, boxX, boxY, boxW, boxH, bg);
+                    _textRenderer.DrawString(size.X, size.Y, label,
+                        boxX + padX, boxY + padY, hover ? red : gold);
+                }
+            }
 
             // Phase 17a — floating cast-feedback labels. World-anchored, so we
             // project each WorldPos through the same VP used for the 3D pass.
@@ -5650,6 +6241,12 @@ void main()
         _grid?.Dispose();
         _textRenderer?.Dispose();
         _barRenderer?.Dispose();
+        _iconRenderer?.Dispose();
+        foreach (var t in _itemIconCache.Values) t?.Dispose();
+        _itemIconCache.Clear();
+        _heroPreview?.Dispose();
+        _heroPreview = null;
+        _frontendScene?.Dispose();
         _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
@@ -5871,6 +6468,7 @@ void main()
 
             _playerInventory.Clear();
             _playerEquipment.Clear();
+            _inventoryPanel.Reset();
             foreach (var e in ps.Inventory)
             {
                 if (e.Slot.StartsWith("equipped:", StringComparison.OrdinalIgnoreCase))
@@ -5881,6 +6479,7 @@ void main()
                 else
                 {
                     _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                    _inventoryPanel.NotifyItemAdded();
                 }
             }
             // Re-render the equipped weapon mesh so the visible model matches

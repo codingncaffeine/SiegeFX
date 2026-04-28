@@ -173,16 +173,16 @@ public sealed class GasDocument
                 if (!inQuote && c == '[' && _pos + 1 < _src.Length && _src[_pos + 1] == '[')
                 {
                     _pos += 2;
-                    // Track quotes inside the script body too, so a quoted `]]` doesn't
-                    // prematurely terminate. Effect-script bodies in /world/global/effects/
-                    // contain multiline quoted strings that could plausibly hold `]]`.
-                    var innerQuote = false;
-                    while (_pos + 1 < _src.Length)
+                    // Scan to the next `]]` literally — no quote tracking. DS1's
+                    // character_select.gas authors `excluded_chars = [["<>:/\|?*.%;]];`
+                    // where the leading `"` opens a quote that never closes inside the
+                    // script literal; tracking quotes inside [[...]] would let that lone
+                    // `"` swallow the rest of the file. Shipped effect-script bodies in
+                    // /world/global/effects/ never put `]]` inside a quoted string, so
+                    // a literal scan is both correct and the simplest model.
+                    while (_pos + 1 < _src.Length && !(_src[_pos] == ']' && _src[_pos + 1] == ']'))
                     {
-                        var ic = _src[_pos];
-                        if (ic == '"') innerQuote = !innerQuote;
-                        else if (!innerQuote && ic == ']' && _src[_pos + 1] == ']') break;
-                        if (ic == '\n') _line++;
+                        if (_src[_pos] == '\n') _line++;
                         _pos++;
                     }
                     if (_pos + 1 >= _src.Length) throw Err("unterminated [[...]] script literal");

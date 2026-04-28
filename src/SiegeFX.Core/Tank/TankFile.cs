@@ -30,7 +30,7 @@ public sealed class TankFile : IDisposable
         try
         {
             var header = TankHeader.Read(reader);
-            header.Validate();
+            header.Validate(reader.Length);
             return new TankFile(path, reader, header);
         }
         catch
