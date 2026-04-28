@@ -742,6 +742,7 @@ static int DispatchRegion(string[] a)
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
         "path"        => CmdRegionPath(a[1..]),
         "path-fuzz"   => CmdRegionPathFuzz(a[1..]),
+        "path-bench"  => CmdRegionPathBench(a[1..]),
         "nav-components" => CmdRegionNavComponents(a[1..]),
         "follow"      => CmdRegionFollow(a[1..]),
         _             => UnknownCommand("region " + a[0]),
@@ -1544,6 +1545,65 @@ static int CmdRegionPathFuzz(string[] a)
     Console.WriteLine($"Random-pair A*       : {probes} probes, {solved} solved = {solveRate:F1}%  (measures topology, not pathfinder health)");
     Console.WriteLine($"Biggest-component A* : {intraBigProbes} probes, {intraBigSolved} solved = {bigSolveRate:F1}%  (should be ~100%)");
     return failedRegions == 0 ? 0 : 4;
+}
+
+// Hot-loop microbench: time NavPathfinder.TryFindPath over N random pairs drawn
+// from the biggest connected component of one region's mesh (so every probe
+// solves and the pathfinder hits its full inner-loop cost). Prints total time +
+// per-probe stats. Used to decide whether the SortedSet open-set is worth
+// replacing with a binary heap (Phase 11-SC-5).
+static int CmdRegionPathBench(string[] a)
+{
+    if (a.Length < 3 || a.Length > 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region path-bench <map-tank> <terrain-tank> <region-path> [probes]");
+        return 1;
+    }
+    int probeCount = 10000;
+    if (a.Length == 4 && !int.TryParse(a[3], out probeCount))
+    { Console.Error.WriteLine($"bad probe count: '{a[3]}'"); return 1; }
+
+    var mesh = LoadRegionNavMesh(a[0], a[1], a[2]);
+    var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
+    Console.WriteLine($"NavMesh   : {mesh.TriangleCount:N0} tris, biggest component {bigSize:N0} ({(100.0 * bigSize / Math.Max(1, mesh.TriangleCount)):F1}%) across {components} components");
+    if (bigSize < 2) { Console.Error.WriteLine("biggest component is too small to bench"); return 2; }
+
+    var rng = new Random(unchecked((int)0xCAFEBABE));
+    // Pre-roll the probe pairs so RNG / list-indexing cost doesn't bleed into the timed loop.
+    var pairs = new (int a, int b)[probeCount];
+    for (int i = 0; i < probeCount; i++)
+        pairs[i] = (bigComponent[rng.Next(bigSize)], bigComponent[rng.Next(bigSize)]);
+
+    var ws = new NavPathfinder.Workspace();
+    var pathBuf = new List<int>(capacity: 256);
+
+    // Warmup pass — JIT the hot path, prime the workspace arrays at full size.
+    int warmupSolves = 0;
+    for (int i = 0; i < Math.Min(500, probeCount); i++)
+    {
+        if (NavPathfinder.TryFindPath(mesh, pairs[i].a, pairs[i].b, pathBuf, ws)) warmupSolves++;
+    }
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    long totalPathLen = 0;
+    int solved = 0;
+    for (int i = 0; i < probeCount; i++)
+    {
+        if (NavPathfinder.TryFindPath(mesh, pairs[i].a, pairs[i].b, pathBuf, ws))
+        {
+            solved++;
+            totalPathLen += pathBuf.Count;
+        }
+    }
+    sw.Stop();
+
+    double ms = sw.Elapsed.TotalMilliseconds;
+    double usPerProbe = (ms * 1000.0) / probeCount;
+    double avgPathLen = solved == 0 ? 0 : (double)totalPathLen / solved;
+    Console.WriteLine($"Probes    : {probeCount:N0} (warmup {warmupSolves} solved, timed {solved} solved)");
+    Console.WriteLine($"Time      : {ms:F1} ms total, {usPerProbe:F2} us/probe");
+    Console.WriteLine($"Avg path  : {avgPathLen:F1} tris");
+    return 0;
 }
 
 // Flood-fills connected components over triangle adjacency. Returns the total
