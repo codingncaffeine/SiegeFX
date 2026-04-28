@@ -1224,6 +1224,43 @@ static int CmdRegionNav(string[] a)
     Console.WriteLine($"Nav faces      : floor={floorFaces:N0}  water={waterFaces:N0}  ignored={ignoredFaces:N0}");
     if (floorFaces == 0)
         Console.WriteLine("WARNING: no walkable floor faces — region is nav-empty");
+
+    // Build the mesh and break down what made it through the welder. Water tiles flow
+    // into the mesh starting Phase 11-SC-3; this confirms they survived per-region.
+    var mesh = NavMesh.BuildForRegion(graph, layout, Resolve);
+    int meshFloor = 0, meshWater = 0;
+    for (int t = 0; t < mesh.TriangleCount; t++)
+    {
+        switch (mesh.Kinds[t])
+        {
+            case SnoModel.FloorKind.Floor: meshFloor++; break;
+            case SnoModel.FloorKind.Water: meshWater++; break;
+        }
+    }
+    Console.WriteLine($"Mesh tris      : {mesh.TriangleCount:N0}  (floor={meshFloor:N0}, water={meshWater:N0})");
+    if (meshWater > 0)
+    {
+        // Diagnostic: how does water actually connect to floor in this region? Print the
+        // first water tri's centroid (so callers can drive `region path --water=N` at a
+        // real water target), then count how many water tris share an edge with a Floor
+        // tri. In stock DS1 the water surface is a separate SNO whose vertices don't
+        // weld to the shoreline floor, so this number is typically 0 — water becomes
+        // its own component and only routes if start AND goal both sit on water.
+        int firstWater = -1;
+        int waterFloorEdges = 0;
+        for (int t = 0; t < mesh.TriangleCount; t++)
+        {
+            if (mesh.Kinds[t] != SnoModel.FloorKind.Water) continue;
+            if (firstWater < 0) firstWater = t;
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = mesh.Neighbors[3 * t + s];
+                if (nb >= 0 && mesh.Kinds[nb] == SnoModel.FloorKind.Floor) { waterFloorEdges++; break; }
+            }
+        }
+        Console.WriteLine($"Water sample   : tri={firstWater}  centroid={FormatVec(mesh.Centroids[firstWater])}");
+        Console.WriteLine($"Water seams    : {waterFloorEdges}/{meshWater} water tris share an edge with a Floor tri");
+    }
     return 0;
 }
 
@@ -1337,9 +1374,12 @@ static int CmdRegionNavFuzz(string[] a)
 
 static int CmdRegionPath(string[] a)
 {
+    // Optional trailing flag: --water=<multiplier> (anything else stays positional). Pulled
+    // out before the arg-count check so the path command keeps its rigid 5-positional shape.
+    var traversal = ExtractTraversalFlag(ref a);
     if (a.Length != 5)
     {
-        Console.Error.WriteLine("usage: siegefx region path <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
+        Console.Error.WriteLine("usage: siegefx region path <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [--water=<cost-mul>]");
         return 1;
     }
     if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
@@ -1347,16 +1387,17 @@ static int CmdRegionPath(string[] a)
 
     var mesh = LoadRegionNavMesh(a[0], a[1], a[2]);
     Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.SourceSnodeCount} source snode(s), {mesh.DegenerateFaceCount} degen");
+    Console.WriteLine($"Traversal  : water-cost-mul={(float.IsPositiveInfinity(traversal.WaterCostMultiplier) ? "INF (impassable)" : traversal.WaterCostMultiplier.ToString("F2"))}");
 
     if (!mesh.TryFindTriangle(start, out var startTri)) { Console.Error.WriteLine("start point is not over any walkable triangle"); return 2; }
     if (!mesh.TryFindTriangle(goal,  out var goalTri))  { Console.Error.WriteLine("goal point is not over any walkable triangle"); return 2; }
-    Console.WriteLine($"Start tri  : {startTri}  centroid={FormatVec(mesh.Centroids[startTri])}");
-    Console.WriteLine($"Goal  tri  : {goalTri}  centroid={FormatVec(mesh.Centroids[goalTri])}");
+    Console.WriteLine($"Start tri  : {startTri}  kind={mesh.Kinds[startTri]}  centroid={FormatVec(mesh.Centroids[startTri])}");
+    Console.WriteLine($"Goal  tri  : {goalTri}  kind={mesh.Kinds[goalTri]}  centroid={FormatVec(mesh.Centroids[goalTri])}");
 
     var path = new List<int>();
-    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, path))
+    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, path, ws: null, traversal: traversal))
     {
-        Console.Error.WriteLine("no path — triangles are in disconnected components");
+        Console.Error.WriteLine("no path — disconnected components, or endpoint kind impassable under this traversal policy");
         return 3;
     }
     float length = 0f;
@@ -1372,9 +1413,10 @@ static int CmdRegionPath(string[] a)
 
 static int CmdRegionFollow(string[] a)
 {
+    var traversal = ExtractTraversalFlag(ref a);
     if (a.Length < 5 || a.Length > 7)
     {
-        Console.Error.WriteLine("usage: siegefx region follow <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
+        Console.Error.WriteLine("usage: siegefx region follow <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks] [--water=<cost-mul>]");
         return 1;
     }
     if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
@@ -1389,7 +1431,7 @@ static int CmdRegionFollow(string[] a)
     var mesh = LoadRegionNavMesh(a[0], a[1], a[2]);
     Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.NonManifoldEdgeCount} non-manifold edge(s)");
 
-    var follower = new SiegeFX.Core.Nav.NavFollower(mesh, start, speed);
+    var follower = new SiegeFX.Core.Nav.NavFollower(mesh, start, speed) { Traversal = traversal };
     follower.SetTarget(goal);
     if (follower.PathBlocked)
     {
@@ -1745,6 +1787,35 @@ static List<List<int>> FloodFillAllComponents(NavMesh mesh)
         result.Add(current);
     }
     return result;
+}
+
+// Strips a `--water=<float>` flag (in any position) from the command's positional args
+// and returns a NavTraversal configured accordingly. `--water=inf` or no flag at all
+// keep the LandOnly default. `--water=4` (or any finite value) makes water passable
+// at that cost multiplier — handy to verify swim-style routing through CLI without
+// touching engine code.
+static SiegeFX.Core.Nav.NavTraversal ExtractTraversalFlag(ref string[] a)
+{
+    float? mul = null;
+    var kept = new List<string>(a.Length);
+    for (int i = 0; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--water=", StringComparison.OrdinalIgnoreCase))
+        {
+            var v = a[i].Substring("--water=".Length);
+            if (string.Equals(v, "inf", StringComparison.OrdinalIgnoreCase) || string.Equals(v, "infinity", StringComparison.OrdinalIgnoreCase))
+                mul = float.PositiveInfinity;
+            else if (float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                mul = parsed;
+            // Bad values silently fall through to LandOnly — better than aborting the
+            // command for a typo when the diagnostic itself is the point.
+            continue;
+        }
+        kept.Add(a[i]);
+    }
+    a = kept.ToArray();
+    if (mul is null || float.IsPositiveInfinity(mul.Value)) return SiegeFX.Core.Nav.NavTraversal.LandOnly;
+    return new SiegeFX.Core.Nav.NavTraversal { WaterCostMultiplier = mul.Value };
 }
 
 static NavMesh LoadRegionNavMesh(string mapTankPath, string terrainTankPath, string regionPathRaw)

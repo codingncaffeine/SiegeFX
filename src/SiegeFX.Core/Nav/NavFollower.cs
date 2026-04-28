@@ -64,6 +64,12 @@ public sealed class NavFollower
     private int _pathIdx;
     private int _waypointIdx;
 
+    /// <summary>Per-actor traversal policy: which kinds (Floor / Water) the follower can
+    /// enter and at what cost. Defaults to <see cref="NavTraversal.LandOnly"/>; assign
+    /// <see cref="NavTraversal.Amphibious"/> (or a custom one) for swimmers. Re-read on
+    /// every <see cref="SetTarget"/> — change before retargeting.</summary>
+    public NavTraversal Traversal { get; set; } = NavTraversal.LandOnly;
+
     /// <summary>Funnel-smoothed waypoint list as a read-only snapshot. Empty when
     /// the follower has no active path. Each waypoint sits on a portal corner of the
     /// corridor (or is the goal); chasing them produces a visibly straight walk
@@ -124,7 +130,7 @@ public sealed class NavFollower
             PathBlocked = true;
             return;
         }
-        if (!NavPathfinder.TryFindPath(Mesh, startTri, goalTri, _path, _workspace))
+        if (!NavPathfinder.TryFindPath(Mesh, startTri, goalTri, _path, _workspace, Traversal))
         {
             PathBlocked = true;
             return;

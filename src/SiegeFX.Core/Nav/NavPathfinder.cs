@@ -5,11 +5,11 @@ namespace SiegeFX.Core.Nav;
 /// <summary>
 /// A* over a <see cref="NavMesh"/>'s triangle adjacency.
 ///
-/// Cost and heuristic are both raw centroid-to-centroid Euclidean distance. That picks
-/// tight paths across a single-slope region but leaves the obvious improvements on the
-/// table (actual crossing-point distance via the funnel algorithm, kind-aware cost
-/// bumps for water tiles). Funnel smoothing lands alongside the actor follower when
-/// lumpy paths become visible.
+/// Step cost is centroid-to-centroid Euclidean distance scaled by the destination
+/// triangle's <see cref="NavTraversal.GetMultiplier"/>; the heuristic is raw straight-
+/// line distance to the goal. The heuristic is admissible only for actors whose
+/// minimum kind-multiplier is <c>1</c> (i.e. <c>Floor</c> is always cheapest). DS1's
+/// shipped templates all satisfy that, so optimality holds in practice.
 /// </summary>
 public static class NavPathfinder
 {
@@ -52,17 +52,26 @@ public static class NavPathfinder
     /// <paramref name="goalTri"/>. Clears <paramref name="pathDest"/> and appends the
     /// triangle sequence (including both endpoints) on success. Returns <c>false</c> and
     /// leaves <paramref name="pathDest"/> empty when the triangles are in disconnected
-    /// components. Pass a reused <paramref name="ws"/> to avoid per-call allocation.</summary>
+    /// components, when either endpoint is impassable under <paramref name="traversal"/>,
+    /// or when no passable corridor connects them. Pass a reused <paramref name="ws"/>
+    /// to avoid per-call allocation. <paramref name="traversal"/> defaults to
+    /// <see cref="NavTraversal.LandOnly"/> — DS1 stock behavior, water blocks.</summary>
     public static bool TryFindPath(
         NavMesh mesh,
         int startTri,
         int goalTri,
         List<int> pathDest,
-        Workspace? ws = null)
+        Workspace? ws = null,
+        NavTraversal? traversal = null)
     {
         pathDest.Clear();
         if (startTri < 0 || startTri >= mesh.TriangleCount) return false;
         if (goalTri  < 0 || goalTri  >= mesh.TriangleCount) return false;
+        traversal ??= NavTraversal.LandOnly;
+        // Refuse impassable endpoints up front. Without this, A* would walk the whole
+        // open set looking for a goal it can never enter.
+        if (!traversal.CanEnter(mesh.Kinds[startTri])) return false;
+        if (!traversal.CanEnter(mesh.Kinds[goalTri])) return false;
         if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
         ws ??= new Workspace();
@@ -95,7 +104,9 @@ public static class NavPathfinder
             {
                 int nb = mesh.Neighbors[3 * curTri + slot];
                 if (nb < 0 || closed[nb]) continue;
-                float stepCost = Vector3.Distance(mesh.Centroids[curTri], mesh.Centroids[nb]);
+                float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
+                if (float.IsPositiveInfinity(mul)) continue;
+                float stepCost = Vector3.Distance(mesh.Centroids[curTri], mesh.Centroids[nb]) * mul;
                 float tentative = gScore[curTri] + stepCost;
                 if (tentative >= gScore[nb]) continue;
                 cameFrom[nb] = curTri;

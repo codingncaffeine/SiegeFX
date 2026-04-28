@@ -33,9 +33,12 @@ public sealed class NavMesh
     /// That lets a triangle-walker "cross edge i" without reindexing.</summary>
     public int[] Neighbors { get; }
 
-    /// <summary>Per-triangle FloorKind — always <see cref="SnoModel.FloorKind.Floor"/>
-    /// in the current build since we filter to walkable on construction. Kept as a field
-    /// so Phase 11b can start stitching water tiles in without reshaping the mesh.</summary>
+    /// <summary>Per-triangle FloorKind. Mixed values: Floor and Water both make it into
+    /// the mesh (Ignored is dropped at source). The pathfinder consults
+    /// <see cref="NavTraversal"/> to decide which kinds an actor may enter — DS1's stock
+    /// land-only actors treat Water as impassable, but the data is here for amphibious
+    /// templates and for the funnel/Y-resampler so an actor never falls off the world
+    /// when stepping near a beach.</summary>
     public SnoModel.FloorKind[] Kinds { get; }
 
     /// <summary>Per-triangle centroid in region-space. Cached because A* heuristic +
@@ -120,9 +123,10 @@ public sealed class NavMesh
     public const float WeldToleranceUnits = 0.1f;
 
     /// <summary>Builds a region-scope nav mesh from a region's placed-snode layout and an
-    /// SNO resolver. Only <see cref="SnoModel.FloorKind.Floor"/> groupings contribute —
-    /// water and ignored groupings are filtered at the source so downstream consumers
-    /// can trust every triangle is walkable.</summary>
+    /// SNO resolver. Floor and Water groupings both contribute (each face is tagged via
+    /// <see cref="Kinds"/>); Ignored groupings are filtered at the source. Whether a
+    /// given actor may enter a Water triangle is a pathfinder-time decision driven by
+    /// <see cref="NavTraversal"/>.</summary>
     public static NavMesh BuildForRegion(
         RegionGraph graph,
         RegionLayout layout,
@@ -164,7 +168,9 @@ public sealed class NavMesh
             sourceSnodes++;
             foreach (var group in sno.LogicalGroupings)
             {
-                if (group.Kind != SnoModel.FloorKind.Floor) continue;
+                // Drop Ignored (cosmetic, off-mesh). Floor and Water both flow through —
+                // Water becomes a per-triangle Kinds[] tag the pathfinder consults later.
+                if (group.Kind != SnoModel.FloorKind.Floor && group.Kind != SnoModel.FloorKind.Water) continue;
                 foreach (var face in group.Faces)
                 {
                     // Row-vector convention: p * snodeXform lifts SNO-local into region-frame.

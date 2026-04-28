@@ -34,7 +34,7 @@ The clean-room rule: every claim is backed by a headless `siegefx` audit you can
 - **520 mood definitions + 165 SED descriptors** — region ambient beds and per-fire pitch ranges driven by data (`mood list`, `audio sed-list`)
 - **626 audio cues** in `Sound.dsres`; 20 wired so far, per-category gaps mapped (`audio coverage`)
 - **2,829 pcontent entries** (303 weapons across 10 classes + 435 armor templates) tagged with rarity (normal / rare / unique) — krug-class `#club/2-3` picks a generic power-2/3 club, `#armor/-rare(1)/28-80` rolls only rare-tier armor in band, `#*/-unique(2)/175-286` picks named unique drops the normal roll never sees (`pcontent dump`)
-- **16,275 SNO tiles** (World + MpWorld) — every shipped retail tile parses cleanly; the doors/spots disk-order swap and the v6.2/v6.3 `general_connection_section.center` gate landed here (`region nav-fuzz`); funnel-smoothed nav follower hugs corridor corners — fh_r1 (10,10)→(30,30) walks 30.30 units vs 28.28 straight-line over 39 path triangles / 7 funnel waypoints (`region follow`)
+- **16,275 SNO tiles** (World + MpWorld) — every shipped retail tile parses cleanly; the doors/spots disk-order swap and the v6.2/v6.3 `general_connection_section.center` gate landed here (`region nav-fuzz`); funnel-smoothed nav follower hugs corridor corners — fh_r1 (10,10)→(30,30) walks 30.30 units vs 28.28 straight-line over 39 path triangles / 7 funnel waypoints (`region follow`); water tiles ride alongside floor in the mesh (1,435 water / 26,973 floor in fh_r1), gated by a per-actor `NavTraversal` policy — `--water=4` on `region path` swims a 6-tri pond crossing the default land-only policy refuses (`region nav`, `region path --water=N`)
 
 End-to-end Farmhouse → Castle Ehb playtest is next.
 
