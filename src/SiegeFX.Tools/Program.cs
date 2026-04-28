@@ -745,6 +745,7 @@ static int DispatchRegion(string[] a)
         "path-bench"  => CmdRegionPathBench(a[1..]),
         "nav-components" => CmdRegionNavComponents(a[1..]),
         "follow"      => CmdRegionFollow(a[1..]),
+        "triggers"    => CmdRegionTriggers(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -4010,6 +4011,115 @@ static int CmdRegionActors(string[] a)
         Console.WriteLine($"  {act}  pos=({p.LocalPosition.X:F2},{p.LocalPosition.Y:F2},{p.LocalPosition.Z:F2}) node=0x{p.NodeGuid:x8}");
     }
     return 0;
+}
+
+// Phase 10-SC-1 — surface every [instance_triggers] block in a region's special.gas
+// (and the templates the placements specialize from). Tallies per-verb coverage so
+// the audit can confirm which conditions/actions are wired in TriggerRuntime and
+// which are still parsed-but-cold. Also dispatches one tick to confirm the runtime
+// handles the parsed matrix without throwing.
+static int CmdRegionTriggers(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region triggers <map-tank> <logic-tank> <region-path>");
+        return 1;
+    }
+    using var mapTank   = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader   = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+
+    var (store, _) = TemplateStore.LoadFromTank(logicReader);
+    var (placements, diags) = RegionObjects.LoadPlacements(mapReader, a[2], "special.gas");
+
+    Console.WriteLine($"region      : {a[2]}");
+    Console.WriteLine($"placements  : {placements.Count} (special.gas)");
+    if (diags.Count > 0)
+    {
+        Console.WriteLine($"diagnostics : {diags.Count}");
+        foreach (var d in diags.Take(5)) Console.WriteLine($"  !! {d}");
+        if (diags.Count > 5) Console.WriteLine($"  ... +{diags.Count - 5} more");
+    }
+
+    var matrixDiags = new List<string>();
+    var conditionVerbs = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var actionVerbs    = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var matrixOwners = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    int rowsTotal = 0, withMatrix = 0;
+
+    var runtime = new TriggerRuntime();
+    foreach (var p in placements)
+    {
+        if (!store.TryGet(p.TemplateName, out var template)) continue;
+        var matrix = TriggerMatrix.FromInstanceOrTemplate(p, template, store, matrixDiags);
+        if (matrix is null) continue;
+        withMatrix++;
+        rowsTotal += matrix.Rows.Count;
+        matrixOwners.TryGetValue(p.TemplateName, out var n);
+        matrixOwners[p.TemplateName] = n + 1;
+        foreach (var row in matrix.Rows)
+        {
+            foreach (var c in row.Conditions) Bump(conditionVerbs, c.Verb);
+            foreach (var act in row.Actions)  Bump(actionVerbs, act.Verb);
+        }
+        runtime.Register(new TriggerInstance(p.Scid, p.Placement.NodeGuid,
+            p.Placement.LocalPosition, matrix, startActive: matrix.Rows[0].StartActive));
+    }
+
+    Console.WriteLine($"trig matrix : {withMatrix}/{placements.Count} placements bear [instance_triggers]");
+    Console.WriteLine($"rows total  : {rowsTotal}");
+    if (matrixDiags.Count > 0)
+    {
+        Console.WriteLine($"parse diags : {matrixDiags.Count}");
+        foreach (var d in matrixDiags.Take(5)) Console.WriteLine($"  !! {d}");
+        if (matrixDiags.Count > 5) Console.WriteLine($"  ... +{matrixDiags.Count - 5} more");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"by template ({matrixOwners.Count} distinct):");
+    foreach (var (name, count) in matrixOwners.OrderByDescending(kv => kv.Value).Take(15))
+        Console.WriteLine($"  {count,4}  {name}");
+
+    Console.WriteLine();
+    Console.WriteLine($"condition verbs ({conditionVerbs.Count}):");
+    foreach (var (verb, count) in conditionVerbs)
+        Console.WriteLine($"  {count,4}  {verb}{(IsConditionDispatched(verb) ? "" : "   [parsed, not yet dispatched]")}");
+
+    Console.WriteLine();
+    Console.WriteLine($"action verbs ({actionVerbs.Count}):");
+    foreach (var (verb, count) in actionVerbs)
+        Console.WriteLine($"  {count,4}  {verb}{(IsActionDispatched(verb) ? "" : "   [parsed, not yet dispatched]")}");
+
+    // Dispatch one synthetic tick with a no-op context. The runtime should walk every
+    // row without throwing; condition verbs that need world state report false against
+    // the empty context, and the smoke-test confirms the dispatcher handles the parsed
+    // shape (verb names, arg counts) without an unhandled exception.
+    runtime.Tick(1.0 / 20, new TriggerContext());
+    Console.WriteLine();
+    Console.WriteLine($"dry-tick    : {runtime.Instances.Count} instances iterated, " +
+                      $"{runtime.ActionFireCounts.Sum(kv => kv.Value)} actions fired " +
+                      $"(empty world ⇒ no condition satisfaction expected)");
+    return 0;
+
+    static void Bump(SortedDictionary<string, int> dict, string key)
+    {
+        dict.TryGetValue(key, out var n);
+        dict[key] = n + 1;
+    }
+    static bool IsConditionDispatched(string verb) => verb.ToLowerInvariant() switch
+    {
+        "actor_within_sphere" or "go_within_sphere" or "party_member_within_sphere" or
+        "party_member_within_bounding_box" or "party_member_within_node" or
+        "receive_world_message" => true,
+        _ => false,
+    };
+    static bool IsActionDispatched(string verb) => verb.ToLowerInvariant() switch
+    {
+        "send_world_message" or "mood_change" or "set_interest_radius" or
+        "fade_node" or "fade_nodes" or "fade_nodes_global" => true,
+        _ => false,
+    };
 }
 
 static int CmdRegionSpawnProbe(string[] a)

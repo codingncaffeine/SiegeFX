@@ -141,6 +141,8 @@ public sealed class RenderHost : IDisposable
     private float _ambientLevel = 0.25f;
     private SkritRuntime? _actorRuntime;
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
+    private SiegeFX.Core.Actors.TriggerRuntime? _triggerRuntime;
+    private RenderHostTriggerContext? _triggerCtx;
     // Template index for the active scene; used everywhere we need to walk a
     // template's specializes chain (texture resolution, weapon equip, loot
     // tables, voice cues). Loaded from Logic.dsres at LoadPlayActors.
@@ -492,6 +494,44 @@ public sealed class RenderHost : IDisposable
         public Vector3 LastPositionXZ;
         public bool HasLastPosition;
         public bool IsMoving;
+    }
+
+    // Phase 10-SC-1 — trigger-runtime queries route through these helpers so the
+    // trigger context never has to reach into ActorRenderState (which is private to
+    // this class). Each one is a thin pass-through; we keep them grouped here so
+    // future trigger verbs (line-of-sight checks, occupants groups) can sit alongside.
+    internal IEnumerable<(uint Scid, Vector3 Pos)> EnumerateActorPositionsForTriggers()
+    {
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            yield return (s.Actor.Instance.Scid, s.CurrentTransform.Translation);
+        }
+    }
+
+    internal Vector3? PlayerWorldPositionForTriggers()
+    {
+        if (_player is null) return null;
+        return _player.CurrentTransform.Translation;
+    }
+
+    internal void PostTriggerWorldMessage(string name, uint fromScid, uint toScid)
+    {
+        // Skrit-side actors hear it through the bus; trigger-side rows hear it via
+        // the runtime's per-instance inbox stamp. Phase 10-SC-1 ships both halves so
+        // a `send_world_message` action posted by trigger A can satisfy a
+        // `receive_world_message` condition on trigger B in the same region.
+        _actorBus?.Post(name, fromScid, toScid, 0, 0);
+        _triggerRuntime?.PostInboundMessage(toScid, name);
+    }
+
+    internal void OnTriggerMoodChange(string moodName)
+    {
+        // Mood swap is Phase 18 territory — the trigger runtime fires the request
+        // and the mood subsystem consumes it. For now we log so audits can confirm
+        // the action is reaching dispatch even when the mood pipeline doesn't yet
+        // accept arbitrary names.
+        Console.WriteLine($"[trigger] mood_change → '{moodName}'");
     }
 
     // Phase 21c — one placed prop (tree, barrel, fence, crop, candle, etc.).
@@ -2147,6 +2187,32 @@ void main()
         var actors  = spawner.Spawn(allInstances);
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
+        _triggerRuntime = spawner.TriggerRuntime;
+        // Phase 10-SC-1 — load every region's special.gas (player region + neighbors)
+        // through the same spawner so condition radii operate against the unified
+        // world layout. trigger_generic placements never have aspect.model and were
+        // previously dropped by Spawn() with a "missing model" diagnostic; this is
+        // their real entry point. RegionObjects.LoadPlacements quietly returns empty
+        // when special.gas is absent, so regions with no triggers cost one path probe.
+        var triggerPlacementCount = 0;
+        var triggerRegions = new List<string> { regionPath };
+        if (_worldLayout is not null && _worldRegionGraphs.Count > 1)
+        {
+            foreach (var (path, _) in _worldRegionGraphs)
+                if (path != regionPath) triggerRegions.Add(path);
+        }
+        foreach (var rp in triggerRegions)
+        {
+            var (placements, diags) =
+                SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "special.gas");
+            foreach (var d in diags) Console.WriteLine("  " + d);
+            triggerPlacementCount += placements.Count;
+            spawner.SpawnTriggers(placements);
+        }
+        Console.WriteLine($"  triggers: {_triggerRuntime.Instances.Count} active matrices " +
+                          $"from {triggerPlacementCount} special.gas placements " +
+                          $"({_triggerRuntime.Instances.Sum(t => t.Matrix.Rows.Count)} rows)");
+        _triggerCtx = new RenderHostTriggerContext(this);
         _templateStore = store;
         _pcontentResolver = new SiegeFX.Core.Actors.PcontentResolver(store);
         _playResolver = resolver;
@@ -3472,6 +3538,8 @@ void main()
                 _actorTickAccumulator -= stepSec;
                 _actorRuntime.Tick(stepSec);
                 _actorBus.Deliver();
+                if (_triggerRuntime is not null && _triggerCtx is not null)
+                    _triggerRuntime.Tick(stepSec, _triggerCtx);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless

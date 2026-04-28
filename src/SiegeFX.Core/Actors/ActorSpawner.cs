@@ -23,6 +23,7 @@ public sealed class ActorSpawner
     RegionLayout? _layout;
     readonly SkritRuntime _runtime;
     readonly WorldMessageBus _bus;
+    readonly TriggerRuntime _triggerRuntime;
 
     readonly Dictionary<string, AspMesh?> _meshCache = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, PrsAnimation?> _clipCache = new(StringComparer.OrdinalIgnoreCase);
@@ -30,6 +31,7 @@ public sealed class ActorSpawner
 
     public SkritRuntime Runtime => _runtime;
     public WorldMessageBus MessageBus => _bus;
+    public TriggerRuntime TriggerRuntime => _triggerRuntime;
 
     /// <summary>Phase 21a-3 — re-anchor support. When the world layout is rebuilt
     /// (rolling preload after the player crosses into a new region), the spawner
@@ -51,13 +53,52 @@ public sealed class ActorSpawner
         AssetResolver resolver,
         RegionLayout? layout = null,
         SkritRuntime? runtime = null,
-        WorldMessageBus? bus = null)
+        WorldMessageBus? bus = null,
+        TriggerRuntime? triggerRuntime = null)
     {
         _store = store;
         _resolver = resolver;
         _layout = layout;
         _runtime = runtime ?? new SkritRuntime();
         _bus = bus ?? new WorldMessageBus();
+        _triggerRuntime = triggerRuntime ?? new TriggerRuntime();
+    }
+
+    /// <summary>Phase 10-SC-1 — spawn every <c>[instance_triggers]</c>-bearing placement
+    /// in <paramref name="placements"/> into the trigger runtime. Each placement gets
+    /// its world transform composed (so condition radii operate in world space) and
+    /// its matrix parsed from the per-instance node first, then the template chain.
+    /// Skips placements with no matrix authored anywhere along that chain — many
+    /// special.gas entries are pure markers (mood boxes, generators) and don't carry
+    /// triggers.</summary>
+    public IReadOnlyList<TriggerInstance> SpawnTriggers(IEnumerable<ActorInstance> placements)
+    {
+        var spawned = new List<TriggerInstance>();
+        foreach (var p in placements)
+        {
+            if (!_store.TryGet(p.TemplateName, out var template))
+            {
+                Diagnostics.Add($"trigger {p}: template not in store");
+                continue;
+            }
+            var matrix = TriggerMatrix.FromInstanceOrTemplate(p, template, _store, Diagnostics);
+            if (matrix is null) continue;
+
+            var world = ComposeWorldTransform(p.Placement);
+            var pos = world.Translation;
+
+            // start_active is per-row in the GAS but for the instance we honor the
+            // first row's flag — DS1's editor only ever writes one [*] row that
+            // wants the shared flag, and rows that share an instance share its
+            // active state through flip_flop semantics. Defaults to active when
+            // unauthored.
+            bool startActive = matrix.Rows.Count == 0 || matrix.Rows[0].StartActive;
+
+            var trigger = new TriggerInstance(p.Scid, p.Placement.NodeGuid, pos, matrix, startActive);
+            _triggerRuntime.Register(trigger);
+            spawned.Add(trigger);
+        }
+        return spawned;
     }
 
     public IReadOnlyList<Actor> Spawn(IEnumerable<ActorInstance> instances)

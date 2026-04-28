@@ -138,6 +138,7 @@ echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-regio
 echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + cap inventory)
 echo   67. Phase 9-SC-10      - Shield render verify (fh_r1 + SIEGEFX_DEBUG_DROP=shield)
 echo   68. Phase 9-SC-16 B-1+B-2 - Pcontent tier + wildcards + rarity (#club/2-3, #armor/-rare/..., #*/-unique/...)
+echo   69. Phase 10-SC-1 - Trigger matrix parser (fh_r1 special.gas + verb coverage)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -212,6 +213,7 @@ if /i "%CHOICE%"=="65" goto T65
 if /i "%CHOICE%"=="66" goto T66
 if /i "%CHOICE%"=="67" goto T67
 if /i "%CHOICE%"=="68" goto T68
+if /i "%CHOICE%"=="69" goto T69
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1330,6 +1332,18 @@ echo === B-2 verify: #*/-unique(2)/175-286 ===
 "%TOOL%" pcontent dump "%DS1%\Resources\Logic.dsres" --class=NONE --spec=#*/-unique(2)/175-286 --rolls=10 --seed=2
 echo.
 echo === pcontent dump exited with code %EXITCODE% (last invocation: %ERRORLEVEL%) ===
+pause
+goto MENU
+
+:T69
+echo.
+echo --- Phase 10-SC-1: trigger matrix parser + dispatcher (fh_r1) ---
+echo [expect: 64/93 placements bear [instance_triggers], 73 rows, condition verbs]
+echo [actor_within_sphere/party_member_within_sphere/_bbox/_node + receive_world_message]
+echo [dispatched; entered/left_trigger_group still cold; action verbs: send_world_message,]
+echo [mood_change, set_interest_radius, fade_node{,s,_global} all fire on dry-tick.]
+echo.
+"%TOOL%" region triggers "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" /world/maps/map_world/regions/fh_r1
 pause
 goto MENU
 
