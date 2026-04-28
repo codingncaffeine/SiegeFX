@@ -27,6 +27,7 @@ try
         "anim"   => DispatchAnim(args[1..]),
         "skrit"  => DispatchSkrit(args[1..]),
         "templates" => DispatchTemplates(args[1..]),
+        "pcontent"  => DispatchPcontent(args[1..]),
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
@@ -99,6 +100,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
     Console.WriteLine("  siegefx templates equipment-audit <logic-tank> <objects-tank> <player-template> [--terrain=PATH]");
     Console.WriteLine("  siegefx templates hero-variants <objects-tank>");
+    Console.WriteLine("  siegefx pcontent  dump     <tank> [--spec=#class/lo-hi] [--rolls=N] [--seed=K] [--class=X]");
     Console.WriteLine("  siegefx region actors      <map-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn-probe <map-tank> <logic-tank> <objects-tank> <region-path>");
     Console.WriteLine("  siegefx region spawn       <map-tank> <logic-tank> <objects-tank> <region-path> [--ticks=N] [--broadcast=NAME]");
@@ -5024,4 +5026,107 @@ static string StripMapSuffix(string name)
         if (!char.IsDigit(name[i])) return name;
     if (dash + 4 == name.Length) return name;
     return name[..dash];
+}
+
+// Phase 9-SC-16 Phase B-1 — diagnostic CLI for the pcontent roller. Dumps
+// every literal class bucket the resolver indexed (sorted by power) so a
+// `#club/2-3` no longer silently rolls a unique. With --spec=#class/lo-hi
+// it also runs N sample rolls, listing the names + powers actually picked
+// by TryResolve under the same filter the runtime uses.
+static int DispatchPcontent(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx pcontent dump <tank> [--spec=#class/lo-hi] [--rolls=N] [--seed=K] [--class=X]"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdPcontentDump(a[1..]),
+        _      => UnknownCommand("pcontent " + a[0]),
+    };
+}
+
+static int CmdPcontentDump(string[] a)
+{
+    string? specArg = null;
+    string? classFilter = null;
+    int rolls = 12;
+    int? seed = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if      (x.StartsWith("--spec=",  StringComparison.Ordinal)) specArg = x["--spec=".Length..];
+        else if (x.StartsWith("--class=", StringComparison.Ordinal)) classFilter = x["--class=".Length..];
+        else if (x.StartsWith("--rolls=", StringComparison.Ordinal)) int.TryParse(x["--rolls=".Length..], out rolls);
+        else if (x.StartsWith("--seed=",  StringComparison.Ordinal)) { if (int.TryParse(x["--seed=".Length..], out var s)) seed = s; }
+        else rest.Add(x);
+    }
+    if (rest.Count != 1)
+    {
+        Console.Error.WriteLine("usage: siegefx pcontent dump <tank> [--spec=#class/lo-hi] [--rolls=N] [--seed=K] [--class=X]");
+        return 1;
+    }
+
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    var resolver = new PcontentResolver(store);
+
+    var byClass = resolver.ByClass();
+    var classKeys = byClass.Keys
+        .Where(k => classFilter is null || k.Equals(classFilter, StringComparison.OrdinalIgnoreCase))
+        .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    Console.WriteLine($"indexed {byClass.Count} class bucket(s); {byClass.Sum(kv => kv.Value.Count)} entries total");
+    Console.WriteLine();
+    foreach (var key in classKeys)
+    {
+        var bucket = byClass[key];
+        var minP = bucket.Count == 0 ? 0 : bucket.Min(e => e.Power);
+        var maxP = bucket.Count == 0 ? 0 : bucket.Max(e => e.Power);
+        Console.WriteLine($"== {key}  ({bucket.Count} entries, power {minP}..{maxP}) ==");
+        // Show low-tier head and high-tier tail so the spread is visible
+        // even for big buckets (e.g. weapon classes with dozens of variants).
+        int head = Math.Min(8, bucket.Count);
+        for (int i = 0; i < head; i++)
+            Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+        if (bucket.Count > head + 4)
+        {
+            Console.WriteLine($"  ... ({bucket.Count - head - 4} entries omitted) ...");
+            for (int i = bucket.Count - 4; i < bucket.Count; i++)
+                Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+        }
+        else
+        {
+            for (int i = head; i < bucket.Count; i++)
+                Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+        }
+        Console.WriteLine();
+    }
+
+    if (specArg is not null)
+    {
+        var parsed = PcontentResolver.ParseSpec(specArg);
+        Console.WriteLine($"spec '{specArg}' parsed: class='{parsed.Class}' sub='{parsed.Sub}' power={(parsed.HasPower ? $"{parsed.PowerMin}-{parsed.PowerMax}" : "<any>")}");
+        var rng = new Random(seed ?? Environment.TickCount);
+        var hist = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        bool resolved = false;
+        for (int i = 0; i < rolls; i++)
+        {
+            if (resolver.TryResolve(specArg, rng, out var name, out var power))
+            {
+                resolved = true;
+                var line = $"pow={power,4}  {name}";
+                hist[line] = hist.TryGetValue(line, out var c) ? c + 1 : 1;
+            }
+        }
+        if (!resolved)
+        {
+            Console.WriteLine("  (resolver returned false for every roll — class unknown or bucket empty)");
+            return 2;
+        }
+        Console.WriteLine($"{rolls} roll(s):");
+        foreach (var (line, count) in hist.OrderByDescending(kv => kv.Value))
+            Console.WriteLine($"  x{count,2}  {line}");
+    }
+
+    return 0;
 }

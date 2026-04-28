@@ -137,6 +137,7 @@ echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + ga
 echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-region for in-game loop)
 echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + cap inventory)
 echo   67. Phase 9-SC-10      - Shield render verify (fh_r1 + SIEGEFX_DEBUG_DROP=shield)
+echo   68. Phase 9-SC-16 B-1  - Pcontent tier dump (#club/2-3 must not roll uniques)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -210,6 +211,7 @@ if /i "%CHOICE%"=="64" goto T64
 if /i "%CHOICE%"=="65" goto T65
 if /i "%CHOICE%"=="66" goto T66
 if /i "%CHOICE%"=="67" goto T67
+if /i "%CHOICE%"=="68" goto T68
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1306,6 +1308,21 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T68
+echo.
+echo --- Phase 9-SC-16 B-1: Pcontent tier dump + sample roll ---
+echo [Indexes every literal weapon-class bucket the resolver knows about,]
+echo [sorted by power. With --spec=#club/2-3 it samples 20 rolls so the]
+echo [tier filter is visible: power-2/3 clubs only, no power-4 'avg' clubs,]
+echo [and definitely no cb_un_2h_troll_rock (excluded by is_pcontent_allowed).]
+echo.
+"%TOOL%" pcontent dump "%DS1%\Resources\Logic.dsres" --class=club --spec=#club/2-3 --rolls=20 --seed=42
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === pcontent dump exited with code %EXITCODE% ===
 pause
 goto MENU
 

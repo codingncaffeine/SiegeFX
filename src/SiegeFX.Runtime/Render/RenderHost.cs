@@ -4867,13 +4867,13 @@ void main()
         if (_resolvedSpecCache.TryGetValue(itemRef, out var hit)) return hit;
         if (_pcontentResolver is null
             || !SiegeFX.Core.Actors.PcontentResolver.IsSpec(itemRef)
-            || !_pcontentResolver.TryResolve(itemRef, _pcontentRng, out var rolled))
+            || !_pcontentResolver.TryResolve(itemRef, _pcontentRng, out var rolled, out var power))
         {
             _resolvedSpecCache[itemRef] = itemRef;
             return itemRef;
         }
         _resolvedSpecCache[itemRef] = rolled;
-        Console.WriteLine($"  pcontent: {itemRef} -> {rolled}");
+        Console.WriteLine($"  pcontent: {itemRef} -> {rolled} (power={power})");
         return rolled;
     }
 
