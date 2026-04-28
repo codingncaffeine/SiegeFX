@@ -8,11 +8,10 @@ namespace SiegeFX.Core.Nav;
 /// target and advances through the triangle sequence as the point enters each triangle.
 ///
 /// Movement is purely XZ-planar in region-space; Y is resampled from whatever triangle
-/// the follower is currently standing on so it sticks to the terrain. No funnel
-/// smoothing yet — the follower walks toward the centroid of the next triangle in the
-/// path, which produces a visibly lumpy route across wide corridors. Good enough to
-/// prove the wiring works before the first actor integration; replace with a funnel
-/// when lumpy paths start showing up in the viewer.
+/// the follower is currently standing on so it sticks to the terrain. The waypoint
+/// list comes from <see cref="NavFunnel"/>'s "simple stupid funnel" string-pull over
+/// the triangle path, so the route hugs inside corners instead of zig-zagging through
+/// every triangle centroid.
 ///
 /// <b>Not reentrant.</b> <see cref="Tick"/> and <see cref="SetTarget"/> share the
 /// pathfinder workspace; calling SetTarget from inside a Tick-driven callback (e.g. a
@@ -60,8 +59,16 @@ public sealed class NavFollower
     public IReadOnlyList<int> RemainingPath => _path;
 
     private readonly List<int> _path = new();
+    private readonly List<Vector3> _waypoints = new();
     private readonly NavPathfinder.Workspace _workspace = new();
     private int _pathIdx;
+    private int _waypointIdx;
+
+    /// <summary>Funnel-smoothed waypoint list as a read-only snapshot. Empty when
+    /// the follower has no active path. Each waypoint sits on a portal corner of the
+    /// corridor (or is the goal); chasing them produces a visibly straight walk
+    /// across wide tiles compared to centroid-chasing.</summary>
+    public IReadOnlyList<Vector3> Waypoints => _waypoints;
 
     public NavFollower(NavMesh mesh, Vector3 startPos, float speed)
     {
@@ -94,14 +101,18 @@ public sealed class NavFollower
         ReachedGoal = true;
         PathBlocked = false;
         _path.Clear();
+        _waypoints.Clear();
         _pathIdx = 0;
+        _waypointIdx = 0;
         CurrentTriangle = -1;
     }
 
     private void Replan()
     {
         _path.Clear();
+        _waypoints.Clear();
         _pathIdx = 0;
+        _waypointIdx = 0;
 
         if (!Mesh.TryFindTriangle(Position, out var startTri))
         {
@@ -119,6 +130,11 @@ public sealed class NavFollower
             return;
         }
 
+        // String-pull the triangle path into a waypoint list. _path stays around because
+        // the Y resampler still uses it to figure out which triangle the follower is
+        // standing on as it advances through the corridor.
+        NavFunnel.BuildWaypoints(Mesh, _path, Position, Target, _waypoints);
+
         CurrentTriangle = startTri;
         // Snap Y to the starting triangle's surface so the first tick doesn't jump.
         Position = new Vector3(Position.X, Mesh.SampleYOnTriangle(startTri, Position), Position.Z);
@@ -128,24 +144,22 @@ public sealed class NavFollower
     /// already reached the goal or is blocked.</summary>
     public void Tick(float dt)
     {
-        if (ReachedGoal || PathBlocked || _path.Count == 0) return;
+        if (ReachedGoal || PathBlocked || _path.Count == 0 || _waypoints.Count == 0) return;
         if (dt <= 0f) return;
 
         float remaining = Speed * dt;
-        // The follower chases one waypoint at a time; waypoint N is the centroid of
-        // path[N+1] while we're still walking the corridor, and the actual Target once
-        // we're on the last triangle. Switching at GoalRadius gives smooth handoffs
-        // without zig-zag on long tiles.
+        // Chase the current funnel waypoint. When close enough, advance the waypoint
+        // index; on the last waypoint (which is always the goal), declare arrival.
         while (remaining > 0f)
         {
-            Vector3 waypoint = NextWaypoint();
+            Vector3 waypoint = _waypoints[_waypointIdx];
             float dx = waypoint.X - Position.X;
             float dz = waypoint.Z - Position.Z;
             float distXZ = MathF.Sqrt(dx * dx + dz * dz);
 
             if (distXZ <= GoalRadius)
             {
-                if (_pathIdx + 1 >= _path.Count)
+                if (_waypointIdx + 1 >= _waypoints.Count)
                 {
                     // Standing on the goal triangle and close to the target: done.
                     Position = new Vector3(Target.X, Mesh.SampleYOnTriangle(_path[^1], Target), Target.Z);
@@ -153,21 +167,20 @@ public sealed class NavFollower
                     ReachedGoal = true;
                     return;
                 }
-                _pathIdx++;
-                CurrentTriangle = _path[_pathIdx];
+                _waypointIdx++;
                 continue;
             }
 
             float step = MathF.Min(remaining, distXZ);
             float nx = Position.X + dx / distXZ * step;
             float nz = Position.Z + dz / distXZ * step;
-            // Resample Y on whichever triangle the new XZ position lands on. We only
-            // trust the hit when it's on our path corridor: stepping across a seam can
-            // briefly land us on an adjacent non-path tile (float precision at edges),
-            // and if we re-rooted CurrentTriangle there the follower would chase a
-            // stale centroid forever without advancing the path. Accept the hit only
-            // if it's _path[pathIdx], _path[pathIdx+1] (advance in that case), or
-            // fall through silently and keep trusting the A* result.
+            // Resample Y on whichever triangle the new XZ position lands on. We trust
+            // the hit only when it's the current path triangle or the next one — funnel
+            // smoothing means we may walk in a straight line that briefly clips the
+            // INSIDE corner of an off-path neighbor, but we still need to land Y on the
+            // legitimate path tile. We sweep _pathIdx forward to whichever path[k] the
+            // hit matches (a single straight segment can span several triangles when
+            // the funnel pulls a long line through a corridor).
             int standing = CurrentTriangle;
             if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit))
             {
@@ -175,28 +188,28 @@ public sealed class NavFollower
                 {
                     standing = hit;
                 }
-                else if (_pathIdx + 1 < _path.Count && hit == _path[_pathIdx + 1])
+                else
                 {
-                    _pathIdx++;
-                    standing = hit;
+                    // Look ahead through the path for this triangle — funnel waypoints
+                    // can outrun pathIdx by more than one tile per step.
+                    var ahead = -1;
+                    for (var k = _pathIdx + 1; k < _path.Count; k++)
+                    {
+                        if (_path[k] == hit) { ahead = k; break; }
+                    }
+                    if (ahead >= 0)
+                    {
+                        _pathIdx = ahead;
+                        standing = hit;
+                    }
+                    // else: drifted off-path; keep standing on _path[_pathIdx] and let
+                    // the next iteration pull us back toward the waypoint.
                 }
-                // else: drifted into a neighbor that's not on the path; ignore the
-                // hit and keep standing on _path[_pathIdx] — the next waypoint-chase
-                // iteration will pull us back into the corridor.
             }
             float ny = standing >= 0 ? Mesh.SampleYOnTriangle(standing, new Vector3(nx, 0f, nz)) : Position.Y;
             Position = new Vector3(nx, ny, nz);
             CurrentTriangle = standing;
             remaining -= step;
         }
-    }
-
-    private Vector3 NextWaypoint()
-    {
-        // When the follower is on the final triangle of the path, chase the target
-        // directly so it lands right on it. Otherwise chase the centroid of the next
-        // triangle, which funnels the walk through the corridor.
-        if (_pathIdx + 1 >= _path.Count) return Target;
-        return Mesh.Centroids[_path[_pathIdx + 1]];
     }
 }

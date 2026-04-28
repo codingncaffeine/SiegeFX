@@ -156,8 +156,13 @@ public sealed class SnoModel
             throw new InvalidDataException(
                 $"SNO cornerCount {cornerCount} × {CornerSizeBytes} bytes exceeds remaining {remaining} bytes");
 
-        var spots = ReadSpots(r, spotCount);
+        // Disk order is doors-then-spots (verified against shipped fh/cry/gi tiles
+        // where both counts are non-zero — see hfloor_1b.sno @ 0x58: door[0].id=1,
+        // 48-byte xform, hotSpotCount=20, then 20 u32 hotspots, then door[1]…).
+        // Swapping spots-first parses the >99% of tiles where spotCount=0 by accident;
+        // this restores the canonical layout for the both-nonzero cases.
         var doors = ReadDoors(r, doorCount);
+        var spots = ReadSpots(r, spotCount);
         var corners = ReadCorners(r, cornerCount);
         var surfaces = ReadSurfaces(r, textureCount, cornerCount);
 
@@ -170,7 +175,7 @@ public sealed class SnoModel
 
         // Logical-grouping / nav section follows the render surfaces. Not every SNO has
         // one — older map tiles ship without it — so short-circuit if we hit EOF cleanly.
-        var groupings = r.AtEnd ? Array.Empty<LogicalGrouping>() : ReadLogicalGroupings(r);
+        var groupings = r.AtEnd ? Array.Empty<LogicalGrouping>() : ReadLogicalGroupings(r, version, versionMinor);
 
         return new SnoModel
         {
@@ -194,10 +199,18 @@ public sealed class SnoModel
     /// triangle list desyncs. Each grouping terminates in a <c>recurse_unknown_section</c>
     /// tail that nests an arbitrary number of child sections — we mirror that recursion
     /// exactly.</summary>
-    private static LogicalGrouping[] ReadLogicalGroupings(Reader r)
+    public static bool TraceParse;
+    private static LogicalGrouping[] ReadLogicalGroupings(Reader r, int versionMajor, int versionMinor)
     {
         var count = r.ReadU32();
+        if (TraceParse) Console.Error.WriteLine($"  [trace] ReadLogicalGroupings count={count} @ 0x{r.Position:X8}");
         if (count == 0) return Array.Empty<LogicalGrouping>();
+
+        // Version-conditional fields per opensiege/ksy/sno.ksy `general_connection_section`:
+        //  - `center` v3 only present for v6.4+ (so v7 always, v6.0..v6.3 omit it)
+        //  - `triangles` index section only present for v6.2+ (older v6 omits the whole sub-block)
+        var hasCenter = versionMajor > 6 || (versionMajor == 6 && versionMinor >= 4);
+        var hasTriangleIndex = versionMajor > 6 || (versionMajor == 6 && versionMinor >= 2);
 
         var result = new LogicalGrouping[count];
         for (var i = 0; i < count; i++)
@@ -206,27 +219,36 @@ public sealed class SnoModel
             var bMin = r.ReadVec3();
             var bMax = r.ReadVec3();
             var kind = (FloorKind)r.ReadU32();
+            if (TraceParse) Console.Error.WriteLine($"  [trace]   group[{i}] id={id} kind={kind} @ 0x{r.Position:X8}");
 
-            // Per-grouping unknown "rotation + shorts + shorts" array. Nothing we need
-            // for nav — just stride past.
-            var unkCount1 = r.ReadU32();
-            for (var j = 0; j < unkCount1; j++)
+            // `general_connection_section` repeats `num_connections` times.
+            var connCount = r.ReadU32();
+            if (TraceParse) Console.Error.WriteLine($"  [trace]     connCount={connCount} hasCenter={hasCenter} hasTri={hasTriangleIndex} @ 0x{r.Position:X8}");
+            for (var j = 0; j < connCount; j++)
             {
-                r.ReadU16();                                 // index
-                for (var k = 0; k < 9; k++) r.ReadF32();     // 3x3 rotation
-                var shortArr1 = r.ReadU16();
-                r.Skip(shortArr1 * 2);
-                var shortArr2 = r.ReadU32();
-                r.Skip(shortArr2 * 2);
+                r.ReadU16();                                 // newid
+                r.ReadVec3();                                // min_box
+                r.ReadVec3();                                // max_box
+                if (hasCenter) r.ReadVec3();                 // center (v6.4+)
+                if (hasTriangleIndex)
+                {
+                    var numTri = r.ReadU16();
+                    r.Skip(numTri * 2);
+                    var numLocal = r.ReadU32();
+                    if (TraceParse) Console.Error.WriteLine($"  [trace]       conn[{j}] numTri={numTri} numLocal={numLocal} @ 0x{r.Position:X8}");
+                    r.Skip(numLocal * 2);
+                }
             }
 
-            // "Short-pair" sub-section — length is u32, each entry u8 + u32 + that-many u16 pairs.
-            var pairSectionCount = r.ReadU32();
-            for (var j = 0; j < pairSectionCount; j++)
+            // `nodal_array`: u8 + u32 (count) + count*2 u16s.
+            var nodalCount = r.ReadU32();
+            if (TraceParse) Console.Error.WriteLine($"  [trace]     nodalCount={nodalCount} @ 0x{r.Position:X8}");
+            for (var j = 0; j < nodalCount; j++)
             {
                 r.ReadU8();
-                var pairCount = r.ReadU32();
-                r.Skip(pairCount * 4);                       // two u16s per pair
+                var nlcc = r.ReadU32();
+                if (TraceParse) Console.Error.WriteLine($"  [trace]       nodal[{j}] nlcc={nlcc} @ 0x{r.Position:X8}");
+                r.Skip(nlcc * 4);                            // count*2 u16s = count*4 bytes
             }
 
             // The payload we actually want.

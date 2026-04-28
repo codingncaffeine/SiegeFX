@@ -110,6 +110,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region nav-fuzz    <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region path        <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2>");
     Console.WriteLine("  siegefx region path-fuzz   <map-tank> <terrain-tank>");
+    Console.WriteLine("  siegefx region nav-components <map-tank> <terrain-tank> <region-path|all> [--top=N]");
     Console.WriteLine("  siegefx region follow      <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
     Console.WriteLine("  siegefx formulas dump      <Logic.dsres>");
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
@@ -741,6 +742,7 @@ static int DispatchRegion(string[] a)
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
         "path"        => CmdRegionPath(a[1..]),
         "path-fuzz"   => CmdRegionPathFuzz(a[1..]),
+        "nav-components" => CmdRegionNavComponents(a[1..]),
         "follow"      => CmdRegionFollow(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
@@ -1241,14 +1243,31 @@ static int CmdRegionNavFuzz(string[] a)
     var meshIndex = SnoMeshIndex.Build(terrainReader);
     var snoCache = new Dictionary<uint, SnoModel?>();
     var snoFails = new List<string>();
+    var snoUnresolved = new List<uint>();
+    var unresolvedRegions = new Dictionary<uint, List<string>>();
+    string currentRegion = "";
     SnoModel? Resolve(uint meshGuid)
     {
-        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        if (snoCache.TryGetValue(meshGuid, out var cached))
+        {
+            if (cached is null && !meshIndex.TryResolve(meshGuid, out _))
+            {
+                if (!unresolvedRegions.TryGetValue(meshGuid, out var list)) { list = new List<string>(); unresolvedRegions[meshGuid] = list; }
+                if (!list.Contains(currentRegion)) list.Add(currentRegion);
+            }
+            return cached;
+        }
         SnoModel? sno = null;
         if (meshIndex.TryResolve(meshGuid, out var path))
         {
             try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
             catch (Exception ex) { snoFails.Add($"{path}: {ex.Message}"); sno = null; }
+        }
+        else
+        {
+            snoUnresolved.Add(meshGuid);
+            if (!unresolvedRegions.TryGetValue(meshGuid, out var list)) { list = new List<string>(); unresolvedRegions[meshGuid] = list; }
+            list.Add(currentRegion);
         }
         snoCache[meshGuid] = sno;
         return sno;
@@ -1261,6 +1280,7 @@ static int CmdRegionNavFuzz(string[] a)
     {
         if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
         regionCount++;
+        currentRegion = path;
         try
         {
             var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
@@ -1292,12 +1312,25 @@ static int CmdRegionNavFuzz(string[] a)
     }
     Console.WriteLine($"Regions scanned: {regionCount}  ({regionFails} region failure(s))");
     Console.WriteLine($"Unique SNOs    : {snosScanned}  (with-nav={snosWithNav}, no-nav={snosNoNav}, bad={snosBad})");
+    Console.WriteLine($"  bad split    : parse-fail={snoFails.Count}  unresolved-meshGuid={snoUnresolved.Count}");
     Console.WriteLine($"Nav faces      : floor={floorFaces:N0}  water={waterFaces:N0}  ignored={ignoredFaces:N0}");
     if (snoFails.Count > 0)
     {
         Console.WriteLine($"SNO parse failures ({snoFails.Count}):");
         foreach (var msg in snoFails.Take(20)) Console.WriteLine($"  {msg}");
         if (snoFails.Count > 20) Console.WriteLine($"  ... {snoFails.Count - 20} more");
+    }
+    if (snoUnresolved.Count > 0)
+    {
+        Console.WriteLine($"Unresolved mesh GUIDs ({snoUnresolved.Count}):");
+        foreach (var g in snoUnresolved.Take(20))
+        {
+            Console.Write($"  0x{g:X8}");
+            if (unresolvedRegions.TryGetValue(g, out var regions))
+                Console.Write($"  in {regions.Count} region(s): {string.Join(", ", regions.Take(3).Select(r => r.Substring(r.LastIndexOf("/regions/", StringComparison.OrdinalIgnoreCase) + 9).Replace("/terrain_nodes/nodes.gas", "")))}");
+            Console.WriteLine();
+        }
+        if (snoUnresolved.Count > 20) Console.WriteLine($"  ... {snoUnresolved.Count - 20} more");
     }
     return (regionFails == 0 && snoFails.Count == 0) ? 0 : 4;
 }
@@ -1364,7 +1397,7 @@ static int CmdRegionFollow(string[] a)
         return 2;
     }
     Console.WriteLine($"Start      : {FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
-    Console.WriteLine($"Goal       : {FormatVec(follower.Target)}   path-tris={follower.RemainingPath.Count}");
+    Console.WriteLine($"Goal       : {FormatVec(follower.Target)}   path-tris={follower.RemainingPath.Count}  funnel-waypoints={follower.Waypoints.Count}");
 
     const float tickDt = 1f / 20f; // Match the 20 Hz simulation tick used by actors.
     float totalDist = 0f;
@@ -1509,6 +1542,209 @@ static (int components, List<int> bigComponent, int bigSize) AnalyzeComponents(N
         }
     }
     return (components, biggest, biggest.Count);
+}
+
+// Phase 11-SC-1 — characterize each connected component in a region's nav mesh.
+// Phase 11 audit found avg 33 components / region, with the biggest holding only
+// ~54.5% of all tris; the question this CLI answers is whether the stranded 45.5%
+// is real terrain (cliff islands, balcony platforms, NPC pens) or junk (Floor SNOs
+// authored as separate sub-meshes that should weld but don't). For each component
+// we report face count, AABB, centroid, and the top SNO files anchoring it (by
+// face contribution), so a human can scan the report and decide.
+static int CmdRegionNavComponents(string[] a)
+{
+    int top = 5;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if (x.StartsWith("--top=", StringComparison.Ordinal)) int.TryParse(x["--top=".Length..], out top);
+        else rest.Add(x);
+    }
+    if (rest.Count != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region nav-components <map-tank> <terrain-tank> <region-path|all> [--top=N]");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(rest[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(rest[1]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+    string MeshPath(uint guid) => meshIndex.TryResolve(guid, out var p) ? p : $"<unresolved 0x{guid:X8}>";
+
+    if (string.Equals(rest[2], "all", StringComparison.OrdinalIgnoreCase))
+    {
+        // Aggregate roll-up across every region. We don't dump per-component for
+        // every region (would be tens of thousands of lines); instead we report
+        // the histogram of fragment sizes and the worst-offender regions.
+        var sizeBuckets = new Dictionary<string, int>(StringComparer.Ordinal);
+        int regions = 0, totalComps = 0, totalTris = 0, totalBig = 0;
+        var worst = new List<(string region, int comps, int big, int total)>();
+        foreach (var rnodePath in mapReader.ListFiles())
+        {
+            if (!rnodePath.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+            regions++;
+            try
+            {
+                var graph = RegionGraph.Load(mapReader.ExtractToMemory(rnodePath));
+                var layout = RegionLayout.Build(graph, Resolve);
+                var mesh = NavMesh.BuildForRegion(graph, layout, Resolve);
+                if (mesh.TriangleCount == 0) continue;
+                var comps = FloodFillAllComponents(mesh);
+                totalComps += comps.Count;
+                totalTris += mesh.TriangleCount;
+                int biggest = 0;
+                foreach (var c in comps)
+                {
+                    if (c.Count > biggest) biggest = c.Count;
+                    string bucket = c.Count switch
+                    {
+                        1     => "1",
+                        <= 10 => "2-10",
+                        <= 100 => "11-100",
+                        <= 1000 => "101-1000",
+                        _ => "1001+",
+                    };
+                    sizeBuckets[bucket] = sizeBuckets.TryGetValue(bucket, out var v) ? v + 1 : 1;
+                }
+                totalBig += biggest;
+                worst.Add((rnodePath, comps.Count, biggest, mesh.TriangleCount));
+            }
+            catch { /* swallow — counted under regions but not contributing */ }
+        }
+        Console.WriteLine($"Regions scanned    : {regions}");
+        Console.WriteLine($"Total components   : {totalComps:N0}  ({(double)totalComps / Math.Max(1, regions):F1} avg/region)");
+        Console.WriteLine($"Total tris         : {totalTris:N0}");
+        Console.WriteLine($"Biggest-comp share : {(totalTris == 0 ? 0 : 100.0 * totalBig / totalTris):F1}%");
+        Console.WriteLine();
+        Console.WriteLine("Component size histogram:");
+        foreach (var b in new[] { "1", "2-10", "11-100", "101-1000", "1001+" })
+            Console.WriteLine($"  {b,-9}  {sizeBuckets.GetValueOrDefault(b, 0),6}");
+        Console.WriteLine();
+        Console.WriteLine($"Top {top} fragmented regions (by component count):");
+        worst.Sort((x, y) => y.comps.CompareTo(x.comps));
+        foreach (var w in worst.Take(top))
+            Console.WriteLine($"  {w.comps,4} comps  biggest={w.big,5}/{w.total,-5}  {w.region}");
+        return 0;
+    }
+
+    var regionPath = rest[2].Replace('\\', '/');
+    if (!regionPath.StartsWith('/')) regionPath = "/" + regionPath;
+    if (regionPath.EndsWith('/')) regionPath = regionPath[..^1];
+    if (regionPath.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase))
+        regionPath = regionPath[..^"/terrain_nodes/nodes.gas".Length];
+    var rGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
+    var rLayout = RegionLayout.Build(rGraph, Resolve);
+    var rMesh = NavMesh.BuildForRegion(rGraph, rLayout, Resolve);
+    Console.WriteLine($"Region          : {regionPath}");
+    Console.WriteLine($"NavMesh         : {rMesh.TriangleCount:N0} tris, {rMesh.SourceSnodeCount} src snode(s), {rMesh.NonManifoldEdgeCount} non-manifold edge(s)");
+    if (rMesh.TriangleCount == 0) { Console.WriteLine("(empty mesh — nothing to flood)"); return 0; }
+
+    var components = FloodFillAllComponents(rMesh);
+    components.Sort((x, y) => y.Count.CompareTo(x.Count));
+    Console.WriteLine($"Components      : {components.Count}");
+    Console.WriteLine();
+
+    int show = Math.Min(top, components.Count);
+    for (int ci = 0; ci < show; ci++)
+    {
+        var comp = components[ci];
+        // AABB + centroid in region-space.
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity, minZ = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity, maxZ = float.NegativeInfinity;
+        Vector3 sum = Vector3.Zero;
+        var sourceFaces = new Dictionary<int, int>();
+        foreach (var t in comp)
+        {
+            var ctr = rMesh.Centroids[t];
+            sum += ctr;
+            if (ctr.X < minX) minX = ctr.X; if (ctr.X > maxX) maxX = ctr.X;
+            if (ctr.Y < minY) minY = ctr.Y; if (ctr.Y > maxY) maxY = ctr.Y;
+            if (ctr.Z < minZ) minZ = ctr.Z; if (ctr.Z > maxZ) maxZ = ctr.Z;
+            int srcNode = rMesh.SourceNodeIndex[t];
+            sourceFaces[srcNode] = sourceFaces.TryGetValue(srcNode, out var v) ? v + 1 : 1;
+        }
+        var ctrAvg = sum / comp.Count;
+        Console.WriteLine($"[{ci}] {comp.Count} faces  centroid={FormatVec(ctrAvg)}  bbox=({maxX-minX:F1} x {maxY-minY:F1} x {maxZ-minZ:F1})");
+        // Top 3 source SNOs by face count
+        foreach (var kv in sourceFaces.OrderByDescending(k => k.Value).Take(3))
+        {
+            var node = rGraph.Nodes[kv.Key];
+            Console.WriteLine($"    {kv.Value,5} faces  {MeshPath(node.MeshGuid)}");
+        }
+        if (sourceFaces.Count > 3) Console.WriteLine($"    ... +{sourceFaces.Count - 3} more snode(s)");
+    }
+    if (components.Count > show) Console.WriteLine($"... +{components.Count - show} more component(s) (use --top=N to see more)");
+
+    // Tail summary: histogram of remaining components by size, so a human can see
+    // at a glance whether the long tail is "lots of tiny stranded fragments" vs
+    // "a few medium-size islands".
+    Console.WriteLine();
+    var tailHistogram = new Dictionary<string, int>();
+    foreach (var c in components.Skip(show))
+    {
+        string bucket = c.Count switch
+        {
+            1     => "1",
+            <= 10 => "2-10",
+            <= 100 => "11-100",
+            <= 1000 => "101-1000",
+            _ => "1001+",
+        };
+        tailHistogram[bucket] = tailHistogram.TryGetValue(bucket, out var v) ? v + 1 : 1;
+    }
+    if (tailHistogram.Count > 0)
+    {
+        Console.WriteLine("Tail (components beyond top): size histogram:");
+        foreach (var b in new[] { "1", "2-10", "11-100", "101-1000", "1001+" })
+            if (tailHistogram.TryGetValue(b, out var v))
+                Console.WriteLine($"  {b,-9}  {v,5}");
+    }
+    return 0;
+}
+
+// Returns every connected component as its own list of triangle indices. The
+// existing `AnalyzeComponents` only retains the biggest because that's all path-
+// fuzz needs; nav-components needs every fragment so it can describe them.
+static List<List<int>> FloodFillAllComponents(NavMesh mesh)
+{
+    var visited = new bool[mesh.TriangleCount];
+    var stack = new Stack<int>();
+    var result = new List<List<int>>();
+    for (int seed = 0; seed < mesh.TriangleCount; seed++)
+    {
+        if (visited[seed]) continue;
+        var current = new List<int>();
+        stack.Push(seed);
+        while (stack.Count > 0)
+        {
+            int t = stack.Pop();
+            if (visited[t]) continue;
+            visited[t] = true;
+            current.Add(t);
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = mesh.Neighbors[3 * t + s];
+                if (nb >= 0 && !visited[nb]) stack.Push(nb);
+            }
+        }
+        result.Add(current);
+    }
+    return result;
 }
 
 static NavMesh LoadRegionNavMesh(string mapTankPath, string terrainTankPath, string regionPathRaw)
@@ -2195,12 +2431,17 @@ static int CmdGasFuzz(string[] a)
 
 static int CmdSnoInfo(string[] a)
 {
-    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx sno info <file.sno>"); return 1; }
-    var data = File.ReadAllBytes(a[0]);
-    Console.WriteLine($"File      : {a[0]}");
+    bool trace = false;
+    var rest = new List<string>();
+    foreach (var x in a) { if (x == "--trace") trace = true; else rest.Add(x); }
+    if (rest.Count != 1) { Console.Error.WriteLine("usage: siegefx sno info <file.sno> [--trace]"); return 1; }
+    var data = File.ReadAllBytes(rest[0]);
+    Console.WriteLine($"File      : {rest[0]}");
     Console.WriteLine($"Size      : {data.Length:N0} bytes");
 
+    SnoModel.TraceParse = trace;
     var sno = SnoModel.Load(data);
+    SnoModel.TraceParse = false;
     Console.WriteLine($"Magic     : {sno.Magic}");
     Console.WriteLine($"Version   : {sno.Version}");
     Console.WriteLine($"Bounds    : {sno.MinBounds} .. {sno.MaxBounds}");

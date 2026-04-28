@@ -42,6 +42,13 @@ public sealed class NavMesh
     /// cost functions both call it per node expansion.</summary>
     public Vector3[] Centroids { get; }
 
+    /// <summary>Per-triangle source node index into <c>graph.Nodes</c> at build time.
+    /// Lets the nav-components diagnostic name the SNOs anchoring each connected
+    /// component without having to rebuild the mesh. -1 only on triangles authored
+    /// outside the original BuildForRegion loop, which the current pipeline never
+    /// produces.</summary>
+    public int[] SourceNodeIndex { get; }
+
     /// <summary>Number of SNO instances whose nav faces were folded into the mesh.</summary>
     public int SourceSnodeCount { get; }
 
@@ -76,6 +83,7 @@ public sealed class NavMesh
         int[] neighbors,
         SnoModel.FloorKind[] kinds,
         Vector3[] centroids,
+        int[] sourceNodeIndex,
         int sourceSnodeCount,
         int degenerateFaceCount,
         int nonManifoldEdgeCount,
@@ -90,6 +98,7 @@ public sealed class NavMesh
         Neighbors = neighbors;
         Kinds = kinds;
         Centroids = centroids;
+        SourceNodeIndex = sourceNodeIndex;
         SourceSnodeCount = sourceSnodeCount;
         DegenerateFaceCount = degenerateFaceCount;
         NonManifoldEdgeCount = nonManifoldEdgeCount;
@@ -124,6 +133,7 @@ public sealed class NavMesh
         var vertIndex = new Dictionary<(int, int, int), int>(capacity: 4096);
         var tris = new List<int>(capacity: 2048);
         var kinds = new List<SnoModel.FloorKind>(capacity: 2048);
+        var sourceNode = new List<int>(capacity: 2048);
         int sourceSnodes = 0;
         int degenerate = 0;
         float inv = 1f / WeldToleranceUnits;
@@ -145,8 +155,9 @@ public sealed class NavMesh
             return idx;
         }
 
-        foreach (var node in graph.Nodes)
+        for (int nodeIdx = 0; nodeIdx < graph.Nodes.Count; nodeIdx++)
         {
+            var node = graph.Nodes[nodeIdx];
             if (!layout.TryGetTransform(node.Guid, out var snodeXform)) continue;
             var sno = resolveSno(node.MeshGuid);
             if (sno is null) continue;
@@ -168,6 +179,7 @@ public sealed class NavMesh
                     tris.Add(ib);
                     tris.Add(ic);
                     kinds.Add(group.Kind);
+                    sourceNode.Add(nodeIdx);
                 }
             }
         }
@@ -308,6 +320,7 @@ public sealed class NavMesh
             neighbors,
             kinds.ToArray(),
             centroids,
+            sourceNode.ToArray(),
             sourceSnodes,
             degenerate,
             nonManifoldEdges,
