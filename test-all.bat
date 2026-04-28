@@ -137,7 +137,7 @@ echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + ga
 echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-region for in-game loop)
 echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + cap inventory)
 echo   67. Phase 9-SC-10      - Shield render verify (fh_r1 + SIEGEFX_DEBUG_DROP=shield)
-echo   68. Phase 9-SC-16 B-1  - Pcontent tier dump (#club/2-3 must not roll uniques)
+echo   68. Phase 9-SC-16 B-1+B-2 - Pcontent tier + wildcards + rarity (#club/2-3, #armor/-rare/..., #*/-unique/...)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -1313,16 +1313,23 @@ goto MENU
 
 :T68
 echo.
-echo --- Phase 9-SC-16 B-1: Pcontent tier dump + sample roll ---
-echo [Indexes every literal weapon-class bucket the resolver knows about,]
-echo [sorted by power. With --spec=#club/2-3 it samples 20 rolls so the]
-echo [tier filter is visible: power-2/3 clubs only, no power-4 'avg' clubs,]
-echo [and definitely no cb_un_2h_troll_rock (excluded by is_pcontent_allowed).]
+echo --- Phase 9-SC-16 B-1+B-2: Pcontent dump (tier + wildcards + rarity) ---
+echo [B-1: #club/2-3 hits power-2/3 generic clubs only, never the unique]
+echo [cb_un_2h_troll_rock. B-2: #armor/-rare(1)/28-80 picks rare-tier armor]
+echo [in the right defense band (only *_ra_* templates show up); #*/-unique(2)/175-286]
+echo [picks unique cross-class items (ax_un_*, sd_un_*, st_un_*, bd_un_*, etc).]
 echo.
+echo === B-1 verify: #club/2-3 ===
 "%TOOL%" pcontent dump "%DS1%\Resources\Logic.dsres" --class=club --spec=#club/2-3 --rolls=20 --seed=42
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === pcontent dump exited with code %EXITCODE% ===
+echo === B-2 verify: #armor/-rare(1)/28-80 ===
+"%TOOL%" pcontent dump "%DS1%\Resources\Logic.dsres" --class=NONE --spec=#armor/-rare(1)/28-80 --rolls=10 --seed=1
+echo.
+echo === B-2 verify: #*/-unique(2)/175-286 ===
+"%TOOL%" pcontent dump "%DS1%\Resources\Logic.dsres" --class=NONE --spec=#*/-unique(2)/175-286 --rolls=10 --seed=2
+echo.
+echo === pcontent dump exited with code %EXITCODE% (last invocation: %ERRORLEVEL%) ===
 pause
 goto MENU
 

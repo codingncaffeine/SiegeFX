@@ -33,7 +33,7 @@ The clean-room rule: every claim is backed by a headless `siegefx` audit you can
 - **~18,000 hero variants** — 7 bodies × ~32 skins × ~41 pants × 2 genders (`templates hero-variants`)
 - **520 mood definitions + 165 SED descriptors** — region ambient beds and per-fire pitch ranges driven by data (`mood list`, `audio sed-list`)
 - **626 audio cues** in `Sound.dsres`; 20 wired so far, per-category gaps mapped (`audio coverage`)
-- **10 weapon class buckets** (axe / bow / club / hammer / mace / minigun / staff / sword / combat_magic / beastfu) indexed for tier-correct pcontent rolls — `#club/2-3` resolves to a power-2/3 club, never the unique `cb_un_2h_troll_rock` (`pcontent dump`)
+- **2,829 pcontent entries** (303 weapons across 10 classes + 435 armor templates) tagged with rarity (normal / rare / unique) — krug-class `#club/2-3` picks a generic power-2/3 club, `#armor/-rare(1)/28-80` rolls only rare-tier armor in band, `#*/-unique(2)/175-286` picks named unique drops the normal roll never sees (`pcontent dump`)
 
 End-to-end Farmhouse → Castle Ehb playtest is next.
 

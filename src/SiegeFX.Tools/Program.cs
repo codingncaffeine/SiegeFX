@@ -5075,8 +5075,27 @@ static int CmdPcontentDump(string[] a)
         .OrderBy(k => k, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
-    Console.WriteLine($"indexed {byClass.Count} class bucket(s); {byClass.Sum(kv => kv.Value.Count)} entries total");
+    var allEntries = resolver.AllEntries();
+    Console.WriteLine($"indexed {byClass.Count} class bucket(s); {byClass.Sum(kv => kv.Value.Count)} weapon entries; {allEntries.Count} total entries (incl. armor)");
     Console.WriteLine();
+
+    // Wildcard summaries — these are the synthetic groups the
+    // resolver folds across at run-time for #weapon / #armor / #*
+    // specs. Useful sanity check: armor count > 0, melee < weapon, etc.
+    Console.WriteLine("== wildcards ==");
+    PrintGroup("weapon (melee + ranged)", allEntries.Where(e => (e.Group & (PcontentResolver.Group.Melee | PcontentResolver.Group.Ranged)) != 0));
+    PrintGroup("melee",                   allEntries.Where(e => (e.Group & PcontentResolver.Group.Melee) != 0));
+    PrintGroup("armor",                   allEntries.Where(e => (e.Group & PcontentResolver.Group.Armor) != 0));
+    Console.WriteLine();
+
+    // Rarity tally — how many normal / rare / unique items got
+    // indexed; Phase B-2 needs unique > 0 for #*/-unique(2)/... to
+    // resolve at all.
+    var rarityCounts = allEntries.GroupBy(e => e.Rarity).ToDictionary(g => g.Key, g => g.Count());
+    var pcontentDisallowed = allEntries.Count(e => !e.PcontentAllowed);
+    Console.WriteLine($"== rarity tally ==  normal={rarityCounts.GetValueOrDefault(PcontentResolver.Rarity.Normal)}  rare={rarityCounts.GetValueOrDefault(PcontentResolver.Rarity.Rare)}  unique={rarityCounts.GetValueOrDefault(PcontentResolver.Rarity.Unique)}  is_pcontent_allowed=false: {pcontentDisallowed}");
+    Console.WriteLine();
+
     foreach (var key in classKeys)
     {
         var bucket = byClass[key];
@@ -5087,17 +5106,17 @@ static int CmdPcontentDump(string[] a)
         // even for big buckets (e.g. weapon classes with dozens of variants).
         int head = Math.Min(8, bucket.Count);
         for (int i = 0; i < head; i++)
-            Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+            Console.WriteLine($"  pow={bucket[i].Power,4}  rar={RarityTag(bucket[i].Rarity)}  {bucket[i].Name}");
         if (bucket.Count > head + 4)
         {
             Console.WriteLine($"  ... ({bucket.Count - head - 4} entries omitted) ...");
             for (int i = bucket.Count - 4; i < bucket.Count; i++)
-                Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+                Console.WriteLine($"  pow={bucket[i].Power,4}  rar={RarityTag(bucket[i].Rarity)}  {bucket[i].Name}");
         }
         else
         {
             for (int i = head; i < bucket.Count; i++)
-                Console.WriteLine($"  pow={bucket[i].Power,4}  {bucket[i].Name}");
+                Console.WriteLine($"  pow={bucket[i].Power,4}  rar={RarityTag(bucket[i].Rarity)}  {bucket[i].Name}");
         }
         Console.WriteLine();
     }
@@ -5105,7 +5124,7 @@ static int CmdPcontentDump(string[] a)
     if (specArg is not null)
     {
         var parsed = PcontentResolver.ParseSpec(specArg);
-        Console.WriteLine($"spec '{specArg}' parsed: class='{parsed.Class}' sub='{parsed.Sub}' power={(parsed.HasPower ? $"{parsed.PowerMin}-{parsed.PowerMax}" : "<any>")}");
+        Console.WriteLine($"spec '{specArg}' parsed: class='{parsed.Class}' sub='{parsed.Sub}' rarity={parsed.Rarity} power={(parsed.HasPower ? $"{parsed.PowerMin}-{parsed.PowerMax}" : "<any>")}");
         var rng = new Random(seed ?? Environment.TickCount);
         var hist = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         bool resolved = false;
@@ -5129,4 +5148,23 @@ static int CmdPcontentDump(string[] a)
     }
 
     return 0;
+
+    static void PrintGroup(string label, IEnumerable<PcontentResolver.Entry> entries)
+    {
+        var list = entries.ToList();
+        if (list.Count == 0) { Console.WriteLine($"  {label,-26}: 0"); return; }
+        var minP = list.Min(e => e.Power);
+        var maxP = list.Max(e => e.Power);
+        var n = list.Count(e => e.Rarity == PcontentResolver.Rarity.Normal && e.PcontentAllowed);
+        var r = list.Count(e => e.Rarity == PcontentResolver.Rarity.Rare);
+        var u = list.Count(e => e.Rarity == PcontentResolver.Rarity.Unique);
+        Console.WriteLine($"  {label,-26}: {list.Count,5}  power {minP,4}..{maxP,-4}  (normal-rollable={n}  rare={r}  unique={u})");
+    }
+
+    static string RarityTag(PcontentResolver.Rarity r) => r switch
+    {
+        PcontentResolver.Rarity.Rare   => "ra",
+        PcontentResolver.Rarity.Unique => "un",
+        _                              => "g ",
+    };
 }
