@@ -136,6 +136,7 @@ echo   63. Phase 21d-2a-viii-c - Hero name + variant persistence through quicksa
 echo   64. Phase 21d-2a-ix    - Audio coverage audit (Sound.dsres histogram + gap report)
 echo   65. Phase 21d-2a-xi    - Mood + region ambient bed audit (CLI; play-region for in-game loop)
 echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + cap inventory)
+echo   67. Phase 9-SC-10      - Shield render verify (fh_r1 + SIEGEFX_DEBUG_DROP=shield)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -208,6 +209,7 @@ if /i "%CHOICE%"=="63" goto T63
 if /i "%CHOICE%"=="64" goto T64
 if /i "%CHOICE%"=="65" goto T65
 if /i "%CHOICE%"=="66" goto T66
+if /i "%CHOICE%"=="67" goto T67
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -481,12 +483,13 @@ goto MENU
 
 :T26
 echo.
-echo --- Phase 15c + SC-9/13/14: Grid inventory panel w/ drag-drop (fh_r1) ---
+echo --- Phase 15c + SC-9/10/13/14: Grid inventory + shield-on-bone (fh_r1) ---
 echo [press I to toggle a centered 8x5 inventory grid]
 echo [icons land per-template (b_gui_ig_*); multi-cell weapons span 1x2 / 1x3]
 echo [LMB-drag an item to a new cell to relocate it (saved across opens)]
 echo [LMB-drag out of the panel to drop the item back into the world]
 echo [each drop fires the template's [aspect][voice][put_down] *  cue]
+echo [SC-10: kill a shield-bearing enemy + pick up the shield -> renders on shield_grip]
 echo [press I again or Esc to dismiss the panel]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
@@ -1279,6 +1282,30 @@ echo --- filter spell ---
 "%TOOL%" audio sed-list "%DS1%\Resources\Sound.dsres" --filter=spell
 echo.
 echo === xii exited with %ERRORLEVEL% ===
+pause
+goto MENU
+
+:T67
+echo.
+echo --- Phase 9-SC-10: Shield render verify (fh_r1 + debug-drop) ---
+echo [SIEGEFX_DEBUG_DROP injects a sh_m_g_c_r_s_avg loot pile 1.5u in front of]
+echo [spawn so the real pickup -> auto-equip -> LoadAttachedItem path fires]
+echo [without hunting for a shield-bearing mob to kill.]
+echo [Walk forward, the auto-pickup picks up the shield, the [es_shield_hand]]
+echo [equip log fires, and the shield should render on the PC's shield_grip]
+echo [bone (left forearm) oriented like the weapon (X 180 deg + grip prerot).]
+echo.
+set "SIEGEFX_DEBUG_DROP=shield_hand:sh_m_g_c_r_s_avg"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set "SIEGEFX_DEBUG_DROP="
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
 pause
 goto MENU
 

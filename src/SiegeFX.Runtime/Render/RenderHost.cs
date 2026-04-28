@@ -319,6 +319,17 @@ public sealed class RenderHost : IDisposable
         Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI);
     private static readonly Vector3 s_gripPreTrans = new(0.02f, 0.04f, 0f);
 
+    // Phase 9-SC-10 — extra prerotation for the shield slot, applied on top
+    // of the shared s_gripPreRot. The dagger's X 180° doesn't quite fit a
+    // shield's bind orientation; +85° around X (visually signed off) tilts the
+    // shield face out from the forearm into the standard "behind the buckler"
+    // ready pose. Authored as a constant — if a future shield mesh disagrees
+    // it should ship its own [aspect] offset rather than re-introducing the
+    // runtime knob removed at the same time as the dagger's F1-F4 cycling.
+    private static readonly Quaternion s_shieldExtraRot =
+        Quaternion.CreateFromAxisAngle(Vector3.UnitX, 85f * MathF.PI / 180f);
+    private static readonly Vector3 s_shieldExtraTrans = Vector3.Zero;
+
     // Phase 21d-2a-vii — layered equipment composition. Each entry is a skinned
     // ASP that re-uses the body's biped skeleton (boots/helms/gauntlets) and
     // gets posed against the body's current animation clip, then drawn through
@@ -348,6 +359,23 @@ public sealed class RenderHost : IDisposable
         public required string MeshBaseName { get; init; }
     }
 
+    // Phase 9-SC-10 — bone-attached props other than the primary weapon.
+    // Shields are the only shipped DS1 example (es_shield_hand → shield_grip),
+    // but the same pattern handles any future single-bone attachment (quiver,
+    // off-hand torch, lantern). The primary weapon stays in its dedicated
+    // _weaponMesh fields because hit-cue selection and material lookup are
+    // entangled with es_weapon_hand specifically; this list is everything else.
+    private sealed class AttachedItem
+    {
+        public required string SlotName { get; init; }
+        public required string ItemRef { get; init; }
+        public required StaticMesh Mesh { get; init; }
+        public required GlTexture? Texture { get; init; }
+        public required Matrix4x4 BindInv { get; init; }
+        public required int BoneIdx { get; init; }
+    }
+    private readonly List<AttachedItem> _attachedItems = new();
+
     // Phase 9-SC-9 — pile holds an optional throw state for items the player
     // just dropped. While Throw is non-null, the pile lerps from source to
     // target with a parabolic Y arc (mimics DS1's drop-toss animation), and
@@ -357,6 +385,12 @@ public sealed class RenderHost : IDisposable
     {
         public Vector3 Position;
         public float RotationY; // radians; non-zero only while a throw is in flight
+        // Phase 9-SC-10 — per-pile rest pitch so items that aren't naturally
+        // upright (shields modeled vertically along the forearm) lie flat on
+        // the ground after landing. Authored at pile creation by inspecting
+        // the item template chain; default 0 keeps weapons / generic loot
+        // standing as they are now.
+        public float RestPitch;
         public readonly List<SiegeFX.Core.Actors.LootEntry> Items;
         public LootThrow? Throw;
         public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
@@ -389,6 +423,19 @@ public sealed class RenderHost : IDisposable
     // so an idle PC keeps his last heading instead of snapping to +Z each tick.
     private Vector3 _playerFacing = Vector3.UnitZ;
     private double _actorTickAccumulator;
+
+    // Phase 9-SC-10b — render-state interpolation for the PC. The actor runtime
+    // ticks at 20 Hz (50 ms steps) but render runs at 60+ fps; without smoothing
+    // the body's CurrentTransform jumped in 50 ms increments and the chase
+    // camera dragged the whole world with it (visible as walk jitter). We
+    // double-buffer pos/facing each fixed tick and lerp into CurrentTransform
+    // every render frame using the leftover accumulator. Render lags one tick
+    // (50 ms) behind sim, which is invisible at this cadence.
+    private Vector3 _playerRenderPosPrev;
+    private Vector3 _playerRenderPosNext;
+    private Vector3 _playerRenderFacingPrev = Vector3.UnitZ;
+    private Vector3 _playerRenderFacingNext = Vector3.UnitZ;
+    private bool _playerRenderInit;
 
     // Phase 21b-1 — `--diag` performance instrumentation. _diagMode is set
     // from the CLI flag and gates every block in this file that prints
@@ -3495,10 +3542,22 @@ void main()
                         float len = MathF.Sqrt(len2);
                         _playerFacing = new Vector3(dx / len, 0f, dz / len);
                     }
-                    float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
-                    _player.CurrentTransform =
-                        Matrix4x4.CreateRotationY(pyaw) *
-                        Matrix4x4.CreateTranslation(after);
+                    // Phase 9-SC-10b — feed the per-frame interp buffers. The
+                    // actual CurrentTransform write happens after the while loop
+                    // drains, lerping prev→next by the leftover accumulator.
+                    if (!_playerRenderInit)
+                    {
+                        _playerRenderPosPrev = before;
+                        _playerRenderFacingPrev = _playerFacing;
+                        _playerRenderInit = true;
+                    }
+                    else
+                    {
+                        _playerRenderPosPrev = _playerRenderPosNext;
+                        _playerRenderFacingPrev = _playerRenderFacingNext;
+                    }
+                    _playerRenderPosNext = after;
+                    _playerRenderFacingNext = _playerFacing;
                     // 21d-2a-vi: the actor draw loop swaps to WalkClipIndex while
                     // IsMoving is set; without this the PC always played chore_default
                     // even when click-to-move was translating it. Same XZ-delta
@@ -3525,6 +3584,22 @@ void main()
                     // TryClickToCast read CooldownRemaining off the spellbook.
                     _playerSpellbook?.Tick((float)stepSec);
                 }
+            }
+            // Phase 9-SC-10b — render-state interpolation for the PC. Lerp
+            // prev→next by the leftover accumulator (clamped 0..1). Yaw is
+            // composed from the lerped facing vector so the body never wraps
+            // through 180° on heading reversals.
+            if (_player is not null && !_player.IsDead && _playerRenderInit)
+            {
+                float alpha = (float)Math.Min(1.0, _actorTickAccumulator / (1.0 / SkritInstance.FramesPerSecond));
+                var pos = Vector3.Lerp(_playerRenderPosPrev, _playerRenderPosNext, alpha);
+                var face = Vector3.Lerp(_playerRenderFacingPrev, _playerRenderFacingNext, alpha);
+                if (face.LengthSquared() > 1e-6f) face = Vector3.Normalize(face);
+                else face = _playerRenderFacingNext;
+                float pyaw = MathF.Atan2(face.X, face.Z);
+                _player.CurrentTransform =
+                    Matrix4x4.CreateRotationY(pyaw) *
+                    Matrix4x4.CreateTranslation(pos);
             }
             foreach (var s in _actors)
             {
@@ -3692,30 +3767,25 @@ void main()
             playerTemplate, scid: 0xffffff00u, worldPosition: spawnPos,
             orientation: System.Numerics.Quaternion.Identity);
 
-        // 21d-2a-vi — peek at es_weapon_hand to pick the right idle stance.
-        // chore_default lists 0..8; first-loadable wins, which is stance 0
-        // (unarmed) for everyone — wrong for an armed PC because the unarmed
-        // wrist pose doesn't grip a weapon. weapon_melee → stance 1, weapon_ranged
-        // → stance 5. Falls back to whatever loads first when the chain is
-        // unfamiliar (e.g. spell-only PCs).
-        int? preferredStance = null;
+        // 21d-2a-vi / Phase 9-SC-10 — peek at es_weapon_hand (and es_shield_hand)
+        // to pick the right idle stance. See ComputePreferredPlayerStance for the
+        // stance map. At spawn time the live _playerEquipment dict is empty, so
+        // we seed the picker from the template's authored [inventory][equipment]
+        // block; pickup-time refreshes feed the live dict instead.
+        IReadOnlyDictionary<string, string>? spawnEquip = null;
         if (_templateStore is not null && _templateStore.TryGet(playerTemplate, out var pcTpl))
         {
             var eqSection = _templateStore.GetSection(pcTpl, "inventory", "equipment");
-            var weaponRef = eqSection is null ? null
-                : SiegeFX.Core.Assets.TemplateStore.FindAttr(eqSection, "es_weapon_hand");
-            if (!string.IsNullOrWhiteSpace(weaponRef)
-                && _templateStore.TryGet(weaponRef!, out var weaponTpl))
+            if (eqSection is not null)
             {
-                for (var t = weaponTpl; t is not null; t = t.Specializes)
-                {
-                    if (string.Equals(t.Name, "weapon_melee", StringComparison.OrdinalIgnoreCase))
-                    { preferredStance = 1; break; }
-                    if (string.Equals(t.Name, "weapon_ranged", StringComparison.OrdinalIgnoreCase))
-                    { preferredStance = 5; break; }
-                }
+                var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var attr in eqSection.Attributes)
+                    if (!string.IsNullOrWhiteSpace(attr.Value))
+                        dict[attr.Name] = attr.Value!.Trim();
+                spawnEquip = dict;
             }
         }
+        int? preferredStance = ComputePreferredPlayerStance(spawnEquip);
 
         // Build the variant override (model only — texture overrides flow
         // through ResolveActorTexture's player-only block via the renderer
@@ -3814,6 +3884,11 @@ void main()
             _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed);
         }
         _playerFacing = Vector3.UnitZ;
+        // 9-SC-10b — re-seed the render-interp buffers for the fresh spawn so
+        // the body doesn't lerp from the previous PC's last position.
+        _playerRenderInit = false;
+        _playerRenderPosPrev = _playerRenderPosNext = spawnPos;
+        _playerRenderFacingPrev = _playerRenderFacingNext = _playerFacing;
 
         // Phase 14b — seed PC equipment from the template's [inventory][equipment]
         // block. base_farmboy authors es_weapon_hand=dg_g_d_1h_fun (fun dagger),
@@ -3877,31 +3952,123 @@ void main()
         // Phase 21d-2a-vii — compose layered equipment (boots, helm, gauntlets,
         // chest texture override) from the same [inventory][equipment] block.
         TryLoadPlayerEquipment(player.Template);
+
+        // Phase 9-SC-10 verification hook — when SIEGEFX_DEBUG_DROP is set,
+        // place a single-item loot pile 1.5u in front of the spawn so the user
+        // can walk over it and exercise the real pickup -> auto-equip ->
+        // LoadAttachedItem path without hunting for a mob that drops the right
+        // slot. Format: "<slot>:<itemRef>" (e.g. "shield_hand:sh_m_g_c_r_s_avg")
+        // or just "<itemRef>" for a non-equipped drop.
+        var debugDrop = Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_DROP");
+        if (!string.IsNullOrWhiteSpace(debugDrop))
+        {
+            var parts = debugDrop.Split(':', 2);
+            var dropSlot = parts.Length == 2 ? parts[0].Trim() : "";
+            var dropRef  = parts.Length == 2 ? parts[1].Trim() : debugDrop.Trim();
+            var dropPos  = spawnPos + new Vector3(1.5f, 0f, 0f);
+            _lootPiles.Add(new LootPile(dropPos,
+                new List<SiegeFX.Core.Actors.LootEntry> {
+                    new(dropSlot, dropRef)
+                })
+                {
+                    RestPitch = ComputeLootRestPitch(dropRef),
+                });
+            Console.WriteLine($"  debug-drop: [{(string.IsNullOrEmpty(dropSlot) ? "drop" : dropSlot)}] {dropRef} at ({dropPos.X:F1},{dropPos.Z:F1})");
+        }
+    }
+
+    /// <summary>Phase 9-SC-10 — pick the chore_default stance number that matches
+    /// the PC's equipped weapon class. fs0=unarmed, fs1=1H melee, fs5=ranged.
+    /// The fs2 stance is NOT a "1H melee + shield" idle — visual testing showed
+    /// it warps the dagger wrist pose and doesn't help shield placement, so the
+    /// shield stays in stance 1 with the existing bone-attach on shield_grip.</summary>
+    private int? ComputePreferredPlayerStance(IReadOnlyDictionary<string, string>? slots)
+    {
+        if (_templateStore is null || slots is null) return null;
+        if (!slots.TryGetValue("es_weapon_hand", out var weaponRef)
+            || string.IsNullOrWhiteSpace(weaponRef)) return null;
+        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
+        for (var t = weaponTpl; t is not null; t = t.Specializes)
+        {
+            if (string.Equals(t.Name, "weapon_melee", StringComparison.OrdinalIgnoreCase))
+                return 1;
+            if (string.Equals(t.Name, "weapon_ranged", StringComparison.OrdinalIgnoreCase))
+                return 5;
+        }
+        return null;
+    }
+
+    /// <summary>Phase 9-SC-10 — pick the natural ground orientation for a freshly
+    /// dropped item. Shields are modeled vertically (oriented along the
+    /// forearm-facing axis on shield_grip) so they need a 90° tip to lie flat;
+    /// weapons and generic loot keep RestPitch=0 because their meshes are already
+    /// authored "lying along the ground" at their bind pose.</summary>
+    private float ComputeLootRestPitch(string itemRef)
+    {
+        if (_templateStore is null || string.IsNullOrEmpty(itemRef)) return 0f;
+        var resolved = ResolveItemRef(itemRef);
+        if (!_templateStore.TryGet(resolved, out var tpl)) return 0f;
+        for (var t = tpl; t is not null; t = t.Specializes)
+        {
+            if (string.Equals(t.Name, "base_shield", StringComparison.OrdinalIgnoreCase))
+                return MathF.PI * 0.5f; // 90° — lay flat
+        }
+        return 0f;
+    }
+
+    /// <summary>Phase 9-SC-10 — re-pick the PC's idle/walk clip after equipment
+    /// changes. Called from the loot-pickup path so that picking up a shield
+    /// switches the idle from fs1 to fs2 without a respawn. No-op when the
+    /// spawner or player hasn't materialized yet.</summary>
+    private void RefreshPlayerStance()
+    {
+        if (_actorSpawner is null || _player is null) return;
+        var stance = ComputePreferredPlayerStance(_playerEquipment);
+        _actorSpawner.RefreshMotionClips(_player.Actor, stance);
+        Console.WriteLine($"  stance: refreshed -> {(stance.HasValue ? stance.ToString() : "default")}");
     }
 
     /// <summary>Phase 21d-2a-vii — resolve every <c>[inventory][equipment]</c>
     /// slot via <see cref="EquipmentResolver"/> and load the layered meshes for
-    /// SkinnedLayer entries (boots/helm/gauntlets). AttachBone (weapon, shield)
-    /// is handled by the dedicated <see cref="TryLoadPlayerWeapon"/> path; this
-    /// pass intentionally skips that strategy. ChestTexture entries set
+    /// SkinnedLayer entries (boots/helm/gauntlets). The primary weapon
+    /// (<c>es_weapon_hand</c>) is loaded by <see cref="TryLoadPlayerWeapon"/>
+    /// because hit-cue/material selection is entangled with that slot;
+    /// <em>other</em> AttachBone slots — shields today, quivers/torches/etc.
+    /// tomorrow — go through <see cref="LoadAttachedItem"/> into
+    /// <c>_attachedItems</c> (Phase 9-SC-10). ChestTexture entries set
     /// <c>_chestTexOverrideName</c> so the body's slot-1 binding swaps to the
     /// armor's <c>b_c_pos_*</c> texture.</summary>
     private void TryLoadPlayerEquipment(SiegeFX.Core.Assets.Template playerTemplate)
     {
         DisposeEquippedLayers();
+        DisposeAttachedItems();
         _chestTexOverrideName = null;
         if (_gl is null || _playResolver is null || _templateStore is null) return;
 
+        // Phase 9-SC-10 — feed the live _playerEquipment dict so picked-up items
+        // (e.g. a shield acquired after spawn) layer in alongside the template's
+        // authored loadout. EquipmentResolver falls back to the template's
+        // [inventory][equipment] block when liveSlots is null, which is what we
+        // want during the very first call from TrySpawnPlayer (the dict is
+        // populated from the template right before this call).
         var layers = SiegeFX.Core.Assets.EquipmentResolver.Resolve(
-            _templateStore, _playResolver, playerTemplate);
+            _templateStore, _playResolver, playerTemplate, _playerEquipment);
         foreach (var layer in layers)
         {
             switch (layer.Strategy)
             {
                 case SiegeFX.Core.Assets.EquipmentResolver.Strategy.None:
+                    break;
+
                 case SiegeFX.Core.Assets.EquipmentResolver.Strategy.AttachBone:
-                    // None = no 3D representation (spellbook/amulet/ring).
-                    // AttachBone = handled by TryLoadPlayerWeapon for now.
+                    // es_weapon_hand is owned by TryLoadPlayerWeapon (hit-cue
+                    // material lookup, swap-on-pickup integration). Everything
+                    // else (shield_hand today; quiver/torch/etc. tomorrow) goes
+                    // through the generic single-bone attach path.
+                    if (string.Equals(layer.SlotName, "es_weapon_hand",
+                            StringComparison.OrdinalIgnoreCase))
+                        break;
+                    LoadAttachedItem(layer);
                     break;
 
                 case SiegeFX.Core.Assets.EquipmentResolver.Strategy.SkinnedLayer:
@@ -3980,6 +4147,87 @@ void main()
         var tex = LoadTexsetTexture(textureBaseName);
         _equipTexCache[key] = tex;
         return tex;
+    }
+
+    /// <summary>Phase 9-SC-10 — load a single bone-attached prop (shield, quiver,
+    /// torch) into <c>_attachedItems</c>. Mirrors <see cref="TryLoadPlayerWeapon"/>
+    /// but driven from <see cref="EquipmentResolver"/> so the bone name is whatever
+    /// <c>body.bone_translator</c> declared (shield → <c>shield_grip</c> on
+    /// base_farmboy). Silent on resolution misses — the slot just doesn't render.</summary>
+    private void LoadAttachedItem(SiegeFX.Core.Assets.EquipmentResolver.EquipmentLayer layer)
+    {
+        if (_gl is null || _playResolver is null) return;
+        if (_player is null) return;
+        if (string.IsNullOrEmpty(layer.MeshBaseName) || string.IsNullOrEmpty(layer.AttachBoneName))
+            return;
+
+        // Resolve bone index against the PC's skeleton. Without a matching bone
+        // there's nowhere to attach the mesh — log and bail.
+        var pcMesh = _player.Actor.Mesh;
+        int boneIdx = -1;
+        for (int bi = 0; bi < pcMesh.BoneNames.Count; bi++)
+        {
+            if (string.Equals(pcMesh.BoneNames[bi], layer.AttachBoneName,
+                    StringComparison.OrdinalIgnoreCase))
+            { boneIdx = bi; break; }
+        }
+        if (boneIdx < 0)
+        {
+            Console.WriteLine(
+                $"  attach: '{layer.SlotName}' = '{layer.ItemRef}' bone " +
+                $"'{layer.AttachBoneName}' not on PC skeleton — skipped");
+            return;
+        }
+
+        if (!_playResolver.TryLoadModel(layer.MeshBaseName, out var aspBytes))
+        {
+            Console.WriteLine($"  attach: model '{layer.MeshBaseName}.asp' not in any tank");
+            return;
+        }
+        SiegeFX.Core.Assets.AspMesh asp;
+        try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  attach: '{layer.MeshBaseName}.asp' load failed: {ex.Message}");
+            return;
+        }
+
+        var mesh = new StaticMesh(_gl, asp);
+        var bindInv = asp.InverseBindMatrices.Length > 0
+            ? asp.InverseBindMatrices[0]
+            : Matrix4x4.Identity;
+
+        GlTexture? tex = null;
+        if (asp.TextureNames.Count > 0 &&
+            _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+        {
+            try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); }
+            catch (Exception ex) { Console.WriteLine($"  attach: texture load failed: {ex.Message}"); }
+        }
+
+        _attachedItems.Add(new AttachedItem
+        {
+            SlotName = layer.SlotName,
+            ItemRef = layer.ItemRef,
+            Mesh = mesh,
+            Texture = tex,
+            BindInv = bindInv,
+            BoneIdx = boneIdx,
+        });
+        Console.WriteLine(
+            $"  attach: '{layer.SlotName}' = '{layer.ItemRef}' " +
+            $"mesh='{layer.MeshBaseName}' bone='{layer.AttachBoneName}' (idx={boneIdx}) " +
+            $"({(tex is null ? "untextured" : asp.TextureNames[0])})");
+    }
+
+    private void DisposeAttachedItems()
+    {
+        foreach (var a in _attachedItems)
+        {
+            a.Mesh.Dispose();
+            a.Texture?.Dispose();
+        }
+        _attachedItems.Clear();
     }
 
 
@@ -4558,11 +4806,39 @@ void main()
 
         _inventoryPanel.NotifyItemRemoved(index);
         _playerInventory.RemoveAt(index);
+
+        // Phase 9-SC-10 — if the dropped item was currently equipped (e.g. the
+        // PC throws their own shield), unbind the equipment slot and refresh
+        // the attach + layered-equipment passes so the rendered shield/boot/helm
+        // stops floating on the bone after the inventory entry is gone.
+        bool weaponDropped = false;
+        bool nonWeaponDropped = false;
+        string? droppedSlotKey = null;
+        foreach (var kv in _playerEquipment)
+        {
+            if (string.Equals(kv.Value, entry.Reference, StringComparison.OrdinalIgnoreCase))
+            { droppedSlotKey = kv.Key; break; }
+        }
+        if (droppedSlotKey is not null)
+        {
+            _playerEquipment.Remove(droppedSlotKey);
+            if (string.Equals(droppedSlotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
+                weaponDropped = true;
+            else
+                nonWeaponDropped = true;
+            Console.WriteLine($"  unequipped: [{droppedSlotKey}] (dropped to world)");
+        }
+        if (weaponDropped) TryLoadPlayerWeapon();
+        if (nonWeaponDropped && _player is not null)
+            TryLoadPlayerEquipment(_player.Actor.Template);
+        if (weaponDropped || nonWeaponDropped) RefreshPlayerStance();
+
         var pile = new LootPile(feet, new List<SiegeFX.Core.Actors.LootEntry>
         {
             new SiegeFX.Core.Actors.LootEntry("", entry.Reference)
         })
         {
+            RestPitch = ComputeLootRestPitch(entry.Reference),
             Throw = new LootThrow
             {
                 Source        = feet,
@@ -5032,6 +5308,11 @@ void main()
                         _player.CurrentTransform =
                             Matrix4x4.CreateRotationY(pyaw) *
                             Matrix4x4.CreateTranslation(playerPos);
+                        // 9-SC-10b — snap the render-interp buffers too, otherwise
+                        // the next frame's pass would lerp back toward the old
+                        // walking-facing and the bolt would launch from the side.
+                        _playerRenderFacingPrev = _playerFacing;
+                        _playerRenderFacingNext = _playerFacing;
                     }
                     var src = playerPos + new Vector3(0f, 1.2f, 0f);
                     var dst = tp        + new Vector3(0f, 1.0f, 0f);
@@ -5169,7 +5450,7 @@ void main()
         if (dropDir.LengthSquared() < 1e-4f) dropDir = new Vector2(0f, 1f);
         else dropDir = Vector2.Normalize(dropDir);
         var dropTarget = deathPos + new Vector3(dropDir.X * 1.4f, 0f, dropDir.Y * 1.4f);
-        _lootPiles.Add(new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops))
+        var deathPile = new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops))
         {
             Throw = new LootThrow
             {
@@ -5181,7 +5462,15 @@ void main()
                 Spins         = 0.5f,
                 StartRotation = (float)rng.NextDouble() * MathF.PI * 2f,
             }
-        });
+        };
+        // Phase 9-SC-10 — first resolvable item drives the pile's rest pitch
+        // (shields lie flat on the ground, weapons stay upright).
+        foreach (var d in drops)
+        {
+            var pitch = ComputeLootRestPitch(d.Reference);
+            if (pitch != 0f) { deathPile.RestPitch = pitch; break; }
+        }
+        _lootPiles.Add(deathPile);
     }
 
     // Phase 14c — a dropped "weapon_hand" entry is an upgrade iff its template has
@@ -5268,6 +5557,7 @@ void main()
             // matching es_ slot. Keeps the kill -> loot -> stronger-hit loop
             // visible without a real inventory UI.
             bool weaponSwapped = false;
+            bool nonWeaponSwapped = false;
             foreach (var it in pile.Items)
             {
                 if (!it.IsEquipped) continue;
@@ -5278,8 +5568,21 @@ void main()
                 Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
                 if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
                     weaponSwapped = true;
+                else
+                    nonWeaponSwapped = true;
             }
             if (weaponSwapped) TryLoadPlayerWeapon();
+            // Phase 9-SC-10 — refresh layered + attached equipment when anything
+            // other than the weapon changed (shields, boots, helms, gauntlets,
+            // chest texture). TryLoadPlayerEquipment is non-destructive to the
+            // weapon path; the weapon refresh above stays independent.
+            if (nonWeaponSwapped && _player is not null)
+                TryLoadPlayerEquipment(_player.Actor.Template);
+            // Phase 9-SC-10 — both weapon and shield changes can shift the idle
+            // stance (1H melee → 1, +shield → 2, ranged → 5). Re-pick after the
+            // equipment dict has settled so the new stance reflects the full
+            // post-pickup state.
+            if (weaponSwapped || nonWeaponSwapped) RefreshPlayerStance();
 
             _lootPiles.RemoveAt(i);
         }
@@ -5780,6 +6083,52 @@ void main()
                 }
                 _weaponMesh.Draw();
             }
+
+            // Phase 9-SC-10 — render every other bone-attached prop on the PC
+            // (shields today, quiver/torch tomorrow). Reuses the per-frame
+            // _boneWorldsScratch the weapon draw just populated, so we don't
+            // recompute the bone walk; each attach takes one bone from the
+            // already-animated array, applies its bind-inverse + the shared
+            // grip prerotation/translation, and draws as a static mesh. The
+            // same prerotation rule applies to shield_grip per SiegeMax
+            // ASPImport.ms (see s_gripPreRot field comment).
+            if (_attachedItems.Count > 0 && _meshShader is not null)
+            {
+                int pcBoneCount = _player.Actor.Mesh.BoneCount;
+                var gripPreRot = Matrix4x4.CreateFromQuaternion(s_gripPreRot);
+                var gripPreTrans = Matrix4x4.CreateTranslation(s_gripPreTrans);
+                _meshShader.Use();
+                _meshShader.SetMatrix4("uViewProj", vp);
+                _meshShader.SetInt("uAlbedo", 0);
+                _meshShader.SetInt("uFlipV", 0);
+                ApplyLightingUniforms(_meshShader);
+                // Phase 9-SC-10 — extra rotation for the shield slot, applied on
+                // top of the shared grip prerotation. See s_shieldExtraRot for the
+                // rationale behind the +85° X bake.
+                var shieldExtraRot = Matrix4x4.CreateFromQuaternion(s_shieldExtraRot);
+                var shieldExtraTrans = Matrix4x4.CreateTranslation(s_shieldExtraTrans);
+                foreach (var att in _attachedItems)
+                {
+                    if (att.BoneIdx < 0 || att.BoneIdx >= pcBoneCount) continue;
+                    var boneLocal = _boneWorldsScratch[att.BoneIdx];
+                    bool isShield = string.Equals(att.SlotName, "es_shield_hand",
+                        StringComparison.OrdinalIgnoreCase);
+                    var model = isShield
+                        ? att.BindInv * shieldExtraRot * shieldExtraTrans * gripPreRot * gripPreTrans * boneLocal * _player.CurrentTransform
+                        : att.BindInv * gripPreRot * gripPreTrans * boneLocal * _player.CurrentTransform;
+                    _meshShader.SetMatrix4("uModel", model);
+                    if (att.Texture is not null)
+                    {
+                        att.Texture.Bind(TextureUnit.Texture0);
+                        _meshShader.SetInt("uHasTexture", 1);
+                    }
+                    else
+                    {
+                        _meshShader.SetInt("uHasTexture", 0);
+                    }
+                    att.Mesh.Draw();
+                }
+            }
         }
 
         // Phase 9-SC-7 — render the first item in each loot pile as its real
@@ -5815,7 +6164,18 @@ void main()
 
                 if (itemMesh is not null)
                 {
+                    // Phase 9-SC-10 — RestPitch tips items that don't sit
+                    // naturally upright (shields lay flat). While a throw is
+                    // in flight, fade the pitch in over the back half so it
+                    // doesn't pop on landing.
+                    float pitch = pile.RestPitch;
+                    if (pile.Throw is { } th2 && th2.Duration > 0f)
+                    {
+                        float pt = MathF.Min(1f, th2.Elapsed / th2.Duration);
+                        pitch *= MathF.Max(0f, (pt - 0.5f) * 2f);
+                    }
                     var model = Matrix4x4.CreateScale(itemScale)
+                              * Matrix4x4.CreateRotationX(pitch)
                               * Matrix4x4.CreateRotationY(pile.RotationY)
                               * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
                     _meshShader.SetMatrix4("uModel", model);
@@ -6232,6 +6592,15 @@ void main()
         foreach (var tex in _equipTexCache.Values)
             if (tex is not null && disposedEquipTex.Add(tex)) tex.Dispose();
         _equipTexCache.Clear();
+        // Phase 9-SC-10 — bone-attached props (shields, future quivers/torches).
+        // Each item owns its mesh + texture (no shared cache yet) so a flat
+        // sweep is safe.
+        foreach (var a in _attachedItems)
+        {
+            a.Mesh.Dispose();
+            a.Texture?.Dispose();
+        }
+        _attachedItems.Clear();
         _animTexture?.Dispose();
         _skinnedMesh?.Dispose();
         _texture?.Dispose();
@@ -6458,6 +6827,12 @@ void main()
                 _progression.RestoreGoldFromSave(ps.Gold);
             }
             _playerFacing = ps.Facing.ToVector3();
+            // 9-SC-10b — same reseed as on spawn so the body doesn't smear from
+            // its pre-load position to the loaded one over a single tick.
+            _playerRenderInit = false;
+            if (_playerFollower is not null)
+                _playerRenderPosPrev = _playerRenderPosNext = _playerFollower.Position;
+            _playerRenderFacingPrev = _playerRenderFacingNext = _playerFacing;
             _cameraMode   = (CameraMode)ps.CameraMode;
             _chaseYaw     = ps.ChaseYaw;
             _chaseDistance = ps.ChaseDistance;

@@ -108,27 +108,43 @@ public sealed class EquipmentResolver
     }
 
     /// <summary>Resolves every equipment slot on <paramref name="playerTemplate"/>'s
-    /// <c>[inventory][equipment]</c> block. Slots that fail to resolve (missing item
-    /// template, no mesh on disk) are returned with <see cref="Strategy.None"/> so
-    /// the caller can log them without crashing the spawn path.</summary>
+    /// <c>[inventory][equipment]</c> block. When <paramref name="liveSlots"/> is
+    /// supplied (e.g. the host's runtime equipment dict), iterate that instead of
+    /// the template — picked-up items override / extend the template's authored
+    /// loadout. Slots that fail to resolve (missing item template, no mesh on
+    /// disk) are returned with <see cref="Strategy.None"/> so the caller can log
+    /// them without crashing the spawn path.</summary>
     public static List<EquipmentLayer> Resolve(
-        TemplateStore templates, AssetResolver resolver, Template playerTemplate)
+        TemplateStore templates, AssetResolver resolver, Template playerTemplate,
+        IReadOnlyDictionary<string, string>? liveSlots = null)
     {
         var layers = new List<EquipmentLayer>();
-        var equip = templates.GetSection(playerTemplate, "inventory", "equipment");
-        if (equip is null) return layers;
-
         var armorVersion = templates.GetAttribute(playerTemplate, "body", "armor_version");
         var bodyModel = templates.GetAttribute(playerTemplate, "aspect", "model");
         var bodyType = ExtractBodyType(bodyModel); // e.g. m_c_gah_fb_pos_a1 → a1
         var weaponBone = templates.GetAttribute(playerTemplate, "body", "bone_translator", "weapon_bone");
         var shieldBone = templates.GetAttribute(playerTemplate, "body", "bone_translator", "shield_bone");
 
-        foreach (var attr in equip.Attributes)
+        IEnumerable<KeyValuePair<string, string>> source;
+        if (liveSlots is not null)
         {
-            if (!attr.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
-            var slot = attr.Name.Trim();
-            var itemRef = attr.Value?.Trim();
+            source = liveSlots;
+        }
+        else
+        {
+            var equip = templates.GetSection(playerTemplate, "inventory", "equipment");
+            if (equip is null) return layers;
+            var fromTemplate = new List<KeyValuePair<string, string>>(equip.Attributes.Count);
+            foreach (var attr in equip.Attributes)
+                fromTemplate.Add(new KeyValuePair<string, string>(attr.Name, attr.Value ?? ""));
+            source = fromTemplate;
+        }
+
+        foreach (var pair in source)
+        {
+            if (!pair.Key.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
+            var slot = pair.Key.Trim();
+            var itemRef = pair.Value?.Trim();
             if (string.IsNullOrEmpty(itemRef)) continue;
             layers.Add(ResolveSlot(templates, resolver,
                 slot, itemRef, armorVersion, bodyType, weaponBone, shieldBone));
