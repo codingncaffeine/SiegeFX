@@ -1337,13 +1337,17 @@ goto MENU
 
 :T69
 echo.
-echo --- Phase 10-SC-1: trigger matrix parser + dispatcher (fh_r1) ---
-echo [expect: 64/93 placements bear [instance_triggers], 73 rows, condition verbs]
-echo [actor_within_sphere/party_member_within_sphere/_bbox/_node + receive_world_message]
-echo [dispatched; entered/left_trigger_group still cold; action verbs: send_world_message,]
-echo [mood_change, set_interest_radius, fade_node{,s,_global} all fire on dry-tick.]
+echo --- Phase 10-SC-1/b/c: trigger matrix parser + dispatcher ---
+echo [fh_r1 expect: 64 placements bear [instance_triggers]; entered/left_trigger_group]
+echo [warm via the synthetic trip-tick (entered=4, left=4) — proves SC-1b occupants pass.]
+echo [cr_r1 expect: 92 placements, 23 when_false actions deferred to falling edge;]
+echo [trip-tick at the @-0.04,-1.2,-0.04 placement reports when_false^>0 — proves SC-1c.]
 echo.
+echo --- fh_r1 (SC-1b: occupants/entered/left) ---
 "%TOOL%" region triggers "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+echo --- cr_r1 (SC-1c: when_false falling-edge dispatch) ---
+"%TOOL%" region triggers "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" /world/maps/map_world/regions/cr_r1
 pause
 goto MENU
 

@@ -4046,7 +4046,14 @@ static int CmdRegionTriggers(string[] a)
     var conditionVerbs = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     var actionVerbs    = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     var matrixOwners = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-    int rowsTotal = 0, withMatrix = 0;
+    var occupantsGroups = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+    int rowsTotal = 0, withMatrix = 0, whenFalseActions = 0, occupantsRows = 0;
+    // The trip-tick prefers a placement whose row carries when_false (falling-edge proof);
+    // failing that, an occupants_group producer (entered/left proof); failing that, any
+    // matrix placement (smoke test the dispatcher walks rows without throwing).
+    System.Numerics.Vector3? firstWhenFalsePos = null;
+    System.Numerics.Vector3? firstOccupantsPos = null;
+    System.Numerics.Vector3? firstMatrixPos = null;
 
     var runtime = new TriggerRuntime();
     foreach (var p in placements)
@@ -4058,11 +4065,43 @@ static int CmdRegionTriggers(string[] a)
         rowsTotal += matrix.Rows.Count;
         matrixOwners.TryGetValue(p.TemplateName, out var n);
         matrixOwners[p.TemplateName] = n + 1;
+        firstMatrixPos ??= p.Placement.LocalPosition;
+        bool placementHasWhenFalseDispatchable = false;
+        bool rowHasOccupants = false;
         foreach (var row in matrix.Rows)
         {
-            foreach (var c in row.Conditions) Bump(conditionVerbs, c.Verb);
-            foreach (var act in row.Actions)  Bump(actionVerbs, act.Verb);
+            bool rowHasWhenFalse = false;
+            bool rowHasAnswerableCondition = false;
+            foreach (var c in row.Conditions)
+            {
+                Bump(conditionVerbs, c.Verb);
+                if (c.Verb.Equals("party_member_within_sphere",        StringComparison.OrdinalIgnoreCase)
+                 || c.Verb.Equals("party_member_within_bounding_box",  StringComparison.OrdinalIgnoreCase)
+                 || c.Verb.Equals("party_member_within_node",          StringComparison.OrdinalIgnoreCase))
+                    rowHasAnswerableCondition = true;
+            }
+            foreach (var act in row.Actions)
+            {
+                Bump(actionVerbs, act.Verb);
+                if (act.WhenFalse) { whenFalseActions++; rowHasWhenFalse = true; }
+            }
+            // Only nominate this placement for the when_false trip-tick when the row
+            // pairs when_false with a condition the synthetic party context can drive
+            // (volume tests). Otherwise the rising edge never fires → no falling edge.
+            // single_shot rows are still excluded: they latch FiredOnce on the rising
+            // edge so the falling edge never re-evaluates. flip_flop is fine — the
+            // runtime treats it as inert (see TriggerRuntime.EvaluateInstance).
+            if (rowHasWhenFalse && rowHasAnswerableCondition && !row.SingleShot)
+                placementHasWhenFalseDispatchable = true;
+            if (row.OccupantsGroup.Length > 0)
+            {
+                occupantsGroups.Add(row.OccupantsGroup);
+                occupantsRows++;
+                rowHasOccupants = true;
+            }
         }
+        if (placementHasWhenFalseDispatchable) firstWhenFalsePos ??= p.Placement.LocalPosition;
+        if (rowHasOccupants) firstOccupantsPos ??= p.Placement.LocalPosition;
         runtime.Register(new TriggerInstance(p.Scid, p.Placement.NodeGuid,
             p.Placement.LocalPosition, matrix, startActive: matrix.Rows[0].StartActive));
     }
@@ -4091,6 +4130,13 @@ static int CmdRegionTriggers(string[] a)
     foreach (var (verb, count) in actionVerbs)
         Console.WriteLine($"  {count,4}  {verb}{(IsActionDispatched(verb) ? "" : "   [parsed, not yet dispatched]")}");
 
+    Console.WriteLine();
+    Console.WriteLine($"occupants   : {occupantsRows} producer rows authoring " +
+                      $"{occupantsGroups.Count} distinct trigger_groups");
+    if (occupantsGroups.Count > 0)
+        foreach (var g in occupantsGroups) Console.WriteLine($"  · {g}");
+    Console.WriteLine($"when_false  : {whenFalseActions} actions deferred to falling edge");
+
     // Dispatch one synthetic tick with a no-op context. The runtime should walk every
     // row without throwing; condition verbs that need world state report false against
     // the empty context, and the smoke-test confirms the dispatcher handles the parsed
@@ -4100,6 +4146,35 @@ static int CmdRegionTriggers(string[] a)
     Console.WriteLine($"dry-tick    : {runtime.Instances.Count} instances iterated, " +
                       $"{runtime.ActionFireCounts.Sum(kv => kv.Value)} actions fired " +
                       $"(empty world ⇒ no condition satisfaction expected)");
+
+    // Phase 10-SC-1b/c smoke test: drive a synthetic party member to the first
+    // matrix-bearing placement so volume conditions fire on tick 1 (arrive) and the
+    // falling edge fires on tick 2 (depart). Captures hit counts for entered/left
+    // trigger_group and the when_false dispatches separately.
+    var pickPos = firstWhenFalsePos ?? firstOccupantsPos ?? firstMatrixPos;
+    var pickKind = firstWhenFalsePos is not null ? "when_false placement"
+        : firstOccupantsPos is not null ? "occupants placement"
+        : "first matrix placement";
+    if (pickPos is { } here)
+    {
+        var trip = new TriggerRuntime();
+        foreach (var inst in runtime.Instances)
+            trip.Register(new TriggerInstance(inst.Scid, inst.NodeGuid, inst.Position,
+                inst.Matrix, startActive: inst.Matrix.Rows[0].StartActive));
+        var ctx = new SyntheticPartyContext { Position = here };
+        trip.Tick(1.0 / 20, ctx);                  // tick 1: arrive
+        int firesAfterArrive = trip.ActionFireCounts.Sum(kv => kv.Value);
+        ctx.Position = new System.Numerics.Vector3(1e6f, 1e6f, 1e6f);
+        trip.Tick(1.0 / 20, ctx);                  // tick 2: leave
+        int firesTotal = trip.ActionFireCounts.Sum(kv => kv.Value);
+        var entered = trip.ConditionHitCounts.TryGetValue("party_member_entered_trigger_group", out var ne) ? ne : 0;
+        var left    = trip.ConditionHitCounts.TryGetValue("party_member_left_trigger_group",    out var nl) ? nl : 0;
+        Console.WriteLine();
+        Console.WriteLine($"trip-tick   : @{here.X:0.##},{here.Y:0.##},{here.Z:0.##} ({pickKind}) → away → "
+            + $"arrive-fires={firesAfterArrive}, depart-fires={firesTotal - firesAfterArrive} "
+            + $"(when_false={trip.WhenFalseFireCount}), entered={entered}, left={left}");
+    }
+
     return 0;
 
     static void Bump(SortedDictionary<string, int> dict, string key)
@@ -4111,6 +4186,7 @@ static int CmdRegionTriggers(string[] a)
     {
         "actor_within_sphere" or "go_within_sphere" or "party_member_within_sphere" or
         "party_member_within_bounding_box" or "party_member_within_node" or
+        "party_member_entered_trigger_group" or "party_member_left_trigger_group" or
         "receive_world_message" => true,
         _ => false,
     };
@@ -5649,4 +5725,19 @@ static int CmdPcontentDump(string[] a)
         PcontentResolver.Rarity.Unique => "un",
         _                              => "g ",
     };
+}
+
+/// <summary>Audit-CLI helper: pretends a single party member sits at <see cref="Position"/>.
+/// Used by `siegefx region triggers` to drive a synthetic enter/leave through the first
+/// producer placement so the SC-1b/SC-1c paths get exercised on every run.</summary>
+sealed class SyntheticPartyContext : SiegeFX.Core.Actors.TriggerContext
+{
+    public System.Numerics.Vector3 Position;
+    public override bool PartyMemberWithinSphere(System.Numerics.Vector3 c, float r)
+        => (Position - c).LengthSquared() <= r * r;
+    public override bool PartyMemberWithinAabb(System.Numerics.Vector3 c, float hx, float hy, float hz)
+    {
+        var d = Position - c;
+        return MathF.Abs(d.X) <= hx && MathF.Abs(d.Y) <= hy && MathF.Abs(d.Z) <= hz;
+    }
 }

@@ -196,13 +196,18 @@ public sealed class TriggerCall
     /// <summary>Per-call delay from a <c>delay(N)</c> option tag. Stacks with the
     /// row-level delay.</summary>
     public float CallDelay { get; }
+    /// <summary>Phase 10-SC-1c — author-side <c>when_false</c> prefix. The action fires
+    /// on the row's true→false transition (e.g., "fade in" when the player leaves the
+    /// trigger box) instead of on every-tick-true. Conditions don't use this prefix.</summary>
+    public bool WhenFalse { get; }
 
-    internal TriggerCall(string verb, IReadOnlyList<string> args, int group, float callDelay)
+    internal TriggerCall(string verb, IReadOnlyList<string> args, int group, float callDelay, bool whenFalse)
     {
         Verb = verb;
         Args = args;
         Group = group;
         CallDelay = callDelay;
+        WhenFalse = whenFalse;
     }
 
     public override string ToString() =>
@@ -221,7 +226,19 @@ public sealed class TriggerCall
             return false;
         }
 
-        if (!TryParseCall(tokens[0], out var verb, out var args))
+        // The when_false prefix sits before the verb call inside the same top-level token,
+        // e.g. `when_false fade_node(0,"in")`. Lift it before splitting verb from args.
+        var head = tokens[0].TrimStart();
+        bool whenFalse = false;
+        const string prefix = "when_false";
+        if (head.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && head.Length > prefix.Length && char.IsWhiteSpace(head[prefix.Length]))
+        {
+            whenFalse = true;
+            head = head[prefix.Length..].TrimStart();
+        }
+
+        if (!TryParseCall(head, out var verb, out var args))
         {
             diagnostics?.Add($"{sourceLabel}: malformed trigger call '{tokens[0]}'");
             return false;
@@ -250,7 +267,7 @@ public sealed class TriggerCall
             }
         }
 
-        call = new TriggerCall(verb, args, group, callDelay);
+        call = new TriggerCall(verb, args, group, callDelay, whenFalse);
         return true;
     }
 

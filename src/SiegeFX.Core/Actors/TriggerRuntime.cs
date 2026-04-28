@@ -28,6 +28,15 @@ public sealed class TriggerRuntime
     public IReadOnlyList<TriggerInstance> Instances => _instances;
     public double NowSeconds => _now;
 
+    /// <summary>Phase 10-SC-1b — occupancy of named trigger_groups this tick.
+    /// A row that authors <c>occupants_group = NAME</c> with a satisfied volume condition
+    /// (party_member_within_sphere / _bounding_box / _node) marks NAME occupied; consumer
+    /// rows (<c>party_member_entered/left_trigger_group(NAME, ...)</c>) compare current vs
+    /// previous to fire on transitions.</summary>
+    public IReadOnlyDictionary<string, bool> Occupants => _occupiedNow;
+    Dictionary<string, bool> _occupiedNow = new(StringComparer.OrdinalIgnoreCase);
+    Dictionary<string, bool> _occupiedPrev = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Counts of every action verb fired since runtime start. Exposed so the
     /// audit CLI and runtime smoke tests can confirm dispatch coverage matches the
     /// authored <c>action*</c> mix.</summary>
@@ -39,6 +48,12 @@ public sealed class TriggerRuntime
     /// vs. which are wired-but-cold.</summary>
     public IReadOnlyDictionary<string, int> ConditionHitCounts => _conditionHits;
     readonly Dictionary<string, int> _conditionHits = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Subset of <see cref="ActionFireCounts"/> that came from <c>when_false</c>
+    /// dispatches. Lets the audit CLI demonstrate falling-edge wiring independently of
+    /// the regular action fire count.</summary>
+    public int WhenFalseFireCount => _whenFalseFires;
+    int _whenFalseFires;
 
     public void Register(TriggerInstance trigger) => _instances.Add(trigger);
 
@@ -60,11 +75,64 @@ public sealed class TriggerRuntime
             }
         }
 
+        // Phase 10-SC-1b producer pass — recompute occupants_group membership before
+        // any consumer row evaluates entered/left. Two-pass keeps the producer's volume
+        // check authoritative for this tick: rotate now → prev (cheap, dicts are tiny),
+        // then refill _occupiedNow from active producer rows.
+        (_occupiedPrev, _occupiedNow) = (_occupiedNow, _occupiedPrev);
+        _occupiedNow.Clear();
+        for (int i = 0; i < _instances.Count; i++)
+        {
+            var trig = _instances[i];
+            if (!trig.IsActive) continue;
+            UpdateOccupantsForInstance(trig, ctx);
+        }
+
         for (int i = 0; i < _instances.Count; i++)
         {
             var trig = _instances[i];
             if (!trig.IsActive) continue;
             EvaluateInstance(trig, ctx);
+        }
+    }
+
+    void UpdateOccupantsForInstance(TriggerInstance trig, TriggerContext ctx)
+    {
+        var matrix = trig.Matrix;
+        for (int r = 0; r < matrix.Rows.Count; r++)
+        {
+            var row = matrix.Rows[r];
+            if (row.OccupantsGroup.Length == 0) continue;
+            for (int c = 0; c < row.Conditions.Count; c++)
+            {
+                if (EvaluateOccupancyVolume(trig, row.Conditions[c], ctx))
+                {
+                    _occupiedNow[row.OccupantsGroup] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Stateless variant of <see cref="EvaluateCondition"/> that handles only the
+    /// volume verbs used to populate occupants_group. Side-effect free so the producer
+    /// pass can run before condition-hit counters get bumped by the main eval loop.</summary>
+    static bool EvaluateOccupancyVolume(TriggerInstance trig, TriggerCall cond, TriggerContext ctx)
+    {
+        switch (cond.Verb.ToLowerInvariant())
+        {
+            case "party_member_within_sphere":
+                return TryFloatArg(cond, 0, out var radius)
+                    && ctx.PartyMemberWithinSphere(trig.Position, radius);
+            case "party_member_within_bounding_box":
+                return TryFloatArg(cond, 0, out var hx)
+                    && TryFloatArg(cond, 1, out var hy)
+                    && TryFloatArg(cond, 2, out var hz)
+                    && ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
+            case "party_member_within_node":
+                return ctx.PartyMemberWithinNode(trig.NodeGuid);
+            default:
+                return false;
         }
     }
 
@@ -97,25 +165,48 @@ public sealed class TriggerRuntime
                 }
             }
 
-            if (!anySatisfied) continue;
+            // Phase 10-SC-1c — falling edge: row was satisfied last tick but isn't now.
+            // Fire when_false actions; they're the only way DS1 author "fade in on leave".
+            bool fallingEdge = state.ConditionHeld && !anySatisfied;
+            state.ConditionHeld = anySatisfied;
+
+            if (!anySatisfied)
+            {
+                if (fallingEdge)
+                {
+                    for (int a = 0; a < row.Actions.Count; a++)
+                    {
+                        var act = row.Actions[a];
+                        if (!act.WhenFalse) continue;
+                        ScheduleAction(trig, row, act, ctx);
+                    }
+                }
+                continue;
+            }
 
             // Actions: untagged actions (group 0) fire whenever any condition
             // satisfied. Tagged actions only fire when their group matches a
-            // satisfied condition's group.
+            // satisfied condition's group. when_false actions sit out the
+            // any-true frame — they only fire on the falling edge above.
             for (int a = 0; a < row.Actions.Count; a++)
             {
                 var act = row.Actions[a];
+                if (act.WhenFalse) continue;
                 if (act.Group != 0 && !firedGroups.Contains(act.Group)) continue;
                 ScheduleAction(trig, row, act, ctx);
             }
 
             state.FiredOnce = true;
-            // reset_duration acts as a per-row cooldown after firing. flip_flop swaps
-            // active state; we record both effects here so the next Tick sees them.
+            // reset_duration acts as a per-row cooldown after firing.
+            // flip_flop is intentionally NOT toggling instance.IsActive: shipped DS1
+            // rows pair `flip_flop = true` with explicit `when_false` actions whose
+            // author intent is "enter activates, leave deactivates" — toggling the
+            // instance off after enter would silence the falling-edge dispatch and
+            // leave the leave-side action stranded. The actual alternation between
+            // sides is already expressed by `when_false`; we treat flip_flop as a
+            // documented-but-inert flag pending direct repro from a row that needs it.
             if (row.ResetDuration > 0f)
                 state.NextEligibleAt = _now + row.ResetDuration;
-            if (row.FlipFlop)
-                trig.IsActive = !trig.IsActive;
         }
     }
 
@@ -155,11 +246,21 @@ public sealed class TriggerRuntime
             case "party_member_within_node":
                 return ctx.PartyMemberWithinNode(trig.NodeGuid);
             case "party_member_entered_trigger_group":
+            {
+                if (cond.Args.Count == 0) return false;
+                var name = cond.Args[0];
+                bool now  = _occupiedNow.TryGetValue(name, out var n) && n;
+                bool prev = _occupiedPrev.TryGetValue(name, out var p) && p;
+                return now && !prev;
+            }
             case "party_member_left_trigger_group":
-                // These need region-occupancy bookkeeping (an "occupants set" per group).
-                // Phase 10-SC-1 surfaces them as parsed but cold; the audit CLI flags the
-                // gap so we can splinter the occupants tracker out as its own SC.
-                return false;
+            {
+                if (cond.Args.Count == 0) return false;
+                var name = cond.Args[0];
+                bool now  = _occupiedNow.TryGetValue(name, out var n) && n;
+                bool prev = _occupiedPrev.TryGetValue(name, out var p) && p;
+                return prev && !now;
+            }
             case "receive_world_message":
             {
                 // Drained against the per-row inbox the runtime fills from message-bus
@@ -176,6 +277,7 @@ public sealed class TriggerRuntime
     void Dispatch(TriggerInstance trig, TriggerCall act, TriggerContext ctx, bool deferred)
     {
         Bump(_actionFireCounts, act.Verb);
+        if (act.WhenFalse) _whenFalseFires++;
         switch (act.Verb.ToLowerInvariant())
         {
             case "send_world_message":
@@ -199,9 +301,6 @@ public sealed class TriggerRuntime
             case "fade_nodes_global":
                 ctx.FadeNodes(act.Args);
                 return;
-            // when_false is a row modifier in DS1 — fires the next action only when the
-            // condition is false. We surface it for parser coverage but treat it as a
-            // no-op until SC-1b wires the negated-evaluation pass.
         }
     }
 
@@ -250,6 +349,10 @@ public struct TriggerRowState
 {
     public bool FiredOnce;
     public double NextEligibleAt;
+    /// <summary>Phase 10-SC-1c — last tick's "any condition satisfied" answer for this
+    /// row, used to detect the true→false falling edge that drives <c>when_false</c>
+    /// actions.</summary>
+    public bool ConditionHeld;
     /// <summary>Pending world-message names that landed on this row's owning trigger
     /// since the last evaluation. Each receive_world_message condition consumes its
     /// match. We cap to a tiny ring buffer because shipped DS1 trigger inboxes never
