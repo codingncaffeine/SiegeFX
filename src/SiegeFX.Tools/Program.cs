@@ -31,6 +31,7 @@ try
         "loot"      => DispatchLoot(args[1..]),
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
+        "sfx"       => DispatchSfx(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
@@ -117,6 +118,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx spells elements    <Logic.dsres>");
+    Console.WriteLine("  siegefx sfx list           <Logic.dsres> [--prefix=NAME]");
+    Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
@@ -5130,6 +5133,70 @@ static int CmdSpellsElements(string[] a)
         foreach (var s in kv.Value.OrderBy(s => s.Name))
             Console.WriteLine($"    {s.Name,-32} \"{s.ScreenName}\"");
     }
+    return 0;
+}
+
+// Phase 17-SC-D: dispatch + commands for the sfx_script store. Lets us
+// inventory the shipped /world/global/effects/*.gas pile and dump any
+// single script body (fireball, smoke_emitter, waterfall_froth, ...) so
+// the interpreter we build in SC-F has a verifiable source of truth.
+static int DispatchSfx(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "list" => CmdSfxList(a[1..]),
+        "show" => CmdSfxShow(a[1..]),
+        _      => UnknownCommand("sfx " + a[0]),
+    };
+}
+
+static int CmdSfxList(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx sfx list <Logic.dsres> [--prefix=NAME]"); return 1; }
+    string? prefix = null;
+    for (int i = 1; i < a.Length; i++)
+        if (a[i].StartsWith("--prefix=", StringComparison.Ordinal))
+            prefix = a[i]["--prefix=".Length..];
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var store = SfxScriptStore.LoadFromTank(reader);
+
+    var byFile = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    int shown = 0;
+    var picked = store.All.OrderBy(s => s.Name).ToList();
+    foreach (var s in picked)
+    {
+        byFile.TryGetValue(s.SourcePath, out var n);
+        byFile[s.SourcePath] = n + 1;
+        if (prefix is not null && !s.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+        Console.WriteLine($"  {s.Name,-32}  {s.SourcePath}");
+        shown++;
+    }
+    Console.WriteLine();
+    Console.WriteLine($"sfx scripts: {store.Count} total ({shown} shown)");
+    foreach (var kv in byFile)
+        Console.WriteLine($"  {kv.Value,5} from {kv.Key}");
+    return 0;
+}
+
+static int CmdSfxShow(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx sfx show <Logic.dsres> <script-name>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var store = SfxScriptStore.LoadFromTank(reader);
+    if (!store.TryGet(a[1], out var s))
+    {
+        Console.Error.WriteLine($"no sfx_script named '{a[1]}' in {SfxScriptStore.EffectsDir}");
+        return 4;
+    }
+    Console.WriteLine($"name   : {s.Name}");
+    Console.WriteLine($"source : {s.SourcePath}");
+    Console.WriteLine($"body   : {s.Body.Length} chars");
+    Console.WriteLine();
+    Console.WriteLine(s.Body);
     return 0;
 }
 

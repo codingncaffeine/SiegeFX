@@ -149,6 +149,7 @@ echo   76. Phase 17-SC-A1 - SpellExpr ** power op (spells survey + show fireball
 echo   77. Phase 17-SC-A2/A3 - SpellExpr placeholders + ternary (spells eval / show freeze)
 echo   78. Phase 17-SC-B    - Per-element spell projectile/impact VFX (spells elements)
 echo   79. Phase 17-SC-C    - Player chore_magic plays during moving casts
+echo   80. Phase 17-SC-D    - SfxScriptStore inventory (1074 effect_script* across 14 gas files)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -234,6 +235,7 @@ if /i "%CHOICE%"=="76" goto T76
 if /i "%CHOICE%"=="77" goto T77
 if /i "%CHOICE%"=="78" goto T78
 if /i "%CHOICE%"=="79" goto T79
+if /i "%CHOICE%"=="80" goto T80
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1535,6 +1537,25 @@ echo [override has a real clip to land on. (Visual confirmation: cast spell_zap]
 echo [while click-to-moving — the cast pose now reads instead of the walk cycle.)]
 echo.
 "%TOOL%" templates show "%DS1%\Resources\Logic.dsres" farmboy ^| findstr /R "chore_"
+echo.
+pause
+goto MENU
+
+:T80
+echo.
+echo --- Phase 17-SC-D: SfxScriptStore inventory + sample bodies ---
+echo [DS1's particle / spell-VFX system is driven by [effect_script*] blocks under]
+echo [/world/global/effects/. Each block names a script (fireball, smoke_emitter,]
+echo [waterfall_froth, ...) and stores a stack-based DSL body in script=[[ ... ]];.]
+echo [SC-D parses the lot and exposes them via 'siegefx sfx list / show'.]
+echo [Receipt: 1074 scripts across 14 gas files; 'fireball' resolves to offensive.gas,]
+echo [smoke_emitter to environmental.gas, waterfall_froth to environmental.gas.]
+echo.
+echo === sfx list (top of the catalog) ===
+"%TOOL%" sfx list "%DS1%\Resources\Logic.dsres" --prefix=fireball
+echo.
+echo === sfx show smoke_emitter ===
+"%TOOL%" sfx show "%DS1%\Resources\Logic.dsres" smoke_emitter
 echo.
 pause
 goto MENU
