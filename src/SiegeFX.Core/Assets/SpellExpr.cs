@@ -6,14 +6,21 @@ namespace SiegeFX.Core.Assets;
 /// Tiny arithmetic evaluator for the formula strings DS1 uses inside
 /// <c>[magic]</c> blocks — things like
 /// <c>(((#magic+5.51)-1/((#magic+1)/3))*1.23)*(1+((1/(#magic+3.3))+0.03))</c>
-/// for spell damage scaling. Only what shipped data actually needs:
-/// numeric literals, <c>#magic</c> substitution, <c>+ - * /</c>, parentheses.
+/// for spell damage scaling. Covers what shipped data actually needs:
+/// numeric literals, <c>#magic</c> substitution, parentheses, <c>+ - * /</c>,
+/// and the right-associative <c>**</c> power operator (~19 offensive spells —
+/// fireball, iceshard, acid_cloud, etc. — encode their level scaling as
+/// <c>(#magic+1)**1.15</c> and friends; without this they read as zero).
 ///
 /// Recursive-descent, no allocations beyond the Tokenizer cursor — these
 /// formulas are short (max ~120 chars) and we evaluate one per cast at most.
 /// Returns <c>0</c> for parse failures rather than throwing; the caller
 /// (<see cref="SpellTemplate"/>) treats a zero damage roll as "spell does
 /// nothing" which is identical to how DS1 fails-soft on bad data.
+///
+/// Precedence (low → high): <c>+ -</c> &lt; <c>* /</c> &lt; <c>**</c> &lt;
+/// unary <c>+ -</c> &lt; primary. Power binds tighter than mul/div so
+/// <c>(#magic+1)**1.15*1.92</c> reads as <c>((#magic+1)**1.15)*1.92</c>.
 /// </summary>
 public static class SpellExpr
 {
@@ -67,20 +74,37 @@ public static class SpellExpr
 
         float ParseMulDiv()
         {
-            float left = ParseUnary();
+            float left = ParsePower();
             while (true)
             {
                 Skip();
                 if (_i >= _s.Length) break;
+                // Don't consume the first '*' of a '**' here — ParsePower handles
+                // the power operator on the LHS before we even reach this loop,
+                // and the RHS path goes through ParsePower again below.
+                if (_i + 1 < _s.Length && _s[_i] == '*' && _s[_i + 1] == '*') break;
                 char c = _s[_i];
                 if (c == '*' || c == '/')
                 {
                     _i++;
-                    float right = ParseUnary();
+                    float right = ParsePower();
                     if (c == '*') left = left * right;
                     else left = right == 0f ? 0f : left / right;
                 }
                 else break;
+            }
+            return left;
+        }
+
+        float ParsePower()
+        {
+            float left = ParseUnary();
+            Skip();
+            if (_i + 1 < _s.Length && _s[_i] == '*' && _s[_i + 1] == '*')
+            {
+                _i += 2;
+                float right = ParsePower(); // right-associative: a**b**c = a**(b**c)
+                return MathF.Pow(left, right);
             }
             return left;
         }

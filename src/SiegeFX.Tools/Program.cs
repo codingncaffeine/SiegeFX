@@ -4982,13 +4982,91 @@ static int CmdBalanceCurve(string[] a)
 
 static int DispatchSpells(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "dump" => CmdSpellsDump(a[1..]),
-        "show" => CmdSpellsShow(a[1..]),
-        _      => UnknownCommand("spells " + a[0]),
+        "dump"   => CmdSpellsDump(a[1..]),
+        "show"   => CmdSpellsShow(a[1..]),
+        "survey" => CmdSpellsSurvey(a[1..]),
+        _        => UnknownCommand("spells " + a[0]),
     };
+}
+
+// Phase 17-SC-A: survey all spell_* templates and report which operators
+// (** ^ %) and #-placeholders appear in their [magic] block damage / mana /
+// heal expressions. Used to scope SpellExpr coverage gaps. Walks
+// attack_damage_modifier_min/max + mana_cost_modifier on every spell_*
+// template + walks the alter_life enchantment value for self-heal spells.
+static int CmdSpellsSurvey(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx spells survey <Logic.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+
+    var ops = new SortedDictionary<string, int>();
+    var phs = new SortedDictionary<string, int>();
+    var sampleByOp = new Dictionary<string, (string spell, string expr)>();
+    var sampleByPh = new Dictionary<string, (string spell, string expr)>();
+    int spellCount = 0, exprCount = 0;
+
+    void Inspect(string spell, string expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return;
+        exprCount++;
+        // Operators of interest beyond what SpellExpr currently handles (+ - * /).
+        if (expr.Contains("**")) { ops["**"] = ops.GetValueOrDefault("**") + 1; sampleByOp.TryAdd("**", (spell, expr)); }
+        if (expr.Contains('^')) { ops["^"] = ops.GetValueOrDefault("^") + 1;  sampleByOp.TryAdd("^",  (spell, expr)); }
+        if (expr.Contains('%')) { ops["%"] = ops.GetValueOrDefault("%") + 1;  sampleByOp.TryAdd("%",  (spell, expr)); }
+        for (int i = 0; i < expr.Length; i++)
+        {
+            if (expr[i] != '#') continue;
+            int s = ++i;
+            while (i < expr.Length && (char.IsLetterOrDigit(expr[i]) || expr[i] == '_')) i++;
+            var name = expr.Substring(s, i - s);
+            phs[name] = phs.GetValueOrDefault(name) + 1;
+            sampleByPh.TryAdd(name, (spell, expr));
+            i--;
+        }
+    }
+
+    foreach (var t in store.All)
+    {
+        if (!t.Name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) continue;
+        spellCount++;
+        Inspect(t.Name, store.GetAttribute(t, "magic", "attack_damage_modifier_min") ?? "");
+        Inspect(t.Name, store.GetAttribute(t, "magic", "attack_damage_modifier_max") ?? "");
+        Inspect(t.Name, store.GetAttribute(t, "magic", "mana_cost_modifier") ?? "");
+        var ench = store.GetSection(t, "magic", "enchantments");
+        if (ench is not null)
+        {
+            foreach (var child in ench.Children)
+            {
+                if (!string.Equals((TemplateStore.FindAttr(child, "alteration") ?? "").Trim().Trim('"'),
+                                   "alter_life", StringComparison.OrdinalIgnoreCase)) continue;
+                Inspect(t.Name, TemplateStore.FindAttr(child, "value") ?? "");
+            }
+        }
+    }
+
+    Console.WriteLine($"spell_* templates    : {spellCount}");
+    Console.WriteLine($"non-empty exprs scanned: {exprCount}");
+    Console.WriteLine();
+    Console.WriteLine("operators beyond + - * /:");
+    if (ops.Count == 0) Console.WriteLine("  (none)");
+    foreach (var kv in ops)
+    {
+        var samp = sampleByOp[kv.Key];
+        Console.WriteLine($"  {kv.Key,-3} -> {kv.Value,3}    e.g. {samp.spell}: {samp.expr}");
+    }
+    Console.WriteLine();
+    Console.WriteLine("placeholders:");
+    foreach (var kv in phs)
+    {
+        var samp = sampleByPh[kv.Key];
+        Console.WriteLine($"  #{kv.Key,-12} -> {kv.Value,3}    e.g. {samp.spell}: {samp.expr}");
+    }
+    return 0;
 }
 
 static int CmdSpellsDump(string[] a)

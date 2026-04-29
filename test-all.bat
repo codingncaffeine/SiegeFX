@@ -145,6 +145,7 @@ echo   72. Phase 11-SC-7 - Land water seam stitching (fh_r1 nav + amphibious pat
 echo   73. Phase 12-SC-3 - Mob loot frequency vs DS1 retail (krug_grunt/krug_scout/gremal)
 echo   74. Phase 12-SC-4/5 - Death pose + weapon-class attack chore (VISUAL, fh_r1)
 echo   75. Phase 12-SC-6 - PRS TRCR resync (Objects.dsres prs fuzz, expect 1855 v3 OK + 131 tracers)
+echo   76. Phase 17-SC-A1 - SpellExpr ** power op (spells survey + show fireball/iceshard)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -226,6 +227,7 @@ if /i "%CHOICE%"=="72" goto T72
 if /i "%CHOICE%"=="73" goto T73
 if /i "%CHOICE%"=="74" goto T74
 if /i "%CHOICE%"=="75" goto T75
+if /i "%CHOICE%"=="76" goto T76
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1450,6 +1452,25 @@ echo [Expected: 1962 / 1962 OK, 0 failures, 131 with tracers, 0 legacy-skip.]
 echo [Versions OK: 0x3=1855, 0x202=62, 0x302=45 (v3 climbed 1724 -> 1855).]
 echo.
 "%TOOL%" prs fuzz "%DS1%\Resources\Objects.dsres"
+echo.
+pause
+goto MENU
+
+:T76
+echo.
+echo --- Phase 17-SC-A1: SpellExpr ** power operator ---
+echo [Survey: shows 19 spells use ** (fireball, iceshard, acid_cloud, etc.) and lists]
+echo [the placeholder set (#magic + #maxlife/#life/#src_mana/#src_life — last four are]
+echo [SC-A2 territory; ternary [[?:]] in healing_hands is SC-A3).]
+echo [Show fireball: pre-fix every level rolled dmg=0 because ParseMulDiv ate one star]
+echo [of the ** pair. Post-fix L1 [3.85..4.67], L100 [376..399], scaling by ~96x.]
+echo [Show iceshard: pre-fix L1 [1.66..2.54] flat. Post-fix L1 [3.54..5.42] -> L100 [284..361].]
+echo.
+"%TOOL%" spells survey "%DS1%\Resources\Logic.dsres"
+echo.
+"%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_fireball
+echo.
+"%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_iceshard
 echo.
 pause
 goto MENU
