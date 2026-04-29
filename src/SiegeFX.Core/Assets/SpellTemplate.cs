@@ -139,11 +139,22 @@ public sealed class SpellTemplate
     /// without standing up an effect-script runtime.</summary>
     public string HealAmountExpr { get; }
 
+    /// <summary>Phase 17-SC-H — name of the sfx_script the template's
+    /// <c>[common][template_triggers]</c> matrix invokes on
+    /// <c>we_req_cast</c> (the actual cast event, not the charge-up).
+    /// Empty string when the template chain has no such trigger row, in
+    /// which case the renderer falls back to the legacy dot-trail bolt.
+    /// SfxRuntime.Spawn with this name reproduces DS1's per-spell
+    /// projectile + impact visuals (fireball -> fire+smoke columns,
+    /// zap -> lightning burst, etc.) instead of the placeholder trail.</summary>
+    public string CastSfxScript { get; }
+
     SpellTemplate(string name, string screenName, SpellKind kind,
         float castRange, float castReloadDelay,
         float baseManaCost, string manaCostModifierExpr,
         string attackDamageMinExpr, string attackDamageMaxExpr,
-        string healAmountExpr)
+        string healAmountExpr,
+        string castSfxScript)
     {
         Name = name;
         ScreenName = screenName;
@@ -156,6 +167,7 @@ public sealed class SpellTemplate
         AttackDamageMinExpr = attackDamageMinExpr;
         AttackDamageMaxExpr = attackDamageMaxExpr;
         HealAmountExpr = healAmountExpr;
+        CastSfxScript = castSfxScript;
     }
 
     /// <summary>Mana to charge for a cast against <paramref name="ctx"/>.
@@ -230,6 +242,7 @@ public sealed class SpellTemplate
             float.TryParse(costStr, NumberStyles.Float, CultureInfo.InvariantCulture, out cost);
 
         string sn = (screenName ?? template.Name).Trim().Trim('"');
+        string castSfx = ResolveCastSfxScript(template);
 
         // Offensive instant-hit path: needs a damage formula.
         string? dmgMaxStr = store.GetAttribute(template, "magic", "attack_damage_modifier_max");
@@ -238,7 +251,8 @@ public sealed class SpellTemplate
         {
             return new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
                 range, reload, cost, (costModStr ?? "").Trim(),
-                (dmgMinStr ?? "").Trim(), dmgMaxStr.Trim(), "");
+                (dmgMinStr ?? "").Trim(), dmgMaxStr.Trim(), "",
+                castSfx);
         }
 
         // Self-heal path: spells DS1 marks with state_name = "heal". The heal
@@ -259,11 +273,109 @@ public sealed class SpellTemplate
                     if (string.IsNullOrWhiteSpace(valueExpr)) continue;
                     return new SpellTemplate(template.Name, sn, SpellKind.SelfHeal,
                         range, reload, cost, (costModStr ?? "").Trim(),
-                        "", "", valueExpr.Trim());
+                        "", "", valueExpr.Trim(),
+                        castSfx);
                 }
             }
         }
 
         return null;
+    }
+
+    /// <summary>Phase 17-SC-H — pull the sfx_script name out of the template
+    /// chain. DS1 ships two ways to bind a cast effect, and shipped templates
+    /// use them about evenly (19 / 50 in the 69-spell offensive catalog):
+    ///
+    /// (1) <c>[common][template_triggers][*]</c> with
+    ///     <c>condition* = receive_world_message("we_req_cast")</c> and
+    ///     <c>action* = call_sfx_script("&lt;name&gt;")</c>. Used by fireball,
+    ///     fireshot, implosion, etc. — the "trigger matrix" path.
+    ///
+    /// (2) A category block <c>[spell_lightning]</c> / <c>[spell_fire]</c> /
+    ///     <c>[spell_summon]</c> / etc. on the template root with a flat
+    ///     <c>effect_script = &lt;name&gt;;</c> attribute. Used by zap,
+    ///     iceshard, healing_wind, etc.
+    ///
+    /// Walks specializes-chain leaf-first so a derived template's override
+    /// wins over the base — matches DS1's <c>specializes</c> resolution. Path
+    /// (1) is checked first since it's the more explicit binding when both
+    /// happen to be present.</summary>
+    static string ResolveCastSfxScript(Template template)
+    {
+        // Path 1: [common][template_triggers] matrix, condition we_req_cast.
+        // DS1 templates occasionally split [common] into two sibling blocks
+        // (one with screen_name, one with description + template_triggers —
+        // see spell_iceshard). FindChild only returns the first, so iterate
+        // all sibling [common] nodes and check each for a triggers block.
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            foreach (var common in t.Node.Children)
+            {
+                if (!common.Header.Equals("common", StringComparison.OrdinalIgnoreCase)) continue;
+                var triggers = TemplateStore.FindChild(common, "template_triggers");
+                if (triggers is null) continue;
+                foreach (var row in triggers.Children)
+                {
+                    if (!row.Header.Equals("*", StringComparison.Ordinal)) continue;
+
+                    // condition* / action* are repeating attributes; for the
+                    // cast-script lookup we only care that *some* condition is
+                    // we_req_cast and *some* action is call_sfx_script in the
+                    // same row.
+                    bool isCastRow = false;
+                    string? scriptName = null;
+                    foreach (var attr in row.Attributes)
+                    {
+                        if (attr.Name.Equals("condition*", StringComparison.Ordinal)
+                            && IsCastCondition(attr.Value))
+                            isCastRow = true;
+                        else if (attr.Name.Equals("action*", StringComparison.Ordinal))
+                        {
+                            var name = ExtractCallSfxScriptArg(attr.Value);
+                            if (!string.IsNullOrEmpty(name)) scriptName = name;
+                        }
+                    }
+                    if (isCastRow && !string.IsNullOrEmpty(scriptName)) return scriptName!;
+                }
+            }
+        }
+
+        // Path 2: any [spell_*] root block with effect_script. Bare attribute
+        // value (unquoted, no parens) — TemplateStore.FindAttr returns the
+        // literal string verbatim.
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            foreach (var child in t.Node.Children)
+            {
+                if (!child.Header.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var name = TemplateStore.FindAttr(child, "effect_script");
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                return name.Trim().Trim('"');
+            }
+        }
+        return string.Empty;
+    }
+
+    static bool IsCastCondition(string raw)
+    {
+        var s = raw.Trim();
+        if (!s.StartsWith("receive_world_message", StringComparison.OrdinalIgnoreCase)) return false;
+        int open = s.IndexOf('(');
+        int close = s.LastIndexOf(')');
+        if (open < 0 || close <= open) return false;
+        var arg = s.Substring(open + 1, close - open - 1).Trim().Trim('"');
+        return arg.Equals("we_req_cast", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string ExtractCallSfxScriptArg(string raw)
+    {
+        var s = raw.Trim();
+        if (!s.StartsWith("call_sfx_script", StringComparison.OrdinalIgnoreCase)) return string.Empty;
+        int open = s.IndexOf('(');
+        int close = s.LastIndexOf(')');
+        if (open < 0 || close <= open) return string.Empty;
+        var arg = s.Substring(open + 1, close - open - 1).Trim().Trim('"');
+        return arg;
     }
 }

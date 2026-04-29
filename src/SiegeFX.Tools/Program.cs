@@ -5294,13 +5294,30 @@ static int CmdSpellsDump(string[] a)
     var reader = new TankReader(tank);
     var (store, diags) = TemplateStore.LoadFromTank(reader);
     var cat = SpellCatalog.Build(store);
+    var sfxStore = SfxScriptStore.LoadFromTank(reader);
     Console.WriteLine($"templates: {store.Count} loaded ({diags.Count} diagnostics)");
     Console.WriteLine($"spells (instant-hit, parsed [magic] block): {cat.Count}");
+    Console.WriteLine($"sfx scripts loaded: {sfxStore.Count}");
     foreach (var s in cat.All.OrderBy(s => s.Name).Take(40))
     {
-        Console.WriteLine($"  {s.Name,-32} \"{s.ScreenName,-22}\"  range={s.CastRange,5:0.0}  cd={s.CastReloadDelay,4:0.00}  cost={s.BaseManaCost,4:0.0}");
+        var sfx = string.IsNullOrEmpty(s.CastSfxScript) ? "<no cast row>"
+                : sfxStore.TryGet(s.CastSfxScript, out _) ? s.CastSfxScript
+                : s.CastSfxScript + " (missing)";
+        Console.WriteLine($"  {s.Name,-32} \"{s.ScreenName,-22}\"  range={s.CastRange,5:0.0}  cd={s.CastReloadDelay,4:0.00}  cost={s.BaseManaCost,4:0.0}  sfx={sfx}");
     }
     if (cat.Count > 40) Console.WriteLine($"  ... ({cat.Count - 40} more)");
+
+    // Phase 17-SC-H receipt — coverage summary across the catalog.
+    int withRow = 0, resolved = 0, missing = 0, none = 0;
+    foreach (var s in cat.All)
+    {
+        if (string.IsNullOrEmpty(s.CastSfxScript)) { none++; continue; }
+        withRow++;
+        if (sfxStore.TryGet(s.CastSfxScript, out _)) resolved++;
+        else missing++;
+    }
+    Console.WriteLine();
+    Console.WriteLine($"cast_sfx_script coverage: {resolved}/{cat.Count} resolved, {missing} unresolved, {none} no [we_req_cast] row");
     return 0;
 }
 

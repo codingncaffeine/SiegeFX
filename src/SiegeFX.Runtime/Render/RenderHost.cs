@@ -5660,17 +5660,37 @@ void main()
                     var src = playerPos + new Vector3(0f, 1.2f, 0f);
                     var dst = tp        + new Vector3(0f, 1.0f, 0f);
                     var elemColor = SpellElementColor(spell.Element);
-                    _spellBolts.Add(new SpellBolt
+                    // Phase 17-SC-H — if the spell template authored a
+                    // [template_triggers] row for we_req_cast (every shipped
+                    // offensive spell does), invoke its sfx_script through
+                    // the VM at the impact point. The script names match
+                    // DS1's ones (fireball, zap, lightning, ...) so the
+                    // VM produces real fire+smoke / lightning bursts via
+                    // ParticleSystem instead of the placeholder dot trail.
+                    // The dot trail stays as the fallback for the rare
+                    // template that omits the cast row.
+                    bool spellSfxFired = false;
+                    if (_sfxRuntime is not null && _sfxStore is not null
+                        && !string.IsNullOrEmpty(spell.CastSfxScript)
+                        && _sfxStore.TryGet(spell.CastSfxScript, out _))
                     {
-                        Source = src, Target = dst,
-                        Color = elemColor,
-                        Remaining = SpellBoltDuration, Total = SpellBoltDuration,
-                    });
+                        _sfxRuntime.Spawn(spell.CastSfxScript, dst);
+                        spellSfxFired = true;
+                    }
+                    if (!spellSfxFired)
+                    {
+                        _spellBolts.Add(new SpellBolt
+                        {
+                            Source = src, Target = dst,
+                            Color = elemColor,
+                            Remaining = SpellBoltDuration, Total = SpellBoltDuration,
+                        });
+                    }
                     _spellImpacts.Add(new SpellImpact
                     {
                         Position = dst,
                         Color = elemColor,
-                        Delay = SpellBoltDuration,
+                        Delay = spellSfxFired ? 0f : SpellBoltDuration,
                         Remaining = SpellImpactDuration, Total = SpellImpactDuration,
                     });
                     // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
