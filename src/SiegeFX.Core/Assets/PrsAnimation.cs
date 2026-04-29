@@ -145,15 +145,52 @@ public sealed class PrsAnimation
                     break;
 
                 case TagTrcr:
-                    // Tracer data — weapon trail/ammo hook info. Format isn't public;
-                    // PRSImport.ms literally bails with "oh no, tracers!". We record the
-                    // count and walk past the chunk later (AEND discipline keeps us aligned).
+                {
+                    // Tracer data — weapon-trail / ammo-hook info. The internal layout isn't
+                    // public (PRSImport.ms bails with "oh no, tracers!") and the runtime
+                    // skinning path doesn't render trails, so we just need to step past it.
+                    // Strategy: read the (version, count) header, then resync to the next
+                    // valid chunk via 4-byte-aligned tag scan with a post-tag plausibility
+                    // check. The payload is float-heavy and the four follow-up tags are
+                    // narrow ASCII u32s, so a false-positive match inside the payload is
+                    // vanishingly unlikely. The canary case is fb stance-1 attack
+                    // (a_c_gah_fb_fs1_at.prs): TRCR ver=3 count=81, 3896-byte payload, then
+                    // RKEY/KLST/AEND. Without this resync the loader fell through to stance-0
+                    // (unarmed punch) when the player equipped a dagger.
                     _ = r.ReadU32(); // chunk version
                     tracerCount = (int)r.ReadU32();
-                    // Without known layout we can't skip precisely. In practice, files
-                    // that contain tracers are rare in shipping DS1; bail loudly so we
-                    // notice the first one instead of silently mis-parsing.
-                    throw new NotSupportedException("prs: TRCR chunk parsing not implemented; report the file so we can figure out its layout");
+                    int payloadStart = r.Position;
+                    int found = -1;
+                    for (int p = payloadStart; p + 8 <= r.Length; p += 4)
+                    {
+                        uint candidate = BitConverter.ToUInt32(r.Data, p);
+                        if (candidate != TagRkey && candidate != TagKlst && candidate != TagAend)
+                            continue;
+                        if (candidate == TagAend)
+                        {
+                            // AEND has no chunk-version / count field, so accept directly.
+                            found = p;
+                            break;
+                        }
+                        // RKEY / KLST: validate the chunk-version u32 is small (shipped DS1
+                        // uses 1 or 3) and, for KLST, that the bone index is in range.
+                        uint chunkVer = BitConverter.ToUInt32(r.Data, p + 4);
+                        if (chunkVer > 16) continue;
+                        if (candidate == TagKlst)
+                        {
+                            if (p + 12 > r.Length) continue;
+                            uint klstBoneIdx = BitConverter.ToUInt32(r.Data, p + 8);
+                            if (klstBoneIdx >= (uint)numBones) continue;
+                        }
+                        found = p;
+                        break;
+                    }
+                    if (found < 0)
+                        throw new InvalidDataException(
+                            $"prs: TRCR resync failed — no RKEY/KLST/AEND with plausible header found after offset 0x{payloadStart:X}");
+                    r.Position = found;
+                    break;
+                }
 
                 case TagRkey:
                     _ = r.ReadU32(); // chunk version

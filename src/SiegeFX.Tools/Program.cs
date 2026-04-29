@@ -648,13 +648,6 @@ static int CmdPrsFuzz(string[] a)
             versionsLegacy[ver] = versionsLegacy.GetValueOrDefault(ver) + 1;
             if (!legacySamples.ContainsKey(ver)) legacySamples[ver] = path;
         }
-        catch (NotSupportedException)
-        {
-            // TRCR chunks — known gap. Counted separately so they don't inflate the
-            // failure metric. Don't also bump versionsOk: a TRCR bail is a partial parse,
-            // not a successful one, and double-counting muddles the "files handled" signal.
-            tracers++;
-        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"  [parse-fail v0x{ver:X}] {path}: {ex.Message}");

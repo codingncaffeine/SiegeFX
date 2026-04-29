@@ -144,6 +144,7 @@ echo   71. Phase 10-SC-3 - PRS v0x202 + v0x302 loader (Objects.dsres prs fuzz, a
 echo   72. Phase 11-SC-7 - Land water seam stitching (fh_r1 nav + amphibious path 30,30 to water)
 echo   73. Phase 12-SC-3 - Mob loot frequency vs DS1 retail (krug_grunt/krug_scout/gremal)
 echo   74. Phase 12-SC-4/5 - Death pose + weapon-class attack chore (VISUAL, fh_r1)
+echo   75. Phase 12-SC-6 - PRS TRCR resync (Objects.dsres prs fuzz, expect 1855 v3 OK + 131 tracers)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -224,6 +225,7 @@ if /i "%CHOICE%"=="71" goto T71
 if /i "%CHOICE%"=="72" goto T72
 if /i "%CHOICE%"=="73" goto T73
 if /i "%CHOICE%"=="74" goto T74
+if /i "%CHOICE%"=="75" goto T75
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1432,6 +1434,22 @@ echo [SC-5 walks the whole chore_dictionary on RefreshMotionClips so attack/magi
 echo [die/get_hit/fidget all rebind to the equipped weapon's stance.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T75
+echo.
+echo --- Phase 12-SC-6: PRS TRCR resync ---
+echo [Objects.dsres prs fuzz: every shipped .prs (incl. tracer-bearing files) parses.]
+echo [Pre-fix the loader threw NotSupportedException on TRCR, so 131 files (incl. fb]
+echo [stance-1 attack a_c_gah_fb_fs1_at.prs) bailed and the player swung the unarmed]
+echo [chore on dagger equip. Post-fix: scan-forward resync to next valid chunk via]
+echo [4-byte-aligned tag scan with chunk-version + KLST bone-index plausibility check.]
+echo [Expected: 1962 / 1962 OK, 0 failures, 131 with tracers, 0 legacy-skip.]
+echo [Versions OK: 0x3=1855, 0x202=62, 0x302=45 (v3 climbed 1724 -> 1855).]
+echo.
+"%TOOL%" prs fuzz "%DS1%\Resources\Objects.dsres"
 echo.
 pause
 goto MENU
