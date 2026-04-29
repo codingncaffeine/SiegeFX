@@ -825,20 +825,18 @@ public sealed class RenderHost : IDisposable
         return false;
     }
 
-    /// <summary>Phase 17-SC-I — compute the per-frame UV offset DS1 bakes onto
-    /// flowing-water terrain. The shipped engine reads vshiftpersecond out of
-    /// each texture's TSD .gas sidecar; until we wire that store, recognise
-    /// the waterfall pattern by name (DS1 ships <c>_rvr_fall-*</c> with vshift
-    /// 0.5/sec) and skip anything tagged <c>-static</c> (mist + the wheelfall
-    /// composite we can't replicate without multi-layer texturing).</summary>
-    private static Vector2 ComputeTexUvOffset(string textureName, double time)
-    {
-        if (string.IsNullOrEmpty(textureName)) return Vector2.Zero;
-        if (textureName.Contains("static", StringComparison.OrdinalIgnoreCase)) return Vector2.Zero;
-        if (textureName.Contains("fall", StringComparison.OrdinalIgnoreCase))
-            return new Vector2(0f, (float)(time * 0.5));
-        return Vector2.Zero;
-    }
+    /// <summary>Phase 17-SC-J followup — DS1 stores per-texture scroll under
+    /// <c>layer1ushiftpersecond</c> / <c>layer1vshiftpersecond</c> in each
+    /// texture's TSD <c>.gas</c> sidecar. SC-I shipped a name heuristic
+    /// (<c>fall</c> on / <c>static</c> off) which was wrong on both sides:
+    /// it scrolled autumn-grass land textures whose name contains "fall",
+    /// and it skipped the wheelfall waterfall whose layer-1 ships static
+    /// (the visible motion is a separate <c>b_t_grs01_rvr_dynamic</c> layer-2
+    /// overlay blended <c>modulate2x</c>, which a future slice will land).
+    /// For now: layer-1 never scrolls — every shipped <c>rvr_*</c> sidecar
+    /// authors layer1 vshift = 0. Until the overlay layer ships, water reads
+    /// stationary; the prior heuristic's wrong-texture scroll is gone.</summary>
+    private static Vector2 ComputeTexUvOffset(string textureName, double time) => Vector2.Zero;
 
     /// <summary>Phase 17-SC-J — pull <c>aspect.scale_multiplier</c> for a placed
     /// prop. DS1 lets the *instance* override the template (fh_r1's breakable
@@ -3526,6 +3524,9 @@ void main()
             float scale = MathF.Max(0.4f, size * 0.6f);
 
             _sfxRuntime.AddPersistentEmitter(kind, origin, new Vector4(red, green, blue, 1f), scale, rate);
+            Console.WriteLine($"    legacy emitter [{inst.TemplateName} 0x{inst.Scid:x8}] -> " +
+                              $"{kind} at ({origin.X:F2},{origin.Y:F2},{origin.Z:F2}) " +
+                              $"rgb=({red:F2},{green:F2},{blue:F2}) dark={dark} rate={rate:F1}");
             registered++;
         }
         return registered;
