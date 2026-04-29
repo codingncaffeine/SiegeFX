@@ -150,6 +150,7 @@ echo   77. Phase 17-SC-A2/A3 - SpellExpr placeholders + ternary (spells eval / s
 echo   78. Phase 17-SC-B    - Per-element spell projectile/impact VFX (spells elements)
 echo   79. Phase 17-SC-C    - Player chore_magic plays during moving casts
 echo   80. Phase 17-SC-D    - SfxScriptStore inventory (1074 effect_script* across 14 gas files)
+echo   81. Phase 17-SC-E    - Billboard particle backend (in-window F11 fire+smoke+sparks, F10 lightning)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -236,6 +237,7 @@ if /i "%CHOICE%"=="77" goto T77
 if /i "%CHOICE%"=="78" goto T78
 if /i "%CHOICE%"=="79" goto T79
 if /i "%CHOICE%"=="80" goto T80
+if /i "%CHOICE%"=="81" goto T81
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1556,6 +1558,24 @@ echo === sfx list (top of the catalog) ===
 echo.
 echo === sfx show smoke_emitter ===
 "%TOOL%" sfx show "%DS1%\Resources\Logic.dsres" smoke_emitter
+echo.
+pause
+goto MENU
+
+:T81
+echo.
+echo --- Phase 17-SC-E: billboard particle backend ---
+echo [Loads the farmhouse region (fh_r1) the same way option 50 does, then exposes]
+echo [particle backend hotkeys for the visual receipt:]
+echo   F11 - spawns a burst of fire + smoke + sparks at the player's feet
+echo   F10 - fires a downward lightning bolt onto the player position
+echo [Atlas pulled from Objects.dsres at LoadPlayActors:]
+echo   slot 0 = b_sfx_fireball-01.raw, slot 1 = b_sfx_smoke.raw,
+echo   slot 2 = b_sfx_sparkle01.raw,   slot 3 = b_sfx_002.raw.
+echo [Receipt: a smoke column, a fire plume, and bright spark scatter in-window.]
+echo [SC-F (script interpreter) and SC-G (region emitter wiring) drive this from data.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.
 pause
 goto MENU

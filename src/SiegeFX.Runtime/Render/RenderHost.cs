@@ -600,6 +600,11 @@ public sealed class RenderHost : IDisposable
     // icons (b_gui_ig_*.raw) inside InventoryPanel cells. Same blend pass
     // as the other HUD renderers; lifetime parallels them.
     private IconRenderer? _iconRenderer;
+    // Phase 17-SC-E — billboard particle backend (fire, smoke, sparks,
+    // lightning bolts). Built once GL is up; LoadPlayActors fills its
+    // sprite atlas off Objects.dsres. Tick + Draw run inside OnRender's
+    // world pass before the HUD overlay starts.
+    private ParticleSystem? _particles;
     // Per-template icon cache. Keyed by the same itemRef that TryGetItemMesh
     // uses, so pcontent specs and direct template names share one entry.
     // null sentinel = no [gui][inventory_icon] authored / .raw missing.
@@ -1057,6 +1062,25 @@ void main()
                         Console.Error.WriteLine($"  save: failed -- {ex.Message}");
                     }
                 }
+                // Phase 17-SC-E — debug particle receipt. F11 spawns a
+                // burst of fire + smoke + sparks at the player's feet so
+                // the standalone backend has a visible test before the
+                // sfx_script interpreter (SC-F) and emitter wiring (SC-G)
+                // call into it from data. F10 fires a lightning bolt
+                // straight up to verify SpawnLightning + bolt quad path.
+                else if (key == Key.F11 && _particles is not null && _player is not null)
+                {
+                    var p = _player.CurrentTransform.Translation + new Vector3(0f, 0.5f, 0f);
+                    _particles.SpawnFire (p, new Vector4(1.00f, 0.55f, 0.20f, 1f), 0.8f, 1.4f, 28);
+                    _particles.SpawnSmoke(p + new Vector3(0f, 0.6f, 0f), new Vector4(0.4f, 0.4f, 0.42f, 0.6f), 0.9f, 3.0f, 16);
+                    _particles.SpawnSpark(p, new Vector4(1.00f, 0.85f, 0.30f, 1f), 1.0f, 0.8f, 24);
+                }
+                else if (key == Key.F10 && _particles is not null && _player is not null)
+                {
+                    var p = _player.CurrentTransform.Translation + new Vector3(0f, 0.4f, 0f);
+                    _particles.SpawnLightning(p + new Vector3(0f, 4.5f, 0f), p,
+                        new Vector4(0.7f, 0.85f, 1.0f, 1f), 0.35f);
+                }
                 else if (key == Key.F9)
                 {
                     var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
@@ -1354,6 +1378,10 @@ void main()
         _textRenderer = new TextRenderer(_gl);
         _barRenderer  = new BarRenderer(_gl);
         _iconRenderer = new IconRenderer(_gl);
+        // Phase 17-SC-E — particle backend lives next to the other GL
+        // renderers; sprite atlas loads later off Objects.dsres inside
+        // LoadPlayActors when the play-mode tank is open.
+        _particles = new ParticleSystem(_gl);
 
         if (_meshPath is not null)
         {
@@ -2149,6 +2177,12 @@ void main()
         var mapReader     = new TankReader(mapTank);
         var logicReader   = new TankReader(logicTank);
         var objectsReader = new TankReader(objectsTank);
+
+        // Phase 17-SC-E — populate the particle atlas off Objects.dsres
+        // while we have a fresh reader. Failure-tolerant: missing entries
+        // leave the slot null and the shader falls back to white.
+        try { _particles?.LoadTextures(objectsReader); }
+        catch (Exception ex) { Console.WriteLine($"  particle atlas load failed: {ex.Message}"); }
 
         var (store, storeDiags)    = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
         var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
@@ -5886,6 +5920,11 @@ void main()
             _spellBolts[i].Remaining -= (float)dt;
             if (_spellBolts[i].Remaining <= 0f) _spellBolts.RemoveAt(i);
         }
+        // Phase 17-SC-E — integrate billboard particles + lightning bolts.
+        // Independent of the spell-bolt screen-space dots (those still
+        // run as the Phase 17b head-and-trail stand-in until SC-H rewires
+        // them through the script interpreter).
+        _particles?.Tick((float)dt);
         // Phase 17-SC-B — impact flashes: dwell on Delay until the bolt
         // arrives, then count down Remaining to drive the expanding-ring
         // animation. Reverse-iterate for in-place compaction on expiry.
@@ -6522,6 +6561,19 @@ void main()
                     inst.Mesh.DrawSubset(i);
                 }
             }
+        }
+
+        // Phase 17-SC-E — billboard particles. Sit above the world scene
+        // (depth-tested against actors + props) but below the HUD ortho
+        // pass so smoke columns get occluded by the farmhouse correctly.
+        // Camera basis comes from the view matrix's transpose inside the
+        // shader — passing view + proj separately rather than a combined
+        // VP keeps that math local.
+        if (_particles is not null)
+        {
+            var pview = _camera.GetView();
+            var pproj = _camera.GetProjection(aspect);
+            _particles.Draw(pview, pproj, _camera.Position);
         }
 
         // Phase 15a — 2D text overlay. Drawn last so it sits over the 3D scene;
