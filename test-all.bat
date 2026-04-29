@@ -139,6 +139,8 @@ echo   66. Phase 21d-2a-xii   - SED registry audit (Sound.dsres pitch jitter + c
 echo   67. Phase 9-SC-10      - Shield render verify (fh_r1 + SIEGEFX_DEBUG_DROP=shield)
 echo   68. Phase 9-SC-16 B-1+B-2 - Pcontent tier + wildcards + rarity (#club/2-3, #armor/-rare/..., #*/-unique/...)
 echo   69. Phase 10-SC-1 - Trigger matrix parser (fh_r1 special.gas + verb coverage)
+echo   70. Phase 10-SC-2 - Full chore dictionary into Actor.Clips (fh_r1 chore coverage)
+echo   71. Phase 10-SC-3 - PRS v0x202 + v0x302 loader (Objects.dsres prs fuzz, all 1962 files)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -214,6 +216,8 @@ if /i "%CHOICE%"=="66" goto T66
 if /i "%CHOICE%"=="67" goto T67
 if /i "%CHOICE%"=="68" goto T68
 if /i "%CHOICE%"=="69" goto T69
+if /i "%CHOICE%"=="70" goto T70
+if /i "%CHOICE%"=="71" goto T71
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1348,6 +1352,29 @@ echo --- fh_r1 (SC-1b: occupants/entered/left) ---
 echo.
 echo --- cr_r1 (SC-1c: when_false falling-edge dispatch) ---
 "%TOOL%" region triggers "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" /world/maps/map_world/regions/cr_r1
+pause
+goto MENU
+
+:T70
+echo.
+echo --- Phase 10-SC-2: full chore dictionary into Actor.Clips ---
+echo [fh_r1 expect: 181/181 spawned; clip catalogue avg ~6 per actor (was 2 pre-SC-2);]
+echo [chore coverage line lists chore_default / chore_walk / chore_attack / chore_die /]
+echo [chore_fidget / chore_magic / chore_misc — each addressable via Actor.GetClipIndex.]
+echo [Post-SC-3 expect min=3 (every actor has at least default + fidget + walk).]
+echo.
+"%TOOL%" region spawn "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+pause
+goto MENU
+
+:T71
+echo.
+echo --- Phase 10-SC-3: PRS v0x202 + v0x302 animation loader ---
+echo [Objects.dsres prs fuzz: parse every shipped .prs and tally by version stamp.]
+echo [Expected: 1962 / 1962 OK, 0 failures, 131 with TRCR (separate gap), 0 legacy-skip.]
+echo [versions (ok): 0x3=1724, 0x202=62, 0x302=45 — full coverage of shipped DS1.]
+echo.
+"%TOOL%" prs fuzz "%DS1%\Resources\Objects.dsres"
 pause
 goto MENU
 

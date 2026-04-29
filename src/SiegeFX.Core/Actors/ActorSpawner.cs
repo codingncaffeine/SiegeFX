@@ -177,7 +177,10 @@ public sealed class ActorSpawner
         // chore_default is every actor's idle. Its {prefix, stance list, suffix} triple
         // composes one PRS clip; the skrit lives alongside under `skrit = NAME`.
         var chorePrefix = _store.GetAttribute(template, "body", "chore_dictionary", "chore_prefix");
-        var defaultSection = _store.GetSection(template, "body", "chore_dictionary", "chore_default");
+        var dictionary = _store.GetSection(template, "body", "chore_dictionary");
+        var defaultSection = dictionary is null
+            ? null
+            : TemplateStore.FindChild(dictionary, "chore_default");
         if (chorePrefix is null || defaultSection is null)
         {
             Diagnostics.Add($"{inst}: chore_default section missing");
@@ -191,47 +194,49 @@ public sealed class ActorSpawner
             return null;
         }
 
-        var stances = ParseChoreStances(TemplateStore.FindAttr(defaultSection, "chore_stances"));
-        var animFiles = TemplateStore.FindChild(defaultSection, "anim_files");
-        var animSuffix = animFiles?.Attributes.FirstOrDefault().Value;
-        if (animSuffix is null)
-        {
-            Diagnostics.Add($"{inst}: chore_default.anim_files missing or empty");
-            return null;
-        }
-
-        // Clip is best-effort in Phase 10c. Not every shipped .prs version parses yet
-        // (0x0202 vs the 0x0003 our loader targets); if the clip fails to load, the
-        // actor still spawns and falls back to rest pose. The skrit still runs so its
-        // blender log reflects what *would* have been selected once the loader catches
-        // up. Missing-file vs version-miss is distinguished in diagnostics.
-        var clip = TryLoadAnyStanceClip(chorePrefix, stances, animSuffix, inst, preferredStance);
-
-        // Phase 21c-4 — load chore_walk alongside chore_default so the renderer can
-        // swap to the walk cycle while the brain is moving the actor along nav paths.
-        // Falls back to the idle clip if the walk PRS is missing or version-misses.
-        PrsAnimation? walkClip = null;
-        var walkSection = _store.GetSection(template, "body", "chore_dictionary", "chore_walk");
-        if (walkSection is not null)
-        {
-            var walkAnimFiles = TemplateStore.FindChild(walkSection, "anim_files");
-            var walkSuffix = walkAnimFiles?.Attributes.FirstOrDefault().Value;
-            if (walkSuffix is not null)
-            {
-                var walkStances = ParseChoreStances(TemplateStore.FindAttr(walkSection, "chore_stances"));
-                walkClip = TryLoadAnyStanceClip(chorePrefix, walkStances, walkSuffix, inst, preferredStance);
-            }
-        }
-
-        // Clips[0] = idle (chore_default), Clips[1] = walk if loaded. Order is the
-        // contract Actor.WalkClipIndex publishes to the renderer.
+        // Clip catalogue is best-effort in Phase 10. Not every shipped .prs version parses
+        // yet (0x0202 vs the 0x0003 our loader targets); if a clip fails to load the chore
+        // simply doesn't appear in ClipIndexByName and callers branch to a bind-pose
+        // fallback. The skrit still runs so its blender log reflects what *would* have
+        // been selected once the loader catches up.
+        //
+        // Phase 10-SC-2: walk every chore_* child of the dictionary, not just default + walk.
+        // chore_default lands at index 0 (renderer's bind-time fallback), chore_walk gets
+        // tracked separately for WalkClipIndex; everything else is addressable by name via
+        // Actor.GetClipIndex("chore_die") / "chore_attack" / etc.
         var clipList = new List<PrsAnimation>();
+        var clipIndexByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         int walkIdx = -1;
-        if (clip is not null) clipList.Add(clip);
-        if (walkClip is not null)
+
+        var defaultClip = TryLoadChoreClip(chorePrefix!, defaultSection, inst, preferredStance);
+        if (defaultClip is not null)
         {
-            walkIdx = clipList.Count;
-            clipList.Add(walkClip);
+            // Index 0 is the renderer's idle fallback (CurrentClipIndex returns 0 when the
+            // skrit hasn't dispatched yet). The contract is "Clips[0] = chore_default" — if
+            // chore_default fails to load (typically the v0x202 PRS issue addressed by
+            // Phase 10-SC-3), we leave the catalogue empty rather than promote chore_attack
+            // or chore_die into slot 0 where the renderer would loop it as the idle.
+            clipList.Add(defaultClip);
+            clipIndexByName["chore_default"] = 0;
+
+            // Iterate every chore_* section the template authors. The dictionary's other
+            // children (chore_prefix is a flat attribute, not a child) are all chore sections.
+            foreach (var section in dictionary!.Children)
+            {
+                var name = section.Header;
+                if (name is null) continue;
+                if (!name.StartsWith("chore_", StringComparison.OrdinalIgnoreCase)) continue;
+                if (name.Equals("chore_default", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var sectionClip = TryLoadChoreClip(chorePrefix!, section, inst, preferredStance);
+                if (sectionClip is null) continue;
+
+                int idx = clipList.Count;
+                clipList.Add(sectionClip);
+                clipIndexByName[name] = idx;
+                if (name.Equals("chore_walk", StringComparison.OrdinalIgnoreCase))
+                    walkIdx = idx;
+            }
         }
         var clips = clipList.ToArray();
 
@@ -258,7 +263,7 @@ public sealed class ActorSpawner
 
         var world = ComposeWorldTransform(inst.Placement);
         var stats = ActorStats.FromTemplate(_store, template);
-        return new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx);
+        return new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
     }
 
     Matrix4x4 ComposeWorldTransform(NodePlacement p)
@@ -329,6 +334,84 @@ public sealed class ActorSpawner
                         actor.Clips[actor.WalkClipIndex] = newWalk;
                 }
             }
+        }
+    }
+
+    /// <summary>Phase 10-SC-2 — load a representative PRS clip for one chore_* section.
+    /// Walks every <c>[anim_files]</c> entry and stops at the first that resolves; returns
+    /// null if none load. Two filename strategies depending on the section's
+    /// <c>chore_stances</c> attribute:
+    ///
+    /// • Numeric list (the common case, e.g. <c>0,1,2,3,4,5,6,7,8</c>) — stance values
+    ///   compose with prefix + suffix to <c>{prefix}{stance}_{suffix}.prs</c>. Mirrors the
+    ///   classic <see cref="TryLoadAnyStanceClip"/> path so behavior for chore_default and
+    ///   chore_walk is identical to before SC-2 landed.
+    ///
+    /// • <c>ignore</c> (chore_misc only across shipped DS1) — the anim_files VALUE is the
+    ///   full PRS basename already (e.g. <c>a_c_gah_fb_fs1_dk</c>); we just append .prs.
+    ///   No stance/prefix composition.
+    ///
+    /// Sub-anim selection: the chore section often lists multiple sub-anims (chore_attack
+    /// has 5: 0mid/high/loww/extr/qffg). Phase 10-SC-2 just loads the first that resolves;
+    /// the per-sub-anim catalogue (so combat can pick "high" vs "extr") is a future
+    /// splinter — for now combat just needs *some* attack clip rather than falling back
+    /// to the idle.</summary>
+    PrsAnimation? TryLoadChoreClip(string prefix, GasNode section, ActorInstance inst, int? preferredStance)
+    {
+        var animFiles = TemplateStore.FindChild(section, "anim_files");
+        if (animFiles is null || animFiles.Attributes.Count == 0) return null;
+
+        var stancesRaw = TemplateStore.FindAttr(section, "chore_stances");
+        bool ignoreStance = stancesRaw is not null
+            && stancesRaw.Trim().Equals("ignore", StringComparison.OrdinalIgnoreCase);
+
+        if (ignoreStance)
+        {
+            foreach (var attr in animFiles.Attributes)
+            {
+                var basename = attr.Value;
+                if (string.IsNullOrWhiteSpace(basename)) continue;
+                var clip = TryLoadFullNameClip(basename, inst);
+                if (clip is not null) return clip;
+            }
+            return null;
+        }
+
+        var stances = ParseChoreStances(stancesRaw);
+        foreach (var attr in animFiles.Attributes)
+        {
+            var suffix = attr.Value;
+            if (string.IsNullOrWhiteSpace(suffix)) continue;
+            var clip = TryLoadAnyStanceClip(prefix, stances, suffix, inst, preferredStance);
+            if (clip is not null) return clip;
+        }
+        return null;
+    }
+
+    /// <summary>Phase 10-SC-2 helper — load a PRS by full basename (no stance composition).
+    /// Used for chore_misc whose <c>chore_stances=ignore</c> means each anim_files value
+    /// is itself a complete PRS basename (e.g. <c>a_c_gah_fb_fs0_dsf-04</c>).</summary>
+    PrsAnimation? TryLoadFullNameClip(string basename, ActorInstance inst)
+    {
+        var filename = $"{basename}.prs";
+        if (_clipCache.TryGetValue(filename, out var cached)) return cached;
+        if (!_resolver.TryLoadByBasename(filename, out var bytes))
+        {
+            _clipCache[filename] = null;
+            return null;
+        }
+        try
+        {
+            var clip = PrsAnimation.Load(bytes);
+            _clipCache[filename] = clip;
+            Diagnostics.Add($"loaded clip: {filename} (chore_misc full name)");
+            return clip;
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Add($"{inst}: clip '{filename}' load failed: {ex.Message}");
+            _clipCache[filename] = null;
+            return null;
         }
     }
 

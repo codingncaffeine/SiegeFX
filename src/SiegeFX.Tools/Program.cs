@@ -615,6 +615,8 @@ static int CmdPrsFuzz(string[] a)
     long totalBytes = 0;
     var versionsOk = new Dictionary<uint, int>();
     var versionsFail = new Dictionary<uint, int>();
+    var versionsLegacy = new Dictionary<uint, int>();
+    var legacySamples = new Dictionary<uint, string>();
     foreach (var path in reader.ListFiles())
     {
         if (!path.EndsWith(".prs", StringComparison.OrdinalIgnoreCase)) continue;
@@ -640,7 +642,10 @@ static int CmdPrsFuzz(string[] a)
         {
             // Legacy PRS versions (~5.5% of shipped DS1); explicitly punted. Counted
             // separately so the true failure metric stays focused on v3 regressions.
+            // Sub-histogram + first-sample path so the SC-3 work has a concrete handle.
             oldVersion++;
+            versionsLegacy[ver] = versionsLegacy.GetValueOrDefault(ver) + 1;
+            if (!legacySamples.ContainsKey(ver)) legacySamples[ver] = path;
         }
         catch (NotSupportedException)
         {
@@ -657,8 +662,11 @@ static int CmdPrsFuzz(string[] a)
         }
     }
     Console.WriteLine($"fuzzed {total} .prs file(s), {totalBytes:N0} bytes total; {failed} failure(s), {tracers} with tracers, {oldVersion} legacy-version skipped");
-    Console.WriteLine("versions (ok):    " + string.Join(", ", versionsOk.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
-    Console.WriteLine("versions (fail):  " + string.Join(", ", versionsFail.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    Console.WriteLine("versions (ok):     " + string.Join(", ", versionsOk.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    Console.WriteLine("versions (fail):   " + string.Join(", ", versionsFail.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    Console.WriteLine("versions (legacy): " + string.Join(", ", versionsLegacy.OrderBy(kv => kv.Key).Select(kv => $"0x{kv.Key:X}={kv.Value}")));
+    foreach (var kv in legacySamples.OrderBy(kv => kv.Key))
+        Console.WriteLine($"  legacy sample 0x{kv.Key:X}: {kv.Value}");
     return failed == 0 ? 0 : 4;
 }
 
@@ -4743,11 +4751,20 @@ static int CmdRegionSpawn(string[] a)
 
     int withAnim = 0, withState = 0;
     var clipPicks = new Dictionary<int, int>();
+    var choreCoverage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    long catalogueTotal = 0;
+    int catalogueMin = int.MaxValue, catalogueMax = 0;
     foreach (var actor in actors)
     {
         if (actor.Host.CurrentAnimIndex >= 0) withAnim++;
         if (actor.Skrit.CurrentState is not null) withState++;
         clipPicks[actor.CurrentClipIndex] = clipPicks.GetValueOrDefault(actor.CurrentClipIndex) + 1;
+
+        catalogueTotal += actor.Clips.Length;
+        if (actor.Clips.Length < catalogueMin) catalogueMin = actor.Clips.Length;
+        if (actor.Clips.Length > catalogueMax) catalogueMax = actor.Clips.Length;
+        foreach (var name in actor.ClipIndexByName.Keys)
+            choreCoverage[name] = choreCoverage.GetValueOrDefault(name) + 1;
     }
 
     Console.WriteLine();
@@ -4755,6 +4772,11 @@ static int CmdRegionSpawn(string[] a)
     Console.WriteLine($"  in a skrit state   : {withState}/{actors.Count}");
     Console.WriteLine($"  picked a clip      : {withAnim}/{actors.Count}");
     Console.WriteLine($"  clip-index tally   : {string.Join(", ", clipPicks.OrderBy(kv => kv.Key).Select(kv => $"#{kv.Key}×{kv.Value}"))}");
+    if (actors.Count > 0)
+    {
+        Console.WriteLine($"  clip catalogue     : avg {catalogueTotal / (double)actors.Count:0.00} per actor (min {catalogueMin}, max {catalogueMax})");
+        Console.WriteLine($"  chore coverage     : {string.Join(", ", choreCoverage.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}×{kv.Value}"))}");
+    }
     Console.WriteLine($"  bus posted         : {spawner.MessageBus.PostedCount}");
     Console.WriteLine($"  bus delivered      : {delivered}   (undelivered: {spawner.MessageBus.UndeliveredCount})");
 

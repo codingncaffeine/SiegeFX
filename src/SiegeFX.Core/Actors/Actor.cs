@@ -22,11 +22,28 @@ public sealed class Actor
 
     public AspMesh Mesh { get; }
 
-    /// <summary>Clip catalogue driven by the skrit. Index 0 is the single chore_default
-    /// clip for Phase 10c; Phase 11+ will layer the rest of the chore dictionary here.
-    /// Phase 21c-4: index 1 (when present) is chore_walk so the renderer can swap to
-    /// the walk cycle while the brain advances the actor along its nav path.</summary>
+    /// <summary>Clip catalogue driven by the skrit. Index 0 is always chore_default
+    /// (the idle the renderer falls back to). Phase 10-SC-2: every other chore_* section
+    /// the template authors lands here too — chore_walk, chore_die, chore_attack,
+    /// chore_fidget, chore_magic, chore_misc, chore_get_hit, chore_pickup, chore_cast,
+    /// etc. <see cref="ClipIndexByName"/> is the lookup; <see cref="GetClipIndex"/> is
+    /// the convenience wrapper.</summary>
     public PrsAnimation[] Clips { get; }
+
+    /// <summary>Phase 10-SC-2 — chore-section name → index into <see cref="Clips"/>.
+    /// Keys are the GAS section header verbatim (<c>chore_die</c>, <c>chore_attack</c>,
+    /// …) and the lookup is case-insensitive. Built once at spawn from whatever sections
+    /// resolved to a loadable PRS; missing sections are absent (not -1 entries) so a
+    /// caller using <see cref="GetClipIndex"/> can branch on -1 to mean "this actor has
+    /// no death anim, fall back".</summary>
+    public IReadOnlyDictionary<string, int> ClipIndexByName { get; }
+
+    /// <summary>Returns the <see cref="Clips"/> index for <paramref name="choreName"/>
+    /// (e.g. <c>"chore_die"</c>) or -1 if this actor's template doesn't ship that chore
+    /// or its PRS failed to load. Combat / loot / death code address chores by name and
+    /// branch to the bind-pose fallback on -1.</summary>
+    public int GetClipIndex(string choreName) =>
+        ClipIndexByName.TryGetValue(choreName, out var i) ? i : -1;
 
     /// <summary>Phase 21c-4 — index into <see cref="Clips"/> for the walk cycle, or -1
     /// if the template doesn't author a chore_walk (or its PRS failed to load). The
@@ -64,7 +81,8 @@ public sealed class Actor
         SkritInstance skrit,
         ActorHostBridge host,
         ActorStats stats,
-        int walkClipIndex = -1)
+        int walkClipIndex = -1,
+        IReadOnlyDictionary<string, int>? clipIndexByName = null)
     {
         Instance = instance;
         Template = template;
@@ -76,6 +94,8 @@ public sealed class Actor
         Stats = stats;
         Combat = new ActorCombatState(stats);
         WalkClipIndex = walkClipIndex;
+        ClipIndexByName = clipIndexByName
+            ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     }
 
     public override string ToString() =>

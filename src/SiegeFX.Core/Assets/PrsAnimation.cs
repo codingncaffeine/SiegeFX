@@ -63,14 +63,21 @@ public sealed class PrsAnimation
         if (r.ReadU32() != TagAnim)
             throw new InvalidDataException("prs: missing ANIM tag");
         var animVersion = r.ReadU32();
-        // PRSImport.ms was only ever tested against version 3. A minority (~5.5%) of
-        // shipped DS1 .prs files are stamped 0x0202 or 0x0302 — older authoring-tool
-        // revisions where the chunk headers carry extra u32 fields between version and
-        // nrk/npk. They're not documented in any surviving GPG reference, and the
-        // shipping game loads them via a different code path. Reject them cleanly so
-        // fuzzers don't produce confusing garbage counts.
-        if (animVersion != 3)
-            throw new NotSupportedException($"prs: anim version 0x{animVersion:X} not supported (only v3)");
+        // Three known PRS versions ship in DS1: v3 (1724 / 1791 = 95.5%, the layout
+        // PRSImport.ms documents), and the older legacy pair v0x0202 (62) + v0x0302 (45)
+        // emitted by an earlier siege_max revision. The ANIM header, NOTE, TRCR, AEND
+        // and INFO chunks are identical across all three. The keylist chunks differ:
+        //   * v3 RKEY/KLST split keys into a rotation list (time + quat = 20 bytes)
+        //     followed by a position list (time + vec3 = 16 bytes), with both counts
+        //     in the chunk header (nrk, npk).
+        //   * v0x0202 / v0x0302 RKEY/KLST collapse the lists into a single combined
+        //     stream of 32-byte (time, quat[xyzw], vec3) bundles, with only nrk in
+        //     the header (no npk field).
+        // The runtime AnimationRuntime path consumes RotKey/PosKey arrays, so the
+        // legacy branch fans the combined stream back into matching parallel lists.
+        bool legacyKeys = animVersion is 0x202u or 0x302u;
+        if (animVersion != 3 && !legacyKeys)
+            throw new NotSupportedException($"prs: anim version 0x{animVersion:X} not supported (only v3, v0x202, v0x302)");
         var sizeTextField = r.ReadU32();
         var numBones = (int)r.ReadU32();
         var animLength = r.ReadF32();
@@ -150,7 +157,7 @@ public sealed class PrsAnimation
 
                 case TagRkey:
                     _ = r.ReadU32(); // chunk version
-                    rootKeys = ReadKeyList(r);
+                    rootKeys = legacyKeys ? ReadCombinedKeyList(r) : ReadKeyList(r);
                     break;
 
                 case TagKlst:
@@ -159,7 +166,7 @@ public sealed class PrsAnimation
                     _ = r.ReadU32(); // text offset into the name blob — we already have names.
                     if ((uint)boneIdx >= (uint)numBones)
                         throw new InvalidDataException($"prs: KLST bone index {boneIdx} out of range ({numBones} bones)");
-                    boneKeys[boneIdx] = ReadKeyList(r);
+                    boneKeys[boneIdx] = legacyKeys ? ReadCombinedKeyList(r) : ReadKeyList(r);
                     break;
 
                 default:
@@ -181,6 +188,28 @@ public sealed class PrsAnimation
         var pos = new PosKey[npk];
         for (var i = 0; i < npk; i++)
             pos[i] = new PosKey(r.ReadF32(), r.ReadVec3());
+        return new KeyList(rot, pos);
+    }
+
+    // v0x0202 / v0x0302 keylist: nrk only (no npk), then nrk * 32-byte combined keys
+    // laid out as (time, qx, qy, qz, qw, px, py, pz). Verified against the wraith
+    // (v0x202, 45 keys * 32 = 1440 bytes data, 1665 unit quats across RKEY + 36 KLST),
+    // the skeleton-guard pose anim (v0x302, 2 keys per chunk, 62 unit quats over 30
+    // KLST + 1 RKEY) and a swamp-stinger 2-frame pose (v0x202, 35 KLST + 1 RKEY, 72
+    // unit quats). All 1799 quats normalize within 1e-6, times stride 1/12s monotonic.
+    private static KeyList ReadCombinedKeyList(Reader r)
+    {
+        var nrk = (int)r.ReadU32();
+        var rot = new RotKey[nrk];
+        var pos = new PosKey[nrk];
+        for (var i = 0; i < nrk; i++)
+        {
+            var t = r.ReadF32();
+            var q = r.ReadQuat();
+            var p = r.ReadVec3();
+            rot[i] = new RotKey(t, q);
+            pos[i] = new PosKey(t, p);
+        }
         return new KeyList(rot, pos);
     }
 
