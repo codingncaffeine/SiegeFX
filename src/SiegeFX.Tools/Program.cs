@@ -4982,14 +4982,46 @@ static int CmdBalanceCurve(string[] a)
 
 static int DispatchSpells(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey|eval> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "dump"   => CmdSpellsDump(a[1..]),
         "show"   => CmdSpellsShow(a[1..]),
         "survey" => CmdSpellsSurvey(a[1..]),
+        "eval"   => CmdSpellsEval(a[1..]),
         _        => UnknownCommand("spells " + a[0]),
     };
+}
+
+// Phase 17-SC-A3: free-form expression evaluator. Lets us reproduce ternary +
+// comparison receipts from the CLI without needing a spell that lands in
+// SpellCatalog (healing_hands' [[?:]] is the canonical case but it doesn't
+// match the SelfHeal predicate yet, and leech_life isn't OffensiveInstantHit
+// either — Phase 17-SC-D will widen the catalog).
+//   siegefx spells eval "<expr>" [--magic=N] [--maxlife=N] [--life=N]
+//                                [--src_mana=N] [--src_life=N]
+static int CmdSpellsEval(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx spells eval \"<expr>\" [--magic=N] [--maxlife=N] [--life=N] [--src_mana=N] [--src_life=N]");
+        return 1;
+    }
+    string expr = a[0];
+    float magic = 0f, maxLife = 0f, life = 0f, srcMana = 0f, srcLife = 0f;
+    for (int i = 1; i < a.Length; i++)
+    {
+        var s = a[i];
+        if      (s.StartsWith("--magic=",    StringComparison.Ordinal)) float.TryParse(s.AsSpan("--magic=".Length),    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out magic);
+        else if (s.StartsWith("--maxlife=",  StringComparison.Ordinal)) float.TryParse(s.AsSpan("--maxlife=".Length),  System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out maxLife);
+        else if (s.StartsWith("--life=",     StringComparison.Ordinal)) float.TryParse(s.AsSpan("--life=".Length),     System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out life);
+        else if (s.StartsWith("--src_mana=", StringComparison.Ordinal)) float.TryParse(s.AsSpan("--src_mana=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out srcMana);
+        else if (s.StartsWith("--src_life=", StringComparison.Ordinal)) float.TryParse(s.AsSpan("--src_life=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out srcLife);
+    }
+    var ctx = new SpellEvalContext(magic, maxLife, life, srcMana, srcLife);
+    float v = SpellExpr.Eval(expr, ctx);
+    Console.WriteLine($"= {v}");
+    return 0;
 }
 
 // Phase 17-SC-A: survey all spell_* templates and report which operators

@@ -47,28 +47,45 @@ public readonly struct SpellEvalContext
 /// a <see cref="SpellEvalContext"/>), parentheses, <c>+ - * /</c>, and the
 /// right-associative <c>**</c> power operator (~19 offensive spells encode
 /// level scaling as <c>(#magic+1)**1.15</c>; without this they read as 0).
+/// Also handles the <c>[[ <i>cond</i> ?( <i>a</i> ):( <i>b</i> ) ]]</c>
+/// ternary blocks DS1 uses for clamping logic — <c>spell_healing_hands</c>
+/// uses a nested triple-ternary to clamp heal magnitude against caster
+/// mana, and <c>spell_leech_life</c> uses one to clamp drain against the
+/// target's remaining HP. The outer <c>[[ ]]</c> sentinels are stripped at
+/// entry; comparison operators (<c>&lt; &gt; &lt;= &gt;= == !=</c>) yield
+/// 1.0 / 0.0 and feed into ternary truthiness (<c>!= 0</c>).
 ///
 /// Recursive-descent, no allocations beyond the Tokenizer cursor — these
-/// formulas are short (max ~120 chars) and we evaluate one per cast at most.
+/// formulas are short (max ~250 chars) and we evaluate one per cast at most.
 /// Returns <c>0</c> for parse failures rather than throwing; the caller
 /// (<see cref="SpellTemplate"/>) treats a zero damage roll as "spell does
 /// nothing" which is identical to how DS1 fails-soft on bad data.
 ///
-/// Precedence (low → high): <c>+ -</c> &lt; <c>* /</c> &lt; <c>**</c> &lt;
-/// unary <c>+ -</c> &lt; primary. Power binds tighter than mul/div so
-/// <c>(#magic+1)**1.15*1.92</c> reads as <c>((#magic+1)**1.15)*1.92</c>.
+/// Precedence (low → high): ternary <c>?:</c> &lt; comparisons
+/// <c>&lt; &gt; &lt;= &gt;= == !=</c> &lt; <c>+ -</c> &lt; <c>* /</c> &lt;
+/// <c>**</c> &lt; unary <c>+ -</c> &lt; primary. Power binds tighter than
+/// mul/div so <c>(#magic+1)**1.15*1.92</c> reads as
+/// <c>((#magic+1)**1.15)*1.92</c>.
 /// </summary>
 public static class SpellExpr
 {
     /// <summary>Evaluate <paramref name="expr"/> against <paramref name="ctx"/>.
-    /// Returns 0 on parse error.</summary>
+    /// Returns 0 on parse error. <c>[[ ... ]]</c> outer brackets (DS1's
+    /// "evaluate this expression block" wrapper, used to delimit ternary
+    /// formulas in healing_hands / leech_life) are stripped before parsing.</summary>
     public static float Eval(string expr, in SpellEvalContext ctx)
     {
         if (string.IsNullOrWhiteSpace(expr)) return 0f;
-        var p = new Parser(expr, ctx);
+        var trimmed = expr.AsSpan().Trim();
+        if (trimmed.Length >= 4 && trimmed[0] == '[' && trimmed[1] == '['
+                                && trimmed[^1] == ']' && trimmed[^2] == ']')
+        {
+            trimmed = trimmed[2..^2];
+        }
+        var p = new Parser(trimmed.ToString(), ctx);
         try
         {
-            float v = p.ParseAddSub();
+            float v = p.ParseExpr();
             return p.AtEnd ? v : 0f;
         }
         catch
@@ -95,6 +112,70 @@ public static class SpellExpr
         public bool AtEnd { get { Skip(); return _i >= _s.Length; } }
 
         void Skip() { while (_i < _s.Length && char.IsWhiteSpace(_s[_i])) _i++; }
+
+        // Top-level entry. Ternary `cond ? a : b` (or DS1's parenthesized
+        // `cond ?( a ):( b )` shape) sits here at the lowest precedence.
+        // Truthiness is 0 = false, anything-else = true — comparisons emit
+        // 1.0 / 0.0 from ParseCmp, but a bare arithmetic value works too.
+        // Right-associative so `a ? b : c ? d : e` reads as `a ? b : (c ? d : e)`.
+        public float ParseExpr()
+        {
+            float cond = ParseCmp();
+            Skip();
+            if (_i < _s.Length && _s[_i] == '?')
+            {
+                _i++;
+                float t = ParseExpr();
+                Skip();
+                if (_i < _s.Length && _s[_i] == ':') _i++;
+                float f = ParseExpr();
+                return cond != 0f ? t : f;
+            }
+            return cond;
+        }
+
+        // Comparison tier. Six operators total; chains left-to-right but DS1
+        // never chains them (always parenthesized into ternary conditions),
+        // so the loop is just defensive. Yields 1.0 for true / 0.0 for false
+        // so the result feeds straight into ternary truthiness or arithmetic.
+        float ParseCmp()
+        {
+            float left = ParseAddSub();
+            while (true)
+            {
+                Skip();
+                if (_i >= _s.Length) break;
+                char c = _s[_i];
+                int op;     // 0 lt, 1 le, 2 gt, 3 ge, 4 eq, 5 ne
+                int width;  //  characters consumed
+                if (c == '<')
+                {
+                    if (_i + 1 < _s.Length && _s[_i + 1] == '=') { op = 1; width = 2; }
+                    else                                          { op = 0; width = 1; }
+                }
+                else if (c == '>')
+                {
+                    if (_i + 1 < _s.Length && _s[_i + 1] == '=') { op = 3; width = 2; }
+                    else                                          { op = 2; width = 1; }
+                }
+                else if (c == '=' && _i + 1 < _s.Length && _s[_i + 1] == '=') { op = 4; width = 2; }
+                else if (c == '!' && _i + 1 < _s.Length && _s[_i + 1] == '=') { op = 5; width = 2; }
+                else break;
+                _i += width;
+                float right = ParseAddSub();
+                bool b = op switch
+                {
+                    0 => left <  right,
+                    1 => left <= right,
+                    2 => left >  right,
+                    3 => left >= right,
+                    4 => left == right,
+                    _ => left != right,
+                };
+                left = b ? 1f : 0f;
+            }
+            return left;
+        }
 
         public float ParseAddSub()
         {
@@ -176,7 +257,10 @@ public static class SpellExpr
             if (c == '(')
             {
                 _i++;
-                float v = ParseAddSub();
+                // Recurse through the full grammar (ternary down to primary)
+                // so `(a > b ? c : d)` and DS1's `( cond ?( a ):( b ) )`
+                // ternary blocks parse as one parenthesized sub-expression.
+                float v = ParseExpr();
                 Skip();
                 if (_i < _s.Length && _s[_i] == ')') _i++;
                 return v;

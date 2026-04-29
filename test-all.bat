@@ -146,6 +146,7 @@ echo   73. Phase 12-SC-3 - Mob loot frequency vs DS1 retail (krug_grunt/krug_sco
 echo   74. Phase 12-SC-4/5 - Death pose + weapon-class attack chore (VISUAL, fh_r1)
 echo   75. Phase 12-SC-6 - PRS TRCR resync (Objects.dsres prs fuzz, expect 1855 v3 OK + 131 tracers)
 echo   76. Phase 17-SC-A1 - SpellExpr ** power op (spells survey + show fireball/iceshard)
+echo   77. Phase 17-SC-A2/A3 - SpellExpr placeholders + ternary (spells eval / show freeze)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -228,6 +229,7 @@ if /i "%CHOICE%"=="73" goto T73
 if /i "%CHOICE%"=="74" goto T74
 if /i "%CHOICE%"=="75" goto T75
 if /i "%CHOICE%"=="76" goto T76
+if /i "%CHOICE%"=="77" goto T77
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1471,6 +1473,32 @@ echo.
 "%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_fireball
 echo.
 "%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_iceshard
+echo.
+pause
+goto MENU
+
+:T77
+echo.
+echo --- Phase 17-SC-A2/A3: SpellExpr placeholders + ternary ---
+echo [SC-A2 plumbs #maxlife / #life / #src_mana / #src_life through SpellEvalContext.]
+echo [Receipt: spell_freeze with #maxlife=20 -> mana=50.0 (was 0.0 pre-A2).]
+echo [SC-A3 adds [[?:]] ternary + comparison ops (^< ^> ^<= ^>= == !=) so leech_life]
+echo [drain clamps and healing_hands' nested heal-vs-mana ternary parse cleanly.]
+echo [Receipts: leech_life formula evaluates to 0.7 / 0.3 across two src_life cases;]
+echo [healing_hands triple-ternary returns 11 / -0.61 / 4 across three context cases.]
+echo.
+echo -- spell_freeze (#maxlife=20) --
+"%TOOL%" spells show "%DS1%\Resources\Logic.dsres" spell_freeze --maxlife=20 5
+echo.
+echo -- ternary smoke tests --
+"%TOOL%" spells eval "(2 ^> 1) ? 5 : 10"
+"%TOOL%" spells eval "(1 ^> 2) ? 5 : 10"
+"%TOOL%" spells eval "[[ ( #magic ^> 5 ) ?( 100 ): ( 200 ) ]]" --magic=10
+"%TOOL%" spells eval "[[ ( #magic ^> 5 ) ?( 100 ): ( 200 ) ]]" --magic=2
+echo.
+echo -- spell_leech_life clamp formula --
+"%TOOL%" spells eval "( ( #src_life ^> (2.0 + #magic ) ) ? (2 + #magic ) : ( ( #src_life ^> 0.0 ) ? #src_life : 0.0 ) )/10.0" --magic=5 --src_life=20
+"%TOOL%" spells eval "( ( #src_life ^> (2.0 + #magic ) ) ? (2 + #magic ) : ( ( #src_life ^> 0.0 ) ? #src_life : 0.0 ) )/10.0" --magic=5 --src_life=3
 echo.
 pause
 goto MENU
