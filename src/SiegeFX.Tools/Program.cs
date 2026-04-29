@@ -5142,12 +5142,13 @@ static int CmdSpellsElements(string[] a)
 // the interpreter we build in SC-F has a verifiable source of truth.
 static int DispatchSfx(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show|parse> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list" => CmdSfxList(a[1..]),
-        "show" => CmdSfxShow(a[1..]),
-        _      => UnknownCommand("sfx " + a[0]),
+        "list"  => CmdSfxList(a[1..]),
+        "show"  => CmdSfxShow(a[1..]),
+        "parse" => CmdSfxParse(a[1..]),
+        _       => UnknownCommand("sfx " + a[0]),
     };
 }
 
@@ -5199,6 +5200,46 @@ static int CmdSfxShow(string[] a)
     Console.WriteLine(s.Body);
     return 0;
 }
+
+static int CmdSfxParse(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx sfx parse <Logic.dsres> <script-name>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var store = SfxScriptStore.LoadFromTank(reader);
+    if (!store.TryGet(a[1], out var s))
+    {
+        Console.Error.WriteLine($"no sfx_script named '{a[1]}' in {SfxScriptStore.EffectsDir}");
+        return 4;
+    }
+    var prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(s.Name, s.Body);
+    Console.WriteLine($"name      : {prog.Name}");
+    Console.WriteLine($"source    : {s.SourcePath}");
+    Console.WriteLine($"statements: {prog.Statements.Count}");
+
+    var byKind = new Dictionary<SiegeFX.Core.Sfx.StatementKind, int>();
+    foreach (var st in prog.Statements)
+        byKind[st.Kind] = byKind.TryGetValue(st.Kind, out var n) ? n + 1 : 1;
+    Console.WriteLine();
+    Console.WriteLine("kind tally:");
+    foreach (var kv in byKind.OrderByDescending(kv => kv.Value))
+        Console.WriteLine($"  {kv.Key,-20} {kv.Value,4}");
+
+    Console.WriteLine();
+    Console.WriteLine("statements:");
+    int idx = 0;
+    foreach (var st in prog.Statements)
+    {
+        var argSummary = string.Join(" ", st.Tokens);
+        if (argSummary.Length > 80) argSummary = argSummary.Substring(0, 77) + "...";
+        var paramTail = st.ParamString is null ? "" : $"  param=\"{Truncate(st.ParamString, 40)}\"";
+        Console.WriteLine($"  [{idx,3}] {st.Kind,-18} {st.Verb,-20} {argSummary}{paramTail}");
+        idx++;
+    }
+    return 0;
+}
+
+static string Truncate(string s, int n) => s.Length <= n ? s : s.Substring(0, n - 3) + "...";
 
 static int CmdSpellsDump(string[] a)
 {

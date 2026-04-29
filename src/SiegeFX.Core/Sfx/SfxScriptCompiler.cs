@@ -1,0 +1,286 @@
+using System.Text;
+
+namespace SiegeFX.Core.Sfx;
+
+/// <summary>Phase 17-SC-F — text → <see cref="SfxProgram"/> compiler.
+/// The DSL is line-oriented but with explicit ';' terminators and
+/// brace-grouped <c>if/else</c> bodies; comments are <c>//</c> to EOL
+/// and <c>/* … */</c> blocks. The minimal interpreter doesn't yet handle
+/// conditional bodies or <c>waitfor</c> / <c>get</c> shapes — those land
+/// as later splinters fold them in. Everything the parser doesn't know
+/// surfaces as <see cref="StatementKind.Raw"/> with the original tokens
+/// preserved, so the VM can log + skip rather than blowing up.</summary>
+public static class SfxScriptCompiler
+{
+    public static SfxProgram Compile(string name, string body)
+    {
+        // The body comes off SfxScriptStore as the raw attribute value
+        // GasDocument captured for `script = [[ ... ]];` — i.e. it still
+        // wraps the DSL in literal `[[` ... `]]` markers (DS1's GAS quoting
+        // for multi-line script literals). Strip both ends if present so
+        // the tokenizer doesn't see them as their own tokens.
+        var trimmed = body.Trim();
+        if (trimmed.StartsWith("[[")) trimmed = trimmed.Substring(2);
+        if (trimmed.EndsWith("]]"))   trimmed = trimmed.Substring(0, trimmed.Length - 2);
+
+        var stripped = StripComments(trimmed);
+        var tokens   = Tokenize(stripped);
+        var stmts    = new List<SfxStatement>();
+
+        int i = 0;
+        while (i < tokens.Count)
+        {
+            // Empty statement (stray ;).
+            if (tokens[i] == ";") { i++; continue; }
+
+            // if/else brace blocks — parse the head + drop the bodies as
+            // a single Raw stmt. The VM logs and skips conditionals for
+            // now; we still keep them in the IR so a future SC can fold
+            // them in without re-parsing.
+            if (string.Equals(tokens[i], "if", StringComparison.OrdinalIgnoreCase))
+            {
+                i = SkipBracedBlock(tokens, i, stmts);
+                continue;
+            }
+            if (string.Equals(tokens[i], "else", StringComparison.OrdinalIgnoreCase))
+            {
+                i = SkipBracedBlock(tokens, i, stmts);
+                continue;
+            }
+
+            // Slurp tokens up to the next ';'.
+            var stmtTokens = new List<string>();
+            while (i < tokens.Count && tokens[i] != ";")
+            {
+                stmtTokens.Add(tokens[i]);
+                i++;
+            }
+            if (i < tokens.Count) i++; // consume the ';'
+
+            if (stmtTokens.Count == 0) continue;
+
+            stmts.Add(BuildStatement(stmtTokens));
+        }
+
+        return new SfxProgram(name, stmts);
+    }
+
+    static int SkipBracedBlock(List<string> tokens, int i, List<SfxStatement> stmts)
+    {
+        // Capture the head (everything up to '{') as a Raw statement so
+        // the VM can log it. Then walk balanced braces to skip the body.
+        var head = new List<string>();
+        head.Add(tokens[i]);
+        i++;
+        while (i < tokens.Count && tokens[i] != "{")
+        {
+            head.Add(tokens[i]); i++;
+        }
+        stmts.Add(new SfxStatement(StatementKind.Raw, head[0], head, null));
+        if (i >= tokens.Count) return i;
+        // Skip balanced braces.
+        int depth = 0;
+        while (i < tokens.Count)
+        {
+            if      (tokens[i] == "{") depth++;
+            else if (tokens[i] == "}") { depth--; if (depth == 0) { i++; break; } }
+            i++;
+        }
+        return i;
+    }
+
+    static SfxStatement BuildStatement(List<string> toks)
+    {
+        var verb = toks[0];
+
+        // sfx <subverb> [args...]
+        if (string.Equals(verb, "sfx", StringComparison.OrdinalIgnoreCase) && toks.Count >= 2)
+        {
+            var sub = toks[1].ToLowerInvariant();
+            // sfx friendly target $x  → folded into one statement
+            if (sub == "friendly" && toks.Count >= 3 &&
+                string.Equals(toks[2], "target", StringComparison.OrdinalIgnoreCase))
+            {
+                var args = toks.GetRange(3, toks.Count - 3);
+                return new SfxStatement(StatementKind.SfxFriendlyTarget, "sfx friendly target", args, null);
+            }
+            var rest = toks.GetRange(2, toks.Count - 2);
+            return sub switch
+            {
+                "create"       => MakeCreate(rest),
+                "start"        => new SfxStatement(StatementKind.SfxStart,        "sfx start",        rest, null),
+                "destroy"      => new SfxStatement(StatementKind.SfxDestroy,      "sfx destroy",      rest, null),
+                "finish"       => new SfxStatement(StatementKind.SfxFinish,       "sfx finish",       rest, null),
+                "target"       => new SfxStatement(StatementKind.SfxTarget,       "sfx target",       rest, null),
+                "attach"       => new SfxStatement(StatementKind.SfxAttach,       "sfx attach",       rest, null),
+                "attach_point" => new SfxStatement(StatementKind.SfxAttachPoint,  "sfx attach_point", rest, null),
+                "position_at"  => new SfxStatement(StatementKind.SfxPositionAt,   "sfx position_at",  rest, null),
+                "offset"       => new SfxStatement(StatementKind.SfxOffset,       "sfx offset",       rest, null),
+                "rat"          => new SfxStatement(StatementKind.SfxRat,          "sfx rat",          rest, null),
+                _              => new SfxStatement(StatementKind.Raw,             "sfx " + sub,       toks, null),
+            };
+        }
+
+        // sound <play|stop> ...
+        if (string.Equals(verb, "sound", StringComparison.OrdinalIgnoreCase) && toks.Count >= 2)
+        {
+            var sub = toks[1].ToLowerInvariant();
+            var rest = toks.GetRange(2, toks.Count - 2);
+            return sub switch
+            {
+                "play" => new SfxStatement(StatementKind.SoundPlay, "sound play", rest, null),
+                "stop" => new SfxStatement(StatementKind.SoundStop, "sound stop", rest, null),
+                _      => new SfxStatement(StatementKind.Raw,       "sound " + sub, toks, null),
+            };
+        }
+
+        if (string.Equals(verb, "set",   StringComparison.OrdinalIgnoreCase))
+            return new SfxStatement(StatementKind.Set,   "set",   toks.GetRange(1, toks.Count - 1), null);
+        if (string.Equals(verb, "pause", StringComparison.OrdinalIgnoreCase))
+            return new SfxStatement(StatementKind.Pause, "pause", toks.GetRange(1, toks.Count - 1), null);
+        if (string.Equals(verb, "call",  StringComparison.OrdinalIgnoreCase))
+            return new SfxStatement(StatementKind.Call,  "call",  toks.GetRange(1, toks.Count - 1), null);
+
+        return new SfxStatement(StatementKind.Raw, verb, toks, null);
+    }
+
+    static SfxStatement MakeCreate(List<string> rest)
+    {
+        // Layout: <kind> <target-token> ["param-string"]
+        // The param-string is always the last token if any (quoted in
+        // source). Tokenize() preserved its quoted form by stripping the
+        // quotes and storing the inner text — so we look for a token
+        // whose first character was tagged with a leading STRING marker.
+        // We use a leading sentinel of '\u0001' below.
+        string? param = null;
+        var tokens = new List<string>();
+        foreach (var t in rest)
+        {
+            if (t.Length > 0 && t[0] == '\u0001') param = t.Substring(1);
+            else tokens.Add(t);
+        }
+        return new SfxStatement(StatementKind.SfxCreate, "sfx create", tokens, param);
+    }
+
+    // --- lexing --------------------------------------------------------
+
+    static string StripComments(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        int i = 0;
+        while (i < s.Length)
+        {
+            if (i + 1 < s.Length && s[i] == '/' && s[i + 1] == '/')
+            {
+                while (i < s.Length && s[i] != '\n') i++;
+            }
+            else if (i + 1 < s.Length && s[i] == '/' && s[i + 1] == '*')
+            {
+                i += 2;
+                while (i + 1 < s.Length && !(s[i] == '*' && s[i + 1] == '/')) i++;
+                if (i + 1 < s.Length) i += 2;
+            }
+            else
+            {
+                sb.Append(s[i]);
+                i++;
+            }
+        }
+        return sb.ToString();
+    }
+
+    static List<string> Tokenize(string s)
+    {
+        var tokens = new List<string>();
+        int i = 0;
+        while (i < s.Length)
+        {
+            char c = s[i];
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+
+            // Punctuation single-char tokens.
+            if (c == ';' || c == '{' || c == '}' || c == '(' || c == ')')
+            {
+                tokens.Add(c.ToString()); i++; continue;
+            }
+
+            // Quoted string: extract verbatim, prefix with \u0001 marker
+            // so MakeCreate can pull it out of the token list.
+            if (c == '"')
+            {
+                int start = ++i;
+                var inner = new StringBuilder();
+                while (i < s.Length && s[i] != '"')
+                {
+                    inner.Append(s[i]);
+                    i++;
+                }
+                if (i < s.Length) i++; // closing "
+                // Collapse any whitespace runs to single spaces — DS1
+                // wraps long param strings across multiple lines.
+                var collapsed = CollapseWs(inner.ToString());
+                tokens.Add("\u0001" + collapsed);
+                continue;
+            }
+
+            // v<x y z> vector literal — collapse the whole thing into
+            // one token so parameters that take a 3-vec stay together.
+            if (c == 'v' && i + 1 < s.Length && s[i + 1] == '<')
+            {
+                int start = i;
+                while (i < s.Length && s[i] != '>') i++;
+                if (i < s.Length) i++;
+                tokens.Add(s.Substring(start, i - start));
+                continue;
+            }
+
+            // <angle-quoted-arg> e.g. call fireball <offset(0,0,-.3)>;
+            if (c == '<')
+            {
+                int start = i;
+                int depth = 0;
+                while (i < s.Length)
+                {
+                    if (s[i] == '<') depth++;
+                    else if (s[i] == '>') { depth--; if (depth == 0) { i++; break; } }
+                    i++;
+                }
+                tokens.Add(s.Substring(start, i - start));
+                continue;
+            }
+
+            // Otherwise: word token — gobble until whitespace or break char.
+            int wordStart = i;
+            while (i < s.Length)
+            {
+                char d = s[i];
+                if (char.IsWhiteSpace(d)) break;
+                if (d == ';' || d == '{' || d == '}' || d == '"' || d == '<') break;
+                // Keep ()[] inside a word so [0] / radius(0) tokens stay glued.
+                i++;
+            }
+            if (i > wordStart) tokens.Add(s.Substring(wordStart, i - wordStart));
+        }
+        return tokens;
+    }
+
+    static string CollapseWs(string s)
+    {
+        var sb = new StringBuilder(s.Length);
+        bool prevWs = false;
+        foreach (var ch in s)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (!prevWs) sb.Append(' ');
+                prevWs = true;
+            }
+            else
+            {
+                sb.Append(ch);
+                prevWs = false;
+            }
+        }
+        return sb.ToString().Trim();
+    }
+}

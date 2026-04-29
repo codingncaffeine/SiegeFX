@@ -151,6 +151,7 @@ echo   78. Phase 17-SC-B    - Per-element spell projectile/impact VFX (spells el
 echo   79. Phase 17-SC-C    - Player chore_magic plays during moving casts
 echo   80. Phase 17-SC-D    - SfxScriptStore inventory (1074 effect_script* across 14 gas files)
 echo   81. Phase 17-SC-E    - Billboard particle backend (in-window F11 fire+smoke+sparks, F10 lightning)
+echo   82. Phase 17-SC-F-1  - sfx_script compiler IR (parser dump for fireball_emitter)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -238,6 +239,7 @@ if /i "%CHOICE%"=="78" goto T78
 if /i "%CHOICE%"=="79" goto T79
 if /i "%CHOICE%"=="80" goto T80
 if /i "%CHOICE%"=="81" goto T81
+if /i "%CHOICE%"=="82" goto T82
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1576,6 +1578,25 @@ echo [Receipt: a smoke column, a fire plume, and bright spark scatter in-window.
 echo [SC-F (script interpreter) and SC-G (region emitter wiring) drive this from data.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T82
+echo.
+echo --- Phase 17-SC-F-1: sfx_script compiler (text -> SfxProgram IR) ---
+echo [SfxScriptCompiler.Compile reads each [effect_script*] body, strips the [[ ]]]
+echo [literal markers + // and /* */ comments, tokenizes the DSL, then folds verbs]
+echo [into typed StatementKind entries: SfxCreate / SfxStart / Set / SoundPlay /]
+echo [Pause / Call / etc. Conditionals (if/else), waitfor, get, worldmsg surface as]
+echo [Raw statements so the future VM can log + skip rather than crash on shapes the]
+echo [interpreter doesn't yet handle.]
+echo.
+echo === fireball_emitter (rich script: 34 statements across 11 kinds) ===
+"%TOOL%" sfx parse "%DS1%\Resources\Logic.dsres" fireball_emitter
+echo.
+echo === smoke_emitter (minimal 2-statement emitter pattern) ===
+"%TOOL%" sfx parse "%DS1%\Resources\Logic.dsres" smoke_emitter
 echo.
 pause
 goto MENU
