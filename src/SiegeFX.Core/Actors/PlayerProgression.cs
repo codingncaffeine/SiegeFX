@@ -75,6 +75,28 @@ public sealed class PlayerProgression
     public long XpIntoCurrentLevel => TotalXp - XpForCurrentLevel;
     public long XpToNextLevel      => XpForNextLevel - TotalXp;
 
+    // Phase 21-SC-INV-A2 (round 6) — per-skill XP pools. The four skill kinds
+    // each accumulate independently from <see cref="AwardXp"/>'s tagged amount;
+    // the per-skill level walks the same XP table as the global level. Only
+    // the global pool drives stat auto-grow; the per-skill pool exists so the
+    // HUD's ability cells can show "progress toward next M/R/Q/W rank" — the
+    // single most-asked-for player feedback the always-on bar can carry.
+    private readonly long[] _skillXp = new long[4];
+    public long SkillXp(SkillKind k) => _skillXp[(int)k];
+    public int  SkillLevel(SkillKind k) => _formulas.LevelForXp(_skillXp[(int)k]);
+    public long SkillXpForCurrentLevel(SkillKind k) => _formulas.XpForLevel(SkillLevel(k));
+    public long SkillXpForNextLevel(SkillKind k)    => _formulas.XpForLevel(SkillLevel(k) + 1);
+    public long SkillXpIntoCurrentLevel(SkillKind k) => _skillXp[(int)k] - SkillXpForCurrentLevel(k);
+    public float SkillProgressFraction(SkillKind k)
+    {
+        long span = SkillXpForNextLevel(k) - SkillXpForCurrentLevel(k);
+        if (span <= 0) return 0f;
+        long into = _skillXp[(int)k] - SkillXpForCurrentLevel(k);
+        if (into <= 0) return 0f;
+        if (into >= span) return 1f;
+        return (float)into / span;
+    }
+
     public PlayerProgression(Actor player, FormulasStore formulas)
     {
         _player = player;
@@ -91,6 +113,7 @@ public sealed class PlayerProgression
     {
         if (amount <= 0) return false;
         TotalXp += amount;
+        _skillXp[(int)skill] += amount;
         int newLevel = _formulas.LevelForXp(TotalXp);
         if (newLevel == Level) return false;
 

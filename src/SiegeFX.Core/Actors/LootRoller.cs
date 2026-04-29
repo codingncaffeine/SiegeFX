@@ -26,17 +26,30 @@ namespace SiegeFX.Core.Actors;
 /// weighted variant later.</summary>
 public static class LootRoller
 {
+    /// <summary>Phase 21-SC-LOOT-FIX — fraction of kills on which an enemy's
+    /// worn (Equipped) gear lands on the corpse. Skipping Equipped entirely
+    /// (the Phase 12-SC-3 fix to stop 100%-drop weapons) overshot: most DS1
+    /// mob templates author their worn weapon in es_weapon_hand and ship no
+    /// separate il_main drop, so kills produced zero loot. Tunable knob;
+    /// pick something low enough that a goblin grunt isn't a guaranteed
+    /// weapon vending machine but high enough that mid-fight gear upgrades
+    /// actually happen. 0.35 lines up with the "decent but not constant"
+    /// drop cadence DS1 shipped.</summary>
+    const double EquippedDropChance = 0.35;
+
     public static List<LootEntry> Roll(LootTable table, Random rng)
     {
-        // Phase 12-SC-3 — only roll the Drops buckets. The Equipped buckets
-        // (es_weapon_hand / es_shield_hand / etc.) describe what the actor
-        // *wears* for rendering, not what it drops on death. DS1 retail
-        // doesn't drop the worn weapon every kill: templates that intend
-        // a drop author it explicitly via `il_main` inside a chance-gated
-        // oneof*. Folding Equipped into the drop pile produced 100%-drop
-        // weapons that don't match shipped behavior.
         var results = new List<LootEntry>();
+        // Drops buckets — `il_main = #pattern/range` style, chance-gated by
+        // their own oneof*. Always roll these.
         foreach (var bucket in table.Drops) RollBucket(bucket, rng, results);
+        // Equipped buckets — `es_weapon_hand = X` etc. Worn gear; gate at
+        // the bucket level with EquippedDropChance so they drop sometimes.
+        foreach (var bucket in table.Equipped)
+        {
+            if (rng.NextDouble() < EquippedDropChance)
+                RollBucket(bucket, rng, results);
+        }
         return results;
     }
 

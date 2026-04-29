@@ -24,6 +24,8 @@ A DS1-faithful character creator built from the shipped `character_select.gas` l
 
 Region world events run through the same sfx_script VM as spell casts — chimneys vent smoke, cooking fires + torches throw their billboard cones, and the farmhouse mill turns: animated waterfalls cascade via per-texture UV scroll while the placed waterwheel prop spins on its own X axis from the `chore_default = rotateX?rpm=-8` skrit baked at spawn. Per-instance `aspect.scale_multiplier` is now honored at spawn time, so DS1's baked foliage variation reads correctly (≈1150 placements in fh_r1 alone) and the breakable farmhouse door inflates to its 1.5× footprint instead of reading as a clone of the everyday door.
 
+Phase 21 polish in progress — the always-on HUD now matches DS1's status pane (HP/MP readout above STR/DEX/INT, two-panel dock arrows, four-cell active-ability bar with per-skill XP fills), inventory cells render edge-to-edge in a true grid, and scroll-wheel zoom dollies the chase camera along the view ray instead of arcing flatter as you pull back. Loot drops were over-corrected to zero in 12-SC-3; equipped buckets now roll at a 35% chance gate so corpses leave usable gear behind without becoming weapon-vending machines.
+
 <details>
 <summary><strong>Receipts</strong> — 81 regions / 50,680 props / 7,252 NPCs / 2,829 pcontent entries / 16,275 SNO tiles / 2,086 trigger rows / 1962 PRS animations / 69 spells, every claim backed by a headless <code>siegefx</code> audit.</summary>
 

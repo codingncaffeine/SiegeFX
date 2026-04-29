@@ -149,12 +149,20 @@ public sealed class SpellTemplate
     /// zap -> lightning burst, etc.) instead of the placeholder trail.</summary>
     public string CastSfxScript { get; }
 
+    /// <summary>Phase 21-SC-SPELL-A — basename of the spell's icon RAW in the
+    /// <c>b_gui_ig_i_ic_sp_*_inv</c> set. Pulled from the template's
+    /// <c>[gui]inventory_icon</c> attribute. Empty string when the chain has
+    /// no gui block (creator-defined or stub spells), in which case the
+    /// SpellBookPanel falls back to an element-tinted placeholder.</summary>
+    public string InventoryIcon { get; }
+
     SpellTemplate(string name, string screenName, SpellKind kind,
         float castRange, float castReloadDelay,
         float baseManaCost, string manaCostModifierExpr,
         string attackDamageMinExpr, string attackDamageMaxExpr,
         string healAmountExpr,
-        string castSfxScript)
+        string castSfxScript,
+        string inventoryIcon)
     {
         Name = name;
         ScreenName = screenName;
@@ -168,6 +176,7 @@ public sealed class SpellTemplate
         AttackDamageMaxExpr = attackDamageMaxExpr;
         HealAmountExpr = healAmountExpr;
         CastSfxScript = castSfxScript;
+        InventoryIcon = inventoryIcon;
     }
 
     /// <summary>Mana to charge for a cast against <paramref name="ctx"/>.
@@ -243,6 +252,8 @@ public sealed class SpellTemplate
 
         string sn = (screenName ?? template.Name).Trim().Trim('"');
         string castSfx = ResolveCastSfxScript(template);
+        string invIcon = (store.GetAttribute(template, "gui", "inventory_icon") ?? "")
+                         .Trim().Trim('"');
 
         // Offensive instant-hit path: needs a damage formula.
         string? dmgMaxStr = store.GetAttribute(template, "magic", "attack_damage_modifier_max");
@@ -252,7 +263,7 @@ public sealed class SpellTemplate
             return new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
                 range, reload, cost, (costModStr ?? "").Trim(),
                 (dmgMinStr ?? "").Trim(), dmgMaxStr.Trim(), "",
-                castSfx);
+                castSfx, invIcon);
         }
 
         // Self-heal path: spells DS1 marks with state_name = "heal". The heal
@@ -274,7 +285,7 @@ public sealed class SpellTemplate
                     return new SpellTemplate(template.Name, sn, SpellKind.SelfHeal,
                         range, reload, cost, (costModStr ?? "").Trim(),
                         "", "", valueExpr.Trim(),
-                        castSfx);
+                        castSfx, invIcon);
                 }
             }
         }
