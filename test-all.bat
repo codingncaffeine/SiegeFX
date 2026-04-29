@@ -143,6 +143,7 @@ echo   70. Phase 10-SC-2 - Full chore dictionary into Actor.Clips (fh_r1 chore c
 echo   71. Phase 10-SC-3 - PRS v0x202 + v0x302 loader (Objects.dsres prs fuzz, all 1962 files)
 echo   72. Phase 11-SC-7 - Land water seam stitching (fh_r1 nav + amphibious path 30,30 to water)
 echo   73. Phase 12-SC-3 - Mob loot frequency vs DS1 retail (krug_grunt/krug_scout/gremal)
+echo   74. Phase 12-SC-4/5 - Death pose + weapon-class attack chore (VISUAL, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -222,6 +223,7 @@ if /i "%CHOICE%"=="70" goto T70
 if /i "%CHOICE%"=="71" goto T71
 if /i "%CHOICE%"=="72" goto T72
 if /i "%CHOICE%"=="73" goto T73
+if /i "%CHOICE%"=="74" goto T74
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1413,6 +1415,24 @@ echo.
 "%TOOL%" loot dump "%DS1%\Resources\Logic.dsres" krug_scout --rolls=200 --seed=42
 echo.
 "%TOOL%" loot dump "%DS1%\Resources\Logic.dsres" gremal --rolls=200 --seed=42
+pause
+goto MENU
+
+:T74
+echo.
+echo --- Phase 12-SC-4 + SC-5: Death pose + weapon-class attack chore (VISUAL) ---
+echo [SC-4: kill a krug -- the body should fall and HOLD its final chore_die frame]
+echo [instead of T-posing or vanishing on the idle. fh_r1 receipt: 179/179 mobs ship]
+echo [chore_die. Quicksave (F5) and quickload (F9) -- corpse should still be down.]
+echo.
+echo [SC-5: pick up the dagger and attack a krug. Player should swing the dagger]
+echo [(stance 1, 1H melee), NOT punch with the empty hand. Pre-fix only chore_default]
+echo [+ chore_walk swapped on equip; chore_attack stayed at the unarmed stance.]
+echo [SC-5 walks the whole chore_dictionary on RefreshMotionClips so attack/magic/]
+echo [die/get_hit/fidget all rebind to the equipped weapon's stance.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
 pause
 goto MENU
 

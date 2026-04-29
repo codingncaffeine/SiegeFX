@@ -297,43 +297,34 @@ public sealed class ActorSpawner
         }
     }
 
-    /// <summary>Phase 9-SC-10 — re-pick chore_default + chore_walk against a new
-    /// preferred stance and swap them into <paramref name="actor"/>'s clip array
-    /// in place. Used by the player path when equipment changes mid-game (e.g.
-    /// picking up a shield should switch the idle from fs1 to fs2). Leaves
-    /// Clips[0] / Clips[WalkClipIndex] untouched if the new lookup fails so the
-    /// actor never goes clipless.</summary>
+    /// <summary>Phase 9-SC-10 / Phase 12-SC-5 — re-pick every chore clip against a
+    /// new preferred stance and swap them into <paramref name="actor"/>'s clip
+    /// array in place. Used by the player path when equipment changes mid-game.
+    /// SC-10 originally refreshed only chore_default + chore_walk so picking up a
+    /// shield switched the idle stance, but chore_attack stayed on the unarmed
+    /// fist clip — so a dagger-equipped farmboy played the punch animation on
+    /// every swing. SC-5 walks the whole chore_dictionary so attack/magic/die/
+    /// get_hit/fidget all rebind to the equipped weapon's stance. Leaves an
+    /// existing clip in place if the new lookup fails so the actor never goes
+    /// clipless.</summary>
     public void RefreshMotionClips(Actor actor, int? preferredStance)
     {
         var template = actor.Template;
         var chorePrefix = _store.GetAttribute(template, "body", "chore_dictionary", "chore_prefix");
-        var defaultSection = _store.GetSection(template, "body", "chore_dictionary", "chore_default");
-        if (chorePrefix is null || defaultSection is null) return;
+        var dict = _store.GetSection(template, "body", "chore_dictionary");
+        if (chorePrefix is null || dict is null) return;
 
-        var animFiles = TemplateStore.FindChild(defaultSection, "anim_files");
-        var animSuffix = animFiles?.Attributes.FirstOrDefault().Value;
-        if (animSuffix is null) return;
-
-        var stances = ParseChoreStances(TemplateStore.FindAttr(defaultSection, "chore_stances"));
-        var newIdle = TryLoadAnyStanceClip(chorePrefix, stances, animSuffix, actor.Instance, preferredStance);
-        if (newIdle is not null && actor.Clips.Length > 0)
-            actor.Clips[0] = newIdle;
-
-        if (actor.WalkClipIndex >= 0 && actor.WalkClipIndex < actor.Clips.Length)
+        foreach (var section in dict.Children)
         {
-            var walkSection = _store.GetSection(template, "body", "chore_dictionary", "chore_walk");
-            if (walkSection is not null)
-            {
-                var walkFiles = TemplateStore.FindChild(walkSection, "anim_files");
-                var walkSuffix = walkFiles?.Attributes.FirstOrDefault().Value;
-                if (walkSuffix is not null)
-                {
-                    var walkStances = ParseChoreStances(TemplateStore.FindAttr(walkSection, "chore_stances"));
-                    var newWalk = TryLoadAnyStanceClip(chorePrefix, walkStances, walkSuffix, actor.Instance, preferredStance);
-                    if (newWalk is not null)
-                        actor.Clips[actor.WalkClipIndex] = newWalk;
-                }
-            }
+            var name = section.Header;
+            if (string.IsNullOrEmpty(name) || !name.StartsWith("chore_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!actor.ClipIndexByName.TryGetValue(name, out var clipIdx)) continue;
+            if (clipIdx < 0 || clipIdx >= actor.Clips.Length) continue;
+
+            var newClip = TryLoadChoreClip(chorePrefix, section, actor.Instance, preferredStance);
+            if (newClip is not null)
+                actor.Clips[clipIdx] = newClip;
         }
     }
 

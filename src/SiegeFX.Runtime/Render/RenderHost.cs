@@ -3719,13 +3719,17 @@ void main()
             }
             foreach (var s in _actors)
             {
-                if (s.IsDead) continue;
+                // Phase 12-SC-4 — dead actors keep ticking so chore_die can play
+                // through; the IsMoving/walk override is suppressed and the time
+                // is clamped to the clip's last frame so the corpse holds its
+                // final pose instead of looping the death animation.
+                bool isDead = s.IsDead;
                 // 21d-2a-vi: compute the EFFECTIVE clip index (same logic the draw
                 // loop uses) so AnimTime resets cleanly on idle↔walk swaps. Reading
                 // only CurrentClipIndex meant the walk cycle started from whatever
                 // phase the idle anim happened to be at, which read as a glitch.
                 int idx = s.Actor.CurrentClipIndex;
-                if (s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
+                if (!isDead && s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
                     idx = s.Actor.WalkClipIndex;
                 if (idx != s.LastClipIndex)
                 {
@@ -3735,7 +3739,18 @@ void main()
                 if (s.Actor.Clips.Length > 0)
                 {
                     var clip = s.Actor.Clips[Math.Min(idx, s.Actor.Clips.Length - 1)];
-                    if (clip.AnimLength > 0f) s.AnimTime += dt;
+                    if (clip.AnimLength > 0f)
+                    {
+                        if (isDead)
+                        {
+                            float endHold = clip.AnimLength - 0.01f;
+                            if (s.AnimTime < endHold) s.AnimTime = Math.Min(s.AnimTime + dt, endHold);
+                        }
+                        else
+                        {
+                            s.AnimTime += dt;
+                        }
+                    }
                 }
             }
         }
@@ -4764,12 +4779,32 @@ void main()
         {
             best.IsDead = true;
             best.Brain = null;
+            // Phase 12-SC-4 — fire chore_die so the corpse falls instead of staying
+            // upright on the idle clip. Held forever (PositiveInfinity); the
+            // AnimTime tick + draw loop clamp time at the last frame so we don't
+            // loop the death animation.
+            BeginDeathChore(best);
             // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
             PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
         }
+    }
+
+    /// <summary>Phase 12-SC-4 — kick off the death chore on an actor that just died.
+    /// Pins <c>chore_die</c> on the override layer with infinite duration; the
+    /// AnimTime tick block clamps the playhead at the last frame so the corpse
+    /// holds its final pose rather than looping. Falls back silently if the
+    /// template doesn't ship a chore_die (Phase 10-SC-2 catalogue showed 179/179
+    /// fh_r1 combatants do).</summary>
+    static void BeginDeathChore(ActorRenderState s)
+    {
+        int dieIdx = s.Actor.GetClipIndex("chore_die");
+        if (dieIdx < 0) return;
+        s.Actor.PlayChoreOnce("chore_die", float.PositiveInfinity);
+        s.AnimTime = 0;
+        s.LastClipIndex = dieIdx;
     }
 
     /// <summary>Phase 20c — single funnel for "an actor just died". Credits
@@ -5525,6 +5560,9 @@ void main()
                     {
                         best.IsDead = true;
                         best.Brain = null;
+                        // Phase 12-SC-4 — chore_die on spell-kill (mirrors the
+                        // melee-kill site).
+                        BeginDeathChore(best);
                         // Phase 9-SC-2 — death scream from template's voice block.
                         PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
@@ -5969,12 +6007,18 @@ void main()
                     // is translating this actor; otherwise honor the skrit-driven default.
                     // Without this every NPC played its idle while striding across the map.
                     int idx;
-                    if (s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length)
+                    if (!s.IsDead && s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length)
                         idx = s.Actor.WalkClipIndex;
                     else
                         idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
                     var clip = clips[idx];
-                    var t = (float)(clip.AnimLength > 0f ? s.AnimTime % clip.AnimLength : 0.0);
+                    // Phase 12-SC-4 — dead actors hold the last frame of chore_die
+                    // (clamp to AnimLength) instead of looping. Without the clamp the
+                    // corpse would replay the death over and over.
+                    float t;
+                    if (clip.AnimLength <= 0f) t = 0f;
+                    else if (s.IsDead) t = MathF.Min((float)s.AnimTime, clip.AnimLength - 0.01f);
+                    else t = (float)(s.AnimTime % clip.AnimLength);
                     // Phase 21b-2 — write into the shared scratch buffer instead of
                     // allocating a fresh Matrix4x4[] per actor per frame. The upload
                     // below copies the bytes synchronously so the next iteration may
@@ -6966,6 +7010,10 @@ void main()
             if (!byScid.TryGetValue(snap.Scid, out var s)) { missing++; continue; }
             s.Actor.Combat.RestoreFromSave(snap.CurrentLife, snap.CurrentMana, snap.IsDead);
             s.IsDead = snap.IsDead;
+            // Phase 12-SC-4 — restored corpses re-enter the death pose so they
+            // don't pop back to idle after a quickload. BeginDeathChore is a
+            // no-op when the template doesn't ship chore_die.
+            if (snap.IsDead) { s.Brain = null; BeginDeathChore(s); }
             // Position restore: actors with a brain (on-mesh) teleport via
             // the follower; off-mesh pinned actors get their CurrentTransform
             // updated directly since they have no follower to drive movement.
