@@ -116,6 +116,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx formulas dump      <Logic.dsres>");
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
+    Console.WriteLine("  siegefx spells elements    <Logic.dsres>");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
@@ -4985,11 +4986,12 @@ static int DispatchSpells(string[] a)
     if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey|eval> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "dump"   => CmdSpellsDump(a[1..]),
-        "show"   => CmdSpellsShow(a[1..]),
-        "survey" => CmdSpellsSurvey(a[1..]),
-        "eval"   => CmdSpellsEval(a[1..]),
-        _        => UnknownCommand("spells " + a[0]),
+        "dump"     => CmdSpellsDump(a[1..]),
+        "show"     => CmdSpellsShow(a[1..]),
+        "survey"   => CmdSpellsSurvey(a[1..]),
+        "eval"     => CmdSpellsEval(a[1..]),
+        "elements" => CmdSpellsElements(a[1..]),
+        _          => UnknownCommand("spells " + a[0]),
     };
 }
 
@@ -5097,6 +5099,36 @@ static int CmdSpellsSurvey(string[] a)
     {
         var samp = sampleByPh[kv.Key];
         Console.WriteLine($"  #{kv.Key,-12} -> {kv.Value,3}    e.g. {samp.spell}: {samp.expr}");
+    }
+    return 0;
+}
+
+// Phase 17-SC-B: classify every parsed spell by element bucket so we can
+// verify the renderer's per-element tinting maps onto sensible spells. Walks
+// the SpellCatalog (so only fully-parseable templates count) and groups by
+// SpellElement, listing the spells under each bucket. Receipt: zap →
+// Lightning, fireball → Fire, iceshard → Ice, etc., with no large Generic
+// pile (a big Generic count would mean the keyword set missed real spells).
+static int CmdSpellsElements(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx spells elements <Logic.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    var cat = SpellCatalog.Build(store);
+
+    var byElem = new SortedDictionary<SpellElement, List<SpellTemplate>>();
+    foreach (var s in cat.All)
+    {
+        if (!byElem.TryGetValue(s.Element, out var list)) byElem[s.Element] = list = new();
+        list.Add(s);
+    }
+    Console.WriteLine($"spell elements (catalog size: {cat.Count})");
+    foreach (var kv in byElem)
+    {
+        Console.WriteLine($"  {kv.Key,-9} ({kv.Value.Count}):");
+        foreach (var s in kv.Value.OrderBy(s => s.Name))
+            Console.WriteLine($"    {s.Name,-32} \"{s.ScreenName}\"");
     }
     return 0;
 }

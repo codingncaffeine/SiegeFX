@@ -205,6 +205,36 @@ public sealed class RenderHost : IDisposable
         public float Remaining;
         public float Total;
     }
+    // Phase 17-SC-B — burst flash at the impact point. Spawned alongside
+    // the bolt with Delay matching SpellBoltDuration so the flash fires the
+    // instant the bolt arrives. Drawn as four expanding compass dots in the
+    // HUD pass — same screen-space pipeline as the bolt itself, no need to
+    // stand up a 3D billboard system for one pop of feedback per cast.
+    private readonly List<SpellImpact> _spellImpacts = new();
+    private const float SpellImpactDuration = 0.25f;
+    private sealed class SpellImpact
+    {
+        public Vector3 Position;
+        public Vector4 Color;
+        public float Delay;     // ticks down first; impact dormant until 0
+        public float Remaining; // then ticks down; controls fade + radius
+        public float Total;
+    }
+    // Phase 17-SC-B — element → projectile/impact tint. DS1 ships per-spell
+    // sfx_scripts (call_sfx_script("fireball") etc.) that pick the actual
+    // particle system; until the script runtime lands we lean on the name
+    // taxonomy (SpellElementClassifier) so a fireball reads orange instead
+    // of the same blue zap as every other offensive spell.
+    private static Vector4 SpellElementColor(SiegeFX.Core.Assets.SpellElement e) => e switch
+    {
+        SiegeFX.Core.Assets.SpellElement.Fire      => new Vector4(1.00f, 0.55f, 0.20f, 1f),
+        SiegeFX.Core.Assets.SpellElement.Ice       => new Vector4(0.65f, 0.90f, 1.00f, 1f),
+        SiegeFX.Core.Assets.SpellElement.Lightning => new Vector4(0.55f, 0.85f, 1.00f, 1f),
+        SiegeFX.Core.Assets.SpellElement.Acid      => new Vector4(0.55f, 0.95f, 0.40f, 1f),
+        SiegeFX.Core.Assets.SpellElement.Death     => new Vector4(0.70f, 0.40f, 0.85f, 1f),
+        SiegeFX.Core.Assets.SpellElement.Holy      => new Vector4(1.00f, 0.95f, 0.60f, 1f),
+        _                                           => new Vector4(0.55f, 0.85f, 1.00f, 1f),
+    };
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -5539,11 +5569,19 @@ void main()
                     }
                     var src = playerPos + new Vector3(0f, 1.2f, 0f);
                     var dst = tp        + new Vector3(0f, 1.0f, 0f);
+                    var elemColor = SpellElementColor(spell.Element);
                     _spellBolts.Add(new SpellBolt
                     {
                         Source = src, Target = dst,
-                        Color = new Vector4(0.55f, 0.85f, 1.00f, 1f),
+                        Color = elemColor,
                         Remaining = SpellBoltDuration, Total = SpellBoltDuration,
+                    });
+                    _spellImpacts.Add(new SpellImpact
+                    {
+                        Position = dst,
+                        Color = elemColor,
+                        Delay = SpellBoltDuration,
+                        Remaining = SpellImpactDuration, Total = SpellImpactDuration,
                     });
                     // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
                     // heal branch; only the clip id differs because we still
@@ -5552,7 +5590,7 @@ void main()
                     _audio?.Play(SfxZapCast);
                     AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
                                     anchor + new Vector3(0f, 1.8f, 0f),
-                                    new Vector4(0.55f, 0.80f, 1.00f, 1f));
+                                    elemColor);
                     AwardCombatXp((long)result.Damage,
                                   result.TargetKilled ? best.Actor.Stats.ExperienceValue : 0,
                                   SiegeFX.Core.Assets.SkillKind.CombatMagic);
@@ -5842,6 +5880,16 @@ void main()
         {
             _spellBolts[i].Remaining -= (float)dt;
             if (_spellBolts[i].Remaining <= 0f) _spellBolts.RemoveAt(i);
+        }
+        // Phase 17-SC-B — impact flashes: dwell on Delay until the bolt
+        // arrives, then count down Remaining to drive the expanding-ring
+        // animation. Reverse-iterate for in-place compaction on expiry.
+        for (int i = _spellImpacts.Count - 1; i >= 0; i--)
+        {
+            var im = _spellImpacts[i];
+            if (im.Delay > 0f) { im.Delay -= (float)dt; continue; }
+            im.Remaining -= (float)dt;
+            if (im.Remaining <= 0f) _spellImpacts.RemoveAt(i);
         }
         // Phase 9-SC-9 — advance toss arcs on freshly-dropped piles. Linear
         // XZ lerp from feet to target with a parabolic Y arc (0 → ArcHeight
@@ -6673,6 +6721,31 @@ void main()
                         var c = b.Color; c.W *= falloff;
                         _barRenderer.DrawRect(size.X, size.Y, sx - dot / 2, sy - dot / 2, dot, dot, c);
                     }
+                }
+            }
+            // Phase 17-SC-B — impact rings. Four compass dots expanding from
+            // the target position with linearly fading alpha. Active only
+            // after Delay drains, i.e. the moment the bolt would have hit.
+            if (_spellImpacts.Count > 0 && _barRenderer is not null)
+            {
+                foreach (var im in _spellImpacts)
+                {
+                    if (im.Delay > 0f) continue;
+                    float t = 1f - (im.Remaining / MathF.Max(0.0001f, im.Total));
+                    if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+                    var clip = Vector4.Transform(new Vector4(im.Position, 1f), vp);
+                    if (clip.W <= 0.001f) continue;
+                    float ndcXX = clip.X / clip.W;
+                    float ndcYY = clip.Y / clip.W;
+                    int sx = (int)((ndcXX * 0.5f + 0.5f) * size.X);
+                    int sy = (int)((1f - (ndcYY * 0.5f + 0.5f)) * size.Y);
+                    int radius = 4 + (int)(t * 28f);
+                    int sz = 6;
+                    var c = im.Color; c.W *= 1f - t;
+                    _barRenderer.DrawRect(size.X, size.Y, sx - radius - sz / 2, sy - sz / 2, sz, sz, c);
+                    _barRenderer.DrawRect(size.X, size.Y, sx + radius - sz / 2, sy - sz / 2, sz, sz, c);
+                    _barRenderer.DrawRect(size.X, size.Y, sx - sz / 2, sy - radius - sz / 2, sz, sz, c);
+                    _barRenderer.DrawRect(size.X, size.Y, sx - sz / 2, sy + radius - sz / 2, sz, sz, c);
                 }
             }
             // Phase 20c — quest goal marker. Picks the first active quest with

@@ -147,6 +147,7 @@ echo   74. Phase 12-SC-4/5 - Death pose + weapon-class attack chore (VISUAL, fh_
 echo   75. Phase 12-SC-6 - PRS TRCR resync (Objects.dsres prs fuzz, expect 1855 v3 OK + 131 tracers)
 echo   76. Phase 17-SC-A1 - SpellExpr ** power op (spells survey + show fireball/iceshard)
 echo   77. Phase 17-SC-A2/A3 - SpellExpr placeholders + ternary (spells eval / show freeze)
+echo   78. Phase 17-SC-B    - Per-element spell projectile/impact VFX (spells elements)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -230,6 +231,7 @@ if /i "%CHOICE%"=="74" goto T74
 if /i "%CHOICE%"=="75" goto T75
 if /i "%CHOICE%"=="76" goto T76
 if /i "%CHOICE%"=="77" goto T77
+if /i "%CHOICE%"=="78" goto T78
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1499,6 +1501,21 @@ echo.
 echo -- spell_leech_life clamp formula --
 "%TOOL%" spells eval "( ( #src_life ^> (2.0 + #magic ) ) ? (2 + #magic ) : ( ( #src_life ^> 0.0 ) ? #src_life : 0.0 ) )/10.0" --magic=5 --src_life=20
 "%TOOL%" spells eval "( ( #src_life ^> (2.0 + #magic ) ) ? (2 + #magic ) : ( ( #src_life ^> 0.0 ) ? #src_life : 0.0 ) )/10.0" --magic=5 --src_life=3
+echo.
+pause
+goto MENU
+
+:T78
+echo.
+echo --- Phase 17-SC-B: per-element spell projectile/impact VFX ---
+echo [SpellTemplate now exposes a SpellElement (Fire/Ice/Lightning/Acid/Death/Holy/]
+echo [Generic) classified by template name. RenderHost reads it to tint the bolt +]
+echo [impact flash for every cast — fireballs read orange, iceshards cyan, zaps blue.]
+echo [Receipt: catalog of 69 offensive instant-hit spells groups cleanly across the]
+echo [seven buckets; only 7 land in Generic (kill / killing_fist / leech_life /]
+echo [metal_shards / nurture / reconstitution / tremor — no obvious element cue).]
+echo.
+"%TOOL%" spells elements "%DS1%\Resources\Logic.dsres"
 echo.
 pause
 goto MENU

@@ -11,6 +11,81 @@ public enum SpellKind
     SelfHeal,
 }
 
+/// <summary>Element bucket used by the render layer to pick projectile + impact
+/// color/style. DS1's [magic] block doesn't ship an explicit damage-type field
+/// for offensive spells (it's implicit in the per-spell sfx_script the
+/// template calls on we_req_cast), so we classify by name keyword — the same
+/// taxonomy DS1 uses for its UI's Combat-Magic vs Nature-Magic split. Phase
+/// 17-SC-B only needs five buckets to tell fireball from iceshard from
+/// lightning at a glance.</summary>
+public enum SpellElement
+{
+    Generic,
+    Fire,
+    Ice,
+    Lightning,
+    Acid,
+    Death,
+    Holy,
+}
+
+internal static class SpellElementClassifier
+{
+    /// <summary>Pick an element bucket from a spell template name. Conservative
+    /// — anything we don't recognize falls back to <see cref="SpellElement.Generic"/>
+    /// so the render layer keeps the original blue-bolt look. The keyword set
+    /// covers every offensive spell in shipped DS1 (verified against the
+    /// SpellCatalog dump: 69 OffensiveInstantHit templates).</summary>
+    public static SpellElement FromName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return SpellElement.Generic;
+        var n = name.ToLowerInvariant();
+        // Two-pass classify. Pass 1 runs the strong (unambiguous) element
+        // keywords so e.g. spell_ice_storm and spell_meteor_storm match Ice
+        // and Fire respectively before pass 2 sees their "storm" suffix.
+        // "ice" needs a word-boundary check or it would tag spell_apprentice_zap
+        // — "ice" lives inside "apprent_ice_". The other keywords are unique
+        // enough to use plain Contains.
+        bool HasIceWord(string s)
+        {
+            int i = s.IndexOf("ice", StringComparison.Ordinal);
+            while (i >= 0)
+            {
+                bool boundaryBefore = i == 0 || s[i - 1] == '_';
+                if (boundaryBefore) return true;
+                i = s.IndexOf("ice", i + 1, StringComparison.Ordinal);
+            }
+            return false;
+        }
+        if (n.Contains("fire") || n.Contains("flame") || n.Contains("burn") || n.Contains("flare")
+         || n.Contains("dragon") || n.Contains("meteor") || n.Contains("inferno")
+         || n.Contains("incinerate")) return SpellElement.Fire;
+        if (HasIceWord(n) || n.Contains("frost") || n.Contains("freeze") || n.Contains("snow")
+         || n.Contains("cold") || n.Contains("frigid")) return SpellElement.Ice;
+        if (n.Contains("acid") || n.Contains("poison") || n.Contains("toxic")
+         || n.Contains("plague") || n.Contains("pestilence")) return SpellElement.Acid;
+        if (n.Contains("death") || n.Contains("drain") || n.Contains("decay")
+         || n.Contains("necro") || n.Contains("void") || n.Contains("soul")
+         || n.Contains("explode_body")) return SpellElement.Death;
+        // Lightning before Holy because Holy's "light" keyword would
+        // otherwise swallow spell_lightning / spell_chain_lightning. Holy
+        // still picks up spell_light_ray (no electric keyword present).
+        if (n.Contains("zap") || n.Contains("lightning") || n.Contains("shock")
+         || n.Contains("electric") || n.Contains("blaster") || n.Contains("thunder")
+         || n.Contains("chain")) return SpellElement.Lightning;
+        if (n.Contains("heal") || n.Contains("cure") || n.Contains("bless")
+         || n.Contains("light") || n.Contains("starburst") || n.Contains("sun")
+         || n.Contains("nova")) return SpellElement.Holy;
+        // Pass 2 — weaker tinge keywords: a bare "storm" or "spark" defaults
+        // to Lightning, "bomb"/"blast"/"explod" to Fire. Only reached if no
+        // strong keyword matched above.
+        if (n.Contains("storm") || n.Contains("spark") || n.Contains("flash")) return SpellElement.Lightning;
+        if (n.Contains("bomb") || n.Contains("blast") || n.Contains("explod")
+         || n.Contains("explos") || n.Contains("implo")) return SpellElement.Fire;
+        return SpellElement.Generic;
+    }
+}
+
 /// <summary>
 /// One playable spell, lifted out of a DS1 <c>spell_*</c> template's
 /// <c>[magic]</c> block. The fields here are the bare minimum to fire a
@@ -29,6 +104,11 @@ public sealed class SpellTemplate
     public string Name { get; }
     public string ScreenName { get; }
     public SpellKind Kind { get; }
+
+    /// <summary>Phase 17-SC-B — element bucket derived from <see cref="Name"/>.
+    /// Drives projectile + impact tinting in the render layer; doesn't touch
+    /// damage math.</summary>
+    public SpellElement Element { get; }
 
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
@@ -68,6 +148,7 @@ public sealed class SpellTemplate
         Name = name;
         ScreenName = screenName;
         Kind = kind;
+        Element = SpellElementClassifier.FromName(name);
         CastRange = castRange;
         CastReloadDelay = castReloadDelay;
         BaseManaCost = baseManaCost;
