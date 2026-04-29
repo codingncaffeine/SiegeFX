@@ -301,6 +301,18 @@ public sealed class TriggerRuntime
             case "fade_nodes_global":
                 ctx.FadeNodes(act.Args);
                 return;
+            case "call_sfx_script":
+            {
+                // action* = call_sfx_script("smoke_emitter", "color0(1,1,1)…").
+                // Args[0] is the script name; any remaining args are the
+                // caller-supplied [N] payload referenced from the script body.
+                if (act.Args.Count == 0) return;
+                var scriptName = act.Args[0];
+                IReadOnlyList<string>? scriptArgs =
+                    act.Args.Count > 1 ? act.Args.Skip(1).ToList() : null;
+                ctx.CallSfxScript(scriptName, scriptArgs, trig.Position);
+                return;
+            }
         }
     }
 
@@ -452,4 +464,9 @@ public class TriggerContext
     public virtual void ChangeMood(string moodName) { }
     public virtual void SetInterestRadius(float radius) { }
     public virtual void FadeNodes(IReadOnlyList<string> args) { }
+    /// <summary>Phase 17-SC-G — emitter / spell trigger gateway. The default
+    /// implementation is a no-op so the audit CLI's headless context can still
+    /// drive trigger fan-out without dragging the Runtime project in. Live
+    /// hosts override to dispatch into <c>SfxRuntime</c>.</summary>
+    public virtual void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin) { }
 }

@@ -152,6 +152,8 @@ echo   79. Phase 17-SC-C    - Player chore_magic plays during moving casts
 echo   80. Phase 17-SC-D    - SfxScriptStore inventory (1074 effect_script* across 14 gas files)
 echo   81. Phase 17-SC-E    - Billboard particle backend (in-window F11 fire+smoke+sparks, F10 lightning)
 echo   82. Phase 17-SC-F-1  - sfx_script compiler IR (parser dump for fireball_emitter)
+echo   83. Phase 17-SC-F-2  - sfx_script VM receipt (TallySink: smoke_emitter + fire_emitter, 60 ticks)
+echo   84. Phase 17-SC-G    - Region emitters wired (in-window fh_r1, smoke columns over chimneys)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -240,6 +242,8 @@ if /i "%CHOICE%"=="79" goto T79
 if /i "%CHOICE%"=="80" goto T80
 if /i "%CHOICE%"=="81" goto T81
 if /i "%CHOICE%"=="82" goto T82
+if /i "%CHOICE%"=="83" goto T83
+if /i "%CHOICE%"=="84" goto T84
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1597,6 +1601,43 @@ echo === fireball_emitter (rich script: 34 statements across 11 kinds) ===
 echo.
 echo === smoke_emitter (minimal 2-statement emitter pattern) ===
 "%TOOL%" sfx parse "%DS1%\Resources\Logic.dsres" smoke_emitter
+echo.
+pause
+goto MENU
+
+:T83
+echo.
+echo --- Phase 17-SC-F-2: sfx_script VM receipt (TallySink, headless) ---
+echo [SfxRuntime executes the compiled IR against an IParticleSink. The VM lives in]
+echo [SiegeFX.Core (no GL dep) so this CLI can drive it from a counting stub. Two]
+echo [scripts ticked for 3 simulated seconds (60 ticks @ 1/20s):]
+echo.
+echo   smoke_emitter -> 1 persistent emitter, 60 Maintain calls, ~360 smoke spawns]
+echo   fire_emitter  -> 1 persistent emitter, 60 Maintain calls, ~54 fire spawns]
+echo.
+echo [Same VM (SiegeFX.Core.Sfx.SfxRuntime) drives the live ParticleSystem at runtime.]
+echo.
+echo === smoke_emitter ===
+"%TOOL%" sfx run "%DS1%\Resources\Logic.dsres" smoke_emitter --ticks=60
+echo.
+echo === fire_emitter ===
+"%TOOL%" sfx run "%DS1%\Resources\Logic.dsres" fire_emitter --ticks=60
+echo.
+pause
+goto MENU
+
+:T84
+echo.
+echo --- Phase 17-SC-G: region emitters wired into world load ---
+echo [LoadPlayActors loads emitter.gas placements per region (alongside special.gas)]
+echo [and broadcasts we_entered_world to each trigger instance. The trigger matrix's]
+echo [call_sfx_script verb invokes SfxRuntime.Spawn at the placement origin, so DS1's]
+echo [smoke / fire emitters in fh_r1 produce live billboard columns above chimneys.]
+echo.
+echo [VISUAL: launch fh_r1, look at the farmhouse roofs. Smoke columns should rise]
+echo [from each emitter placement; fireplaces (if any) get fire+smoke pairs.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.
 pause
 goto MENU

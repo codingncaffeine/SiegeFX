@@ -5148,6 +5148,7 @@ static int DispatchSfx(string[] a)
         "list"  => CmdSfxList(a[1..]),
         "show"  => CmdSfxShow(a[1..]),
         "parse" => CmdSfxParse(a[1..]),
+        "run"   => CmdSfxRun(a[1..]),
         _       => UnknownCommand("sfx " + a[0]),
     };
 }
@@ -5240,6 +5241,51 @@ static int CmdSfxParse(string[] a)
 }
 
 static string Truncate(string s, int n) => s.Length <= n ? s : s.Substring(0, n - 3) + "...";
+
+static int CmdSfxRun(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx sfx run <Logic.dsres> <script-name> [--ticks=N]");
+        return 1;
+    }
+    int ticks = 60;
+    for (int i = 2; i < a.Length; i++)
+        if (a[i].StartsWith("--ticks=", StringComparison.Ordinal)
+            && int.TryParse(a[i]["--ticks=".Length..], out var t)) ticks = t;
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var store  = SfxScriptStore.LoadFromTank(reader);
+    if (!store.TryGet(a[1], out _))
+    {
+        Console.Error.WriteLine($"no sfx_script named '{a[1]}'");
+        return 4;
+    }
+
+    var sink = new TallySink();
+    var rt = new SiegeFX.Core.Sfx.SfxRuntime(store, sink);
+    rt.Spawn(a[1], new System.Numerics.Vector3(0, 1, 0), null);
+
+    Console.WriteLine($"after Spawn:");
+    Console.WriteLine($"  persistent emitters : {rt.LivePersistentCount}");
+    Console.WriteLine($"  live coroutines     : {rt.LiveCoroutineCount}");
+    Console.WriteLine($"  one-shot bursts     : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount}");
+
+    const float dt = 1f / 20f;
+    for (int i = 0; i < ticks; i++) rt.Tick(dt);
+
+    Console.WriteLine();
+    Console.WriteLine($"after {ticks} ticks ({ticks * dt:0.00}s):");
+    Console.WriteLine($"  persistent emitters : {rt.LivePersistentCount}");
+    Console.WriteLine($"  live coroutines     : {rt.LiveCoroutineCount}");
+    Console.WriteLine($"  Maintain calls      : fire={sink.MaintainFireCount} smoke={sink.MaintainSmokeCount} steam={sink.MaintainSteamCount}");
+    Console.WriteLine($"  particles spawned   : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount}");
+    if (rt.UnhandledVerbs.Count > 0)
+        Console.WriteLine($"  unhandled verbs     : {string.Join(", ", rt.UnhandledVerbs)}");
+
+    return 0;
+}
 
 static int CmdSpellsDump(string[] a)
 {
@@ -6130,4 +6176,24 @@ sealed class SyntheticPartyContext : SiegeFX.Core.Actors.TriggerContext
         var d = Position - c;
         return MathF.Abs(d.X) <= hx && MathF.Abs(d.Y) <= hy && MathF.Abs(d.Z) <= hz;
     }
+}
+
+/// <summary>Headless <see cref="SiegeFX.Core.Sfx.IParticleSink"/> for `siegefx sfx run`.
+/// Counts spawn/maintain calls and accumulates per-kind particle budgets so the audit
+/// CLI can verify the VM produces the expected receipt without standing up GL.</summary>
+sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
+{
+    public int SpawnFireCount, SpawnSmokeCount, SpawnSteamCount, SpawnSparkCount, SpawnLightningCount;
+    public int MaintainFireCount, MaintainSmokeCount, MaintainSteamCount;
+    public void SpawnFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 12) => SpawnFireCount += n;
+    public void SpawnSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 8) => SpawnSmokeCount += n;
+    public void SpawnSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 8) => SpawnSteamCount += n;
+    public void SpawnSpark(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 16) => SpawnSparkCount += n;
+    public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d) => SpawnLightningCount++;
+    public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
+    { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }
+    public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
+    { MaintainSmokeCount++; float b = carry + r * dt; int k = (int)b; SpawnSmokeCount += Math.Max(0, k); return b - k; }
+    public float MaintainSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
+    { MaintainSteamCount++; float b = carry + r * dt; int k = (int)b; SpawnSteamCount += Math.Max(0, k); return b - k; }
 }

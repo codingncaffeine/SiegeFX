@@ -1,6 +1,7 @@
 using System.Numerics;
 using Silk.NET.OpenGL;
 using SiegeFX.Core.Assets;
+using SiegeFX.Core.Sfx;
 using SiegeFX.Core.Tank;
 
 namespace SiegeFX.Runtime.Render;
@@ -52,7 +53,7 @@ public struct LightningBolt
 /// interpreter. RenderHost drives <see cref="Tick"/> + <see cref="Draw"/>
 /// inside the world pass each frame.
 /// </summary>
-public sealed class ParticleSystem : IDisposable
+public sealed class ParticleSystem : IParticleSink, IDisposable
 {
     private readonly GL _gl;
     private readonly Shader _shader;

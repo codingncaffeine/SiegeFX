@@ -143,6 +143,12 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     private SiegeFX.Core.Actors.TriggerRuntime? _triggerRuntime;
     private RenderHostTriggerContext? _triggerCtx;
+    // Phase 17-SC-D / SC-F — sfx_script catalogue + interpreter. Loaded once
+    // at LoadPlayActors; the trigger runtime hits OnTriggerCallSfxScript which
+    // forwards to _sfxRuntime.Spawn so emitter.gas placements + spell casts
+    // share the same particle backend.
+    private SiegeFX.Core.Assets.SfxScriptStore? _sfxStore;
+    private SiegeFX.Core.Sfx.SfxRuntime? _sfxRuntime;
     // Template index for the active scene; used everywhere we need to walk a
     // template's specializes chain (texture resolution, weapon equip, loot
     // tables, voice cues). Loaded from Logic.dsres at LoadPlayActors.
@@ -562,6 +568,14 @@ public sealed class RenderHost : IDisposable
         // the action is reaching dispatch even when the mood pipeline doesn't yet
         // accept arbitrary names.
         Console.WriteLine($"[trigger] mood_change → '{moodName}'");
+    }
+
+    internal void OnTriggerCallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin)
+    {
+        // Phase 17-SC-G — region emitters route here via TriggerRuntime's
+        // call_sfx_script action. The SfxRuntime spawns a coroutine + maintains
+        // any persistent fire/smoke/steam columns the script kicks off.
+        _sfxRuntime?.Spawn(scriptName, origin, args);
     }
 
     // Phase 21c — one placed prop (tree, barrel, fence, crop, candle, etc.).
@@ -2184,6 +2198,19 @@ void main()
         try { _particles?.LoadTextures(objectsReader); }
         catch (Exception ex) { Console.WriteLine($"  particle atlas load failed: {ex.Message}"); }
 
+        // Phase 17-SC-D — load every shipped effect_script* block. SC-F-2's
+        // SfxRuntime walks these on demand when the trigger runtime fires
+        // call_sfx_script. Failure is non-fatal; without the store, emitter
+        // calls just no-op (the matrix still ticks).
+        try
+        {
+            _sfxStore = SiegeFX.Core.Assets.SfxScriptStore.LoadFromTank(logicReader);
+            if (_particles is not null)
+                _sfxRuntime = new SiegeFX.Core.Sfx.SfxRuntime(_sfxStore, _particles);
+            Console.WriteLine($"  sfx scripts: {_sfxStore.Count} loaded");
+        }
+        catch (Exception ex) { Console.WriteLine($"  sfx_script load failed: {ex.Message}"); }
+
         var (store, storeDiags)    = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
         var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
 
@@ -2273,9 +2300,33 @@ void main()
             triggerPlacementCount += placements.Count;
             spawner.SpawnTriggers(placements);
         }
+        // Phase 17-SC-G — emitter.gas placements ride the same trigger pipeline.
+        // Their templates carry [template_triggers] rows whose action is
+        // call_sfx_script("smoke_emitter") and whose condition is
+        // receive_world_message("we_entered_world"). LoadStaticProps already
+        // skips them (no aspect.model) so this is the only path that ever
+        // registers them; we kick the message below so the rows fire.
+        var emitterPlacementCount = 0;
+        foreach (var rp in triggerRegions)
+        {
+            var (placements, diags) =
+                SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "emitter.gas");
+            foreach (var d in diags) Console.WriteLine("  " + d);
+            emitterPlacementCount += placements.Count;
+            spawner.SpawnTriggers(placements);
+        }
         Console.WriteLine($"  triggers: {_triggerRuntime.Instances.Count} active matrices " +
-                          $"from {triggerPlacementCount} special.gas placements " +
+                          $"from {triggerPlacementCount} special.gas + " +
+                          $"{emitterPlacementCount} emitter.gas placements " +
                           $"({_triggerRuntime.Instances.Sum(t => t.Matrix.Rows.Count)} rows)");
+        // Phase 17-SC-G — boot signal. Every shipped emitter (and many trigger
+        // matrices in special.gas) authors `condition*=receive_world_message
+        // ("we_entered_world")` to fire on world load. Post the message to
+        // every registered SCID after spawn so those rows latch on tick 1.
+        // PostInboundMessage is no-op for SCIDs without matching rows, so
+        // broadcasting to all is safe and one-shot.
+        foreach (var inst in _triggerRuntime.Instances)
+            _triggerRuntime.PostInboundMessage(inst.Scid, "we_entered_world");
         _triggerCtx = new RenderHostTriggerContext(this);
         _templateStore = store;
         _pcontentResolver = new SiegeFX.Core.Actors.PcontentResolver(store);
@@ -5925,6 +5976,10 @@ void main()
         // run as the Phase 17b head-and-trail stand-in until SC-H rewires
         // them through the script interpreter).
         _particles?.Tick((float)dt);
+        // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
+        // run continuous-emitter spawn budgets. Must run after the particle
+        // Tick so this frame's spawns get drawn rather than waiting one tick.
+        _sfxRuntime?.Tick((float)dt);
         // Phase 17-SC-B — impact flashes: dwell on Delay until the bolt
         // arrives, then count down Remaining to drive the expanding-ring
         // animation. Reverse-iterate for in-place compaction on expiry.
