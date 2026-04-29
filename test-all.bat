@@ -148,6 +148,7 @@ echo   75. Phase 12-SC-6 - PRS TRCR resync (Objects.dsres prs fuzz, expect 1855 
 echo   76. Phase 17-SC-A1 - SpellExpr ** power op (spells survey + show fireball/iceshard)
 echo   77. Phase 17-SC-A2/A3 - SpellExpr placeholders + ternary (spells eval / show freeze)
 echo   78. Phase 17-SC-B    - Per-element spell projectile/impact VFX (spells elements)
+echo   79. Phase 17-SC-C    - Player chore_magic plays during moving casts
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -232,6 +233,7 @@ if /i "%CHOICE%"=="75" goto T75
 if /i "%CHOICE%"=="76" goto T76
 if /i "%CHOICE%"=="77" goto T77
 if /i "%CHOICE%"=="78" goto T78
+if /i "%CHOICE%"=="79" goto T79
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1516,6 +1518,23 @@ echo [seven buckets; only 7 land in Generic (kill / killing_fist / leech_life /]
 echo [metal_shards / nurture / reconstitution / tremor — no obvious element cue).]
 echo.
 "%TOOL%" spells elements "%DS1%\Resources\Logic.dsres"
+echo.
+pause
+goto MENU
+
+:T79
+echo.
+echo --- Phase 17-SC-C: chore_magic plays on every cast (incl. moving casts) ---
+echo [The cast site already pinned chore_magic via PlayChoreOnce, but the actor]
+echo [draw loop unconditionally swapped to chore_walk while the player was moving]
+echo [— masking the cast clip whenever the click-to-cast happened mid-stride.]
+echo [Fix: ActorHostBridge.IsOverrideActive gates the walk swap; pinned chores]
+echo [(magic / attack / die) now ride through the full override duration.]
+echo [Receipt: the farmboy template's chore dictionary ships chore_magic, so the]
+echo [override has a real clip to land on. (Visual confirmation: cast spell_zap]
+echo [while click-to-moving — the cast pose now reads instead of the walk cycle.)]
+echo.
+"%TOOL%" templates show "%DS1%\Resources\Logic.dsres" farmboy ^| findstr /R "chore_"
 echo.
 pause
 goto MENU

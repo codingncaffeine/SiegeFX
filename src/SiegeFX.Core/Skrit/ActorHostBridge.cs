@@ -45,6 +45,13 @@ public sealed class ActorHostBridge : IHostBridge
     int _overrideAnimIndex = -1;
     float _overrideRemaining;
 
+    /// <summary>Phase 17-SC-C — true while a chore override pinned by
+    /// <see cref="OverrideAnimIndex"/> is still draining. Lets the draw loop
+    /// keep the override clip on screen instead of swapping it for the walk
+    /// cycle when the actor is also translating mid-chore (a moving cast
+    /// would otherwise hide chore_magic behind chore_walk).</summary>
+    public bool IsOverrideActive => _overrideRemaining > 0f && _overrideAnimIndex >= 0;
+
     /// <summary>Phase 12-SC-2 — pin a chore on top of the skrit-driven blender for
     /// <paramref name="durationSec"/> seconds. Used by combat to play chore_attack
     /// on a swing without waiting for the skrit state machine to route through it.

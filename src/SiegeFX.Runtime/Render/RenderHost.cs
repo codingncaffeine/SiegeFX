@@ -3759,7 +3759,12 @@ void main()
                 // only CurrentClipIndex meant the walk cycle started from whatever
                 // phase the idle anim happened to be at, which read as a glitch.
                 int idx = s.Actor.CurrentClipIndex;
-                if (!isDead && s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
+                // Phase 17-SC-C — a pinned chore override (cast / swing / die)
+                // wins over the IsMoving walk swap. Otherwise a player who casts
+                // while walking would never see chore_magic — the walk clip masks
+                // it for its full 0.7s duration.
+                if (!isDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
+                    && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
                     idx = s.Actor.WalkClipIndex;
                 if (idx != s.LastClipIndex)
                 {
