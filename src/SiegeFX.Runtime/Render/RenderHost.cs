@@ -177,6 +177,10 @@ public sealed class RenderHost : IDisposable
     // viewer modes that bypass play-region loading.
     private SiegeFX.Core.Assets.SpellCatalog? _spellCatalog;
     private SiegeFX.Core.Actors.PlayerSpellbook? _playerSpellbook;
+    // Phase 17-SC-H-DBG — index into the catalog for the [ ] cycle keys.
+    // Lazy: -1 means "not yet aligned with current Primary"; the first cycle
+    // input snaps it to whichever slot the active spell already occupies.
+    private int _spellCycleIdx = -1;
     // 9-SC-3: DS1 spellbooks are pcontent-rolled containers (book_glb_magic_01
     // has pcontent_level=0, no authored spell names). These two names are a
     // SiegeFX stand-in so 'Q'/'W' have something to fire while pcontent
@@ -597,6 +601,19 @@ public sealed class RenderHost : IDisposable
         // orbiting the region origin.
         public int   SpinAxis;
         public float SpinRadPerSec;
+
+        // Phase 17-SC-K — breakable container/prop state. DS1 wires
+        // `[aspect][break_particulate]` on barrels/crates/jugs that the
+        // player can shatter with a click; non-breakable variants ship
+        // `aspect:is_invincible = true`. We promote those placements out
+        // of pure-static rendering: they keep getting drawn the same way
+        // until life reaches zero, at which point IsDestroyed flips and
+        // the renderer skips them. Click-attack picks them when no live
+        // combatant is closer to the cursor.
+        public bool  IsBreakable;
+        public float Life;
+        public float MaxLife;
+        public bool  IsDestroyed;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -1146,6 +1163,18 @@ void main()
                 else if (key == Key.W && _player is not null && !_player.IsDead)
                 {
                     TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
+                }
+                // Phase 17-SC-H-DBG — [ and ] cycle the Primary spell slot
+                // through SpellCatalog.All so SC-H's sfx_script wiring can be
+                // verified per element (zap, fireball, freeze, charm, …)
+                // without an inventory/learn UI. Off-element heals stay on W;
+                // self-heal spells are skipped by the cycle since Primary's
+                // click-target flow expects a live target. The full spell
+                // book panel is Phase 21-SC-SPELL.
+                else if ((key == Key.LeftBracket || key == Key.RightBracket) &&
+                         _playerSpellbook is not null && _spellCatalog is not null)
+                {
+                    CyclePrimarySpell(forward: key == Key.RightBracket);
                 }
                 // Phase 19c — F5 quicksaves to a single slot under the user
                 // profile; F9 reloads the same slot. No confirmation prompt
@@ -3259,6 +3288,33 @@ void main()
                     var defaultSkrit = _templateStore.GetAttribute(template, "body", "chore_dictionary", "chore_default", "skrit");
                     TryParseRotateSkrit(defaultSkrit, out var spinAxis, out var spinRad);
 
+                    // Phase 17-SC-K — breakability lives in [aspect][break_particulate].
+                    // Non-breakable variants ship `aspect:is_invincible = true` (e.g.
+                    // base_container_barrel-still vs base_container_barrel). Default
+                    // life=1 matches DS1's barrel/crate authoring; we read max_life
+                    // off the chain in case heavier crates ship a higher value.
+                    bool isBreakable = false;
+                    float maxLife = 1f;
+                    var breakSection = _templateStore.GetSection(template, "aspect", "break_particulate");
+                    if (breakSection is not null)
+                    {
+                        var inv = _templateStore.GetAttribute(template, "aspect", "is_invincible");
+                        bool invincible = inv is not null &&
+                            (inv.Equals("true", StringComparison.OrdinalIgnoreCase) || inv == "1");
+                        if (!invincible)
+                        {
+                            isBreakable = true;
+                            var lifeAttr = _templateStore.GetAttribute(template, "aspect", "max_life");
+                            if (lifeAttr is null)
+                                lifeAttr = _templateStore.GetAttribute(template, "aspect", "life");
+                            if (lifeAttr is not null &&
+                                float.TryParse(lifeAttr, System.Globalization.NumberStyles.Float,
+                                               System.Globalization.CultureInfo.InvariantCulture, out var lv) &&
+                                lv > 0f)
+                                maxLife = lv;
+                        }
+                    }
+
                     _staticProps.Add(new StaticPropInstance
                     {
                         Mesh          = glMesh,
@@ -3267,6 +3323,9 @@ void main()
                         Template      = p.TemplateName,
                         SpinAxis      = spinAxis,
                         SpinRadPerSec = spinRad,
+                        IsBreakable   = isBreakable,
+                        Life          = maxLife,
+                        MaxLife       = maxLife,
                     });
                     spawned++;
                 }
@@ -3521,12 +3580,39 @@ void main()
             // per second to maintain steady-state population. Clamp so a
             // pathological count=8000 emitter doesn't melt the renderer.
             float rate = (count > 0 && fade > 0f) ? Math.Min(count / fade, 60f) : 18f;
-            float scale = MathF.Max(0.4f, size * 0.6f);
+            float scale = MathF.Max(0.6f, size);
 
-            _sfxRuntime.AddPersistentEmitter(kind, origin, new Vector4(red, green, blue, 1f), scale, rate);
+            // DS1's `dark=true` is a blend-mode flag for opacity/multiply
+            // smoke, not a literal grey colour — the authored rgb=0.1 means
+            // "low contribution per channel" for the dark blend, but in our
+            // straight alpha-blend pipeline that paints near-black smoke. The
+            // farmhouse plumes are visibly white in retail; force white tint
+            // so the textured smoke billboard reads correctly until SC-L
+            // wires up a real dark/multiply blend mode.
+            Vector4 tint;
+            if (kind == ParticleKind.Smoke)
+            {
+                tint = new Vector4(1f, 1f, 1f, 1f);
+            }
+            else
+            {
+                // Fire: saturate the authored colour so the additive plume
+                // actually lights up. DS1 ships rgb=(0.6,0.4,0) for the
+                // farmhouse fire — our texture * tint additive needs that
+                // pushed up to read as flame, not "very dim ember".
+                float boost = MathF.Max(red, MathF.Max(green, blue));
+                float k = boost > 0f ? 1f / boost : 1f;
+                tint = new Vector4(MathF.Min(red * k, 1f),
+                                   MathF.Min(green * k, 1f),
+                                   MathF.Min(blue  * k, 1f),
+                                   1f);
+            }
+
+            _sfxRuntime.AddPersistentEmitter(kind, origin, tint, scale, rate);
             Console.WriteLine($"    legacy emitter [{inst.TemplateName} 0x{inst.Scid:x8}] -> " +
                               $"{kind} at ({origin.X:F2},{origin.Y:F2},{origin.Z:F2}) " +
-                              $"rgb=({red:F2},{green:F2},{blue:F2}) dark={dark} rate={rate:F1}");
+                              $"rgb=({red:F2},{green:F2},{blue:F2}) dark={dark} " +
+                              $"tint=({tint.X:F2},{tint.Y:F2},{tint.Z:F2}) scale={scale:F2} rate={rate:F1}");
             registered++;
         }
         return registered;
@@ -5013,6 +5099,11 @@ void main()
         }
         if (best is null)
         {
+            // Phase 17-SC-K — no live combatant under the cursor; try a
+            // breakable static prop (barrels, crates, jugs). DS1 lets the
+            // player smash these for a frag burst — same pick radius, same
+            // reach gate as actor combat. PerformPropBreak handles the hit.
+            if (TryClickToBreakProp(groundHit)) return;
             Console.WriteLine(
                 $"click-attack: no combatant within {ClickAttackRadius:F1}u of " +
                 $"({groundHit.X:F1}, {groundHit.Z:F1})");
@@ -5058,6 +5149,94 @@ void main()
         float walk = MathF.Max(0f, len - stopShortBy * 0.8f);
         var dir = d / len;
         return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
+    }
+
+    /// <summary>Phase 17-SC-K — pick the closest live breakable static prop
+    /// to the cursor's ground hit. Walks to it if out of reach; otherwise
+    /// shatters it on the spot. DS1 barrels/crates/jugs are 1HP so a single
+    /// swing is the norm, but we still route through max_life so heavier
+    /// crates would take multiple hits if any ship them.</summary>
+    private bool TryClickToBreakProp(Vector3 groundHit)
+    {
+        if (_player is null) return false;
+        StaticPropInstance? best = null;
+        float bestDist = ClickAttackRadius;
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsBreakable || prop.IsDestroyed) continue;
+            var pos = prop.World.Translation;
+            float dx = pos.X - groundHit.X;
+            float dz = pos.Z - groundHit.Z;
+            float d  = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = prop; }
+        }
+        if (best is null) return false;
+
+        var attackerStats = GetPlayerAttackStats();
+        float reach = PlayerMeleeReach(attackerStats);
+        var pPos = _playerFollower?.Position ?? _player.CurrentTransform.Translation;
+        var tPos = best.World.Translation;
+        float playerDist = MathF.Sqrt(
+            (pPos.X - tPos.X) * (pPos.X - tPos.X) +
+            (pPos.Z - tPos.Z) * (pPos.Z - tPos.Z));
+        if (playerDist > reach)
+        {
+            // Static props don't sit in _pendingAttackTarget (that field
+            // expects an ActorRenderState); for now just walk closer and
+            // ask the user to click again. A latched-prop pending-target is
+            // a Phase 21 polish item.
+            var stop = ComputeApproachPoint(pPos, tPos, reach);
+            _playerFollower?.SetTarget(stop);
+            Console.WriteLine(
+                $"click-break: approaching {best.Template} " +
+                $"(dist={playerDist:F1}u, reach={reach:F1}u)");
+            return true;
+        }
+
+        PerformPropBreak(best, attackerStats);
+        return true;
+    }
+
+    /// <summary>Phase 17-SC-K — apply one swing's worth of damage to a
+    /// breakable static prop. On Life&lt;=0 we kick a small smoke + spark
+    /// burst at the prop origin (the wood-frag mesh chain referenced by
+    /// `[break_particulate]` is a Phase 21 polish job — particles read as
+    /// "shatter" until those frags wire through the loot pipeline) and
+    /// flip IsDestroyed so the next render skips the placement.</summary>
+    private void PerformPropBreak(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
+    {
+        if (_player is null || prop.IsDestroyed) return;
+        _player.Actor.PlayChoreOnce("chore_attack", 0.6f);
+        // Single-hit shatter is the DS1 default for life=1 props; we still
+        // roll real damage so heavier crates (if any) would survive a weak
+        // swing rather than always one-shotting.
+        var rng = new Random();
+        float raw = MathF.Max(1f,
+            SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
+                attacker,
+                new SiegeFX.Core.Actors.ActorStats(
+                    MaxLife: prop.MaxLife, MaxMana: 0,
+                    DamageMin: 0, DamageMax: 0, Defense: 0,
+                    AttackRange: 0, WalkSpeed: 0, ExperienceValue: 0,
+                    Strength: 0, Dexterity: 0, Intelligence: 0),
+                rng));
+        prop.Life = MathF.Max(0f, prop.Life - raw);
+        Console.WriteLine(
+            $"click-break: hit {prop.Template} for {raw:F0} " +
+            $"({prop.Life:F0}/{prop.MaxLife:F0})" +
+            (prop.Life <= 0f ? "  *** SHATTERED ***" : ""));
+        if (prop.Life <= 0f)
+        {
+            prop.IsDestroyed = true;
+            // Debris — small smoke puff plus a sparkle ring so the visual
+            // disappearance reads as "broke" rather than "popped out".
+            if (_particles is not null)
+            {
+                var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
+                _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
+                _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
+            }
+        }
     }
 
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
@@ -5713,6 +5892,36 @@ void main()
         }
         _audio.SetAmbientBed(mood.AmbientTrack);
         Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' → '{mood.AmbientTrack}'");
+    }
+
+    /// <summary>Phase 17-SC-H-DBG — step the Primary slot through every
+    /// non-self-heal entry in <see cref="SpellCatalog"/>. Self-heals are
+    /// filtered out because Primary's flow expects a click target; heals
+    /// stay in Secondary on 'W'. Used to verify SC-H's per-element sfx
+    /// scripts (zap, fireball, freeze, charm, …) without an inventory UI.
+    /// Logs the new slot so the user can correlate cast → script.</summary>
+    private void CyclePrimarySpell(bool forward)
+    {
+        if (_playerSpellbook is null || _spellCatalog is null) return;
+        var pool = new List<SiegeFX.Core.Assets.SpellTemplate>();
+        foreach (var s in _spellCatalog.All)
+            if (s.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal) pool.Add(s);
+        if (pool.Count == 0) return;
+
+        // First cycle press: snap the index to whatever's currently slotted
+        // so the user steps relative to the live Primary, not from zero.
+        if (_spellCycleIdx < 0 && _playerSpellbook.Primary is { } cur)
+        {
+            for (int i = 0; i < pool.Count; i++)
+                if (string.Equals(pool[i].Name, cur.Name, StringComparison.OrdinalIgnoreCase))
+                { _spellCycleIdx = i; break; }
+        }
+        _spellCycleIdx = ((_spellCycleIdx < 0 ? 0 : _spellCycleIdx) + (forward ? 1 : -1) + pool.Count) % pool.Count;
+        var next = pool[_spellCycleIdx];
+        _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, next);
+        Console.WriteLine($"  spell-cycle: primary <- {next.Name} (\"{next.ScreenName}\") " +
+                          $"kind={next.Kind} range={next.CastRange:F1} cd={next.CastReloadDelay:F2}s " +
+                          $"[{_spellCycleIdx + 1}/{pool.Count}]");
     }
 
     /// <summary>Phase 17a — cast the slotted spell at whatever the cursor's
@@ -6589,6 +6798,11 @@ void main()
             int lastHas = -1;
             foreach (var prop in _staticProps)
             {
+                // Phase 17-SC-K — once a breakable prop's life hits zero we
+                // simulate the shatter by dropping it from the render set;
+                // the on-hit code already kicked debris particles at the
+                // origin so the disappearance reads as a break, not a pop.
+                if (prop.IsDestroyed) continue;
                 if (!ReferenceEquals(prop.Texture, lastTex))
                 {
                     if (prop.Texture is not null)
