@@ -1253,9 +1253,10 @@ static int CmdRegionNav(string[] a)
         // Diagnostic: how does water actually connect to floor in this region? Print the
         // first water tri's centroid (so callers can drive `region path --water=N` at a
         // real water target), then count how many water tris share an edge with a Floor
-        // tri. In stock DS1 the water surface is a separate SNO whose vertices don't
-        // weld to the shoreline floor, so this number is typically 0 — water becomes
-        // its own component and only routes if start AND goal both sit on water.
+        // tri. Pre-SC-7 this was structurally 0 (water authored in its own SNO whose
+        // vertices don't weld to the shoreline floor); post-SC-7 the seam-stitch pass
+        // wires Floor↔Water boundary edges that share an XZ footprint and a wadeable Y,
+        // and this counter measures how thoroughly the shoreline got reconnected.
         int firstWater = -1;
         int waterFloorEdges = 0;
         for (int t = 0; t < mesh.TriangleCount; t++)
@@ -1269,7 +1270,7 @@ static int CmdRegionNav(string[] a)
             }
         }
         Console.WriteLine($"Water sample   : tri={firstWater}  centroid={FormatVec(mesh.Centroids[firstWater])}");
-        Console.WriteLine($"Water seams    : {waterFloorEdges}/{meshWater} water tris share an edge with a Floor tri");
+        Console.WriteLine($"Water seams    : {waterFloorEdges}/{meshWater} water tris share an edge with a Floor tri  ({mesh.SeamEdgeCount} stitched cross-kind pair(s))");
     }
     return 0;
 }
@@ -1504,7 +1505,7 @@ static int CmdRegionPathFuzz(string[] a)
     const int SamplesPerRegion = 20;
     var rng = new Random(unchecked((int)0xDEADBEEF));
     int regions = 0, emptyMeshes = 0, failedRegions = 0, probes = 0, solved = 0, intraBigProbes = 0, intraBigSolved = 0;
-    long totalTris = 0, totalComponents = 0, totalBiggest = 0, totalNonManifold = 0;
+    long totalTris = 0, totalComponents = 0, totalBiggest = 0, totalNonManifold = 0, totalSeams = 0;
     foreach (var rnodePath in mapReader.ListFiles())
     {
         if (!rnodePath.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
@@ -1517,9 +1518,19 @@ static int CmdRegionPathFuzz(string[] a)
             if (mesh.TriangleCount == 0) { emptyMeshes++; continue; }
             totalTris += mesh.TriangleCount;
             totalNonManifold += mesh.NonManifoldEdgeCount;
+            totalSeams += mesh.SeamEdgeCount;
             var (components, bigComponent, bigSize) = AnalyzeComponents(mesh);
             totalComponents += components;
             totalBiggest += bigSize;
+            // SC-7: the seam-stitch pass merges shoreline water into the biggest
+            // geometric component. The biggest-component A* control probes LandOnly
+            // routability, so endpoints have to be Floor — water is impassable under
+            // the default traversal and a probe with a water start/goal would always
+            // fail and contaminate the metric. Filter once per region.
+            var bigFloor = new List<int>(bigComponent.Count);
+            for (int i = 0; i < bigComponent.Count; i++)
+                if (mesh.Kinds[bigComponent[i]] == SnoModel.FloorKind.Floor)
+                    bigFloor.Add(bigComponent[i]);
             var ws = new NavPathfinder.Workspace();
             var pathBuf = new List<int>();
             for (int s = 0; s < SamplesPerRegion; s++)
@@ -1528,11 +1539,12 @@ static int CmdRegionPathFuzz(string[] a)
                 int a0 = rng.Next(mesh.TriangleCount);
                 int b0 = rng.Next(mesh.TriangleCount);
                 if (NavPathfinder.TryFindPath(mesh, a0, b0, pathBuf, ws)) solved++;
-                // Control probe: both endpoints forced into the biggest component.
-                // Exercises the pathfinder on the mesh's "real" walkable surface rather
-                // than measuring topology disconnectedness. Expect ~100%.
-                int ia = bigComponent[rng.Next(bigComponent.Count)];
-                int ib = bigComponent[rng.Next(bigComponent.Count)];
+                // Control probe: both endpoints forced into the biggest component's
+                // Floor subset. Exercises the pathfinder on the mesh's "real" walkable
+                // surface rather than measuring topology disconnectedness. Expect ~100%.
+                if (bigFloor.Count == 0) continue;
+                int ia = bigFloor[rng.Next(bigFloor.Count)];
+                int ib = bigFloor[rng.Next(bigFloor.Count)];
                 intraBigProbes++;
                 if (NavPathfinder.TryFindPath(mesh, ia, ib, pathBuf, ws)) intraBigSolved++;
             }
@@ -1551,6 +1563,7 @@ static int CmdRegionPathFuzz(string[] a)
     Console.WriteLine($"Avg comps / mesh     : {(meshed == 0 ? 0 : totalComponents / meshed)}");
     Console.WriteLine($"Avg biggest / mesh   : {(meshed == 0 ? 0 : totalBiggest / meshed):N0} ({(totalTris == 0 ? 0 : 100.0 * totalBiggest / totalTris):F1}% of all tris)");
     Console.WriteLine($"Total non-manifold   : {totalNonManifold:N0} edge(s) across all regions");
+    Console.WriteLine($"Total land↔water     : {totalSeams:N0} cross-kind seam(s) wired across all regions");
     Console.WriteLine($"Random-pair A*       : {probes} probes, {solved} solved = {solveRate:F1}%  (measures topology, not pathfinder health)");
     Console.WriteLine($"Biggest-component A* : {intraBigProbes} probes, {intraBigSolved} solved = {bigSolveRate:F1}%  (should be ~100%)");
     return failedRegions == 0 ? 0 : 4;

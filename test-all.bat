@@ -141,6 +141,7 @@ echo   68. Phase 9-SC-16 B-1+B-2 - Pcontent tier + wildcards + rarity (#club/2-3
 echo   69. Phase 10-SC-1 - Trigger matrix parser (fh_r1 special.gas + verb coverage)
 echo   70. Phase 10-SC-2 - Full chore dictionary into Actor.Clips (fh_r1 chore coverage)
 echo   71. Phase 10-SC-3 - PRS v0x202 + v0x302 loader (Objects.dsres prs fuzz, all 1962 files)
+echo   72. Phase 11-SC-7 - Land water seam stitching (fh_r1 nav + amphibious path 30,30 to water)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -218,6 +219,7 @@ if /i "%CHOICE%"=="68" goto T68
 if /i "%CHOICE%"=="69" goto T69
 if /i "%CHOICE%"=="70" goto T70
 if /i "%CHOICE%"=="71" goto T71
+if /i "%CHOICE%"=="72" goto T72
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1375,6 +1377,24 @@ echo [Expected: 1962 / 1962 OK, 0 failures, 131 with TRCR (separate gap), 0 lega
 echo [versions (ok): 0x3=1724, 0x202=62, 0x302=45 — full coverage of shipped DS1.]
 echo.
 "%TOOL%" prs fuzz "%DS1%\Resources\Objects.dsres"
+pause
+goto MENU
+
+:T72
+echo.
+echo --- Phase 11-SC-7: land-water seam stitching ---
+echo [fh_r1 nav: expect "Water seams: 37/1435 ... (37 stitched cross-kind pair(s))"]
+echo [Pre-SC-7 was 0/1435 — Floor and Water lived on disconnected geometric components.]
+echo [World path-fuzz: expect "Total land-water: ~4,907 cross-kind seam(s)" across 81]
+echo [regions; biggest-component A* should still be ~99-100%% (now Floor-only-restricted).]
+echo [Amphibious route: 30,0,30 (Floor) -- 27.57,-1.5,0.70 (Water) crosses a stitched seam]
+echo [with --water=4. Default LandOnly traversal still refuses water endpoints.]
+echo.
+"%TOOL%" region nav "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+"%TOOL%" region path "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1 "30,0,30" "27.57,-1.5,0.70" --water=4
+echo.
+"%TOOL%" region path-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
 pause
 goto MENU
 

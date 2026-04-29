@@ -66,6 +66,16 @@ public sealed class NavMesh
     /// and pop out on the wrong surface.</summary>
     public int NonManifoldEdgeCount { get; }
 
+    /// <summary>Cross-kind adjacencies wired by the land↔water seam pass. DS1 authors
+    /// water surfaces in their own SNOs whose vertices don't weld to the shoreline floor,
+    /// so a vertex-equality manifold pass alone leaves Floor and Water on disconnected
+    /// components. <see cref="StitchLandWaterSeams"/> finds Floor and Water boundary edges
+    /// whose XZ projections overlap within <see cref="SeamXZToleranceUnits"/> and whose
+    /// midpoint Y differs by less than <see cref="SeamYToleranceUnits"/>, then wires them
+    /// across — letting an amphibious actor wade onto a beach. Each tally is one
+    /// floor↔water pair (counted once, not twice).</summary>
+    public int SeamEdgeCount { get; }
+
     public int TriangleCount => Indices.Length / 3;
 
     // XZ uniform-grid spatial index. Built once at construction and queried by
@@ -90,6 +100,7 @@ public sealed class NavMesh
         int sourceSnodeCount,
         int degenerateFaceCount,
         int nonManifoldEdgeCount,
+        int seamEdgeCount,
         float gridMinX,
         float gridMinZ,
         int gridCellsX,
@@ -105,6 +116,7 @@ public sealed class NavMesh
         SourceSnodeCount = sourceSnodeCount;
         DegenerateFaceCount = degenerateFaceCount;
         NonManifoldEdgeCount = nonManifoldEdgeCount;
+        SeamEdgeCount = seamEdgeCount;
         _gridMinX = gridMinX;
         _gridMinZ = gridMinZ;
         _gridCellsX = gridCellsX;
@@ -121,6 +133,18 @@ public sealed class NavMesh
     /// Empirical fuzz across 81 regions: 0.01 → ~29 components/mesh; 0.1 → 1 component
     /// in the typical region.</summary>
     public const float WeldToleranceUnits = 0.1f;
+
+    /// <summary>How far apart (in XZ projection) two boundary edges may sit and still be
+    /// stitched together as a Floor↔Water seam. 0.5 units is wider than the weld tolerance
+    /// because shoreline floor and water SNOs are authored independently — vertices that
+    /// look "the same" in the editor land 0.2-0.4u apart by the time door-chain transforms
+    /// have accumulated.</summary>
+    public const float SeamXZToleranceUnits = 0.5f;
+
+    /// <summary>Maximum vertical step between a Floor edge midpoint and a Water edge midpoint
+    /// for them to be considered the same shoreline. Half a unit roughly matches DS1's
+    /// authored wading depth — anything taller is a cliff into water (no walkable transition).</summary>
+    public const float SeamYToleranceUnits = 0.5f;
 
     /// <summary>Builds a region-scope nav mesh from a region's placed-snode layout and an
     /// SNO resolver. Floor and Water groupings both contribute (each face is tagged via
@@ -252,8 +276,16 @@ public sealed class NavMesh
                 if (neighbors[3 * triB + ss] == triA) { neighbors[3 * triB + ss] = -1; break; }
         }
 
-        var centroids = new Vector3[triCount];
         var vertsArr = verts.ToArray();
+        var kindsArr = kinds.ToArray();
+
+        // Land↔water seam stitching: shoreline Floor and Water SNOs are authored in
+        // separate meshes whose vertices don't fall inside the WeldToleranceUnits bucket,
+        // so the manifold pass leaves them on disconnected components. Wire cross-kind
+        // adjacencies for boundary-edge pairs that share an XZ footprint and a wadeable Y.
+        int seamEdges = StitchLandWaterSeams(triCount, indices, neighbors, vertsArr, kindsArr);
+
+        var centroids = new Vector3[triCount];
         float gMinX = float.PositiveInfinity, gMinZ = float.PositiveInfinity;
         float gMaxX = float.NegativeInfinity, gMaxZ = float.NegativeInfinity;
         for (int t = 0; t < triCount; t++)
@@ -324,17 +356,153 @@ public sealed class NavMesh
             vertsArr,
             indices,
             neighbors,
-            kinds.ToArray(),
+            kindsArr,
             centroids,
             sourceNode.ToArray(),
             sourceSnodes,
             degenerate,
             nonManifoldEdges,
+            seamEdges,
             originX,
             originZ,
             cellsX,
             cellsZ,
             grid);
+    }
+
+    /// <summary>Wires cross-kind adjacencies for Floor↔Water boundary edges that visually
+    /// share a shoreline. DS1 authors water surfaces in separate SNOs whose vertices don't
+    /// weld to the floor under <see cref="WeldToleranceUnits"/>, so a vertex-equality
+    /// manifold pass alone leaves Floor and Water on disconnected components — fh_r1 ships
+    /// 0/1435 water tris with a Floor edge before this pass runs. We pair each Floor
+    /// boundary edge with the closest unclaimed Water boundary edge whose XZ projection
+    /// overlaps within <see cref="SeamXZToleranceUnits"/>, whose direction is roughly
+    /// collinear (|cos θ| ≥ 0.85, ~32°), and whose midpoint Y is within
+    /// <see cref="SeamYToleranceUnits"/> of the floor's. Each side keeps the single-int
+    /// neighbors[] slot — water claimed by floor A can't also be claimed by floor B —
+    /// so we sort candidates by combined (XZ + Y) distance and process best-first.
+    /// Returns the number of cross-kind pairs wired (one count per Floor↔Water bond).
+    /// The pathfinder still consults <see cref="NavTraversal"/> to decide whether a given
+    /// actor may cross — land-only stays land-only, amphibious gets a routable shoreline.</summary>
+    private static int StitchLandWaterSeams(
+        int triCount,
+        int[] indices,
+        int[] neighbors,
+        Vector3[] verts,
+        SnoModel.FloorKind[] kinds)
+    {
+        // Slot s on triangle t spans the edge OPPOSITE vertex s (verts (s+1)%3 and (s+2)%3).
+        // Capture (tri, slot, midpoint, unit XZ direction, length) per boundary edge so the
+        // pairing pass can score collinearity + overlap without recomputing per candidate.
+        var floorEdges = new List<(int tri, int slot, Vector3 mid, float dirX, float dirZ, float len)>();
+        var waterEdges = new List<(int tri, int slot, Vector3 mid, float dirX, float dirZ, float len)>();
+        for (int t = 0; t < triCount; t++)
+        {
+            var kind = kinds[t];
+            if (kind != SnoModel.FloorKind.Floor && kind != SnoModel.FloorKind.Water) continue;
+            for (int s = 0; s < 3; s++)
+            {
+                if (neighbors[3 * t + s] != -1) continue;
+                var a = verts[indices[3 * t + (s + 1) % 3]];
+                var b = verts[indices[3 * t + (s + 2) % 3]];
+                var mid = 0.5f * (a + b);
+                float dx = b.X - a.X, dz = b.Z - a.Z;
+                float len = MathF.Sqrt(dx * dx + dz * dz);
+                if (len < 1e-6f) continue; // edge-on-Y, degenerate XZ projection
+                float ux = dx / len, uz = dz / len;
+                if (kind == SnoModel.FloorKind.Floor) floorEdges.Add((t, s, mid, ux, uz, len));
+                else waterEdges.Add((t, s, mid, ux, uz, len));
+            }
+        }
+        if (floorEdges.Count == 0 || waterEdges.Count == 0) return 0;
+
+        // Bin water edges by midpoint XZ cell so the per-floor scan stays linear in nearby
+        // candidates rather than full water-edge count. Cell size = 2× tolerance: a floor
+        // edge in cell C only needs to inspect cells (C ± 1) × (C ± 1) to cover everything
+        // within SeamXZToleranceUnits. Empty meshes already early-exited above.
+        const float CellSize = SeamXZToleranceUnits * 2f;
+        float waterMinX = float.PositiveInfinity, waterMinZ = float.PositiveInfinity;
+        float waterMaxX = float.NegativeInfinity, waterMaxZ = float.NegativeInfinity;
+        for (int i = 0; i < waterEdges.Count; i++)
+        {
+            var m = waterEdges[i].mid;
+            if (m.X < waterMinX) waterMinX = m.X;
+            if (m.Z < waterMinZ) waterMinZ = m.Z;
+            if (m.X > waterMaxX) waterMaxX = m.X;
+            if (m.Z > waterMaxZ) waterMaxZ = m.Z;
+        }
+        int wCellsX = Math.Max(1, (int)MathF.Ceiling((waterMaxX - waterMinX) / CellSize) + 1);
+        int wCellsZ = Math.Max(1, (int)MathF.Ceiling((waterMaxZ - waterMinZ) / CellSize) + 1);
+        var waterGrid = new List<int>?[wCellsX * wCellsZ];
+        for (int i = 0; i < waterEdges.Count; i++)
+        {
+            var m = waterEdges[i].mid;
+            int cx = Math.Clamp((int)MathF.Floor((m.X - waterMinX) / CellSize), 0, wCellsX - 1);
+            int cz = Math.Clamp((int)MathF.Floor((m.Z - waterMinZ) / CellSize), 0, wCellsZ - 1);
+            (waterGrid[cz * wCellsX + cx] ??= new List<int>()).Add(i);
+        }
+
+        // Collect candidate (floor, water, score) triples within tolerance, then process
+        // best-first so the cleanest shorelines claim their water partner before any
+        // marginal alignment can. Each side gets a single neighbors[] slot, so 1:1 wiring
+        // is mandatory — sort + greedy-claim is cheaper than a full bipartite match and
+        // good enough for DS1 shoreline geometry.
+        const float CollinearityCosMin = 0.85f;
+        var pairs = new List<(int fIdx, int wIdx, float score)>(floorEdges.Count);
+        for (int f = 0; f < floorEdges.Count; f++)
+        {
+            var fe = floorEdges[f];
+            int cx = Math.Clamp((int)MathF.Floor((fe.mid.X - waterMinX) / CellSize), 0, wCellsX - 1);
+            int cz = Math.Clamp((int)MathF.Floor((fe.mid.Z - waterMinZ) / CellSize), 0, wCellsZ - 1);
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                int rz = cz + dz;
+                if (rz < 0 || rz >= wCellsZ) continue;
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    int rx = cx + dx;
+                    if (rx < 0 || rx >= wCellsX) continue;
+                    var bucket = waterGrid[rz * wCellsX + rx];
+                    if (bucket is null) continue;
+                    foreach (var w in bucket)
+                    {
+                        var we = waterEdges[w];
+                        float ddx = fe.mid.X - we.mid.X;
+                        float ddz = fe.mid.Z - we.mid.Z;
+                        float dxz = MathF.Sqrt(ddx * ddx + ddz * ddz);
+                        if (dxz > SeamXZToleranceUnits) continue;
+                        float dy = MathF.Abs(fe.mid.Y - we.mid.Y);
+                        if (dy > SeamYToleranceUnits) continue;
+                        float cosAlign = MathF.Abs(fe.dirX * we.dirX + fe.dirZ * we.dirZ);
+                        if (cosAlign < CollinearityCosMin) continue;
+                        pairs.Add((f, w, dxz + dy));
+                    }
+                }
+            }
+        }
+        if (pairs.Count == 0) return 0;
+        pairs.Sort((a, b) => a.score.CompareTo(b.score));
+
+        var floorClaimed = new bool[floorEdges.Count];
+        var waterClaimed = new bool[waterEdges.Count];
+        int stitched = 0;
+        foreach (var p in pairs)
+        {
+            if (floorClaimed[p.fIdx] || waterClaimed[p.wIdx]) continue;
+            var fe = floorEdges[p.fIdx];
+            var we = waterEdges[p.wIdx];
+            // Sanity: a previously-stitched non-manifold cleanup or duplicate slot could have
+            // changed neighbors[] from -1 since we captured the boundary edges. Refuse to
+            // overwrite a real wire — this is defensive and never trips on shipped data.
+            if (neighbors[3 * fe.tri + fe.slot] != -1) continue;
+            if (neighbors[3 * we.tri + we.slot] != -1) continue;
+            neighbors[3 * fe.tri + fe.slot] = we.tri;
+            neighbors[3 * we.tri + we.slot] = fe.tri;
+            floorClaimed[p.fIdx] = true;
+            waterClaimed[p.wIdx] = true;
+            stitched++;
+        }
+        return stitched;
     }
 
     /// <summary>Finds the triangle containing <paramref name="worldPos"/> by XZ
