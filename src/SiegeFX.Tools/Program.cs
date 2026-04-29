@@ -5088,12 +5088,30 @@ static int CmdSpellsDump(string[] a)
 
 static int CmdSpellsShow(string[] a)
 {
-    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx spells show <Logic.dsres> <spell_name> [magic_level]"); return 1; }
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx spells show <Logic.dsres> <spell_name> [magic_level] [--maxlife=N] [--life=N] [--src_mana=N] [--src_life=N]");
+        return 1;
+    }
     using var tank = TankFile.Open(a[0]);
     var reader = new TankReader(tank);
     var (store, _) = TemplateStore.LoadFromTank(reader);
     var cat = SpellCatalog.Build(store);
     if (!cat.TryGet(a[1], out var s)) { Console.Error.WriteLine($"no spell named '{a[1]}' in catalog"); return 4; }
+
+    // Optional context flags (SC-A2): the placeholders besides #magic.
+    float maxLife = 0f, life = 0f, srcMana = 0f, srcLife = 0f;
+    int? onlyLevel = null;
+    for (int ai = 2; ai < a.Length; ai++)
+    {
+        var arg = a[ai];
+        if (arg.StartsWith("--maxlife=",  StringComparison.Ordinal)) float.TryParse(arg.AsSpan("--maxlife=".Length),  System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out maxLife);
+        else if (arg.StartsWith("--life=",     StringComparison.Ordinal)) float.TryParse(arg.AsSpan("--life=".Length),     System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out life);
+        else if (arg.StartsWith("--src_mana=", StringComparison.Ordinal)) float.TryParse(arg.AsSpan("--src_mana=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out srcMana);
+        else if (arg.StartsWith("--src_life=", StringComparison.Ordinal)) float.TryParse(arg.AsSpan("--src_life=".Length), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out srcLife);
+        else if (int.TryParse(arg, out var lv)) onlyLevel = lv;
+    }
+
     Console.WriteLine($"{s.Name}  \"{s.ScreenName}\"  (kind={s.Kind})");
     Console.WriteLine($"  cast_range          = {s.CastRange}");
     Console.WriteLine($"  cast_reload_delay   = {s.CastReloadDelay}");
@@ -5106,16 +5124,20 @@ static int CmdSpellsShow(string[] a)
         Console.WriteLine($"  damage_min expr     = {s.AttackDamageMinExpr}");
         Console.WriteLine($"  damage_max expr     = {s.AttackDamageMaxExpr}");
     }
+    if (maxLife != 0f || life != 0f || srcMana != 0f || srcLife != 0f)
+        Console.WriteLine($"  context             = #maxlife={maxLife} #life={life} #src_mana={srcMana} #src_life={srcLife}");
     Console.WriteLine();
-    int[] levels = a.Length >= 3 && int.TryParse(a[2], out var only) ? new[] { only } : new[] { 1, 5, 10, 25, 50, 100 };
+
+    int[] levels = onlyLevel.HasValue ? new[] { onlyLevel.Value } : new[] { 1, 5, 10, 25, 50, 100 };
     var rng = new Random(1);
     if (s.Kind == SpellKind.SelfHeal)
     {
         Console.WriteLine("evaluated by magic level (heal amount, mana cost):");
         foreach (var lv in levels)
         {
-            float heal = s.HealAmount(lv);
-            float cost = s.ManaCost(lv);
+            var ctx = new SpellEvalContext(lv, maxLife, life, srcMana, srcLife);
+            float heal = s.HealAmount(ctx);
+            float cost = s.ManaCost(ctx);
             Console.WriteLine($"  L{lv,-3}  heal={heal,6:0.00}  mana={cost,5:0.0}");
         }
     }
@@ -5124,10 +5146,11 @@ static int CmdSpellsShow(string[] a)
         Console.WriteLine("evaluated by magic level (lo / hi damage, mana cost):");
         foreach (var lv in levels)
         {
-            float lo = SpellExpr.Eval(s.AttackDamageMinExpr, lv);
-            float hi = SpellExpr.Eval(s.AttackDamageMaxExpr, lv);
-            float cost = s.ManaCost(lv);
-            float sample = s.RollDamage(lv, rng);
+            var ctx = new SpellEvalContext(lv, maxLife, life, srcMana, srcLife);
+            float lo = SpellExpr.Eval(s.AttackDamageMinExpr, ctx);
+            float hi = SpellExpr.Eval(s.AttackDamageMaxExpr, ctx);
+            float cost = s.ManaCost(ctx);
+            float sample = s.RollDamage(ctx, rng);
             Console.WriteLine($"  L{lv,-3}  dmg [{lo,7:0.00} .. {hi,7:0.00}]  sample={sample,6:0.00}  mana={cost,5:0.0}");
         }
     }

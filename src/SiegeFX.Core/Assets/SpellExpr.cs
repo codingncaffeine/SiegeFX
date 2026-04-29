@@ -2,15 +2,51 @@ using System.Globalization;
 
 namespace SiegeFX.Core.Assets;
 
+/// <summary>Caster/target snapshot consumed by <see cref="SpellExpr"/> when
+/// resolving <c>#magic</c>, <c>#maxlife</c>, <c>#life</c>, <c>#src_mana</c>,
+/// <c>#src_life</c>. Values default to 0 — any placeholder a caller doesn't
+/// fill folds to 0 the same way the parser does for unknown identifiers, so
+/// shipped formulas that only reference <c>#magic</c> still resolve cleanly
+/// against a context built with just a magic level. <c>#src_*</c> always
+/// reads from the caster; <c>#life</c> / <c>#maxlife</c> follow DS1
+/// convention by reading from the *target* of the cast (which equals the
+/// caster for self-target heals/buffs — Phase 17-SC-A2 ships with that
+/// caster=target wiring on the heal path because the offensive path doesn't
+/// need target life yet).</summary>
+public readonly struct SpellEvalContext
+{
+    /// <summary>Caster's combat-magic skill level (<c>#magic</c>).</summary>
+    public readonly float Magic;
+    /// <summary>Target's max life (<c>#maxlife</c>) — caster's for self-target spells.</summary>
+    public readonly float MaxLife;
+    /// <summary>Target's current life (<c>#life</c>) — caster's for self-target spells.</summary>
+    public readonly float Life;
+    /// <summary>Caster's current mana (<c>#src_mana</c>).</summary>
+    public readonly float SrcMana;
+    /// <summary>Caster's current life (<c>#src_life</c>).</summary>
+    public readonly float SrcLife;
+
+    public SpellEvalContext(float magic, float maxLife = 0f, float life = 0f,
+                            float srcMana = 0f, float srcLife = 0f)
+    {
+        Magic = magic;
+        MaxLife = maxLife;
+        Life = life;
+        SrcMana = srcMana;
+        SrcLife = srcLife;
+    }
+}
+
 /// <summary>
 /// Tiny arithmetic evaluator for the formula strings DS1 uses inside
 /// <c>[magic]</c> blocks — things like
 /// <c>(((#magic+5.51)-1/((#magic+1)/3))*1.23)*(1+((1/(#magic+3.3))+0.03))</c>
 /// for spell damage scaling. Covers what shipped data actually needs:
-/// numeric literals, <c>#magic</c> substitution, parentheses, <c>+ - * /</c>,
-/// and the right-associative <c>**</c> power operator (~19 offensive spells —
-/// fireball, iceshard, acid_cloud, etc. — encode their level scaling as
-/// <c>(#magic+1)**1.15</c> and friends; without this they read as zero).
+/// numeric literals, the placeholder set
+/// <c>#magic / #maxlife / #life / #src_mana / #src_life</c> (substituted from
+/// a <see cref="SpellEvalContext"/>), parentheses, <c>+ - * /</c>, and the
+/// right-associative <c>**</c> power operator (~19 offensive spells encode
+/// level scaling as <c>(#magic+1)**1.15</c>; without this they read as 0).
 ///
 /// Recursive-descent, no allocations beyond the Tokenizer cursor — these
 /// formulas are short (max ~120 chars) and we evaluate one per cast at most.
@@ -24,12 +60,12 @@ namespace SiegeFX.Core.Assets;
 /// </summary>
 public static class SpellExpr
 {
-    /// <summary>Evaluate <paramref name="expr"/> with <c>#magic</c> bound to
-    /// <paramref name="magicLevel"/>. Returns 0 on parse error.</summary>
-    public static float Eval(string expr, float magicLevel)
+    /// <summary>Evaluate <paramref name="expr"/> against <paramref name="ctx"/>.
+    /// Returns 0 on parse error.</summary>
+    public static float Eval(string expr, in SpellEvalContext ctx)
     {
         if (string.IsNullOrWhiteSpace(expr)) return 0f;
-        var p = new Parser(expr, magicLevel);
+        var p = new Parser(expr, ctx);
         try
         {
             float v = p.ParseAddSub();
@@ -41,13 +77,20 @@ public static class SpellExpr
         }
     }
 
+    /// <summary>Convenience overload for callers that only care about the
+    /// caster's magic level — typical of survey/balance CLIs and back-compat
+    /// call sites that predate the placeholder set. Anything beyond
+    /// <c>#magic</c> folds to 0.</summary>
+    public static float Eval(string expr, float magicLevel)
+        => Eval(expr, new SpellEvalContext(magicLevel));
+
     private struct Parser
     {
         readonly string _s;
-        readonly float _magic;
+        readonly SpellEvalContext _ctx;
         int _i;
 
-        public Parser(string s, float magic) { _s = s; _magic = magic; _i = 0; }
+        public Parser(string s, in SpellEvalContext ctx) { _s = s; _ctx = ctx; _i = 0; }
 
         public bool AtEnd { get { Skip(); return _i >= _s.Length; } }
 
@@ -140,13 +183,20 @@ public static class SpellExpr
             }
             if (c == '#')
             {
-                // Read the bare identifier after '#'. Only #magic is referenced
-                // by shipped data we care about; unknown placeholders fold to 0.
+                // Read the bare identifier after '#'. Identifiers may include
+                // underscores (#src_mana, #src_life). Unknown placeholders
+                // fold to 0 — DS1's cost/damage formulas reference a fixed
+                // set and we'd rather miss a niche placeholder silently than
+                // throw mid-cast.
                 _i++;
                 int start = _i;
-                while (_i < _s.Length && char.IsLetterOrDigit(_s[_i])) _i++;
+                while (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '_')) _i++;
                 var name = _s.AsSpan(start, _i - start);
-                if (name.Equals("magic", StringComparison.OrdinalIgnoreCase)) return _magic;
+                if (name.Equals("magic",    StringComparison.OrdinalIgnoreCase)) return _ctx.Magic;
+                if (name.Equals("maxlife",  StringComparison.OrdinalIgnoreCase)) return _ctx.MaxLife;
+                if (name.Equals("life",     StringComparison.OrdinalIgnoreCase)) return _ctx.Life;
+                if (name.Equals("src_mana", StringComparison.OrdinalIgnoreCase)) return _ctx.SrcMana;
+                if (name.Equals("src_life", StringComparison.OrdinalIgnoreCase)) return _ctx.SrcLife;
                 return 0f;
             }
             // Numeric literal — digits + dot, allow leading digit OR leading dot.

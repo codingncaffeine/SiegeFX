@@ -123,11 +123,26 @@ public sealed class PlayerSpellbook
         if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, spell, 0, 0, 0, false);
         if (distance > spell.CastRange) return new CastResult(CastOutcome.OutOfRange, spell, 0, 0, 0, false);
 
-        float cost = spell.ManaCost(magicLevel);
+        // Build the caster/target context once. Cost expressions reference
+        // caster fields (#src_*, occasionally #maxlife as a self-scaling cost
+        // — spell_freeze does this); damage expressions reference target life
+        // (#maxlife/#life, e.g. spell_charm scales duration by target maxlife).
+        var costCtx = new SpellEvalContext(magicLevel,
+            maxLife: _player.Stats.MaxLife,
+            life:    _player.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+        var dmgCtx = new SpellEvalContext(magicLevel,
+            maxLife: target.Stats.MaxLife,
+            life:    target.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+
+        float cost = spell.ManaCost(costCtx);
         if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
 
         float spent = _player.Combat.SpendMana(cost);
-        float damage = spell.RollDamage(magicLevel, _rng);
+        float damage = spell.RollDamage(dmgCtx, _rng);
         float dealt  = damage > 0f ? target.Combat.ApplyDamage(damage) : 0f;
         bool killed  = target.Combat.IsDead;
 
@@ -142,12 +157,21 @@ public sealed class PlayerSpellbook
         if (_player.Combat.CurrentLife >= _player.Stats.MaxLife)
             return new CastResult(CastOutcome.AlreadyFull, spell, 0, 0, 0, false);
 
-        float cost = spell.ManaCost(magicLevel);
+        // Self-heal: caster *is* the target, so #maxlife / #life and
+        // #src_* all read from the player. spell_healing_hands' ternary
+        // (SC-A3 — once landed) clamps heal-against-mana with these values.
+        var ctx = new SpellEvalContext(magicLevel,
+            maxLife: _player.Stats.MaxLife,
+            life:    _player.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+
+        float cost = spell.ManaCost(ctx);
         if (_player.Combat.CurrentMana < cost)
             return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
 
         float spent = _player.Combat.SpendMana(cost);
-        float heal  = spell.HealAmount(magicLevel);
+        float heal  = spell.HealAmount(ctx);
         if (heal > 0f) _player.Combat.Heal(heal);
         StartCooldown(slot, spell.CastReloadDelay);
         return new CastResult(CastOutcome.Cast, spell, spent, 0f, heal, false);

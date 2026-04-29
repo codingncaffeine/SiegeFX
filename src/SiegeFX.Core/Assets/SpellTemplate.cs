@@ -77,7 +77,7 @@ public sealed class SpellTemplate
         HealAmountExpr = healAmountExpr;
     }
 
-    /// <summary>Mana to charge for a cast at <paramref name="magicLevel"/>.
+    /// <summary>Mana to charge for a cast against <paramref name="ctx"/>.
     /// Returns <c>MathF.Max(BaseManaCost, modifier)</c> when a modifier is
     /// present — DS1 templates split into two patterns, both of which the max
     /// preserves: (a) zap-style with base=1 and a modifier crossing 1 near L1
@@ -87,34 +87,44 @@ public sealed class SpellTemplate
     /// like spell_leech_life (base=3, modifier=#magic*2) by treating the
     /// modifier as a multiplier; the pure modifier-wins reading (17c first
     /// pass) under-charged the same template at low levels (mod=2 &lt; 3).</summary>
-    public float ManaCost(float magicLevel)
+    public float ManaCost(in SpellEvalContext ctx)
     {
         if (string.IsNullOrEmpty(ManaCostModifierExpr)) return BaseManaCost;
-        float mod = SpellExpr.Eval(ManaCostModifierExpr, magicLevel);
+        float mod = SpellExpr.Eval(ManaCostModifierExpr, ctx);
         if (mod <= 0f) return BaseManaCost;
         return MathF.Max(BaseManaCost, mod);
     }
 
-    /// <summary>Roll a damage value in [min, max] resolved at the caster's
-    /// magic level. Returns 0 if both expressions evaluate to 0 (broken
-    /// template) so the caller can short-circuit instead of dividing by zero.</summary>
-    public float RollDamage(float magicLevel, Random rng)
+    /// <summary>Magic-only convenience overload (survey CLIs, callers that
+    /// don't yet plumb caster/target stats).</summary>
+    public float ManaCost(float magicLevel) => ManaCost(new SpellEvalContext(magicLevel));
+
+    /// <summary>Roll a damage value in [min, max] resolved against
+    /// <paramref name="ctx"/>. Returns 0 if both expressions evaluate to 0
+    /// (broken template) so the caller can short-circuit instead of dividing
+    /// by zero.</summary>
+    public float RollDamage(in SpellEvalContext ctx, Random rng)
     {
-        float lo = SpellExpr.Eval(AttackDamageMinExpr, magicLevel);
-        float hi = SpellExpr.Eval(AttackDamageMaxExpr, magicLevel);
+        float lo = SpellExpr.Eval(AttackDamageMinExpr, ctx);
+        float hi = SpellExpr.Eval(AttackDamageMaxExpr, ctx);
         if (hi < lo) (lo, hi) = (hi, lo);
         if (hi <= 0f) return 0f;
         if (hi <= lo) return lo;
         return lo + (float)rng.NextDouble() * (hi - lo);
     }
 
-    /// <summary>Heal magnitude at <paramref name="magicLevel"/>. Always ≥ 0.</summary>
-    public float HealAmount(float magicLevel)
+    public float RollDamage(float magicLevel, Random rng)
+        => RollDamage(new SpellEvalContext(magicLevel), rng);
+
+    /// <summary>Heal magnitude against <paramref name="ctx"/>. Always ≥ 0.</summary>
+    public float HealAmount(in SpellEvalContext ctx)
     {
         if (string.IsNullOrEmpty(HealAmountExpr)) return 0f;
-        float v = SpellExpr.Eval(HealAmountExpr, magicLevel);
+        float v = SpellExpr.Eval(HealAmountExpr, ctx);
         return v > 0f ? v : 0f;
     }
+
+    public float HealAmount(float magicLevel) => HealAmount(new SpellEvalContext(magicLevel));
 
     /// <summary>Build a <see cref="SpellTemplate"/> from a parsed <see cref="Template"/>
     /// in the world template store. Returns null if the template lacks both a usable
