@@ -156,6 +156,7 @@ echo   83. Phase 17-SC-F-2  - sfx_script VM receipt (TallySink: smoke_emitter + 
 echo   84. Phase 17-SC-G    - Region emitters wired (in-window fh_r1, smoke columns over chimneys)
 echo   85. Phase 17-SC-H    - Spell cast sfx_script binding (spells dump w/ cast_sfx column + coverage)
 echo   86. Phase 17-SC-I    - Water UV scroll + waterwheel rotation (in-window fh_r1)
+echo   87. Phase 17-SC-J    - Per-instance scale_multiplier (breakable farmhouse door + foliage variation)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -248,6 +249,7 @@ if /i "%CHOICE%"=="83" goto T83
 if /i "%CHOICE%"=="84" goto T84
 if /i "%CHOICE%"=="85" goto T85
 if /i "%CHOICE%"=="86" goto T86
+if /i "%CHOICE%"=="87" goto T87
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1685,6 +1687,29 @@ echo [so the wheel turns in place while the riverfall texture cascades over it.]
 echo.
 echo [Receipt: in fh_r1, walk to the mill (north of the farmhouse, river side) —]
 echo [the waterfall column should flow downward and the wooden wheel should turn.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T87
+echo.
+echo --- Phase 17-SC-J: per-instance scale_multiplier ---
+echo [DS1 lets each placement override aspect.scale_multiplier so the same mesh]
+echo [reads with subtle variation across the world. fh_r1 has 1150 placements with]
+echo [a non-default scale (most foliage in the 0.9-1.4 range), and the breakable]
+echo [farmhouse door (door_grs_farmhouse_breakable, 0x01c00da3) ships with 1.5 so]
+echo [the destroyable variant looks visibly larger than the everyday wooden door.]
+echo.
+echo [Receipt 1 (text): the static-prop load summary now ends with "N with]
+echo [non-default scale_multiplier" — expect ~1100+ for fh_r1. Receipt 2 (visual):]
+echo [in-window, the breakable farmhouse door sits scaled 1.5x; vegetation reads]
+echo [with the per-instance jitter DS1 baked instead of a uniform clone-stamp.]
+echo.
+echo [Note: the original "burnt door" reading was wrong — DS1 has no separate]
+echo [burnt-door mesh and no fire emitters at the door. The breakable variant uses]
+echo [the same m_i_grs_door-farmhouse asp; what made it look distinct was scale.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.

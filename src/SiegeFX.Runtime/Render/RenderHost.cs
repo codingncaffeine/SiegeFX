@@ -839,6 +839,29 @@ public sealed class RenderHost : IDisposable
         return Vector2.Zero;
     }
 
+    /// <summary>Phase 17-SC-J — pull <c>aspect.scale_multiplier</c> for a placed
+    /// prop. DS1 lets the *instance* override the template (fh_r1's breakable
+    /// farmhouse door is <c>scale_multiplier=1.5</c> on the placement so the
+    /// destroyable variant reads visibly larger than the everyday door using
+    /// the same mesh). Reads instance-level <c>[aspect]</c> first, then falls
+    /// through to the template chain via <see cref="TemplateStore.GetAttribute"/>.
+    /// Returns 1.0 when nothing is declared.</summary>
+    private float ResolveScaleMultiplier(Template template, GasNode instanceNode)
+    {
+        var instanceAspect = TemplateStore.FindChild(instanceNode, "aspect");
+        if (instanceAspect is not null)
+        {
+            var v = TemplateStore.FindAttr(instanceAspect, "scale_multiplier");
+            if (v is not null && float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s))
+                return s;
+        }
+        var fromTemplate = _templateStore!.GetAttribute(template, "aspect", "scale_multiplier");
+        if (fromTemplate is not null
+            && float.TryParse(fromTemplate, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var st))
+            return st;
+        return 1f;
+    }
+
     /// <summary>Region paths look like <c>/world/maps/&lt;map&gt;/regions/&lt;region&gt;</c>.
     /// Strip the trailing <c>regions/&lt;region&gt;</c> and append <c>info</c> so callers
     /// can locate map-scoped files like <c>start_positions.gas</c>. Returns null on a
@@ -3132,7 +3155,7 @@ void main()
 
         var mapReader = new TankReader(_playMapTank);
         int considered = 0, spawned = 0, missingTemplate = 0, missingModel = 0,
-            missingMesh = 0, parseFail = 0;
+            missingMesh = 0, parseFail = 0, scaledPlacements = 0;
         // Group skips by template (and missing meshes by model name) so the diag
         // surfaces which content is silently absent — the user should not have
         // to spot missing trees by eye.
@@ -3195,6 +3218,18 @@ void main()
                     var tex = ResolveAspTexture(asp);
                     var world = ComposePlacementWorld(asp, p.Placement);
 
+                    // Phase 17-SC-J — DS1 lets the placement override `aspect.scale_multiplier`
+                    // (fh_r1's breakable farmhouse door bumps it to 1.5 so the destroyable
+                    // variant reads visibly larger than the everyday wooden door using the
+                    // same mesh). Multiply in model space so scale composes inside the
+                    // rotation+translation rather than blowing up world-space placement.
+                    var scale = ResolveScaleMultiplier(template, p.Node);
+                    if (scale != 1f)
+                    {
+                        world = Matrix4x4.CreateScale(scale) * world;
+                        scaledPlacements++;
+                    }
+
                     // Phase 21c-1 — barrel-render investigation. Dump per-corner data
                     // for the first placement of any "barrel" template so we can verify
                     // UVs hit the band rows, normals point outward, and corner colors
@@ -3232,7 +3267,8 @@ void main()
         Console.WriteLine($"  static props: {spawned}/{considered} placed " +
                           $"({_propGlMeshCache.Count} unique mesh(es); " +
                           $"skipped {missingTemplate} no-template, {missingModel} no-model, " +
-                          $"{missingMesh} no-mesh-in-tank, {parseFail} parse-fail)");
+                          $"{missingMesh} no-mesh-in-tank, {parseFail} parse-fail; " +
+                          $"{scaledPlacements} with non-default scale_multiplier)");
         if (skippedNoMesh.Count > 0)
         {
             Console.WriteLine("  no-mesh-in-tank (top by count):");

@@ -22,7 +22,7 @@ Most of the work that made this tractable is other people's: **Guilherme Lampert
 
 A DS1-faithful character creator built from the shipped `character_select.gas` lets you pick gender / head / face / hair / shirt / pants over a live 3D preview, and the picked hero name + variant axes round-trip through quicksave (schema v5).
 
-Region world events run through the same sfx_script VM as spell casts — chimneys vent smoke, cooking fires + torches throw their billboard cones, and the farmhouse mill turns: animated waterfalls cascade via per-texture UV scroll while the placed waterwheel prop spins on its own X axis from the `chore_default = rotateX?rpm=-8` skrit baked at spawn.
+Region world events run through the same sfx_script VM as spell casts — chimneys vent smoke, cooking fires + torches throw their billboard cones, and the farmhouse mill turns: animated waterfalls cascade via per-texture UV scroll while the placed waterwheel prop spins on its own X axis from the `chore_default = rotateX?rpm=-8` skrit baked at spawn. Per-instance `aspect.scale_multiplier` is now honored at spawn time, so DS1's baked foliage variation reads correctly (≈1150 placements in fh_r1 alone) and the breakable farmhouse door inflates to its 1.5× footprint instead of reading as a clone of the everyday door.
 
 <details>
 <summary><strong>Receipts</strong> — 81 regions / 50,680 props / 7,252 NPCs / 2,829 pcontent entries / 16,275 SNO tiles / 2,086 trigger rows / 1962 PRS animations / 69 spells, every claim backed by a headless <code>siegefx</code> audit.</summary>
