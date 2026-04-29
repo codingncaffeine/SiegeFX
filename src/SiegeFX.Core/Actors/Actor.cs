@@ -110,4 +110,15 @@ public sealed class Actor
         Stats = newStats;
         Combat.ResyncStats(newStats);
     }
+
+    /// <summary>Phase 12-SC-2 — pin <paramref name="choreName"/> on top of the
+    /// skrit blender for <paramref name="durationSec"/> seconds. No-op if the
+    /// template doesn't ship that chore. Used by combat code so a swing actually
+    /// plays chore_attack instead of staying frozen on the default idle.</summary>
+    public void PlayChoreOnce(string choreName, float durationSec)
+    {
+        int idx = GetClipIndex(choreName);
+        if (idx < 0) return;
+        Host.OverrideAnimIndex(idx, durationSec);
+    }
 }

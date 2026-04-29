@@ -28,6 +28,7 @@ try
         "skrit"  => DispatchSkrit(args[1..]),
         "templates" => DispatchTemplates(args[1..]),
         "pcontent"  => DispatchPcontent(args[1..]),
+        "loot"      => DispatchLoot(args[1..]),
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
@@ -5760,6 +5761,94 @@ static int CmdPcontentDump(string[] a)
         PcontentResolver.Rarity.Unique => "un",
         _                              => "g ",
     };
+}
+
+// Phase 12-SC-3 — `siegefx loot dump <tank> <template> [--rolls=N] [--seed=K]`.
+// Parses the template's [inventory][pcontent] tree via the runtime LootTable
+// + LootRoller, prints the parsed Equipped/Drops buckets, then rolls N times
+// and aggregates frequency by reference. Cross-checked against shipped DS1
+// retail behavior so the audit can spot bugs like "equipped weapon always
+// drops" or "branch picks aren't weighted".
+static int DispatchLoot(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx loot dump <tank> <template> [--rolls=N] [--seed=K]"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdLootDump(a[1..]),
+        _      => UnknownCommand("loot " + a[0]),
+    };
+}
+
+static int CmdLootDump(string[] a)
+{
+    int rolls = 100;
+    int? seed = null;
+    var rest = new List<string>();
+    foreach (var x in a)
+    {
+        if      (x.StartsWith("--rolls=", StringComparison.Ordinal)) int.TryParse(x["--rolls=".Length..], out rolls);
+        else if (x.StartsWith("--seed=",  StringComparison.Ordinal)) { if (int.TryParse(x["--seed=".Length..], out var s)) seed = s; }
+        else rest.Add(x);
+    }
+    if (rest.Count != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx loot dump <tank> <template> [--rolls=N] [--seed=K]");
+        return 1;
+    }
+    using var tank = TankFile.Open(rest[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    if (!store.TryGet(rest[1], out var tpl) || tpl is null)
+    {
+        Console.Error.WriteLine($"template not found: {rest[1]}");
+        return 2;
+    }
+
+    var table = LootTable.FromTemplate(store, tpl);
+    Console.WriteLine($"== {tpl.Name} ==");
+    if (table.IsEmpty)
+    {
+        Console.WriteLine("  (no [inventory][pcontent] in specializes chain — actor drops nothing)");
+        return 0;
+    }
+
+    Console.WriteLine($"  equipped buckets: {table.Equipped.Count}");
+    for (int i = 0; i < table.Equipped.Count; i++) PrintBucket($"  [eq {i}]", table.Equipped[i], 4);
+    Console.WriteLine($"  drop buckets:     {table.Drops.Count}");
+    for (int i = 0; i < table.Drops.Count; i++) PrintBucket($"  [drop {i}]", table.Drops[i], 4);
+
+    var rng = new Random(seed ?? Environment.TickCount);
+    var hist = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    int totalDrops = 0;
+    int emptyKills = 0;
+    for (int i = 0; i < rolls; i++)
+    {
+        var drops = LootRoller.Roll(table, rng);
+        if (drops.Count == 0) emptyKills++;
+        foreach (var d in drops)
+        {
+            totalDrops++;
+            string key = d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference;
+            hist[key] = hist.TryGetValue(key, out var c) ? c + 1 : 1;
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"  {rolls} rolls — {totalDrops} drops total, {emptyKills} empty kills, avg {(float)totalDrops/rolls:F2} drops/kill");
+    foreach (var kv in hist.OrderByDescending(kv => kv.Value))
+        Console.WriteLine($"  x{kv.Value,4} ({100f * kv.Value / rolls,5:F1}%)  {kv.Key}");
+    return 0;
+
+    static void PrintBucket(string label, LootBucket b, int indent)
+    {
+        var pad = new string(' ', indent);
+        Console.WriteLine($"{label} chance={b.Chance:F2}  entries={b.Entries.Count}  children={b.Children.Count}");
+        foreach (var e in b.Entries)
+            Console.WriteLine(e.IsEquipped
+                ? $"{pad}  es_{e.Slot} = {e.Reference}"
+                : $"{pad}  il_main  = {e.Reference}");
+        for (int i = 0; i < b.Children.Count; i++) PrintBucket($"{pad}  [child {i}]", b.Children[i], indent + 4);
+    }
 }
 
 /// <summary>Audit-CLI helper: pretends a single party member sits at <see cref="Position"/>.

@@ -28,8 +28,14 @@ public static class LootRoller
 {
     public static List<LootEntry> Roll(LootTable table, Random rng)
     {
+        // Phase 12-SC-3 — only roll the Drops buckets. The Equipped buckets
+        // (es_weapon_hand / es_shield_hand / etc.) describe what the actor
+        // *wears* for rendering, not what it drops on death. DS1 retail
+        // doesn't drop the worn weapon every kill: templates that intend
+        // a drop author it explicitly via `il_main` inside a chance-gated
+        // oneof*. Folding Equipped into the drop pile produced 100%-drop
+        // weapons that don't match shipped behavior.
         var results = new List<LootEntry>();
-        foreach (var bucket in table.Equipped) RollBucket(bucket, rng, results);
         foreach (var bucket in table.Drops) RollBucket(bucket, rng, results);
         return results;
     }

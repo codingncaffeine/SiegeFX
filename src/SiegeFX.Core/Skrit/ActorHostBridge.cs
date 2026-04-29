@@ -32,8 +32,49 @@ public sealed class ActorHostBridge : IHostBridge
     public List<string> BlenderLog { get; } = new();
 
     /// <summary>Most recent anim index the script asked to blend in via
-    /// <c>owner.blender.AddAnimToBlendGroup(idx, weight)</c>. -1 before any request.</summary>
-    public int CurrentAnimIndex { get; private set; } = -1;
+    /// <c>owner.blender.AddAnimToBlendGroup(idx, weight)</c>. -1 before any request.
+    /// When an override is active (Phase 12-SC-2), reads the override index instead;
+    /// the underlying skrit-driven value is still updated and reasserts itself when
+    /// the override countdown expires.</summary>
+    public int CurrentAnimIndex
+    {
+        get => _overrideRemaining > 0f && _overrideAnimIndex >= 0 ? _overrideAnimIndex : _skritAnimIndex;
+        private set => _skritAnimIndex = value;
+    }
+    int _skritAnimIndex = -1;
+    int _overrideAnimIndex = -1;
+    float _overrideRemaining;
+
+    /// <summary>Phase 12-SC-2 — pin a chore on top of the skrit-driven blender for
+    /// <paramref name="durationSec"/> seconds. Used by combat to play chore_attack
+    /// on a swing without waiting for the skrit state machine to route through it.
+    /// idx &lt; 0 cancels any active override.</summary>
+    public void OverrideAnimIndex(int idx, float durationSec)
+    {
+        if (idx < 0 || durationSec <= 0f)
+        {
+            _overrideAnimIndex = -1;
+            _overrideRemaining = 0f;
+            return;
+        }
+        _overrideAnimIndex = idx;
+        _overrideRemaining = durationSec;
+    }
+
+    /// <summary>Drain the override timer. Called from the runtime per logic tick;
+    /// no-op when no override is active.</summary>
+    public void TickOverride(float dt)
+    {
+        if (_overrideRemaining > 0f)
+        {
+            _overrideRemaining -= dt;
+            if (_overrideRemaining <= 0f)
+            {
+                _overrideAnimIndex = -1;
+                _overrideRemaining = 0f;
+            }
+        }
+    }
 
     /// <summary>Number of sub-anims the blender reports — set by the host to match the
     /// real clip list so <c>Math.RandomInt(0, num-1)</c> picks a valid index.</summary>

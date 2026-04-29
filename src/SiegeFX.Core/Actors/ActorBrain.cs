@@ -49,14 +49,16 @@ public sealed class ActorBrain
     public float SwingPeriod { get; set; } = 1.5f;
 
     readonly ActorStats _selfStats;
+    readonly Actor? _selfActor;
     readonly Random _swingRng;
     float _swingCooldown;
     Vector3? _attackFacing;
 
-    public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed)
+    public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed, Actor? selfActor = null)
     {
         Wander = wander;
         _selfStats = selfStats;
+        _selfActor = selfActor;
         _swingRng = new Random(rngSeed);
         MeleeRange = selfStats.AttackRange > 0.1f ? selfStats.AttackRange : 2f;
         // First swing fires immediately on entering Attack (no warmup), then the
@@ -112,6 +114,11 @@ public sealed class ActorBrain
                         float raw = CombatResolver.RollMeleeDamage(_selfStats, targetStats, _swingRng);
                         targetCombat!.ApplyDamage(raw);
                     }
+                    // Phase 12-SC-2 — play the swing chore for ~85% of the cooldown
+                    // so the next swing's clip swap reads as a fresh strike instead
+                    // of looping a still-running animation. Falls back silently if
+                    // the template doesn't ship a chore_attack (chickens, props).
+                    _selfActor?.PlayChoreOnce("chore_attack", SwingPeriod * 0.85f);
                 }
                 break;
         }

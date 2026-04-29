@@ -142,6 +142,7 @@ echo   69. Phase 10-SC-1 - Trigger matrix parser (fh_r1 special.gas + verb cover
 echo   70. Phase 10-SC-2 - Full chore dictionary into Actor.Clips (fh_r1 chore coverage)
 echo   71. Phase 10-SC-3 - PRS v0x202 + v0x302 loader (Objects.dsres prs fuzz, all 1962 files)
 echo   72. Phase 11-SC-7 - Land water seam stitching (fh_r1 nav + amphibious path 30,30 to water)
+echo   73. Phase 12-SC-3 - Mob loot frequency vs DS1 retail (krug_grunt/krug_scout/gremal)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -220,6 +221,7 @@ if /i "%CHOICE%"=="69" goto T69
 if /i "%CHOICE%"=="70" goto T70
 if /i "%CHOICE%"=="71" goto T71
 if /i "%CHOICE%"=="72" goto T72
+if /i "%CHOICE%"=="73" goto T73
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1395,6 +1397,22 @@ echo.
 "%TOOL%" region path "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1 "30,0,30" "27.57,-1.5,0.70" --water=4
 echo.
 "%TOOL%" region path-fuzz "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres"
+pause
+goto MENU
+
+:T73
+echo.
+echo --- Phase 12-SC-3: mob loot drops vs DS1 retail ---
+echo [Pre-SC-3 the equipped weapon (es_weapon_hand) dropped 100%% of kills because]
+echo [LootRoller folded Equipped buckets into the drop pile. Post-SC-3 only il_main]
+echo [entries roll: krug_grunt drops at ~18%% (15%% chance gate), krug_scout at ~12%%,]
+echo [gremal at 0%% (no [inventory][pcontent] in chain). Worn weapon stays on body.]
+echo.
+"%TOOL%" loot dump "%DS1%\Resources\Logic.dsres" krug_grunt --rolls=200 --seed=42
+echo.
+"%TOOL%" loot dump "%DS1%\Resources\Logic.dsres" krug_scout --rolls=200 --seed=42
+echo.
+"%TOOL%" loot dump "%DS1%\Resources\Logic.dsres" gremal --rolls=200 --seed=42
 pause
 goto MENU
 

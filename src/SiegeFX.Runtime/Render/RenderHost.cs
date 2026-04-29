@@ -2553,7 +2553,8 @@ void main()
                 // the same brain class but never receive a target during Tick, so
                 // their state machine stays parked in Wander.
                 brain = new SiegeFX.Core.Actors.ActorBrain(
-                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu));
+                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
+                    selfActor: actor);
                 actorsOnMesh++;
             }
             else
@@ -3361,7 +3362,8 @@ void main()
                     navMesh, snapped, speed: gait, rngSeed: (int)actor.Instance.Scid,
                     initialFacing: authoredFacing);
                 brain = new SiegeFX.Core.Actors.ActorBrain(
-                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu));
+                    follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
+                    selfActor: actor);
                 onMesh++;
             }
             else
@@ -3559,6 +3561,10 @@ void main()
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
+                    // Phase 12-SC-2 — drain any chore_attack override pinned by
+                    // the brain on the previous swing. Outside the brain branch
+                    // so non-combatants and brain-less actors still tick.
+                    s.Actor.Host.TickOverride((float)stepSec);
                     if (s.Brain is null) continue;
                     bool hostile = s.Actor.Stats.IsCombatant;
                     s.Brain.Tick(
@@ -3599,6 +3605,9 @@ void main()
                 // PC doesn't snap to +Z on arrival.
                 if (_player is not null && _playerFollower is not null && !_player.IsDead)
                 {
+                    // Phase 12-SC-2 — drain the player's chore_attack override
+                    // on the same fixed-step cadence the brains use.
+                    _player.Actor.Host.TickOverride((float)stepSec);
                     var before = _playerFollower.Position;
                     _playerFollower.Tick((float)stepSec);
                     var after = _playerFollower.Position;
@@ -3633,6 +3642,45 @@ void main()
                     // from idle/arrived states doesn't trigger a phantom walk cycle.
                     _player.IsMoving = len2 > 0.0025f;
                     TryAutoPickup(after);
+
+                    // Phase 12-SC-1 — pending click-attack drive. If the click
+                    // landed beyond reach we latched _pendingAttackTarget and
+                    // pointed the follower at an approach point. Each tick:
+                    // re-pin the target (it may have wandered), check reach,
+                    // fire the swing when in range, or drop the latch if the
+                    // target died/ran away.
+                    if (_pendingAttackTarget is { } pat)
+                    {
+                        if (pat.IsDead || pat.Actor.Combat.IsDead)
+                        {
+                            _pendingAttackTarget = null;
+                        }
+                        else
+                        {
+                            var atk = GetPlayerAttackStats();
+                            float r = PlayerMeleeReach(atk);
+                            var tp = pat.CurrentTransform.Translation;
+                            float ddx = after.X - tp.X;
+                            float ddz = after.Z - tp.Z;
+                            float pdist = MathF.Sqrt(ddx * ddx + ddz * ddz);
+                            if (pdist > MeleeChaseGiveUp)
+                            {
+                                Console.WriteLine(
+                                    $"click-attack: gave up on {pat.Actor.Template.Name} " +
+                                    $"(dist={pdist:F1}u)");
+                                _pendingAttackTarget = null;
+                            }
+                            else if (pdist <= r)
+                            {
+                                PerformPlayerSwing(pat, atk);
+                                _pendingAttackTarget = null;
+                            }
+                            else
+                            {
+                                _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
+                            }
+                        }
+                    }
 
                     // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
                     // (lr_unit/lr_period and mr_unit/mr_period; STR/INT-scaled). At
@@ -4393,6 +4441,8 @@ void main()
         if (!_navMesh.TryFindTriangle(hit, out var tri)) return;
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
         _playerFollower.SetTarget(hit);
+        // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
+        _pendingAttackTarget = null;
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
     }
 
@@ -4554,6 +4604,19 @@ void main()
     // 1-3 profile to keep the kill loop playable until the stat fix lands in
     // Phase 13e.
     private const float ClickAttackRadius = 3f;
+    // Phase 12-SC-1 — drop-back reach when the PC template doesn't author one
+    // (hero baseline ships AttackRange=0.5u which is wrist-length, too tight
+    // to land a swing on a 1.8u-radius krug bubble). 2u mirrors ActorBrain's
+    // mob fallback.
+    private const float MeleeReachFallback = 2f;
+    // Phase 12-SC-1 — once latched, abandon the walk-up if the target wandered
+    // farther than this. Bigger than reach so a moving krug doesn't break the
+    // chase mid-stride; smaller than aggro so we don't track across the map.
+    private const float MeleeChaseGiveUp = 14f;
+    // Phase 12-SC-1 — pending click-attack target. Set when the player RMBs an
+    // enemy beyond reach: the follower walks up, and once inside MeleeReach the
+    // per-tick check fires the actual swing through PerformPlayerSwing.
+    private ActorRenderState? _pendingAttackTarget;
     // Phase 13e — fallback attacker profile used when the PC template didn't
     // resolve real damage stats (hero templates author damage=0 and derive it
     // from the equipped weapon — Phase 14). 1-3 matches a bare-fisted level-1
@@ -4564,6 +4627,10 @@ void main()
         DamageMin: 1f, DamageMax: 3f,
         Defense: 0f, AttackRange: 0.5f, WalkSpeed: 4.5f, ExperienceValue: 0,
         Strength: 10f, Dexterity: 10f, Intelligence: 10f);
+
+    static float PlayerMeleeReach(SiegeFX.Core.Actors.ActorStats attacker) =>
+        attacker.AttackRange > 0.1f ? attacker.AttackRange : MeleeReachFallback;
+
     private void TryClickToAttack(Vector2 cursorPx)
     {
         if (_player is null || _window is null || _actors.Count == 0) return;
@@ -4614,11 +4681,58 @@ void main()
             return;
         }
 
+        // Phase 12-SC-1 — gate by player→target reach, not just click-pick
+        // tolerance. ClickAttackRadius=3u is just "did you click on this guy
+        // or near him"; the *swing* requires the player be within attacker
+        // reach of the target. If not, latch _pendingAttackTarget so the
+        // per-tick player block walks the follower up and fires the swing
+        // when in range.
+        var attackerStats = GetPlayerAttackStats();
+        float reach = PlayerMeleeReach(attackerStats);
+        var pPos = _playerFollower?.Position ?? _player.CurrentTransform.Translation;
+        var tPos = best.CurrentTransform.Translation;
+        float playerDist = MathF.Sqrt(
+            (pPos.X - tPos.X) * (pPos.X - tPos.X) +
+            (pPos.Z - tPos.Z) * (pPos.Z - tPos.Z));
+        if (playerDist > reach)
+        {
+            _pendingAttackTarget = best;
+            // Walk to a point just inside reach on the player→target line so
+            // the follower stops at swinging distance instead of plowing in.
+            var stop = ComputeApproachPoint(pPos, tPos, reach);
+            _playerFollower?.SetTarget(stop);
+            Console.WriteLine(
+                $"click-attack: approaching {best.Actor.Template.Name} " +
+                $"(dist={playerDist:F1}u, reach={reach:F1}u)");
+            return;
+        }
+
+        PerformPlayerSwing(best, attackerStats);
+    }
+
+    static Vector3 ComputeApproachPoint(Vector3 from, Vector3 toCenter, float stopShortBy)
+    {
+        var d = new Vector3(toCenter.X - from.X, 0f, toCenter.Z - from.Z);
+        float len = d.Length();
+        if (len < 1e-3f) return from;
+        // Stop ~80% of the reach so we cleanly enter the "in range" check
+        // instead of stopping right on the boundary and oscillating.
+        float walk = MathF.Max(0f, len - stopShortBy * 0.8f);
+        var dir = d / len;
+        return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
+    }
+
+    private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
+    {
+        if (_player is null || best.IsDead) return;
+        // Phase 12-SC-2 — play the swing chore on the player. Duration is keyed
+        // to the audio-cue cadence; the renderer uses CurrentClipIndex which
+        // reads through the override layer in ActorHostBridge.
+        _player.Actor.PlayChoreOnce("chore_attack", 0.6f);
         // Phase 14c: damage derives from the equipped weapon when es_weapon_hand is
         // populated; otherwise the 1-3 HeroBaselineStats fallback stands in for
         // bare-fisted swings. DS1 hero templates author damage=0 because the real
         // number is the weapon's own attack.damage_min/max.
-        var attacker = GetPlayerAttackStats();
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
             attacker, best.Actor.Stats, rng);
@@ -5333,6 +5447,12 @@ void main()
         switch (result.Outcome)
         {
             case SiegeFX.Core.Actors.CastOutcome.Cast:
+                // Phase 12-SC-2 — play chore_magic on a successful cast so the
+                // PC actually performs the spell motion. 144/179 combatant
+                // templates ship one (Phase 10-SC-2 receipt); falls back
+                // silently if not. Duration matches the melee cadence so the
+                // clip plays through once and reverts.
+                _player.Actor.PlayChoreOnce("chore_magic", 0.7f);
                 if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
                     // Phase 17c — self-heal cast: no target, no bolt, green
