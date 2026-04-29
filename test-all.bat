@@ -155,6 +155,7 @@ echo   82. Phase 17-SC-F-1  - sfx_script compiler IR (parser dump for fireball_e
 echo   83. Phase 17-SC-F-2  - sfx_script VM receipt (TallySink: smoke_emitter + fire_emitter, 60 ticks)
 echo   84. Phase 17-SC-G    - Region emitters wired (in-window fh_r1, smoke columns over chimneys)
 echo   85. Phase 17-SC-H    - Spell cast sfx_script binding (spells dump w/ cast_sfx column + coverage)
+echo   86. Phase 17-SC-I    - Water UV scroll + waterwheel rotation (in-window fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -246,6 +247,7 @@ if /i "%CHOICE%"=="82" goto T82
 if /i "%CHOICE%"=="83" goto T83
 if /i "%CHOICE%"=="84" goto T84
 if /i "%CHOICE%"=="85" goto T85
+if /i "%CHOICE%"=="86" goto T86
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1664,6 +1666,27 @@ echo [Receipt: dump shows the resolved sfx column per spell + a coverage]
 echo [summary. Expect ~61/69 offensive spells to resolve a script.]
 echo.
 "%TOOL%" spells dump "%DS1%\Resources\Logic.dsres"
+echo.
+pause
+goto MENU
+
+:T86
+echo.
+echo --- Phase 17-SC-I: water UV scroll + waterwheel rotation ---
+echo [DS1 ships per-texture TSD .gas sidecars with vshiftpersecond + frame counts.]
+echo [SC-I-1 recognises the waterfall texture pattern (b_t_*_rvr_fall-*) and applies]
+echo [a 0.5/sec V-shift on its sampling UVs; -static textures (mist + the layered]
+echo [wheelfallstatic composite) are excluded so they stay still.]
+echo.
+echo [SC-I-2 detects chore_default = rotateX?rpm=N on placed templates (mill]
+echo [waterwheel = rotatex?rpm=-8.0) and bakes an angular velocity onto the static]
+echo [prop. The draw loop spins the prop's local axis before applying placement,]
+echo [so the wheel turns in place while the riverfall texture cascades over it.]
+echo.
+echo [Receipt: in fh_r1, walk to the mill (north of the farmhouse, river side) —]
+echo [the waterfall column should flow downward and the wooden wheel should turn.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.
 pause
 goto MENU

@@ -586,6 +586,16 @@ public sealed class RenderHost : IDisposable
         public GlTexture? Texture;
         public Matrix4x4 World;
         public string Template = "";
+        // Phase 17-SC-I-2 — DS1's chore_default = rotatex?rpm=N skrit drives the
+        // mill waterwheel + a few other rotating props. Rather than running
+        // skrit per static prop (props aren't actors), we recognise the pattern
+        // at spawn time and bake the angular velocity here. Axis 0/1/2 = X/Y/Z;
+        // SpinRadPerSec = 0 means no spin. The rotation is applied around the
+        // model's local origin before the placement transform — the asp origin
+        // sits at the wheel spindle, so the wheel spins in place rather than
+        // orbiting the region origin.
+        public int   SpinAxis;
+        public float SpinRadPerSec;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -706,6 +716,11 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _animTexture;
     private GlTexture? _texture;
     private double _animTime;
+    // Phase 17-SC-I — wallclock seconds since the renderer opened, ticked
+    // every OnUpdate regardless of whether _anim is loaded. Drives the
+    // waterfall UV scroll (and any future TSD-driven texture animation)
+    // independent of the skinned-anim time loop above.
+    private double _terrainTime;
     private readonly Dictionary<string, GlTexture> _snoTextures =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
@@ -772,6 +787,56 @@ public sealed class RenderHost : IDisposable
             arr[i] = ResolveTexName(mesh.Subsets[i].TextureName, texsetAbbr);
         _resolvedTexNameCache[key] = arr;
         return arr;
+    }
+
+    /// <summary>Phase 17-SC-I-2 — parse a DS1 chore_default skrit reference of
+    /// the form <c>rotateX?rpm=-8.0</c>/<c>rotatey?rpm=...</c>/<c>rotatez?...</c>
+    /// into (axis, radPerSec). Returns false for any other skrit (most actor
+    /// chores) so the caller can fall back to non-rotating placement. Used
+    /// once per static prop at spawn — no per-frame parsing.</summary>
+    private static bool TryParseRotateSkrit(string? skrit, out int axis, out float radPerSec)
+    {
+        axis = 0;
+        radPerSec = 0f;
+        if (string.IsNullOrEmpty(skrit)) return false;
+        var lower = skrit.Trim();
+        var qm = lower.IndexOf('?');
+        if (qm < 0) return false;
+        var name = lower[..qm].Trim();
+        if (!name.StartsWith("rotate", StringComparison.OrdinalIgnoreCase)) return false;
+        var axisCh = char.ToLowerInvariant(name[^1]);
+        axis = axisCh switch { 'x' => 0, 'y' => 1, 'z' => 2, _ => -1 };
+        if (axis < 0) return false;
+        var rest = lower[(qm + 1)..];
+        foreach (var tok in rest.Split('&'))
+        {
+            var eq = tok.IndexOf('=');
+            if (eq < 0) continue;
+            var key = tok[..eq].Trim();
+            var val = tok[(eq + 1)..].Trim();
+            if (key.Equals("rpm", StringComparison.OrdinalIgnoreCase)
+                && float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rpm))
+            {
+                radPerSec = rpm * (MathF.PI * 2f / 60f);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Phase 17-SC-I — compute the per-frame UV offset DS1 bakes onto
+    /// flowing-water terrain. The shipped engine reads vshiftpersecond out of
+    /// each texture's TSD .gas sidecar; until we wire that store, recognise
+    /// the waterfall pattern by name (DS1 ships <c>_rvr_fall-*</c> with vshift
+    /// 0.5/sec) and skip anything tagged <c>-static</c> (mist + the wheelfall
+    /// composite we can't replicate without multi-layer texturing).</summary>
+    private static Vector2 ComputeTexUvOffset(string textureName, double time)
+    {
+        if (string.IsNullOrEmpty(textureName)) return Vector2.Zero;
+        if (textureName.Contains("static", StringComparison.OrdinalIgnoreCase)) return Vector2.Zero;
+        if (textureName.Contains("fall", StringComparison.OrdinalIgnoreCase))
+            return new Vector2(0f, (float)(time * 0.5));
+        return Vector2.Zero;
     }
 
     /// <summary>Region paths look like <c>/world/maps/&lt;map&gt;/regions/&lt;region&gt;</c>.
@@ -888,6 +953,11 @@ uniform vec4      uSubsetTint;
 // faces. Default = flip (preserves the working NPC look); the static-prop pass
 // sets uFlipV=0 before drawing.
 uniform int       uFlipV;
+// Phase 17-SC-I — per-draw UV scroll for animated terrain textures
+// (waterfalls vshift 0.5/sec in DS1's TSD sidecars). Defaults to (0,0)
+// for everything else, which the host resets between water and non-water
+// passes so the offset doesn't leak into actors/weapons/static props.
+uniform vec2      uUvOffset;
 // Phase 21c-3 — region directional lighting. Replaces the prior single-white-sun
 // constant. uDirCount may be 0 (no lights file → fall back to ambient-only),
 // 1 (single key sun), or up to 4. uDirColor is pre-multiplied by intensity so
@@ -899,6 +969,7 @@ uniform float     uAmbient;
 void main()
 {
     vec2 uv = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+    uv += uUvOffset;
     vec4 fallback = (uDebugFallback != 0)
         ? vec4(1.0, 0.0, 1.0, 1.0)
         : vec4(0.85, 0.78, 0.62, 1.0);
@@ -3141,12 +3212,17 @@ void main()
                         entry.untextured + (tex is null ? 1 : 0),
                         texName ?? entry.texName);
 
+                    var defaultSkrit = _templateStore.GetAttribute(template, "body", "chore_dictionary", "chore_default", "skrit");
+                    TryParseRotateSkrit(defaultSkrit, out var spinAxis, out var spinRad);
+
                     _staticProps.Add(new StaticPropInstance
                     {
-                        Mesh     = glMesh,
-                        Texture  = tex,
-                        World    = world,
-                        Template = p.TemplateName,
+                        Mesh          = glMesh,
+                        Texture       = tex,
+                        World         = world,
+                        Template      = p.TemplateName,
+                        SpinAxis      = spinAxis,
+                        SpinRadPerSec = spinRad,
                     });
                     spawned++;
                 }
@@ -3610,6 +3686,7 @@ void main()
 
         if (_anim is not null && _anim.AnimLength > 0f)
             _animTime += dt;
+        _terrainTime += dt;
 
         // Phase 9a: advance the skrit runtime at a fixed 20 Hz logic tick (DS1's authoritative
         // rate for `at ( N frames )` scheduling). Render dt is variable-rate — we accumulate
@@ -6079,8 +6156,10 @@ void main()
                 {
                     _meshShader.SetInt("uHasTexture", 0);
                 }
+                _meshShader.SetVec2("uUvOffset", ComputeTexUvOffset(subset.TextureName, _terrainTime));
                 _sno.DrawSubset(i);
             }
+            _meshShader.SetVec2("uUvOffset", Vector2.Zero);
         }
 
         if (_skinShader is not null && _skinnedMesh is not null && _skinnedAsp is not null && _anim is not null)
@@ -6397,7 +6476,23 @@ void main()
                     }
                     lastTex = prop.Texture;
                 }
-                _meshShader.SetMatrix4("uModel", prop.World);
+                Matrix4x4 model = prop.World;
+                if (prop.SpinRadPerSec != 0f)
+                {
+                    // Rotate around the model's local axis (wheel spindle is at
+                    // its asp origin), then apply the placement transform — this
+                    // way the wheel spins in place and the placement orientation
+                    // continues to point the spindle in the right direction.
+                    var theta = (float)(_terrainTime * prop.SpinRadPerSec);
+                    var spin = prop.SpinAxis switch
+                    {
+                        1 => Matrix4x4.CreateRotationY(theta),
+                        2 => Matrix4x4.CreateRotationZ(theta),
+                        _ => Matrix4x4.CreateRotationX(theta),
+                    };
+                    model = spin * prop.World;
+                }
+                _meshShader.SetMatrix4("uModel", model);
                 prop.Mesh.Draw();
             }
             _gl.Enable(GLEnum.CullFace);
@@ -6633,9 +6728,11 @@ void main()
                     {
                         _meshShader.SetInt("uHasTexture", 0);
                     }
+                    _meshShader.SetVec2("uUvOffset", ComputeTexUvOffset(resolvedNames[i], _terrainTime));
                     inst.Mesh.DrawSubset(i);
                 }
             }
+            _meshShader.SetVec2("uUvOffset", Vector2.Zero);
         }
 
         // Phase 17-SC-E — billboard particles. Sit above the world scene
