@@ -104,6 +104,31 @@ public sealed class SfxRuntime
         _scripts.Clear();
     }
 
+    /// <summary>Phase 17-SC-J — register a continuous fire/smoke/steam column
+    /// without going through an sfx_script. fh_r1's burning farmhouse uses
+    /// legacy <c>emt_particle</c> placements that ship a raw
+    /// <c>[particle_emitter]</c> block on the *instance* (count, red/green/blue,
+    /// growth, yacc, zacc, zvel, fade, dark, …) instead of calling a named
+    /// effect script. RenderHost parses those blocks and maps them onto this
+    /// API; modern sfx_script-driven emitters still go through Spawn().</summary>
+    public void AddPersistentEmitter(ParticleKind kind, Vector3 position, Vector4 color, float scale, float rate)
+    {
+        _emitters.Add(new PersistentEmitter
+        {
+            Mode     = kind switch
+            {
+                ParticleKind.Fire  => EmitterMode.Fire,
+                ParticleKind.Smoke => EmitterMode.Smoke,
+                ParticleKind.Steam => EmitterMode.Steam,
+                _ => EmitterMode.Smoke,
+            },
+            Position = position,
+            Color    = color,
+            Scale    = scale,
+            Rate     = rate,
+        });
+    }
+
     // ---- step engine ---------------------------------------------------
 
     void StepUntilYield(RunningScript rs)

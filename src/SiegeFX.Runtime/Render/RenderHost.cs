@@ -5,6 +5,7 @@ using Silk.NET.OpenGL;
 using Silk.NET.Windowing;
 using SiegeFX.Core.Actors;
 using SiegeFX.Core.Assets;
+using SiegeFX.Core.Sfx;
 using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
 using SiegeFX.Runtime.Render.Hud;
@@ -2401,6 +2402,7 @@ void main()
         // skips them (no aspect.model) so this is the only path that ever
         // registers them; we kick the message below so the rows fire.
         var emitterPlacementCount = 0;
+        var legacyParticleCount = 0;
         foreach (var rp in triggerRegions)
         {
             var (placements, diags) =
@@ -2408,11 +2410,20 @@ void main()
             foreach (var d in diags) Console.WriteLine("  " + d);
             emitterPlacementCount += placements.Count;
             spawner.SpawnTriggers(placements);
+
+            // Phase 17-SC-J — legacy raw [particle_emitter] block emitters
+            // (emt_particle, emt_generic, …). They ship no [template_triggers]
+            // so SpawnTriggers skips them; we route the per-instance block
+            // straight to SfxRuntime as a persistent fire/smoke/steam column.
+            // fh_r1's burning farmhouse is the canary: fire+smoke at the
+            // doorway, dark/light columns from the same template family.
+            legacyParticleCount += RegisterLegacyParticleEmitters(placements);
         }
         Console.WriteLine($"  triggers: {_triggerRuntime.Instances.Count} active matrices " +
                           $"from {triggerPlacementCount} special.gas + " +
                           $"{emitterPlacementCount} emitter.gas placements " +
-                          $"({_triggerRuntime.Instances.Sum(t => t.Matrix.Rows.Count)} rows)");
+                          $"({_triggerRuntime.Instances.Sum(t => t.Matrix.Rows.Count)} rows); " +
+                          $"{legacyParticleCount} legacy [particle_emitter] columns");
         // Phase 17-SC-G — boot signal. Every shipped emitter (and many trigger
         // matrices in special.gas) authors `condition*=receive_world_message
         // ("we_entered_world")` to fire on world load. Post the message to
@@ -3467,6 +3478,84 @@ void main()
     /// trees, etc.) author vertices in world-bind space already, so applying
     /// BindPose[0] would lay THEM flat — we render those at vertex-pose, no
     /// pre-multiply.</summary>
+    /// <summary>Phase 17-SC-J — for each emitter.gas placement that ships an
+    /// instance-scope [particle_emitter] block (fh_r1's emt_particle fire +
+    /// smoke columns), translate its color/size/rate into a persistent
+    /// fire/smoke/steam emitter on _sfxRuntime. Returns how many emitters
+    /// were registered.</summary>
+    private int RegisterLegacyParticleEmitters(IReadOnlyList<SiegeFX.Core.Assets.ActorInstance> placements)
+    {
+        if (_sfxRuntime is null || _regionLayout is null) return 0;
+        int registered = 0;
+        foreach (var inst in placements)
+        {
+            var pe = SiegeFX.Core.Assets.TemplateStore.FindChild(inst.Node, "particle_emitter");
+            if (pe is null) continue;
+
+            float red   = ReadFloat(pe, "red",   0.6f);
+            float green = ReadFloat(pe, "green", 0.4f);
+            float blue  = ReadFloat(pe, "blue",  0.2f);
+            float fade  = ReadFloat(pe, "fade",  0.4f);
+            int   count = (int)ReadFloat(pe, "count", 60f);
+            float size  = ReadFloat(pe, "particle_size", 1.0f);
+            float growth = ReadFloat(pe, "growth", 1.0f);
+            bool  dark  = ReadBool(pe, "dark");
+
+            // DS1's particle block doesn't carry an explicit kind; we
+            // discriminate by `dark`+luminance. Smoke columns ship dark=true
+            // with low rgb; fire columns ship red>green>blue without dark.
+            // Steam (waterfall froth) shows up as bright bluish/white but
+            // those live under SC-I/-L water work, not here.
+            float luma = red * 0.299f + green * 0.587f + blue * 0.114f;
+            ParticleKind kind = dark
+                ? ParticleKind.Smoke
+                : (red >= green && red >= blue && luma > 0.25f)
+                    ? ParticleKind.Fire
+                    : ParticleKind.Smoke;
+
+            var local = Matrix4x4.CreateFromQuaternion(inst.Placement.Orientation) *
+                        Matrix4x4.CreateTranslation(inst.Placement.LocalPosition);
+            var world = _regionLayout.TryGetTransform(inst.Placement.NodeGuid, out var nw) ? local * nw : local;
+            var origin = world.Translation;
+
+            // Spawn rate: count is total particles intended at full burn,
+            // fade is each particle's lifetime. count/fade yields particles
+            // per second to maintain steady-state population. Clamp so a
+            // pathological count=8000 emitter doesn't melt the renderer.
+            float rate = (count > 0 && fade > 0f) ? Math.Min(count / fade, 60f) : 18f;
+            float scale = MathF.Max(0.4f, size * 0.6f);
+
+            _sfxRuntime.AddPersistentEmitter(kind, origin, new Vector4(red, green, blue, 1f), scale, rate);
+            registered++;
+        }
+        return registered;
+    }
+
+    private static float ReadFloat(SiegeFX.Core.Assets.GasNode node, string name, float fallback)
+    {
+        foreach (var a in node.Attributes)
+        {
+            if (string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase) &&
+                float.TryParse(a.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+                return v;
+        }
+        return fallback;
+    }
+
+    private static bool ReadBool(SiegeFX.Core.Assets.GasNode node, string name)
+    {
+        foreach (var a in node.Attributes)
+        {
+            if (string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                var v = a.Value.Trim();
+                return v.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                       v == "1" || v.Equals("yes", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        return false;
+    }
+
     private Matrix4x4 ComposePlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
     {
         var bindRoot = ComputeRootBindPose(asp);

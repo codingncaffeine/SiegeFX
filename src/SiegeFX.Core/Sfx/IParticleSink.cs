@@ -2,6 +2,12 @@ using System.Numerics;
 
 namespace SiegeFX.Core.Sfx;
 
+/// <summary>Phase 17-SC-J — public mode tag for persistent emitter
+/// registration paths (legacy <c>emt_particle</c> instances). Mirrors the
+/// internal EmitterMode discriminant in SfxRuntime; kept here so callers
+/// outside Sfx don't have to re-derive it.</summary>
+public enum ParticleKind { Fire, Smoke, Steam }
+
 /// <summary>Phase 17-SC-F-2 — particle backend abstraction. The shipped
 /// implementation is the GL-backed billboard system in
 /// <c>SiegeFX.Runtime.Render.ParticleSystem</c>; tests and CLIs swap in a
