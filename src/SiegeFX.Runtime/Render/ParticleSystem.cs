@@ -81,7 +81,30 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private readonly uint _vao;
     private readonly uint _vboQuad;
     private readonly uint _vboInstance;
-    private readonly GlTexture?[] _textures = new GlTexture?[4];
+    private readonly GlTexture?[] _textures = new GlTexture?[9];
+
+    // Phase 21-SC-SPELL-VFX-debug — runtime-cyclable bolt texture so we
+    // can A/B every plausible DS1 lightning streak from the live game
+    // without rebuilding. Slot index into _textures and a pretty name
+    // for the on-screen log.
+    private readonly (int slot, string name)[] _boltCandidates =
+    {
+        (4, "lightray_01"),
+        (5, "lightray_02"),
+        (6, "lightray_04"),
+        (7, "streaks"),
+        (8, "lightray01-legacy"),
+        (2, "sparkle01"),
+    };
+    private int _boltCandidateIndex = 0;
+    public byte BoltTexSlot { get; private set; } = 4;
+    public string BoltTexName => _boltCandidates[_boltCandidateIndex].name;
+    public string CycleBoltTexture()
+    {
+        _boltCandidateIndex = (_boltCandidateIndex + 1) % _boltCandidates.Length;
+        BoltTexSlot = (byte)_boltCandidates[_boltCandidateIndex].slot;
+        return _boltCandidates[_boltCandidateIndex].name;
+    }
 
     private readonly List<Particle>        _particles   = new(2048);
     private readonly List<LightningBolt>   _bolts       = new(64);
@@ -89,6 +112,18 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
     private float[] _instanceBuffer = new float[2048 * InstanceFloats];
+
+    // --- ribbon (continuous strip) renderer -------------------------------
+    // CPU builds a triangle list with shared world-space corners at every
+    // junction so adjacent segments meet at one perpendicular per point —
+    // no tinsel-style cross-hatching. Per-vertex pos/uv/color, slot bound
+    // as a uniform per draw call.
+    private const int RibbonVertFloats = 9; // pos(3) + uv(2) + color(4)
+    private float[] _ribbonVerts = new float[2048 * RibbonVertFloats];
+    private int _ribbonVertCount = 0;
+    private readonly Shader _ribbonShader;
+    private readonly uint _ribbonVao;
+    private readonly uint _ribbonVbo;
 
     public int LiveParticleCount   => _particles.Count;
     public int LiveBoltCount       => _bolts.Count;
@@ -154,6 +189,28 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
         _gl.BindBuffer(GLEnum.ArrayBuffer, 0);
         _gl.BindVertexArray(0);
+
+        // --- ribbon (continuous strip) VAO/VBO/shader ---
+        _ribbonShader = new Shader(gl, RibbonVertexSrc, RibbonFragmentSrc);
+        _ribbonVao = _gl.GenVertexArray();
+        _ribbonVbo = _gl.GenBuffer();
+        _gl.BindVertexArray(_ribbonVao);
+        _gl.BindBuffer(GLEnum.ArrayBuffer, _ribbonVbo);
+        unsafe
+        {
+            int rstride = RibbonVertFloats * sizeof(float);
+            // pos.xyz
+            _gl.VertexAttribPointer(0, 3, GLEnum.Float, false, (uint)rstride, (void*)0);
+            _gl.EnableVertexAttribArray(0);
+            // uv.xy
+            _gl.VertexAttribPointer(1, 2, GLEnum.Float, false, (uint)rstride, (void*)(3 * sizeof(float)));
+            _gl.EnableVertexAttribArray(1);
+            // color.rgba
+            _gl.VertexAttribPointer(2, 4, GLEnum.Float, false, (uint)rstride, (void*)(5 * sizeof(float)));
+            _gl.EnableVertexAttribArray(2);
+        }
+        _gl.BindBuffer(GLEnum.ArrayBuffer, 0);
+        _gl.BindVertexArray(0);
     }
 
     /// <summary>Lazy-load the sprite atlas off Objects.dsres. Failures are
@@ -165,6 +222,13 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         TryLoadSlot(objectsTank, 1, "/art/bitmaps/sfx/b_sfx_smoke.raw");
         TryLoadSlot(objectsTank, 2, "/art/bitmaps/sfx/b_sfx_sparkle01.raw");
         TryLoadSlot(objectsTank, 3, "/art/bitmaps/sfx/b_sfx_002.raw");
+        // Slots 4-8 — DS1 lightning/streak candidates we can A/B at runtime
+        // via CycleBoltTexture(). All five are real shipped DS1 textures.
+        TryLoadSlot(objectsTank, 4, "/art/bitmaps/sfx/b_sfx_lightray_01.raw");
+        TryLoadSlot(objectsTank, 5, "/art/bitmaps/sfx/b_sfx_lightray_02.raw");
+        TryLoadSlot(objectsTank, 6, "/art/bitmaps/sfx/b_sfx_lightray_04.raw");
+        TryLoadSlot(objectsTank, 7, "/art/bitmaps/sfx/b_sfx_streaks.raw");
+        TryLoadSlot(objectsTank, 8, "/art/bitmaps/sfx/b_sfx_lightray01.raw");
     }
 
     void TryLoadSlot(TankReader tank, int slot, string path)
@@ -404,10 +468,14 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     {
         if (_particles.Count == 0 && _bolts.Count == 0 && _projectiles.Count == 0) return;
 
-        // Bolts compile into transient particle quads each frame (cheap; max
-        // a few dozen segments per bolt). This keeps draw paths unified.
-        EmitBoltQuads();
+        // Bolts compile into ribbon segments (separate draw path); projectile
+        // heads stamp transient particles into the main billboard list.
+        EmitBoltQuads(cameraPos);
         EmitProjectileHeads();
+
+        // Ribbon (lightning bolts) draw before particles so additive
+        // particles still composite on top cleanly.
+        if (_ribbonVertCount > 0) DrawRibbons(view, proj);
 
         if (_particles.Count == 0) return;
 
@@ -462,6 +530,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _shader.SetInt("uTex1", 1);
         _shader.SetInt("uTex2", 2);
         _shader.SetInt("uTex3", 3);
+        _shader.SetInt("uTex4", 4);
+        _shader.SetInt("uTex5", 5);
+        _shader.SetInt("uTex6", 6);
+        _shader.SetInt("uTex7", 7);
+        _shader.SetInt("uTex8", 8);
         for (int slot = 0; slot < _textures.Length; slot++)
         {
             _gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + slot));
@@ -483,12 +556,17 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
     }
 
-    void EmitBoltQuads()
+    private readonly Vector3[] _boltPathScratch = new Vector3[64 + 1];
+    private readonly Vector3[] _boltPerpScratch = new Vector3[64 + 1];
+    void EmitBoltQuads(Vector3 cameraPos)
     {
-        // Phase 21-SC-SPELL-VFX — denser segments + larger bright sparks so the
-        // bolt actually reads against terrain at gameplay distance. The prior
-        // 8-segment / 0.18-scale stand-in was technically rendering but visually
-        // invisible against a sunlit ground plane.
+        // Build a continuous triangle strip per bolt. Each junction point gets
+        // ONE shared perpendicular (tangent × toCam, neighbor-averaged), so
+        // adjacent segments meet at the same corner pair instead of each
+        // computing its own perpendicular and producing the cross-hatched
+        // tinsel/X effect. Result is a true wire instead of a string of pills.
+        _ribbonVertCount = 0;
+        if (_bolts.Count == 0) return;
         const int Segments = 24;
         for (int bi = 0; bi < _bolts.Count; bi++)
         {
@@ -502,59 +580,130 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             var side = Vector3.Cross(fwd, up); if (side.LengthSquared() < 0.001f) side = Vector3.UnitX;
             side = Vector3.Normalize(side);
             uint rng = b.Seed + (uint)(frac * 16f);
-            // Phase 21-SC-SPELL-VFX-2: when DS1 supplies maxdisplace(N) honour it
-            // (clamped to a sane minimum so a tiny script value doesn't render
-            // as a perfectly straight pencil-line at gameplay distance).
             float xAmp = b.Displace > 0.001f
-                ? MathF.Max(b.Displace, MathF.Min(len * 0.06f, 0.20f))
-                : MathF.Min(len * 0.10f, 0.45f);
-            float yAmp = b.Displace > 0.001f
-                ? MathF.Max(b.Displace * 0.7f, MathF.Min(len * 0.05f, 0.18f))
+                ? MathF.Max(b.Displace, MathF.Min(len * 0.05f, 0.25f))
                 : MathF.Min(len * 0.08f, 0.35f);
-            for (int s = 0; s < Segments; s++)
+            float yAmp = b.Displace > 0.001f
+                ? MathF.Max(b.Displace * 0.6f, MathF.Min(len * 0.04f, 0.18f))
+                : MathF.Min(len * 0.06f, 0.25f);
+            // Wire-thin world-space half-width. ~2 pixels at chase-cam range.
+            float thickness = 0.022f;
+            float lifeAlpha = MathF.Max(0.25f, 1f - frac);
+            var core = b.Color;
+            core.X = MathF.Min(1f, core.X * 0.4f + 0.6f);
+            core.Y = MathF.Min(1f, core.Y * 0.4f + 0.6f);
+            core.Z = MathF.Min(1f, core.Z * 0.4f + 0.6f);
+            core.W = lifeAlpha;
+
+            // Pass 1: jittered polyline points along the bolt.
+            var pts = _boltPathScratch;
+            for (int s = 0; s <= Segments; s++)
             {
-                float t = (s + 0.5f) / Segments;
+                float t = (float)s / Segments;
                 rng = rng * 1664525u + 1013904223u;
                 float jx = ((rng & 0xFFFF) / 65535f - 0.5f) * xAmp;
                 rng = rng * 1664525u + 1013904223u;
                 float jy = ((rng & 0xFFFF) / 65535f - 0.5f) * yAmp;
-                var p = b.Source + dir * t + side * jx + up * jy;
-                var c = b.Color; c.W = MathF.Min(1f, c.W * (1f - frac * 0.8f));
-                _particles.Add(new Particle
-                {
-                    Position  = p,
-                    Velocity  = Vector3.Zero,
-                    Accel     = Vector3.Zero,
-                    Color0    = c,
-                    Color1    = new Vector4(c.X, c.Y, c.Z, 0f),
-                    Scale0    = 0.55f,
-                    Scale1    = 0.35f,
-                    Life      = 0.10f,
-                    TotalLife = 0.10f,
-                    TexSlot   = 2,
-                    Additive  = 1,
-                });
+                if (s == 0 || s == Segments) { jx = 0f; jy = 0f; }
+                pts[s] = b.Source + dir * t + side * jx + up * jy;
             }
-            // Bright "core" particles at source and target so the endpoints
-            // read as anchored hits even when the camera grazes the line.
-            var core = b.Color; core.W = 1f;
-            _particles.Add(new Particle
+
+            // Pass 2: shared per-junction perpendicular = neighbor-averaged
+            // tangent crossed with view-direction-to-camera at this point.
+            var perp = _boltPerpScratch;
+            for (int s = 0; s <= Segments; s++)
             {
-                Position = b.Source, Color0 = core,
-                Color1 = new Vector4(core.X, core.Y, core.Z, 0f),
-                Scale0 = 0.85f, Scale1 = 0.55f,
-                Life = 0.10f, TotalLife = 0.10f,
-                TexSlot = 2, Additive = 1,
-            });
-            _particles.Add(new Particle
+                Vector3 tangent;
+                if      (s == 0)        tangent = pts[1] - pts[0];
+                else if (s == Segments) tangent = pts[Segments] - pts[Segments - 1];
+                else                    tangent = pts[s + 1] - pts[s - 1];
+                var toCam = cameraPos - pts[s];
+                var sv = Vector3.Cross(tangent, toCam);
+                float slen = sv.Length();
+                if (slen < 1e-6f) sv = Vector3.UnitY; else sv /= slen;
+                perp[s] = sv * thickness;
+            }
+
+            // Pass 3: emit 2 tris (6 verts) per segment; corners at s and s+1
+            // share their perpendicular with the neighbor segment.
+            EnsureRibbonCapacity(_ribbonVertCount + Segments * 6);
+            for (int s = 0; s < Segments; s++)
             {
-                Position = b.Target, Color0 = core,
-                Color1 = new Vector4(core.X, core.Y, core.Z, 0f),
-                Scale0 = 0.95f, Scale1 = 0.60f,
-                Life = 0.10f, TotalLife = 0.10f,
-                TexSlot = 2, Additive = 1,
-            });
+                float u0 = (float)s / Segments;
+                float u1 = (float)(s + 1) / Segments;
+                var p0a = pts[s]     + perp[s];
+                var p0b = pts[s]     - perp[s];
+                var p1a = pts[s + 1] + perp[s + 1];
+                var p1b = pts[s + 1] - perp[s + 1];
+                EmitRibbonVert(p0b, u0, 0f, core);
+                EmitRibbonVert(p1b, u1, 0f, core);
+                EmitRibbonVert(p1a, u1, 1f, core);
+                EmitRibbonVert(p0b, u0, 0f, core);
+                EmitRibbonVert(p1a, u1, 1f, core);
+                EmitRibbonVert(p0a, u0, 1f, core);
+            }
         }
+    }
+
+    void EmitRibbonVert(Vector3 pos, float u, float v, Vector4 c)
+    {
+        int o = _ribbonVertCount * RibbonVertFloats;
+        _ribbonVerts[o + 0] = pos.X;
+        _ribbonVerts[o + 1] = pos.Y;
+        _ribbonVerts[o + 2] = pos.Z;
+        _ribbonVerts[o + 3] = u;
+        _ribbonVerts[o + 4] = v;
+        _ribbonVerts[o + 5] = c.X;
+        _ribbonVerts[o + 6] = c.Y;
+        _ribbonVerts[o + 7] = c.Z;
+        _ribbonVerts[o + 8] = c.W;
+        _ribbonVertCount++;
+    }
+
+    void EnsureRibbonCapacity(int verts)
+    {
+        int needed = verts * RibbonVertFloats;
+        if (_ribbonVerts.Length < needed)
+            _ribbonVerts = new float[Math.Max(_ribbonVerts.Length * 2, needed)];
+    }
+
+    void DrawRibbons(Matrix4x4 view, Matrix4x4 proj)
+    {
+        _gl.BindBuffer(GLEnum.ArrayBuffer, _ribbonVbo);
+        unsafe
+        {
+            fixed (float* p = _ribbonVerts)
+                _gl.BufferData(GLEnum.ArrayBuffer,
+                    (nuint)(_ribbonVertCount * RibbonVertFloats * sizeof(float)),
+                    p, GLEnum.DynamicDraw);
+        }
+
+        bool depthWasOn = _gl.IsEnabled(GLEnum.DepthTest);
+        bool cullWasOn  = _gl.IsEnabled(GLEnum.CullFace);
+        _gl.Enable(GLEnum.DepthTest);
+        _gl.DepthMask(false);
+        _gl.Disable(GLEnum.CullFace);
+        _gl.Enable(GLEnum.Blend);
+        _gl.BlendFunc(GLEnum.One, GLEnum.One); // straight additive — guaranteed glow
+
+        _ribbonShader.Use();
+        _ribbonShader.SetMatrix4("uView", view);
+        _ribbonShader.SetMatrix4("uProj", proj);
+        _ribbonShader.SetInt("uSlot", BoltTexSlot);
+        for (int i = 0; i < _textures.Length; i++)
+            _ribbonShader.SetInt("uTex" + i, i);
+        for (int slot = 0; slot < _textures.Length; slot++)
+        {
+            _gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + slot));
+            _gl.BindTexture(GLEnum.Texture2D, _textures[slot]?.Handle ?? 0);
+        }
+
+        _gl.BindVertexArray(_ribbonVao);
+        _gl.DrawArrays(GLEnum.Triangles, 0, (uint)_ribbonVertCount);
+        _gl.BindVertexArray(0);
+        _gl.DepthMask(true);
+        if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
+        if (cullWasOn)   _gl.Enable(GLEnum.CullFace);
     }
 
     void EmitProjectileHeads()
@@ -601,6 +750,9 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _gl.DeleteBuffer(_vboInstance);
         _gl.DeleteVertexArray(_vao);
         _shader.Dispose();
+        _gl.DeleteBuffer(_ribbonVbo);
+        _gl.DeleteVertexArray(_ribbonVao);
+        _ribbonShader.Dispose();
     }
 
     static class MathHelper
@@ -643,6 +795,11 @@ uniform sampler2D uTex0;
 uniform sampler2D uTex1;
 uniform sampler2D uTex2;
 uniform sampler2D uTex3;
+uniform sampler2D uTex4;
+uniform sampler2D uTex5;
+uniform sampler2D uTex6;
+uniform sampler2D uTex7;
+uniform sampler2D uTex8;
 out vec4 frag;
 void main(){
   vec4 tex;
@@ -650,16 +807,66 @@ void main(){
   if      (slot == 0) tex = texture(uTex0, vUv);
   else if (slot == 1) tex = texture(uTex1, vUv);
   else if (slot == 2) tex = texture(uTex2, vUv);
-  else                tex = texture(uTex3, vUv);
+  else if (slot == 3) tex = texture(uTex3, vUv);
+  else if (slot == 4) tex = texture(uTex4, vUv);
+  else if (slot == 5) tex = texture(uTex5, vUv);
+  else if (slot == 6) tex = texture(uTex6, vUv);
+  else if (slot == 7) tex = texture(uTex7, vUv);
+  else                tex = texture(uTex8, vUv);
   vec4 c = tex * vColor;
-  // Additive: pre-multiply RGB by alpha so the shared SrcAlpha blend
-  // approximates the brighter additive look (alpha stays 1, RGB carries
-  // the modulated brightness).
+  // Additive look via the shared SrcAlpha/OneMinusSrcAlpha blend: brighten
+  // RGB and keep alpha so the fragment actually contributes (the prior
+  // c.a=0 zeroed every additive particle and made bolts/sparks invisible).
   if (vAdditive > 0.5) {
-    c.rgb *= c.a;
-    c.a   = 0.0;
-    c.rgb *= 2.0;
+    c.rgb *= 1.8;
   }
+  frag = c;
+}";
+
+    // --- ribbon shader ----------------------------------------------------
+    // CPU has already computed world-space positions with shared per-junction
+    // perpendiculars, so the vertex shader just transforms straight through.
+    const string RibbonVertexSrc = @"#version 330 core
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec2 aUv;
+layout(location=2) in vec4 aColor;
+uniform mat4 uView;
+uniform mat4 uProj;
+out vec2 vUv;
+out vec4 vColor;
+void main(){
+  gl_Position = uProj * uView * vec4(aPos, 1.0);
+  vUv    = aUv;
+  vColor = aColor;
+}";
+
+    const string RibbonFragmentSrc = @"#version 330 core
+in vec2 vUv;
+in vec4 vColor;
+uniform sampler2D uTex0;
+uniform sampler2D uTex1;
+uniform sampler2D uTex2;
+uniform sampler2D uTex3;
+uniform sampler2D uTex4;
+uniform sampler2D uTex5;
+uniform sampler2D uTex6;
+uniform sampler2D uTex7;
+uniform sampler2D uTex8;
+uniform int uSlot;
+out vec4 frag;
+void main(){
+  vec4 tex;
+  if      (uSlot == 0) tex = texture(uTex0, vUv);
+  else if (uSlot == 1) tex = texture(uTex1, vUv);
+  else if (uSlot == 2) tex = texture(uTex2, vUv);
+  else if (uSlot == 3) tex = texture(uTex3, vUv);
+  else if (uSlot == 4) tex = texture(uTex4, vUv);
+  else if (uSlot == 5) tex = texture(uTex5, vUv);
+  else if (uSlot == 6) tex = texture(uTex6, vUv);
+  else if (uSlot == 7) tex = texture(uTex7, vUv);
+  else                 tex = texture(uTex8, vUv);
+  vec4 c = tex * vColor;
+  c.rgb *= 1.8; // ribbons always read as additive bright glow
   frag = c;
 }";
 }

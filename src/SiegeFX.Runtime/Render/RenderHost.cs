@@ -1257,6 +1257,15 @@ void main()
                 {
                     CyclePrimarySpell(forward: key == Key.RightBracket);
                 }
+                // Phase 21-SC-SPELL-VFX-debug — \ cycles which DS1 streak
+                // texture the lightning-bolt renderer samples (lightray_01,
+                // _02, _04, streaks, legacy lightray01, sparkle01). Lets
+                // the user A/B candidates live to pick the authentic look.
+                else if (key == Key.BackSlash && _particles is not null)
+                {
+                    var name = _particles.CycleBoltTexture();
+                    Console.WriteLine($"  bolt-tex: {name} (slot {_particles.BoltTexSlot})");
+                }
                 // Phase 19c — F5 quicksaves to a single slot under the user
                 // profile; F9 reloads the same slot. No confirmation prompt
                 // and no multi-slot UI yet — that's a save-screen job that
@@ -6304,6 +6313,7 @@ void main()
                     // fallback for spells whose CastSfxScript isn't in the
                     // store.
                     bool ranNativeScript = false;
+                    string sfxTrace;
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
                         && _sfxStore.TryGet(spell.CastSfxScript, out _))
@@ -6312,17 +6322,22 @@ void main()
                             SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
                             TargetPos:     dst,
                             WeaponBonePos: src);
+                        int boltsBefore = _particles?.LiveBoltCount ?? 0;
+                        int particlesBefore = _particles?.LiveParticleCount ?? 0;
                         ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
+                        int boltsAfter = _particles?.LiveBoltCount ?? 0;
+                        int particlesAfter = _particles?.LiveParticleCount ?? 0;
+                        sfxTrace = ranNativeScript
+                            ? $"native '{spell.CastSfxScript}' src=({src.X:F1},{src.Y:F1},{src.Z:F1}) dst=({dst.X:F1},{dst.Y:F1},{dst.Z:F1}) bolts={boltsBefore}->{boltsAfter} parts={particlesBefore}->{particlesAfter}"
+                            : $"native '{spell.CastSfxScript}' Spawn returned false";
+                    }
+                    else
+                    {
+                        sfxTrace = $"fallback (rt={_sfxRuntime is not null} st={_sfxStore is not null} script='{spell.CastSfxScript}')";
                     }
                     if (!ranNativeScript)
                         SpawnSpellVisual(src, dst, spell.Element, elemColor);
-                    _spellImpacts.Add(new SpellImpact
-                    {
-                        Position = dst,
-                        Color = elemColor,
-                        Delay = 0f,
-                        Remaining = SpellImpactDuration, Total = SpellImpactDuration,
-                    });
+                    Console.WriteLine($"  cast vfx: {sfxTrace}");
                     // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
                     // heal branch; only the clip id differs because we still
                     // hardcode the spell→sound mapping (full sfx_script
