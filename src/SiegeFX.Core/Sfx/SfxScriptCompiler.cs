@@ -117,6 +117,12 @@ public static class SfxScriptCompiler
                 "position_at"  => new SfxStatement(StatementKind.SfxPositionAt,   "sfx position_at",  rest, null),
                 "offset"       => new SfxStatement(StatementKind.SfxOffset,       "sfx offset",       rest, null),
                 "rat"          => new SfxStatement(StatementKind.SfxRat,          "sfx rat",          rest, null),
+                // freeze_targets / snap_to_ground — gameplay-side flags that
+                // don't drive the visual primitive. We map them onto
+                // SfxFriendlyTarget which already consumes #POP/#PEEK
+                // correctly so script stack discipline holds.
+                "freeze_targets"  => new SfxStatement(StatementKind.SfxFriendlyTarget, "sfx freeze_targets",  rest, null),
+                "snap_to_ground"  => new SfxStatement(StatementKind.SfxFriendlyTarget, "sfx snap_to_ground",  rest, null),
                 _              => new SfxStatement(StatementKind.Raw,             "sfx " + sub,       toks, null),
             };
         }

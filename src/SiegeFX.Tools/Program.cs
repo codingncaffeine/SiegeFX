@@ -6200,13 +6200,15 @@ sealed class SyntheticPartyContext : SiegeFX.Core.Actors.TriggerContext
 /// CLI can verify the VM produces the expected receipt without standing up GL.</summary>
 sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
 {
-    public int SpawnFireCount, SpawnSmokeCount, SpawnSteamCount, SpawnSparkCount, SpawnLightningCount;
+    public int SpawnFireCount, SpawnSmokeCount, SpawnSteamCount, SpawnSparkCount, SpawnLightningCount, SpawnProjectileCount;
     public int MaintainFireCount, MaintainSmokeCount, MaintainSteamCount;
     public void SpawnFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 12) => SpawnFireCount += n;
     public void SpawnSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 8) => SpawnSmokeCount += n;
     public void SpawnSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 8) => SpawnSteamCount += n;
     public void SpawnSpark(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 16) => SpawnSparkCount += n;
     public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d) => SpawnLightningCount++;
+    public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d, float disp) => SpawnLightningCount++;
+    public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }
     public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)

@@ -202,25 +202,12 @@ public sealed class RenderHost : IDisposable
         public float Total;
     }
     // Phase 17b — short-lived projectile glyph traveling source→target. Pure
-    // visual feedback so casting feels like more than a popping number; the
-    // actual damage was already applied at TryClickToCast time. Drawn in the
-    // HUD pass as a head dot + trailing dots projected to screen each frame.
-    private readonly List<SpellBolt> _spellBolts = new();
-    private const float SpellBoltDuration = 0.30f;
-    private const int SpellBoltTrailDots = 5;
-    private sealed class SpellBolt
-    {
-        public Vector3 Source;
-        public Vector3 Target;
-        public Vector4 Color;
-        public float Remaining;
-        public float Total;
-    }
-    // Phase 17-SC-B — burst flash at the impact point. Spawned alongside
-    // the bolt with Delay matching SpellBoltDuration so the flash fires the
-    // instant the bolt arrives. Drawn as four expanding compass dots in the
-    // HUD pass — same screen-space pipeline as the bolt itself, no need to
-    // stand up a 3D billboard system for one pop of feedback per cast.
+    // Phase 21-SC-SPELL-VFX retired the screen-space _spellBolts trail; the
+    // primary cast visual is now a 3D world-space beam or projectile from the
+    // ParticleSystem (see SpawnSpellVisual). _spellImpacts stays as the
+    // screen-space "compass-dot" flash at the impact point — cheap, always
+    // visible regardless of camera angle, and complements the 3D burst with
+    // a bright HUD-space punctuation.
     private readonly List<SpellImpact> _spellImpacts = new();
     private const float SpellImpactDuration = 0.25f;
     private sealed class SpellImpact
@@ -246,6 +233,53 @@ public sealed class RenderHost : IDisposable
         SiegeFX.Core.Assets.SpellElement.Holy      => new Vector4(1.00f, 0.95f, 0.60f, 1f),
         _                                           => new Vector4(0.55f, 0.85f, 1.00f, 1f),
     };
+
+    // Phase 21-SC-SPELL-VFX — element-aware 3D cast visual. Always emits a
+    // primary primitive (beam or projectile) so every one of the 69 shipped
+    // OffensiveInstantHit spells has a clear cast read at gameplay distance,
+    // independent of how complete the sfx_script VM is for that script's
+    // verbs. Lightning-class → instant beam (DS1 zap shape), Fire-class →
+    // homing fireball with fire+ember trail (DS1 trackball shape), everything
+    // else → tinted beam in the element's color.
+    private void SpawnSpellVisual(Vector3 src, Vector3 dst,
+                                  SiegeFX.Core.Assets.SpellElement element,
+                                  Vector4 color)
+    {
+        if (_particles is null) return;
+        switch (element)
+        {
+            case SiegeFX.Core.Assets.SpellElement.Lightning:
+                _particles.SpawnLightning(src, dst, color, 0.40f);
+                // Layer a warm-white second beam (DS1 zap is two passes —
+                // cool-white over warm-white). Slightly different seed gives
+                // the jaggy stack a parallax read.
+                _particles.SpawnLightning(src, dst,
+                    new Vector4(1f, 0.95f, 0.85f, 1f), 0.30f);
+                break;
+            case SiegeFX.Core.Assets.SpellElement.Fire:
+                _particles.SpawnProjectile(src, dst, color, 0.55f, 16f, 0);
+                break;
+            case SiegeFX.Core.Assets.SpellElement.Ice:
+                _particles.SpawnProjectile(src, dst, color, 0.55f, 18f, 1);
+                break;
+            case SiegeFX.Core.Assets.SpellElement.Acid:
+                _particles.SpawnProjectile(src, dst, color, 0.50f, 14f, 0);
+                break;
+            case SiegeFX.Core.Assets.SpellElement.Death:
+                _particles.SpawnLightning(src, dst, color, 0.35f);
+                _particles.SpawnSmoke(dst,
+                    new Vector4(0.45f, 0.20f, 0.55f, 0.7f), 0.6f, 1.0f, 8);
+                break;
+            case SiegeFX.Core.Assets.SpellElement.Holy:
+                _particles.SpawnLightning(src, dst, color, 0.30f);
+                _particles.SpawnSpark(dst,
+                    new Vector4(1f, 0.95f, 0.65f, 1f), 0.6f, 0.45f, 24);
+                break;
+            default:
+                _particles.SpawnLightning(src, dst, color, 0.30f);
+                break;
+        }
+    }
     // Phase 12e — one entry per dead actor that produced a non-empty loot roll.
     // Drawn as a small untextured cube at Pile.Position using the mesh shader's
     // default beige tint. Phase 14a upgraded the bare Vector3 to a LootPile record
@@ -687,9 +721,10 @@ public sealed class RenderHost : IDisposable
     // Phase 21-SC-INV-A2 — currently selected combat-ability slot for the
     // mini-HUD's 4-cell ability bar. The cell that's selected gets a thicker
     // golden ring; the other three are dim. 0=melee, 1=ranged, 2=spell-1
-    // (Q), 3=spell-2 (W). The actual cast/swing keys (LMB / Q / W) are
-    // unchanged — this is a "what's my active mode" affordance only, until
-    // 21-SC-INV-B routes LMB through the selected ability.
+    // (Q/Primary), 3=spell-2 (W/Secondary). Phase 21-SC-ABIL-RMB wires this
+    // into the RMB tap dispatch: clicking a target with cell 2/3 active casts
+    // the slotted spell instead of melee-attacking. Q/W keys still cast their
+    // own slots so keyboard-only players aren't forced through the cell ring.
     private int _activeAbilityIdx; // 0..3
     // Hit-rects published by the last DrawMiniStatusHud so the mouse-down
     // handler can route clicks to ability-bar selection / open-arrows toggle.
@@ -1526,7 +1561,27 @@ void main()
                         // to the combat path. Hostile actors don't get talkable
                         // even if they happen to have a [conversation] block.
                         if (!TryClickToTalk(_rmbDownPos))
-                            TryClickToAttack(_rmbDownPos);
+                        {
+                            // Phase 21-SC-ABIL-RMB — RMB respects the selected
+                            // ability cell. Cells 0/1 swing the equipped weapon
+                            // (no dedicated ranged-projectile path yet — the
+                            // swing chore plus weapon-class stance is what
+                            // distinguishes the two visually). Cells 2/3 cast
+                            // the Primary/Secondary spell slot at whatever the
+                            // cursor is over, mirroring Q/W keyboard casts.
+                            switch (_activeAbilityIdx)
+                            {
+                                case 2:
+                                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
+                                    break;
+                                case 3:
+                                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
+                                    break;
+                                default:
+                                    TryClickToAttack(_rmbDownPos);
+                                    break;
+                            }
+                        }
                     }
                     _rmbDrift = 0f;
                 }
@@ -6223,40 +6278,49 @@ void main()
                         _playerRenderFacingPrev = _playerFacing;
                         _playerRenderFacingNext = _playerFacing;
                     }
-                    var src = playerPos + new Vector3(0f, 1.2f, 0f);
+                    // Phase 21-SC-SPELL-VFX — caster's hand-area position. We
+                    // don't have @weapon_bone resolution yet (DS1's sfx scripts
+                    // anchor lightning to bip01_l_hand / @weapon_bone source),
+                    // so approximate: shoulder-height + a half-step forward
+                    // along facing. Reads as "from the hand" to a casual eye.
+                    var src = playerPos + _playerFacing * 0.45f + new Vector3(0f, 1.25f, 0f);
                     var dst = tp        + new Vector3(0f, 1.0f, 0f);
                     var elemColor = SpellElementColor(spell.Element);
-                    // Phase 17-SC-H — if the spell template authored a
-                    // [template_triggers] row for we_req_cast (every shipped
-                    // offensive spell does), invoke its sfx_script through
-                    // the VM at the impact point. The script names match
-                    // DS1's ones (fireball, zap, lightning, ...) so the
-                    // VM produces real fire+smoke / lightning bursts via
-                    // ParticleSystem instead of the placeholder dot trail.
-                    // The dot trail stays as the fallback for the rare
-                    // template that omits the cast row.
-                    bool spellSfxFired = false;
+                    // Phase 17-SC-H — invoke the spell's sfx_script through the
+                    // VM (still partial: lightning/fire emitter verbs only).
+                    // Even when the script runs, we ALSO spawn an element-aware
+                    // 3D primitive below so every spell has a clear visible
+                    // beam-or-projectile. Phase 21-SC-SPELL-VFX dropped the
+                    // gating on spellSfxFired — the prior gate left ~all 69
+                    // OffensiveInstantHit spells with no visible cast effect
+                    // because the VM's lightning shorthand spawned a 1-unit
+                    // pale-blue stub at the target that washed out at gameplay
+                    // distance.
+                    // Phase 21-SC-SPELL-VFX-2 — feed the VM a real SfxContext
+                    // (caster + target + weapon-bone-area approximation) so
+                    // shipped DS1 scripts (zap, fireball) render natively
+                    // through `sfx target source` / `sfx attach_point
+                    // @weapon_bone source`. SpawnSpellVisual stays as the
+                    // fallback for spells whose CastSfxScript isn't in the
+                    // store.
+                    bool ranNativeScript = false;
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
                         && _sfxStore.TryGet(spell.CastSfxScript, out _))
                     {
-                        _sfxRuntime.Spawn(spell.CastSfxScript, dst);
-                        spellSfxFired = true;
+                        var ctx = new SiegeFX.Core.Sfx.SfxContext(
+                            SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
+                            TargetPos:     dst,
+                            WeaponBonePos: src);
+                        ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
                     }
-                    if (!spellSfxFired)
-                    {
-                        _spellBolts.Add(new SpellBolt
-                        {
-                            Source = src, Target = dst,
-                            Color = elemColor,
-                            Remaining = SpellBoltDuration, Total = SpellBoltDuration,
-                        });
-                    }
+                    if (!ranNativeScript)
+                        SpawnSpellVisual(src, dst, spell.Element, elemColor);
                     _spellImpacts.Add(new SpellImpact
                     {
                         Position = dst,
                         Color = elemColor,
-                        Delay = spellSfxFired ? 0f : SpellBoltDuration,
+                        Delay = 0f,
                         Remaining = SpellImpactDuration, Total = SpellImpactDuration,
                     });
                     // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
@@ -6571,16 +6635,10 @@ void main()
             _floatingTexts[i].Remaining -= (float)dt;
             if (_floatingTexts[i].Remaining <= 0f) _floatingTexts.RemoveAt(i);
         }
-        // Phase 17b — same lifecycle for spell-bolt projectiles.
-        for (int i = _spellBolts.Count - 1; i >= 0; i--)
-        {
-            _spellBolts[i].Remaining -= (float)dt;
-            if (_spellBolts[i].Remaining <= 0f) _spellBolts.RemoveAt(i);
-        }
-        // Phase 17-SC-E — integrate billboard particles + lightning bolts.
-        // Independent of the spell-bolt screen-space dots (those still
-        // run as the Phase 17b head-and-trail stand-in until SC-H rewires
-        // them through the script interpreter).
+        // Phase 17-SC-E — integrate billboard particles + lightning bolts +
+        // (Phase 21-SC-SPELL-VFX) flying projectile heads. The screen-space
+        // _spellBolts trail was retired here; primary cast visuals are now
+        // the 3D world-space primitives spawned through SpawnSpellVisual.
         _particles?.Tick((float)dt);
         // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
         // run continuous-emitter spawn budgets. Must run after the particle
@@ -7467,36 +7525,6 @@ void main()
                     // viii-d wooden-card scaffold so the creator stays
                     // usable rather than presenting an empty screen.
                     _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
-                }
-            }
-            // Phase 17b — projectile bolts. Head dot at lerp(src,dst,progress)
-            // plus a few trailing dots stepped back along the line, alpha
-            // fading per step. All in screen-space via the HUD ortho pass —
-            // cheap and no need to wire a 3D billboard pipeline.
-            if (_spellBolts.Count > 0 && _barRenderer is not null)
-            {
-                foreach (var b in _spellBolts)
-                {
-                    float prog = 1f - (b.Remaining / MathF.Max(0.0001f, b.Total));
-                    if (prog < 0f) prog = 0f; else if (prog > 1f) prog = 1f;
-                    for (int i = 0; i < SpellBoltTrailDots; i++)
-                    {
-                        float ti = prog - i * 0.07f;
-                        if (ti < 0f) break;
-                        var w = Vector3.Lerp(b.Source, b.Target, ti);
-                        var clip = Vector4.Transform(new Vector4(w, 1f), vp);
-                        if (clip.W <= 0.001f) continue;
-                        float ndcXX = clip.X / clip.W;
-                        float ndcYY = clip.Y / clip.W;
-                        int sx = (int)((ndcXX * 0.5f + 0.5f) * size.X);
-                        int sy = (int)((1f - (ndcYY * 0.5f + 0.5f)) * size.Y);
-                        // Head dot is brightest + biggest; trail tapers in
-                        // both alpha and pixel size so it reads as a streak.
-                        float falloff = 1f - i / (float)SpellBoltTrailDots;
-                        int dot = i == 0 ? 6 : Math.Max(2, 6 - i);
-                        var c = b.Color; c.W *= falloff;
-                        _barRenderer.DrawRect(size.X, size.Y, sx - dot / 2, sy - dot / 2, dot, dot, c);
-                    }
                 }
             }
             // Phase 17-SC-B — impact rings. Four compass dots expanding from

@@ -37,6 +37,27 @@ public struct LightningBolt
     public float   Life;
     public float   TotalLife;
     public uint    Seed;            // displacement noise seed
+    /// <summary>Phase 21-SC-SPELL-VFX-2 — DS1 lightning param
+    /// <c>maxdisplace(N)</c> (units of jitter perpendicular to the
+    /// line). 0 means "use renderer default" (length-relative).</summary>
+    public float   Displace;
+}
+
+/// <summary>Phase 21-SC-SPELL-VFX — flying spell projectile (DS1 trackball
+/// stand-in). Travels Source→Target at <see cref="Speed"/> world units/sec,
+/// stamping a fire/ember trail every tick and detonating a fire+spark
+/// explosion on arrival. <see cref="ImpactKind"/> picks the impact flavor
+/// (0=fire, 1=ice, 2=lightning).</summary>
+public struct SpellProjectile
+{
+    public Vector3 Position;
+    public Vector3 Target;
+    public Vector4 Color;
+    public float   Scale;
+    public float   Speed;
+    public float   TrailCarry;
+    public byte    ImpactKind;
+    public bool    Done;
 }
 
 /// <summary>
@@ -62,14 +83,16 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private readonly uint _vboInstance;
     private readonly GlTexture?[] _textures = new GlTexture?[4];
 
-    private readonly List<Particle>      _particles = new(2048);
-    private readonly List<LightningBolt> _bolts     = new(64);
+    private readonly List<Particle>        _particles   = new(2048);
+    private readonly List<LightningBolt>   _bolts       = new(64);
+    private readonly List<SpellProjectile> _projectiles = new(32);
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
     private float[] _instanceBuffer = new float[2048 * InstanceFloats];
 
-    public int LiveParticleCount => _particles.Count;
-    public int LiveBoltCount     => _bolts.Count;
+    public int LiveParticleCount   => _particles.Count;
+    public int LiveBoltCount       => _bolts.Count;
+    public int LiveProjectileCount => _projectiles.Count;
 
     public ParticleSystem(GL gl)
     {
@@ -245,6 +268,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     }
 
     public void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration)
+        => SpawnLightning(source, target, color, duration, displace: 0f);
+
+    /// <summary>Phase 21-SC-SPELL-VFX-2 — DS1's <c>maxdisplace(N)</c> param.
+    /// 0 falls back to length-relative jitter.</summary>
+    public void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration, float displace)
     {
         _bolts.Add(new LightningBolt
         {
@@ -254,6 +282,20 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             Life      = duration,
             TotalLife = duration,
             Seed      = (uint)Random.Shared.Next(),
+            Displace  = displace,
+        });
+    }
+
+    public void SpawnProjectile(Vector3 source, Vector3 target, Vector4 color, float scale, float speed, int impactKind)
+    {
+        _projectiles.Add(new SpellProjectile
+        {
+            Position   = source,
+            Target     = target,
+            Color      = color,
+            Scale      = MathF.Max(0.1f, scale),
+            Speed      = MathF.Max(2f, speed),
+            ImpactKind = (byte)Math.Clamp(impactKind, 0, 2),
         });
     }
 
@@ -302,21 +344,70 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (b.Life <= 0f) { _bolts.RemoveAt(i); continue; }
             _bolts[i] = b;
         }
+        // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
+        // stamp a fire/ember trail along the way, detonate on arrival.
+        for (int i = _projectiles.Count - 1; i >= 0; i--)
+        {
+            var pr = _projectiles[i];
+            var toTarget = pr.Target - pr.Position;
+            float dist = toTarget.Length();
+            float step = pr.Speed * dt;
+            if (step >= dist || dist < 0.05f)
+            {
+                // Impact burst — flavor by ImpactKind. Always loud enough to read.
+                switch (pr.ImpactKind)
+                {
+                    case 1: // ice / frost
+                        SpawnSteam(pr.Target, new Vector4(0.75f, 0.92f, 1f, 0.9f), pr.Scale * 1.6f, 0.55f, 18);
+                        SpawnSpark(pr.Target, pr.Color, pr.Scale * 1.4f, 0.45f, 24);
+                        break;
+                    case 2: // lightning crack
+                        SpawnSpark(pr.Target, pr.Color, pr.Scale * 1.4f, 0.35f, 32);
+                        SpawnFire (pr.Target, pr.Color, pr.Scale * 0.9f, 0.30f, 8);
+                        break;
+                    default: // fire
+                        SpawnFire (pr.Target, pr.Color, pr.Scale * 1.6f, 0.55f, 22);
+                        SpawnSpark(pr.Target, new Vector4(1f, 0.85f, 0.4f, 1f), pr.Scale * 1.2f, 0.45f, 18);
+                        SpawnSmoke(pr.Target, new Vector4(0.25f, 0.20f, 0.18f, 0.55f), pr.Scale * 1.4f, 0.90f, 8);
+                        break;
+                }
+                _projectiles.RemoveAt(i);
+                continue;
+            }
+            var dir = toTarget / dist;
+            pr.Position += dir * step;
+            // Trail: 60 particles/sec ~ one fire puff per frame at 60fps,
+            // plus a thinner ember spark stream.
+            float trailRate = 90f;
+            float budget = pr.TrailCarry + trailRate * dt;
+            int n = (int)budget;
+            if (n > 0)
+            {
+                SpawnFire(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);
+                if ((n & 1) == 0)
+                    SpawnSpark(pr.Position, new Vector4(1f, 0.9f, 0.55f, 1f),
+                               pr.Scale * 0.6f, 0.20f, 2);
+            }
+            pr.TrailCarry = budget - n;
+            _projectiles[i] = pr;
+        }
     }
 
     public void Clear()
     {
         _particles.Clear();
         _bolts.Clear();
+        _projectiles.Clear();
     }
 
     public void Draw(Matrix4x4 view, Matrix4x4 proj, Vector3 cameraPos)
     {
-        if (_particles.Count == 0 && _bolts.Count == 0) return;
+        if (_particles.Count == 0 && _bolts.Count == 0 && _projectiles.Count == 0) return;
 
         // Bolts compile into transient particle quads each frame (cheap; max
         // a few dozen segments per bolt). This keeps draw paths unified.
         EmitBoltQuads();
+        EmitProjectileHeads();
 
         if (_particles.Count == 0) return;
 
@@ -394,10 +485,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     void EmitBoltQuads()
     {
-        // Stand-in for proper line strips: 8 small bright spark quads
-        // scattered along the bolt with seeded perpendicular displacement.
-        // Visible at gameplay distance, no per-frame jitter cost.
-        const int Segments = 8;
+        // Phase 21-SC-SPELL-VFX — denser segments + larger bright sparks so the
+        // bolt actually reads against terrain at gameplay distance. The prior
+        // 8-segment / 0.18-scale stand-in was technically rendering but visually
+        // invisible against a sunlit ground plane.
+        const int Segments = 24;
         for (int bi = 0; bi < _bolts.Count; bi++)
         {
             var b = _bolts[bi];
@@ -410,15 +502,24 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             var side = Vector3.Cross(fwd, up); if (side.LengthSquared() < 0.001f) side = Vector3.UnitX;
             side = Vector3.Normalize(side);
             uint rng = b.Seed + (uint)(frac * 16f);
+            // Phase 21-SC-SPELL-VFX-2: when DS1 supplies maxdisplace(N) honour it
+            // (clamped to a sane minimum so a tiny script value doesn't render
+            // as a perfectly straight pencil-line at gameplay distance).
+            float xAmp = b.Displace > 0.001f
+                ? MathF.Max(b.Displace, MathF.Min(len * 0.06f, 0.20f))
+                : MathF.Min(len * 0.10f, 0.45f);
+            float yAmp = b.Displace > 0.001f
+                ? MathF.Max(b.Displace * 0.7f, MathF.Min(len * 0.05f, 0.18f))
+                : MathF.Min(len * 0.08f, 0.35f);
             for (int s = 0; s < Segments; s++)
             {
                 float t = (s + 0.5f) / Segments;
                 rng = rng * 1664525u + 1013904223u;
-                float jx = ((rng & 0xFFFF) / 65535f - 0.5f) * len * 0.08f;
+                float jx = ((rng & 0xFFFF) / 65535f - 0.5f) * xAmp;
                 rng = rng * 1664525u + 1013904223u;
-                float jy = ((rng & 0xFFFF) / 65535f - 0.5f) * len * 0.06f;
+                float jy = ((rng & 0xFFFF) / 65535f - 0.5f) * yAmp;
                 var p = b.Source + dir * t + side * jx + up * jy;
-                var c = b.Color; c.W *= (1f - frac);
+                var c = b.Color; c.W = MathF.Min(1f, c.W * (1f - frac * 0.8f));
                 _particles.Add(new Particle
                 {
                     Position  = p,
@@ -426,14 +527,60 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                     Accel     = Vector3.Zero,
                     Color0    = c,
                     Color1    = new Vector4(c.X, c.Y, c.Z, 0f),
-                    Scale0    = 0.18f,
-                    Scale1    = 0.10f,
-                    Life      = 0.06f,
-                    TotalLife = 0.06f,
+                    Scale0    = 0.55f,
+                    Scale1    = 0.35f,
+                    Life      = 0.10f,
+                    TotalLife = 0.10f,
                     TexSlot   = 2,
                     Additive  = 1,
                 });
             }
+            // Bright "core" particles at source and target so the endpoints
+            // read as anchored hits even when the camera grazes the line.
+            var core = b.Color; core.W = 1f;
+            _particles.Add(new Particle
+            {
+                Position = b.Source, Color0 = core,
+                Color1 = new Vector4(core.X, core.Y, core.Z, 0f),
+                Scale0 = 0.85f, Scale1 = 0.55f,
+                Life = 0.10f, TotalLife = 0.10f,
+                TexSlot = 2, Additive = 1,
+            });
+            _particles.Add(new Particle
+            {
+                Position = b.Target, Color0 = core,
+                Color1 = new Vector4(core.X, core.Y, core.Z, 0f),
+                Scale0 = 0.95f, Scale1 = 0.60f,
+                Life = 0.10f, TotalLife = 0.10f,
+                TexSlot = 2, Additive = 1,
+            });
+        }
+    }
+
+    void EmitProjectileHeads()
+    {
+        // Phase 21-SC-SPELL-VFX — every frame, stamp a bright "head" particle
+        // for each in-flight projectile. Without this the only visible mark of
+        // the projectile would be the drifting trail particles, which lag
+        // behind the actual current position.
+        for (int pi = 0; pi < _projectiles.Count; pi++)
+        {
+            var pr = _projectiles[pi];
+            var c = pr.Color; c.W = 1f;
+            _particles.Add(new Particle
+            {
+                Position  = pr.Position,
+                Velocity  = Vector3.Zero,
+                Accel     = Vector3.Zero,
+                Color0    = c,
+                Color1    = new Vector4(c.X, c.Y, c.Z, 0f),
+                Scale0    = pr.Scale * 1.1f,
+                Scale1    = pr.Scale * 0.9f,
+                Life      = 0.05f,
+                TotalLife = 0.05f,
+                TexSlot   = 0,
+                Additive  = 1,
+            });
         }
     }
 
