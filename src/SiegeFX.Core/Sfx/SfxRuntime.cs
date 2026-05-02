@@ -59,6 +59,10 @@ public sealed class SfxRuntime
         = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
+            // Phase 21-SC-SPELL-VFX-3f/g/h/i — first-pass primitives.
+            // Visual quality not yet DS1-pixel-faithful; the per-primitive
+            // test list at session-end will surface where tuning is needed.
+            "flurry", "fireb", "cylinder", "sray",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -386,6 +390,65 @@ public sealed class SfxRuntime
                     count);
                 break;
             }
+            case EmitterMode.OneShotFlurry:
+            {
+                // Phase 21-SC-SPELL-VFX-3f — `flurry` is a popcorn-style
+                // particle burst with `count`/`dur`/`color0`/`grow_params`/
+                // `tin`/`tout` params. First-pass: SpawnSpark sized by the
+                // grow_params middle (peak scale). Doesn't yet animate the
+                // grow curve — visible test list will flag if it's needed.
+                int count = h.BurstCount > 0 ? h.BurstCount : 30;
+                _particles.SpawnSpark(h.Anchor, h.Color,
+                    MathF.Max(0.30f, h.Scale * 1.5f),
+                    MathF.Max(0.30f, h.Duration),
+                    count);
+                break;
+            }
+            case EmitterMode.Fireb:
+            {
+                // Phase 21-SC-SPELL-VFX-3g — `fireb` is a directional fire
+                // emitter (dragon_fire's flame cones, spell_flame's burst).
+                // First-pass: SpawnFire one-shot at the anchor, sized by
+                // flamesize, with count from the param string. Real DS1
+                // shape (forward-emitting cone with velocity/accel) needs
+                // a directional-emitter primitive — flagged as a tweak
+                // candidate.
+                int count = h.BurstCount > 0 ? h.BurstCount : 30;
+                _particles.SpawnFire(h.Anchor, h.Color,
+                    MathF.Max(0.40f, h.Scale * 1.3f),
+                    MathF.Max(0.50f, h.Duration),
+                    count);
+                break;
+            }
+            case EmitterMode.OneShotCylinder:
+            {
+                // Phase 21-SC-SPELL-VFX-3i — `cylinder` is a textured beam
+                // between hp0 and hp1 (head positions) with rp0/rp1 radii,
+                // tin/tout fade, dur, color0, spin, segments. First-pass:
+                // straight beam (displace=0) via SpawnLightning between the
+                // anchor and OtherEnd. The "tube" effect is approximated by
+                // the lightning bolt rendering. Tube-textured rendering
+                // would need a new primitive — listed in the test sweep as
+                // "expect a colored beam, not necessarily a tube."
+                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color,
+                    MathF.Max(0.20f, h.Duration),
+                    displace: 0f);
+                break;
+            }
+            case EmitterMode.OneShotSray:
+            {
+                // Phase 21-SC-SPELL-VFX-3h — `sray` is a directional ray
+                // (sun ray, death blast streamer) with theta/phi/lmin/lmax
+                // and offset params. First-pass: dense SpawnSpark burst at
+                // the anchor sized by `radius`. Directional bias (the actual
+                // ray shape) needs a streak/billboard primitive — tweak list.
+                int count = h.BurstCount > 0 ? h.BurstCount : 32;
+                _particles.SpawnSpark(h.Anchor, h.Color,
+                    MathF.Max(0.25f, h.Scale * 1.4f),
+                    MathF.Max(0.25f, h.Duration),
+                    count);
+                break;
+            }
             case EmitterMode.Unsupported:
                 return;
             default:
@@ -554,6 +617,11 @@ public sealed class SfxRuntime
             case "lightning": return EmitterMode.OneShotLightning;
             case "explosion": return EmitterMode.OneShotExplosion;
             case "sparkles":  return EmitterMode.OneShotSparkles;
+            // Phase 21-SC-SPELL-VFX-3f/g/h/i first-pass mappings.
+            case "flurry":    return EmitterMode.OneShotFlurry;
+            case "fireb":     return EmitterMode.Fireb;
+            case "cylinder":  return EmitterMode.OneShotCylinder;
+            case "sray":      return EmitterMode.OneShotSray;
             default:          return EmitterMode.Unsupported;
         }
     }
@@ -723,6 +791,14 @@ public sealed class SfxRuntime
     {
         Fire, Smoke, Steam,
         OneShotLightning, OneShotExplosion, OneShotSparkles,
+        // Phase 21-SC-SPELL-VFX-3f/g/h/i — first-pass implementations
+        // mapped to existing particle/bolt primitives. Visual tuning
+        // (texture choice, motion shape) is the user's eyes-test job
+        // captured in the per-primitive test list at session end.
+        OneShotFlurry,    // 3f — particle burst with growth, ≈SpawnSpark+count
+        Fireb,            // 3g — fire one-shot with directional puff, ≈SpawnFire
+        OneShotCylinder,  // 3i — straight beam between hp0/hp1, ≈SpawnLightning displace=0
+        OneShotSray,      // 3h — directional ray, ≈SpawnSpark dense + slight bias
         Unsupported,
     }
 
