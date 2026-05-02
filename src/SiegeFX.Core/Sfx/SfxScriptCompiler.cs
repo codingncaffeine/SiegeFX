@@ -33,18 +33,31 @@ public static class SfxScriptCompiler
             // Empty statement (stray ;).
             if (tokens[i] == ";") { i++; continue; }
 
-            // if/else brace blocks — parse the head + drop the bodies as
-            // a single Raw stmt. The VM logs and skips conditionals for
-            // now; we still keep them in the IR so a future SC can fold
-            // them in without re-parsing.
+            // if/else brace blocks. Phase 21-SC-SCROLL fold-fix: instead of
+            // dropping the body (which hid `position_at` calls inside
+            // fireball_base's `if ([1]==3) {...} else {...}` and made every
+            // trackball start at #TARGET = arrived-immediately = pruned),
+            // we recursively compile the body statements and inline them
+            // into the parent. The if/else head is still logged once as a
+            // Raw stmt so the diagnostic CLI can see what conditions exist.
+            //
+            // Net effect: both branches of every if/else execute. For DS1
+            // scripts that author parallel "branch A: position_at @kill_bone
+            // source; branch B: position_at @weapon_bone source" the last
+            // write wins (and our handler ignores bone names anyway, so
+            // the result is the same in practice). For the rarer case of
+            // truly-divergent branches (different visual decorations per
+            // condition) we'll get a slight over-render — fixable later
+            // by a real condition evaluator. Today's bar is "fireball
+            // shoots a projectile" and that requires the body to run.
             if (string.Equals(tokens[i], "if", StringComparison.OrdinalIgnoreCase))
             {
-                i = SkipBracedBlock(tokens, i, stmts);
+                i = InlineBracedBody(tokens, i, stmts);
                 continue;
             }
             if (string.Equals(tokens[i], "else", StringComparison.OrdinalIgnoreCase))
             {
-                i = SkipBracedBlock(tokens, i, stmts);
+                i = InlineBracedBody(tokens, i, stmts);
                 continue;
             }
 
@@ -65,10 +78,9 @@ public static class SfxScriptCompiler
         return new SfxProgram(name, stmts);
     }
 
-    static int SkipBracedBlock(List<string> tokens, int i, List<SfxStatement> stmts)
+    static int InlineBracedBody(List<string> tokens, int i, List<SfxStatement> stmts)
     {
-        // Capture the head (everything up to '{') as a Raw statement so
-        // the VM can log it. Then walk balanced braces to skip the body.
+        // Capture the head (everything up to '{') as a Raw stmt for diag.
         var head = new List<string>();
         head.Add(tokens[i]);
         i++;
@@ -78,15 +90,52 @@ public static class SfxScriptCompiler
         }
         stmts.Add(new SfxStatement(StatementKind.Raw, head[0], head, null));
         if (i >= tokens.Count) return i;
-        // Skip balanced braces.
-        int depth = 0;
-        while (i < tokens.Count)
+        // Find matching `}` and slice body tokens out for nested compile.
+        int bodyStart = i + 1;
+        int depth = 1;
+        i++;
+        while (i < tokens.Count && depth > 0)
         {
             if      (tokens[i] == "{") depth++;
-            else if (tokens[i] == "}") { depth--; if (depth == 0) { i++; break; } }
+            else if (tokens[i] == "}") depth--;
+            if (depth == 0) break;
             i++;
         }
+        int bodyEnd = i; // exclusive — points at the closing `}`
+        if (i < tokens.Count) i++; // consume `}`
+
+        // Recursively parse the body via a sub-scanner that mirrors the
+        // outer Compile loop. Sharing logic by reconstructing a token slice
+        // and running CompileTokenRange over it.
+        var body = tokens.GetRange(bodyStart, bodyEnd - bodyStart);
+        CompileTokenRange(body, stmts);
         return i;
+    }
+
+    /// <summary>Statement loop extracted so the if/else inliner can call it.
+    /// Mirrors the outer <see cref="Compile"/> body once stripped of the
+    /// `[[ ]]` wrappers and comment-removal — those preprocessing steps
+    /// happen at the top level only.</summary>
+    static void CompileTokenRange(List<string> tokens, List<SfxStatement> stmts)
+    {
+        int i = 0;
+        while (i < tokens.Count)
+        {
+            if (tokens[i] == ";") { i++; continue; }
+            if (string.Equals(tokens[i], "if", StringComparison.OrdinalIgnoreCase))
+            { i = InlineBracedBody(tokens, i, stmts); continue; }
+            if (string.Equals(tokens[i], "else", StringComparison.OrdinalIgnoreCase))
+            { i = InlineBracedBody(tokens, i, stmts); continue; }
+            var stmtTokens = new List<string>();
+            while (i < tokens.Count && tokens[i] != ";")
+            {
+                stmtTokens.Add(tokens[i]);
+                i++;
+            }
+            if (i < tokens.Count) i++;
+            if (stmtTokens.Count == 0) continue;
+            stmts.Add(BuildStatement(stmtTokens));
+        }
     }
 
     static SfxStatement BuildStatement(List<string> toks)

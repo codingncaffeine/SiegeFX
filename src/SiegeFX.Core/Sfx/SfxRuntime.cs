@@ -760,6 +760,7 @@ public sealed class SfxRuntime
     void ExecAttachPoint(RunningScript rs, SfxStatement stmt)
     {
         // `sfx attach_point <handle-tok> <@bone> <source|target>`
+        // `sfx position_at <handle-tok> <@bone> <source|target>`
         // We don't have skeletal bone resolution yet; treat the trailing
         // source/target word as an override of the bolt's far-end. For DS1's
         // shipped zap that's `... @weapon_bone source`, which lands the bolt
@@ -774,10 +775,38 @@ public sealed class SfxRuntime
         // when we wire skeletal resolution; for now we always use WeaponBonePos
         // when the trailing word is `source` and TargetPos when `target`.
         var trailing = stmt.Tokens[stmt.Tokens.Count - 1];
+        Vector3 resolved;
         if (trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase))
-            h.OtherEnd = rs.Ctx.WeaponBonePos;
+            resolved = rs.Ctx.WeaponBonePos;
         else if (trailing.StartsWith("target", StringComparison.OrdinalIgnoreCase))
-            h.OtherEnd = rs.Ctx.TargetPos;
+            resolved = rs.Ctx.TargetPos;
+        else
+            resolved = h.OtherEnd;
+        h.OtherEnd = resolved;
+
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — when this handle backs a
+        // live motion (trackball / orbiter / lightsource / curve), the
+        // sfx_script's `position_at $X @bone source` is meant to RESET the
+        // motion's start point. fireball_base ships
+        //     sfx create trackball #TARGET_KB "..."
+        //     sfx position_at $trackball @weapon_bone source;
+        // — without this update, the trackball's MotionState.Position
+        // stays at the create-time anchor (#TARGET_KB → TargetPos), which
+        // equals MotionState.Target, so the trackball arrives instantly
+        // (distSq=0), Done flips true, gets pruned, and every fire emitter
+        // following it gets pruned too. Net: fireball renders nothing on
+        // cast. This bug shipped in 0b9bfc3 and was caught when SC-SCROLL
+        // testing surfaced "fireball no longer shoots a projectile."
+        if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+        {
+            motion.Position = resolved;
+            // For orbiter the source token sets the ORBITAL CENTER (anchor),
+            // not the orbiter's instantaneous position — the orbital math
+            // still computes Position from Anchor + circle each tick.
+            if (motion.Kind.Equals("orbiter", StringComparison.OrdinalIgnoreCase))
+                motion.Anchor = resolved;
+            _motionHandles[h.MotionId] = motion;
+        }
 
         StoreMutatedHandle(rs, stmt.Tokens[0], h);
     }
