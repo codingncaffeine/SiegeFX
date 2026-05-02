@@ -6147,20 +6147,16 @@ void main()
     {
         if (_spellCoverageCache.TryGetValue(spell.Name, out var cached))
             return cached;
-        bool covered;
-        try
-        {
-            var prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(script.Name, script.Body);
-            covered = SiegeFX.Core.Sfx.SfxRuntime.IsScriptFullyCovered(prog);
-        }
-        catch
-        {
-            // Malformed script — treat as not-covered so the placeholder
-            // takes over. Don't cache the failure (next compile attempt may
-            // succeed if e.g. a future SfxScriptCompiler change handles a
-            // shape that was previously rejected).
-            return false;
-        }
+        // Phase 21-SC-SPELL-VFX-3d — recurse through `call <subscript>` so
+        // fireball-class spells (top-level body is just `call fireball_base`)
+        // pick up the trackball / fire creates that live in the called
+        // primitive. The 3c first pass walked only the top-level program
+        // and reported fireball as covered, letting the VM run and producing
+        // the static-fire-at-caster bug. SfxRuntime owns the recursion now
+        // so the audit CLI and the cast-site share the same logic.
+        bool covered = _sfxStore is null
+            ? false
+            : SiegeFX.Core.Sfx.SfxRuntime.IsScriptFullyCovered(script, _sfxStore);
         _spellCoverageCache[spell.Name] = covered;
         return covered;
     }

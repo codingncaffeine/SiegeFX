@@ -61,16 +61,72 @@ public sealed class SfxRuntime
             "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
         };
 
-    /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> in the
-    /// supplied program is in <see cref="SupportedCreateKinds"/>. Use this
-    /// at a cast site to decide between "let the VM run the native script"
-    /// and "the script asks for an unmodeled primitive (orbiter, trackball,
-    /// cylinder, …); spawn a placeholder visual instead so the partial run
-    /// doesn't leave stranded emitters at the caster" — see fireball's
-    /// `sfx target $fire $trackball` pattern, which without this gate
-    /// anchors the fire emitters at #SOURCE permanently when trackball is
-    /// unimplemented (they're targeting a handle that was never actually
-    /// resolved).</summary>
+    /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
+    /// the supplied script — including transitively through <c>call
+    /// &lt;subscript&gt;</c> — is in <see cref="SupportedCreateKinds"/>.
+    /// Use this at a cast site to decide between "let the VM run the native
+    /// script" and "the script asks for an unmodeled primitive (orbiter,
+    /// trackball, cylinder, …); spawn a placeholder visual instead so the
+    /// partial run doesn't leave stranded emitters at the caster" — see
+    /// fireball's `sfx target $fire $trackball` pattern, which without this
+    /// gate anchors the fire emitters at #SOURCE permanently when trackball
+    /// is unimplemented (they're targeting a handle that was never actually
+    /// resolved).
+    ///
+    /// <para>Recurses through <c>call</c> with a name-based visited-set
+    /// cycle guard — fireball's top-level script has no <c>sfx create</c> at
+    /// all, just a <c>call fireball_base</c>, and fireball_base is where
+    /// the trackball + fire creates live. The non-recursive form (the first
+    /// pass shipped at d99af1e) reported fireball as fully-covered and let
+    /// the VM run, reproducing the static-fire-at-caster bug.</para></summary>
+    public static bool IsScriptFullyCovered(SfxScript script, SfxScriptStore store)
+    {
+        if (script is null) return false;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return WalkScriptForCoverage(script, store, visited);
+    }
+
+    static bool WalkScriptForCoverage(SfxScript script, SfxScriptStore store, HashSet<string> visited)
+    {
+        if (!visited.Add(script.Name)) return true; // already walked — cycle / diamond
+        SfxProgram prog;
+        try { prog = SfxScriptCompiler.Compile(script.Name, script.Body); }
+        catch { return false; } // malformed — treat as not-covered, force placeholder
+        foreach (var stmt in prog.Statements)
+        {
+            if (stmt.Kind == StatementKind.SfxCreate)
+            {
+                if (stmt.Tokens.Count == 0) continue;
+                // ToLowerInvariant before the lookup: MapMode at runtime
+                // (ExecCreate calls .ToLowerInvariant() before the switch)
+                // is case-sensitive on lowercase, so "Fire" would slip past
+                // a case-insensitive HashSet check here only to land on
+                // EmitterMode.Unsupported during execution. DS1 ships
+                // lowercase so this is defense-in-depth, not a current-data
+                // bug — but keeps the invariant tight.
+                if (!SupportedCreateKinds.Contains(stmt.Tokens[0].ToLowerInvariant()))
+                    return false;
+            }
+            else if (stmt.Kind == StatementKind.Call)
+            {
+                if (stmt.Tokens.Count == 0) continue;
+                var callName = stmt.Tokens[0].Trim().Trim('"');
+                if (string.IsNullOrEmpty(callName)) continue;
+                // Subscript not in store = treat as unknown unmodeled work.
+                // Forces placeholder rather than running a script that may
+                // call into anything.
+                if (!store.TryGet(callName, out var sub)) return false;
+                if (!WalkScriptForCoverage(sub, store, visited)) return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Program-only overload kept for callers that already hold a
+    /// compiled <see cref="SfxProgram"/> and don't need <c>call</c>-recursion
+    /// (e.g. unit tests that hand-author a single program). Production cast
+    /// sites should use the script+store overload above so fireball-class
+    /// recipes don't slip through the gate via a top-level <c>call</c>.</summary>
     public static bool IsScriptFullyCovered(SfxProgram program)
     {
         if (program is null) return false;
@@ -78,13 +134,6 @@ public sealed class SfxRuntime
         {
             if (stmt.Kind != StatementKind.SfxCreate) continue;
             if (stmt.Tokens.Count == 0) continue;
-            // ToLowerInvariant before the lookup: MapMode at runtime
-            // (ExecCreate calls .ToLowerInvariant() before the switch) is
-            // case-sensitive on lowercase, so "Fire" would slip past a
-            // case-insensitive HashSet check here only to land on
-            // EmitterMode.Unsupported during execution. DS1 ships
-            // lowercase so this is defense-in-depth, not a current-data
-            // bug — but keeps the invariant tight.
             if (!SupportedCreateKinds.Contains(stmt.Tokens[0].ToLowerInvariant()))
                 return false;
         }
