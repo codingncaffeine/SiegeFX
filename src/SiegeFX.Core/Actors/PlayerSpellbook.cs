@@ -66,6 +66,28 @@ public sealed class PlayerSpellbook
     public float PrimaryCooldownRemaining { get; private set; }
     public float SecondaryCooldownRemaining { get; private set; }
 
+    /// <summary>Phase 21-SC-SCROLL-C-1 — the 10 user-organized "placed"
+    /// rows below the two active slots in the spellbook UI. A learned
+    /// spell that isn't in an active slot lives here. Null entries
+    /// render as empty cells in <see cref="Hud.SpellBookPanel"/>; non-
+    /// null entries are draggable scrolls. Length is fixed at 10 (matches
+    /// SpellBookPanel.InactiveSlots).</summary>
+    public SpellTemplate?[] Placed { get; } = new SpellTemplate?[10];
+
+    /// <summary>Total number of <see cref="Placed"/> rows. Public so
+    /// callers can iterate without hardcoding the constant.</summary>
+    public int PlacedCount => Placed.Length;
+
+    /// <summary>Phase 21-SC-SCROLL-C-1 — write to a <see cref="Placed"/>
+    /// slot. Pass null to clear. Out-of-range indices silently no-op
+    /// rather than throw, matching the existing Slot() forgiveness for
+    /// accidental Tertiary etc.</summary>
+    public void SetPlaced(int index, SpellTemplate? spell)
+    {
+        if ((uint)index < (uint)Placed.Length)
+            Placed[index] = spell;
+    }
+
     /// <summary>Phase 17a back-compat alias — the only slot that existed
     /// when <see cref="CooldownRemaining"/> was the public surface.</summary>
     public float CooldownRemaining => PrimaryCooldownRemaining;

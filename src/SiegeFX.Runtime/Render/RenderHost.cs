@@ -1504,44 +1504,61 @@ void main()
                     if (_spellBookOpen && _spellBookPanel.IsPointInPanel(mx, my))
                     {
                         var hit = _spellBookPanel.HitTestSlot(mx, my);
-                        if (_cursorScroll is null && _playerSpellbook is not null
-                            && hit.Kind != Hud.SpellBookPanel.SlotKind.None)
+                        if (hit.Kind != Hud.SpellBookPanel.SlotKind.None && _playerSpellbook is not null)
                         {
-                            // Phase 21-SC-SCROLL-B-2 — LMB on a populated
-                            // spellbook spell row picks up that scroll onto
-                            // the cursor. Source slot is cleared on pickup
-                            // (matches DS1's drop-from-slot behavior); a
-                            // cancel — RMB / ESC — will need to restore it,
-                            // wired in C-2 alongside the drop-target logic.
-                            // Placed list backing storage lands in C-1 so
-                            // for now a click on a placed row is a no-op.
-                            SiegeFX.Core.Assets.SpellTemplate? src = hit.Kind switch
+                            if (_cursorScroll is null)
                             {
-                                Hud.SpellBookPanel.SlotKind.Active1 => _playerSpellbook.Primary,
-                                Hud.SpellBookPanel.SlotKind.Active2 => _playerSpellbook.Secondary,
-                                _ => null,
-                            };
-                            if (src is not null)
-                            {
-                                var srcKind = hit.Kind switch
+                                // Phase 21-SC-SCROLL-B-2 / C-1 — LMB on a
+                                // populated row picks up its scroll onto the
+                                // cursor. Source slot is cleared on pickup;
+                                // RMB / ESC restores via CancelScrollDrag.
+                                SiegeFX.Core.Assets.SpellTemplate? src = hit.Kind switch
                                 {
-                                    Hud.SpellBookPanel.SlotKind.Active1 => CursorScrollSource.SpellbookActive1,
-                                    Hud.SpellBookPanel.SlotKind.Active2 => CursorScrollSource.SpellbookActive2,
-                                    _ => CursorScrollSource.SpellbookPlaced,
+                                    Hud.SpellBookPanel.SlotKind.Active1 => _playerSpellbook.Primary,
+                                    Hud.SpellBookPanel.SlotKind.Active2 => _playerSpellbook.Secondary,
+                                    Hud.SpellBookPanel.SlotKind.Placed  => _playerSpellbook.Placed[hit.Index],
+                                    _ => null,
                                 };
-                                BeginScrollDrag(src, srcKind, hit.Index);
-                                if (hit.Kind == Hud.SpellBookPanel.SlotKind.Active1)
-                                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, null);
-                                else if (hit.Kind == Hud.SpellBookPanel.SlotKind.Active2)
-                                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, null);
+                                if (src is not null)
+                                {
+                                    var srcKind = hit.Kind switch
+                                    {
+                                        Hud.SpellBookPanel.SlotKind.Active1 => CursorScrollSource.SpellbookActive1,
+                                        Hud.SpellBookPanel.SlotKind.Active2 => CursorScrollSource.SpellbookActive2,
+                                        _ => CursorScrollSource.SpellbookPlaced,
+                                    };
+                                    BeginScrollDrag(src, srcKind, hit.Index);
+                                    ClearSpellbookSlot(hit.Kind, hit.Index);
+                                    _audio?.Play(SfxGuiInventory);
+                                    Console.WriteLine($"  scroll drag: pickup {src.Name} from {srcKind}[{hit.Index}]");
+                                    return;
+                                }
+                                // Empty slot — fall through to swallow.
+                            }
+                            else
+                            {
+                                // Phase 21-SC-SCROLL-C-2 — LMB on any slot
+                                // while dragging drops the cursor scroll
+                                // there. If destination is occupied, the
+                                // existing spell goes to the source slot
+                                // (a swap). Empty destination is a plain
+                                // move. Either way the drag ends.
+                                var dropping = _cursorScroll;
+                                var displaced = ReadSpellbookSlot(hit.Kind, hit.Index);
+                                WriteSpellbookSlot(hit.Kind, hit.Index, dropping);
+                                if (displaced is not null)
+                                    RestoreToSource(displaced);
+                                else
+                                    ClearSpellbookSlot(_cursorScrollSource, _cursorScrollSourceIndex);
                                 _audio?.Play(SfxGuiInventory);
-                                Console.WriteLine($"  scroll drag: pickup {src.Name} from {srcKind}");
+                                Console.WriteLine($"  scroll drag: drop {dropping.Name} into {hit.Kind}[{hit.Index}]" +
+                                                  (displaced is not null ? $" (swap with {displaced.Name})" : ""));
+                                ClearScrollDrag();
                                 return;
                             }
                         }
-                        // Already dragging, clicked an empty slot, or
-                        // clicked panel chrome — swallow so the world
-                        // below doesn't see click-to-move.
+                        // No-slot hit — swallow click so the world below
+                        // doesn't see a click-to-move on the panel chrome.
                         return;
                     }
                 }
@@ -7801,10 +7818,11 @@ void main()
                 _spellBookPanel.OriginX = dockX;
                 _spellBookPanel.OriginY = panelTopY;
                 _spellBookPanel.IsOpen  = true;
-                // Phase 21-SC-SPELL-A — the 10 below-active rows are user-organized
-                // and stay empty until drag-from-inventory lands (-SPELL-B).
+                // Phase 21-SC-SCROLL-C-1 — the 10 below-active rows are now
+                // backed by PlayerSpellbook.Placed. Null entries render as
+                // empty cells; the scroll-drag flow (B/C-2) populates them.
                 IReadOnlyList<SiegeFX.Core.Assets.SpellTemplate?> placed =
-                    System.Array.Empty<SiegeFX.Core.Assets.SpellTemplate?>();
+                    _playerSpellbook?.Placed ?? System.Array.Empty<SiegeFX.Core.Assets.SpellTemplate?>();
                 var spellClose = TryGetGuiTexture("b_gui_ig_mnu_minimize-book-up");
                 _spellBookPanel.Draw(_barRenderer, _textRenderer,
                     size.X, size.Y, _playerSpellbook?.Primary, _playerSpellbook?.Secondary, placed,
@@ -8099,12 +8117,21 @@ void main()
     /// that interrupts the drag should call this.</summary>
     private void CancelScrollDrag()
     {
-        if (_cursorScroll is null || _playerSpellbook is null)
-        {
-            ClearScrollDrag();
-            return;
-        }
+        if (_cursorScroll is null) { ClearScrollDrag(); return; }
         var spell = _cursorScroll;
+        RestoreToSource(spell);
+        Console.WriteLine($"  scroll drag: cancel — restored {spell.Name} to {_cursorScrollSource}[{_cursorScrollSourceIndex}]");
+        ClearScrollDrag();
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-C-2 — put a spell back into the slot
+    /// recorded as the current drag's source. Used by both cancel (the
+    /// drag itself ends) and swap (the displaced spell lands at the
+    /// source). Caller is responsible for calling ClearScrollDrag if
+    /// the drag itself ends.</summary>
+    private void RestoreToSource(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_playerSpellbook is null) return;
         switch (_cursorScrollSource)
         {
             case CursorScrollSource.SpellbookActive1:
@@ -8113,12 +8140,71 @@ void main()
             case CursorScrollSource.SpellbookActive2:
                 _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
                 break;
-            // SpellbookPlaced + Inventory restore paths land in C-1 / E-2
-            // alongside their respective backing storages. Today's only
-            // BeginScrollDrag callers are the two Active slots.
+            case CursorScrollSource.SpellbookPlaced:
+                _playerSpellbook.SetPlaced(_cursorScrollSourceIndex, spell);
+                break;
+            // Inventory restore lands in SC-SCROLL-E.
         }
-        Console.WriteLine($"  scroll drag: cancel — restored {spell.Name} to {_cursorScrollSource}");
-        ClearScrollDrag();
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-C-2 — read the spell currently in a
+    /// spellbook slot (Active1, Active2, or Placed[index]).</summary>
+    private SiegeFX.Core.Assets.SpellTemplate? ReadSpellbookSlot(
+        Hud.SpellBookPanel.SlotKind kind, int index)
+    {
+        if (_playerSpellbook is null) return null;
+        return kind switch
+        {
+            Hud.SpellBookPanel.SlotKind.Active1 => _playerSpellbook.Primary,
+            Hud.SpellBookPanel.SlotKind.Active2 => _playerSpellbook.Secondary,
+            Hud.SpellBookPanel.SlotKind.Placed  => _playerSpellbook.Placed[index],
+            _ => null,
+        };
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-C-2 — write a spell into a spellbook
+    /// slot, replacing whatever was there. Pass null to clear.</summary>
+    private void WriteSpellbookSlot(
+        Hud.SpellBookPanel.SlotKind kind, int index,
+        SiegeFX.Core.Assets.SpellTemplate? spell)
+    {
+        if (_playerSpellbook is null) return;
+        switch (kind)
+        {
+            case Hud.SpellBookPanel.SlotKind.Active1:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
+                break;
+            case Hud.SpellBookPanel.SlotKind.Active2:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
+                break;
+            case Hud.SpellBookPanel.SlotKind.Placed:
+                _playerSpellbook.SetPlaced(index, spell);
+                break;
+        }
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-C-2 — clear by SlotKind (used at
+    /// pickup time to leave the source empty).</summary>
+    private void ClearSpellbookSlot(Hud.SpellBookPanel.SlotKind kind, int index)
+        => WriteSpellbookSlot(kind, index, null);
+
+    /// <summary>Overload that takes the cursor-source enum so a
+    /// successful drop-into-empty-slot can clear the original source.</summary>
+    private void ClearSpellbookSlot(CursorScrollSource source, int index)
+    {
+        if (_playerSpellbook is null) return;
+        switch (source)
+        {
+            case CursorScrollSource.SpellbookActive1:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, null);
+                break;
+            case CursorScrollSource.SpellbookActive2:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, null);
+                break;
+            case CursorScrollSource.SpellbookPlaced:
+                _playerSpellbook.SetPlaced(index, null);
+                break;
+        }
     }
 
     /// <summary>Draws a single HP/MP-style bar at (<paramref name="x"/>,<paramref name="y"/>):
