@@ -8011,9 +8011,14 @@ void main()
                     itemMesh.Mesh.Draw();
                     if (itemMesh.DisplayName is not null)
                     {
-                        // Anchor the label slightly above the mesh's top so it
-                        // reads cleanly from the chase-cam angle.
-                        var labelPos = new Vector3(pos.X, pos.Y + pileSize + 0.6f, pos.Z);
+                        // Sit the label nearly on top of the mesh — pile mesh
+                        // top is at pos.Y + pileSize (0.5), and a 0.05 gap
+                        // floats the text just above the surface without
+                        // clipping the textured top face. Was +pileSize+0.6
+                        // which floated the labels well above the items;
+                        // user feedback on SC-SCROLL ground pile asked for
+                        // "much closer to the objects, nearly right on top."
+                        var labelPos = new Vector3(pos.X, pos.Y + pileSize + 0.05f, pos.Z);
                         _frameLootLabels.Add((labelPos, itemMesh.DisplayName));
                     }
                 }
