@@ -6436,6 +6436,7 @@ void main()
                     // fallback for spells whose CastSfxScript isn't in the
                     // store.
                     bool ranNativeScript = false;
+                    bool nativeProducedVisual = false;
                     string sfxTrace;
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
@@ -6445,20 +6446,36 @@ void main()
                             SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
                             TargetPos:     dst,
                             WeaponBonePos: src);
-                        int boltsBefore = _particles?.LiveBoltCount ?? 0;
-                        int particlesBefore = _particles?.LiveParticleCount ?? 0;
+                        int boltsBefore       = _particles?.LiveBoltCount ?? 0;
+                        int particlesBefore   = _particles?.LiveParticleCount ?? 0;
+                        int persistentBefore  = _sfxRuntime.LivePersistentCount;
                         ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
-                        int boltsAfter = _particles?.LiveBoltCount ?? 0;
-                        int particlesAfter = _particles?.LiveParticleCount ?? 0;
+                        int boltsAfter        = _particles?.LiveBoltCount ?? 0;
+                        int particlesAfter    = _particles?.LiveParticleCount ?? 0;
+                        int persistentAfter   = _sfxRuntime.LivePersistentCount;
+                        // Phase 21-SC-SPELL-VFX-3b — Spawn returning true only
+                        // means the script ran without a parse error; for the
+                        // 5 UNCOVERED sound-only stubs DS1 ships (iceblast /
+                        // iceshard / icefury / lightning_storm / explosive_powder
+                        // — see iceblast_launch.gas's `// only a sound now,
+                        // should hook up an effect. -ET` TODO) Spawn returns
+                        // true and we'd skip the placeholder fallback, leaving
+                        // the player with no visual at all on cast. Gate the
+                        // skip on "did the script *actually* produce a visual"
+                        // — bolts, billboards, or a persistent emitter — so
+                        // sound-only scripts fall through to SpawnSpellVisual.
+                        nativeProducedVisual = (boltsAfter > boltsBefore)
+                                             || (particlesAfter > particlesBefore)
+                                             || (persistentAfter > persistentBefore);
                         sfxTrace = ranNativeScript
-                            ? $"native '{spell.CastSfxScript}' src=({src.X:F1},{src.Y:F1},{src.Z:F1}) dst=({dst.X:F1},{dst.Y:F1},{dst.Z:F1}) bolts={boltsBefore}->{boltsAfter} parts={particlesBefore}->{particlesAfter}"
+                            ? $"native '{spell.CastSfxScript}' src=({src.X:F1},{src.Y:F1},{src.Z:F1}) dst=({dst.X:F1},{dst.Y:F1},{dst.Z:F1}) bolts={boltsBefore}->{boltsAfter} parts={particlesBefore}->{particlesAfter} persist={persistentBefore}->{persistentAfter} visual={nativeProducedVisual}"
                             : $"native '{spell.CastSfxScript}' Spawn returned false";
                     }
                     else
                     {
                         sfxTrace = $"fallback (rt={_sfxRuntime is not null} st={_sfxStore is not null} script='{spell.CastSfxScript}')";
                     }
-                    if (!ranNativeScript)
+                    if (!ranNativeScript || !nativeProducedVisual)
                         SpawnSpellVisual(src, dst, spell.Element, elemColor);
                     Console.WriteLine($"  cast vfx: {sfxTrace}");
                     // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX from the
