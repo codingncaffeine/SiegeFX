@@ -866,6 +866,12 @@ public sealed class RenderHost : IDisposable
     /// PlayerSpellbook.Placed[] right after the spellbook is constructed.
     /// Null = no env-var seed in effect.</summary>
     private string[]? _pendingPlacedSeeds;
+    /// <summary>Phase 21-SC-SCROLL-D follow-up — names beyond the first 12
+    /// (2 active + 10 placed) overflow into the player's inventory as
+    /// scroll items so testing the drag-from-inventory path (E) doesn't
+    /// require world drops + pickup. Seeded into _playerInventory after
+    /// the spellbook is built. Null = no inventory overflow in effect.</summary>
+    private string[]? _pendingInventoryScrollSeeds;
     private SiegeFX.Core.Assets.SpellTemplate? _cursorScroll;
     private CursorScrollSource _cursorScrollSource;
 
@@ -4933,7 +4939,17 @@ void main()
                 // swap among during test sessions. e.g.
                 //   SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning,shock_wave,nurture
                 // primaries Q+W from index 0/1, plus 3 placed rows from
-                // index 2..4. Up to 10 placed slots; extras silently ignored.
+                // index 2..4.
+                //
+                // Phase 21-SC-SCROLL-D follow-up — slots 12+ overflow into
+                // the player's inventory as scroll items so a test roster
+                // can exercise the drag-from-inventory path (E) without
+                // needing world drops + pickup. Example seeding 12 active+
+                // placed + 4 inventory scrolls:
+                //   SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning,shock_wave,
+                //                        nurture,bombard,acid_cloud,death_blast,
+                //                        spark,fire_pillar,implosion,starburst,
+                //                        zap,frigid_armor,heal_bind,leech_life
                 if (parts.Length > 2)
                 {
                     int placedCount = Math.Min(parts.Length - 2, 10);
@@ -4946,6 +4962,19 @@ void main()
                     }
                     _pendingPlacedSeeds = placedNames;
                     Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS placed seed: {string.Join(", ", placedNames)}");
+                }
+                if (parts.Length > 12)
+                {
+                    int invCount = parts.Length - 12;
+                    var invNames = new string[invCount];
+                    for (int ii = 0; ii < invCount; ii++)
+                    {
+                        var name = parts[ii + 12];
+                        invNames[ii] = name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)
+                            ? name : "spell_" + name;
+                    }
+                    _pendingInventoryScrollSeeds = invNames;
+                    Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS inventory seed: {string.Join(", ", invNames)}");
                 }
             }
 
@@ -5003,6 +5032,28 @@ void main()
                     // effect" so leaving it populated past this point is
                     // misleading for any future caller that re-reads.
                     _pendingPlacedSeeds = null;
+                }
+                // Phase 21-SC-SCROLL-D follow-up — overflow into the
+                // inventory as scroll items. Reference is the spell template
+                // name (Slot=""); existing TryGetItemIcon path renders them
+                // with the b_gui_ig_i_ic_sp_*_inv art (A-1 pre-cached). The
+                // user can then click-pick-up and drag them into the
+                // spellbook to swap actives during testing without leaving
+                // the launch.
+                if (_pendingInventoryScrollSeeds is not null)
+                {
+                    int seeded = 0;
+                    foreach (var name in _pendingInventoryScrollSeeds)
+                    {
+                        var seedSpell = ResolveSlottableSpell(name, debugSpells);
+                        if (seedSpell is null) continue;
+                        _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                            Slot: "", Reference: seedSpell.Name));
+                        _inventoryPanel.NotifyItemAdded();
+                        seeded++;
+                    }
+                    Console.WriteLine($"  inventory: seeded {seeded}/{_pendingInventoryScrollSeeds.Length} scroll items from SIEGEFX_DEBUG_SPELLS");
+                    _pendingInventoryScrollSeeds = null;
                 }
             }
             else if (!string.IsNullOrWhiteSpace(debugSpells))
