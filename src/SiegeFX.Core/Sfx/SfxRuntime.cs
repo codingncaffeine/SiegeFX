@@ -909,8 +909,17 @@ public sealed class SfxRuntime
 
     static EmitterMode MapMode(string kind, string raw)
     {
+        // A `sfx create fire` whose texture explicitly names a smoke/mist
+        // sprite is meant to render as a color-preserving plume, not a
+        // fire-flicker. SpawnFire's Color1 fade is warm-biased (X*0.4,
+        // Y*0.2, Z*0.05), which renders any non-warm color (acid green,
+        // ice cyan, etc.) as brown over the particle's lifetime — the
+        // same family of bug we caught on iceshard's projectile trail.
+        // Routing those creates to Smoke uses SpawnSmoke's color-preserving
+        // Color1 fade so the script's color0 reads correctly.
         bool hasSmoke = ContainsKeyword(raw, "texture") &&
-                        raw.IndexOf("b_sfx_smoke", StringComparison.OrdinalIgnoreCase) >= 0;
+                        (raw.IndexOf("b_sfx_smoke", StringComparison.OrdinalIgnoreCase) >= 0
+                         || raw.IndexOf("b_sfx_mist",  StringComparison.OrdinalIgnoreCase) >= 0);
         bool isDark   = ContainsKeyword(raw, "dark");
         switch (kind)
         {
