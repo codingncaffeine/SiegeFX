@@ -1637,6 +1637,13 @@ void main()
                         var spell = _cursorScroll;
                         _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
                             Slot: "", Reference: spell.Name));
+                        // Phase 21-SC-SCROLL-D fold — keep the panel's _placements
+                        // in sync with the inventory list. Without this, the new
+                        // scroll renders at the next free cell via
+                        // EnsurePlacements' defensive padding rather than at the
+                        // panel's authored layout, and a user-arranged grid loses
+                        // placement determinism for the new entry.
+                        _inventoryPanel.NotifyItemAdded();
                         _audio?.Play(SfxGuiPutDownScroll);
                         Console.WriteLine($"  scroll drag: drop {spell.Name} into inventory grid");
                         ClearScrollDrag();
@@ -7168,8 +7175,13 @@ void main()
                 _inventoryPanel.NotifyItemAdded();
                 parts.Add(entry.IsEquipped ? $"[{entry.Slot}] {entry.Reference}" : entry.Reference);
             }
-            Console.WriteLine(
-                $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+            // Phase 21-SC-SCROLL-F-2 fold — suppress the empty announce when
+            // every pile item was a scroll handled by the spellbook router
+            // above. The router's per-spell "scroll pickup: X" log line is
+            // the right signal for that case.
+            if (parts.Count > 0)
+                Console.WriteLine(
+                    $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
             _audio?.PlayAt(SfxGuiPickup, pile.Position);
 
             // Phase 14c — auto-equip dropped weapons. If the loot entry came from
@@ -8461,6 +8473,7 @@ void main()
             {
                 // Spellbook full — keep as inventory item so it isn't lost.
                 _playerInventory.Add(entry);
+                _inventoryPanel.NotifyItemAdded();
                 Console.WriteLine($"  scroll pickup: {spell.Name} -> inventory (spellbook Placed full)");
             }
             pile.Items.RemoveAt(i);

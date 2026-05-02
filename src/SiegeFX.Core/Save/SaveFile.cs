@@ -22,8 +22,13 @@ public sealed class SaveFile
     ///   v4 -> v5 : added <see cref="PlayerSnapshot.HeroName"/> and
     ///              <see cref="PlayerSnapshot.Variant"/> (gender + body/skin/
     ///              pants picks from the character creator).
+    ///   v5 -> v6 : added <see cref="SpellbookSnapshot.Placed"/> (the 10
+    ///              user-organized inactive rows in the spellbook UI).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v4 file loads as a v5 with the new fields zero-initialized.</summary>
+    /// so any v1..v5 file loads as a v6 with the new fields zero-initialized.
+    /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
+    /// migration whitelist in SaveStore.Load too; the strict-equality check
+    /// downstream throws InvalidDataException on any unmigrated version.</summary>
     public const int CurrentSchemaVersion = 6;
 
     /// <summary>Schema version of the file as written. Loader rejects when
