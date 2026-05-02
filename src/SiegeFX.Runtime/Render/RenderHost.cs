@@ -4572,7 +4572,14 @@ void main()
                     // threshold the NPC brains use (~1u/s minimum) so float noise
                     // from idle/arrived states doesn't trigger a phantom walk cycle.
                     _player.IsMoving = len2 > 0.0025f;
-                    TryAutoPickup(after);
+                    // Phase 21-SC-SCROLL-CLICKLOOT — DS1 has no walk-over
+                    // auto-pickup. Items on the ground stay there until the
+                    // player CLICKS them (gold is the lone exception, but
+                    // gold is awarded directly via CreditGoldFromKill on
+                    // enemy death and never enters a LootPile in the first
+                    // place — see line 5967 / 7019). Removed call to
+                    // TryAutoPickup; the helper is preserved for click-
+                    // dispatch use in TryClickToLoot.
 
                     // Phase 12-SC-1 — pending click-attack drive. If the click
                     // landed beyond reach we latched _pendingAttackTarget and
@@ -5071,7 +5078,10 @@ void main()
                         var origin = player.WorldTransform.Translation;
                         var face = _playerFacing.LengthSquared() > 0.01f
                             ? _playerFacing : new Vector3(1f, 0f, 0f);
-                        var dropPos = origin + face * 2.0f;
+                        // Phase 21-SC-SCROLL-CLICKLOOT — short throw, item
+                        // lands near the player so click-to-loot is fast.
+                        // Was 2.0u (felt like a mini-trebuchet shot).
+                        var dropPos = origin + face * 0.7f;
                         _lootPiles.Add(new LootPile(dropPos, pileItems));
                         Console.WriteLine($"  ground scrolls: pile of {pileItems.Count} scrolls at " +
                                           $"({dropPos.X:F1},{dropPos.Z:F1}) — walk over to pick up");
@@ -5535,6 +5545,13 @@ void main()
         float t = (planeY - near.Y) / dir.Y;
         if (t < 0f) return;
         var hit = near + dir * t;
+
+        // Phase 21-SC-SCROLL-CLICKLOOT — DS1 has no walk-over auto-pickup;
+        // items must be clicked to be looted. If the click landed near a
+        // settled loot pile (within 1.0u tolerance), pick it up and
+        // suppress click-to-move so the player doesn't ALSO walk past
+        // the now-empty pile spot.
+        if (TryClickPickupAt(hit)) return;
 
         if (!_navMesh.TryFindTriangle(hit, out var tri)) return;
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
@@ -7124,7 +7141,10 @@ void main()
             (float)rng.NextDouble() * 2f - 1f);
         if (dropDir.LengthSquared() < 1e-4f) dropDir = new Vector2(0f, 1f);
         else dropDir = Vector2.Normalize(dropDir);
-        var dropTarget = deathPos + new Vector3(dropDir.X * 1.4f, 0f, dropDir.Y * 1.4f);
+        // Phase 21-SC-SCROLL-CLICKLOOT — short throw, item lands near
+        // the body. DS1 enemies drop loot in a tight scatter, not flung
+        // 1.4u out. Was 1.4f.
+        var dropTarget = deathPos + new Vector3(dropDir.X * 0.6f, 0f, dropDir.Y * 0.6f);
         var deathPile = new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops))
         {
             Throw = new LootThrow
@@ -7215,84 +7235,96 @@ void main()
     // advances. Any pile within PickupRadius (XZ) of the PC is emptied into the
     // inventory list; the pile is removed so its cube despawns. Iterating backwards
     // so a mid-loop RemoveAt doesn't skip the next pile.
-    private void TryAutoPickup(Vector3 playerPos)
+    /// <summary>Phase 21-SC-SCROLL-CLICKLOOT — empty a single LootPile into
+    /// the player's inventory + spellbook + equipment slots. Mid-throw
+    /// piles are rejected (the toss arc is animation-only; click-to-loot
+    /// only succeeds once the pile has settled). Returns true on success.
+    ///
+    /// <para>Callers used to walk every pile within PickupRadius and run
+    /// this body inline (see the deleted TryAutoPickup loop). DS1 doesn't
+    /// auto-pickup — items on the ground require an explicit click. Click
+    /// path now invokes this helper for the chosen pile only.</para></summary>
+    private bool LootPileNow(LootPile pile, int pileIndex)
     {
-        if (_lootPiles.Count == 0) return;
-        for (int i = _lootPiles.Count - 1; i >= 0; i--)
+        if (pile.Throw is not null) return false;
+
+        // Phase 21-SC-SCROLL-F-2 — handle scroll items first so they
+        // route to spellbook Placed[] instead of the flat inventory.
+        // Scroll items are removed from the pile before the inventory
+        // pass below so they don't double-stuff. Spellbook-full
+        // scrolls fall back to inventory inside the helper.
+        TryAutoPickupScrollsFromPile(pile);
+
+        // Phase 9-SC-13 — resolve pcontent specs (#club/2-3) to a concrete
+        // template name at pickup, so the inventory grid sees the same name
+        // the pile rendered on the ground. The shared spec cache means the
+        // mesh, icon, and stored ref all agree.
+        var parts = new List<string>(pile.Items.Count);
+        foreach (var it in pile.Items)
+        {
+            var resolved = ResolveItemRef(it.Reference);
+            var entry = resolved == it.Reference ? it : it with { Reference = resolved };
+            _playerInventory.Add(entry);
+            _inventoryPanel.NotifyItemAdded();
+            parts.Add(entry.IsEquipped ? $"[{entry.Slot}] {entry.Reference}" : entry.Reference);
+        }
+        if (parts.Count > 0)
+            Console.WriteLine(
+                $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+        _audio?.PlayAt(SfxGuiPickup, pile.Position);
+
+        // Phase 14c — auto-equip dropped weapons. If the loot entry came from
+        // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
+        // and the new item has a non-zero damage_max, swap it into the PC's
+        // matching es_ slot. Keeps the kill -> loot -> stronger-hit loop
+        // visible without a real inventory UI.
+        bool weaponSwapped = false;
+        bool nonWeaponSwapped = false;
+        foreach (var it in pile.Items)
+        {
+            if (!it.IsEquipped) continue;
+            if (!IsWeaponUpgrade(it)) continue;
+            var slotKey = "es_" + it.Slot;
+            var resolvedRef = ResolveItemRef(it.Reference);
+            _playerEquipment[slotKey] = resolvedRef;
+            Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
+            if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
+                weaponSwapped = true;
+            else
+                nonWeaponSwapped = true;
+        }
+        if (weaponSwapped) TryLoadPlayerWeapon();
+        if (nonWeaponSwapped && _player is not null)
+            TryLoadPlayerEquipment(_player.Actor.Template);
+        if (weaponSwapped || nonWeaponSwapped) RefreshPlayerStance();
+
+        _lootPiles.RemoveAt(pileIndex);
+        return true;
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-CLICKLOOT — find the closest settled
+    /// loot pile to a world-space click point and loot it. Tolerance is
+    /// 1.0u so the user can click roughly on or near the pile rather than
+    /// pixel-precise on the mesh. Returns true when a pile was looted
+    /// (caller swallows the click so it doesn't also fire click-to-move).</summary>
+    private bool TryClickPickupAt(Vector3 clickPos)
+    {
+        if (_lootPiles.Count == 0) return false;
+        const float clickRadius = 1.0f;
+        const float radiusSq = clickRadius * clickRadius;
+        int bestIdx = -1;
+        float bestDistSq = radiusSq;
+        for (int i = 0; i < _lootPiles.Count; i++)
         {
             var pile = _lootPiles[i];
-            // Phase 9-SC-9 — let dropped items finish their toss arc before
-            // auto-pickup is eligible. Without this gate the player drop +
-            // immediate pickup loop would re-acquire on the same tick.
             if (pile.Throw is not null) continue;
-            float dx = pile.Position.X - playerPos.X;
-            float dz = pile.Position.Z - playerPos.Z;
-            if (dx * dx + dz * dz > PickupRadius * PickupRadius) continue;
-
-            // Phase 21-SC-SCROLL-F-2 — handle scroll items first so they
-            // route to spellbook Placed[] instead of the flat inventory.
-            // Scroll items are removed from the pile before the inventory
-            // pass below so they don't double-stuff. Spellbook-full
-            // scrolls fall back to inventory inside the helper.
-            TryAutoPickupScrollsFromPile(pile);
-
-            // Phase 9-SC-13 — resolve pcontent specs (#club/2-3) to a concrete
-            // template name at pickup, so the inventory grid sees the same name
-            // the pile rendered on the ground. The shared spec cache means the
-            // mesh, icon, and stored ref all agree.
-            var parts = new List<string>(pile.Items.Count);
-            foreach (var it in pile.Items)
-            {
-                var resolved = ResolveItemRef(it.Reference);
-                var entry = resolved == it.Reference ? it : it with { Reference = resolved };
-                _playerInventory.Add(entry);
-                _inventoryPanel.NotifyItemAdded();
-                parts.Add(entry.IsEquipped ? $"[{entry.Slot}] {entry.Reference}" : entry.Reference);
-            }
-            // Phase 21-SC-SCROLL-F-2 fold — suppress the empty announce when
-            // every pile item was a scroll handled by the spellbook router
-            // above. The router's per-spell "scroll pickup: X" log line is
-            // the right signal for that case.
-            if (parts.Count > 0)
-                Console.WriteLine(
-                    $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
-            _audio?.PlayAt(SfxGuiPickup, pile.Position);
-
-            // Phase 14c — auto-equip dropped weapons. If the loot entry came from
-            // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
-            // and the new item has a non-zero damage_max, swap it into the PC's
-            // matching es_ slot. Keeps the kill -> loot -> stronger-hit loop
-            // visible without a real inventory UI.
-            bool weaponSwapped = false;
-            bool nonWeaponSwapped = false;
-            foreach (var it in pile.Items)
-            {
-                if (!it.IsEquipped) continue;
-                if (!IsWeaponUpgrade(it)) continue;
-                var slotKey = "es_" + it.Slot;
-                var resolvedRef = ResolveItemRef(it.Reference);
-                _playerEquipment[slotKey] = resolvedRef;
-                Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
-                if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
-                    weaponSwapped = true;
-                else
-                    nonWeaponSwapped = true;
-            }
-            if (weaponSwapped) TryLoadPlayerWeapon();
-            // Phase 9-SC-10 — refresh layered + attached equipment when anything
-            // other than the weapon changed (shields, boots, helms, gauntlets,
-            // chest texture). TryLoadPlayerEquipment is non-destructive to the
-            // weapon path; the weapon refresh above stays independent.
-            if (nonWeaponSwapped && _player is not null)
-                TryLoadPlayerEquipment(_player.Actor.Template);
-            // Phase 9-SC-10 — both weapon and shield changes can shift the idle
-            // stance (1H melee → 1, +shield → 2, ranged → 5). Re-pick after the
-            // equipment dict has settled so the new stance reflects the full
-            // post-pickup state.
-            if (weaponSwapped || nonWeaponSwapped) RefreshPlayerStance();
-
-            _lootPiles.RemoveAt(i);
+            float dx = pile.Position.X - clickPos.X;
+            float dz = pile.Position.Z - clickPos.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestDistSq) { bestDistSq = d2; bestIdx = i; }
         }
+        if (bestIdx < 0) return false;
+        return LootPileNow(_lootPiles[bestIdx], bestIdx);
     }
 
     private void OnRender(double dt)
@@ -8555,7 +8587,9 @@ void main()
         // drop distance. Falls back to +X if facing isn't set yet.
         var facing = _playerFacing.LengthSquared() > 0.01f
             ? _playerFacing : new Vector3(1f, 0f, 0f);
-        var target = origin + facing * 1.5f;
+        // Phase 21-SC-SCROLL-CLICKLOOT — short throw arc; scroll lands
+        // near the player so click-to-loot is fast. Was 1.5f.
+        var target = origin + facing * 0.7f;
         var entry  = new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: spell.Name);
         var pile   = new LootPile(origin, new List<SiegeFX.Core.Actors.LootEntry> { entry })
         {
