@@ -228,6 +228,37 @@ public sealed class SpellTemplate
 
     public float HealAmount(float magicLevel) => HealAmount(new SpellEvalContext(magicLevel));
 
+    /// <summary>Phase 21-SC-SPELL-VFX-3p — build a synthetic
+    /// <see cref="SpellTemplate"/> from any <see cref="Template"/>, including
+    /// summon templates and non-spell templates that the offensive/heal
+    /// predicates in <see cref="FromTemplate"/> would skip. Used by the
+    /// <c>SIEGEFX_DEBUG_SPELLS</c> launch override so the user can slot any
+    /// spell template (summons, charm/buff, vendor-test scrolls, etc.) and
+    /// see/hear its authored cast effect on Q-press, without needing the
+    /// gameplay payload (creature spawn / charm-target / etc.) wired up.
+    ///
+    /// <para>The synthetic spell is classified as <see cref="SpellKind.OffensiveInstantHit"/>
+    /// with zero damage and zero mana cost — the user RMB-clicks any nearby
+    /// enemy (fh_r1 has krug in abundance) and Q-presses to fire. The cast
+    /// site's offensive branch runs the resolved cast sfx_script and plays
+    /// the authored sound; no actual damage applies. Range defaults to 30u
+    /// (DS1 typical), cooldown to 1s.</para></summary>
+    public static SpellTemplate FromTemplateForDebug(Template template, TemplateStore store)
+    {
+        string? screenName = store.GetAttribute(template, "common", "screen_name");
+        string sn = (screenName ?? template.Name).Trim().Trim('"');
+        string castSfx = ResolveCastSfxScript(template);
+        string invIcon = (store.GetAttribute(template, "gui", "inventory_icon") ?? "")
+                         .Trim().Trim('"');
+
+        return new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
+            castRange: 30f, castReloadDelay: 1f,
+            baseManaCost: 0f, manaCostModifierExpr: "",
+            attackDamageMinExpr: "0", attackDamageMaxExpr: "0",
+            healAmountExpr: "",
+            castSfx, invIcon);
+    }
+
     /// <summary>Build a <see cref="SpellTemplate"/> from a parsed <see cref="Template"/>
     /// in the world template store. Returns null if the template lacks both a usable
     /// offensive-cast block AND a heal-pattern signature.</summary>

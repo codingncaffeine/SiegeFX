@@ -4647,7 +4647,15 @@ void main()
                 Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS override: primary={primaryName} secondary={secondaryName}");
             }
 
-            if (_spellCatalog.TryGet(primaryName, out var primary))
+            // Phase 21-SC-SPELL-VFX-3p — when SIEGEFX_DEBUG_SPELLS names a
+            // template the catalog skipped (summons have no damage/heal so
+            // SpellTemplate.FromTemplate returns null), fall back to the
+            // debug factory which builds a synthetic SpellTemplate stub
+            // from the raw template. Lets the user slot summon_helper /
+            // summon_drake_green / etc. and see/hear the authored cast
+            // effect on Q-press without needing the spawn-verb runtime.
+            var primary = ResolveSlottableSpell(primaryName, debugSpells);
+            if (primary is not null)
             {
                 _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
                     player, new Random(unchecked((int)0x5C617AC1u)));
@@ -4659,7 +4667,8 @@ void main()
                 // formula and a tractable alter_life enchantment value our
                 // SpellExpr resolver handles without hitting the ternary syntax
                 // the more complex heal templates use.
-                if (_spellCatalog.TryGet(secondaryName, out var secondary))
+                var secondary = ResolveSlottableSpell(secondaryName, debugSpells);
+                if (secondary is not null)
                 {
                     _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, secondary);
                     Console.WriteLine($"  spellbook: secondary <- {secondary.Name} (\"{secondary.ScreenName}\") " +
@@ -4667,12 +4676,12 @@ void main()
                 }
                 else if (!string.IsNullOrWhiteSpace(debugSpells))
                 {
-                    Console.WriteLine($"  spellbook: secondary '{secondaryName}' not in catalog (override ignored, slot empty)");
+                    Console.WriteLine($"  spellbook: secondary '{secondaryName}' not resolvable (slot empty)");
                 }
             }
             else if (!string.IsNullOrWhiteSpace(debugSpells))
             {
-                Console.WriteLine($"  spellbook: primary '{primaryName}' not in catalog (override failed; spellbook will be empty)");
+                Console.WriteLine($"  spellbook: primary '{primaryName}' not resolvable (spellbook empty)");
             }
         }
         // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
@@ -6134,6 +6143,38 @@ void main()
         }
         _spellCastSoundCache[spell.Name] = final;
         return final;
+    }
+
+    // Phase 21-SC-SPELL-VFX-3p — resolve a spell name to a slottable
+    // SpellTemplate. First the catalog (offensive + heal, the normal
+    // gameplay spells); on miss, falls back to the debug factory that
+    // synthesizes a stub from the raw template (summons, charm/buff,
+    // anything else with a we_req_cast trigger row). Returns null only
+    // when the name doesn't even exist as a template — that's a typo.
+    private SiegeFX.Core.Assets.SpellTemplate? ResolveSlottableSpell(
+        string spellName, string? debugSpellsEnv)
+    {
+        if (_spellCatalog is not null && _spellCatalog.TryGet(spellName, out var fromCatalog))
+            return fromCatalog;
+        if (_templateStore is null) return null;
+        if (!_templateStore.TryGet(spellName, out var template)) return null;
+        // Only accept templates that actually look like spells (under
+        // /world/contentdb/templates/spells/* or named spell_*) so a typo
+        // like SIEGEFX_DEBUG_SPELLS=krug_grunt doesn't silently slot a
+        // monster template as the primary. Path check is the strict gate.
+        if (!spellName.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(debugSpellsEnv))
+                Console.WriteLine($"  spellbook: '{spellName}' not a spell_* template — refusing to slot");
+            return null;
+        }
+        var synthetic = SiegeFX.Core.Assets.SpellTemplate.FromTemplateForDebug(template, _templateStore);
+        if (!string.IsNullOrWhiteSpace(debugSpellsEnv))
+            Console.WriteLine(
+                $"  spellbook: '{spellName}' synthesized from template " +
+                $"(non-offensive/heal — cast script + sound only, no damage). " +
+                $"sfx='{synthetic.CastSfxScript}'");
+        return synthetic;
     }
 
     // Phase 21-SC-SPELL-VFX-3c — true iff every `sfx create` in this spell's
