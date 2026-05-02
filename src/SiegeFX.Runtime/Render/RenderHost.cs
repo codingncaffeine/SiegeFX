@@ -7388,9 +7388,14 @@ void main()
         // explicit gate needed.
         if (_particles is not null)
         {
-            const float glitterRate = 18f;          // sparkles per second per pile (was 12)
-            const float scrollTopY  = 0.55f;        // above pileSize (0.5) so sparkles float on the scroll
-            const float footprintR  = 0.30f;        // scroll mesh ~0.5 wide; XZ scatter just inside that
+            // Tuning per "storm cloud" user feedback (b4accc5 v2 was too
+            // tall + too loose). Hugging the scroll mesh now: emit plane
+            // just above the visible top, half the prior XZ scatter, and
+            // shorter lifetime so particles can't accumulate altitude
+            // before they fade.
+            const float glitterRate = 18f;          // sparkles per second per pile
+            const float scrollTopY  = 0.30f;        // was 0.55 — emit just above the resting scroll
+            const float footprintR  = 0.16f;        // was 0.30 — tighter cluster on the scroll
             var sparkleColor = new Vector4(1f, 1f, 1f, 1f); // pure white
             for (int i = 0; i < _lootPiles.Count; i++)
             {
@@ -7415,8 +7420,8 @@ void main()
                     pile.Position + new Vector3(0f, scrollTopY, 0f),
                     sparkleColor,
                     footprintRadius: footprintR,
-                    scale: 0.18f,
-                    duration: 0.70f,
+                    scale: 0.14f,         // was 0.18 — tighter visual size
+                    duration: 0.45f,      // was 0.70 — fade before drifting too high
                     count: batch);
             }
         }

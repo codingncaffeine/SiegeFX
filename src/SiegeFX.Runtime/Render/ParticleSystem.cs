@@ -326,13 +326,16 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             float ang = Rand(0f, MathF.Tau);
             float r   = MathF.Sqrt(Rand(0f, 1f)) * footprintRadius; // uniform-area sample
             var pos = center + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
-            // Rolling drift: small tangential velocity so the field reads
-            // as a moving star-field rather than a static cloud. Adds a
-            // gentle upward bias for a "rising shimmer" feel.
+            // Rolling drift: tangential velocity so the field reads as a
+            // moving star-field rather than a static cloud. Earlier draft
+            // had 0.20 tangential + 0.05–0.18 upward bias which billowed
+            // the field upward into a storm-cloud shape; the user wanted
+            // it sitting close to the scroll. Halved tangential and
+            // killed the upward bias so the cloud hugs the emit plane.
             float driftAng = ang + MathF.PI * 0.5f; // tangent to radial
-            var v = new Vector3(MathF.Cos(driftAng) * 0.20f,
-                                Rand(0.05f, 0.18f),
-                                MathF.Sin(driftAng) * 0.20f);
+            var v = new Vector3(MathF.Cos(driftAng) * 0.10f,
+                                Rand(-0.02f, 0.04f),       // mostly flat, occasional slow rise
+                                MathF.Sin(driftAng) * 0.10f);
             _particles.Add(new Particle
             {
                 Position  = pos,
