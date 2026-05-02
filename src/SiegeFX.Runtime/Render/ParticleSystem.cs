@@ -440,17 +440,43 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             }
             var dir = toTarget / dist;
             pr.Position += dir * step;
-            // Trail: 60 particles/sec ~ one fire puff per frame at 60fps,
-            // plus a thinner ember spark stream.
+            // Trail — branch by ImpactKind so the in-flight visual reads
+            // as the element it is. SpawnFire / SpawnSpark have warm-biased
+            // Color1 fades baked in (color.Y * 0.2 / color.Z * 0.05), which
+            // is correct for fire but turns a cyan input into brown puffs
+            // mid-flight — that's why pre-fix iceshard "looked like
+            // fireball." SpawnSteam / SpawnSmoke preserve the input color
+            // through the alpha fade, so they're the right primitives for
+            // cool elements.
             float trailRate = 90f;
             float budget = pr.TrailCarry + trailRate * dt;
             int n = (int)budget;
             if (n > 0)
             {
-                SpawnFire(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);
-                if ((n & 1) == 0)
-                    SpawnSpark(pr.Position, new Vector4(1f, 0.9f, 0.55f, 1f),
-                               pr.Scale * 0.6f, 0.20f, 2);
+                switch (pr.ImpactKind)
+                {
+                    case 1: // ice / frost — cool steam trail + cyan sparks
+                        SpawnSteam(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);
+                        if ((n & 1) == 0)
+                            SpawnSpark(pr.Position,
+                                       new Vector4(0.85f, 0.95f, 1.0f, 1f),
+                                       pr.Scale * 0.6f, 0.18f, 2);
+                        break;
+                    case 2: // lightning crack — element-tinted sparks only
+                        SpawnSpark(pr.Position, pr.Color, pr.Scale * 0.55f, 0.20f, n);
+                        if ((n & 1) == 0)
+                            SpawnSpark(pr.Position,
+                                       new Vector4(1f, 1f, 1f, 1f),
+                                       pr.Scale * 0.6f, 0.15f, 2);
+                        break;
+                    default: // fire — original warm trail
+                        SpawnFire(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);
+                        if ((n & 1) == 0)
+                            SpawnSpark(pr.Position,
+                                       new Vector4(1f, 0.9f, 0.55f, 1f),
+                                       pr.Scale * 0.6f, 0.20f, 2);
+                        break;
+                }
             }
             pr.TrailCarry = budget - n;
             _projectiles[i] = pr;
