@@ -6116,8 +6116,11 @@ void main()
             var wavPath = $"/sound/effects/{clip}.wav";
             if (reader.TryGetFile(wavPath, out _))
             {
-                // wav exists. Register if new (idempotent — duplicate id
-                // no-ops cheaply inside RegisterClip).
+                // wav exists. Register the clip. Note: AudioEngine.RegisterClip
+                // is NOT cheap on duplicate ids — it re-decodes + re-uploads
+                // the WAV every call (see AudioEngine.cs ~line 139). The cache
+                // we set just below ensures each spell hits TryRegisterSfx at
+                // most once per launch session, so the redundancy never runs.
                 TryRegisterSfx(reader, clip, wavPath);
                 final = clip;
             }
@@ -6183,7 +6186,16 @@ void main()
                 if (clip.Length > 0) return clip;
             }
         }
-        catch { /* malformed script body — leave empty */ }
+        catch (Exception ex)
+        {
+            // Match the rest of the file's diagnostic style — a parse throw
+            // for shipped data is unexpected, surface it once. The caller's
+            // cache locks the fallback in place so this fires at most once
+            // per spell per launch session.
+            Console.Error.WriteLine(
+                $"  spellbook: cast script parse threw for '{spell.Name}' " +
+                $"(script '{spell.CastSfxScript}') — {ex.Message}");
+        }
         return "";
     }
 

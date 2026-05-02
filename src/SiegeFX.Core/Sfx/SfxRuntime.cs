@@ -78,7 +78,14 @@ public sealed class SfxRuntime
         {
             if (stmt.Kind != StatementKind.SfxCreate) continue;
             if (stmt.Tokens.Count == 0) continue;
-            if (!SupportedCreateKinds.Contains(stmt.Tokens[0]))
+            // ToLowerInvariant before the lookup: MapMode at runtime
+            // (ExecCreate calls .ToLowerInvariant() before the switch) is
+            // case-sensitive on lowercase, so "Fire" would slip past a
+            // case-insensitive HashSet check here only to land on
+            // EmitterMode.Unsupported during execution. DS1 ships
+            // lowercase so this is defense-in-depth, not a current-data
+            // bug — but keeps the invariant tight.
+            if (!SupportedCreateKinds.Contains(stmt.Tokens[0].ToLowerInvariant()))
                 return false;
         }
         return true;
