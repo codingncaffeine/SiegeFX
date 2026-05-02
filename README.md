@@ -26,6 +26,8 @@ Region world events run through the same sfx_script VM as spell casts — chimne
 
 Phase 21 polish in progress — the always-on HUD now matches DS1's status pane (HP/MP readout above STR/DEX/INT, two-panel dock arrows, four-cell active-ability bar with per-skill XP fills), inventory cells render edge-to-edge in a true grid, and scroll-wheel zoom dollies the chase camera along the view ray instead of arcing flatter as you pull back. Loot drops were over-corrected to zero in 12-SC-3; equipped buckets now roll at a 35% chance gate so corpses leave usable gear behind without becoming weapon-vending machines.
 
+A new headless `siegefx spells visual-audit` walks every offensive spell's compiled cast sfx_script and reports a per-spell verdict (COVERED / PARTIAL / UNCOVERED) plus the catalog-wide primitive / unhandled-verb / texture tallies. First run: 69 offensive spells, 61 with a cast script, 9 fully COVERED, 47 PARTIAL, 5 UNCOVERED — and the 5 UNCOVERED ones turn out to be sound-only stubs DS1's author flagged with a literal `// only a sound now, should hook up an effect. -ET` TODO in `iceblast_launch.gas`. The audit replaces "playtest 69 spells one by one" with "find the gaps in batch": orbiter (20 spells), trackball (18), cylinder (12), lightsource (9), flurry (7), fireb (5), sray (5), curve (4) are the primitive verbs the next SC slice covers, in priority order.
+
 <details>
 <summary><strong>Receipts</strong> — 81 regions / 50,680 props / 7,252 NPCs / 2,829 pcontent entries / 16,275 SNO tiles / 2,086 trigger rows / 1962 PRS animations / 69 spells, every claim backed by a headless <code>siegefx</code> audit.</summary>
 

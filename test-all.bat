@@ -157,6 +157,7 @@ echo   84. Phase 17-SC-G    - Region emitters wired (in-window fh_r1, smoke colu
 echo   85. Phase 17-SC-H    - Spell cast sfx_script binding (spells dump w/ cast_sfx column + coverage)
 echo   86. Phase 17-SC-I    - Water UV scroll + waterwheel rotation (in-window fh_r1)
 echo   87. Phase 17-SC-J    - Per-instance scale_multiplier (breakable farmhouse door + foliage variation)
+echo   88. Phase 21-SC-SPELL-VFX-AUDIT - Visual-coverage audit across every offensive spell (Logic.dsres)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -250,6 +251,7 @@ if /i "%CHOICE%"=="84" goto T84
 if /i "%CHOICE%"=="85" goto T85
 if /i "%CHOICE%"=="86" goto T86
 if /i "%CHOICE%"=="87" goto T87
+if /i "%CHOICE%"=="88" goto T88
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1712,6 +1714,29 @@ echo [burnt-door mesh and no fire emitters at the door. The breakable variant us
 echo [the same m_i_grs_door-farmhouse asp; what made it look distinct was scale.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T88
+echo.
+echo --- Phase 21-SC-SPELL-VFX-AUDIT: visual coverage across every offensive spell ---
+echo [Headless audit: walks every offensive SpellTemplate's compiled cast sfx_script]
+echo [statically and reports per-spell verdict (COVERED/PARTIAL/UNCOVERED) plus the]
+echo [primitive-kind / unhandled-verb / texture roll-ups across the whole catalog.]
+echo [Recurses one level into `call <subscript>` so composed scripts audit fully.]
+echo.
+echo [Receipt: 69 offensive spells, 61 with cast_sfx_script (8 have no we_req_cast),]
+echo [9 fully COVERED, 47 PARTIAL (use orbiter/trackball/cylinder/lightsource/etc.),]
+echo [5 UNCOVERED (DS1 author left them sound-only — see iceblast_launch.gas TODO).]
+echo [Top primitive misses: orbiter (20 spells), trackball (18), cylinder (12),]
+echo [lightsource (9), flurry (7), fireb (5), sray (5), curve (4). 19 distinct b_sfx_*]
+echo [textures referenced; b_sfx_sparkle01 is the most common (26 spells).]
+echo.
+"%TOOL%" spells visual-audit "%DS1%\Resources\Logic.dsres"
+echo.
+echo [--verbose for the per-spell breakdown; --filter=NAME to narrow; --only-uncovered]
+echo [to see only the PARTIAL+UNCOVERED rows.]
 echo.
 pause
 goto MENU

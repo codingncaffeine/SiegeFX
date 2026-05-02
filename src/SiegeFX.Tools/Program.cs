@@ -118,6 +118,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx spells elements    <Logic.dsres>");
+    Console.WriteLine("  siegefx spells visual-audit <Logic.dsres> [--verbose] [--filter=NAME] [--only-uncovered]");
     Console.WriteLine("  siegefx sfx list           <Logic.dsres> [--prefix=NAME]");
     Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
@@ -4986,15 +4987,16 @@ static int CmdBalanceCurve(string[] a)
 
 static int DispatchSpells(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey|eval> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx spells <dump|show|survey|eval|elements|visual-audit> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "dump"     => CmdSpellsDump(a[1..]),
-        "show"     => CmdSpellsShow(a[1..]),
-        "survey"   => CmdSpellsSurvey(a[1..]),
-        "eval"     => CmdSpellsEval(a[1..]),
-        "elements" => CmdSpellsElements(a[1..]),
-        _          => UnknownCommand("spells " + a[0]),
+        "dump"         => CmdSpellsDump(a[1..]),
+        "show"         => CmdSpellsShow(a[1..]),
+        "survey"       => CmdSpellsSurvey(a[1..]),
+        "eval"         => CmdSpellsEval(a[1..]),
+        "elements"     => CmdSpellsElements(a[1..]),
+        "visual-audit" => CmdSpellsVisualAudit(a[1..]),
+        _              => UnknownCommand("spells " + a[0]),
     };
 }
 
@@ -5134,6 +5136,253 @@ static int CmdSpellsElements(string[] a)
             Console.WriteLine($"    {s.Name,-32} \"{s.ScreenName}\"");
     }
     return 0;
+}
+
+// Phase 21-SC-SPELL-VFX-AUDIT: headless visual-coverage audit over every
+// offensive spell's cast sfx_script. Walks each script's compiled IR
+// statically (no GL, no synthetic time-stepping) and reports:
+//   1. which `sfx create` kinds are invoked across the catalog, tagged
+//      OK / MISS against SfxRuntime.MapMode's covered set
+//      (fire / smoke / steam / lightning / explosion / sparkles)
+//   2. which verbs the VM still treats as Raw (trackball / waitfor /
+//      spawn / fireb / sphere / orbiter / worldmsg / get / etc.)
+//   3. which textures (b_sfx_*) the param strings reference, plus how
+//      many spells reach for each
+//   4. a per-spell verdict: COVERED / PARTIAL / UNCOVERED
+// `call <subscript>` recurses one level so composed scripts (DS1's
+// canonical pattern — a spell calls a shared bolt/burst primitive)
+// get audited end-to-end. Output drives the SC-SPELL-VFX-3 scope: we
+// know exactly which verbs unblock how many spells before guessing
+// fireball was the right next pick.
+static int CmdSpellsVisualAudit(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx spells visual-audit <Logic.dsres> [--verbose] [--filter=NAME] [--only-uncovered]");
+        return 1;
+    }
+    bool verbose = false;
+    bool onlyUncovered = false;
+    string? filter = null;
+    for (int i = 1; i < a.Length; i++)
+    {
+        if (a[i] == "--verbose") verbose = true;
+        else if (a[i] == "--only-uncovered") onlyUncovered = true;
+        else if (a[i].StartsWith("--filter=", StringComparison.Ordinal))
+            filter = a[i]["--filter=".Length..];
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (templates, _) = TemplateStore.LoadFromTank(reader);
+    var spells = SpellCatalog.Build(templates);
+    var sfx    = SfxScriptStore.LoadFromTank(reader);
+
+    // Mirror SfxRuntime.MapMode's switch so MISS picks up exactly what the
+    // VM today drops on the floor. If MapMode grows new branches, this set
+    // must grow too — keep it next to the runtime in PRs.
+    var coveredKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
+    };
+    // Verbs that drive *motion* or gating — when these go unhandled the
+    // visual diverges materially (fireball stops tracking, beams never
+    // detach). Less critical Raws (worldmsg / get / lightsource) just log
+    // and continue without a visible regression, so they don't move a
+    // verdict from COVERED → PARTIAL on their own.
+    var criticalUnhandled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "trackball", "waitfor", "spawn", "fireb", "sphere", "orbiter",
+        "charge", "lightsource",
+    };
+
+    var results = new List<SpellAuditRow>();
+    int withScript = 0, withoutScript = 0, missingScript = 0;
+    var primitiveTally = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    var textureTally   = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    var unhandledTally = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var spell in spells.All.OrderBy(s => s.Name, StringComparer.Ordinal))
+    {
+        if (filter != null && spell.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+            continue;
+
+        if (string.IsNullOrEmpty(spell.CastSfxScript)) { withoutScript++; continue; }
+        if (!sfx.TryGet(spell.CastSfxScript, out var script)) { missingScript++; continue; }
+        withScript++;
+
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var row = new SpellAuditRow(spell.Name, spell.CastSfxScript);
+        WalkAuditScript(script.Name, script.Body, sfx, row, visited);
+
+        bool hasAnyPrimitive = row.PrimitiveKinds.Count > 0;
+        bool allPrimsCovered = hasAnyPrimitive && row.PrimitiveKinds.All(k => coveredKinds.Contains(k));
+        bool anyCritical     = row.UnhandledVerbs.Any(v => criticalUnhandled.Contains(v));
+        row.Verdict =
+            !hasAnyPrimitive ? "UNCOVERED" :
+            (allPrimsCovered && !anyCritical) ? "COVERED" :
+            "PARTIAL";
+
+        results.Add(row);
+
+        foreach (var k in row.PrimitiveKinds) AppendTo(primitiveTally, k, spell.Name);
+        foreach (var t in row.Textures)       AppendTo(textureTally,   t, spell.Name);
+        foreach (var v in row.UnhandledVerbs) AppendTo(unhandledTally, v, spell.Name);
+    }
+
+    int total     = results.Count;
+    int covered   = results.Count(r => r.Verdict == "COVERED");
+    int partial   = results.Count(r => r.Verdict == "PARTIAL");
+    int uncovered = results.Count(r => r.Verdict == "UNCOVERED");
+
+    Console.WriteLine($"siegefx spells visual-audit  —  {spells.Count} offensive spells, {sfx.Count} sfx_scripts in pack");
+    Console.WriteLine();
+    Console.WriteLine($"  cast_sfx_script coverage : {withScript} resolved, {missingScript} missing, {withoutScript} no [we_req_cast] row");
+    Console.WriteLine();
+    Console.WriteLine($"  visual coverage  (of {total} runnable spells):");
+    Console.WriteLine($"     COVERED   : {covered,3}  every primitive handled, no motion/gating verbs unhandled");
+    Console.WriteLine($"     PARTIAL   : {partial,3}  unhandled critical verbs (trackball/waitfor/spawn/fireb/sphere/orbiter)");
+    Console.WriteLine($"     UNCOVERED : {uncovered,3}  no recognized `sfx create` kind at all");
+    Console.WriteLine();
+
+    Console.WriteLine($"Primitive `sfx create` kinds invoked ({primitiveTally.Count} distinct):");
+    foreach (var kv in primitiveTally.OrderByDescending(p => p.Value.Count).ThenBy(p => p.Key, StringComparer.Ordinal))
+    {
+        var tag = coveredKinds.Contains(kv.Key) ? "OK  " : "MISS";
+        var sample = string.Join(", ", kv.Value.Take(2));
+        var more   = kv.Value.Count > 2 ? ", ..." : "";
+        Console.WriteLine($"  {tag}  {kv.Key,-12} : {kv.Value.Count,3} spells   (e.g. {sample}{more})");
+    }
+    Console.WriteLine();
+
+    Console.WriteLine($"Unhandled verbs across the catalog ({unhandledTally.Count} distinct):");
+    foreach (var kv in unhandledTally.OrderByDescending(p => p.Value.Count).ThenBy(p => p.Key, StringComparer.Ordinal))
+    {
+        var tag = criticalUnhandled.Contains(kv.Key) ? "CRIT" : "soft";
+        var sample = string.Join(", ", kv.Value.Take(3));
+        var more   = kv.Value.Count > 3 ? ", ..." : "";
+        Console.WriteLine($"  {tag}  {kv.Key,-14} : {kv.Value.Count,3} spells   (e.g. {sample}{more})");
+    }
+    Console.WriteLine();
+
+    Console.WriteLine($"Textures referenced ({textureTally.Count} distinct, top 20):");
+    foreach (var kv in textureTally.OrderByDescending(p => p.Value.Count).Take(20))
+    {
+        var sample = string.Join(", ", kv.Value.Take(2));
+        var more   = kv.Value.Count > 2 ? ", ..." : "";
+        Console.WriteLine($"  {kv.Key,-32} : {kv.Value.Count,3} spells   (e.g. {sample}{more})");
+    }
+    if (textureTally.Count > 20) Console.WriteLine($"  ... ({textureTally.Count - 20} more)");
+    Console.WriteLine();
+
+    if (verbose || onlyUncovered)
+    {
+        Console.WriteLine("Per-spell breakdown:");
+        IEnumerable<SpellAuditRow> rows = results
+            .OrderBy(r => r.Verdict switch { "UNCOVERED" => 0, "PARTIAL" => 1, "COVERED" => 2, _ => 3 })
+            .ThenBy(r => r.Name, StringComparer.Ordinal);
+        foreach (var r in rows)
+        {
+            if (onlyUncovered && r.Verdict == "COVERED") continue;
+            var prims = r.PrimitiveKinds.Count > 0 ? string.Join("/", r.PrimitiveKinds) : "<none>";
+            var unh   = r.UnhandledVerbs.Count > 0 ? "  unhandled=" + string.Join(",", r.UnhandledVerbs) : "";
+            var texs  = r.Textures.Count > 0
+                ? "  tex=" + string.Join(",", r.Textures.Take(2)) + (r.Textures.Count > 2 ? "..." : "")
+                : "";
+            Console.WriteLine($"  [{r.Verdict,-9}] {r.Name,-30} script={r.ScriptName,-22} create={prims}{unh}{texs}");
+        }
+    }
+    return 0;
+}
+
+static void AppendTo(Dictionary<string, List<string>> map, string key, string spellName)
+{
+    if (!map.TryGetValue(key, out var list)) map[key] = list = new List<string>();
+    if (list.Count == 0 || list[^1] != spellName) list.Add(spellName);
+}
+
+static void WalkAuditScript(string scriptName, string body, SfxScriptStore store, SpellAuditRow row, HashSet<string> visited)
+{
+    if (!visited.Add(scriptName)) return; // cycle / mutual-call guard
+    SiegeFX.Core.Sfx.SfxProgram prog;
+    try { prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(scriptName, body); }
+    catch { return; }
+
+    foreach (var stmt in prog.Statements)
+    {
+        switch (stmt.Kind)
+        {
+            case SiegeFX.Core.Sfx.StatementKind.SfxCreate:
+                if (stmt.Tokens.Count > 0)
+                    row.PrimitiveKinds.Add(stmt.Tokens[0].ToLowerInvariant());
+                if (!string.IsNullOrEmpty(stmt.ParamString))
+                    foreach (var tex in ExtractAuditTextures(stmt.ParamString!))
+                        row.Textures.Add(tex);
+                break;
+
+            case SiegeFX.Core.Sfx.StatementKind.Call:
+                // First non-quoted token is the called script's name; the
+                // remainder are <angle-quoted-args> the compiler preserved.
+                if (stmt.Tokens.Count > 0)
+                {
+                    var callName = stmt.Tokens[0].Trim('"').Trim();
+                    // Strip trailing args glued by the lexer (rare — compiler
+                    // already split on whitespace) just in case.
+                    int sp = callName.IndexOf(' ');
+                    if (sp >= 0) callName = callName.Substring(0, sp);
+                    if (!string.IsNullOrEmpty(callName) &&
+                        store.TryGet(callName, out var sub))
+                        WalkAuditScript(sub.Name, sub.Body, store, row, visited);
+                }
+                break;
+
+            case SiegeFX.Core.Sfx.StatementKind.Raw:
+                // Verb is "sfx <sub>" / "sound <sub>" for unrecognized
+                // sub-verbs, or the bare top-level verb otherwise. Keep the
+                // sub-verb shape (drop the "sfx " prefix) so the table
+                // reads cleanly: `orbiter` / `sphere` / `charge` instead
+                // of `sfx orbiter`.
+                if (string.IsNullOrEmpty(stmt.Verb)) break;
+                string v = stmt.Verb;
+                if (v.StartsWith("sfx ", StringComparison.OrdinalIgnoreCase))
+                    v = v.Substring(4);
+                else if (v.StartsWith("sound ", StringComparison.OrdinalIgnoreCase))
+                    v = v.Substring(6);
+                row.UnhandledVerbs.Add(v.ToLowerInvariant());
+                break;
+        }
+    }
+}
+
+// Extracts every `texture(NAME)` reference from a DS1 sfx param-string.
+// DS1 param strings use a paren-args shape: `key(value)key(value)...`
+// (e.g. `scale(.75)texture(b_sfx_sparkle01)color0(.7,.7,1)`) — no `=` and
+// no `;` separators inside a quoted block. We only mine `texture` and
+// `dual_texture` keys; their values are bare token names.
+static IEnumerable<string> ExtractAuditTextures(string paramString)
+{
+    int i = 0;
+    while (i < paramString.Length)
+    {
+        int idx = paramString.IndexOf("texture", i, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) yield break;
+        // Word-boundary check on the preceding char so `dual_texture` matches
+        // (prev is `_`, which is fine) but a substring like `nntexture` (made
+        // up — guard against weird typos in shipped data) does not.
+        if (idx > 0)
+        {
+            char prev = paramString[idx - 1];
+            if (char.IsLetterOrDigit(prev)) { i = idx + 7; continue; }
+        }
+        int open = idx + 7;
+        while (open < paramString.Length && char.IsWhiteSpace(paramString[open])) open++;
+        if (open >= paramString.Length || paramString[open] != '(') { i = idx + 7; continue; }
+        int close = paramString.IndexOf(')', open + 1);
+        if (close < 0) { i = open + 1; continue; }
+        var name = paramString.Substring(open + 1, close - open - 1).Trim().Trim('"');
+        if (name.Length > 0) yield return name;
+        i = close + 1;
+    }
 }
 
 // Phase 17-SC-D: dispatch + commands for the sfx_script store. Lets us
@@ -6193,6 +6442,21 @@ sealed class SyntheticPartyContext : SiegeFX.Core.Actors.TriggerContext
         var d = Position - c;
         return MathF.Abs(d.X) <= hx && MathF.Abs(d.Y) <= hy && MathF.Abs(d.Z) <= hz;
     }
+}
+
+/// <summary>Phase 21-SC-SPELL-VFX-AUDIT — one spell's worth of static-IR
+/// audit results, accumulated by <c>WalkAuditScript</c>. Lives next to
+/// <see cref="TallySink"/> because Program.cs is a top-level-statement file
+/// and class declarations must follow all top-level functions.</summary>
+sealed class SpellAuditRow
+{
+    public string Name { get; }
+    public string ScriptName { get; }
+    public HashSet<string> PrimitiveKinds { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> UnhandledVerbs { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> Textures       { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public string Verdict { get; set; } = "?";
+    public SpellAuditRow(string name, string script) { Name = name; ScriptName = script; }
 }
 
 /// <summary>Headless <see cref="SiegeFX.Core.Sfx.IParticleSink"/> for `siegefx sfx run`.
