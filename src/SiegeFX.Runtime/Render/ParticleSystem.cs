@@ -307,6 +307,49 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
     }
 
+    /// <summary>Phase 21-SC-SCROLL-GLITTER — DS1's "pixie dust" twinkle on
+    /// resting magic items. Distinct from SpawnSpark (which radiates
+    /// outward from a single point with strong gravity): twinkle particles
+    /// are scattered across an XZ footprint, drift slowly with a
+    /// rolling lateral velocity, and use a brief grow-then-fade scale curve
+    /// so they read like stars twinkling on a pond. Per-particle spawn
+    /// position is randomized inside <paramref name="footprintRadius"/>;
+    /// each particle gets a small tangential velocity so the field looks
+    /// like it's moving across the scroll's surface rather than puffing
+    /// out from a single point.</summary>
+    public void SpawnTwinkle(Vector3 center, Vector4 color, float footprintRadius,
+                             float scale, float duration, int count)
+    {
+        if (count <= 0) return;
+        for (int i = 0; i < count; i++)
+        {
+            float ang = Rand(0f, MathF.Tau);
+            float r   = MathF.Sqrt(Rand(0f, 1f)) * footprintRadius; // uniform-area sample
+            var pos = center + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
+            // Rolling drift: small tangential velocity so the field reads
+            // as a moving star-field rather than a static cloud. Adds a
+            // gentle upward bias for a "rising shimmer" feel.
+            float driftAng = ang + MathF.PI * 0.5f; // tangent to radial
+            var v = new Vector3(MathF.Cos(driftAng) * 0.20f,
+                                Rand(0.05f, 0.18f),
+                                MathF.Sin(driftAng) * 0.20f);
+            _particles.Add(new Particle
+            {
+                Position  = pos,
+                Velocity  = v,
+                Accel     = Vector3.Zero,                    // no gravity — twinkles drift
+                Color0    = color,
+                Color1    = new Vector4(color.X, color.Y, color.Z, 0f), // fade alpha
+                Scale0    = scale * 0.30f,                   // grow-in
+                Scale1    = scale * 1.10f,                   // peak before fade
+                Life      = duration,
+                TotalLife = duration,
+                TexSlot   = 2,                               // spark/star texture
+                Additive  = 1,                               // bright on dark backdrops
+            });
+        }
+    }
+
     public void SpawnSpark(Vector3 position, Vector4 color, float scale, float duration, int count = 16)
     {
         for (int i = 0; i < count; i++)

@@ -7368,65 +7368,55 @@ void main()
             pile.RotationX = th.StartRotationX + th.XSpins * MathF.PI * 2f * t;
         }
         // Phase 21-SC-SCROLL-GLITTER — DS1's continuous "pixie dust" on
-        // resting spell scrolls. Walk every loot pile; for each pile that
-        // (a) has settled (no live throw) and (b) carries at least one
-        // scroll item, accumulate a per-pile spawn budget at ~12 sparkles/
-        // sec and fire SpawnSpark in batches of 3-5 when the budget tips
-        // over an integer. Color picked from the spell's element so combat
-        // magic reads warm-orange (DS1's combat_spell_sparkle .7,.4,.2)
-        // and nature reads cool-green (.2,.7,.4) — same chromatic split
-        // DS1 ships in the per-class sparkle scripts under
-        // /world/global/effects/itemeffects.gas. Pickup flow already
-        // removes scroll items from the pile, so the glitter naturally
-        // turns off when the player picks up — no explicit gate needed.
-        if (_particles is not null && _spellCatalog is not null)
+        // resting spell scrolls. Distinct visual recipe per user feedback:
+        // pure white (not element-tinted), pronounced, and SCATTERED
+        // across the scroll's top surface with a rolling drift — like
+        // twinkling stars rolling across a night sky.
+        //
+        // Per-pile timer accumulates spawn budget at glitterRate; when
+        // it tips over an integer, fires SpawnTwinkle which scatters the
+        // batch across the pile's footprint (uniform-area XZ sample) and
+        // gives each particle a tangential drift velocity so the field
+        // visibly moves rather than puffing in place. Y-offset puts the
+        // emit plane just above the scroll mesh's top (pile renders at
+        // pos.Y + pileSize=0.5, so 0.55 floats sparkles right above the
+        // visible scroll surface — the prior 0.10 emitted UNDER the mesh
+        // which read as "wrong side of the scroll").
+        //
+        // Pickup flow already removes scroll items from the pile, so the
+        // glitter naturally turns off when the player picks up — no
+        // explicit gate needed.
+        if (_particles is not null)
         {
-            const float glitterRate = 12f; // sparkles per second per pile
+            const float glitterRate = 18f;          // sparkles per second per pile (was 12)
+            const float scrollTopY  = 0.55f;        // above pileSize (0.5) so sparkles float on the scroll
+            const float footprintR  = 0.30f;        // scroll mesh ~0.5 wide; XZ scatter just inside that
+            var sparkleColor = new Vector4(1f, 1f, 1f, 1f); // pure white
             for (int i = 0; i < _lootPiles.Count; i++)
             {
                 var pile = _lootPiles[i];
                 if (pile.Throw is not null) continue;
                 bool hasScroll = false;
-                Vector4 sparkleColor = new Vector4(0.7f, 0.4f, 0.2f, 1f); // combat default
                 foreach (var entry in pile.Items)
                 {
-                    if (!string.IsNullOrEmpty(entry.Slot)) continue;
-                    if (!entry.Reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
-                        continue;
-                    hasScroll = true;
-                    // Per-element tint when the spell resolves; nature/holy
-                    // elements lean to the green palette to match DS1's
-                    // nature_spell_sparkle script.
-                    var s = ResolveSlottableSpell(entry.Reference, debugSpellsEnv: null);
-                    if (s is not null)
+                    if (string.IsNullOrEmpty(entry.Slot)
+                        && entry.Reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
                     {
-                        sparkleColor = s.Element switch
-                        {
-                            SiegeFX.Core.Assets.SpellElement.Holy
-                                or SiegeFX.Core.Assets.SpellElement.Acid
-                                  => new Vector4(0.20f, 0.70f, 0.40f, 1f),  // nature green
-                            SiegeFX.Core.Assets.SpellElement.Ice
-                                  => new Vector4(0.55f, 0.85f, 1.00f, 1f),  // ice cyan
-                            SiegeFX.Core.Assets.SpellElement.Death
-                                  => new Vector4(0.65f, 0.35f, 0.85f, 1f),  // death purple
-                            _     => new Vector4(0.70f, 0.40f, 0.20f, 1f),  // combat warm
-                        };
+                        hasScroll = true;
+                        break;
                     }
-                    break; // first scroll's element drives the tint
                 }
                 if (!hasScroll) { pile.GlitterCarry = 0f; continue; }
                 pile.GlitterCarry += glitterRate * (float)dt;
                 if (pile.GlitterCarry < 1f) continue;
                 int batch = (int)pile.GlitterCarry;
                 pile.GlitterCarry -= batch;
-                // Burst at the pile, with a small Y offset so sparkles
-                // emerge from above the scroll instead of clipping the
-                // ground.
-                _particles.SpawnSpark(
-                    pile.Position + new Vector3(0f, 0.10f, 0f),
+                _particles.SpawnTwinkle(
+                    pile.Position + new Vector3(0f, scrollTopY, 0f),
                     sparkleColor,
-                    scale: 0.20f,
-                    duration: 0.55f,
+                    footprintRadius: footprintR,
+                    scale: 0.18f,
+                    duration: 0.70f,
                     count: batch);
             }
         }
