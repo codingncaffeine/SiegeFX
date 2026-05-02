@@ -486,6 +486,11 @@ public sealed class RenderHost : IDisposable
     {
         public Vector3 Position;
         public float RotationY; // radians; non-zero only while a throw is in flight
+        // Phase 21-SC-SCROLL-F — X-axis tumble. Set during a throw alongside
+        // RotationY so dropped items rotate-and-twist mid-flight (more
+        // DS1-faithful than a pure yaw spin). Reset to 0 on landing; the
+        // RestPitch flow below then governs the resting pitch.
+        public float RotationX;
         // Phase 9-SC-10 — per-pile rest pitch so items that aren't naturally
         // upright (shields modeled vertically along the forearm) lie flat on
         // the ground after landing. Authored at pile creation by inspecting
@@ -506,6 +511,12 @@ public sealed class RenderHost : IDisposable
         public float ArcHeight;
         public float Spins;        // total Y-axis turns over the duration
         public float StartRotation; // initial yaw so PC vs enemy drops don't all face the same way
+        // Phase 21-SC-SCROLL-F — X-axis tumble. Lower count than Y so the
+        // result reads as "twist + flop" not a chaotic spin. 0 keeps
+        // legacy enemy-drop look (pure yaw); player drops set ~1.0 for
+        // a single end-over-end during flight.
+        public float XSpins;
+        public float StartRotationX;
     }
     // Phase 13a — the one player-controlled actor's render state. Null until
     // TrySpawnPlayer succeeds. Also lives inside _actors (rendered + ticked with
@@ -1690,6 +1701,17 @@ void main()
                     _rmbDownPos = m.Position;
                     _rmbDrift = 0f;
                     m.Cursor.CursorMode = CursorMode.Raw;
+                }
+                // Phase 21-SC-SCROLL-F-1 — LMB outside any UI WITH a scroll
+                // on cursor = world drop. Spawn a loot pile at the player's
+                // feet that arcs to a target ~1.5u out, with the Phase
+                // 9-SC-9 throw-tumble + the new XSpins (-F flavor: end-
+                // over-end). Pickup of the resulting pile auto-routes the
+                // scroll back to the spellbook via F-2 in TryAutoPickup.
+                else if (btn == MouseButton.Left && _cursorScroll is not null)
+                {
+                    DropScrollToWorld(_cursorScroll);
+                    return;
                 }
                 // Phase 13c — LMB click-to-move. Unproject the cursor onto the
                 // player's current Y plane, confirm the point lands on a nav
@@ -7126,6 +7148,13 @@ void main()
             float dz = pile.Position.Z - playerPos.Z;
             if (dx * dx + dz * dz > PickupRadius * PickupRadius) continue;
 
+            // Phase 21-SC-SCROLL-F-2 — handle scroll items first so they
+            // route to spellbook Placed[] instead of the flat inventory.
+            // Scroll items are removed from the pile before the inventory
+            // pass below so they don't double-stuff. Spellbook-full
+            // scrolls fall back to inventory inside the helper.
+            TryAutoPickupScrollsFromPile(pile);
+
             // Phase 9-SC-13 — resolve pcontent specs (#club/2-3) to a concrete
             // template name at pickup, so the inventory grid sees the same name
             // the pile rendered on the ground. The shared spec cache means the
@@ -7237,6 +7266,7 @@ void main()
             {
                 pile.Position = th.Target;
                 pile.RotationY = 0f;
+                pile.RotationX = 0f;
                 pile.Throw = null;
                 continue;
             }
@@ -7244,6 +7274,12 @@ void main()
             float arc = th.ArcHeight * 4f * t * (1f - t); // peak at t=0.5
             pile.Position = new Vector3(basePos.X, basePos.Y + arc, basePos.Z);
             pile.RotationY = th.StartRotation + th.Spins * MathF.PI * 2f * t;
+            // Phase 21-SC-SCROLL-F — X-axis tumble. Same easing as Y: linear
+            // through the flight, comes to rest exactly on landing because
+            // the t>=1 branch above clears it. With XSpins=1.0 the item
+            // does one full end-over-end during the throw arc; legacy
+            // enemy drops keep XSpins=0 for the original pure-yaw look.
+            pile.RotationX = th.StartRotationX + th.XSpins * MathF.PI * 2f * t;
         }
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
@@ -7808,8 +7844,13 @@ void main()
                         float pt = MathF.Min(1f, th2.Elapsed / th2.Duration);
                         pitch *= MathF.Max(0f, (pt - 0.5f) * 2f);
                     }
+                    // Phase 21-SC-SCROLL-F — sum the static rest-pitch with the
+                    // throw-driven X tumble so a flying item reads as "twist
+                    // + flop" while a landed item just sits at its rest angle.
+                    // RotationX is already 0 once the throw lands (cleared at
+                    // t>=1 in the tick), so this collapses to RestPitch only.
                     var model = Matrix4x4.CreateScale(itemScale)
-                              * Matrix4x4.CreateRotationX(pitch)
+                              * Matrix4x4.CreateRotationX(pitch + pile.RotationX)
                               * Matrix4x4.CreateRotationY(pile.RotationY)
                               * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
                     _meshShader.SetMatrix4("uModel", model);
@@ -8348,6 +8389,85 @@ void main()
     /// pickup time to leave the source empty).</summary>
     private void ClearSpellbookSlot(Hud.SpellBookPanel.SlotKind kind, int index)
         => WriteSpellbookSlot(kind, index, null);
+
+    /// <summary>Phase 21-SC-SCROLL-F-1 — toss the cursor-held scroll onto
+    /// the ground in front of the player. Reuses the Phase 9-SC-9 throw
+    /// arc + Y-spin and adds the SC-SCROLL-F X-axis tumble so the scroll
+    /// reads as twisting end-over-end mid-flight. Drag ends; auto-pickup
+    /// of the resulting pile is gated until landing (existing 9-SC-9
+    /// behavior). The pile contains a single LootEntry whose Reference
+    /// is the spell's template name; F-2 routes the pickup through
+    /// AutoPickupScrollToSpellbook.</summary>
+    private void DropScrollToWorld(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_player is null) { ClearScrollDrag(); return; }
+        var origin = _player.CurrentTransform.Translation;
+        // Throw lands ~1.5u in front of the player, matching DS1's visible
+        // drop distance. Falls back to +X if facing isn't set yet.
+        var facing = _playerFacing.LengthSquared() > 0.01f
+            ? _playerFacing : new Vector3(1f, 0f, 0f);
+        var target = origin + facing * 1.5f;
+        var entry  = new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: spell.Name);
+        var pile   = new LootPile(origin, new List<SiegeFX.Core.Actors.LootEntry> { entry })
+        {
+            Throw = new LootThrow
+            {
+                Source         = origin,
+                Target         = target,
+                Duration       = 0.55f,
+                Elapsed        = 0f,
+                ArcHeight      = 0.45f,
+                Spins          = 0.5f,                                   // half a yaw spin
+                XSpins         = 1.0f,                                   // SC-SCROLL-F: one end-over-end
+                StartRotation  = MathF.Atan2(facing.X, facing.Z),
+                StartRotationX = 0f,                                     // start flat, tumble forward
+            },
+        };
+        _lootPiles.Add(pile);
+        _audio?.Play(SfxGuiPutDownScroll);
+        Console.WriteLine($"  scroll drag: world drop {spell.Name} -> pile at " +
+                          $"({target.X:F1},{target.Z:F1}) with throw-tumble");
+        ClearScrollDrag();
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-F-2 — when the player walks over a
+    /// loot pile that contains a spell-scroll item, route it to the
+    /// spellbook (first empty Placed[] slot) instead of the flat
+    /// inventory. Falls back to inventory when Placed is full so the
+    /// scroll isn't lost. Returns true if any scroll items in the
+    /// pile were handled (caller should still process non-scroll items
+    /// the normal way). Active1/Active2 are NEVER auto-filled — those
+    /// stay player-controlled via drag-drop.</summary>
+    private bool TryAutoPickupScrollsFromPile(LootPile pile)
+    {
+        if (_playerSpellbook is null || _spellCatalog is null) return false;
+        bool anyHandled = false;
+        for (int i = pile.Items.Count - 1; i >= 0; i--)
+        {
+            var entry = pile.Items[i];
+            if (!string.IsNullOrEmpty(entry.Slot)) continue;     // equipped item, not a scroll
+            var spell = ResolveSlottableSpell(entry.Reference, debugSpellsEnv: null);
+            if (spell is null) continue;                          // not a spell template
+            // First empty Placed slot wins.
+            int dest = -1;
+            for (int p = 0; p < _playerSpellbook.PlacedCount; p++)
+                if (_playerSpellbook.Placed[p] is null) { dest = p; break; }
+            if (dest >= 0)
+            {
+                _playerSpellbook.SetPlaced(dest, spell);
+                Console.WriteLine($"  scroll pickup: {spell.Name} -> spellbook Placed[{dest}]");
+            }
+            else
+            {
+                // Spellbook full — keep as inventory item so it isn't lost.
+                _playerInventory.Add(entry);
+                Console.WriteLine($"  scroll pickup: {spell.Name} -> inventory (spellbook Placed full)");
+            }
+            pile.Items.RemoveAt(i);
+            anyHandled = true;
+        }
+        return anyHandled;
+    }
 
     /// <summary>Overload that takes the cursor-source enum so a
     /// successful drop-into-empty-slot can clear the original source.</summary>
