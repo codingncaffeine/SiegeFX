@@ -42,6 +42,11 @@ public sealed class SfxRuntime
     readonly List<PersistentEmitter> _emitters = new();
     readonly List<RunningScript> _scripts = new();
     readonly HashSet<string> _unhandledVerbsLogged = new(StringComparer.OrdinalIgnoreCase);
+    // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion handles keyed by
+    // monotonically-increasing id. Cleared on Clear(); per-handle pruning
+    // happens inside Tick when Done && no emitter still references it.
+    readonly Dictionary<int, MotionState> _motionHandles = new();
+    int _nextMotionId = 1;
 
     public int LivePersistentCount => _emitters.Count;
     public int LiveCoroutineCount  => _scripts.Count;
@@ -69,6 +74,11 @@ public sealed class SfxRuntime
             // cost more than the leverage; tweak list will say which to
             // promote to native if the user objects to the visual.
             "charge", "polygonalexplosion", "spe",
+            // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — orbital / homing /
+            // glow / spline motion handles. Child emitters following
+            // them via `sfx target $emitter $motion` get per-frame
+            // position updates from the runtime's motion-handle pump.
+            "orbiter", "trackball", "lightsource", "curve",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -192,10 +202,39 @@ public sealed class SfxRuntime
             if (rs.Done) _scripts.RemoveAt(i);
         }
 
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — advance live motion
+        // handles before the emitter maintain pass so emitters that
+        // follow a motion read the just-updated Position.
+        AdvanceMotionHandles(dt);
+
         // Run continuous spawn budgets for every persistent emitter.
-        for (int i = 0; i < _emitters.Count; i++)
+        for (int i = _emitters.Count - 1; i >= 0; i--)
         {
             var e = _emitters[i];
+
+            // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — refresh Position from
+            // the motion handle each tick; if the motion is gone or done,
+            // drop the emitter so e.g. a fire emitter targeting a
+            // departed trackball doesn't render at a stale point forever.
+            if (e.TargetMotionId > 0)
+            {
+                if (!_motionHandles.TryGetValue(e.TargetMotionId, out var motion) || motion.Done)
+                {
+                    _emitters.RemoveAt(i);
+                    continue;
+                }
+                e.Position = motion.Position;
+            }
+            // Self-duration expiry (DS1's `dur(N)` on a lightsource etc.).
+            if (e.Duration > 0f)
+            {
+                e.AgeSec += dt;
+                if (e.AgeSec >= e.Duration)
+                {
+                    _emitters.RemoveAt(i);
+                    continue;
+                }
+            }
             switch (e.Mode)
             {
                 case EmitterMode.Fire:
@@ -218,6 +257,125 @@ public sealed class SfxRuntime
     {
         _emitters.Clear();
         _scripts.Clear();
+        _motionHandles.Clear();
+        _nextMotionId = 1;
+    }
+
+    /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — per-tick advance for
+    /// every live motion handle. Orbiter / trackball / lightsource / curve
+    /// each compute their next Position from their Anchor + per-handle
+    /// state. Done handles stay in the dict for the rest of the tick (so
+    /// the emitter pass can detect them and prune followers cleanly) and
+    /// get pruned at the bottom.</summary>
+    void AdvanceMotionHandles(float dt)
+    {
+        if (_motionHandles.Count == 0) return;
+        // Materialize keys so we can rewrite values without enumerator
+        // invalidation. ints are tiny, list reuse not worth it at this scale.
+        var ids = new List<int>(_motionHandles.Keys);
+        foreach (var id in ids)
+        {
+            var m = _motionHandles[id];
+            // Refresh Anchor from parent if this motion follows another.
+            if (m.ParentMotionId > 0 && _motionHandles.TryGetValue(m.ParentMotionId, out var parent))
+            {
+                if (parent.Done)
+                {
+                    m.Done = true;
+                    _motionHandles[id] = m;
+                    continue;
+                }
+                m.Anchor = parent.Position;
+            }
+
+            switch (m.Kind.ToLowerInvariant())
+            {
+                case "orbiter":
+                    // Phi/Theta tick + radius growth. Position = anchor +
+                    // unit-circle * radius. Theta tilts the circle out of
+                    // the XZ plane (DS1's flame_blades has small theta);
+                    // when itheta is 0 we keep the circle horizontal.
+                    m.Phi    += m.PhiRate * dt;
+                    m.Radius += m.RadiusInc * dt;
+                    {
+                        float r = m.Radius;
+                        float cx = MathF.Cos(m.Phi) * r;
+                        float cz = MathF.Sin(m.Phi) * r;
+                        // Tilt: rotate the (cx, 0, cz) vector around the X
+                        // axis by Theta so the orbit can be inclined.
+                        float cy = MathF.Sin(m.Theta) * r * 0.25f;
+                        m.Position = m.Anchor + new Vector3(cx, cy, cz);
+                    }
+                    break;
+
+                case "trackball":
+                    // Homing toward Target at fixed Speed. Done when within
+                    // 0.5u of Target — collision-aware impact gating
+                    // (waitfor) is a future SC slice; for now the trackball
+                    // simply expires on arrival and child emitters get
+                    // dropped via the Done flag.
+                    {
+                        var to = m.Target - m.Position;
+                        float distSq = to.LengthSquared();
+                        if (distSq <= 0.25f)
+                        {
+                            m.Position = m.Target;
+                            m.Done = true;
+                        }
+                        else
+                        {
+                            float step = m.Speed * dt;
+                            float dist = MathF.Sqrt(distSq);
+                            m.Position += to * (MathF.Min(step, dist) / dist);
+                        }
+                    }
+                    break;
+
+                case "lightsource":
+                    // Static at Anchor unless it has a parent (in which
+                    // case Anchor was just refreshed above). Position
+                    // tracks anchor.
+                    m.Position = m.Anchor;
+                    break;
+
+                case "curve":
+                    // Quadratic Bezier from Anchor → Target with a control
+                    // point above the midpoint (default arc). t advances
+                    // along Duration. When t >= 1, Done.
+                    {
+                        if (m.Duration <= 0.001f) m.Duration = 1.0f;
+                        float t = MathF.Min(1f, m.Elapsed / m.Duration);
+                        var mid = (m.Anchor + m.Target) * 0.5f + new Vector3(0f, 1.0f, 0f);
+                        float u = 1f - t;
+                        m.Position = (u * u) * m.Anchor + (2f * u * t) * mid + (t * t) * m.Target;
+                        if (t >= 1f) m.Done = true;
+                    }
+                    break;
+            }
+
+            // Lifetime expiry — applies to every kind that has a positive
+            // Duration (e.g. orbiter dur(6) in flame_blades, lightsource
+            // dur(2) for short pulses).
+            m.Elapsed += dt;
+            if (m.Duration > 0f && m.Elapsed >= m.Duration) m.Done = true;
+            _motionHandles[id] = m;
+        }
+
+        // Cleanup: prune Done motion handles. Doing this AFTER the emitter
+        // maintain pass would let dead motion handles accumulate for a
+        // frame; prune now so live followers see a stable view.
+        // Build a removal list rather than mutating during enumeration.
+        List<int>? toRemove = null;
+        foreach (var kv in _motionHandles)
+        {
+            if (kv.Value.Done)
+            {
+                toRemove ??= new List<int>();
+                toRemove.Add(kv.Key);
+            }
+        }
+        if (toRemove is not null)
+            foreach (var id in toRemove) _motionHandles.Remove(id);
     }
 
     /// <summary>Phase 17-SC-J — register a continuous fire/smoke/steam column
@@ -359,6 +517,44 @@ public sealed class SfxRuntime
             BurstCount = 0,
         };
         ApplyParamString(ref handle, raw);
+
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — for motion kinds, allocate
+        // a slot in _motionHandles so child emitters that target this
+        // handle can follow its Position frame-by-frame. The Handle.MotionId
+        // is the linkage; ExecSfxTarget propagates it to the child's
+        // TargetMotionId.
+        if (handle.Mode == EmitterMode.MotionOrbiter
+            || handle.Mode == EmitterMode.MotionTrackball
+            || handle.Mode == EmitterMode.LightSource
+            || handle.Mode == EmitterMode.MotionCurve)
+        {
+            int id = _nextMotionId++;
+            handle.MotionId = id;
+            // For orbiter, anchor is the orbital center. For trackball,
+            // anchor is the start point and the script's #TARGET (Ctx.TargetPos)
+            // is where it homes to. Lightsource is static at anchor (until a
+            // sfx target rebinds parent). Curve uses anchor as start, target as end.
+            var motion = new MotionState
+            {
+                Id           = id,
+                Kind         = kind,
+                Anchor       = anchor,
+                Target       = rs.Ctx.TargetPos,
+                Position     = anchor,
+                Phi          = handle.OrbitPhi,
+                Theta        = handle.OrbitTheta,
+                Radius       = handle.OrbitRadius,
+                RadiusInc    = handle.OrbitRadiusInc,
+                // Default rotation rate for orbiter — DS1 doesn't author
+                // a per-spell phi-rate field; visual sweep covers tuning.
+                PhiRate      = handle.Mode == EmitterMode.MotionOrbiter ? 4.0f : 0f,
+                Speed        = handle.Velocity > 0f ? handle.Velocity : 8.0f,
+                Duration     = handle.Duration > 0.1f ? handle.Duration : 0f,
+                Elapsed      = 0f,
+                ParentMotionId = 0,
+            };
+            _motionHandles[id] = motion;
+        }
         rs.Stack.Push(handle);
     }
 
@@ -457,6 +653,38 @@ public sealed class SfxRuntime
             }
             case EmitterMode.Unsupported:
                 return;
+            case EmitterMode.MotionOrbiter:
+            case EmitterMode.MotionCurve:
+                // Pure motion handles — no visible emitter of their own.
+                // Their MotionState lives in _motionHandles (allocated at
+                // ExecCreate) and child emitters that targeted them via
+                // `sfx target $emitter $orbiter` follow Position each tick.
+                // Nothing to register here; Tick advances the motion.
+                break;
+            case EmitterMode.MotionTrackball:
+            case EmitterMode.LightSource:
+            {
+                // Visible motion handles — render a continuous glow at the
+                // motion's live position. SelfMotionId binds the emitter to
+                // its own motion; TargetMotionId is the lookup key the Tick
+                // pump uses to refresh Position. Trackball uses Fire (warm
+                // streak); LightSource uses Steam (color-preserving glow).
+                var glowMode = h.Mode == EmitterMode.MotionTrackball
+                    ? EmitterMode.Fire
+                    : EmitterMode.Steam;
+                _emitters.Add(new PersistentEmitter
+                {
+                    Mode     = glowMode,
+                    Position = h.Anchor,
+                    Color    = h.Color,
+                    Scale    = MathF.Max(0.30f, h.Scale * 0.80f),
+                    Rate     = h.Mode == EmitterMode.MotionTrackball ? 60f : 30f,
+                    TargetMotionId = h.MotionId,
+                    SelfMotionId   = h.MotionId,
+                    Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                });
+                break;
+            }
             default:
                 _emitters.Add(new PersistentEmitter
                 {
@@ -465,6 +693,7 @@ public sealed class SfxRuntime
                     Color    = h.Color,
                     Scale    = h.Scale,
                     Rate     = h.Rate,
+                    TargetMotionId = h.TargetMotionId,
                 });
                 break;
         }
@@ -481,11 +710,37 @@ public sealed class SfxRuntime
     void ExecSfxTarget(RunningScript rs, SfxStatement stmt)
     {
         // `sfx target <handle-tok> <where>` — set the bolt's far end.
-        // <where> is `source` / `target` / `#SOURCE` / `#TARGET` etc.
+        // <where> is `source` / `target` / `#SOURCE` / `#TARGET` / `$name`.
         if (stmt.Tokens.Count < 2) return;
         if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h))
             return;
-        h.OtherEnd = ResolveAnchor(stmt.Tokens[1], rs.Ctx);
+
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — when the second arg is a
+        // $name handle that has a MotionId, we don't just snapshot the
+        // current position into OtherEnd; we wire the source emitter to
+        // FOLLOW that motion handle's live Position each tick. This is
+        // what makes `sfx target $fire $trackball` track the moving ball
+        // instead of stranding $fire at the trackball's spawn point.
+        var targetTok = stmt.Tokens[1];
+        if (targetTok.StartsWith("$") &&
+            rs.NamedHandles.TryGetValue(targetTok, out var named) &&
+            named.MotionId > 0)
+        {
+            h.TargetMotionId = named.MotionId;
+            h.OtherEnd = named.Anchor;     // useful initial value for one-shots
+            // If THIS handle is also a motion (orbiter targeting another
+            // motion = nested orbital), record the parent linkage so its
+            // own motion advance reads the parent's per-tick Position.
+            if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var selfMotion))
+            {
+                selfMotion.ParentMotionId = named.MotionId;
+                _motionHandles[h.MotionId] = selfMotion;
+            }
+        }
+        else
+        {
+            h.OtherEnd = ResolveAnchor(targetTok, rs.Ctx);
+        }
         StoreMutatedHandle(rs, stmt.Tokens[0], h);
     }
 
@@ -635,6 +890,13 @@ public sealed class SfxRuntime
             case "charge":             return EmitterMode.OneShotSparkles;     // fireskull build-up
             case "polygonalexplosion": return EmitterMode.OneShotExplosion;    // explode_body
             case "spe":                return EmitterMode.OneShotFlurry;       // incinerate
+            // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion-driven kinds.
+            // Each gets a slot in _motionHandles whose Position advances
+            // every tick; child emitters following them via TargetMotionId.
+            case "orbiter":     return EmitterMode.MotionOrbiter;
+            case "trackball":   return EmitterMode.MotionTrackball;
+            case "lightsource": return EmitterMode.LightSource;
+            case "curve":       return EmitterMode.MotionCurve;
             default:          return EmitterMode.Unsupported;
         }
     }
@@ -692,6 +954,17 @@ public sealed class SfxRuntime
             var lum = 0.30f + 0.10f * h.Color.X;
             h.Color = new Vector4(lum, lum, lum, 0.55f);
         }
+
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — orbital / homing knobs.
+        // Always parsed; non-motion modes ignore them. iphi/itheta/radiusi
+        // are unique to orbiter; velocity is unique to trackball. radius is
+        // overloaded (Scale for non-orbiter), so OrbitRadius is set
+        // separately and only used when EmitterMode is MotionOrbiter.
+        if (TryReadFloat(raw, "iphi",     out var iphi))   h.OrbitPhi   = iphi;
+        if (TryReadFloat(raw, "itheta",   out var ith))    h.OrbitTheta = ith;
+        if (TryReadFloat(raw, "radius",   out var or))     h.OrbitRadius = or;
+        if (TryReadFloat(raw, "radiusi",  out var ori))    h.OrbitRadiusInc = ori;
+        if (TryReadFloat(raw, "velocity", out var vel))    h.Velocity = MathF.Abs(vel);
     }
 
     static string SubstituteCallerArgs(string? param, IReadOnlyList<string>? callerArgs)
@@ -812,6 +1085,15 @@ public sealed class SfxRuntime
         Fireb,            // 3g — fire one-shot with directional puff, ≈SpawnFire
         OneShotCylinder,  // 3i — straight beam between hp0/hp1, ≈SpawnLightning displace=0
         OneShotSray,      // 3h — directional ray, ≈SpawnSpark dense + slight bias
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion handles that other
+        // emitters can target via `sfx target $emitter $motion`. Each gets
+        // a slot in _motionHandles whose Position advances every tick;
+        // PersistentEmitters with TargetMotionId>0 follow that position
+        // each maintain pass.
+        MotionOrbiter,    // orbital motion anchor — invisible, drives child emitters
+        MotionTrackball,  // homing projectile — visible glow trail + drives child emitters
+        LightSource,      // persistent glow billboard at position
+        MotionCurve,      // splined-path motion handle — invisible
         Unsupported,
     }
 
@@ -835,6 +1117,24 @@ public sealed class SfxRuntime
         public float       Displace;     // maxdisplace amplitude
         public int         BurstCount;   // explosion/sparkles count(N)
         public EmitterMode Mode;
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion-tracking fields.
+        /// <summary>Non-zero when this handle IS a motion source (orbiter,
+        /// trackball, lightsource, curve). The id maps into the runtime's
+        /// <c>_motionHandles</c> dict; the live <see cref="MotionState"/>
+        /// is what advances each tick.</summary>
+        public int         MotionId;
+        /// <summary>Non-zero when this handle's emitter should FOLLOW a
+        /// motion id (set via `sfx target $emitter $motionhandle`). On
+        /// `sfx start` the persistent emitter inherits this id and looks
+        /// the position up each maintain pass.</summary>
+        public int         TargetMotionId;
+        // Motion-specific param-string fields (parsed by ApplyParamString,
+        // ignored by non-motion modes).
+        public float       OrbitPhi;        // iphi(N)   — initial orbital angle
+        public float       OrbitTheta;      // itheta(N) — orbital tilt
+        public float       OrbitRadius;     // radius(N) for orbiter (overloaded; Scale path stays for non-orbit)
+        public float       OrbitRadiusInc;  // radiusi(N) — per-second radius delta
+        public float       Velocity;        // velocity(N) — trackball speed
     }
 
     struct PersistentEmitter
@@ -845,6 +1145,49 @@ public sealed class SfxRuntime
         public float   Scale;
         public float   Rate;
         public float   Carry;
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — when set, the runtime
+        // re-derives `Position` from `_motionHandles[TargetMotionId]`
+        // every tick before maintain. When the target motion ends the
+        // emitter is dropped on the same pass.
+        public int     TargetMotionId;
+        // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — when this emitter IS a
+        // motion handle (lightsource, trackball with visible trail), the
+        // motion id its Position is driven from. Used to clean up the
+        // emitter when its own motion expires (`dur` elapsed).
+        public int     SelfMotionId;
+        public float   AgeSec;        // time since spawn — for `dur` expiry
+        public float   Duration;      // 0 = never expire
+    }
+
+    /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion state for
+    /// orbiter / trackball / lightsource / curve handles. Advanced once per
+    /// <see cref="Tick"/>; <see cref="PersistentEmitter"/>s with a matching
+    /// <see cref="PersistentEmitter.TargetMotionId"/> read <c>Position</c>
+    /// before their maintain pass so child emitters follow the moving anchor
+    /// frame by frame (this is what makes `sfx target $fire $orbiter` work).
+    /// </summary>
+    struct MotionState
+    {
+        public int     Id;
+        public string  Kind;             // "orbiter" / "trackball" / "lightsource" / "curve"
+        /// <summary>The static-frame anchor — orbital center, trackball
+        /// start, lightsource emit point, curve start. When
+        /// <see cref="ParentMotionId"/> is non-zero, this is re-derived
+        /// from the parent's Position each tick before motion advances.
+        /// </summary>
+        public Vector3 Anchor;
+        public Vector3 Target;            // trackball: where to home; curve: end point
+        public int     ParentMotionId;    // non-zero = follow another motion handle's Position
+        public Vector3 Position;          // computed each tick
+        public float   Phi;               // current orbital angle
+        public float   Theta;             // current orbital tilt
+        public float   Radius;            // current orbital distance
+        public float   RadiusInc;         // delta radius per second
+        public float   PhiRate;           // delta phi per second (rad/s)
+        public float   Speed;             // trackball travel speed
+        public float   Duration;          // dur(N) lifetime; 0 = never expire
+        public float   Elapsed;           // time since spawn
+        public bool    Done;              // true when expired or trackball arrived
     }
 
     sealed class RunningScript
