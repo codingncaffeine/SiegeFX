@@ -159,6 +159,7 @@ echo   86. Phase 17-SC-I    - Water UV scroll + waterwheel rotation (in-window f
 echo   87. Phase 17-SC-J    - Per-instance scale_multiplier (breakable farmhouse door + foliage variation)
 echo   88. Phase 21-SC-SPELL-VFX-AUDIT - Visual-coverage audit across every offensive spell (Logic.dsres)
 echo   89. Phase 21-SC-SPELL-VFX-AUDIT - Visual verify fireball + iceshard (SIEGEFX_DEBUG_SPELLS launch)
+echo   90. Phase 21-SC-SCROLL          - Full scroll-UI test (16-spell roster + ground pile + glitter)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -254,6 +255,7 @@ if /i "%CHOICE%"=="86" goto T86
 if /i "%CHOICE%"=="87" goto T87
 if /i "%CHOICE%"=="88" goto T88
 if /i "%CHOICE%"=="89" goto T89
+if /i "%CHOICE%"=="90" goto T90
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1760,6 +1762,47 @@ echo.
 echo [If the visuals don't match the audit's verdicts that's a bug; treat as a finding.]
 echo.
 set SIEGEFX_DEBUG_SPELLS=spell_fireball,spell_iceshard
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_DEBUG_SPELLS=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T90
+echo.
+echo --- Phase 21-SC-SCROLL: full scroll-UI test (16-spell roster) ---
+echo [Launches fh_r1 with a 16-spell SIEGEFX_DEBUG_SPELLS roster:]
+echo [  Q+W actives: fireball + iceshard]
+echo [  Spellbook placed (10 rows): lightning, shock_wave, nurture, bombard,]
+echo [    acid_cloud, death_blast, spark, fire_pillar, implosion, starburst]
+echo [  Ground pile (~2u in front of player): zap, frigid_armor, heal_bind, leech_life]
+echo.
+echo [What to test:]
+echo [  - Ground pile glitters with element-tinted "pixie dust" until pickup]
+echo [    (warm orange for combat magic, green for nature/holy/acid, cyan for ice,]
+echo [     purple for death). Walk away, glitter follows the pile. Walk over]
+echo [     pile -> auto-routes scrolls to spellbook Placed[]; once Placed full,]
+echo [     extras land in the inventory grid for drag-from testing.]
+echo [  - Open spellbook with B, click an active or placed slot to pick up]
+echo [    onto cursor. Click another slot to drop/swap. Self-drop = restore.]
+echo [    ESC or RMB cancels and restores to source.]
+echo [  - Open inventory with I. Scroll items render with DS1 b_gui_ig_i_ic_sp_*_inv]
+echo [    art. Click a scroll to pick onto cursor; drop on spellbook slot.]
+echo [  - With cursor scroll, click outside any UI = world drop with the]
+echo [    Phase 9-SC-9 throw arc + new X-axis tumble. Walk over to retrieve.]
+echo [  - F5 quicksave / F9 quickload: layout round-trips through schema v6.]
+echo [  - Verify fireball regression fix: cast Q -> tracking projectile flies]
+echo [    caster -> target with fire trail (was rendering nothing before]
+echo [    commit 6d3a58c).]
+echo.
+set SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning,shock_wave,nurture,bombard,acid_cloud,death_blast,spark,fire_pillar,implosion,starburst,zap,frigid_armor,heal_bind,leech_life
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_DEBUG_SPELLS=
