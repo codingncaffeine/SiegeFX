@@ -920,10 +920,29 @@ public sealed class SfxRuntime
         bool hasSmoke = ContainsKeyword(raw, "texture") &&
                         (raw.IndexOf("b_sfx_smoke", StringComparison.OrdinalIgnoreCase) >= 0
                          || raw.IndexOf("b_sfx_mist",  StringComparison.OrdinalIgnoreCase) >= 0);
+
+        // A `sfx create fire` with a clearly non-warm color0 is also a
+        // misnomer — DS1 spell authors used `fire` for "any flickering
+        // particle column" even when the spell isn't fire-element
+        // (acid_cloud, blast_zap, ice_storm, etc. all do this). Detect
+        // by R-dominance: an input where Red is the brightest channel
+        // wants the warm fade (real fire). When G or B dominates,
+        // route to Smoke so SpawnSmoke's color-preserving fade keeps
+        // green / blue / purple visible across the particle's
+        // lifetime instead of fading to brown. Fixes the "every spell
+        // looks like fireball" complaint without per-spell tweaks.
+        bool nonWarmColor = false;
+        if (TryReadVec4(raw, "color0", out var c0probe))
+        {
+            // R dominant within ~10% margin keeps the warm path; if G
+            // or B exceeds R by more than that, treat as non-warm.
+            float r = c0probe.X, g = c0probe.Y, b = c0probe.Z;
+            if (g > r + 0.05f || b > r + 0.05f) nonWarmColor = true;
+        }
         bool isDark   = ContainsKeyword(raw, "dark");
         switch (kind)
         {
-            case "fire":      return (hasSmoke || isDark) ? EmitterMode.Smoke : EmitterMode.Fire;
+            case "fire":      return (hasSmoke || isDark || nonWarmColor) ? EmitterMode.Smoke : EmitterMode.Fire;
             case "smoke":     return EmitterMode.Smoke;
             case "steam":     return EmitterMode.Steam;
             case "lightning": return EmitterMode.OneShotLightning;
