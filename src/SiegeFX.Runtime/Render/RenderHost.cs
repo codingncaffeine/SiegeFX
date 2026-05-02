@@ -8961,13 +8961,19 @@ void main()
 
             if (_playerSpellbook is not null)
             {
-                p.Spellbook = new SiegeFX.Core.Save.SpellbookSnapshot
+                var snapshot = new SiegeFX.Core.Save.SpellbookSnapshot
                 {
                     PrimarySpell      = _playerSpellbook.Primary?.Name,
                     SecondarySpell    = _playerSpellbook.Secondary?.Name,
                     PrimaryCooldown   = _playerSpellbook.PrimaryCooldownRemaining,
                     SecondaryCooldown = _playerSpellbook.SecondaryCooldownRemaining,
                 };
+                // Phase 21-SC-SCROLL-G — persist Placed[] alongside the actives
+                // so a quicksave round-trips the user's spellbook layout. Null
+                // entries are written as JSON null and stay null on load.
+                for (int p_i = 0; p_i < _playerSpellbook.PlacedCount; p_i++)
+                    snapshot.Placed.Add(_playerSpellbook.Placed[p_i]?.Name);
+                p.Spellbook = snapshot;
             }
 
             if (_progression is not null)
@@ -9123,6 +9129,20 @@ void main()
                     _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, ps2);
                 _playerSpellbook.RestoreCooldowns(
                     ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
+                // Phase 21-SC-SCROLL-G — restore Placed[]. v5 saves have no
+                // Placed list (defaults to empty list via the deserializer),
+                // so the loop simply doesn't fire and the player's placed
+                // rows stay at their startup state (all null). v6+ saves
+                // round-trip the layout. Resolves through ResolveSlottableSpell
+                // so synthesized summon templates restore too.
+                int placedSlots = Math.Min(ps.Spellbook.Placed.Count, _playerSpellbook.PlacedCount);
+                for (int p_i = 0; p_i < placedSlots; p_i++)
+                {
+                    var name = ps.Spellbook.Placed[p_i];
+                    if (name is null) { _playerSpellbook.SetPlaced(p_i, null); continue; }
+                    var spell = ResolveSlottableSpell(name, debugSpellsEnv: null);
+                    _playerSpellbook.SetPlaced(p_i, spell);
+                }
             }
 
             _heroName = ps.HeroName ?? "";

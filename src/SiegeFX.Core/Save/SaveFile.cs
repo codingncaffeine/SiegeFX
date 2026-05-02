@@ -24,7 +24,7 @@ public sealed class SaveFile
     ///              pants picks from the character creator).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
     /// so any v1..v4 file loads as a v5 with the new fields zero-initialized.</summary>
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -80,6 +80,12 @@ public sealed class SpellbookSnapshot
     public string? SecondarySpell      { get; set; }
     public float   PrimaryCooldown     { get; set; }
     public float   SecondaryCooldown   { get; set; }
+
+    /// <summary>Phase 21-SC-SCROLL-G — the 10 user-organized "placed"
+    /// rows below the actives. Stored as template names; null entries
+    /// stay null (empty cells). Empty list / null on a v5 save → all
+    /// placed slots load as empty (matches pre-G behavior).</summary>
+    public List<string?> Placed { get; set; } = new();
 }
 
 /// <summary>Per-actor mutable state. Position is the world-space root the
