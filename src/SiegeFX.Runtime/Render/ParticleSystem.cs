@@ -359,7 +359,13 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             Color      = color,
             Scale      = MathF.Max(0.1f, scale),
             Speed      = MathF.Max(2f, speed),
-            ImpactKind = (byte)Math.Clamp(impactKind, 0, 2),
+            // Clamp upper bound covers every kind the trail+impact switches
+            // recognize (0 fire, 1 ice, 2 lightning, 3 acid). Adding a new
+            // kind here without bumping the bound silently truncates to
+            // an unrelated visual — that's how the acid fix in 8ad7483
+            // initially shipped non-functional. Keep this in sync with the
+            // switch arms in the trail-spawn and impact-burst blocks.
+            ImpactKind = (byte)Math.Clamp(impactKind, 0, 3),
         });
     }
 

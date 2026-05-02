@@ -218,6 +218,11 @@ public sealed class SfxRuntime
             // departed trackball doesn't render at a stale point forever.
             if (e.TargetMotionId > 0)
             {
+                // `|| motion.Done` is defensive: AdvanceMotionHandles prunes
+                // Done entries before we get here, so the dict miss is the
+                // expected drop path. Keep the second clause in case future
+                // refactoring reorders the pump and a Done entry survives
+                // into the emitter pass — costs one branch per emitter.
                 if (!_motionHandles.TryGetValue(e.TargetMotionId, out var motion) || motion.Done)
                 {
                     _emitters.RemoveAt(i);
@@ -727,7 +732,15 @@ public sealed class SfxRuntime
             named.MotionId > 0)
         {
             h.TargetMotionId = named.MotionId;
-            h.OtherEnd = named.Anchor;     // useful initial value for one-shots
+            // Use the motion's CURRENT Position (not the spawn-time Anchor)
+            // for the initial OtherEnd snapshot — nested orbitals can have
+            // already advanced the parent before sfx target runs, and a
+            // stale Anchor reads as a frame-zero ghost on one-shot two-
+            // ended primitives (cylinder/sray) that read OtherEnd at start.
+            // Falls back to Anchor if the motion entry is somehow gone.
+            h.OtherEnd = _motionHandles.TryGetValue(named.MotionId, out var liveMotion)
+                ? liveMotion.Position
+                : named.Anchor;
             // If THIS handle is also a motion (orbiter targeting another
             // motion = nested orbital), record the parent linkage so its
             // own motion advance reads the parent's per-tick Position.
