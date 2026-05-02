@@ -158,6 +158,7 @@ echo   85. Phase 17-SC-H    - Spell cast sfx_script binding (spells dump w/ cast
 echo   86. Phase 17-SC-I    - Water UV scroll + waterwheel rotation (in-window fh_r1)
 echo   87. Phase 17-SC-J    - Per-instance scale_multiplier (breakable farmhouse door + foliage variation)
 echo   88. Phase 21-SC-SPELL-VFX-AUDIT - Visual-coverage audit across every offensive spell (Logic.dsres)
+echo   89. Phase 21-SC-SPELL-VFX-AUDIT - Visual verify fireball + iceshard (SIEGEFX_DEBUG_SPELLS launch)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -252,6 +253,7 @@ if /i "%CHOICE%"=="85" goto T85
 if /i "%CHOICE%"=="86" goto T86
 if /i "%CHOICE%"=="87" goto T87
 if /i "%CHOICE%"=="88" goto T88
+if /i "%CHOICE%"=="89" goto T89
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1738,6 +1740,36 @@ echo.
 echo [--verbose for the per-spell breakdown; --filter=NAME to narrow; --only-uncovered]
 echo [to see only the PARTIAL+UNCOVERED rows.]
 echo.
+pause
+goto MENU
+
+:T89
+echo.
+echo --- Phase 21-SC-SPELL-VFX-AUDIT: visual verify fireball + iceshard ---
+echo [Sets SIEGEFX_DEBUG_SPELLS=spell_fireball,spell_iceshard so the player spawns]
+echo [with those slotted instead of the default zap+healing_wind. Press Q to cast]
+echo [primary (fireball) and W to cast secondary (iceshard) at fh_r1's krug.]
+echo.
+echo [What to look for: fireball is a PARTIAL in the audit (uses trackball + waitfor]
+echo [collision the VM doesn't run yet) so it should fall back to the SpawnSpellVisual]
+echo [placeholder — orange tinted projectile + impact, but not the proper rolling]
+echo [fire ball with collision detection. Iceshard is UNCOVERED in the audit (DS1]
+echo [stub: ice_shard_launch.gas is sound-only) so it'll show our placeholder cyan]
+echo [projectile + impact only.]
+echo.
+echo [If the visuals don't match the audit's verdicts that's a bug; treat as a finding.]
+echo.
+set SIEGEFX_DEBUG_SPELLS=spell_fireball,spell_iceshard
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_DEBUG_SPELLS=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
 pause
 goto MENU
 

@@ -4609,23 +4609,54 @@ void main()
         // book slot. Future inventory/learn UI will populate this from the
         // spellbook items in the PC's [inventory][equipment]; for now zap is
         // the always-on starter so 'Q' has something to fire.
-        if (_spellCatalog is not null && _spellCatalog.TryGet(DefaultPrimarySpellName, out var primary))
+        //
+        // Phase 21-SC-SPELL-VFX-AUDIT follow-up — `SIEGEFX_DEBUG_SPELLS=primary
+        // [,secondary]` overrides the hardcoded defaults so the SC-SPELL-VFX-3
+        // work plan (build a primitive, test the spells it unblocks) doesn't
+        // need pickup→spellbook wiring (which is the separate scroll↔spellbook
+        // SC). Bare names accepted (`spell_` prefix added if missing) so the
+        // env var reads naturally as `SIEGEFX_DEBUG_SPELLS=fireball,iceshard`.
+        if (_spellCatalog is not null)
         {
-            _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
-                player, new Random(unchecked((int)0x5C617AC1u)));
-            _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, primary);
-            Console.WriteLine($"  spellbook: primary <- {primary.Name} (\"{primary.ScreenName}\") " +
-                              $"range={primary.CastRange:F1} cd={primary.CastReloadDelay:F2}s");
-            // Phase 17c — slot a self-heal into Secondary so 'W' has something
-            // to fire. spell_healing_wind has a simple `(#magic+1)*5.15` mana
-            // formula and a tractable alter_life enchantment value our
-            // SpellExpr resolver handles without hitting the ternary syntax
-            // the more complex heal templates use.
-            if (_spellCatalog.TryGet(DefaultSecondarySpellName, out var secondary))
+            string primaryName   = DefaultPrimarySpellName;
+            string secondaryName = DefaultSecondarySpellName;
+            var debugSpells = Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_SPELLS");
+            if (!string.IsNullOrWhiteSpace(debugSpells))
             {
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, secondary);
-                Console.WriteLine($"  spellbook: secondary <- {secondary.Name} (\"{secondary.ScreenName}\") " +
-                                  $"kind={secondary.Kind} cd={secondary.CastReloadDelay:F2}s");
+                var parts = debugSpells.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length >= 1 && parts[0].Length > 0)
+                    primaryName = parts[0].StartsWith("spell_", StringComparison.OrdinalIgnoreCase) ? parts[0] : "spell_" + parts[0];
+                if (parts.Length >= 2 && parts[1].Length > 0)
+                    secondaryName = parts[1].StartsWith("spell_", StringComparison.OrdinalIgnoreCase) ? parts[1] : "spell_" + parts[1];
+                Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS override: primary={primaryName} secondary={secondaryName}");
+            }
+
+            if (_spellCatalog.TryGet(primaryName, out var primary))
+            {
+                _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
+                    player, new Random(unchecked((int)0x5C617AC1u)));
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, primary);
+                Console.WriteLine($"  spellbook: primary <- {primary.Name} (\"{primary.ScreenName}\") " +
+                                  $"range={primary.CastRange:F1} cd={primary.CastReloadDelay:F2}s");
+                // Phase 17c — slot a self-heal into Secondary so 'W' has something
+                // to fire. spell_healing_wind has a simple `(#magic+1)*5.15` mana
+                // formula and a tractable alter_life enchantment value our
+                // SpellExpr resolver handles without hitting the ternary syntax
+                // the more complex heal templates use.
+                if (_spellCatalog.TryGet(secondaryName, out var secondary))
+                {
+                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, secondary);
+                    Console.WriteLine($"  spellbook: secondary <- {secondary.Name} (\"{secondary.ScreenName}\") " +
+                                      $"kind={secondary.Kind} cd={secondary.CastReloadDelay:F2}s");
+                }
+                else if (!string.IsNullOrWhiteSpace(debugSpells))
+                {
+                    Console.WriteLine($"  spellbook: secondary '{secondaryName}' not in catalog (override ignored, slot empty)");
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(debugSpells))
+            {
+                Console.WriteLine($"  spellbook: primary '{primaryName}' not in catalog (override failed; spellbook will be empty)");
             }
         }
         // Phase 13b — once a PC exists, default to chase cam. Toggle with C if the
