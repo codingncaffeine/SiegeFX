@@ -903,13 +903,28 @@ public sealed class SfxRuntime
 
     static Vector4 DefaultColor(string kind) => kind switch
     {
-        "fire"      => new Vector4(1.00f, 0.55f, 0.20f, 1f),
-        "smoke"     => new Vector4(0.35f, 0.35f, 0.38f, 0.55f),
-        "steam"     => new Vector4(0.85f, 0.92f, 1.00f, 0.65f),
-        "lightning" => new Vector4(0.7f, 0.85f, 1.0f, 1f),
-        "explosion" => new Vector4(1f, 0.9f, 0.5f, 1f),
-        "sparkles"  => new Vector4(0.9f, 0.9f, 1f, 1f),
-        _           => new Vector4(1f, 1f, 1f, 1f),
+        "fire"               => new Vector4(1.00f, 0.55f, 0.20f, 1f),
+        "smoke"              => new Vector4(0.35f, 0.35f, 0.38f, 0.55f),
+        "steam"              => new Vector4(0.85f, 0.92f, 1.00f, 0.65f),
+        "lightning"          => new Vector4(0.7f, 0.85f, 1.0f, 1f),
+        "explosion"          => new Vector4(1f, 0.9f, 0.5f, 1f),
+        "sparkles"           => new Vector4(0.9f, 0.9f, 1f, 1f),
+        // Phase 21-SC-SPELL-VFX-3f/g/h/i/q/MOTION-HANDLE — defaults for the
+        // newer kinds when a script forgets `color0(...)`. Match the
+        // dominant in-game element each kind is associated with so a
+        // script-side omission doesn't render colorless white.
+        "flurry"             => new Vector4(1f, 0.9f, 0.5f, 1f),    // explosion-like burst
+        "fireb"              => new Vector4(1.00f, 0.55f, 0.20f, 1f), // fire family
+        "cylinder"           => new Vector4(1.00f, 0.55f, 0.20f, 1f), // shock/fire beams typical
+        "sray"               => new Vector4(1f, 0.95f, 0.65f, 1f),  // sun-ray warm
+        "charge"             => new Vector4(1.00f, 0.55f, 0.20f, 1f), // fireskull
+        "polygonalexplosion" => new Vector4(1f, 0.9f, 0.5f, 1f),    // explosion-like
+        "spe"                => new Vector4(1.00f, 0.55f, 0.20f, 1f), // incinerate (fire-themed)
+        "trackball"          => new Vector4(1.00f, 0.55f, 0.20f, 1f), // fireball-class default
+        "orbiter"            => new Vector4(1f, 1f, 1f, 1f),        // typically invisible(); white if not
+        "lightsource"        => new Vector4(1.00f, 0.85f, 0.45f, 1f), // warm glow
+        "curve"              => new Vector4(1f, 1f, 1f, 1f),        // motion handle, usually invisible
+        _                    => new Vector4(1f, 1f, 1f, 1f),
     };
 
     static void ApplyParamString(ref Handle h, string raw)

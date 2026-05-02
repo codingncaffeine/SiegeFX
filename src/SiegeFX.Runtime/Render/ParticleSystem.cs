@@ -429,6 +429,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                         SpawnSpark(pr.Target, pr.Color, pr.Scale * 1.4f, 0.35f, 32);
                         SpawnFire (pr.Target, pr.Color, pr.Scale * 0.9f, 0.30f, 8);
                         break;
+                    case 3: // acid / poison
+                        SpawnSmoke(pr.Target, pr.Color, pr.Scale * 1.6f, 0.65f, 16);
+                        SpawnSpark(pr.Target, new Vector4(0.55f, 0.95f, 0.40f, 1f), pr.Scale * 1.2f, 0.40f, 20);
+                        break;
                     default: // fire
                         SpawnFire (pr.Target, pr.Color, pr.Scale * 1.6f, 0.55f, 22);
                         SpawnSpark(pr.Target, new Vector4(1f, 0.85f, 0.4f, 1f), pr.Scale * 1.2f, 0.45f, 18);
@@ -468,6 +472,13 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                             SpawnSpark(pr.Position,
                                        new Vector4(1f, 1f, 1f, 1f),
                                        pr.Scale * 0.6f, 0.15f, 2);
+                        break;
+                    case 3: // acid / poison — green-preserving smoke + green sparks
+                        SpawnSmoke(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);
+                        if ((n & 1) == 0)
+                            SpawnSpark(pr.Position,
+                                       new Vector4(0.55f, 0.95f, 0.40f, 1f),
+                                       pr.Scale * 0.6f, 0.18f, 2);
                         break;
                     default: // fire — original warm trail
                         SpawnFire(pr.Position, pr.Color, pr.Scale * 0.55f, 0.30f, n);

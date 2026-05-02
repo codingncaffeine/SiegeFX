@@ -263,7 +263,7 @@ public sealed class RenderHost : IDisposable
                 _particles.SpawnProjectile(src, dst, color, 0.55f, 18f, 1);
                 break;
             case SiegeFX.Core.Assets.SpellElement.Acid:
-                _particles.SpawnProjectile(src, dst, color, 0.50f, 14f, 0);
+                _particles.SpawnProjectile(src, dst, color, 0.50f, 14f, 3);
                 break;
             case SiegeFX.Core.Assets.SpellElement.Death:
                 _particles.SpawnLightning(src, dst, color, 0.35f);
