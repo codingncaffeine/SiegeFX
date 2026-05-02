@@ -5178,13 +5178,12 @@ static int CmdSpellsVisualAudit(string[] a)
     var spells = SpellCatalog.Build(templates);
     var sfx    = SfxScriptStore.LoadFromTank(reader);
 
-    // Mirror SfxRuntime.MapMode's switch so MISS picks up exactly what the
-    // VM today drops on the floor. If MapMode grows new branches, this set
-    // must grow too — keep it next to the runtime in PRs.
-    var coveredKinds = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
-    };
+    // Phase 21-SC-SPELL-VFX-3c — single source of truth for "what kinds
+    // does the runtime actually render": SfxRuntime.SupportedCreateKinds.
+    // Was duplicated here in the audit's first pass (927284a); folded into
+    // the runtime so the audit and the cast-site coverage check can never
+    // drift apart.
+    var coveredKinds = SiegeFX.Core.Sfx.SfxRuntime.SupportedCreateKinds;
     // Bare top-level verbs whose unhandled-ness alone moves a spell from
     // COVERED → PARTIAL. Today only `waitfor` qualifies — it gates the
     // whole script (e.g. waitfor collision before the impact burst), so a

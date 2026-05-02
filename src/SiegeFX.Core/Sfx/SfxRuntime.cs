@@ -47,6 +47,43 @@ public sealed class SfxRuntime
     public int LiveCoroutineCount  => _scripts.Count;
     public IReadOnlyCollection<string> UnhandledVerbs => _unhandledVerbsLogged;
 
+    /// <summary>Phase 21-SC-SPELL-VFX-3c — the set of <c>sfx create &lt;kind&gt;</c>
+    /// kinds the runtime knows how to render (mirrors the cases in
+    /// <see cref="MapMode"/>). Callers (the spell-cast site, the visual-audit
+    /// CLI) consult this set to decide whether a script is fully runnable
+    /// or whether to route it to a placeholder visual instead of letting
+    /// the VM spawn stranded emitters bound to unhandled handles. If
+    /// <c>MapMode</c> grows new branches, add them here too — keep them
+    /// adjacent in PRs.</summary>
+    public static IReadOnlyCollection<string> SupportedCreateKinds { get; }
+        = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
+        };
+
+    /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> in the
+    /// supplied program is in <see cref="SupportedCreateKinds"/>. Use this
+    /// at a cast site to decide between "let the VM run the native script"
+    /// and "the script asks for an unmodeled primitive (orbiter, trackball,
+    /// cylinder, …); spawn a placeholder visual instead so the partial run
+    /// doesn't leave stranded emitters at the caster" — see fireball's
+    /// `sfx target $fire $trackball` pattern, which without this gate
+    /// anchors the fire emitters at #SOURCE permanently when trackball is
+    /// unimplemented (they're targeting a handle that was never actually
+    /// resolved).</summary>
+    public static bool IsScriptFullyCovered(SfxProgram program)
+    {
+        if (program is null) return false;
+        foreach (var stmt in program.Statements)
+        {
+            if (stmt.Kind != StatementKind.SfxCreate) continue;
+            if (stmt.Tokens.Count == 0) continue;
+            if (!SupportedCreateKinds.Contains(stmt.Tokens[0]))
+                return false;
+        }
+        return true;
+    }
+
     public SfxRuntime(SfxScriptStore store, IParticleSink particles)
     {
         _store     = store;

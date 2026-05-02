@@ -336,6 +336,13 @@ public sealed class RenderHost : IDisposable
     // Populated lazily on first cast of each spell.
     private readonly Dictionary<string, string> _spellCastSoundCache =
         new(StringComparer.OrdinalIgnoreCase);
+
+    // Phase 21-SC-SPELL-VFX-3c — per-spell static-coverage decision cache.
+    // Key = SpellTemplate.Name. Value = true iff every `sfx create` in the
+    // compiled cast script names a kind in SfxRuntime.SupportedCreateKinds.
+    // The compile + walk runs once per spell; subsequent casts hit the dict.
+    private readonly Dictionary<string, bool> _spellCoverageCache =
+        new(StringComparer.OrdinalIgnoreCase);
     // Phase 18b — combat-feedback SFX. Singles + per-group ids. The
     // group ids are what RenderHost calls Play() with; the singles are
     // the underlying variants (registered first, then grouped).
@@ -6126,6 +6133,35 @@ void main()
         return final;
     }
 
+    // Phase 21-SC-SPELL-VFX-3c — true iff every `sfx create` in this spell's
+    // cast script names a kind SfxRuntime.MapMode actually handles. Empty
+    // create-kinds (vacuous: sound-only stubs) count as covered — 3b's
+    // post-spawn visual check catches those separately. Cached per spell so
+    // the static walk runs once.
+    private bool IsCastScriptFullyCovered(
+        SiegeFX.Core.Assets.SpellTemplate spell,
+        SiegeFX.Core.Assets.SfxScript script)
+    {
+        if (_spellCoverageCache.TryGetValue(spell.Name, out var cached))
+            return cached;
+        bool covered;
+        try
+        {
+            var prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(script.Name, script.Body);
+            covered = SiegeFX.Core.Sfx.SfxRuntime.IsScriptFullyCovered(prog);
+        }
+        catch
+        {
+            // Malformed script — treat as not-covered so the placeholder
+            // takes over. Don't cache the failure (next compile attempt may
+            // succeed if e.g. a future SfxScriptCompiler change handles a
+            // shape that was previously rejected).
+            return false;
+        }
+        _spellCoverageCache[spell.Name] = covered;
+        return covered;
+    }
+
     // First `sound play <clip>` token in the spell's cast script (or "").
     // Static helper so it can be unit-tested without standing up RenderHost.
     private string ResolveCastSoundClipName(SiegeFX.Core.Assets.SpellTemplate spell)
@@ -6437,39 +6473,67 @@ void main()
                     // store.
                     bool ranNativeScript = false;
                     bool nativeProducedVisual = false;
+                    bool scriptFullyCovered = false;
                     string sfxTrace;
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
-                        && _sfxStore.TryGet(spell.CastSfxScript, out _))
+                        && _sfxStore.TryGet(spell.CastSfxScript, out var castScript))
                     {
-                        var ctx = new SiegeFX.Core.Sfx.SfxContext(
-                            SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
-                            TargetPos:     dst,
-                            WeaponBonePos: src);
-                        int boltsBefore       = _particles?.LiveBoltCount ?? 0;
-                        int particlesBefore   = _particles?.LiveParticleCount ?? 0;
-                        int persistentBefore  = _sfxRuntime.LivePersistentCount;
-                        ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
-                        int boltsAfter        = _particles?.LiveBoltCount ?? 0;
-                        int particlesAfter    = _particles?.LiveParticleCount ?? 0;
-                        int persistentAfter   = _sfxRuntime.LivePersistentCount;
-                        // Phase 21-SC-SPELL-VFX-3b — Spawn returning true only
-                        // means the script ran without a parse error; for the
-                        // 5 UNCOVERED sound-only stubs DS1 ships (iceblast /
-                        // iceshard / icefury / lightning_storm / explosive_powder
-                        // — see iceblast_launch.gas's `// only a sound now,
-                        // should hook up an effect. -ET` TODO) Spawn returns
-                        // true and we'd skip the placeholder fallback, leaving
-                        // the player with no visual at all on cast. Gate the
-                        // skip on "did the script *actually* produce a visual"
-                        // — bolts, billboards, or a persistent emitter — so
-                        // sound-only scripts fall through to SpawnSpellVisual.
-                        nativeProducedVisual = (boltsAfter > boltsBefore)
-                                             || (particlesAfter > particlesBefore)
-                                             || (persistentAfter > persistentBefore);
-                        sfxTrace = ranNativeScript
-                            ? $"native '{spell.CastSfxScript}' src=({src.X:F1},{src.Y:F1},{src.Z:F1}) dst=({dst.X:F1},{dst.Y:F1},{dst.Z:F1}) bolts={boltsBefore}->{boltsAfter} parts={particlesBefore}->{particlesAfter} persist={persistentBefore}->{persistentAfter} visual={nativeProducedVisual}"
-                            : $"native '{spell.CastSfxScript}' Spawn returned false";
+                        // Phase 21-SC-SPELL-VFX-3c — pre-flight static check.
+                        // If the script asks for any unmodeled `sfx create`
+                        // kind (orbiter, trackball, cylinder, lightsource,
+                        // flurry, fireb, sray, curve, …) then running the VM
+                        // anyway leaves stranded emitters bound to handles
+                        // that were never created. fireball is the canonical
+                        // case: it `sfx create trackball ...; set $trackball
+                        // #POP; sfx target $fire $trackball;` — the trackball
+                        // never resolves so the fire emitter falls back to
+                        // its #SOURCE anchor and burns at the caster forever.
+                        // Cached per spell so the static walk runs once.
+                        scriptFullyCovered = IsCastScriptFullyCovered(spell, castScript);
+                        if (scriptFullyCovered)
+                        {
+                            var ctx = new SiegeFX.Core.Sfx.SfxContext(
+                                SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
+                                TargetPos:     dst,
+                                WeaponBonePos: src);
+                            int boltsBefore       = _particles?.LiveBoltCount ?? 0;
+                            int particlesBefore   = _particles?.LiveParticleCount ?? 0;
+                            int persistentBefore  = _sfxRuntime.LivePersistentCount;
+                            ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
+                            int boltsAfter        = _particles?.LiveBoltCount ?? 0;
+                            int particlesAfter    = _particles?.LiveParticleCount ?? 0;
+                            int persistentAfter   = _sfxRuntime.LivePersistentCount;
+                            // Phase 21-SC-SPELL-VFX-3b — Spawn returning true
+                            // only means the script ran without a parse error;
+                            // the 5 UNCOVERED sound-only stubs DS1 ships
+                            // (iceblast / iceshard / icefury / lightning_storm /
+                            // explosive_powder — see iceblast_launch.gas's
+                            // `// only a sound now, should hook up an effect.
+                            // -ET` TODO) get past 3c's fully-covered gate
+                            // because they have no `sfx create` at all (vacuously
+                            // covered), then run "successfully" and produce no
+                            // visual. Gate the skip-fallback on whether the run
+                            // actually grew bolts, particles, or persistent
+                            // emitters — otherwise fall through to placeholder.
+                            nativeProducedVisual = (boltsAfter > boltsBefore)
+                                                 || (particlesAfter > particlesBefore)
+                                                 || (persistentAfter > persistentBefore);
+                            sfxTrace = ranNativeScript
+                                ? $"native '{spell.CastSfxScript}' src=({src.X:F1},{src.Y:F1},{src.Z:F1}) dst=({dst.X:F1},{dst.Y:F1},{dst.Z:F1}) bolts={boltsBefore}->{boltsAfter} parts={particlesBefore}->{particlesAfter} persist={persistentBefore}->{persistentAfter} visual={nativeProducedVisual}"
+                                : $"native '{spell.CastSfxScript}' Spawn returned false";
+                        }
+                        else
+                        {
+                            // Script uses an unmodeled `sfx create` kind. Skip
+                            // the VM entirely; the placeholder visual below
+                            // gives a clean element-tinted projectile + impact
+                            // instead of stranded fire-at-caster. As primitives
+                            // ship in future SC slices (orbiter -> 20 spells,
+                            // trackball -> 18, cylinder -> 12, …) those spells
+                            // automatically promote to native here.
+                            sfxTrace = $"placeholder '{spell.CastSfxScript}' uses unmodeled creates — VM skipped";
+                        }
                     }
                     else
                     {
