@@ -327,6 +327,15 @@ public sealed class RenderHost : IDisposable
     // in one place from silently disabling a sound.
     const string SfxZapCast         = "spell_zap_cast";
     const string SfxHealingWindCast = "spell_healing_wind_cast";
+
+    // Phase 21-SC-SPELL-VFX-3a — per-spell cast-sound resolution cache.
+    // Key = SpellTemplate.Name. Value = the audio-engine clip-id we should
+    // Play() at cast time, derived from the first `sound play <clip>`
+    // statement in the spell's compiled cast sfx_script. Empty string means
+    // "we already looked, the script has no sound play, use the fallback."
+    // Populated lazily on first cast of each spell.
+    private readonly Dictionary<string, string> _spellCastSoundCache =
+        new(StringComparer.OrdinalIgnoreCase);
     // Phase 18b — combat-feedback SFX. Singles + per-group ids. The
     // group ids are what RenderHost calls Play() with; the singles are
     // the underlying variants (registered first, then grouped).
@@ -6070,6 +6079,78 @@ void main()
         }
     }
 
+    // Phase 21-SC-SPELL-VFX-3a — pick the audio clip-id this spell's cast
+    // wants and ensure it's registered with the audio engine. Returns the
+    // id Play() should be called with. The caller does the Play.
+    //
+    // Strategy on the first cast of each spell: parse its compiled cast
+    // script for the first `sound play <clip>` statement, strip any `_SED`
+    // suffix (SED resolution kicks in via SedStore basename match inside
+    // TryRegisterSfx), check the wav exists in Sound.dsres, register it.
+    // On any miss (no SoundPlay in script, wav not in tank, parse threw)
+    // fall back to SfxZapCast which is pre-registered at startup.
+    //
+    // Cached per spell so subsequent casts don't recompile the script or
+    // hit the tank reader. Cache value IS the final Play()-able clip id —
+    // SfxZapCast for fallbacks, the resolved name for hits.
+    private string ResolveSpellCastSound(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_spellCastSoundCache.TryGetValue(spell.Name, out var cached))
+            return cached;
+        string clip = ResolveCastSoundClipName(spell);
+        string final;
+        if (string.IsNullOrEmpty(clip) || _playSoundTank is null)
+        {
+            final = SfxZapCast;
+        }
+        else
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            var wavPath = $"/sound/effects/{clip}.wav";
+            if (reader.TryGetFile(wavPath, out _))
+            {
+                // wav exists. Register if new (idempotent — duplicate id
+                // no-ops cheaply inside RegisterClip).
+                TryRegisterSfx(reader, clip, wavPath);
+                final = clip;
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    $"  spellbook: cast wav missing for '{spell.Name}' " +
+                    $"({wavPath} not in Sound.dsres) — falling back to zap cue");
+                final = SfxZapCast;
+            }
+        }
+        _spellCastSoundCache[spell.Name] = final;
+        return final;
+    }
+
+    // First `sound play <clip>` token in the spell's cast script (or "").
+    // Static helper so it can be unit-tested without standing up RenderHost.
+    private string ResolveCastSoundClipName(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_sfxStore is null
+            || string.IsNullOrEmpty(spell.CastSfxScript)
+            || !_sfxStore.TryGet(spell.CastSfxScript, out var script))
+            return "";
+        try
+        {
+            var prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(script.Name, script.Body);
+            foreach (var stmt in prog.Statements)
+            {
+                if (stmt.Kind != SiegeFX.Core.Sfx.StatementKind.SoundPlay) continue;
+                if (stmt.Tokens.Count == 0) continue;
+                var clip = stmt.Tokens[0].Trim().Trim('"');
+                if (clip.EndsWith("_SED", StringComparison.OrdinalIgnoreCase))
+                    clip = clip.Substring(0, clip.Length - 4);
+                if (clip.Length > 0) return clip;
+            }
+        }
+        catch { /* malformed script body — leave empty */ }
+        return "";
+    }
+
     static IEnumerable<string> CollectDistinctAmbientTracks(
         IReadOnlyDictionary<string, SiegeFX.Core.Assets.MoodSetting> moods)
     {
@@ -6281,9 +6362,20 @@ void main()
                     AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
                                     playerPos + new Vector3(0f, 2.2f, 0f),
                                     new Vector4(0.40f, 0.95f, 0.40f, 1f));
-                    // Phase 18a — DS1's healing-wind cast SFX. 2D playback for
-                    // now; 18b will switch to per-source positional audio.
-                    _audio?.Play(SfxHealingWindCast);
+                    // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX. Same
+                    // resolver as the offensive branch above, so swapping
+                    // the secondary slot to e.g. spell_nurture (a different
+                    // sound-only heal) plays its authored cast cue, not
+                    // healing_wind's. Fallback chain inside ResolveSpellCastSound
+                    // lands on SfxZapCast on a miss; if the secondary is
+                    // healing_wind specifically we re-fall to SfxHealingWindCast
+                    // since it's pre-registered and matches the pre-3a
+                    // experience for that one spell.
+                    var healClip = ResolveSpellCastSound(spell);
+                    if (healClip == SfxZapCast && spell.Name.Equals("spell_healing_wind",
+                            StringComparison.OrdinalIgnoreCase))
+                        healClip = SfxHealingWindCast;
+                    _audio?.Play(healClip);
                     // Heals award NatureMagic XP proportional to HP restored,
                     // matching DS1's "cast_experience grows with effect" rule.
                     // Without this the heal slot is progression-dead.
@@ -6369,11 +6461,14 @@ void main()
                     if (!ranNativeScript)
                         SpawnSpellVisual(src, dst, spell.Element, elemColor);
                     Console.WriteLine($"  cast vfx: {sfxTrace}");
-                    // Phase 18a — DS1's zap cast SFX. Same Play() shape as the
-                    // heal branch; only the clip id differs because we still
-                    // hardcode the spell→sound mapping (full sfx_script
-                    // resolution is the Phase 18b job).
-                    _audio?.Play(SfxZapCast);
+                    // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX from the
+                    // sfx_script's first `sound play` statement. Replaces the
+                    // 17-era hardcoded SfxZapCast that played zap on every
+                    // cast. Resolution + registration happens on the first
+                    // cast of each spell; subsequent casts hit the cache.
+                    // Falls back to SfxZapCast when the wav is missing or
+                    // the script has no sound (so we don't go silent).
+                    _audio?.Play(ResolveSpellCastSound(spell));
                     AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
                                     anchor + new Vector3(0f, 1.8f, 0f),
                                     elemColor);
