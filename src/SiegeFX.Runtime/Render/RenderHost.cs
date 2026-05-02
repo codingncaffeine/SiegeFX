@@ -833,6 +833,33 @@ public sealed class RenderHost : IDisposable
     private readonly Camera _camera = new();
     private bool _mouseLookActive;
     private Vector2? _lastMousePos;
+
+    // Phase 21-SC-SCROLL-PRE-1/PRE-2 — cursor drag-state machine for the
+    // spell-scroll UI. _currentMousePos is the always-up-to-date pointer
+    // location (separate from _lastMousePos which the RMB camera nulls on
+    // release). _cursorScroll holds the spell whose scroll icon is "on"
+    // the cursor when the player is mid-drag — null = no drag in progress.
+    // Source provenance lets a cancelled drag put the spell back where it
+    // came from.
+    private Vector2 _currentMousePos = Vector2.Zero;
+    private SiegeFX.Core.Assets.SpellTemplate? _cursorScroll;
+    private CursorScrollSource _cursorScrollSource;
+
+    /// <summary>Where the spell currently being dragged came from. Used so
+    /// a Cancel (ESC / right-click) can restore it to the source slot
+    /// rather than dropping it. <see cref="None"/> means no drag in flight.</summary>
+    private enum CursorScrollSource
+    {
+        None,
+        SpellbookActive1,    // primary (Q) slot
+        SpellbookActive2,    // secondary (W) slot
+        SpellbookPlaced,     // one of the 10 inactive rows below the actives
+        Inventory,           // a scroll item in the regular inventory grid
+    }
+    /// <summary>Index within the source list — meaningful for SpellbookPlaced
+    /// (which row 0..9) and Inventory (which grid cell index). Ignored for
+    /// the Active1/Active2 sources which are singletons.</summary>
+    private int _cursorScrollSourceIndex;
     // Phase 13d — RMB does double duty: drag to orbit, tap-click to attack. We
     // latch the screen position at RMB-down and measure pixel drift on MouseUp;
     // below _rmbClickDriftPx it's a click (→ attack), otherwise just end orbit.
@@ -1613,6 +1640,12 @@ void main()
             };
             mouse.MouseMove += (_, pos) =>
             {
+                // Phase 21-SC-SCROLL-PRE — track the latest mouse position for
+                // any UI that needs cursor-anchored rendering (the spell-scroll
+                // drag follows the cursor across panels). _lastMousePos below
+                // is RMB-camera-specific and gets nulled on RMB release; a
+                // separate _currentMousePos stays valid for the whole session.
+                _currentMousePos = new Vector2(pos.X, pos.Y);
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
@@ -7910,8 +7943,52 @@ void main()
                     _textRenderer.DrawString(size.X, size.Y, ft.Text, sx - textW / 2, sy, c);
                 }
             }
+            // Phase 21-SC-SCROLL-PRE-1 — cursor-anchored spell-scroll overlay.
+            // Drawn LAST in the HUD pass so it stacks above every panel,
+            // matching the DS1 behavior where a held scroll occludes any
+            // window the cursor is over. No-op when no drag is in flight
+            // (the `_cursorScroll != null` gate). Uses the spell's
+            // authored `inventory_icon` from the larger `_inv` icon set
+            // (b_gui_ig_i_ic_sp_*_inv) for DS1-faithful art.
+            if (_cursorScroll is not null && _iconRenderer is not null)
+            {
+                var iconTex = ResolveSpellInventoryIcon(_cursorScroll);
+                if (iconTex is not null)
+                {
+                    const int iconSize = 32;
+                    int cx = (int)_currentMousePos.X - iconSize / 2;
+                    int cy = (int)_currentMousePos.Y - iconSize / 2;
+                    _iconRenderer.DrawIcon(size.X, size.Y, iconTex,
+                        cx, cy, iconSize, iconSize, Vector4.One);
+                }
+            }
             _textRenderer.EndPass();
         }
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-PRE-2 — start a scroll drag from the
+    /// given source. Sets <see cref="_cursorScroll"/> so the next render
+    /// frame draws the scroll on the cursor; the actual source-slot
+    /// clearing happens in the source-side handler (so a cancel can
+    /// restore it).</summary>
+    private void BeginScrollDrag(SiegeFX.Core.Assets.SpellTemplate spell,
+                                 CursorScrollSource source, int sourceIndex)
+    {
+        _cursorScroll = spell;
+        _cursorScrollSource = source;
+        _cursorScrollSourceIndex = sourceIndex;
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-PRE-2 — release the drag without dropping.
+    /// Used by ESC / right-click and by drop-handlers after they've
+    /// successfully placed the scroll. Caller is responsible for putting
+    /// the spell wherever it lands (cancel = back to source, drop = at
+    /// the cursor).</summary>
+    private void ClearScrollDrag()
+    {
+        _cursorScroll = null;
+        _cursorScrollSource = CursorScrollSource.None;
+        _cursorScrollSourceIndex = 0;
     }
 
     /// <summary>Draws a single HP/MP-style bar at (<paramref name="x"/>,<paramref name="y"/>):
