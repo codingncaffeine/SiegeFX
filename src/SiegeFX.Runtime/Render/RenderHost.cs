@@ -2791,20 +2791,27 @@ void main()
         // Phase 21-SC-SCROLL-A-1 — pre-cache every catalog spell's
         // inventory-grid scroll icon so the first time a player drags a
         // spell out of the spellbook, the cursor scroll renders without
-        // a frame-stutter from on-demand RAW decode + GL upload. The
-        // icons are the larger `b_gui_ig_i_ic_sp_*_inv` set DS1 ships
-        // for inventory display (vs the smaller `b_gui_ig_i_ic_sp_*`
-        // used inside the spellbook UI). _itemIconCache is keyed by
-        // template name; subsequent ResolveSpellInventoryIcon calls hit
-        // the cache. ~69 textures × ~4KB compressed = trivial cost.
+        // a frame-stutter from on-demand RAW decode + GL upload. Two
+        // disjoint caches in play and BOTH need warming:
+        //   - _itemIconCache (TryGetItemIcon) — keyed by template name;
+        //     used by InventoryPanel render when a scroll item lands in
+        //     the inventory grid (SC-SCROLL-D drop).
+        //   - _guiTextureCache (TryGetGuiTexture) — keyed by RAW basename;
+        //     used by ResolveSpellInventoryIcon for spellbook + cursor
+        //     overlay (PRE-1 / B / C drag flows).
+        // A-1's first commit only warmed the former; the cursor-overlay
+        // path missed the cache. Reviewer caught it; folding here.
+        // ~69 textures × ~4KB compressed × 2 paths = still trivial cost.
         if (_spellCatalog is not null)
         {
-            int prefetched = 0;
+            int itemCached = 0, guiCached = 0;
             foreach (var spell in _spellCatalog.All)
             {
-                if (TryGetItemIcon(spell.Name) is not null) prefetched++;
+                if (TryGetItemIcon(spell.Name) is not null) itemCached++;
+                if (ResolveSpellInventoryIcon(spell) is not null) guiCached++;
             }
-            Console.WriteLine($"  spell icons: pre-cached {prefetched}/{_spellCatalog.Count} scroll icons");
+            Console.WriteLine($"  spell icons: pre-cached {itemCached}/{_spellCatalog.Count} via item-cache, " +
+                              $"{guiCached}/{_spellCatalog.Count} via gui-cache");
         }
 
         // Phase 18a — bootstrap the audio engine and pre-register the two
@@ -7969,6 +7976,13 @@ void main()
             // (the `_cursorScroll != null` gate). Uses the spell's
             // authored `inventory_icon` from the larger `_inv` icon set
             // (b_gui_ig_i_ic_sp_*_inv) for DS1-faithful art.
+            //
+            // Invariant: this block must run while `_textRenderer.BeginPass`
+            // is still active (the inner `if (_textRenderer is not null)`
+            // higher up wraps the whole HUD pass through to the EndPass on
+            // the line below). IconRenderer.DrawIcon requires an active
+            // blend pass; if a future refactor moves EndPass earlier this
+            // block needs its own pass scope.
             if (_cursorScroll is not null && _iconRenderer is not null)
             {
                 var iconTex = ResolveSpellInventoryIcon(_cursorScroll);
