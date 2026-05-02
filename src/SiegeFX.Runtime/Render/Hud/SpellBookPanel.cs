@@ -69,6 +69,49 @@ public sealed class SpellBookPanel
         x >= CloseRect.X && y >= CloseRect.Y &&
         x <  CloseRect.X + CloseRect.W && y <  CloseRect.Y + CloseRect.H;
 
+    /// <summary>Phase 21-SC-SCROLL-B-1 — which slot of the spellbook a
+    /// screen-space point falls in. <see cref="None"/> is the answer for
+    /// any point inside the panel that isn't a spell row (title bar,
+    /// label bands, padding) and for any point outside the panel.</summary>
+    public enum SlotKind { None, Active1, Active2, Placed }
+
+    /// <summary>Hit-test a screen-space point against the spellbook's
+    /// spell-row rectangles. Mirrors the layout that <see cref="Draw"/>
+    /// composes from <see cref="OriginX"/> / <see cref="OriginY"/> +
+    /// constants, so a click router can ask "which spell did I click?"
+    /// without re-implementing the math.
+    ///
+    /// <para>Returns <see cref="SlotKind.None"/> + index 0 when no slot
+    /// matches. For <see cref="SlotKind.Placed"/>, the index is 0..9
+    /// matching the row order. Active1/Active2 ignore the index field.</para></summary>
+    public (SlotKind Kind, int Index) HitTestSlot(int x, int y)
+    {
+        // Inside the panel rect at all? Cheap reject so the row math
+        // doesn't fire on every click anywhere on screen.
+        if (!IsPointInPanel(x, y)) return (SlotKind.None, 0);
+
+        // Each spell-row spans the full width minus padding.
+        int rowX = OriginX + Padding;
+        int rowR = OriginX + PanelWidth - Padding;
+        if (x < rowX || x >= rowR) return (SlotKind.None, 0);
+
+        // Active1 spell row sits one label-row below the title.
+        int active1Y = OriginY + TitleH + Padding + LabelRowH;
+        if (y >= active1Y && y < active1Y + RowH) return (SlotKind.Active1, 0);
+
+        // Active2 spell row: skip Active1 spell row + Active2 header.
+        int active2Y = active1Y + RowH + LabelRowH;
+        if (y >= active2Y && y < active2Y + RowH) return (SlotKind.Active2, 0);
+
+        // Placed list starts after both actives + the split gap.
+        int placedY0 = active2Y + RowH + ActiveSplitGap;
+        int relY = y - placedY0;
+        if (relY < 0) return (SlotKind.None, 0);
+        int row = relY / RowH;
+        if (row < 0 || row >= InactiveSlots) return (SlotKind.None, 0);
+        return (SlotKind.Placed, row);
+    }
+
     /// <param name="placed">Spells the player has dragged into the 10
     /// user-organized rows below the two active hot-bar slots. The order
     /// matches the rows top-down; null entries leave a row empty. Pass

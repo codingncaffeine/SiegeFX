@@ -1237,6 +1237,15 @@ void main()
                 // there's a one-button-press exit (Esc, click Quit).
                 if (key == Key.Escape)
                 {
+                    // Phase 21-SC-SCROLL-B-2 — Esc cancels a spell-scroll drag
+                    // and restores the spell to its source slot. Cheap to do
+                    // first because canceling a half-finished drag should be
+                    // free regardless of what other UI is open.
+                    if (_cursorScroll is not null)
+                    {
+                        CancelScrollDrag();
+                        return;
+                    }
                     // Phase 20a/d: dialogue + vendor swallow Esc first so closing
                     // a chat or trade doesn't double up into the pause menu.
                     if (_vendor.IsOpen) _vendor.Close();
@@ -1482,8 +1491,59 @@ void main()
                     }
                     if (_charPanelOpen && _characterPanel.IsPointInPanel(mx, my))
                         return;
+                    // Phase 21-SC-SCROLL-B-2 — LMB on a spellbook spell row
+                    // starts a scroll drag (when no drag is already in
+                    // flight). Active1/Active2/placed slots all qualify;
+                    // clicking an empty placed row is a no-op. The drop
+                    // side (LMB on another slot while dragging = swap)
+                    // lands in SC-SCROLL-C-2 alongside the placed-list
+                    // backing storage. For now, ANY click while dragging
+                    // ends the drag at the cursor position (cancel
+                    // semantics) so the cursor doesn't get stuck holding
+                    // a scroll.
                     if (_spellBookOpen && _spellBookPanel.IsPointInPanel(mx, my))
+                    {
+                        var hit = _spellBookPanel.HitTestSlot(mx, my);
+                        if (_cursorScroll is null && _playerSpellbook is not null
+                            && hit.Kind != Hud.SpellBookPanel.SlotKind.None)
+                        {
+                            // Phase 21-SC-SCROLL-B-2 — LMB on a populated
+                            // spellbook spell row picks up that scroll onto
+                            // the cursor. Source slot is cleared on pickup
+                            // (matches DS1's drop-from-slot behavior); a
+                            // cancel — RMB / ESC — will need to restore it,
+                            // wired in C-2 alongside the drop-target logic.
+                            // Placed list backing storage lands in C-1 so
+                            // for now a click on a placed row is a no-op.
+                            SiegeFX.Core.Assets.SpellTemplate? src = hit.Kind switch
+                            {
+                                Hud.SpellBookPanel.SlotKind.Active1 => _playerSpellbook.Primary,
+                                Hud.SpellBookPanel.SlotKind.Active2 => _playerSpellbook.Secondary,
+                                _ => null,
+                            };
+                            if (src is not null)
+                            {
+                                var srcKind = hit.Kind switch
+                                {
+                                    Hud.SpellBookPanel.SlotKind.Active1 => CursorScrollSource.SpellbookActive1,
+                                    Hud.SpellBookPanel.SlotKind.Active2 => CursorScrollSource.SpellbookActive2,
+                                    _ => CursorScrollSource.SpellbookPlaced,
+                                };
+                                BeginScrollDrag(src, srcKind, hit.Index);
+                                if (hit.Kind == Hud.SpellBookPanel.SlotKind.Active1)
+                                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, null);
+                                else if (hit.Kind == Hud.SpellBookPanel.SlotKind.Active2)
+                                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, null);
+                                _audio?.Play(SfxGuiInventory);
+                                Console.WriteLine($"  scroll drag: pickup {src.Name} from {srcKind}");
+                                return;
+                            }
+                        }
+                        // Already dragging, clicked an empty slot, or
+                        // clicked panel chrome — swallow so the world
+                        // below doesn't see click-to-move.
                         return;
+                    }
                 }
                 // Phase 9-SC-9 — inventory panel owns LMB while open. Latch a
                 // drag if the click lands on an item rect; clicks on empty cells
@@ -1503,6 +1563,16 @@ void main()
                 }
                 if (btn == MouseButton.Right)
                 {
+                    // Phase 21-SC-SCROLL-B-2 — RMB cancels an in-flight
+                    // scroll drag (DS1 convention), restoring the spell to
+                    // its source. Done before the camera-look latch so an
+                    // RMB-while-dragging doesn't simultaneously enter
+                    // mouselook AND drop the cursor scroll.
+                    if (_cursorScroll is not null)
+                    {
+                        CancelScrollDrag();
+                        return;
+                    }
                     _mouseLookActive = true;
                     _lastMousePos = null;
                     _rmbDownPos = m.Position;
@@ -8013,15 +8083,42 @@ void main()
     }
 
     /// <summary>Phase 21-SC-SCROLL-PRE-2 — release the drag without dropping.
-    /// Used by ESC / right-click and by drop-handlers after they've
-    /// successfully placed the scroll. Caller is responsible for putting
-    /// the spell wherever it lands (cancel = back to source, drop = at
-    /// the cursor).</summary>
+    /// Called by drop-handlers after they've successfully placed the
+    /// scroll at its destination. <see cref="CancelScrollDrag"/> is the
+    /// inverse for ESC/RMB cases that need to restore the source.</summary>
     private void ClearScrollDrag()
     {
         _cursorScroll = null;
         _cursorScrollSource = CursorScrollSource.None;
         _cursorScrollSourceIndex = 0;
+    }
+
+    /// <summary>Phase 21-SC-SCROLL-B-2 — cancel an in-flight scroll drag
+    /// and put the spell back where it came from. ESC handler, RMB
+    /// handler, and any state change (pause, save, load, region change)
+    /// that interrupts the drag should call this.</summary>
+    private void CancelScrollDrag()
+    {
+        if (_cursorScroll is null || _playerSpellbook is null)
+        {
+            ClearScrollDrag();
+            return;
+        }
+        var spell = _cursorScroll;
+        switch (_cursorScrollSource)
+        {
+            case CursorScrollSource.SpellbookActive1:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
+                break;
+            case CursorScrollSource.SpellbookActive2:
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
+                break;
+            // SpellbookPlaced + Inventory restore paths land in C-1 / E-2
+            // alongside their respective backing storages. Today's only
+            // BeginScrollDrag callers are the two Active slots.
+        }
+        Console.WriteLine($"  scroll drag: cancel — restored {spell.Name} to {_cursorScrollSource}");
+        ClearScrollDrag();
     }
 
     /// <summary>Draws a single HP/MP-style bar at (<paramref name="x"/>,<paramref name="y"/>):
