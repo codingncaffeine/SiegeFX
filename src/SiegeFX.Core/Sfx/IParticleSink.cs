@@ -36,4 +36,15 @@ public interface IParticleSink
     float MaintainFire(Vector3 position, Vector4 color, float scale, float dt, float rate, float carry);
     float MaintainSmoke(Vector3 position, Vector4 color, float scale, float dt, float rate, float carry);
     float MaintainSteam(Vector3 position, Vector4 color, float scale, float dt, float rate, float carry);
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive. Flat
+    /// textured ring on the Y-up plane at <paramref name="anchor"/>, with
+    /// per-axis spin and tin/tout fade timings. The 19 cylinder-using
+    /// spells in DS1 author this as a ground-snapped impact ring; only
+    /// laser_major (sun_ray) is a true beam between two points and gets
+    /// deferred to a follow-up tweak. Headless sinks no-op.</summary>
+    void SpawnCylinder(Vector3 anchor, Vector4 color,
+                       float radiusOuter, float thicknessRatio,
+                       float spinPerSec,  float fadeIn, float fadeOut,
+                       float duration,    byte texSlot, byte segments);
 }

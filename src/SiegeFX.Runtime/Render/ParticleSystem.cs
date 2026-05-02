@@ -43,6 +43,43 @@ public struct LightningBolt
     public float   Displace;
 }
 
+/// <summary>Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive: a textured
+/// expanding ground ring centered on a single anchor with axis rotation
+/// (spin) and fade-in/out lifetime (tin/tout/dur). Used by 19 shipped
+/// spells (kill, shock_wave, earthquake, fireball impact, summon ritual
+/// pillars, etc.). Pre-A this rendered as a straight lightning bolt with
+/// displace=0 — wrong shape entirely.
+///
+/// <para>Inventory finding: DS1's cylinder is NOT a beam between two
+/// points; almost every shipped script anchors at one position (#TARGET
+/// or #SOURCE) and authors radial extents via `rp0(start,mid,end)`. The
+/// `hp0/hp1` values are typically near-zero per-end offsets, not world
+/// endpoints. The dominant visual is a **ground-snapped impact ring**.
+/// Outliers (laser_major's 20m beam, armor bone-attached cylinders,
+/// energy_ball's X-pattern) are deferred to follow-up tweaks.</para>
+///
+/// <para>Renders as a flat ring on the Y-up plane at <see cref="Anchor"/>
+/// with N segments forming the circle. Outer radius from `rp0` mid-value;
+/// inner radius from <see cref="ThicknessRatio"/> (default 0.7 = ring,
+/// 0.0 = solid disc). Texture wraps around the circumference; <see
+/// cref="Spin"/> rolls the U coordinate over time so the ring appears
+/// to rotate.</para></summary>
+public struct SpellCylinder
+{
+    public Vector3 Anchor;
+    public Vector3 AxisDir;         // Y-up by default; armor scripts override (defer)
+    public Vector4 Color;
+    public float   RadiusOuter;     // rp0/rp1 mid value
+    public float   ThicknessRatio;  // 0..1; 0=solid disc, 0.7=donut ring
+    public float   Spin;            // rad/sec around the axis
+    public float   FadeIn;          // tin — seconds to ramp alpha 0→1
+    public float   FadeOut;         // tout — seconds to ramp alpha 1→0 at end
+    public float   TotalLife;       // dur
+    public float   Elapsed;
+    public byte    TexSlot;         // ParticleSystem texture slot index
+    public byte    Segments;        // segments(N), default 24
+}
+
 /// <summary>Phase 21-SC-SPELL-VFX — flying spell projectile (DS1 trackball
 /// stand-in). Travels Source→Target at <see cref="Speed"/> world units/sec,
 /// stamping a fire/ember trail every tick and detonating a fire+spark
@@ -81,7 +118,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private readonly uint _vao;
     private readonly uint _vboQuad;
     private readonly uint _vboInstance;
-    private readonly GlTexture?[] _textures = new GlTexture?[9];
+    // Phase 21-SC-SPELL-VISUAL-A — slots 9/10/11 reserved for cylinder
+    // textures (b_sfx_cyl_01/02/03). Most cylinder spells use cyl_03;
+    // earthquake / death_blast etc. occasionally use the other two.
+    private readonly GlTexture?[] _textures = new GlTexture?[12];
+    public const byte CylinderTexSlot = 11; // b_sfx_cyl_03 — most-used
 
     // Phase 21-SC-SPELL-VFX-debug — runtime-cyclable bolt texture so we
     // can A/B every plausible DS1 lightning streak from the live game
@@ -108,6 +149,9 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     private readonly List<Particle>        _particles   = new(2048);
     private readonly List<LightningBolt>   _bolts       = new(64);
+    // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive, drawn via the
+    // ribbon path with a different texture slot.
+    private readonly List<SpellCylinder>   _cylinders   = new(16);
     private readonly List<SpellProjectile> _projectiles = new(32);
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
@@ -121,12 +165,18 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private const int RibbonVertFloats = 9; // pos(3) + uv(2) + color(4)
     private float[] _ribbonVerts = new float[2048 * RibbonVertFloats];
     private int _ribbonVertCount = 0;
+    // Phase 21-SC-SPELL-VISUAL-A — split point in the ribbon vertex
+    // buffer between bolts and cylinders. Bolts emit first (slot
+    // BoltTexSlot), cylinders second (slot CylinderTexSlot). DrawRibbons
+    // does two glDrawArrays calls with different uSlot values.
+    private int _cylinderVertStart = 0;
     private readonly Shader _ribbonShader;
     private readonly uint _ribbonVao;
     private readonly uint _ribbonVbo;
 
     public int LiveParticleCount   => _particles.Count;
     public int LiveBoltCount       => _bolts.Count;
+    public int LiveCylinderCount   => _cylinders.Count;
     public int LiveProjectileCount => _projectiles.Count;
 
     public ParticleSystem(GL gl)
@@ -229,6 +279,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         TryLoadSlot(objectsTank, 6, "/art/bitmaps/sfx/b_sfx_lightray_04.raw");
         TryLoadSlot(objectsTank, 7, "/art/bitmaps/sfx/b_sfx_streaks.raw");
         TryLoadSlot(objectsTank, 8, "/art/bitmaps/sfx/b_sfx_lightray01.raw");
+        // Phase 21-SC-SPELL-VISUAL-A — cylinder textures.
+        TryLoadSlot(objectsTank, 9,  "/art/bitmaps/sfx/b_sfx_cyl_01.raw");
+        TryLoadSlot(objectsTank, 10, "/art/bitmaps/sfx/b_sfx_cyl_02.raw");
+        TryLoadSlot(objectsTank, 11, "/art/bitmaps/sfx/b_sfx_cyl_03.raw");
     }
 
     void TryLoadSlot(TankReader tank, int slot, string path)
@@ -353,6 +407,42 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-A — register a DS1 cylinder
+    /// primitive: a flat textured ring/disc on the Y-up plane at
+    /// <paramref name="anchor"/>. The 19 cylinder-using spells in DS1
+    /// (kill, shock_wave, earthquake, fireball impact, summon ritual
+    /// pillars, etc.) overwhelmingly author cylinders as ground-snapped
+    /// impact rings rather than beams between two points; this primitive
+    /// honors that dominant shape.
+    /// <see cref="radiusOuter"/> comes from the script's `rp0(start,mid,end)`
+    /// 3-float profile (we take the mid value); <see cref="thicknessRatio"/>
+    /// 0=solid disc, 0.7=donut ring (default — matches most shipped looks).
+    /// <see cref="spinPerSec"/> rolls the U coord over time so the ring
+    /// appears to rotate around the axis. Outliers (laser_major's 20m
+    /// beam, energy_ball's X-pattern, the armor bone-attached cylinders)
+    /// are deferred to follow-up tweaks.</summary>
+    public void SpawnCylinder(Vector3 anchor, Vector4 color,
+                              float radiusOuter,    float thicknessRatio,
+                              float spinPerSec,     float fadeIn, float fadeOut,
+                              float duration,       byte texSlot, byte segments)
+    {
+        _cylinders.Add(new SpellCylinder
+        {
+            Anchor          = anchor,
+            AxisDir         = Vector3.UnitY,
+            Color           = color,
+            RadiusOuter     = MathF.Max(0.05f, radiusOuter),
+            ThicknessRatio  = Math.Clamp(thicknessRatio, 0f, 0.95f),
+            Spin            = spinPerSec,
+            FadeIn          = MathF.Max(0f, fadeIn),
+            FadeOut         = MathF.Max(0f, fadeOut),
+            TotalLife       = MathF.Max(0.10f, duration),
+            Elapsed         = 0f,
+            TexSlot         = texSlot,
+            Segments        = segments < 4 ? (byte)4 : segments,
+        });
+    }
+
     public void SpawnSpark(Vector3 position, Vector4 color, float scale, float duration, int count = 16)
     {
         for (int i = 0; i < count; i++)
@@ -460,6 +550,15 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (b.Life <= 0f) { _bolts.RemoveAt(i); continue; }
             _bolts[i] = b;
         }
+        // Phase 21-SC-SPELL-VISUAL-A — advance cylinder lifetimes; the
+        // emit pass reads Elapsed for fade-in/out + spin animation.
+        for (int i = _cylinders.Count - 1; i >= 0; i--)
+        {
+            var c = _cylinders[i];
+            c.Elapsed += dt;
+            if (c.Elapsed >= c.TotalLife) { _cylinders.RemoveAt(i); continue; }
+            _cylinders[i] = c;
+        }
         // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
         // stamp a fire/ember trail along the way, detonate on arrival.
         for (int i = _projectiles.Count - 1; i >= 0; i--)
@@ -551,19 +650,28 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _particles.Clear();
         _bolts.Clear();
         _projectiles.Clear();
+        _cylinders.Clear();
     }
 
     public void Draw(Matrix4x4 view, Matrix4x4 proj, Vector3 cameraPos)
     {
-        if (_particles.Count == 0 && _bolts.Count == 0 && _projectiles.Count == 0) return;
+        if (_particles.Count == 0 && _bolts.Count == 0
+            && _projectiles.Count == 0 && _cylinders.Count == 0) return;
 
-        // Bolts compile into ribbon segments (separate draw path); projectile
-        // heads stamp transient particles into the main billboard list.
+        // Bolts + cylinders compile into ribbon segments (separate draw path);
+        // projectile heads stamp transient particles into the main billboard
+        // list. Bolts emit first so they fill _ribbonVerts at index 0..N;
+        // cylinders take the next slice. _cylinderVertStart records the
+        // boundary so DrawRibbons can issue two glDrawArrays calls with
+        // different uSlot values.
+        _ribbonVertCount = 0;
         EmitBoltQuads(cameraPos);
+        _cylinderVertStart = _ribbonVertCount;
+        EmitCylinderQuads(cameraPos);
         EmitProjectileHeads();
 
-        // Ribbon (lightning bolts) draw before particles so additive
-        // particles still composite on top cleanly.
+        // Ribbon (lightning bolts + cylinders) draw before particles so
+        // additive particles still composite on top cleanly.
         if (_ribbonVertCount > 0) DrawRibbons(view, proj);
 
         if (_particles.Count == 0) return;
@@ -756,6 +864,65 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _ribbonVerts = new float[Math.Max(_ribbonVerts.Length * 2, needed)];
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-A — build a flat textured ring at
+    /// each cylinder's anchor. N segments forming a donut on the Y-up
+    /// plane, U coordinate wrapping around the circumference (with a
+    /// `Spin*Elapsed` offset so the ring rotates), V mapping inner→outer.
+    /// Each segment is two triangles (quad strip). Lifetime fade combines
+    /// tin/tout: alpha ramps 0→1 over FadeIn, holds at 1, ramps 1→0 over
+    /// the last FadeOut seconds.</summary>
+    void EmitCylinderQuads(Vector3 cameraPos)
+    {
+        if (_cylinders.Count == 0) return;
+        for (int ci = 0; ci < _cylinders.Count; ci++)
+        {
+            var c = _cylinders[ci];
+            // Lifetime alpha — tin ramp at start, tout ramp at end.
+            float life = c.TotalLife;
+            float t = c.Elapsed;
+            float alpha = 1f;
+            if (c.FadeIn > 0f && t < c.FadeIn)
+                alpha = t / c.FadeIn;
+            float toutStart = life - c.FadeOut;
+            if (c.FadeOut > 0f && t > toutStart)
+                alpha = MathF.Max(0f, 1f - (t - toutStart) / c.FadeOut);
+            if (alpha <= 0.001f) continue;
+
+            int seg = c.Segments;
+            float rOuter = c.RadiusOuter;
+            float rInner = rOuter * c.ThicknessRatio;
+            float spinOff = c.Spin * t / MathF.Tau; // U-coordinate shift per spin
+
+            EnsureRibbonCapacity(_ribbonVertCount + seg * 6);
+
+            // Build ring on the Y plane at Anchor.Y. Each segment k spans
+            // angles [angK, angK+1]. Two triangles per segment connecting
+            // the inner ring to the outer ring.
+            var color = c.Color;
+            color.W *= alpha;
+            for (int k = 0; k < seg; k++)
+            {
+                float a0 = (float)k       / seg * MathF.Tau;
+                float a1 = (float)(k + 1) / seg * MathF.Tau;
+                float u0 = (float)k       / seg + spinOff;
+                float u1 = (float)(k + 1) / seg + spinOff;
+                var ax = c.Anchor;
+                var p0Out = ax + new Vector3(MathF.Cos(a0) * rOuter, 0f, MathF.Sin(a0) * rOuter);
+                var p1Out = ax + new Vector3(MathF.Cos(a1) * rOuter, 0f, MathF.Sin(a1) * rOuter);
+                var p0In  = ax + new Vector3(MathF.Cos(a0) * rInner, 0f, MathF.Sin(a0) * rInner);
+                var p1In  = ax + new Vector3(MathF.Cos(a1) * rInner, 0f, MathF.Sin(a1) * rInner);
+                // Triangle 1: outer0, outer1, inner0
+                EmitRibbonVert(p0Out, u0, 1f, color);
+                EmitRibbonVert(p1Out, u1, 1f, color);
+                EmitRibbonVert(p0In,  u0, 0f, color);
+                // Triangle 2: outer1, inner1, inner0
+                EmitRibbonVert(p1Out, u1, 1f, color);
+                EmitRibbonVert(p1In,  u1, 0f, color);
+                EmitRibbonVert(p0In,  u0, 0f, color);
+            }
+        }
+    }
+
     void DrawRibbons(Matrix4x4 view, Matrix4x4 proj)
     {
         _gl.BindBuffer(GLEnum.ArrayBuffer, _ribbonVbo);
@@ -778,7 +945,6 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _ribbonShader.Use();
         _ribbonShader.SetMatrix4("uView", view);
         _ribbonShader.SetMatrix4("uProj", proj);
-        _ribbonShader.SetInt("uSlot", BoltTexSlot);
         for (int i = 0; i < _textures.Length; i++)
             _ribbonShader.SetInt("uTex" + i, i);
         for (int slot = 0; slot < _textures.Length; slot++)
@@ -788,7 +954,21 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
 
         _gl.BindVertexArray(_ribbonVao);
-        _gl.DrawArrays(GLEnum.Triangles, 0, (uint)_ribbonVertCount);
+        // Phase 21-SC-SPELL-VISUAL-A — 2-pass: bolts at [0, _cylinderVertStart)
+        // with the bolt-streak texture, cylinders at [_cylinderVertStart,
+        // _ribbonVertCount) with the cylinder texture. Single VBO, two
+        // DrawArrays calls with different uSlot values.
+        if (_cylinderVertStart > 0)
+        {
+            _ribbonShader.SetInt("uSlot", BoltTexSlot);
+            _gl.DrawArrays(GLEnum.Triangles, 0, (uint)_cylinderVertStart);
+        }
+        if (_ribbonVertCount > _cylinderVertStart)
+        {
+            _ribbonShader.SetInt("uSlot", CylinderTexSlot);
+            _gl.DrawArrays(GLEnum.Triangles, _cylinderVertStart,
+                (uint)(_ribbonVertCount - _cylinderVertStart));
+        }
         _gl.BindVertexArray(0);
         _gl.DepthMask(true);
         if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
@@ -942,6 +1122,9 @@ uniform sampler2D uTex6;
 uniform sampler2D uTex7;
 uniform sampler2D uTex8;
 uniform int uSlot;
+uniform sampler2D uTex9;
+uniform sampler2D uTex10;
+uniform sampler2D uTex11;
 out vec4 frag;
 void main(){
   vec4 tex;
@@ -953,7 +1136,10 @@ void main(){
   else if (uSlot == 5) tex = texture(uTex5, vUv);
   else if (uSlot == 6) tex = texture(uTex6, vUv);
   else if (uSlot == 7) tex = texture(uTex7, vUv);
-  else                 tex = texture(uTex8, vUv);
+  else if (uSlot == 8) tex = texture(uTex8, vUv);
+  else if (uSlot == 9) tex = texture(uTex9, vUv);
+  else if (uSlot == 10) tex = texture(uTex10, vUv);
+  else                 tex = texture(uTex11, vUv);
   vec4 c = tex * vColor;
   c.rgb *= 1.8; // ribbons always read as additive bright glow
   frag = c;

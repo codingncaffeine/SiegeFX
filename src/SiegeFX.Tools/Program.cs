@@ -6488,6 +6488,7 @@ sealed class SpellAuditRow
 sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
 {
     public int SpawnFireCount, SpawnSmokeCount, SpawnSteamCount, SpawnSparkCount, SpawnLightningCount, SpawnProjectileCount;
+    public int SpawnCylinderCount;
     public int MaintainFireCount, MaintainSmokeCount, MaintainSteamCount;
     public void SpawnFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 12) => SpawnFireCount += n;
     public void SpawnSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 8) => SpawnSmokeCount += n;
@@ -6502,4 +6503,9 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     { MaintainSmokeCount++; float b = carry + r * dt; int k = (int)b; SpawnSmokeCount += Math.Max(0, k); return b - k; }
     public float MaintainSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainSteamCount++; float b = carry + r * dt; int k = (int)b; SpawnSteamCount += Math.Max(0, k); return b - k; }
+    public void SpawnCylinder(System.Numerics.Vector3 anchor, System.Numerics.Vector4 color,
+                              float radiusOuter, float thicknessRatio,
+                              float spinPerSec,  float fadeIn, float fadeOut,
+                              float duration,    byte texSlot, byte segments)
+        => SpawnCylinderCount++;
 }

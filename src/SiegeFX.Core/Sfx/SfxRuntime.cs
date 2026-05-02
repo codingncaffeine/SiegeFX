@@ -629,17 +629,27 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotCylinder:
             {
-                // Phase 21-SC-SPELL-VFX-3i — `cylinder` is a textured beam
-                // between hp0 and hp1 (head positions) with rp0/rp1 radii,
-                // tin/tout fade, dur, color0, spin, segments. First-pass:
-                // straight beam (displace=0) via SpawnLightning between the
-                // anchor and OtherEnd. The "tube" effect is approximated by
-                // the lightning bolt rendering. Tube-textured rendering
-                // would need a new primitive — listed in the test sweep as
-                // "expect a colored beam, not necessarily a tube."
-                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color,
-                    MathF.Max(0.20f, h.Duration),
-                    displace: 0f);
+                // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder is a flat
+                // textured impact ring at one anchor, NOT a beam between
+                // two points. 19 of 19 shipped cylinder scripts confirm
+                // this dominant pattern (per the SC-SPELL-VISUAL-A agent
+                // inventory). Outer radius from rp0 mid-value (3-float
+                // profile authored by every shipped script); donut
+                // thickness via the renderer's default. Spin animates the
+                // texture circumferentially.
+                float outer = h.RpMid > 0.05f ? h.RpMid : MathF.Max(0.5f, h.Scale);
+                int segments = h.Segments >= 4 ? h.Segments : 24;
+                _particles.SpawnCylinder(
+                    anchor:          h.Anchor,
+                    color:           h.Color,
+                    radiusOuter:     outer,
+                    thicknessRatio:  0.7f,                           // ring shape; tweak per spell later
+                    spinPerSec:      h.SpinRate,
+                    fadeIn:          h.FadeIn  > 0f ? h.FadeIn  : 0.10f,
+                    fadeOut:         h.FadeOut > 0f ? h.FadeOut : 0.30f,
+                    duration:        h.Duration > 0.10f ? h.Duration : 1.0f,
+                    texSlot:         11,                             // b_sfx_cyl_03 — most-used; tex-honor in slice H
+                    segments:        (byte)Math.Min(96, segments));
                 break;
             }
             case EmitterMode.OneShotSray:
@@ -1050,6 +1060,17 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "radius",   out var or))     h.OrbitRadius = or;
         if (TryReadFloat(raw, "radiusi",  out var ori))    h.OrbitRadiusInc = ori;
         if (TryReadFloat(raw, "velocity", out var vel))    h.Velocity = MathF.Abs(vel);
+
+        // Phase 21-SC-SPELL-VISUAL-A — cylinder knobs. spin(N), tin/tout
+        // fade-in/out, segments(N), and rp0(start,mid,end) where the mid
+        // value drives the ring's outer radius (per the agent's inventory
+        // of all 19 cylinder spells). rp1 ignored — it's a per-end taper
+        // we don't render yet.
+        if (TryReadFloat(raw, "spin",     out var sp))     h.SpinRate = sp;
+        if (TryReadFloat(raw, "tin",      out var ti))     h.FadeIn   = MathF.Max(0f, ti);
+        if (TryReadFloat(raw, "tout",     out var to))     h.FadeOut  = MathF.Max(0f, to);
+        if (TryReadFloat(raw, "segments", out var sg) && sg >= 4f) h.Segments = (int)sg;
+        if (TryReadFloat(raw, "rp0", out var rpMid, argIndex: 1)) h.RpMid = rpMid;
     }
 
     static string SubstituteCallerArgs(string? param, IReadOnlyList<string>? callerArgs)
@@ -1202,6 +1223,18 @@ public sealed class SfxRuntime
         public float       Displace;     // maxdisplace amplitude
         public int         BurstCount;   // explosion/sparkles count(N)
         public EmitterMode Mode;
+        // Phase 21-SC-SPELL-VISUAL-A — cylinder-specific knobs.
+        public float       SpinRate;     // spin(N) — radians/sec around axis
+        public float       FadeIn;       // tin(N)  — seconds to ramp alpha 0→1
+        public float       FadeOut;      // tout(N) — seconds to ramp alpha 1→0
+        public int         Segments;     // segments(N) — ring subdivision
+        /// <summary>rp0(start, mid, end) middle value — the dominant radius
+        /// value DS1 ships in cylinder profiles. We render a flat ring of
+        /// this radius; <see cref="Scale"/> is overloaded as ring outer
+        /// radius for the OneShotCylinder dispatch, but RpMid takes
+        /// precedence when present so 3-float profiles aren't truncated
+        /// by the ApplyParamString radius→Scale shortcut.</summary>
+        public float       RpMid;
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion-tracking fields.
         /// <summary>Non-zero when this handle IS a motion source (orbiter,
         /// trackball, lightsource, curve). The id maps into the runtime's
