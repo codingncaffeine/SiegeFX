@@ -5168,7 +5168,7 @@ static int CmdSpellsVisualAudit(string[] a)
     {
         if (a[i] == "--verbose") verbose = true;
         else if (a[i] == "--only-uncovered") onlyUncovered = true;
-        else if (a[i].StartsWith("--filter=", StringComparison.Ordinal))
+        else if (a[i].StartsWith("--filter=", StringComparison.OrdinalIgnoreCase))
             filter = a[i]["--filter=".Length..];
     }
 
@@ -5185,15 +5185,21 @@ static int CmdSpellsVisualAudit(string[] a)
     {
         "fire", "smoke", "steam", "lightning", "explosion", "sparkles",
     };
-    // Verbs that drive *motion* or gating — when these go unhandled the
-    // visual diverges materially (fireball stops tracking, beams never
-    // detach). Less critical Raws (worldmsg / get / lightsource) just log
-    // and continue without a visible regression, so they don't move a
-    // verdict from COVERED → PARTIAL on their own.
+    // Bare top-level verbs whose unhandled-ness alone moves a spell from
+    // COVERED → PARTIAL. Today only `waitfor` qualifies — it gates the
+    // whole script (e.g. waitfor collision before the impact burst), so a
+    // skipped waitfor breaks visual sequencing even when every primitive
+    // is otherwise handled. The other "critical" things you'd naively put
+    // here (trackball / orbiter / sphere / fireb / charge / lightsource)
+    // are actually `sfx create <kind>` *kinds*, not bare verbs — DS1
+    // scripts ship them as `sfx create trackball ...` and the compiler
+    // routes them as `SfxCreate` with the kind in `Tokens[0]`. Those land
+    // in `PrimitiveKinds` and get caught by `!allPrimsCovered` below; they
+    // never reach `UnhandledVerbs`. Folded out of this set on review of
+    // 927284a so the table reads what it actually does.
     var criticalUnhandled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        "trackball", "waitfor", "spawn", "fireb", "sphere", "orbiter",
-        "charge", "lightsource",
+        "waitfor",
     };
 
     var results = new List<SpellAuditRow>();
@@ -5240,9 +5246,9 @@ static int CmdSpellsVisualAudit(string[] a)
     Console.WriteLine($"  cast_sfx_script coverage : {withScript} resolved, {missingScript} missing, {withoutScript} no [we_req_cast] row");
     Console.WriteLine();
     Console.WriteLine($"  visual coverage  (of {total} runnable spells):");
-    Console.WriteLine($"     COVERED   : {covered,3}  every primitive handled, no motion/gating verbs unhandled");
-    Console.WriteLine($"     PARTIAL   : {partial,3}  unhandled critical verbs (trackball/waitfor/spawn/fireb/sphere/orbiter)");
-    Console.WriteLine($"     UNCOVERED : {uncovered,3}  no recognized `sfx create` kind at all");
+    Console.WriteLine($"     COVERED   : {covered,3}  every `sfx create` kind handled and no `waitfor` gating left unhandled");
+    Console.WriteLine($"     PARTIAL   : {partial,3}  uses unmodeled create kinds (orbiter/trackball/cylinder/lightsource/...) or hits an unhandled `waitfor`");
+    Console.WriteLine($"     UNCOVERED : {uncovered,3}  no recognized `sfx create` kind at all (DS1-author stubs in shipped data)");
     Console.WriteLine();
 
     Console.WriteLine($"Primitive `sfx create` kinds invoked ({primitiveTally.Count} distinct):");
@@ -5297,8 +5303,13 @@ static int CmdSpellsVisualAudit(string[] a)
 
 static void AppendTo(Dictionary<string, List<string>> map, string key, string spellName)
 {
+    // Set-style add: avoid double-counting if the same spell hits the
+    // same key twice. Today the per-spell loop only iterates each row's
+    // HashSets once each, so a positional `list[^1] != spellName` check
+    // would suffice; but `Contains` keeps the helper safe for future
+    // callers that don't batch by spell. Spell counts are small (<70).
     if (!map.TryGetValue(key, out var list)) map[key] = list = new List<string>();
-    if (list.Count == 0 || list[^1] != spellName) list.Add(spellName);
+    if (!list.Contains(spellName)) list.Add(spellName);
 }
 
 static void WalkAuditScript(string scriptName, string body, SfxScriptStore store, SpellAuditRow row, HashSet<string> visited)
@@ -5359,6 +5370,13 @@ static void WalkAuditScript(string scriptName, string body, SfxScriptStore store
 // (e.g. `scale(.75)texture(b_sfx_sparkle01)color0(.7,.7,1)`) — no `=` and
 // no `;` separators inside a quoted block. We only mine `texture` and
 // `dual_texture` keys; their values are bare token names.
+//
+// Limitations (documented for clean-room transparency, not yet bugs in
+// shipped data): nested parens inside a value (`texture(foo(bar))`) get
+// truncated to `foo(bar` because `IndexOf(')')` takes the first close.
+// No DS1 param string we've seen does this — values are always bare token
+// names — but a future SC-SPELL-* slice authoring its own param strings
+// must keep flat-paren values, or this extractor needs a balanced scan.
 static IEnumerable<string> ExtractAuditTextures(string paramString)
 {
     int i = 0;
@@ -5380,7 +5398,13 @@ static IEnumerable<string> ExtractAuditTextures(string paramString)
         int close = paramString.IndexOf(')', open + 1);
         if (close < 0) { i = open + 1; continue; }
         var name = paramString.Substring(open + 1, close - open - 1).Trim().Trim('"');
-        if (name.Length > 0) yield return name;
+        // Skip script-variable references (e.g. `texture($texture)`) — those
+        // resolve at runtime from caller args, not to a literal asset name.
+        // The audit's primitive / unhandled-verb tables already surface that
+        // a spell uses caller-arg textures; reporting the placeholder string
+        // as if it were an asset clutters the texture roll-up.
+        if (name.Length == 0 || name[0] == '$') { i = close + 1; continue; }
+        yield return name;
         i = close + 1;
     }
 }

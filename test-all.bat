@@ -1730,7 +1730,7 @@ echo [Receipt: 69 offensive spells, 61 with cast_sfx_script (8 have no we_req_ca
 echo [9 fully COVERED, 47 PARTIAL (use orbiter/trackball/cylinder/lightsource/etc.),]
 echo [5 UNCOVERED (DS1 author left them sound-only — see iceblast_launch.gas TODO).]
 echo [Top primitive misses: orbiter (20 spells), trackball (18), cylinder (12),]
-echo [lightsource (9), flurry (7), fireb (5), sray (5), curve (4). 19 distinct b_sfx_*]
+echo [lightsource (9), flurry (7), fireb (5), sray (5), curve (4). 18 distinct b_sfx_*]
 echo [textures referenced; b_sfx_sparkle01 is the most common (26 spells).]
 echo.
 "%TOOL%" spells visual-audit "%DS1%\Resources\Logic.dsres"
