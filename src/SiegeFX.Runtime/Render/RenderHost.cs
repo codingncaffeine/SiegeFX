@@ -2788,6 +2788,25 @@ void main()
         }
         catch (Exception ex) { Console.WriteLine($"  spell catalog build failed: {ex.Message}"); }
 
+        // Phase 21-SC-SCROLL-A-1 — pre-cache every catalog spell's
+        // inventory-grid scroll icon so the first time a player drags a
+        // spell out of the spellbook, the cursor scroll renders without
+        // a frame-stutter from on-demand RAW decode + GL upload. The
+        // icons are the larger `b_gui_ig_i_ic_sp_*_inv` set DS1 ships
+        // for inventory display (vs the smaller `b_gui_ig_i_ic_sp_*`
+        // used inside the spellbook UI). _itemIconCache is keyed by
+        // template name; subsequent ResolveSpellInventoryIcon calls hit
+        // the cache. ~69 textures × ~4KB compressed = trivial cost.
+        if (_spellCatalog is not null)
+        {
+            int prefetched = 0;
+            foreach (var spell in _spellCatalog.All)
+            {
+                if (TryGetItemIcon(spell.Name) is not null) prefetched++;
+            }
+            Console.WriteLine($"  spell icons: pre-cached {prefetched}/{_spellCatalog.Count} scroll icons");
+        }
+
         // Phase 18a — bootstrap the audio engine and pre-register the two
         // shipped cast SFX. Sound.dsres lives next to Logic.dsres in the
         // Resources folder; if it's missing (very-stripped install) we
