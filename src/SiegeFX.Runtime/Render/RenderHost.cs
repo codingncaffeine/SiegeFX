@@ -842,6 +842,11 @@ public sealed class RenderHost : IDisposable
     // Source provenance lets a cancelled drag put the spell back where it
     // came from.
     private Vector2 _currentMousePos = Vector2.Zero;
+    /// <summary>Phase 21-SC-SCROLL-C-1 — names parsed from SIEGEFX_DEBUG_SPELLS
+    /// beyond the first two (primary/secondary). Seeded into
+    /// PlayerSpellbook.Placed[] right after the spellbook is constructed.
+    /// Null = no env-var seed in effect.</summary>
+    private string[]? _pendingPlacedSeeds;
     private SiegeFX.Core.Assets.SpellTemplate? _cursorScroll;
     private CursorScrollSource _cursorScrollSource;
 
@@ -4791,6 +4796,25 @@ void main()
                 if (parts.Length >= 2 && parts[1].Length > 0)
                     secondaryName = parts[1].StartsWith("spell_", StringComparison.OrdinalIgnoreCase) ? parts[1] : "spell_" + parts[1];
                 Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS override: primary={primaryName} secondary={secondaryName}");
+                // Phase 21-SC-SCROLL-C-1 — extra names beyond the first two
+                // seed PlayerSpellbook.Placed[] so the user has a roster to
+                // swap among during test sessions. e.g.
+                //   SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning,shock_wave,nurture
+                // primaries Q+W from index 0/1, plus 3 placed rows from
+                // index 2..4. Up to 10 placed slots; extras silently ignored.
+                if (parts.Length > 2)
+                {
+                    int placedCount = Math.Min(parts.Length - 2, 10);
+                    var placedNames = new string[placedCount];
+                    for (int pi = 0; pi < placedCount; pi++)
+                    {
+                        var name = parts[pi + 2];
+                        placedNames[pi] = name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)
+                            ? name : "spell_" + name;
+                    }
+                    _pendingPlacedSeeds = placedNames;
+                    Console.WriteLine($"  SIEGEFX_DEBUG_SPELLS placed seed: {string.Join(", ", placedNames)}");
+                }
             }
 
             // Phase 21-SC-SPELL-VFX-3p — when SIEGEFX_DEBUG_SPELLS names a
@@ -4823,6 +4847,25 @@ void main()
                 else if (!string.IsNullOrWhiteSpace(debugSpells))
                 {
                     Console.WriteLine($"  spellbook: secondary '{secondaryName}' not resolvable (slot empty)");
+                }
+                // Phase 21-SC-SCROLL-C-1 — seed Placed[] from extra
+                // SIEGEFX_DEBUG_SPELLS names parsed at the catalog override
+                // step. ResolveSlottableSpell handles non-catalog templates
+                // (summons etc.) via the synthetic FromTemplateForDebug path,
+                // so a placed row can hold any spell_* template.
+                if (_pendingPlacedSeeds is not null)
+                {
+                    int seeded = 0;
+                    for (int pi = 0; pi < _pendingPlacedSeeds.Length && pi < _playerSpellbook.PlacedCount; pi++)
+                    {
+                        var seedSpell = ResolveSlottableSpell(_pendingPlacedSeeds[pi], debugSpells);
+                        if (seedSpell is not null)
+                        {
+                            _playerSpellbook.SetPlaced(pi, seedSpell);
+                            seeded++;
+                        }
+                    }
+                    Console.WriteLine($"  spellbook: seeded {seeded}/{_pendingPlacedSeeds.Length} placed rows from SIEGEFX_DEBUG_SPELLS");
                 }
             }
             else if (!string.IsNullOrWhiteSpace(debugSpells))
