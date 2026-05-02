@@ -63,6 +63,12 @@ public sealed class SfxRuntime
             // Visual quality not yet DS1-pixel-faithful; the per-primitive
             // test list at session-end will surface where tuning is needed.
             "flurry", "fireb", "cylinder", "sray",
+            // Phase 21-SC-SPELL-VFX-3q — 1-spell outliers mapped onto
+            // existing primitives (charge -> sparkles, polygonalexplosion
+            // -> explosion, spe -> flurry). Bespoke implementations would
+            // cost more than the leverage; tweak list will say which to
+            // promote to native if the user objects to the visual.
+            "charge", "polygonalexplosion", "spe",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -622,6 +628,13 @@ public sealed class SfxRuntime
             case "fireb":     return EmitterMode.Fireb;
             case "cylinder":  return EmitterMode.OneShotCylinder;
             case "sray":      return EmitterMode.OneShotSray;
+            // Phase 21-SC-SPELL-VFX-3q outliers (1 spell each). Mapped onto
+            // existing primitives to clear MISS without the bespoke
+            // implementation cost — these are unique to one spell, low
+            // leverage if we get them wrong.
+            case "charge":             return EmitterMode.OneShotSparkles;     // fireskull build-up
+            case "polygonalexplosion": return EmitterMode.OneShotExplosion;    // explode_body
+            case "spe":                return EmitterMode.OneShotFlurry;       // incinerate
             default:          return EmitterMode.Unsupported;
         }
     }
