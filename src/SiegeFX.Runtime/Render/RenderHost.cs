@@ -5033,26 +5033,39 @@ void main()
                     // misleading for any future caller that re-reads.
                     _pendingPlacedSeeds = null;
                 }
-                // Phase 21-SC-SCROLL-D follow-up — overflow into the
-                // inventory as scroll items. Reference is the spell template
-                // name (Slot=""); existing TryGetItemIcon path renders them
-                // with the b_gui_ig_i_ic_sp_*_inv art (A-1 pre-cached). The
-                // user can then click-pick-up and drag them into the
-                // spellbook to swap actives during testing without leaving
-                // the launch.
+                // Phase 21-SC-SCROLL-D follow-up — overflow names go into a
+                // ground LOOT PILE next to the player. Walking over picks
+                // them up via F-2 (auto-route to spellbook Placed[]; falls
+                // back to inventory once Placed is full). Lets a test
+                // session exercise the world-drop -> pickup path AND
+                // populate the inventory grid for further drag-from-
+                // inventory testing once Placed fills up. Original
+                // direct-inventory seeding switched at user request:
+                // "if it's easier you can just put the spells on the
+                // ground next to the player."
                 if (_pendingInventoryScrollSeeds is not null)
                 {
-                    int seeded = 0;
+                    var pileItems = new List<SiegeFX.Core.Actors.LootEntry>();
                     foreach (var name in _pendingInventoryScrollSeeds)
                     {
                         var seedSpell = ResolveSlottableSpell(name, debugSpells);
                         if (seedSpell is null) continue;
-                        _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                        pileItems.Add(new SiegeFX.Core.Actors.LootEntry(
                             Slot: "", Reference: seedSpell.Name));
-                        _inventoryPanel.NotifyItemAdded();
-                        seeded++;
                     }
-                    Console.WriteLine($"  inventory: seeded {seeded}/{_pendingInventoryScrollSeeds.Length} scroll items from SIEGEFX_DEBUG_SPELLS");
+                    if (pileItems.Count > 0)
+                    {
+                        // Drop ~2u in front of the player along their facing
+                        // (or +X if facing isn't yet set). No throw arc — these
+                        // are pre-placed for the user to walk over.
+                        var origin = player.WorldTransform.Translation;
+                        var face = _playerFacing.LengthSquared() > 0.01f
+                            ? _playerFacing : new Vector3(1f, 0f, 0f);
+                        var dropPos = origin + face * 2.0f;
+                        _lootPiles.Add(new LootPile(dropPos, pileItems));
+                        Console.WriteLine($"  ground scrolls: pile of {pileItems.Count} scrolls at " +
+                                          $"({dropPos.X:F1},{dropPos.Z:F1}) — walk over to pick up");
+                    }
                     _pendingInventoryScrollSeeds = null;
                 }
             }
