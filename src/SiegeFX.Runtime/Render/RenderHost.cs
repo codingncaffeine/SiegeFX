@@ -1610,9 +1610,30 @@ void main()
                 // doesn't see a click-to-move on an inventory backdrop hit.
                 if (_inventoryOpen && btn == MouseButton.Left)
                 {
-                    _inventoryPanel.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
+                    int imx = (int)m.Position.X, imy = (int)m.Position.Y;
+                    // Phase 21-SC-SCROLL-D — LMB-while-dragging-a-scroll on
+                    // the inventory panel drops the cursor scroll into the
+                    // inventory as a scroll item. Reference is the spell
+                    // template name; TryGetItemIcon already routes spell_*
+                    // refs through the [gui][inventory_icon] attribute (A-1
+                    // pre-cached every catalog spell), so the new entry
+                    // renders with its DS1 b_gui_ig_i_ic_sp_*_inv art.
+                    // The source slot was cleared on pickup so the move
+                    // is just an Add here; ClearScrollDrag ends the drag.
+                    if (_cursorScroll is not null
+                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
+                    {
+                        var spell = _cursorScroll;
+                        _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                            Slot: "", Reference: spell.Name));
+                        _audio?.Play(SfxGuiPutDownScroll);
+                        Console.WriteLine($"  scroll drag: drop {spell.Name} into inventory grid");
+                        ClearScrollDrag();
+                        return;
+                    }
+                    _inventoryPanel.OnMouseDown(imx, imy,
                         _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
-                    if (_inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
+                    if (_inventoryPanel.IsPointInPanel(imx, imy,
                             _window.Size.X, _window.Size.Y))
                         return;
                     // LMB outside the panel with inventory still open: skip the
