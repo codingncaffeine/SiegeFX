@@ -100,17 +100,24 @@ public sealed class PlayerSpellbook
 
     public void Slot(SpellTemplate? spell) => Slot(SpellSlot.Primary, spell);
 
-    public void Slot(SpellSlot slot, SpellTemplate? spell)
+    /// <summary>Phase 21-SC-SCROLL-C-2 — <paramref name="resetCooldown"/>
+    /// defaults true (the original 17a behavior — fresh slot starts with
+    /// no cooldown), but the scroll-drag drop path passes false. Otherwise
+    /// a player mid-cooldown could exploit a drag-and-redrop to reset:
+    /// cast fireball -> 5s cd -> open spellbook, drag fireball out, drag
+    /// it back into Active1 -> cd reset to 0 -> cast again. Caught by
+    /// 27cb12a review.</summary>
+    public void Slot(SpellSlot slot, SpellTemplate? spell, bool resetCooldown = true)
     {
         switch (slot)
         {
             case SpellSlot.Primary:
                 Primary = spell;
-                PrimaryCooldownRemaining = 0f;
+                if (resetCooldown) PrimaryCooldownRemaining = 0f;
                 break;
             case SpellSlot.Secondary:
                 Secondary = spell;
-                SecondaryCooldownRemaining = 0f;
+                if (resetCooldown) SecondaryCooldownRemaining = 0f;
                 break;
         }
     }
