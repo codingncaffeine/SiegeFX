@@ -119,6 +119,34 @@ public sealed class InventoryPanel
     /// NotifyItemAdded) and rebuild from scratch.</summary>
     public int PlacementCount => _placements.Count;
 
+    /// <summary>Phase 21-SC-SCROLL-E-1 — non-latching hit test against the
+    /// inventory grid. Returns the index of the item under the cursor (in
+    /// the supplied <paramref name="items"/> list), or -1 when the click
+    /// lands on an empty cell or panel chrome. Use this when the host
+    /// wants to intercept a click before the intra-grid drag latch (e.g.
+    /// "is this a scroll? pick it up onto the cursor instead").</summary>
+    public int TryHitTestItem(int x, int y, int viewportW, int viewportH,
+                              IReadOnlyList<LootEntry> items,
+                              Func<string, (int W, int H)>? resolveGridSize)
+    {
+        EnsurePlacements(items.Count);
+        Pack(items, resolveGridSize);
+        var (px, py) = Origin(viewportW, viewportH);
+        int gridX = px + Padding;
+        int gridY = py + TitleH + Padding;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var (row, col) = _placements[i];
+            if (row < 0 || col < 0) continue;
+            var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
+            int sx = gridX + col * CellPx;
+            int sy = gridY + row * CellPx;
+            if (x >= sx && y >= sy && x < sx + w * CellPx && y < sy + h * CellPx)
+                return i;
+        }
+        return -1;
+    }
+
     /// <summary>LMB-down inside the panel. Latches the dragged item if the
     /// cursor lands on an item rect. No-op on empty cells.</summary>
     public void OnMouseDown(int x, int y, int viewportW, int viewportH,

@@ -1631,6 +1631,38 @@ void main()
                         ClearScrollDrag();
                         return;
                     }
+                    // Phase 21-SC-SCROLL-E-2 — LMB-without-cursor on a SCROLL
+                    // item in the inventory grid picks it up onto the cursor.
+                    // We hit-test before the inventory's own OnMouseDown
+                    // latch so the intra-grid drag doesn't shadow the
+                    // scroll-pickup intent. Non-scroll items still go
+                    // through the existing intra-grid drag path below.
+                    if (_cursorScroll is null && _spellCatalog is not null
+                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
+                    {
+                        int idx = _inventoryPanel.TryHitTestItem(imx, imy,
+                            _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                        if (idx >= 0)
+                        {
+                            var clicked = _playerInventory[idx];
+                            // A scroll item is identifiable by its Reference
+                            // resolving via ResolveSlottableSpell — same
+                            // path as SIEGEFX_DEBUG_SPELLS, so it works for
+                            // catalog + synthesized (summon/charm) templates.
+                            var spell = ResolveSlottableSpell(clicked.Reference, debugSpellsEnv: null);
+                            if (spell is not null && string.IsNullOrEmpty(clicked.Slot))
+                            {
+                                BeginScrollDrag(spell, CursorScrollSource.Inventory, idx);
+                                _playerInventory.RemoveAt(idx);
+                                _inventoryPanel.NotifyItemRemoved(idx);
+                                _audio?.Play(SfxGuiPickup);
+                                Console.WriteLine($"  scroll drag: pickup {spell.Name} from inventory[{idx}]");
+                                return;
+                            }
+                            // Not a scroll — fall through to the intra-grid
+                            // drag path below. Existing behavior preserved.
+                        }
+                    }
                     _inventoryPanel.OnMouseDown(imx, imy,
                         _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
                     if (_inventoryPanel.IsPointInPanel(imx, imy,
@@ -8250,19 +8282,27 @@ void main()
     /// the drag itself ends.</summary>
     private void RestoreToSource(SiegeFX.Core.Assets.SpellTemplate spell)
     {
-        if (_playerSpellbook is null) return;
         switch (_cursorScrollSource)
         {
             case CursorScrollSource.SpellbookActive1:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
+                _playerSpellbook?.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
                 break;
             case CursorScrollSource.SpellbookActive2:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
+                _playerSpellbook?.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
                 break;
             case CursorScrollSource.SpellbookPlaced:
-                _playerSpellbook.SetPlaced(_cursorScrollSourceIndex, spell);
+                _playerSpellbook?.SetPlaced(_cursorScrollSourceIndex, spell);
                 break;
-            // Inventory restore lands in SC-SCROLL-E.
+            case CursorScrollSource.Inventory:
+                // Phase 21-SC-SCROLL-E-2 — cancel of an inventory pickup
+                // re-inserts the scroll back into the inventory list.
+                // Index may not match exactly (other items may have shifted)
+                // but a clamped-end Insert keeps the spell in the player's
+                // bag, which is what the user expects from a cancel.
+                int restoreIdx = Math.Clamp(_cursorScrollSourceIndex, 0, _playerInventory.Count);
+                _playerInventory.Insert(restoreIdx,
+                    new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: spell.Name));
+                break;
         }
     }
 
