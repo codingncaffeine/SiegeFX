@@ -6137,6 +6137,11 @@ void main()
     {
         if (_player is null || prop.IsDestroyed) return;
         _player.Actor.PlayChoreOnce("chore_attack", 0.6f);
+        // Phase 21-SC-BARREL-FOLD — every hit on a breakable plays the
+        // melee swing whoosh, mirroring the actor-target swing in
+        // PerformPlayerSwing. Without this, smashing barrels was silent
+        // until the moment of shatter.
+        _audio?.Play(SfxMeleeSwingGroup);
         // Single-hit shatter is the DS1 default for life=1 props; we still
         // roll real damage so heavier crates (if any) would survive a weak
         // swing rather than always one-shotting.
@@ -6167,6 +6172,11 @@ void main()
             // item drops. Most barrels are empty; the regional templates
             // (barrel_glb_fh_r1 etc.) carry the actual loot tables.
             LogPropLootDrop(prop);
+            // Phase 21-SC-BARREL-FOLD — material-specific break sound.
+            // Wood barrels/crates author it as [aspect][voice][die][*];
+            // stone/clay/metal containers as [physics][break_sound]. The
+            // helper walks both and plays whichever the template defines.
+            PlayPropBreakSfx(prop);
             if (_particles is not null)
             {
                 var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
@@ -6670,6 +6680,40 @@ void main()
             TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
         }
         _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+    }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — play the shatter cue for a
+    /// breakable static prop. DS1 stores the cue under one of two
+    /// attribute paths depending on which authoring tool produced the
+    /// template:
+    /// <list type="bullet">
+    ///   <item><c>[aspect][voice][die][*]</c> — wood barrels / crates /
+    ///         doors / breakable rocks. Same path PlayDeathSfx uses for
+    ///         actors, so we reuse the registry cache.</item>
+    ///   <item><c>[physics][break_sound]</c> — stone / clay / metal
+    ///         containers. Authored by a different content team and
+    ///         landed on a different attribute. <c>break_sound</c> with
+    ///         a leading-empty value means "no sound" (powder kegs etc.
+    ///         author this to suppress the default break cue), so guard
+    ///         against an empty attribute resolving to a stale cache hit.</item>
+    /// </list>
+    /// Falls back silently when neither attribute is authored — keeps
+    /// the audio path graceful for templates that ship break_particulate
+    /// without a sound (the explosion variants explicitly use camera FX
+    /// instead).</summary>
+    private void PlayPropBreakSfx(StaticPropInstance prop)
+    {
+        if (_audio is null || _templateStore is null) return;
+        if (!_templateStore.TryGet(prop.Template, out var template) || template is null) return;
+        var cue = _templateStore.GetAttribute(template, "aspect", "voice", "die", "*")
+               ?? _templateStore.GetAttribute(template, "physics", "break_sound");
+        if (string.IsNullOrWhiteSpace(cue)) return;
+        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
+        }
+        _audio.PlayAt(cue, prop.World.Translation + new Vector3(0f, 0.6f, 0f));
     }
 
     /// <summary>Phase 9-SC-9 — read the dropped item's
