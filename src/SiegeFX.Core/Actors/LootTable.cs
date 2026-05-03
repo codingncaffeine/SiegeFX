@@ -4,12 +4,33 @@ namespace SiegeFX.Core.Actors;
 
 /// <summary>One equipped-slot or drop-item entry pulled from a template's
 /// inventory.pcontent block. DS1 writes equipped items as <c>es_weapon_hand = X</c>
-/// / <c>es_shield_hand = Y</c> and drops as <c>il_main = #pattern/range</c>; both
-/// land here as the same record, distinguished by <see cref="Slot"/> (null =
-/// drop, non-null = equipped).</summary>
+/// / <c>es_shield_hand = Y</c> and drops as <c>il_main = #pattern/range</c>;
+/// both land here as the same record, distinguished by <see cref="Slot"/>
+/// (empty = drop, non-empty = equipped). The Phase 21-SC-BARREL-D wiring
+/// adds a sentinel <c>"gold"</c> slot for <c>[gold*]</c> buckets — Reference
+/// holds <c>"min-max"</c> so the roller can pick a count at draw time
+/// without re-parsing the template.</summary>
 public readonly record struct LootEntry(string Slot, string Reference)
 {
-    public bool IsEquipped => Slot.Length > 0;
+    public bool IsEquipped =>
+        Slot.Length > 0 && !Slot.Equals("gold", StringComparison.OrdinalIgnoreCase);
+    public bool IsGold => Slot.Equals("gold", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>For <see cref="IsGold"/> entries, parse <see cref="Reference"/>
+    /// (formatted "min-max") into the inclusive range. Returns (0,0) on a
+    /// malformed value so callers don't have to defensively re-validate.</summary>
+    public (int Min, int Max) GoldRange()
+    {
+        if (!IsGold) return (0, 0);
+        var dash = Reference.IndexOf('-');
+        if (dash < 0) return (0, 0);
+        if (!int.TryParse(Reference.AsSpan(0, dash), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var lo)) return (0, 0);
+        if (!int.TryParse(Reference.AsSpan(dash + 1), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var hi)) return (0, 0);
+        if (hi < lo) (lo, hi) = (hi, lo);
+        return (lo, hi);
+    }
 }
 
 /// <summary>A <c>[oneof*]</c> bucket inside a template's pcontent tree. The star
@@ -87,6 +108,10 @@ public sealed class LootTable
         header.Equals("oneof", StringComparison.OrdinalIgnoreCase) ||
         header.Equals("oneof*", StringComparison.OrdinalIgnoreCase);
 
+    static bool IsGold(string header) =>
+        header.Equals("gold", StringComparison.OrdinalIgnoreCase) ||
+        header.Equals("gold*", StringComparison.OrdinalIgnoreCase);
+
     static LootBucket? ParseBucket(GasNode node)
     {
         float chance = 1f;
@@ -96,6 +121,26 @@ public sealed class LootTable
                 System.Globalization.CultureInfo.InvariantCulture, out var c))
         {
             chance = Math.Clamp(c, 0f, 1f);
+        }
+
+        // Phase 21-SC-BARREL-D — [gold*] / [gold] leaves carry a min/max
+        // range (e.g. min=2 max=8 for fh_r1 barrels). Parse into a single
+        // synthetic entry so RollBucket can return it as the "drop" without
+        // needing a separate gold-aware code path.
+        if (IsGold(node.Header))
+        {
+            int min = 0, max = 0;
+            var minStr = TemplateStore.FindAttr(node, "min");
+            var maxStr = TemplateStore.FindAttr(node, "max");
+            if (minStr is not null) int.TryParse(minStr, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out min);
+            if (maxStr is not null) int.TryParse(maxStr, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out max);
+            if (max < min) (min, max) = (max, min);
+            if (max <= 0) return null;
+            return new LootBucket(chance,
+                new[] { new LootEntry("gold", $"{min}-{max}") },
+                Array.Empty<LootBucket>());
         }
 
         var entries = new List<LootEntry>();
@@ -111,7 +156,7 @@ public sealed class LootTable
         var children = new List<LootBucket>();
         foreach (var child in node.Children)
         {
-            if (!IsOneof(child.Header)) continue;
+            if (!IsOneof(child.Header) && !IsGold(child.Header)) continue;
             var parsed = ParseBucket(child);
             if (parsed is not null) children.Add(parsed);
         }

@@ -6158,6 +6158,10 @@ void main()
             // ring stays as the on-impact "shatter" cue; the frag instances
             // are the lasting visual that DS1 ships.
             SpawnPropDebris(prop);
+            // Phase 21-SC-BARREL-D — roll inventory.pcontent for gold +
+            // item drops. Most barrels are empty; the regional templates
+            // (barrel_glb_fh_r1 etc.) carry the actual loot tables.
+            LogPropLootDrop(prop);
             if (_particles is not null)
             {
                 var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
@@ -7694,6 +7698,94 @@ void main()
             if (pitch != 0f) { deathPile.RestPitch = pitch; break; }
         }
         _lootPiles.Add(deathPile);
+    }
+
+    /// <summary>Phase 21-SC-BARREL-D — roll a shattered breakable's
+    /// inventory.pcontent. Mirrors <see cref="LogLootDrop"/> but for
+    /// static props: gold entries credit the player directly with a
+    /// floating "+N gold" cue (no pickup needed), item entries form a
+    /// short-throw LootPile next to the prop. RNG is seeded off the
+    /// world position so a given barrel rolls the same drop across
+    /// reloads of the session — matches the actor-death stable-RNG rule
+    /// (<see cref="LogLootDrop"/> uses scid; props don't carry one, so
+    /// position is the next-cleanest fingerprint). Empty pcontent is
+    /// the dominant case for most barrel templates — DS1's distribution
+    /// is ~60-70% empty, ~20-25% gold, ~5-10% potion, ~2-5% gear.</summary>
+    private void LogPropLootDrop(StaticPropInstance prop)
+    {
+        if (_templateStore is null) return;
+        if (!_templateStore.TryGet(prop.Template, out var template)) return;
+        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, template);
+        if (table.IsEmpty) return;
+
+        var origin = prop.World.Translation;
+        int seed = unchecked(
+            BitConverter.SingleToInt32Bits(origin.X) * 73856093 ^
+            BitConverter.SingleToInt32Bits(origin.Z) * 19349663);
+        var rng = new Random(seed);
+        var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
+        if (drops.Count == 0)
+        {
+            Console.WriteLine($"  loot: {prop.Template} dropped nothing this shatter");
+            return;
+        }
+
+        var items = new List<SiegeFX.Core.Actors.LootEntry>(drops.Count);
+        long goldTotal = 0;
+        foreach (var d in drops)
+        {
+            if (d.IsGold)
+            {
+                var (lo, hi) = d.GoldRange();
+                goldTotal += hi > lo ? rng.Next(lo, hi + 1) : Math.Max(0, lo);
+            }
+            else
+            {
+                items.Add(d);
+            }
+        }
+        var parts = new List<string>(drops.Count);
+        if (goldTotal > 0) parts.Add($"{goldTotal} gold");
+        foreach (var d in items)
+            parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
+        Console.WriteLine($"  loot: {prop.Template} dropped {string.Join(", ", parts)}");
+
+        if (goldTotal > 0)
+        {
+            _progression?.CreditGold(goldTotal);
+            AddFloatingText($"+{goldTotal} gold", origin + new Vector3(0f, 1.4f, 0f),
+                            new Vector4(1.00f, 0.92f, 0.40f, 1f));
+        }
+        if (items.Count == 0) return;
+
+        // Short tumble out from the prop center — same throw shape as
+        // actor-death drops (Phase 9-SC-9), reusing the existing pile
+        // animation so frags + items both visibly fly out of the wreckage.
+        var dropDir = new Vector2(
+            (float)rng.NextDouble() * 2f - 1f,
+            (float)rng.NextDouble() * 2f - 1f);
+        if (dropDir.LengthSquared() < 1e-4f) dropDir = new Vector2(0f, 1f);
+        else dropDir = Vector2.Normalize(dropDir);
+        var dropTarget = origin + new Vector3(dropDir.X * 0.7f, 0f, dropDir.Y * 0.7f);
+        var pile = new LootPile(origin, items)
+        {
+            Throw = new LootThrow
+            {
+                Source        = origin,
+                Target        = dropTarget,
+                Duration      = 0.6f,
+                Elapsed       = 0f,
+                ArcHeight     = 0.55f,
+                Spins         = 0.5f,
+                StartRotation = (float)rng.NextDouble() * MathF.PI * 2f,
+            }
+        };
+        foreach (var d in items)
+        {
+            var pitch = ComputeLootRestPitch(d.Reference);
+            if (pitch != 0f) { pile.RestPitch = pitch; break; }
+        }
+        _lootPiles.Add(pile);
     }
 
     // Phase 14c — a dropped "weapon_hand" entry is an upgrade iff its template has
