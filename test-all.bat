@@ -2068,28 +2068,36 @@ echo             - Page 1: Framerate, Priority, Text Scroll, Max Text,
 echo               Game Speed, Tutorial Tips, Difficulty
 echo             - Page 2: Tooltips, Blood Color, Dismemberment
 echo.
-echo [Things that work runtime-wise (post SC-OPTIONS-FOLD2):]
+echo [Status: PARTIAL. The dialog opens, scales, and persists state within
+echo the session, but most knobs are still persist-only. Verified working:]
 echo   - Audio Master / Music / SFX volumes (live during drag + on OK)
 echo   - Sound on/off (Master goes to 0 when off)
 echo   - Defaults click on Audio tab applies live so you hear the reset
-echo   - Game tab: Show Framerate (top-right FPS HUD on/off)
-echo   - Game tab: Game Speed (multiplies world tick rate)
+echo   - Game tab: Show Framerate (top-right FPS HUD on/off) - eyes confirmed
+echo.
+echo [Wired but reportedly NOT visibly working yet - needs follow-up:]
 echo   - Input tab: Invert Camera X/Y, Camera Sensitivity, Mouse Sensitivity
+echo     (ApplyOptionsRuntime pushes to Camera but user reports no effect;
+echo      may be that the chase-mode handler still routes around it, or
+echo      the values aren't reaching the input dispatch path)
+echo   - Game tab: Game Speed (claimed wired but not yet validated)
 echo.
-echo [Things that persist into the menu state but DON'T apply at runtime yet:]
-echo   - Video resolution / shadows / texture filtering / gamma / object detail
-echo   - Input lock-camera-x/y, screen edge tracking
-echo   - Game tooltips (no tooltip system shipped yet - SC-TOOLTIP)
-echo   - Game blood color / dismemberment / priority / text scroll / max text / tutorial / difficulty
-echo   These need DungeonSiege.ini / prefs.gas writeback (splinter
-echo   SC-OPTIONS-PERSIST) and runtime knobs (splinter SC-OPTIONS-VIDEO-RUNTIME
-echo   etc.). The menu remembers them within the session but resets on relaunch.
+echo [Persist-only - will need their own splinter to take runtime effect:]
+echo   - Video: resolution, shadows, texture filtering, gamma, object detail
+echo            (SC-OPTIONS-VIDEO-RUNTIME)
+echo   - Input: lock-camera-x/y, screen edge tracking
+echo            (SC-OPTIONS-INPUT-RUNTIME)
+echo   - Game:  tooltips (no tooltip system shipped yet - SC-TOOLTIP),
+echo            blood color, dismemberment, priority, text scroll, max text,
+echo            tutorial tips, difficulty (SC-OPTIONS-PERSIST + per-knob splinters)
+echo   The menu remembers all of these within the session but resets on relaunch.
 echo.
-echo [SC-OPTIONS-FOLD2 visible fixes:]
+echo [SC-OPTIONS-FOLD2 visible fixes that DID land:]
 echo   - Tab labels no longer covered by inner panel (panel Y dropped 80 to 86,
 echo     tab font centering now factors in _fontScale)
 echo   - Defaults button no longer overlaps Hotkeys (Input) or More (Game) -
 echo     RowStride dropped 30 to 24 so 8 rows fit above the Defaults band
+echo   - Hotkeys sub-screen layout now scales with _fontScale at 4K
 echo   - mood_change trigger flood log dedupes by name (was 100s/frame in fh_r1)
 echo.
 echo [Reach the menu the cheap way:]
