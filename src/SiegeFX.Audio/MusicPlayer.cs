@@ -1,7 +1,7 @@
 using NLayer;
 using Silk.NET.OpenAL;
 
-namespace SiegeFX.Runtime.Audio;
+namespace SiegeFX.Audio;
 
 /// <summary>Phase 22-SC-MUSIC-A — streaming mp3 → OpenAL playback.
 /// DS1 ships 131 mp3 music tracks at /sound/music/s_m_*.mp3 inside
@@ -72,7 +72,7 @@ public sealed unsafe class MusicPlayer : IDisposable
     public static MusicPlayer? TryCreate(AudioEngine? engine)
     {
         if (engine is null) return null;
-        var al = engine.GetAlForSharedClient();
+        var al = engine.GetAl();
         if (al is null) return null;
         try
         {
@@ -137,23 +137,22 @@ public sealed unsafe class MusicPlayer : IDisposable
     }
 
     /// <summary>Stop playback and release the decoder. Idempotent — safe
-    /// to call when nothing's playing. Detaches every buffer from the
-    /// source so the next Play can re-queue them cleanly.</summary>
+    /// to call when nothing's playing.</summary>
     public void Stop()
     {
         if (_disposed) return;
         _al.SourceStop(_source);
-        // Drain any queued buffers from the source so subsequent Play
-        // calls start with a clean queue. SourceUnqueueBuffers can return
-        // fewer than requested if the source isn't fully stopped yet —
-        // loop until we've flushed everything.
-        _al.GetSourceProperty(_source, GetSourceInteger.BuffersQueued, out int queued);
-        while (queued > 0)
-        {
-            uint dummy;
-            _al.SourceUnqueueBuffers(_source, 1, &dummy);
-            queued--;
-        }
+        // Phase 22-SC-MUSIC-FOLD — alSourcei(src, AL_BUFFER, 0) atomically
+        // detaches every buffer from the source regardless of which are
+        // queued vs processed. The original drain-loop relied on
+        // SourceUnqueueBuffers in a state where SourceStop is async on
+        // some drivers — buffers wouldn't be in the "Processed" state
+        // yet, alSourceUnqueueBuffers would return AL_INVALID_OPERATION,
+        // and the local counter would still tick down (decoupled from
+        // the actual AL state) leaving buffers attached. Subsequent
+        // DeleteBuffers in Dispose would then leak. The single-binding
+        // detach is the canonical idiom for "stop + clear queue".
+        _al.SetSourceProperty(_source, SourceInteger.Buffer, 0);
         _decoder?.Dispose();
         _decoder = null;
         _eosReached = false;
@@ -247,12 +246,7 @@ public sealed unsafe class MusicPlayer : IDisposable
     }
 }
 
-internal static class AudioEngineMusicAccess
-{
-    // Phase 22-SC-MUSIC-A — MusicPlayer needs access to the AudioEngine's
-    // AL handle to share the OpenAL context (one device per process). We
-    // expose this via an internal helper instead of a public AudioEngine
-    // method so external callers don't end up depending on the AL handle
-    // directly — only MusicPlayer does, and it lives in the same assembly.
-    public static AL? GetAlForSharedClient(this AudioEngine? engine) => engine?.GetAl();
-}
+// Phase 22-SC-MUSIC-FOLD — the AudioEngineMusicAccess extension that
+// previously lived in this file was deleted; MusicPlayer.TryCreate
+// calls AudioEngine.GetAl() directly. Both types live in the same
+// SiegeFX.Audio assembly so the internal accessor is enough.

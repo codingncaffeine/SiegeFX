@@ -6361,13 +6361,78 @@ static int CmdFlmDump(string[] a)
 
 static int DispatchMusic(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx music <list|play> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx music <list|play|selftest> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list" => CmdMusicList(a[1..]),
-        "play" => CmdMusicPlay(a[1..]),
-        _      => UnknownCommand("music " + a[0]),
+        "list"     => CmdMusicList(a[1..]),
+        "play"     => CmdMusicPlay(a[1..]),
+        "selftest" => CmdMusicSelftest(a[1..]),
+        _          => UnknownCommand("music " + a[0]),
     };
+}
+
+// Phase 22-SC-MUSIC-FOLD — headless decode-only verification suitable for
+// CI. Extracts a music track from Sound.dsres, decodes ~100ms via NLayer,
+// asserts non-zero PCM bytes + plausible header. Skips AudioEngine /
+// OpenAL entirely so it runs on machines without an audio device.
+static int CmdMusicSelftest(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx music selftest <Sound.dsres> [--track=basename]");
+        Console.Error.WriteLine("  default track is 'frontend' (s_m_frontend.mp3)");
+        return 1;
+    }
+    var trackBasename = "frontend";
+    for (int i = 1; i < a.Length; i++)
+    {
+        const string p = "--track=";
+        if (a[i].StartsWith(p)) trackBasename = a[i][p.Length..];
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var path = "/sound/music/s_m_" + trackBasename + ".mp3";
+    if (!reader.TryGetFile(path, out _))
+    {
+        Console.Error.WriteLine($"selftest FAIL: track not in tank — {path}");
+        return 2;
+    }
+    var bytes = reader.ExtractToMemory(path);
+    Console.WriteLine($"  selftest: extracted {path} ({bytes.Length:N0} bytes)");
+
+    NLayer.MpegFile decoder;
+    try { decoder = new NLayer.MpegFile(new MemoryStream(bytes, writable: false)); }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"selftest FAIL: NLayer.MpegFile constructor — {ex.Message}");
+        return 3;
+    }
+    int sr = decoder.SampleRate;
+    int ch = decoder.Channels;
+    if (sr < 8000 || sr > 96000 || ch < 1 || ch > 2)
+    {
+        Console.Error.WriteLine($"selftest FAIL: implausible header sr={sr} ch={ch}");
+        return 4;
+    }
+    var buffer = new byte[32 * 1024];
+    int produced = decoder.ReadSamples(buffer, 0, buffer.Length);
+    decoder.Dispose();
+    if (produced <= 0)
+    {
+        Console.Error.WriteLine($"selftest FAIL: ReadSamples returned {produced}");
+        return 5;
+    }
+    int nonZero = 0;
+    for (int i = 0; i < produced; i++) if (buffer[i] != 0) { nonZero++; if (nonZero > 16) break; }
+    if (nonZero == 0)
+    {
+        Console.Error.WriteLine("selftest FAIL: decoded buffer is all-zero (silent stream)");
+        return 6;
+    }
+    Console.WriteLine($"  selftest OK: sr={sr}Hz ch={ch} decoded={produced} bytes (~{produced / (sr * ch * 2.0) * 1000.0:F1}ms)");
+    return 0;
 }
 
 // Phase 22-SC-MUSIC-A — list every mp3 under /sound/music/ in a given
@@ -6427,13 +6492,13 @@ static int CmdMusicPlay(string[] a)
     var bytes = reader.ExtractToMemory(path);
     Console.WriteLine($"  loaded {path} ({bytes.Length:N0} bytes)");
 
-    var engine = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
+    var engine = SiegeFX.Audio.AudioEngine.TryCreate();
     if (engine is null)
     {
         Console.Error.WriteLine("AudioEngine.TryCreate failed — no audio device?");
         return 3;
     }
-    using var music = SiegeFX.Runtime.Audio.MusicPlayer.TryCreate(engine);
+    using var music = SiegeFX.Audio.MusicPlayer.TryCreate(engine);
     if (music is null)
     {
         Console.Error.WriteLine("MusicPlayer.TryCreate failed");

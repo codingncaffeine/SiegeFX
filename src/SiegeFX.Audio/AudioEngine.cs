@@ -1,7 +1,7 @@
 using System.Numerics;
 using Silk.NET.OpenAL;
 
-namespace SiegeFX.Runtime.Audio;
+namespace SiegeFX.Audio;
 
 /// <summary>
 /// Tiny OpenAL Soft wrapper. Phase 18a-only feature set: 2D playback of

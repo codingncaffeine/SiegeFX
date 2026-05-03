@@ -17,11 +17,16 @@ public sealed class MoodSetting
     /// playing untouched (silence, or a previous bed). 42 of map_world's 232
     /// shipped moods carry a non-empty value.</summary>
     public string AmbientTrack { get; init; } = "";
-    /// <summary>Standard music track (e.g. <c>"s_m_main"</c>). Captured for the
-    /// future music-streaming slice; xi does not consume it.</summary>
+    /// <summary>Standard music track (e.g. <c>"s_m_Farmhouse_02"</c>). Consumed
+    /// by Phase 22-SC-MUSIC-C's <c>RenderHost.ApplyMoodMusic</c> which strips
+    /// the <c>s_m_</c> prefix and routes to the streaming player. Empty
+    /// means the mood inherits the previous mood's music — DS1 has bed-only
+    /// moods that ride the surrounding region's track.</summary>
     public string StandardTrack { get; init; } = "";
-    /// <summary>Battle music track. Captured for the future slice; xi does
-    /// not consume it.</summary>
+    /// <summary>Battle music track (e.g. <c>"s_m_battle"</c>). Consumed by
+    /// Phase 22-SC-MUSIC-D's combat-state machine — when any nearby hostile
+    /// engages the player, <c>TickCombatMusic</c> swaps to this; reverts to
+    /// <see cref="StandardTrack"/> 3s after disengagement.</summary>
     public string BattleTrack { get; init; } = "";
 }
 

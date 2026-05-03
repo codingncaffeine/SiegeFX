@@ -382,13 +382,13 @@ public sealed class RenderHost : IDisposable
     // tank open is harmless and lets later sub-phases lazy-load extra SFX
     // (hit, death, level-up) without re-opening the file.
     private SiegeFX.Core.Tank.TankFile? _playSoundTank;
-    private SiegeFX.Runtime.Audio.AudioEngine? _audio;
+    private SiegeFX.Audio.AudioEngine? _audio;
     // Phase 22-SC-MUSIC-B — single-channel streaming mp3 player for the
     // game's music track. Constructed alongside _audio (shares the
     // OpenAL device + context) and ticked once per frame to refill the
     // streaming buffer queue. Track changes go through PlayMusicTrack
     // (extract from _playSoundTank, hand bytes to MusicPlayer.Play).
-    private SiegeFX.Runtime.Audio.MusicPlayer? _music;
+    private SiegeFX.Audio.MusicPlayer? _music;
     // Phase 22-SC-MUSIC-B — last-loaded music track basename so a redundant
     // PlayMusicTrack with the same name (region re-entry, save-load) is a
     // no-op rather than restarting the clip. Empty until first Play.
@@ -3166,13 +3166,13 @@ void main()
             {
                 _playSoundTank = TankFile.Open(soundTankPath);
                 var soundReader = new TankReader(_playSoundTank);
-                _audio = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
+                _audio = SiegeFX.Audio.AudioEngine.TryCreate();
                 // Phase 22-SC-MUSIC-B — share the OpenAL context with the
                 // music player. Null-tolerant: TryCreate returns null when
                 // _audio itself failed (no device), and every PlayMusicTrack
                 // call below null-checks so the runtime stays playable
                 // without music.
-                _music = SiegeFX.Runtime.Audio.MusicPlayer.TryCreate(_audio);
+                _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
                 if (_audio is not null)
                 {
                     // Phase 21d-2a-xii — load DS1's SED (sound effect descriptor)
@@ -5021,12 +5021,20 @@ void main()
         var navMesh = _pendingNavMesh;
         _pendingSpawner = null;
         _pendingNavMesh = null;
-        // Phase 22-SC-MUSIC-B — stop the menu music as Begin/Cancel
-        // commits the creator. Region music (SC-MUSIC-C) will fade in
-        // from the player region's mood; until that lands, leaving the
-        // creator results in silence — better than holding the menu
-        // track over gameplay.
-        PlayMusicTrack(null);
+        // Phase 22-SC-MUSIC-FOLD — swap menu music straight to the
+        // active region's mood-driven track on Begin/Cancel. Pre-fold
+        // called PlayMusicTrack(null) and relied on OnPlayerRegionChanged
+        // to bring music back, but the player spawns INSIDE the launch
+        // region — region-changed never fires — so the post-creator
+        // gameplay was silent until the user crossed a region boundary.
+        // ApplyMoodMusic (which remembers the mood from the
+        // LoadPlayActors-time apply at line ~3252) reseats the
+        // standard/battle track in one go; PlayMusicTrack's basename
+        // equality short-circuits if the region track is already what's
+        // playing. Falls through to a hard stop if no mood resolved
+        // (viewer modes, regions with no mood definitions).
+        if (_activeMood is not null) ApplyMoodMusic(_activeMood);
+        else PlayMusicTrack(null);
         if (_creator.Confirmed)
         {
             var name = string.IsNullOrEmpty(_creator.HeroName) ? null : _creator.HeroName;
@@ -7504,6 +7512,15 @@ void main()
     /// has bed-only moods that carry forward the previous mood's music.</summary>
     private void ApplyMoodMusic(SiegeFX.Core.Assets.MoodSetting mood)
     {
+        // Phase 22-SC-MUSIC-FOLD — reset combat state on a real mood
+        // change so a region transition while combat is active doesn't
+        // leave us pinned in a stale BattleTrack from the previous mood.
+        // Same-mood re-applies (no-op region-bed re-checks) keep state.
+        if (!ReferenceEquals(_activeMood, mood))
+        {
+            _inCombat = false;
+            _combatExitTimer = 0f;
+        }
         _activeMood = mood;
         var track = _inCombat && !string.IsNullOrEmpty(mood.BattleTrack)
             ? mood.BattleTrack
@@ -7523,6 +7540,13 @@ void main()
         var basename = trackWithMaybePrefix;
         if (basename.StartsWith("s_m_", StringComparison.OrdinalIgnoreCase))
             basename = basename.Substring(4);
+        // Defensive .mp3 suffix strip — most moods author bare names but
+        // a small number ship `standard_track = "s_m_Foo.mp3"` with the
+        // extension baked in. PlayMusicTrack rebuilds the path including
+        // .mp3, so leaving the suffix would resolve to `…/s_m_Foo.mp3.mp3`
+        // and miss.
+        if (basename.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase))
+            basename = basename.Substring(0, basename.Length - 4);
         PlayMusicTrack(basename);
     }
 
@@ -7545,6 +7569,16 @@ void main()
         {
             var s = _actors[i];
             if (s.IsPlayer || s.IsDead) continue;
+            // Phase 22-SC-MUSIC-FOLD — defensive combatant gate. The brain
+            // tick at ActorBrain.Tick only feeds the player-target into
+            // combatants today, so non-combatants stay in Wander and the
+            // gate is a no-op in practice. But that coupling lives across
+            // two files; if a future phase wires NPC-vs-NPC aggro, every
+            // chicken/peasant brain that enters Chase against another NPC
+            // would silently flip the player's music mix without this
+            // filter. Match the IsCombatant check the existing combat
+            // pipeline uses (e.g. PerformPlayerSwing's actor scan).
+            if (!s.Actor.Stats.IsCombatant) continue;
             var brain = s.Brain;
             if (brain is null) continue;
             if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
@@ -8350,7 +8384,14 @@ void main()
         // frame. Cheap when nothing's playing (one OpenAL state read);
         // when a track is active it decodes ~0-3 chunks per tick to
         // refill drained buffers.
-        _music?.Tick();
+        // Phase 22-SC-MUSIC-FOLD — Tick returns false on natural EOS
+        // (decoder ran out, source drained). Clear _currentMusicTrack
+        // so a subsequent PlayMusicTrack with the same basename
+        // actually re-fires — without this, a frontend track that
+        // played to completion would refuse to replay because the
+        // idempotency guard still thought it was active.
+        if (_music is not null && !_music.Tick() && _currentMusicTrack.Length > 0)
+            _currentMusicTrack = "";
         // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
         // hostile NPC is engaging the player; revert to standard_track
         // after CombatExitDelay seconds without aggro. Cheap loop over
@@ -10258,6 +10299,22 @@ void main()
                 $"  load: region mismatch — save was '{save.RegionPath}', live region is '{_regionPath}'");
             return;
         }
+
+        // Phase 22-SC-MUSIC-FOLD — clear runtime music state so the
+        // post-load region apply re-fires the mood + standard track.
+        // Without this reset, a save mid-combat reloaded into a fresh
+        // session keeps `_inCombat=true` (potentially with an
+        // _activeMood from a different region) and the per-frame
+        // TickCombatMusic would either no-op or play a stale battle
+        // track. Save schema deliberately doesn't carry music state —
+        // it's pure runtime, derived from the player's region + nearby
+        // hostiles — so resetting here is correct.
+        _inCombat = false;
+        _combatExitTimer = 0f;
+        _activeMood = null;
+        _activeBedRegion = null;
+        _currentMusicTrack = "";
+        ApplyAmbientForRegion(_regionPath);
 
         // Index live actors by scid so the patch loop is O(N+M) not O(N*M).
         var byScid = new Dictionary<uint, ActorRenderState>(_actors.Count);

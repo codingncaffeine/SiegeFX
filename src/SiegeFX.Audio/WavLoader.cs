@@ -1,4 +1,4 @@
-namespace SiegeFX.Runtime.Audio;
+namespace SiegeFX.Audio;
 
 /// <summary>
 /// Bare-bones RIFF/WAVE PCM parser. DS1 audio assets ship as plain
