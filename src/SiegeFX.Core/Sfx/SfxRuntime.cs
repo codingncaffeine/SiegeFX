@@ -12,8 +12,9 @@ namespace SiegeFX.Core.Sfx;
 ///   <item><b>Persistent emitters</b> — one entry per <c>sfx create … sfx start</c>
 ///   pair whose script ended without a matching <c>finish/destroy</c>. Each tick
 ///   we call <see cref="IParticleSink.MaintainFire"/> / <c>MaintainSmoke</c> /
-///   <c>MaintainSteam</c> at the emitter's anchored world position. fh_r1's
-///   farmhouse fire / smoke columns / waterfall froth.</item>
+///   <c>MaintainSteam</c> / <c>MaintainGlow</c> at the emitter's anchored world
+///   position. fh_r1's farmhouse fire / smoke columns / waterfall froth, and
+///   spell lightsource halos that follow a motion handle.</item>
 ///   <item><b>Coroutine scripts</b> — script bodies with <c>pause N</c> are
 ///   stepped statement-by-statement on each tick, yielding when they hit a
 ///   pause budget; one-shot spawns (sparks, lightning, brief fire bursts) live
@@ -30,11 +31,13 @@ namespace SiegeFX.Core.Sfx;
 /// shipped zap renders as a hand-to-target beam rather than a 1-unit vertical
 /// stub at the impact point.</para>
 ///
-/// <para>Verbs the VM still doesn't recognize (orbiter / sphere / charge /
-/// lightsource / fireb / spawn / waitfor / get / worldmsg) log once and
-/// continue — same Phase 17-SC-F policy as the parser's
-/// <see cref="StatementKind.Raw"/> fallthrough. Keeps every region's
-/// emitters running rather than freezing on the first un-modeled verb.</para></summary>
+/// <para>Verbs the VM still doesn't recognize (sphere / spawn / waitfor / get /
+/// worldmsg / sfx attach / sfx rat / sfx offset_bone / sfx direction / sfx
+/// friendly) log once and continue — same Phase 17-SC-F policy as the parser's
+/// <see cref="StatementKind.Raw"/> fallthrough. Keeps every region's emitters
+/// running rather than freezing on the first un-modeled verb. Phase 21-SC-
+/// SPELL-VISUAL slices A–D landed cylinder / sray / fireb / orbiter / trackball
+/// / lightsource / curve so those are no longer in this list.</para></summary>
 public sealed class SfxRuntime
 {
     readonly SfxScriptStore _store;
@@ -250,6 +253,12 @@ public sealed class SfxRuntime
                     break;
                 case EmitterMode.Steam:
                     e.Carry = _particles.MaintainSteam(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
+                    break;
+                case EmitterMode.Glow:
+                    // Scale is overloaded as the halo radius for Glow mode
+                    // (the motion-handle dispatch arm sets it from h.Scale,
+                    // bounded above 0.30 so a 0-scale script still glows).
+                    e.Carry = _particles.MaintainGlow(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
             }
             _emitters[i] = e;
@@ -710,17 +719,22 @@ public sealed class SfxRuntime
                 // motion's live position. SelfMotionId binds the emitter to
                 // its own motion; TargetMotionId is the lookup key the Tick
                 // pump uses to refresh Position. Trackball uses Fire (warm
-                // streak); LightSource uses Steam (color-preserving glow).
-                var glowMode = h.Mode == EmitterMode.MotionTrackball
-                    ? EmitterMode.Fire
-                    : EmitterMode.Steam;
+                // streak); LightSource uses Glow (additive halo, color-
+                // preserving — Phase 21-SC-SPELL-VISUAL-D). Steam was the
+                // pre-D placeholder and read as a smoke wisp.
+                bool isLight = h.Mode == EmitterMode.LightSource;
+                var glowMode = isLight ? EmitterMode.Glow : EmitterMode.Fire;
                 _emitters.Add(new PersistentEmitter
                 {
                     Mode     = glowMode,
                     Position = h.Anchor,
                     Color    = h.Color,
-                    Scale    = MathF.Max(0.30f, h.Scale * 0.80f),
-                    Rate     = h.Mode == EmitterMode.MotionTrackball ? 60f : 30f,
+                    // For Glow, Scale is the halo radius; trackball keeps
+                    // its 0.80x particle-scale shrink to read as a streak.
+                    Scale    = isLight
+                        ? MathF.Max(0.30f, h.Scale)
+                        : MathF.Max(0.30f, h.Scale * 0.80f),
+                    Rate     = isLight ? 80f : 60f,
                     TargetMotionId = h.MotionId,
                     SelfMotionId   = h.MotionId,
                     Duration = h.Duration > 0.10f ? h.Duration : 0f,
@@ -1282,6 +1296,10 @@ public sealed class SfxRuntime
         MotionTrackball,  // homing projectile — visible glow trail + drives child emitters
         LightSource,      // persistent glow billboard at position
         MotionCurve,      // splined-path motion handle — invisible
+        // Phase 21-SC-SPELL-VISUAL-D — additive halo cluster used by
+        // lightsource handles. Distinct from Steam (smoke wisp) so the
+        // motion-driven glow reads as a glowing core, not a puff trail.
+        Glow,
         Unsupported,
     }
 

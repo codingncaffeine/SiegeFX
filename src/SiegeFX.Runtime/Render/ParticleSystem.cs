@@ -647,6 +647,46 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         return budget - n;
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-D — bright additive glow halo around
+    /// <paramref name="position"/>. Spawns short-lived sparkles in a tight
+    /// <paramref name="radius"/> ball with near-zero drift, so the cluster
+    /// reads as a glowing core rather than a smoke wisp. Color-preserving
+    /// (Color0 == Color1 RGB; alpha fades to 0). Used by lightsource motion
+    /// handles whose Position the parent sfx VM refreshes each tick.</summary>
+    public float MaintainGlow(Vector3 position, Vector4 color, float radius, float dt, float rate, float carry)
+    {
+        float budget = carry + rate * dt;
+        int n = (int)budget;
+        float r = MathF.Max(0.05f, radius);
+        for (int i = 0; i < n; i++)
+        {
+            float ang = Rand(0f, MathF.Tau);
+            float dy  = Rand(-0.4f, 0.4f) * r;
+            float dr  = Rand(0f, r);
+            var off = new Vector3(MathF.Cos(ang) * dr, dy, MathF.Sin(ang) * dr);
+            float life = Rand(0.20f, 0.45f);
+            float s = r * Rand(0.35f, 0.70f);
+            // Color-preserving: Color1 keeps RGB and fades alpha so the
+            // halo doesn't drift toward warm-orange like SpawnFire/SpawnSpark.
+            var c1 = new Vector4(color.X, color.Y, color.Z, 0f);
+            _particles.Add(new Particle
+            {
+                Position  = position + off,
+                Velocity  = Vector3.Zero,
+                Accel     = Vector3.Zero,
+                Color0    = color,
+                Color1    = c1,
+                Scale0    = s,
+                Scale1    = s * 0.5f,
+                Life      = life,
+                TotalLife = life,
+                TexSlot   = 2,
+                Additive  = 1,
+            });
+        }
+        return budget - n;
+    }
+
     public void Tick(float dt)
     {
         for (int i = _particles.Count - 1; i >= 0; i--)

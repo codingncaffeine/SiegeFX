@@ -64,4 +64,12 @@ public interface IParticleSink
                     Vector3 accel,  float lifetime, float maxDisplace,
                     float lowerRadius, float upperRadius,
                     int count, float flameSize);
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-D — DS1 lightsource glow pulse.
+    /// Continuous emit pump for a bright additive halo at the live
+    /// motion-handle position. Returns the leftover spawn budget so the
+    /// caller carries it across frames (matches MaintainFire/Smoke/Steam
+    /// shape).</summary>
+    float MaintainGlow(Vector3 position, Vector4 color, float radius,
+                       float dt, float rate, float carry);
 }

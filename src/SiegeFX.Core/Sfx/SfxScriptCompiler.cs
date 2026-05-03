@@ -80,15 +80,15 @@ public static class SfxScriptCompiler
 
     static int InlineBracedBody(List<string> tokens, int i, List<SfxStatement> stmts)
     {
-        // Capture the head (everything up to '{') as a Raw stmt for diag.
-        var head = new List<string>();
-        head.Add(tokens[i]);
+        // Skip the head tokens (verb + condition) up to the opening brace.
+        // The original implementation emitted a Raw stmt with the head for
+        // diagnostics, but that surfaced as a fake `unhandled verb 'if'` /
+        // `'else'` in `siegefx sfx run` output even though both branches
+        // already inline-compile and execute. Pragmatic-merge semantics =
+        // the verb is a no-op at runtime; emitting a logging shadow is a
+        // lie. Preserve the body, drop the head Raw record.
         i++;
-        while (i < tokens.Count && tokens[i] != "{")
-        {
-            head.Add(tokens[i]); i++;
-        }
-        stmts.Add(new SfxStatement(StatementKind.Raw, head[0], head, null));
+        while (i < tokens.Count && tokens[i] != "{") i++;
         if (i >= tokens.Count) return i;
         // Find matching `}` and slice body tokens out for nested compile.
         int bodyStart = i + 1;
@@ -146,12 +146,16 @@ public static class SfxScriptCompiler
         if (string.Equals(verb, "sfx", StringComparison.OrdinalIgnoreCase) && toks.Count >= 2)
         {
             var sub = toks[1].ToLowerInvariant();
-            // sfx friendly target $x  → folded into one statement
+            // sfx friendly <target|party> $x  → both are gameplay-side
+            // friendliness flags with no visual side-effect. Folded into
+            // SfxFriendlyTarget so they're silently consumed instead of
+            // surfacing as `unhandled verb 'sfx friendly'` in audit output.
             if (sub == "friendly" && toks.Count >= 3 &&
-                string.Equals(toks[2], "target", StringComparison.OrdinalIgnoreCase))
+                (string.Equals(toks[2], "target", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(toks[2], "party",  StringComparison.OrdinalIgnoreCase)))
             {
                 var args = toks.GetRange(3, toks.Count - 3);
-                return new SfxStatement(StatementKind.SfxFriendlyTarget, "sfx friendly target", args, null);
+                return new SfxStatement(StatementKind.SfxFriendlyTarget, "sfx friendly " + toks[2].ToLowerInvariant(), args, null);
             }
             var rest = toks.GetRange(2, toks.Count - 2);
             return sub switch
