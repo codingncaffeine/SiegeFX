@@ -6096,9 +6096,17 @@ void main()
         var d = new Vector3(toCenter.X - from.X, 0f, toCenter.Z - from.Z);
         float len = d.Length();
         if (len < 1e-3f) return from;
-        // Stop ~80% of the reach so we cleanly enter the "in range" check
-        // instead of stopping right on the boundary and oscillating.
-        float walk = MathF.Max(0f, len - stopShortBy * 0.8f);
+        // Phase 21-SC-BARREL-FOLD — DS1 stops the hero at the edge of
+        // swing reach, not deep inside it. Pre-fold's 0.8x stand-off had
+        // the hero plant 0.4u past the reach boundary toward the target,
+        // overlapping any ~1u-radius body and making the target hard to
+        // re-click. 0.95x leaves a 5% in-range safety margin (the "in
+        // range" check at the per-tick site uses `pdist <= reach` so we
+        // need to stop just inside the boundary, not on it) and visually
+        // clears the target's body bubble for the typical hero/krug
+        // pairing. Eyes-on the user expects "stands close to but not on
+        // top of" — that's this distance.
+        float walk = MathF.Max(0f, len - stopShortBy * 0.95f);
         var dir = d / len;
         return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
     }
