@@ -72,4 +72,13 @@ public interface IParticleSink
     /// shape).</summary>
     float MaintainGlow(Vector3 position, Vector4 color, float radius,
                        float dt, float rate, float carry);
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-H+sphere fold — DS1 sphere
+    /// primitive. Omni-directional expanding shell of particles around
+    /// <paramref name="anchor"/> at <paramref name="radius"/>; color-
+    /// preserving (no warm-bias drift like SpawnSpark). firebomb /
+    /// bombard / dave_shield etc. author this; the headless sink
+    /// counts and no-ops.</summary>
+    void SpawnSphere(Vector3 anchor, Vector4 color,
+                     float radius, float duration, int count);
 }

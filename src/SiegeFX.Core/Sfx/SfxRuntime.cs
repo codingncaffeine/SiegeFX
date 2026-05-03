@@ -31,16 +31,17 @@ namespace SiegeFX.Core.Sfx;
 /// shipped zap renders as a hand-to-target beam rather than a 1-unit vertical
 /// stub at the impact point.</para>
 ///
-/// <para>Verbs the VM still doesn't recognize (sphere / spawn / worldmsg /
-/// frandrange / randrange / camerashake) log once and continue — same Phase
-/// 17-SC-F policy as the parser's <see cref="StatementKind.Raw"/> fallthrough.
-/// Keeps every region's emitters running rather than freezing on the first
-/// un-modeled verb. Phase 21-SC-SPELL-VISUAL slices A–G landed cylinder /
-/// sray / fireb / orbiter / trackball / lightsource / curve / additive Glow /
-/// sfx attach / rat / offset_bone / direction / waitfor + collision gate /
-/// get target_position + collision point/direction / minimal if-evaluator —
-/// 54 of 61 offensive spells now flip COVERED in the visual-audit, with the
-/// remaining gap being two `sphere`-using spells.</para></summary>
+/// <para>Verbs the VM still doesn't recognize (spawn / worldmsg / frandrange /
+/// randrange / camerashake) log once and continue — same Phase 17-SC-F policy
+/// as the parser's <see cref="StatementKind.Raw"/> fallthrough. Keeps every
+/// region's emitters running rather than freezing on the first un-modeled
+/// verb. Phase 21-SC-SPELL-VISUAL slices A–H landed cylinder / sray / fireb /
+/// sphere / orbiter / trackball / lightsource / curve / additive Glow / sfx
+/// attach / rat / offset_bone / direction / waitfor + collision gate / get
+/// target_position + collision point/direction/target / minimal if-evaluator /
+/// per-script texture honoring on cylinders / $name+$[N] param-string
+/// substitution — 56 of 61 offensive spells now flip COVERED in the visual-
+/// audit; the remaining 5 are DS1 author stubs (sound-only, no script body).</para></summary>
 public sealed class SfxRuntime
 {
     readonly SfxScriptStore _store;
@@ -650,9 +651,16 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count == 0) return;
         var kind = stmt.Tokens[0].ToLowerInvariant();
 
-        // ParamString may carry [N] back-references to caller args. Substitute
-        // before keyword extraction so flamesize([0]) etc. resolves cleanly.
+        // ParamString may carry [N] back-references to caller args and
+        // $name back-references to script-level Vars. Substitute both
+        // BEFORE keyword extraction so `flamesize([0])`, `scale($scale)`,
+        // etc. resolve cleanly. Phase 21-SC-SPELL-VISUAL-H+sphere fold:
+        // the $name pass landed alongside slice H so firebomb_base /
+        // bombard_base's `set $scale .7; sfx create sphere ...
+        // "scale($scale)..."` actually applies the authored radius
+        // instead of falling back to Handle.Scale = 0.6.
         var raw = SubstituteCallerArgs(stmt.ParamString, rs.CallerArgs);
+        raw     = SubstituteVars(raw, rs.Vars);
 
         // Resolve the target-token (where the effect anchors).
         var anchor = rs.Origin;
@@ -852,24 +860,25 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotSphere:
             {
-                // Phase 21-SC-SPELL-VISUAL-H — sphere = expanding shell of
-                // particles around the anchor. firebomb_base / bombard_
-                // base ship `scale($scale)` for the authored radius +
-                // `grow_params(start, mid, end)` for the size envelope.
-                // First-pass renders as omni-directional sparks; the
-                // peak radius scales by the grow_params middle so a
-                // grow(.1, 1.5, 3) authored sphere blows out to 1.5x
-                // the base radius mid-life. Honors duration via the
-                // particle lifetime field.
-                float radius = h.Scale > 0.05f ? h.Scale : 1.0f;
-                float life   = h.Duration > 0.05f ? h.Duration : 0.50f;
-                int   count  = h.BurstCount > 0 ? h.BurstCount : 32;
-                _particles.SpawnSpark(
-                    h.Anchor,
-                    h.Color,
-                    radius,
-                    life,
-                    count);
+                // Phase 21-SC-SPELL-VISUAL-H + sphere fold — DS1 sphere
+                // is an omni-directional expanding shell. Routed to the
+                // dedicated SpawnSphere primitive (uniform unit-vector
+                // direction + color-preserving fade) instead of the
+                // pre-fold SpawnSpark misuse, which was Y-biased and
+                // warm-faded.
+                //
+                // grow_params(start, mid, end) authors a size envelope
+                // over the shell's lifetime; we honor the MID value
+                // as the peak radius scaler (start and end act as the
+                // birth/death taper, which the renderer's own Scale0/
+                // Scale1 fall-off already approximates). When grow is
+                // absent, h.Scale alone defines the radius.
+                float baseRadius = h.Scale > 0.05f ? h.Scale : 1.0f;
+                float growMid    = h.GrowMid > 0.05f ? h.GrowMid : 1.0f;
+                float radius     = baseRadius * growMid;
+                float life       = h.Duration > 0.05f ? h.Duration : 0.50f;
+                int   count      = h.BurstCount > 0 ? h.BurstCount : 32;
+                _particles.SpawnSphere(h.Anchor, h.Color, radius, life, count);
                 break;
             }
             case EmitterMode.Unsupported:
@@ -1812,6 +1821,14 @@ public sealed class SfxRuntime
         if (TryReadIdentifier(raw, "texture", out var texName))
             h.TextureName = texName;
 
+        // Phase 21-SC-SPELL-VISUAL-H+sphere fold — `grow_params(start,
+        // mid, end)` middle. firebomb_base authors `(.1, 1.5, 3)` — the
+        // shell blows out to 1.5x base radius mid-life. Birth (start)
+        // and death (end) tapers fall out of the renderer's existing
+        // Scale0 → Scale1 fall-off. Default 1.0 = no scaling.
+        if (TryReadFloat(raw, "grow_params", out var growMid, argIndex: 1) && growMid > 0.05f)
+            h.GrowMid = growMid;
+
         // Scale knobs — different param names per effect type, all map to
         // our single Scale field.
         if (TryReadFloat(raw, "flamesize",  out var fs))   h.Scale = MathF.Max(0.05f, fs);
@@ -1948,6 +1965,44 @@ public sealed class SfxRuntime
         return sb.ToString();
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-H+sphere fold — substitute
+    /// <c>$name</c> tokens in a param string with their values from the
+    /// running script's <see cref="RunningScript.Vars"/>. firebomb_base
+    /// and similar scripts ship `set $scale .7; sfx create sphere ...
+    /// "scale($scale)..."` so this pass runs ahead of TryReadFloat /
+    /// TryReadVec4 so the keyword extractors see real numbers.
+    /// Unrecognized $names pass through unchanged (matches the
+    /// pre-substitute behavior — no spurious hard-fail on a typo).</summary>
+    static string SubstituteVars(string raw, Dictionary<string, string> vars)
+    {
+        if (string.IsNullOrEmpty(raw) || vars.Count == 0) return raw;
+        if (raw.IndexOf('$') < 0) return raw;
+        var sb = new System.Text.StringBuilder(raw.Length);
+        int i = 0;
+        while (i < raw.Length)
+        {
+            char c = raw[i];
+            if (c == '$' && i + 1 < raw.Length && (char.IsLetter(raw[i + 1]) || raw[i + 1] == '_'))
+            {
+                int start = i;
+                i++; // skip $
+                while (i < raw.Length && (char.IsLetterOrDigit(raw[i]) || raw[i] == '_'))
+                    i++;
+                var name = raw.Substring(start, i - start);
+                if (vars.TryGetValue(name, out var v))
+                    sb.Append(v);
+                else
+                    sb.Append(name); // leave as-is so the keyword reader sees the literal
+            }
+            else
+            {
+                sb.Append(c);
+                i++;
+            }
+        }
+        return sb.ToString();
+    }
+
     static bool ContainsKeyword(string raw, string keyword)
     {
         int idx = 0;
@@ -2024,13 +2079,21 @@ public sealed class SfxRuntime
             "b_sfx_lightray_04"   => 6,
             "b_sfx_streaks"       => 7,
             "b_sfx_lightray01"    => 8,
-            "b_sfx_blueflare_01"  => 8,    // lightray-family fallback
-            "b_sfx_armor_shock"   => 4,
+            // Phase 21-SC-SPELL-VISUAL-H+sphere fold: blueflare is a
+            // ROUND flash, not a streak — was mis-routed to slot 8
+            // (lightray01). Slot 0 (b_sfx_fireball-01) is the closest
+            // round-flash analog the renderer pre-loads. Same logic
+            // for armor_shock (impact burst, not a beam).
+            "b_sfx_blueflare_01"  => 0,
+            "b_sfx_armor_shock"   => 0,
             "b_sfx_cyl_01"        => 9,
             "b_sfx_cyl_02"        => 10,
             "b_sfx_cyl_03"        => 11,
             "b_sfx_splotches_02"  => 0,    // warm fireball-class
-            "b_sfx_rock_single_01"=> 1,    // chunky smoke-ish
+            // Rock chunks are tight bright sprites, not soft smoke —
+            // route to the sparkle slot which renders as a bright dot
+            // instead of a slow smoke fade.
+            "b_sfx_rock_single_01"=> 2,
             _ => fallback,
         };
     }
@@ -2158,6 +2221,13 @@ public sealed class SfxRuntime
         // sensible default slot. Mapped to a renderer texture-slot
         // via TextureNameToSlot at dispatch time.
         public string?     TextureName;
+        // Phase 21-SC-SPELL-VISUAL-H+sphere fold — `grow_params(start,
+        // mid, end)` middle value. firebomb_base authors `(.1, 1.5, 3)`
+        // — the shell blows out to 1.5x base radius mid-life. The
+        // start/end values are the birth/death taper which the
+        // renderer's Scale0/Scale1 already approximates. Default 1.0
+        // = no scaling.
+        public float       GrowMid;
         // Phase 21-SC-SPELL-VISUAL-A — cylinder-specific knobs.
         public float       SpinRate;     // spin(N) — radians/sec around axis
         public float       FadeIn;       // tin(N)  — seconds to ramp alpha 0→1

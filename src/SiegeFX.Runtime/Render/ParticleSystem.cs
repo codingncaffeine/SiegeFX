@@ -582,6 +582,50 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-H+sphere fold — DS1 sphere is a
+    /// fully omni-directional expanding shell of particles, NOT a Y-
+    /// biased fountain. Each particle spawns at the anchor with a
+    /// velocity vector uniformly distributed on a unit sphere then
+    /// scaled so the shell reaches roughly <paramref name="radius"/> by
+    /// half its lifetime. Color-preserving fade (Color1 keeps RGB,
+    /// alpha → 0) so non-warm spheres (vandegraph purple, ice cyan)
+    /// don't drift to brown like the warm-biased SpawnSpark would.</summary>
+    public void SpawnSphere(Vector3 anchor, Vector4 color, float radius, float duration, int count)
+    {
+        if (count <= 0) return;
+        if (duration <= 0.05f) duration = 0.5f;
+        // Speed sized so a particle covers `radius` over half the life
+        // (the rest of the lifetime continues outward into a thinning
+        // shell, which reads as a brief bloom).
+        float speed = MathF.Max(0.1f, radius / MathF.Max(0.05f, duration * 0.5f));
+        for (int i = 0; i < count; i++)
+        {
+            // Uniformly-random unit vector via the (z, theta) trick:
+            // z ∈ [-1,1] uniform, theta ∈ [0, 2π) uniform → uniform
+            // distribution on the unit sphere.
+            float z     = Rand(-1f, 1f);
+            float theta = Rand(0f, MathF.Tau);
+            float r     = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+            var dir = new Vector3(r * MathF.Cos(theta), z, r * MathF.Sin(theta));
+            float jitter = Rand(0.85f, 1.15f);
+            var c1 = new Vector4(color.X, color.Y, color.Z, 0f);
+            _particles.Add(new Particle
+            {
+                Position  = anchor,
+                Velocity  = dir * speed * jitter,
+                Accel     = Vector3.Zero,
+                Color0    = color,
+                Color1    = c1,
+                Scale0    = radius * 0.18f,
+                Scale1    = radius * 0.06f,
+                Life      = duration,
+                TotalLife = duration,
+                TexSlot   = 2,
+                Additive  = 1,
+            });
+        }
+    }
+
     public void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration)
         => SpawnLightning(source, target, color, duration, displace: 0f);
 

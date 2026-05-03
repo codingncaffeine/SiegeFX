@@ -5552,7 +5552,7 @@ static int CmdSfxRun(string[] a)
     Console.WriteLine($"  persistent emitters : {rt.LivePersistentCount}");
     Console.WriteLine($"  live coroutines     : {rt.LiveCoroutineCount}");
     Console.WriteLine($"  Maintain calls      : fire={sink.MaintainFireCount} smoke={sink.MaintainSmokeCount} steam={sink.MaintainSteamCount} glow={sink.MaintainGlowCount}");
-    Console.WriteLine($"  particles spawned   : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} glow={sink.SpawnGlowCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount} cyl={sink.SpawnCylinderCount} sray={sink.SpawnSrayCount} fireb={sink.SpawnFirebCount}");
+    Console.WriteLine($"  particles spawned   : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} glow={sink.SpawnGlowCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount} cyl={sink.SpawnCylinderCount} sray={sink.SpawnSrayCount} fireb={sink.SpawnFirebCount} sphere={sink.SpawnSphereCount}");
     if (rt.UnhandledVerbs.Count > 0)
         Console.WriteLine($"  unhandled verbs     : {string.Join(", ", rt.UnhandledVerbs)}");
 
@@ -6523,4 +6523,8 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
                            float lowerRadius, float upperRadius,
                            int count, float flameSize)
         => SpawnFirebCount++;
+    public int SpawnSphereCount;
+    public void SpawnSphere(System.Numerics.Vector3 anchor, System.Numerics.Vector4 color,
+                            float radius, float duration, int count)
+        => SpawnSphereCount += count;
 }
