@@ -67,11 +67,15 @@ public struct LightningBolt
 public struct SpellCylinder
 {
     public Vector3 Anchor;
-    public Vector3 AxisDir;         // Y-up by default; armor scripts override (defer)
     public Vector4 Color;
     public float   RadiusOuter;     // rp0/rp1 mid value
     public float   ThicknessRatio;  // 0..1; 0=solid disc, 0.7=donut ring
-    public float   Spin;            // rad/sec around the axis
+    /// <summary>Axis spin rate. Interpretation: radians/sec — divided by
+    /// MathF.Tau in the emit pass to give per-second U-tile revolutions
+    /// (so DS1's `spin(15)` reads as ~2.39 revs/sec). Renaming would
+    /// touch IParticleSink + 2 callsites; the unit comment is the cheaper
+    /// disambiguation per the review.</summary>
+    public float   Spin;
     public float   FadeIn;          // tin — seconds to ramp alpha 0→1
     public float   FadeOut;         // tout — seconds to ramp alpha 1→0 at end
     public float   TotalLife;       // dur
@@ -459,7 +463,6 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _cylinders.Add(new SpellCylinder
         {
             Anchor          = anchor,
-            AxisDir         = Vector3.UnitY,
             Color           = color,
             RadiusOuter     = MathF.Max(0.05f, radiusOuter),
             ThicknessRatio  = Math.Clamp(thicknessRatio, 0f, 0.95f),

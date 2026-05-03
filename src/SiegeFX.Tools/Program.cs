@@ -5542,7 +5542,7 @@ static int CmdSfxRun(string[] a)
     Console.WriteLine($"after Spawn:");
     Console.WriteLine($"  persistent emitters : {rt.LivePersistentCount}");
     Console.WriteLine($"  live coroutines     : {rt.LiveCoroutineCount}");
-    Console.WriteLine($"  one-shot bursts     : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount}");
+    Console.WriteLine($"  one-shot bursts     : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount} cyl={sink.SpawnCylinderCount} sray={sink.SpawnSrayCount} fireb={sink.SpawnFirebCount}");
 
     const float dt = 1f / 20f;
     for (int i = 0; i < ticks; i++) rt.Tick(dt);
@@ -5552,7 +5552,7 @@ static int CmdSfxRun(string[] a)
     Console.WriteLine($"  persistent emitters : {rt.LivePersistentCount}");
     Console.WriteLine($"  live coroutines     : {rt.LiveCoroutineCount}");
     Console.WriteLine($"  Maintain calls      : fire={sink.MaintainFireCount} smoke={sink.MaintainSmokeCount} steam={sink.MaintainSteamCount}");
-    Console.WriteLine($"  particles spawned   : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount}");
+    Console.WriteLine($"  particles spawned   : fire={sink.SpawnFireCount} smoke={sink.SpawnSmokeCount} steam={sink.SpawnSteamCount} spark={sink.SpawnSparkCount} bolt={sink.SpawnLightningCount} cyl={sink.SpawnCylinderCount} sray={sink.SpawnSrayCount} fireb={sink.SpawnFirebCount}");
     if (rt.UnhandledVerbs.Count > 0)
         Console.WriteLine($"  unhandled verbs     : {string.Join(", ", rt.UnhandledVerbs)}");
 

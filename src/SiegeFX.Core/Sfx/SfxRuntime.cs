@@ -1096,16 +1096,29 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "spin",     out var sp))     h.SpinRate = sp;
         if (TryReadFloat(raw, "tin",      out var ti))     h.FadeIn   = MathF.Max(0f, ti);
         if (TryReadFloat(raw, "tout",     out var to))     h.FadeOut  = MathF.Max(0f, to);
-        if (TryReadFloat(raw, "segments", out var sg) && sg >= 4f) h.Segments = (int)sg;
+        // segments(N) — the renderer's SpawnCylinder clamps to >=4 internally,
+        // so don't gate here. Letting tiny values through preserves them in
+        // diagnostic logs even if the renderer floors them.
+        if (TryReadFloat(raw, "segments", out var sg)) h.Segments = (int)sg;
         if (TryReadFloat(raw, "rp0", out var rpMid, argIndex: 1)) h.RpMid = rpMid;
 
-        // Phase 21-SC-SPELL-VISUAL-B — sray knobs.
+        // Phase 21-SC-SPELL-VISUAL-B — sray knobs. wsmin/wsmax + wemin/wemax
+        // come as min/max ranges; average when both present so the value
+        // honors the script's authored taper (e.g. wsmin(0) wsmax(0.3)
+        // = 0.15 average — a tapered start, not a needle). First-only-wins
+        // on a single-side authoring stays sensible.
         if (TryReadFloat(raw, "lmin", out var lmin)) h.LengthMin = lmin;
         if (TryReadFloat(raw, "lmax", out var lmax)) h.LengthMax = lmax;
-        if (TryReadFloat(raw, "wsmin", out var wsmin)) h.WidthStart = wsmin;
-        else if (TryReadFloat(raw, "wsmax", out var wsmax)) h.WidthStart = wsmax;
-        if (TryReadFloat(raw, "wemin", out var wemin)) h.WidthEnd = wemin;
-        else if (TryReadFloat(raw, "wemax", out var wemax)) h.WidthEnd = wemax;
+        bool hasWsmin = TryReadFloat(raw, "wsmin", out var wsmin);
+        bool hasWsmax = TryReadFloat(raw, "wsmax", out var wsmax);
+        if (hasWsmin && hasWsmax) h.WidthStart = (wsmin + wsmax) * 0.5f;
+        else if (hasWsmin)        h.WidthStart = wsmin;
+        else if (hasWsmax)        h.WidthStart = wsmax;
+        bool hasWemin = TryReadFloat(raw, "wemin", out var wemin);
+        bool hasWemax = TryReadFloat(raw, "wemax", out var wemax);
+        if (hasWemin && hasWemax) h.WidthEnd = (wemin + wemax) * 0.5f;
+        else if (hasWemin)        h.WidthEnd = wemin;
+        else if (hasWemax)        h.WidthEnd = wemax;
         if (TryReadVec4(raw, "color1", out var c1tail)) h.ColorTail = c1tail;
 
         // Phase 21-SC-SPELL-VISUAL-C — fireb knobs. velocity(x,y,z) full
@@ -1125,10 +1138,19 @@ public sealed class SfxRuntime
             h.MaxDisplace = MathF.Abs(maxd);
         if (TryReadFloat(raw, "alphafade", out var afade))
             h.AlphaFade = MathF.Max(0.10f, afade);
-        if (TryReadFloat(raw, "lower_r1", out var lr1))    h.LowerRadius = lr1;
-        else if (TryReadFloat(raw, "lower_r0", out var lr0)) h.LowerRadius = lr0;
-        if (TryReadFloat(raw, "upper_r1", out var ur1))    h.UpperRadius = ur1;
-        else if (TryReadFloat(raw, "upper_r0", out var ur0)) h.UpperRadius = ur0;
+        // lower_r0/r1 and upper_r0/r1 likewise come as range pairs — start
+        // and end of the cone profile along the axis. Average to a single
+        // representative radius when both present.
+        bool hasLr0 = TryReadFloat(raw, "lower_r0", out var lr0);
+        bool hasLr1 = TryReadFloat(raw, "lower_r1", out var lr1);
+        if (hasLr0 && hasLr1) h.LowerRadius = (lr0 + lr1) * 0.5f;
+        else if (hasLr0)      h.LowerRadius = lr0;
+        else if (hasLr1)      h.LowerRadius = lr1;
+        bool hasUr0 = TryReadFloat(raw, "upper_r0", out var ur0);
+        bool hasUr1 = TryReadFloat(raw, "upper_r1", out var ur1);
+        if (hasUr0 && hasUr1) h.UpperRadius = (ur0 + ur1) * 0.5f;
+        else if (hasUr0)      h.UpperRadius = ur0;
+        else if (hasUr1)      h.UpperRadius = ur1;
         if (TryReadFloat(raw, "flamesize", out var flsz))
             h.FlameSize = MathF.Max(0.05f, flsz);
     }
@@ -1249,7 +1271,7 @@ public sealed class SfxRuntime
         // captured in the per-primitive test list at session end.
         OneShotFlurry,    // 3f — particle burst with growth, ≈SpawnSpark+count
         Fireb,            // 3g — fire one-shot with directional puff, ≈SpawnFire
-        OneShotCylinder,  // 3i — straight beam between hp0/hp1, ≈SpawnLightning displace=0
+        OneShotCylinder,  // SC-SPELL-VISUAL-A — flat textured ground ring at anchor, rp0-mid radius
         OneShotSray,      // 3h — directional ray, ≈SpawnSpark dense + slight bias
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion handles that other
         // emitters can target via `sfx target $emitter $motion`. Each gets
