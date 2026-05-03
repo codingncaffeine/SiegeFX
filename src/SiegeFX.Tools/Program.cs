@@ -36,6 +36,7 @@ try
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
         "ui"        => DispatchUi(args[1..]),
+        "flm"       => DispatchFlm(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -6273,6 +6274,43 @@ static int DispatchUi(string[] a)
         "mesh-info" => CmdUiMeshInfo(a[1..]),
         _           => UnknownCommand("ui " + a[0]),
     };
+}
+
+static int DispatchFlm(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx flm dump <input.flm> <out-dir>"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdFlmDump(a[1..]),
+        _      => UnknownCommand("flm " + a[0]),
+    };
+}
+
+// Phase 21-SC-BARREL — visual-verify decoder. Dumps every frame in the .flm
+// to PNG in the given out-dir so the user can sanity-check the offset / row
+// orientation / RGBA swap by eye. Used to chase the "cycling numbers"
+// regression after the offset fix.
+static int CmdFlmDump(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx flm dump <input.flm> <out-dir>");
+        return 1;
+    }
+    var bytes = File.ReadAllBytes(a[0]);
+    var outDir = a[1];
+    Directory.CreateDirectory(outDir);
+    var frames = SiegeFX.Core.Assets.FlmAnimation.LoadFrames(bytes);
+    Console.WriteLine($"flm dump: {a[0]}  ({bytes.Length} bytes -> {frames.Length} frames)");
+    int sz = SiegeFX.Core.Assets.FlmAnimation.FrameSize;
+    for (int i = 0; i < frames.Length; i++)
+    {
+        var path = Path.Combine(outDir, $"frame_{i:D2}.png");
+        using var fs = File.Create(path);
+        SiegeFX.Core.IO.Png.EncodeRgba(fs, frames[i], sz, sz);
+        Console.WriteLine($"  frame {i,2}: {path}");
+    }
+    return 0;
 }
 
 static int CmdUiMeshInfo(string[] a)
