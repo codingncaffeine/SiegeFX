@@ -80,15 +80,29 @@ public static class SfxScriptCompiler
 
     static int InlineBracedBody(List<string> tokens, int i, List<SfxStatement> stmts)
     {
-        // Skip the head tokens (verb + condition) up to the opening brace.
-        // The original implementation emitted a Raw stmt with the head for
-        // diagnostics, but that surfaced as a fake `unhandled verb 'if'` /
-        // `'else'` in `siegefx sfx run` output even though both branches
-        // already inline-compile and execute. Pragmatic-merge semantics =
-        // the verb is a no-op at runtime; emitting a logging shadow is a
-        // lie. Preserve the body, drop the head Raw record.
+        // Phase 21-SC-SPELL-VISUAL-G — emit IfBegin/IfEnd (or
+        // ElseBegin/ElseEnd) markers so the runtime evaluator can SKIP
+        // the body when the condition is false. Pre-G this method
+        // dropped the head and inlined both branches unconditionally
+        // (the InlineBracedBody hack from the fireball regression);
+        // that's now replaced by real conditional dispatch.
+        bool isElse = string.Equals(tokens[i], "else", StringComparison.OrdinalIgnoreCase);
+        var head = new List<string>();
+        head.Add(tokens[i]);
         i++;
-        while (i < tokens.Count && tokens[i] != "{") i++;
+        while (i < tokens.Count && tokens[i] != "{")
+        {
+            head.Add(tokens[i]); i++;
+        }
+        // head[0] is the verb; head[1..] is the parenthesized condition.
+        var condition = head.Count > 1
+            ? head.GetRange(1, head.Count - 1)
+            : new List<string>();
+        stmts.Add(new SfxStatement(
+            isElse ? StatementKind.ElseBegin : StatementKind.IfBegin,
+            isElse ? "else" : "if",
+            condition,
+            null));
         if (i >= tokens.Count) return i;
         // Find matching `}` and slice body tokens out for nested compile.
         int bodyStart = i + 1;
@@ -104,11 +118,13 @@ public static class SfxScriptCompiler
         int bodyEnd = i; // exclusive — points at the closing `}`
         if (i < tokens.Count) i++; // consume `}`
 
-        // Recursively parse the body via a sub-scanner that mirrors the
-        // outer Compile loop. Sharing logic by reconstructing a token slice
-        // and running CompileTokenRange over it.
         var body = tokens.GetRange(bodyStart, bodyEnd - bodyStart);
         CompileTokenRange(body, stmts);
+        stmts.Add(new SfxStatement(
+            isElse ? StatementKind.ElseEnd : StatementKind.IfEnd,
+            isElse ? "else_end" : "if_end",
+            new List<string>(),
+            null));
         return i;
     }
 
@@ -201,6 +217,10 @@ public static class SfxScriptCompiler
             return new SfxStatement(StatementKind.Pause, "pause", toks.GetRange(1, toks.Count - 1), null);
         if (string.Equals(verb, "call",  StringComparison.OrdinalIgnoreCase))
             return new SfxStatement(StatementKind.Call,  "call",  toks.GetRange(1, toks.Count - 1), null);
+        if (string.Equals(verb, "waitfor", StringComparison.OrdinalIgnoreCase))
+            return new SfxStatement(StatementKind.Waitfor, "waitfor", toks.GetRange(1, toks.Count - 1), null);
+        if (string.Equals(verb, "get", StringComparison.OrdinalIgnoreCase))
+            return new SfxStatement(StatementKind.Get, "get", toks.GetRange(1, toks.Count - 1), null);
 
         return new SfxStatement(StatementKind.Raw, verb, toks, null);
     }

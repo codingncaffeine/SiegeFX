@@ -60,6 +60,39 @@ public enum StatementKind
     /// <summary>call &lt;script-name&gt; [&lt;arg-list&gt;]</summary>
     Call,
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — coroutine gate. <c>waitfor
+    /// collision &lt;handle&gt; &lt;timeout&gt;</c> suspends the script until
+    /// the named handle's motion finishes (collision) or the timeout
+    /// elapses; pushes <c>#OBJECT_COLLISION</c>, <c>#TERRAIN_COLLISION</c>,
+    /// or <c>#NO_COLLISION</c> onto the stack on resume. <c>waitfor sig
+    /// &lt;name&gt; &lt;timeout&gt;</c> waits on a named signal — currently
+    /// resolved to NO_COLLISION on timeout (no signal bus yet).</summary>
+    Waitfor,
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — query verbs. <c>get
+    /// target_position &lt;handle&gt; [source|target]</c> pushes the
+    /// handle's anchor or target as a position handle. <c>get collision
+    /// point &lt;handle&gt;</c> pushes the live impact point. <c>get
+    /// collision direction &lt;handle&gt;</c> pushes a unit direction.</summary>
+    Get,
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — runtime conditional begin.
+    /// Tokens carry the parenthesized condition expression.</summary>
+    IfBegin,
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — closes the matching
+    /// <see cref="IfBegin"/> body. Optional <see cref="ElseBegin"/> may
+    /// immediately follow.</summary>
+    IfEnd,
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — opens an else body that pairs
+    /// with the most-recently-closed <see cref="IfEnd"/>.</summary>
+    ElseBegin,
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-G — closes the matching
+    /// <see cref="ElseBegin"/> body.</summary>
+    ElseEnd,
+
     /// <summary>Unrecognized verb captured as raw tokens. The VM logs
     /// once and continues. Lets us land SC-F without freezing every
     /// script body that uses `if`, `waitfor`, `get`, `worldmsg`.</summary>

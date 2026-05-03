@@ -201,6 +201,59 @@ public sealed class SfxRuntime
             var rs = _scripts[i];
             rs.PauseRemaining -= dt;
             if (rs.PauseRemaining > 0f) continue;
+
+            // Phase 21-SC-SPELL-VISUAL-G — waitfor coroutine gate.
+            // When the script asked to wait on a motion handle's collision,
+            // poll the motion's Done flag here (set when the trackball
+            // reaches its target in AdvanceMotionHandles). Two resume paths:
+            //   1. Motion went Done → push the appropriate #*_COLLISION
+            //      handle (Kind=collision_type tag) and step.
+            //   2. Timeout exhausted → push #NO_COLLISION and step.
+            // The collision-type tag is picked heuristically: any reachable
+            // motion arriving at its TargetPos counts as OBJECT_COLLISION
+            // (we don't yet distinguish actor vs world hits — both branches
+            // in shipped DS1 fireball scripts paint impact at the same
+            // world point).
+            if (rs.WaitMotionId > 0)
+            {
+                rs.WaitTimeout -= dt;
+                bool resumed = false;
+                string collisionTag = "no_collision";
+                Vector3 resolvedPos = rs.Ctx.TargetPos;
+                bool found = _motionHandles.TryGetValue(rs.WaitMotionId, out var watched);
+                // Three resume paths:
+                //   1. Motion is present AND Done → object_collision.
+                //   2. Motion is GONE (AdvanceMotionHandles prunes Done
+                //      motions at the end of the same tick where they
+                //      finished, so the very next coroutine pass sees no
+                //      entry — that's still "the motion completed").
+                //   3. Timeout expired → no_collision (matches DS1 semantics).
+                if (found && watched.Done)
+                {
+                    collisionTag = "object_collision";
+                    resolvedPos  = watched.Position;
+                    resumed = true;
+                }
+                else if (!found)
+                {
+                    collisionTag = "object_collision";
+                    resumed = true; // resolvedPos stays at Ctx.TargetPos fallback
+                }
+                else if (rs.WaitTimeout <= 0f)
+                {
+                    collisionTag = "no_collision";
+                    resolvedPos  = watched.Position;
+                    resumed = true;
+                }
+                if (!resumed) continue;
+                // Resume: push a tagged handle so `set $name #POP` captures
+                // the collision_type into the script's Vars (ExecSet bridges
+                // the Kind field into Vars[$name] for if-evaluation).
+                rs.Stack.Push(new Handle { Kind = collisionTag, Anchor = resolvedPos, OtherEnd = resolvedPos });
+                rs.WaitMotionId = 0;
+                rs.WaitTimeout  = 0f;
+            }
+
             StepUntilYield(rs);
             if (rs.Done) _scripts.RemoveAt(i);
         }
@@ -462,6 +515,39 @@ public sealed class SfxRuntime
                     break;
                 case StatementKind.Call:
                     ExecCall(rs, stmt);
+                    break;
+                case StatementKind.Waitfor:
+                    if (ExecWaitfor(rs, stmt)) return; // yielded
+                    break;
+                case StatementKind.Get:
+                    ExecGet(rs, stmt);
+                    break;
+                case StatementKind.IfBegin:
+                {
+                    // Phase 21-SC-SPELL-VISUAL-G — evaluate the
+                    // parenthesized condition; on false, skip past the
+                    // matching IfEnd. LastIfTaken records the branch
+                    // outcome so a following ElseBegin can decide whether
+                    // to run its body. Nested if/else inside the body is
+                    // handled by the same dispatch when StepUntilYield
+                    // recurses through it.
+                    bool cond = EvalCondition(rs, stmt.Tokens);
+                    rs.LastIfTaken = cond;
+                    if (!cond) SkipToMatching(rs, StatementKind.IfBegin, StatementKind.IfEnd);
+                    break;
+                }
+                case StatementKind.ElseBegin:
+                    // Run the else body only if the matching if-body did
+                    // NOT run. LastIfTaken is preserved across IfEnd so
+                    // we can read it here.
+                    if (rs.LastIfTaken)
+                        SkipToMatching(rs, StatementKind.ElseBegin, StatementKind.ElseEnd);
+                    break;
+                case StatementKind.IfEnd:
+                case StatementKind.ElseEnd:
+                    // Markers — no runtime side effect. Nesting is handled
+                    // by SkipToMatching's depth counter, not by these
+                    // markers themselves.
                     break;
                 case StatementKind.SoundPlay:
                 case StatementKind.SoundStop:
@@ -1133,7 +1219,16 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count >= 2 && stmt.Tokens[1].StartsWith("#"))
         {
             if (TryResolveHandleOperand(rs, stmt.Tokens[1], pop: true, out var h))
+            {
                 rs.NamedHandles[name] = h;
+                // Phase 21-SC-SPELL-VISUAL-G — bridge tagged handles
+                // (collision_type, etc.) into the string Vars dict so the
+                // if-condition evaluator can compare $collision_type against
+                // #OBJECT_COLLISION / #TERRAIN_COLLISION / #NO_COLLISION
+                // without a separate handle-tag lookup table.
+                if (!string.IsNullOrEmpty(h.Kind))
+                    rs.Vars[name] = h.Kind;
+            }
             return;
         }
         // Shape B: `set $name = expr` (verbatim string capture; the VM
@@ -1141,6 +1236,238 @@ public sealed class SfxRuntime
         // diagnostics can replay the script).
         if (stmt.Tokens.Count >= 3 && stmt.Tokens[1] == "=")
             rs.Vars[name] = stmt.Tokens[2];
+    }
+
+    // Phase 21-SC-SPELL-VISUAL-G — coroutine gate. Returns true when the
+    // script should yield (waitfor still pending); false when the verb
+    // doesn't suspend (unrecognized form, missing handle, zero timeout)
+    // and execution should continue to the next statement.
+    bool ExecWaitfor(RunningScript rs, SfxStatement stmt)
+    {
+        // `waitfor collision <handle> <timeout>` — common shape (16 spells
+        // gate impact bursts on it). `waitfor sig <name> <timeout>` —
+        // signal wait used by line tracers; we don't have a signal bus
+        // yet so it timeout-resolves immediately.
+        if (stmt.Tokens.Count < 2) return false;
+        var verb = stmt.Tokens[0];
+        if (string.Equals(verb, "collision", StringComparison.OrdinalIgnoreCase) && stmt.Tokens.Count >= 3)
+        {
+            if (!TryResolveHandleOperand(rs, stmt.Tokens[1], pop: false, out var h)) return false;
+            if (h.MotionId <= 0) return false; // can't wait on a non-motion handle
+            float timeout = ResolveTimeout(stmt.Tokens[2]);
+            // If the motion is already Done at the moment we hit waitfor
+            // (rare, e.g. instantaneous-arrival trackball), resume in
+            // place — push collision_type and let the next statement run.
+            if (_motionHandles.TryGetValue(h.MotionId, out var motion) && motion.Done)
+            {
+                rs.Stack.Push(new Handle { Kind = "object_collision", Anchor = motion.Position, OtherEnd = motion.Position });
+                return false;
+            }
+            rs.WaitMotionId = h.MotionId;
+            rs.WaitTimeout  = timeout;
+            return true; // yield
+        }
+        // `waitfor sig <name> <timeout>` — no signal bus yet. Push
+        // no_collision so any following condition reads as false and the
+        // script unwinds to a no-op rather than hanging forever.
+        if (string.Equals(verb, "sig", StringComparison.OrdinalIgnoreCase))
+        {
+            rs.Stack.Push(new Handle { Kind = "no_collision", Anchor = rs.Ctx.TargetPos, OtherEnd = rs.Ctx.TargetPos });
+            return false;
+        }
+        return false;
+    }
+
+    static float ResolveTimeout(string tok)
+    {
+        // DS1 ships `#DEFAULT_TIMEOUT` as the canonical timeout macro — no
+        // shipped script names a different number. Treat it as 30s; any
+        // numeric value parses through the normal float reader.
+        if (string.Equals(tok, "#DEFAULT_TIMEOUT", StringComparison.OrdinalIgnoreCase))
+            return 30f;
+        return ParseF(tok);
+    }
+
+    void ExecGet(RunningScript rs, SfxStatement stmt)
+    {
+        // Verb shapes shipped in DS1:
+        //   get target_position <handle> [source|target]
+        //   get collision point <handle> [source|target]
+        //   get collision direction <handle>
+        // Each pushes a Handle onto the stack whose Anchor encodes the
+        // queried position (or unit direction encoded as Anchor for
+        // collision direction — callers consume it via #POP and pass to
+        // sfx direction, which we already handle).
+        if (stmt.Tokens.Count < 2) return;
+        var sub = stmt.Tokens[0].ToLowerInvariant();
+        if (!TryResolveHandleOperand(rs, stmt.Tokens[1], pop: false, out var h)) return;
+
+        Vector3 result;
+        if (sub == "target_position")
+        {
+            // Trailing source/target qualifier picks which endpoint of
+            // the motion handle to read; default to target so callers that
+            // omit it still land on the impact point.
+            string? trailing = stmt.Tokens.Count >= 3 ? stmt.Tokens[2] : null;
+            if (trailing is not null && trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase))
+                result = h.Anchor;
+            else if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+                result = motion.Target;
+            else
+                result = h.OtherEnd;
+        }
+        else if (sub == "collision")
+        {
+            string? what = stmt.Tokens.Count >= 2 && stmt.Tokens[1].Equals("point",     StringComparison.OrdinalIgnoreCase) ? "point"
+                         : stmt.Tokens.Count >= 2 && stmt.Tokens[1].Equals("direction", StringComparison.OrdinalIgnoreCase) ? "direction"
+                         : null;
+            // Token layout for collision: get collision point/direction <handle> ...
+            // So sub="collision" means tokens[0]="collision", tokens[1]="point|direction", tokens[2]=handle.
+            if (stmt.Tokens.Count < 3) return;
+            if (!TryResolveHandleOperand(rs, stmt.Tokens[2], pop: false, out h)) return;
+            if (string.Equals(stmt.Tokens[1], "direction", StringComparison.OrdinalIgnoreCase))
+            {
+                var src = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+                    ? motion.Anchor : h.Anchor;
+                var dst = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out motion))
+                    ? motion.Target : h.OtherEnd;
+                var dir = dst - src;
+                float len = dir.Length();
+                result = len > 1e-4f ? dir / len : new Vector3(0f, 0f, 1f);
+            }
+            else
+            {
+                // collision point — live impact world position
+                result = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+                    ? motion.Position : h.OtherEnd;
+            }
+        }
+        else
+        {
+            return; // unrecognized get-form; quiet no-op so future shapes don't crash
+        }
+        rs.Stack.Push(new Handle { Anchor = result, OtherEnd = result });
+    }
+
+    // Phase 21-SC-SPELL-VISUAL-G — conditional evaluator. Recognizes the
+    // `$name == #MACRO` / `$name != #MACRO` shape that gates impact
+    // bursts on collision_type, plus `||` and `&&` between such clauses.
+    // When the expression is anything else, returns true so the body
+    // executes (preserves the pre-G "always run both branches"
+    // pragmatism for unmodeled syntax).
+    bool EvalCondition(RunningScript rs, IReadOnlyList<string> tokens)
+    {
+        if (tokens.Count == 0) return true;
+        // Strip surrounding parens; keep going while we see balanced wrap.
+        int lo = 0, hi = tokens.Count - 1;
+        while (lo < hi && tokens[lo] == "(" && tokens[hi] == ")")
+        {
+            // Verify the outer parens match — otherwise we'd strip
+            // unbalanced wrappers like `(a) || (b)` into `a) || (b`.
+            int depth = 0; bool outer = true;
+            for (int j = lo; j <= hi; j++)
+            {
+                if (tokens[j] == "(") depth++;
+                else if (tokens[j] == ")") depth--;
+                if (depth == 0 && j < hi) { outer = false; break; }
+            }
+            if (!outer) break;
+            lo++; hi--;
+        }
+        if (lo > hi) return true;
+
+        // Split on top-level `||` and `&&` operators. Walk left to right
+        // tracking paren depth; at depth 0 we know an operator splits the
+        // expression.
+        var parts = new List<(int start, int end, string? op)>();
+        int partStart = lo;
+        int parenDepth = 0;
+        for (int j = lo; j <= hi; j++)
+        {
+            if (tokens[j] == "(") parenDepth++;
+            else if (tokens[j] == ")") parenDepth--;
+            if (parenDepth == 0 && (tokens[j] == "||" || tokens[j] == "&&"))
+            {
+                parts.Add((partStart, j - 1, tokens[j]));
+                partStart = j + 1;
+            }
+        }
+        parts.Add((partStart, hi, null));
+
+        if (parts.Count == 1)
+            return EvalLeafCondition(rs, tokens, parts[0].start, parts[0].end);
+
+        // Evaluate left-to-right; honor each part's PRECEDING op.
+        bool acc = EvalLeafCondition(rs, tokens, parts[0].start, parts[0].end);
+        for (int p = 1; p < parts.Count; p++)
+        {
+            bool next = EvalLeafCondition(rs, tokens, parts[p].start, parts[p].end);
+            // The op stored on parts[p-1] is the one that splits this leaf
+            // from the previous; left-to-right semantics suffice for the
+            // `(A) || (B) || (C)` shapes DS1 ships.
+            if (parts[p - 1].op == "||") acc = acc || next;
+            else                          acc = acc && next;
+        }
+        return acc;
+    }
+
+    bool EvalLeafCondition(RunningScript rs, IReadOnlyList<string> tokens, int lo, int hi)
+    {
+        // Trim outer parens at the leaf level too — e.g. `(($x == #MACRO))`.
+        while (lo < hi && tokens[lo] == "(" && tokens[hi] == ")")
+        {
+            int depth = 0; bool outer = true;
+            for (int j = lo; j <= hi; j++)
+            {
+                if (tokens[j] == "(") depth++;
+                else if (tokens[j] == ")") depth--;
+                if (depth == 0 && j < hi) { outer = false; break; }
+            }
+            if (!outer) break;
+            lo++; hi--;
+        }
+        // Recognized leaf shape: <var> <op> <macro> with op in {==, !=}.
+        // Anything else evaluates to true so the body runs (preserves
+        // pre-G "always run both branches" pragmatism for unmodeled
+        // condition shapes).
+        if (hi - lo + 1 != 3) return true;
+        var lhs = tokens[lo];
+        var op  = tokens[lo + 1];
+        var rhs = tokens[lo + 2];
+        if (op != "==" && op != "!=") return true;
+        var lhsVal = ResolveCondOperand(rs, lhs);
+        var rhsVal = ResolveCondOperand(rs, rhs);
+        bool eq = string.Equals(lhsVal, rhsVal, StringComparison.OrdinalIgnoreCase);
+        return op == "==" ? eq : !eq;
+    }
+
+    static string ResolveCondOperand(RunningScript rs, string token)
+    {
+        // $name → string Vars lookup (collision_type tag)
+        if (token.StartsWith("$"))
+            return rs.Vars.TryGetValue(token, out var v) ? v : "";
+        // #MACRO → strip leading # and lowercase, matching the tags
+        // pushed by waitfor and stored by ExecSet.
+        if (token.StartsWith("#"))
+            return token.Substring(1).ToLowerInvariant();
+        return token.ToLowerInvariant();
+    }
+
+    static void SkipToMatching(RunningScript rs, StatementKind opener, StatementKind closer)
+    {
+        // Skip statements until we land past the matching closer. Nested
+        // openers of the same kind (nested if-blocks inside a skipped
+        // outer if) bump depth. Stops at the END of the matching closer
+        // so the outer dispatch resumes at the next statement.
+        int depth = 1;
+        var stmts = rs.Program.Statements;
+        while (rs.Ip < stmts.Count && depth > 0)
+        {
+            var k = stmts[rs.Ip].Kind;
+            rs.Ip++;
+            if      (k == opener) depth++;
+            else if (k == closer) depth--;
+        }
     }
 
     void ExecCall(RunningScript rs, SfxStatement stmt)
@@ -1697,6 +2024,22 @@ public sealed class SfxRuntime
         public Stack<Handle>           Stack         = new();
         public Dictionary<string, Handle> NamedHandles = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> Vars         = new(StringComparer.OrdinalIgnoreCase);
+
+        // Phase 21-SC-SPELL-VISUAL-G — coroutine wait state. When > 0,
+        // StepUntilYield won't advance the IP; Tick decrements WaitTimeout
+        // and checks the watched motion handle's Done flag each frame.
+        // Resume condition: motion is Done (collision) or timeout reached
+        // (no collision). Push of #OBJECT_COLLISION / #TERRAIN_COLLISION
+        // / #NO_COLLISION happens at resume.
+        public int   WaitMotionId;
+        public float WaitTimeout;
+        // Phase 21-SC-SPELL-VISUAL-G — outcome of the most recent IfBegin
+        // so an immediately-following ElseBegin can pick the opposite
+        // branch. Nested if/else on the same RunningScript is fine
+        // because the inner if/else fully resolves between the outer
+        // IfBegin and its matching IfEnd — by the time control returns
+        // to the outer level, the inner result has already been consumed.
+        public bool  LastIfTaken;
 
         public RunningScript(SfxProgram prog, in SfxContext ctx, IReadOnlyList<string>? args)
         {
