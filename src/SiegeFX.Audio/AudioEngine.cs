@@ -141,6 +141,25 @@ public sealed unsafe class AudioEngine : IDisposable
     /// the AL handle directly.</summary>
     internal AL? GetAl() => _disposed ? null : _al;
 
+    /// <summary>Phase 23-SC-OPTIONS-C — global master volume gate via
+    /// OpenAL's listener gain. Multiplies every source (SFX pool +
+    /// ambient bed + MusicPlayer's source, all of which share the
+    /// listener context). Caller passes [0,1]; we clamp at zero but
+    /// allow >1 in case future polish wants headroom. Default 1.0.</summary>
+    public void SetMasterVolume(float volume)
+    {
+        if (_disposed) return;
+        _al.SetListenerProperty(ListenerFloat.Gain, MathF.Max(0f, volume));
+    }
+
+    /// <summary>Phase 23-SC-OPTIONS-C — explicit per-channel SFX cap so
+    /// the Audio tab's "SFX Volume" slider rides independently of the
+    /// master gate. Stored on the engine and applied at every Play /
+    /// PlayAt site as an additional gain multiplier.</summary>
+    public void SetSfxVolume(float volume) => _sfxVolume = MathF.Max(0f, volume);
+    public float SfxVolume => _sfxVolume;
+    float _sfxVolume = 1f;
+
     /// <summary>Decode a WAV byte array, upload to a buffer, and key it by
     /// <paramref name="id"/>. Subsequent calls with the same id replace the
     /// previous buffer. Returns false (and logs) on any failure so the
@@ -244,7 +263,7 @@ public sealed unsafe class AudioEngine : IDisposable
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
         _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         // Listener-relative + zero position = always centered, no falloff.
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, true);
@@ -264,7 +283,7 @@ public sealed unsafe class AudioEngine : IDisposable
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(src, SourceFloat.Gain, gain);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
         _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
         _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);

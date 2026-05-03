@@ -1591,6 +1591,16 @@ void main()
                     _optionsMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
+                // backward (DS1 lets the cycle buttons go either way
+                // via onrbuttondown). Also swallow RMB camera-look
+                // while the menu is open.
+                if (_optionsMenu.IsOpen && btn == MouseButton.Right)
+                {
+                    var sz = _window.FramebufferSize;
+                    _optionsMenu.OnRightClickWidget((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
                 // a button doesn't also retarget the follower behind the panel.
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
@@ -4695,6 +4705,7 @@ void main()
         // the Silk dispatcher; ActorSpawner + GL resource creation expect the
         // main thread). Both branches clear the pending args.
         FlushCreator();
+        FlushOptionsMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -5054,6 +5065,58 @@ void main()
     /// <summary>21d-2a-viii-b — called from <see cref="OnUpdate"/>. When the
     /// creator panel resolves (Begin or Cancel), spawns the PC with the picked
     /// (or env-default) variant and clears the pending args. No-op otherwise.</summary>
+    /// <summary>Phase 23-SC-OPTIONS-A through F — drain the options
+    /// menu's edge-trigger flags. OK commits staged → live and
+    /// applies the runtime hooks (audio volumes are the only fully-
+    /// wired ones in this slice cluster; resolution + gamma + etc.
+    /// persist into Live but require the future prefs.gas /
+    /// DungeonSiege.ini writeback splinter to actually take effect
+    /// on next launch). Cancel discards staged. Defaults resets the
+    /// active tab from /config/options.gas defaults inline.</summary>
+    private void FlushOptionsMenu()
+    {
+        if (_optionsMenu.ConfirmedThisFrame)
+        {
+            _optionsMenu.CommitStaged();
+            ApplyOptionsAudio();
+            _optionsMenu.ClearEdgeFlags();
+        }
+        else if (_optionsMenu.CancelledThisFrame)
+        {
+            // Re-sync staged from live so a re-Open starts clean.
+            _optionsMenu.SyncStagedFromLive();
+            _optionsMenu.ClearEdgeFlags();
+        }
+        else if (_optionsMenu.DefaultsRequestedThisFrame)
+        {
+            _optionsMenu.ApplyDefaultsForActiveTab();
+            // Audio defaults need a live re-apply since the user is
+            // listening as they reset; other tabs can wait for OK.
+            if (_optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Audio)
+                ApplyOptionsAudio();
+            _optionsMenu.ClearEdgeFlags();
+        }
+    }
+
+    /// <summary>Phase 23-SC-OPTIONS-C — push the menu's audio settings
+    /// to the live engine. SoundEnabled gates everything via master;
+    /// MasterVolume rides on OpenAL's listener gain (covers SFX +
+    /// ambient + music in one knob); MusicVolume is a separate
+    /// MusicPlayer source gain stacked on top; SFX volume caps the
+    /// per-Play SFX mix below master. DS1's 0..127 range maps to
+    /// our [0,1] OpenAL gains.</summary>
+    private void ApplyOptionsAudio()
+    {
+        var s = _optionsMenu.Live;
+        if (_audio is not null)
+        {
+            float master = s.SoundEnabled ? s.MasterVolume / 127f : 0f;
+            _audio.SetMasterVolume(master);
+            _audio.SetSfxVolume(s.SfxVolume / 127f);
+        }
+        _music?.SetVolume(s.MusicVolume / 127f);
+    }
+
     private void FlushCreator()
     {
         if (_pendingSpawner is null) return;

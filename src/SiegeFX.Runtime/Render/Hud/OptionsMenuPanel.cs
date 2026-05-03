@@ -34,6 +34,104 @@ internal sealed class OptionsMenuPanel
 {
     public enum Tab { Video, Audio, Input, Game }
 
+    /// <summary>Phase 23-SC-OPTIONS-B/C/D/F — staged settings buffer.
+    /// Edits in the menu mutate this; OK commits to the live engine
+    /// (audio volumes apply via <see cref="ApplyAudioToEngine"/>),
+    /// Cancel discards by re-syncing from the engine on next Open,
+    /// Defaults resets the active tab's fields from
+    /// /config/options.gas. SiegeFX's persistence path through
+    /// prefs.gas writes is parked as splinter SC-OPTIONS-PERSIST so
+    /// values currently round-trip within a session only.</summary>
+    public sealed class Settings
+    {
+        // Video — placeholders that persist to prefs.gas in a future
+        // slice. Defaults from /config/options.gas.
+        public string Resolution = "1920x1080x32";
+        public string Shadows = "complex_party";
+        public string TextureFiltering = "trilinear";
+        public float Gamma = 1.0f;          // 0..2 (UI 0..100 step 10)
+        public float ObjectDetail = 1.0f;   // 0..1 (UI 0..10 step 1)
+
+        // Audio — Master + Music apply live; SFX caps per-Play gain;
+        // Sound off mutes everything via master. Ambient + Voice
+        // currently persist-only since SiegeFX doesn't separate those
+        // channels (Phase 18 wired them into the SFX pool).
+        public bool SoundEnabled = true;
+        public int MasterVolume = 108;     // 0..127
+        public int MusicVolume  = 108;
+        public int SfxVolume    = 74;
+        public int AmbientVolume = 90;
+        public int VoiceVolume   = 85;
+        public bool EaxEnabled = false;
+
+        // Input
+        public bool CameraInverseX = false;
+        public bool CameraInverseY = false;
+        public bool ScreenEdgeTracking = true;
+        public int CameraSensitivity = 50; // 0..100 (composite slider)
+        public int MouseSensitivity = 50;  // 0..100
+        public bool LockCameraX = false;
+        public bool LockCameraY = false;
+
+        // Game (page 1)
+        public bool ShowFramerate = false;
+        public bool PriorityBoost = false;
+        public int TextScrollRate = 50;     // 0..100 (DS1 default 5.0)
+        public int MaxTextDisplayed = 6;    // 0..100
+        public int GameSpeed = 100;         // 0..100 step 10 (1.0 default)
+        public bool TutorialTips = true;
+        public string Difficulty = "Normal"; // Easy/Normal/Hard
+
+        // Game (page 2)
+        public bool ShowTooltips = true;
+        public string BloodColor = "Red";    // Red/Green/Disabled
+        public bool Dismemberment = true;
+
+        public Settings Clone() => (Settings)MemberwiseClone();
+    }
+
+    public Settings Live { get; private set; } = new();
+    Settings _staged = new();
+    int _gamePage; // 0 = page 1, 1 = page 2 (Game tab paging via More/Back)
+
+    /// <summary>Phase 23-SC-OPTIONS-E — read-only snapshot of the
+    /// player's current key bindings, surfaced on the Hotkeys
+    /// sub-screen. SiegeFX's input is hardcoded today (key→action
+    /// mapping lives directly in RenderHost); slice E ships a
+    /// READ-ONLY listing matching DS1's bindings panel UI shape so
+    /// the menu structure is complete. Full rebinding lands when the
+    /// runtime gets a proper key-binding registry — splinter
+    /// SC-OPTIONS-REBIND.</summary>
+    public sealed record Binding(string Command, string Primary, string Secondary);
+    static readonly Binding[] DefaultBindings = new[]
+    {
+        new Binding("Pause / Open Menu",       "Esc",       "—"),
+        new Binding("Open Options",            "F10",        "—"),
+        new Binding("Quick Save",              "F5",         "—"),
+        new Binding("Quick Load",              "F9",         "—"),
+        new Binding("Move Forward",            "W",          "—"),
+        new Binding("Move Backward",           "S",          "—"),
+        new Binding("Strafe Left",             "A",          "—"),
+        new Binding("Strafe Right",            "D",          "—"),
+        new Binding("Click-to-Move",           "Left Mouse", "—"),
+        new Binding("Click-to-Attack / Talk",  "Right Mouse","—"),
+        new Binding("Cast Spell — Primary",    "Q",          "—"),
+        new Binding("Cast Spell — Secondary",  "W (RMB-mode)","—"),
+        new Binding("Toggle Inventory",        "I",          "—"),
+        new Binding("Toggle Spell Book",       "B",          "—"),
+        new Binding("Toggle Character Pane",   "C",          "—"),
+        new Binding("Camera Yaw",              "RMB-drag",   "—"),
+        new Binding("Camera Zoom",             "Wheel",      "—"),
+    };
+    bool _hotkeysOpen; // Input tab → Hotkeys sub-screen toggle
+    // _hotkeysScroll is reserved for the rebind-system slice — DefaultBindings
+    // currently fits in one screenful at 1080p so the scroll input handler
+    // isn't wired yet. Reads default 0 in DrawHotkeysSubscreen.
+    const int _hotkeysScroll = 0;
+
+    public void OpenSubScreenHotkeys() => _hotkeysOpen = true;
+    public void CloseSubScreenHotkeys() => _hotkeysOpen = false;
+
     public bool IsOpen { get; private set; }
     public bool QuitRequested { get; private set; }
     public Tab ActiveTab { get; private set; } = Tab.Video;
@@ -95,12 +193,17 @@ internal sealed class OptionsMenuPanel
     {
         IsOpen = true;
         ActiveTab = Tab.Video;
+        _gamePage = 0;
+        _hotkeysOpen = false;
         ConfirmedThisFrame = false;
         CancelledThisFrame = false;
         DefaultsRequestedThisFrame = false;
         _hoveredTab = null;
         _hoveredBtn = Btn.None;
         _pressedBtn = Btn.None;
+        _hoveredWidget = -1;
+        _activeWidget = -1;
+        SyncStagedFromLive();
     }
 
     public void Close()
@@ -187,6 +290,13 @@ internal sealed class OptionsMenuPanel
             Hits(_cancel,   px, py) ? Btn.Cancel   :
             Hits(_defaults, px, py) ? Btn.Defaults :
             Btn.None;
+        _hoveredWidget = HitWidget(px, py);
+        // Drag-continue for sliders.
+        if (_activeWidget >= 0 && _activeWidget < _widgets.Count
+            && _widgets[_activeWidget].OnSliderDrag is { } drag)
+        {
+            drag(px);
+        }
     }
 
     public void OnMouseDown(int px, int py, int viewportW, int viewportH)
@@ -198,6 +308,15 @@ internal sealed class OptionsMenuPanel
             Hits(_cancel,   px, py) ? Btn.Cancel   :
             Hits(_defaults, px, py) ? Btn.Defaults :
             Btn.None;
+        _activeWidget = HitWidget(px, py);
+        // Slider press jumps the thumb to the click point so the
+        // widget feels responsive on a single click anywhere on the
+        // track. Drag continues from the same x via OnMouseMove.
+        if (_activeWidget >= 0 && _activeWidget < _widgets.Count
+            && _widgets[_activeWidget].OnSliderDrag is { } drag)
+        {
+            drag(px);
+        }
     }
 
     public void OnMouseUp(int px, int py, int viewportW, int viewportH)
@@ -205,16 +324,12 @@ internal sealed class OptionsMenuPanel
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
         // Tabs fire on click-up if the cursor is still over the tab.
-        // (Pre-fold the original DS1 fired on `oncheck` of a radio group;
-        // we treat each tab as a click-up button to keep the input
-        // handler symmetric with the bottom buttons.)
-        if (Hits(_tabVideo, px, py)) ActiveTab = Tab.Video;
-        else if (Hits(_tabAudio, px, py)) ActiveTab = Tab.Audio;
-        else if (Hits(_tabInput, px, py)) ActiveTab = Tab.Input;
-        else if (Hits(_tabGame,  px, py)) ActiveTab = Tab.Game;
+        if (Hits(_tabVideo, px, py)) { ActiveTab = Tab.Video; _gamePage = 0; _hotkeysOpen = false; }
+        else if (Hits(_tabAudio, px, py)) { ActiveTab = Tab.Audio; _gamePage = 0; _hotkeysOpen = false; }
+        else if (Hits(_tabInput, px, py)) { ActiveTab = Tab.Input; _gamePage = 0; _hotkeysOpen = false; }
+        else if (Hits(_tabGame,  px, py)) { ActiveTab = Tab.Game;  _gamePage = 0; _hotkeysOpen = false; }
 
-        // Bottom buttons require press AND release on the same button —
-        // matches Windows-standard click semantics.
+        // Bottom buttons.
         var btn =
             Hits(_ok,       px, py) ? Btn.Ok       :
             Hits(_cancel,   px, py) ? Btn.Cancel   :
@@ -238,6 +353,32 @@ internal sealed class OptionsMenuPanel
             }
         }
         _pressedBtn = Btn.None;
+
+        // Widget click → fire OnClick for cycle/button widgets when
+        // the press AND release land on the same widget.
+        int upWidget = HitWidget(px, py);
+        if (upWidget >= 0 && upWidget == _activeWidget && upWidget < _widgets.Count
+            && _widgets[upWidget].OnClick is { } click)
+        {
+            click();
+        }
+        _activeWidget = -1;
+    }
+
+    public void OnRightClickWidget(int px, int py, int viewportW, int viewportH)
+    {
+        if (!IsOpen) return;
+        Layout(viewportW, viewportH, out _);
+        int idx = HitWidget(px, py);
+        if (idx >= 0 && idx < _widgets.Count
+            && _widgets[idx].OnRightClick is { } back) back();
+    }
+
+    int HitWidget(int px, int py)
+    {
+        for (int i = 0; i < _widgets.Count; i++)
+            if (Hits(_widgets[i].Rect, px, py)) return i;
+        return -1;
     }
 
     public bool IsPointInPanel(int px, int py, int viewportW, int viewportH)
@@ -331,28 +472,445 @@ internal sealed class OptionsMenuPanel
         bars.DrawRect(vw, vh, r.X + r.W - 1, r.Y,           1,   r.H, color);
     }
 
+    // ========================================================
+    // Phase 23-SC-OPTIONS-B/C/D/F — control widgets + per-tab
+    // layout. Single-pass implementation so all four tabs share
+    // one Slider + one CycleButton primitive plus a shared row
+    // layout helper. Widgets are stateless beyond their config —
+    // the staged value lives in `_staged.<Field>` and the widget
+    // reads/writes it through a delegate, so a Cancel + re-Open
+    // cleanly resyncs from `Live` without per-widget reset.
+    // ========================================================
+
+    /// <summary>Layout convention on the inner panel: labels
+    /// right-justified at x ∈ [40, 200) of the inner content,
+    /// widgets at x ∈ [220, 380) of the inner content. Y rows
+    /// cascade from the top of the inner panel at 30px DS1
+    /// stride. All coords are AUTHORED in 640×480 space — the
+    /// caller-side Layout() runs every Draw to re-scale.</summary>
+    const int RowStride = 30;
+    const int RowHeight = 16;
+    const int LabelLeftX = 40;
+    const int LabelW = 160;
+    const int WidgetX = 220;
+    const int WidgetW = 160;
+    const int FirstRowY = 20; // relative to inner panel top
+    int _activeWidget = -1; // index of the widget currently being dragged
+    int _hoveredWidget = -1;
+
+    /// <summary>Walked once per draw. Each tab calls this for every
+    /// row; `i` is a per-tab incrementing index that the host loop
+    /// uses to position rows + correlate input. Returns the
+    /// absolute on-screen rect (label rect, widget rect) so the
+    /// per-tab method can hand them to a slider / cycle button /
+    /// button helper without re-doing scaling math.</summary>
+    void RowRect(int i, out (int X, int Y, int W, int H) labelR,
+                        out (int X, int Y, int W, int H) widgetR,
+                        int viewportW, int viewportH)
+    {
+        Layout(viewportW, viewportH, out var s);
+        // Inner panel was scaled at (117,80)-(524,345) authored coords.
+        // Add LabelLeftX / WidgetX offsets in authored space, scale, then
+        // translate to viewport pixels using the live _inner rect.
+        int innerAuthorX = 117;
+        int innerAuthorY = 80;
+        int yAuthor = innerAuthorY + FirstRowY + i * RowStride;
+        labelR = (
+            (int)MathF.Round((innerAuthorX + LabelLeftX) * s) + (_inner.X - (int)MathF.Round(innerAuthorX * s)),
+            (int)MathF.Round(yAuthor * s),
+            (int)MathF.Round(LabelW * s),
+            (int)MathF.Round(RowHeight * s));
+        widgetR = (
+            (int)MathF.Round((innerAuthorX + WidgetX) * s) + (_inner.X - (int)MathF.Round(innerAuthorX * s)),
+            (int)MathF.Round(yAuthor * s),
+            (int)MathF.Round(WidgetW * s),
+            (int)MathF.Round(RowHeight * s));
+    }
+
+    /// <summary>Slider widget. Click-anywhere-on-track jumps the
+    /// thumb; LMB-drag continues. Value is normalized to [0,1] by
+    /// the widget; caller maps to its own range via the get/set
+    /// delegate. Widget index `i` is the per-tab row counter so
+    /// hit-tests + drag-state lookups stay symmetric.</summary>
+    void Slider(BarRenderer bars, TextRenderer text, int vw, int vh,
+                int rowIdx, int widgetIdx, string label,
+                Func<float> get, Action<float> set, int displayMin, int displayMax)
+    {
+        RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
+        int labelTextW = text.MeasureWidth(label);
+        text.DrawString(vw, vh, label,
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim);
+        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y + widgetR.H / 2 - 1,
+            widgetR.W, 2, Border);
+        float v01 = Math.Clamp(get(), 0f, 1f);
+        int thumbX = widgetR.X + (int)((widgetR.W - 8) * v01);
+        bars.DrawRect(vw, vh, thumbX, widgetR.Y, 8, widgetR.H,
+            _activeWidget == widgetIdx ? BtnPress
+            : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle);
+        DrawBorder(bars, vw, vh, (thumbX, widgetR.Y, 8, widgetR.H), Border);
+        int valDisp = displayMin + (int)MathF.Round((displayMax - displayMin) * v01);
+        var valStr = valDisp.ToString();
+        text.DrawString(vw, vh, valStr,
+            widgetR.X + widgetR.W + 8, widgetR.Y + 1, Ink);
+        // Hit + drag state recorded in _activeWidget / _hoveredWidget
+        // by a parent-loop pass below.
+    }
+
+    /// <summary>Cycle button. Click steps to the next option in
+    /// the array; right-click steps backward. Used for toggles
+    /// (On/Off), enums (Easy/Normal/Hard), shadow types, etc.</summary>
+    void CycleButton(BarRenderer bars, TextRenderer text, int vw, int vh,
+                     int rowIdx, int widgetIdx, string label,
+                     Func<int> getIdx, Action<int> setIdx, string[] options)
+    {
+        RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
+        int labelTextW = text.MeasureWidth(label);
+        text.DrawString(vw, vh, label,
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim);
+        var bg = _activeWidget == widgetIdx ? BtnPress
+               : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle;
+        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
+        DrawBorder(bars, vw, vh, widgetR, Border);
+        var optStr = options[Math.Clamp(getIdx(), 0, options.Length - 1)];
+        int oW = text.MeasureWidth(optStr);
+        text.DrawString(vw, vh, optStr,
+            widgetR.X + (widgetR.W - oW) / 2, widgetR.Y + 1, Ink);
+    }
+
+    /// <summary>Per-tab widget descriptor — the `_widgets` list
+    /// rebuilds every Draw so a tab swap clears stale entries
+    /// without manual cleanup. Each entry knows its rect,
+    /// optional slider get/set, optional cycle-step delegate.</summary>
+    sealed class W
+    {
+        public (int X, int Y, int W, int H) Rect;
+        public Action<float>? OnSliderDrag;
+        public Action? OnClick;        // cycle forward / button press
+        public Action? OnRightClick;   // cycle backward
+    }
+    readonly List<W> _widgets = new();
+
     void DrawTabContent(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
-        // Slice A placeholders. Each tab's real content lands in B/C/D/E/F.
-        var (msg, sub) = ActiveTab switch
+        if (_hotkeysOpen) { DrawHotkeysSubscreen(bars, text, vw, vh); return; }
+        _widgets.Clear();
+        switch (ActiveTab)
         {
-            Tab.Video => ("Video Tab",
-                          "Resolution / Shadows / Texture Filtering / Gamma / Object Detail"),
-            Tab.Audio => ("Audio Tab",
-                          "Sound on/off + 5 volume sliders + EAX"),
-            Tab.Input => ("Input Tab",
-                          "Camera + mouse sensitivity + invert/lock + Hotkeys sub-screen"),
-            Tab.Game  => ("Game Tab",
-                          "Framerate / Priority / Text Scroll / Difficulty / Tooltips / Blood / ..."),
-            _         => ("?", "")
-        };
+            case Tab.Video: LayoutVideo(bars, text, vw, vh); break;
+            case Tab.Audio: LayoutAudio(bars, text, vw, vh); break;
+            case Tab.Input: LayoutInput(bars, text, vw, vh); break;
+            case Tab.Game:  LayoutGame (bars, text, vw, vh); break;
+        }
+    }
+
+    int AddSliderWidget(int rowIdx, int displayMax,
+                        Func<float> get01, Action<float> set01,
+                        int viewportW, int viewportH)
+    {
+        RowRect(rowIdx, out _, out var widgetR, viewportW, viewportH);
+        var idx = _widgets.Count;
+        _widgets.Add(new W
+        {
+            Rect = widgetR,
+            OnSliderDrag = px =>
+            {
+                float t = (px - widgetR.X) / (float)Math.Max(1, widgetR.W);
+                set01(Math.Clamp(t, 0f, 1f));
+            }
+        });
+        return idx;
+    }
+
+    int AddCycleWidget(int rowIdx, Action stepF, Action stepB,
+                       int viewportW, int viewportH)
+    {
+        RowRect(rowIdx, out _, out var widgetR, viewportW, viewportH);
+        var idx = _widgets.Count;
+        _widgets.Add(new W { Rect = widgetR, OnClick = stepF, OnRightClick = stepB });
+        return idx;
+    }
+
+    int AddButtonWidget(int rowIdx, Action onClick, int viewportW, int viewportH)
+    {
+        RowRect(rowIdx, out _, out var widgetR, viewportW, viewportH);
+        var idx = _widgets.Count;
+        _widgets.Add(new W { Rect = widgetR, OnClick = onClick });
+        return idx;
+    }
+
+    void LayoutVideo(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        var resOptions = new[] { "1280x720x32", "1600x900x32", "1920x1080x32",
+                                  "2560x1440x32", "3440x1440x32", "3840x2160x32" };
+        var shadows = new[] { "none", "simple_party", "complex_party" };
+        var filter  = new[] { "bilinear", "trilinear" };
+        int r = 0;
+        CycleField(bars, text, vw, vh, r++, "Resolution",
+            () => _staged.Resolution, v => _staged.Resolution = v, resOptions);
+        CycleField(bars, text, vw, vh, r++, "Shadows",
+            () => _staged.Shadows, v => _staged.Shadows = v, shadows);
+        CycleField(bars, text, vw, vh, r++, "Texture Filtering",
+            () => _staged.TextureFiltering, v => _staged.TextureFiltering = v, filter);
+        FloatSlider(bars, text, vw, vh, r++, "Gamma",
+            () => _staged.Gamma / 2f, t => _staged.Gamma = t * 2f, 0, 100);
+        FloatSlider(bars, text, vw, vh, r++, "Object Detail",
+            () => _staged.ObjectDetail, t => _staged.ObjectDetail = t, 0, 10);
+    }
+
+    void LayoutAudio(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        int r = 0;
+        BoolCycle(bars, text, vw, vh, r++, "Sound",
+            () => _staged.SoundEnabled, v => _staged.SoundEnabled = v);
+        IntSlider(bars, text, vw, vh, r++, "Master Volume",
+            () => _staged.MasterVolume, v => _staged.MasterVolume = v, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "Music Volume",
+            () => _staged.MusicVolume, v => _staged.MusicVolume = v, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "SFX Volume",
+            () => _staged.SfxVolume, v => _staged.SfxVolume = v, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "Ambient Volume",
+            () => _staged.AmbientVolume, v => _staged.AmbientVolume = v, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "Voice Volume",
+            () => _staged.VoiceVolume, v => _staged.VoiceVolume = v, 0, 127);
+        BoolCycle(bars, text, vw, vh, r++, "EAX",
+            () => _staged.EaxEnabled, v => _staged.EaxEnabled = v);
+    }
+
+    void LayoutInput(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        int r = 0;
+        BoolCycle(bars, text, vw, vh, r++, "Invert Camera X",
+            () => _staged.CameraInverseX, v => _staged.CameraInverseX = v);
+        BoolCycle(bars, text, vw, vh, r++, "Invert Camera Y",
+            () => _staged.CameraInverseY, v => _staged.CameraInverseY = v);
+        BoolCycle(bars, text, vw, vh, r++, "Screen Edge Tracking",
+            () => _staged.ScreenEdgeTracking, v => _staged.ScreenEdgeTracking = v);
+        IntSlider(bars, text, vw, vh, r++, "Camera Sensitivity",
+            () => _staged.CameraSensitivity, v => _staged.CameraSensitivity = v, 0, 100);
+        IntSlider(bars, text, vw, vh, r++, "Mouse Sensitivity",
+            () => _staged.MouseSensitivity, v => _staged.MouseSensitivity = v, 0, 100);
+        BoolCycle(bars, text, vw, vh, r++, "Lock Camera X",
+            () => _staged.LockCameraX, v => _staged.LockCameraX = v);
+        BoolCycle(bars, text, vw, vh, r++, "Lock Camera Y",
+            () => _staged.LockCameraY, v => _staged.LockCameraY = v);
+        DrawPageButton(bars, text, vw, vh, r, "Hotkeys…", () => _hotkeysOpen = true);
+    }
+
+    void LayoutGame(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        var diff  = new[] { "Easy", "Normal", "Hard" };
+        var blood = new[] { "Red", "Green", "Disabled" };
+        int r = 0;
+        if (_gamePage == 0)
+        {
+            BoolCycle(bars, text, vw, vh, r++, "Show Framerate",
+                () => _staged.ShowFramerate, v => _staged.ShowFramerate = v);
+            BoolCycle(bars, text, vw, vh, r++, "Raise App Priority",
+                () => _staged.PriorityBoost, v => _staged.PriorityBoost = v);
+            IntSlider(bars, text, vw, vh, r++, "Text Scroll Rate",
+                () => _staged.TextScrollRate, v => _staged.TextScrollRate = v, 0, 100);
+            IntSlider(bars, text, vw, vh, r++, "Maximum Text",
+                () => _staged.MaxTextDisplayed, v => _staged.MaxTextDisplayed = v, 0, 100);
+            IntSlider(bars, text, vw, vh, r++, "Game Speed",
+                () => _staged.GameSpeed, v => _staged.GameSpeed = v, 0, 100);
+            BoolCycle(bars, text, vw, vh, r++, "Tutorial Tips",
+                () => _staged.TutorialTips, v => _staged.TutorialTips = v);
+            CycleField(bars, text, vw, vh, r++, "Difficulty",
+                () => _staged.Difficulty, v => _staged.Difficulty = v, diff);
+            DrawPageButton(bars, text, vw, vh, r, "More →", () => _gamePage = 1);
+        }
+        else
+        {
+            BoolCycle(bars, text, vw, vh, r++, "Show Tooltips",
+                () => _staged.ShowTooltips, v => _staged.ShowTooltips = v);
+            CycleField(bars, text, vw, vh, r++, "Blood Color",
+                () => _staged.BloodColor, v => _staged.BloodColor = v, blood);
+            BoolCycle(bars, text, vw, vh, r++, "Dismemberment",
+                () => _staged.Dismemberment, v => _staged.Dismemberment = v);
+            DrawPageButton(bars, text, vw, vh, r, "← Back", () => _gamePage = 0);
+        }
+    }
+
+    void DrawPageButton(BarRenderer bars, TextRenderer text, int vw, int vh,
+                        int rowIdx, string label, Action onClick)
+    {
+        RowRect(rowIdx, out _, out var widgetR, vw, vh);
+        var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
+        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
+        DrawBorder(bars, vw, vh, widgetR, Border);
+        int lW = text.MeasureWidth(label);
+        text.DrawString(vw, vh, label, widgetR.X + (widgetR.W - lW) / 2, widgetR.Y + 1, Ink);
+        AddButtonWidget(rowIdx, onClick, vw, vh);
+    }
+
+    /// <summary>String-cycle field. Click steps forward, right-click
+    /// steps back, both wrap. Options is reference-captured so the
+    /// `Difficulty` cycle keeps stepping through Easy→Normal→Hard
+    /// without relying on a label-string switch.</summary>
+    void CycleField(BarRenderer bars, TextRenderer text, int vw, int vh,
+                    int rowIdx, string label,
+                    Func<string> get, Action<string> set, string[] options)
+    {
+        int idx = Array.IndexOf(options, get());
+        if (idx < 0) idx = 0;
+        CycleButton(bars, text, vw, vh, rowIdx, _widgets.Count, label,
+            () => idx, _ => { }, options);
+        AddCycleWidget(rowIdx,
+            () => { var i = Array.IndexOf(options, get());
+                    if (i < 0) i = 0;
+                    set(options[(i + 1) % options.Length]); },
+            () => { var i = Array.IndexOf(options, get());
+                    if (i < 0) i = 0;
+                    set(options[(i - 1 + options.Length) % options.Length]); },
+            vw, vh);
+    }
+
+    /// <summary>Boolean cycle field — same shape as
+    /// <see cref="CycleField"/> but always toggles the get/set
+    /// delegate's bool. Click + right-click both flip the value.</summary>
+    void BoolCycle(BarRenderer bars, TextRenderer text, int vw, int vh,
+                   int rowIdx, string label, Func<bool> get, Action<bool> set)
+    {
+        var onOff = new[] { "Off", "On" };
+        int idx = get() ? 1 : 0;
+        CycleButton(bars, text, vw, vh, rowIdx, _widgets.Count, label,
+            () => idx, _ => { }, onOff);
+        AddCycleWidget(rowIdx,
+            () => set(!get()),
+            () => set(!get()),
+            vw, vh);
+    }
+
+    /// <summary>Integer slider [min,max] with the displayed value
+    /// being the integer itself (e.g. volumes 0..127, sensitivities
+    /// 0..100).</summary>
+    void IntSlider(BarRenderer bars, TextRenderer text, int vw, int vh,
+                   int rowIdx, string label,
+                   Func<int> get, Action<int> set, int min, int max)
+    {
+        Slider(bars, text, vw, vh, rowIdx, _widgets.Count, label,
+            () => (get() - min) / (float)Math.Max(1, max - min),
+            t => set(min + (int)MathF.Round(t * (max - min))),
+            min, max);
+        AddSliderWidget(rowIdx, max,
+            () => (get() - min) / (float)Math.Max(1, max - min),
+            t => set(min + (int)MathF.Round(t * (max - min))),
+            vw, vh);
+    }
+
+    /// <summary>Generic slider. <paramref name="get01"/> /
+    /// <paramref name="set01"/> use a normalized [0,1] value; the
+    /// caller maps to its own range. Display values are the integer
+    /// min/max for the user-facing label.</summary>
+    void FloatSlider(BarRenderer bars, TextRenderer text, int vw, int vh,
+                     int rowIdx, string label,
+                     Func<float> get01, Action<float> set01,
+                     int displayMin, int displayMax)
+    {
+        Slider(bars, text, vw, vh, rowIdx, _widgets.Count, label,
+            get01, set01, displayMin, displayMax);
+        AddSliderWidget(rowIdx, displayMax, get01, set01, vw, vh);
+    }
+
+    void DrawHotkeysSubscreen(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        // Read-only key-binding listing. Header row + scrolling list.
         int innerCx = _inner.X + _inner.W / 2;
-        int titleW = text.MeasureWidth(msg);
-        text.DrawString(vw, vh, msg, innerCx - titleW / 2, _inner.Y + 24, Ink);
-        int subW = text.MeasureWidth(sub);
-        text.DrawString(vw, vh, sub, innerCx - subW / 2, _inner.Y + 48, InkDim);
-        int hintW = text.MeasureWidth("(slice A skeleton — content lands in slices B / C / D / E / F)");
-        text.DrawString(vw, vh, "(slice A skeleton — content lands in slices B / C / D / E / F)",
-                        innerCx - hintW / 2, _inner.Y + _inner.H - 24, InkDim);
+        var header = "Hotkeys (read-only — rebinding pending splinter SC-OPTIONS-REBIND)";
+        int hW = text.MeasureWidth(header);
+        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12, InkDim);
+
+        // Column headers
+        int colY = _inner.Y + 36;
+        int cmdX = _inner.X + 20;
+        int priX = _inner.X + 220;
+        int secX = _inner.X + 320;
+        text.DrawString(vw, vh, "Command",   cmdX, colY, Ink);
+        text.DrawString(vw, vh, "Primary",   priX, colY, Ink);
+        text.DrawString(vw, vh, "Secondary", secX, colY, Ink);
+        bars.DrawRect(vw, vh, _inner.X + 12, colY + 14, _inner.W - 24, 1, Border);
+
+        int rowH = 18;
+        int rowY = colY + 22;
+        int maxRows = (_inner.Y + _inner.H - rowY - 50) / rowH;
+        for (int i = 0; i < Math.Min(maxRows, DefaultBindings.Length); i++)
+        {
+            var b = DefaultBindings[i + _hotkeysScroll];
+            text.DrawString(vw, vh, b.Command,   cmdX, rowY + i * rowH, Ink);
+            text.DrawString(vw, vh, b.Primary,   priX, rowY + i * rowH, InkDim);
+            text.DrawString(vw, vh, b.Secondary, secX, rowY + i * rowH, InkDim);
+        }
+
+        // Back button at the bottom of the inner panel.
+        int backW = 120, backH = 22;
+        int backX = innerCx - backW / 2;
+        int backY = _inner.Y + _inner.H - 36;
+        var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
+        bars.DrawRect(vw, vh, backX, backY, backW, backH, bg);
+        DrawBorder(bars, vw, vh, (backX, backY, backW, backH), Border);
+        var lbl = "← Back";
+        int lW = text.MeasureWidth(lbl);
+        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + 4, Ink);
+        _widgets.Add(new W { Rect = (backX, backY, backW, backH), OnClick = () => _hotkeysOpen = false });
+    }
+
+    /// <summary>Called by the host on Open() to seed `_staged` from
+    /// `Live` so a Cancel cleanly reverts. Slice A flow exposes
+    /// this as the public entry; later slices that read prefs.gas
+    /// will replace `Live` first then call this.</summary>
+    public void SyncStagedFromLive() { _staged = Live.Clone(); _gamePage = 0; _hotkeysOpen = false; }
+
+    /// <summary>Commit staged → live + apply runtime hooks. Slice C
+    /// wires audio volumes; the rest persist-only until further
+    /// runtime knobs land. Caller invokes when ConfirmedThisFrame
+    /// fires.</summary>
+    public void CommitStaged() { Live = _staged.Clone(); }
+
+    /// <summary>Reset the active tab's fields to the
+    /// /config/options.gas defaults. Per-tab reset matches DS1's
+    /// `notify(default_options_<tab>)` behavior.</summary>
+    public void ApplyDefaultsForActiveTab()
+    {
+        var d = new Settings();
+        switch (ActiveTab)
+        {
+            case Tab.Video:
+                _staged.Resolution = d.Resolution;
+                _staged.Shadows = d.Shadows;
+                _staged.TextureFiltering = d.TextureFiltering;
+                _staged.Gamma = d.Gamma;
+                _staged.ObjectDetail = d.ObjectDetail;
+                break;
+            case Tab.Audio:
+                _staged.SoundEnabled = d.SoundEnabled;
+                _staged.MasterVolume = d.MasterVolume;
+                _staged.MusicVolume = d.MusicVolume;
+                _staged.SfxVolume = d.SfxVolume;
+                _staged.AmbientVolume = d.AmbientVolume;
+                _staged.VoiceVolume = d.VoiceVolume;
+                _staged.EaxEnabled = d.EaxEnabled;
+                break;
+            case Tab.Input:
+                _staged.CameraInverseX = d.CameraInverseX;
+                _staged.CameraInverseY = d.CameraInverseY;
+                _staged.ScreenEdgeTracking = d.ScreenEdgeTracking;
+                _staged.CameraSensitivity = d.CameraSensitivity;
+                _staged.MouseSensitivity = d.MouseSensitivity;
+                _staged.LockCameraX = d.LockCameraX;
+                _staged.LockCameraY = d.LockCameraY;
+                break;
+            case Tab.Game:
+                _staged.ShowFramerate = d.ShowFramerate;
+                _staged.PriorityBoost = d.PriorityBoost;
+                _staged.TextScrollRate = d.TextScrollRate;
+                _staged.MaxTextDisplayed = d.MaxTextDisplayed;
+                _staged.GameSpeed = d.GameSpeed;
+                _staged.TutorialTips = d.TutorialTips;
+                _staged.Difficulty = d.Difficulty;
+                _staged.ShowTooltips = d.ShowTooltips;
+                _staged.BloodColor = d.BloodColor;
+                _staged.Dismemberment = d.Dismemberment;
+                break;
+        }
     }
 }
