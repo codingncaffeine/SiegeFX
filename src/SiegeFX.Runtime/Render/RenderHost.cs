@@ -751,6 +751,26 @@ public sealed class RenderHost : IDisposable
     // icons (b_gui_ig_*.raw) inside InventoryPanel cells. Same blend pass
     // as the other HUD renderers; lifetime parallels them.
     private IconRenderer? _iconRenderer;
+
+    // Phase 21-SC-BARREL-A1 — DS1 sprite cursor state machine. Cursors.gas
+    // ships a 6-state set under /art/bitmaps/gui/cursors/: pointer (sword)
+    // is the default, attack1 (red sword) is enemy hover, smash1.flm is
+    // the animated hammer for breakable props, grab1.flm is the animated
+    // hand for loot piles, talk is the NPC marker. We hide the OS cursor
+    // and draw our own sprite at _currentMousePos minus the authored
+    // hotspot — sethotspot(21,13) for 64x64, (9,5) for 32x32. State picks
+    // happen per render frame via a ground-plane raycast through the
+    // mouse, mirroring TryClickToAttack / TryClickToBreakProp / TryClickToTalk
+    // so cursor visual tracks 1:1 with what a click actually picks.
+    private enum CursorState { Pointer, Attack, Smash, Grab, Talk }
+    private CursorState _cursorState = CursorState.Pointer;
+    private GlTexture? _cursorPointer;          // sword (default)
+    private GlTexture? _cursorAttack;           // red sword (enemy under cursor)
+    private GlTexture? _cursorTalk;             // talk marker
+    private GlTexture[]? _cursorSmash;          // animated hammer (21 frames)
+    private GlTexture[]? _cursorGrab;           // animated hand (30 frames)
+    private bool _cursorTexturesAttempted;
+    private bool _osCursorHidden;
     // Phase 17-SC-E — billboard particle backend (fire, smoke, sparks,
     // lightning bolts). Built once GL is up; LoadPlayActors fills its
     // sprite atlas off Objects.dsres. Tick + Draw run inside OnRender's
@@ -1857,7 +1877,13 @@ void main()
                 {
                     _mouseLookActive = false;
                     _lastMousePos = null;
-                    m.Cursor.CursorMode = CursorMode.Normal;
+                    // Phase 21-SC-BARREL-A1 — keep the OS cursor hidden in
+                    // play mode so the sprite cursor isn't doubled up on
+                    // RMB release. Viewer modes (no _player) restore the
+                    // OS pointer as before.
+                    m.Cursor.CursorMode = _player is not null
+                        ? CursorMode.Hidden
+                        : CursorMode.Normal;
                     // Phase 13d — tap-click discrimination. In Raw cursor mode
                     // m.Position is unreliable on mouse-up (driver snaps it back),
                     // so we use the drift accumulated while RMB was held instead.
@@ -5960,6 +5986,171 @@ void main()
         }
     }
 
+    /// <summary>Phase 21-SC-BARREL-A1 — first-touch lazy load of every cursor
+    /// sprite. Static cursors are direct .raw lookups; animated ones decode
+    /// .flm into per-frame 32x32 BGRA buffers. Run once per session — if any
+    /// individual lookup fails (older content tank, corrupted DSRES) the
+    /// matching state falls back to the pointer in
+    /// <see cref="ResolveCursorVisual"/> so the cursor never disappears.</summary>
+    private void EnsureCursorTextures()
+    {
+        if (_cursorTexturesAttempted) return;
+        if (_gl is null || _playResolver is null) return;
+        _cursorTexturesAttempted = true;
+        _cursorPointer = TryGetGuiTexture("b_gui_c_pointer");
+        _cursorAttack  = TryGetGuiTexture("b_gui_c_attack1");
+        _cursorTalk    = TryGetGuiTexture("b_gui_c_talk");
+        _cursorSmash   = LoadFlmFrames("b_gui_c_smash1.flm");
+        _cursorGrab    = LoadFlmFrames("b_gui_c_grab1.flm");
+        Console.WriteLine(
+            $"[cursor] pointer={(_cursorPointer is not null ? "ok" : "MISS")}" +
+            $" attack={(_cursorAttack is not null ? "ok" : "MISS")}" +
+            $" talk={(_cursorTalk is not null ? "ok" : "MISS")}" +
+            $" smash={(_cursorSmash is null ? "MISS" : _cursorSmash.Length + " frames")}" +
+            $" grab={(_cursorGrab is null ? "MISS" : _cursorGrab.Length + " frames")}");
+    }
+
+    private GlTexture[]? LoadFlmFrames(string fileName)
+    {
+        if (_gl is null || _playResolver is null) return null;
+        if (!_playResolver.TryLoadByBasename(fileName, out var bytes)) return null;
+        var raw = SiegeFX.Core.Assets.FlmAnimation.LoadFrames(bytes);
+        if (raw.Length == 0) return null;
+        var texs = new GlTexture[raw.Length];
+        for (int i = 0; i < raw.Length; i++)
+            texs[i] = new GlTexture(_gl, raw[i],
+                SiegeFX.Core.Assets.FlmAnimation.FrameSize,
+                SiegeFX.Core.Assets.FlmAnimation.FrameSize);
+        return texs;
+    }
+
+    /// <summary>Phase 21-SC-BARREL-A1 — pick a cursor state for this render
+    /// frame. Priority order matches the click handlers' search order so
+    /// the cursor visual is a faithful preview of what a click does:
+    /// enemy &gt; breakable &gt; loot pile &gt; talkable NPC &gt; default.
+    /// Skipped while RMB camera-look is active (the OS owns the cursor in
+    /// Raw mode), or before <see cref="_player"/> is spawned.</summary>
+    private void UpdateCursorState()
+    {
+        _cursorState = CursorState.Pointer;
+        if (_player is null || _window is null || _player.IsDead) return;
+        if (_mouseLookActive) return;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return;
+
+        var cursorPx = _currentMousePos;
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        float aspect = (float)size.X / size.Y;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
+        var dir  = far_ - near;
+        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
+        float planeY = _player.CurrentTransform.Translation.Y;
+        float t = (planeY - near.Y) / dir.Y;
+        if (t < 0f) return;
+        var groundHit = near + dir * t;
+
+        float r2 = ClickAttackRadius * ClickAttackRadius;
+        // 1) enemy under cursor → red sword.
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.IsPlayer) continue;
+            if (!s.Actor.Stats.IsCombatant) continue;
+            var pos = s.CurrentTransform.Translation;
+            float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
+            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Attack; return; }
+        }
+        // 2) live breakable static prop under cursor → hammer.
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsBreakable || prop.IsDestroyed) continue;
+            var pos = prop.World.Translation;
+            float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
+            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Smash; return; }
+        }
+        // 3) loot pile under cursor → grab hand. Skip piles that are still
+        //    in their throw-tumble (auto-pickup is gated on the same flag).
+        foreach (var pile in _lootPiles)
+        {
+            if (pile.Throw is not null && pile.Throw.Elapsed < pile.Throw.Duration) continue;
+            var pos = pile.Position;
+            float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
+            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Grab; return; }
+        }
+        // 4) talkable NPC inside the wider talk radius → talk marker.
+        if (_conversations is not null && _conversations.Count > 0)
+        {
+            float t2 = ClickTalkRadius * ClickTalkRadius;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead || s.IsPlayer) continue;
+                var pos = s.CurrentTransform.Translation;
+                float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
+                if (dx * dx + dz * dz > t2) continue;
+                var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
+                bool talkable = false;
+                foreach (var k in keys)
+                    if (_conversations.TryGetValue(k, out var c) && c.Nodes.Count > 0) { talkable = true; break; }
+                if (!talkable && SiegeFX.Core.Actors.VendorCatalog.Find(s.Actor.Template.Name) is not null) talkable = true;
+                if (talkable) { _cursorState = CursorState.Talk; return; }
+            }
+        }
+    }
+
+    /// <summary>Phase 21-SC-BARREL-A1 — map the current cursor state to a
+    /// (texture, hotspot, size) tuple. Animated states cycle frames at
+    /// 12 fps off <see cref="_terrainTime"/> (so animation rate stays
+    /// consistent regardless of render fps). Hotspots come straight from
+    /// cursors.gas: 64x64 sprites use sethotspot(21,13); 32x32 use (9,5).
+    /// All states fall back to the pointer if their dedicated texture
+    /// failed to load — never returns null while the pointer resolved.</summary>
+    private (GlTexture? tex, int hsx, int hsy, int sz) ResolveCursorVisual()
+    {
+        EnsureCursorTextures();
+        const int big = 64, small = 32;
+        const int hsBigX = 21, hsBigY = 13, hsSmallX = 9, hsSmallY = 5;
+        switch (_cursorState)
+        {
+            case CursorState.Attack:
+                return (_cursorAttack ?? _cursorPointer, hsBigX, hsBigY, big);
+            case CursorState.Smash when _cursorSmash is { Length: > 0 }:
+            {
+                int frame = (int)(_terrainTime * 12.0) % _cursorSmash.Length;
+                return (_cursorSmash[frame], hsSmallX, hsSmallY, small);
+            }
+            case CursorState.Grab when _cursorGrab is { Length: > 0 }:
+            {
+                int frame = (int)(_terrainTime * 12.0) % _cursorGrab.Length;
+                return (_cursorGrab[frame], hsSmallX, hsSmallY, small);
+            }
+            case CursorState.Talk when _cursorTalk is not null:
+                return (_cursorTalk, hsSmallX, hsSmallY, small);
+            case CursorState.Pointer:
+            default:
+                return (_cursorPointer, hsBigX, hsBigY, big);
+        }
+    }
+
+    /// <summary>Phase 21-SC-BARREL-A1 — hide the OS cursor once we've
+    /// committed to drawing our own sprite. Idempotent; cheap to call
+    /// every frame. Skipped while RMB camera-look is active (CursorMode
+    /// is in Raw there for the look-grab).</summary>
+    private void EnsureOsCursorHidden()
+    {
+        if (_osCursorHidden) return;
+        if (_input is null || _input.Mice.Count == 0) return;
+        if (_mouseLookActive) return;
+        if (_player is null) return; // viewer modes keep the OS cursor
+        _input.Mice[0].Cursor.CursorMode = Silk.NET.Input.CursorMode.Hidden;
+        _osCursorHidden = true;
+    }
+
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
@@ -8138,6 +8329,15 @@ void main()
         // the top-left (two tiny vials around a portrait stub plus the two
         // active-spell icons) so the three DS1 panels (Character / Inventory
         // / SpellBook) can dock across the top dock row.
+        // Phase 21-SC-BARREL-A1 — DS1 sprite cursor: pick state for this
+        // frame (priority: enemy > breakable > loot pile > NPC > default)
+        // and hide the OS cursor on the first frame our sprite is ready.
+        // Cheap per-frame work (a few k-prop scans) and run before the HUD
+        // pass so animated states get the same _terrainTime stride the
+        // particle systems use.
+        UpdateCursorState();
+        EnsureOsCursorHidden();
+
         if (_textRenderer is not null && _textRenderer.HasFont)
         {
             _textRenderer.BeginPass();
@@ -8450,6 +8650,24 @@ void main()
                     int cy = (int)_currentMousePos.Y - iconSize / 2;
                     _iconRenderer.DrawIcon(size.X, size.Y, iconTex,
                         cx, cy, iconSize, iconSize, Vector4.One);
+                }
+            }
+            // Phase 21-SC-BARREL-A1 — DS1 sprite cursor (sword / red sword /
+            // hammer / hand / talk). Drawn after every other HUD element so
+            // it stacks above panels (matches DS1 layering). Suppressed when
+            // a scroll is mid-drag — the scroll overlay above replaces the
+            // cursor — and when RMB camera-look has the OS cursor in Raw
+            // mode. UpdateCursorState ran once per frame just below the
+            // scene draw; ResolveCursorVisual maps the state to a texture
+            // and authored hotspot.
+            else if (_iconRenderer is not null && !_mouseLookActive && _player is not null)
+            {
+                var (cTex, hsx, hsy, sz) = ResolveCursorVisual();
+                if (cTex is not null)
+                {
+                    int cx = (int)_currentMousePos.X - hsx;
+                    int cy = (int)_currentMousePos.Y - hsy;
+                    _iconRenderer.DrawIcon(size.X, size.Y, cTex, cx, cy, sz, sz, Vector4.One);
                 }
             }
             _textRenderer.EndPass();

@@ -54,6 +54,37 @@ public sealed class GlTexture : IDisposable
         _gl.BindTexture(GLEnum.Texture2D, 0);
     }
 
+    /// <summary>Single-mip RGBA8888 upload. Used by the cursor pipeline for
+    /// individual .flm frames (32x32 BGRA→RGBA-swapped buffers from
+    /// <see cref="FlmAnimation"/>) where there's no on-disc mip chain to
+    /// preserve. Filtering is point-style by default so the cursor reads as
+    /// crisp pixel art rather than a smeared blur at native pointer size.</summary>
+    public GlTexture(GL gl, byte[] rgba, int width, int height, bool nearestFilter = true)
+    {
+        if (rgba.Length < width * height * 4)
+            throw new ArgumentException("rgba buffer too small for given dimensions", nameof(rgba));
+        _gl = gl;
+        Handle = _gl.GenTexture();
+        Width = width;
+        Height = height;
+        MipCount = 1;
+        _gl.BindTexture(GLEnum.Texture2D, Handle);
+        unsafe
+        {
+            fixed (byte* p = rgba)
+                _gl.TexImage2D(GLEnum.Texture2D, 0, (int)GLEnum.Rgba8,
+                    (uint)width, (uint)height, 0, GLEnum.Rgba, GLEnum.UnsignedByte, p);
+        }
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureBaseLevel, 0);
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMaxLevel, 0);
+        var f = nearestFilter ? GLEnum.Nearest : GLEnum.Linear;
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)f);
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, (int)f);
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+        _gl.BindTexture(GLEnum.Texture2D, 0);
+    }
+
     public void Bind(TextureUnit unit = TextureUnit.Texture0)
     {
         _gl.ActiveTexture(unit);
