@@ -160,6 +160,7 @@ echo   87. Phase 17-SC-J    - Per-instance scale_multiplier (breakable farmhouse
 echo   88. Phase 21-SC-SPELL-VFX-AUDIT - Visual-coverage audit across every offensive spell (Logic.dsres)
 echo   89. Phase 21-SC-SPELL-VFX-AUDIT - Visual verify fireball + iceshard (SIEGEFX_DEBUG_SPELLS launch)
 echo   90. Phase 21-SC-SCROLL          - Full scroll-UI test (16-spell roster + ground pile + glitter)
+echo   91. Phase 21-SC-SPELL-VISUAL    - Primitive sweep (10 spells, one per slice A-H + sphere)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -256,6 +257,7 @@ if /i "%CHOICE%"=="87" goto T87
 if /i "%CHOICE%"=="88" goto T88
 if /i "%CHOICE%"=="89" goto T89
 if /i "%CHOICE%"=="90" goto T90
+if /i "%CHOICE%"=="91" goto T91
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1752,14 +1754,17 @@ echo [Sets SIEGEFX_DEBUG_SPELLS=spell_fireball,spell_iceshard so the player spaw
 echo [with those slotted instead of the default zap+healing_wind. Press Q to cast]
 echo [primary (fireball) and W to cast secondary (iceshard) at fh_r1's krug.]
 echo.
-echo [What to look for: fireball is a PARTIAL in the audit (uses trackball + waitfor]
-echo [collision the VM doesn't run yet) so it should fall back to the SpawnSpellVisual]
-echo [placeholder — orange tinted projectile + impact, but not the proper rolling]
-echo [fire ball with collision detection. Iceshard is UNCOVERED in the audit (DS1]
-echo [stub: ice_shard_launch.gas is sound-only) so it'll show our placeholder cyan]
-echo [projectile + impact only.]
+echo [Post-slice-G: fireball is now COVERED. Q-cast should fly a tracking projectile]
+echo [from the caster's hand to the target with a fire trail, then on collision]
+echo [(slice G's waitfor + impact gating) fire two cylinder ground rings + an explosion]
+echo [burst at the impact point. Pre-G these bursts fired at cast time; post-G they]
+echo [wait for the trackball to arrive.]
 echo.
-echo [If the visuals don't match the audit's verdicts that's a bug; treat as a finding.]
+echo [Iceshard stays UNCOVERED -- DS1 author stub (ice_shard_launch.gas is sound-only).]
+echo [Our SpawnSpellVisual placeholder still over-delivers vs shipped DS1: cyan]
+echo [projectile + impact burst.]
+echo.
+echo [If the visuals don't match these verdicts that's a bug; treat as a finding.]
 echo.
 set SIEGEFX_DEBUG_SPELLS=spell_fireball,spell_iceshard
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
@@ -1803,6 +1808,96 @@ echo [    caster -> target with fire trail (was rendering nothing before]
 echo [    commit 6d3a58c).]
 echo.
 set SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning,shock_wave,nurture,bombard,acid_cloud,death_blast,spark,fire_pillar,implosion,starburst,zap,frigid_armor,heal_bind,leech_life
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_DEBUG_SPELLS=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T91
+echo.
+echo --- Phase 21-SC-SPELL-VISUAL: primitive sweep (slices A-H + sphere) ---
+echo [10-spell roster, one spell per shipped primitive kind. Each highlights a]
+echo [different slice's deliverable so visual regressions surface fast.]
+echo.
+echo [Roster:]
+echo [  Q  fireball       trackball + fire + lightsource glow + waitfor + cylinder impact]
+echo [  W  apprentice_zap straight-bolt lightning]
+echo [  Placed slot 1 dragon_fire    fireb directional cone (slice C)]
+echo [  Placed slot 2 death_blast    cylinder ground ring + sray radial fan (A + B)]
+echo [  Placed slot 3 spark          lightsource Glow halo, color-preserving (slice D)]
+echo [  Placed slot 4 firebomb       sphere shells -- omni shell, color-preserving (H + sphere)]
+echo [  Placed slot 5 bombard        orbiter + lightsource + sphere + flurry (multi-slice)]
+echo [  Placed slot 6 starburst      orbiter + sray]
+echo [  Placed slot 7 fire_pillar    cylinder column + fire emitter]
+echo [  Placed slot 8 healing_wind   curve + sparkles (motion-handle slice + sparkles)]
+echo.
+echo [What to look for, organized by slice:]
+echo.
+echo [  --- Slice A (cylinder ground ring) ---]
+echo [  fireball impact: TWO concentric cylinder rings appear at the landing point]
+echo [  AFTER the trackball arrives (slice G's waitfor gating). fire_pillar: a]
+echo [  textured cylinder column rises at the cast target. Both should look like]
+echo [  textured rings/columns on the ground, NOT a thin lightning beam (that was]
+echo [  the pre-A placeholder).]
+echo.
+echo [  --- Slice B (sray streak) ---]
+echo [  death_blast: tapered radial streaks fan out from the impact point. starburst:]
+echo [  same effect emanating from the orbiting projectile. Should read as long]
+echo [  thin tapered rays, NOT a dense spark cloud.]
+echo.
+echo [  --- Slice C (fireb cone) ---]
+echo [  dragon_fire: forward-emitting fire cone in the caster's facing direction.]
+echo [  The cone should spread laterally and have noticeable forward velocity, NOT]
+echo [  be a static fire column.]
+echo.
+echo [  --- Slice D (lightsource Glow halo) ---]
+echo [  spark: a bright additive halo cluster pulses at the spell origin. Color]
+echo [  should match the spell's authored tint -- NOT drift to orange/brown over]
+echo [  time (that was the pre-D Steam-as-lightsource bug). Bombard's lightsource]
+echo [  should follow the orbiting projectile.]
+echo.
+echo [  --- Slice E (sfx attach / rat / offset_bone / direction) ---]
+echo [  fireball's three layered fire emitters should look DIFFERENT from each other]
+echo [  (slice E's sfx-rat random rotation), not stacked plumes pointing the same]
+echo [  way. The fire trail should follow the trackball through its flight path,]
+echo [  not stay anchored at #SOURCE.]
+echo.
+echo [  --- Slice F (per-bone resolution) ---]
+echo [  fireball, dragon_fire, spark all spawn from the caster's HAND BONE area]
+echo [  (weapon_bone -> weapon_grip), not from feet. Watch the cast origin: it]
+echo [  should track the hand as the player moves.]
+echo.
+echo [  --- Slice G (waitfor + collision gate) ---]
+echo [  fireball: the impact burst (ring + explosion + sparks) fires WHEN THE]
+echo [  TRACKBALL ARRIVES, not at cast time. Pre-G these all fired at cast and]
+echo [  the projectile flew through them. bombard same: impact burst follows the]
+echo [  orbital flight path's terminus.]
+echo.
+echo [  --- Slice H + sphere ---]
+echo [  firebomb: TWO omni-directional expanding particle shells appear at the]
+echo [  impact point. Color should match the authored orange (1, .5, .1) and stay]
+echo [  warm through the lifetime, not drift to brown. Shell should be a 3D]
+echo [  spherical burst -- particles in ALL directions, not just upward (pre-fold]
+echo [  this used the warm-biased SpawnSpark). bombard sphere similar.]
+echo.
+echo [Things that CAN'T be tested headlessly (the test list above + your eyes):]
+echo [  - Color preservation across full lifetime (60+ frames)]
+echo [  - Spatial accuracy of bone-anchored emitters as the caster moves]
+echo [  - Timing of waitfor's resume vs trackball arrival visual match]
+echo [  - Sphere's omni-directionality vs Y-fountain bias]
+echo.
+echo [Audit CLI receipt before launch (should print 56/0/5):]
+"%TOOL%" spells visual-audit "%DS1%\Resources\Logic.dsres" 2^>^&1 ^| findstr /C:"COVERED" /C:"PARTIAL" /C:"UNCOVERED" /C:"MISS"
+echo.
+set SIEGEFX_DEBUG_SPELLS=fireball,apprentice_zap,dragon_fire,death_blast,spark,firebomb,bombard,starburst,fire_pillar,healing_wind
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_DEBUG_SPELLS=
