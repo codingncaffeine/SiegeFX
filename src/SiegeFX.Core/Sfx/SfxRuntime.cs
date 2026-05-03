@@ -472,14 +472,19 @@ public sealed class SfxRuntime
                     // audio into the VM this becomes a real dispatch.
                     break;
                 case StatementKind.SfxAttach:
+                    ExecAttach(rs, stmt);
+                    break;
                 case StatementKind.SfxOffset:
+                    ExecOffset(rs, stmt);
+                    break;
                 case StatementKind.SfxRat:
+                    ExecRat(rs, stmt);
+                    break;
+                case StatementKind.SfxDirection:
+                    ExecDirection(rs, stmt);
+                    break;
                 case StatementKind.Raw:
                     LogUnhandledOnce(stmt.Verb);
-                    // Some of these (sfx attach $h #POP) reference the stack —
-                    // best-effort consume so subsequent #POPs target the right
-                    // slot. Cheap and forgiving; the worst case is a stale
-                    // handle reference no one looks at.
                     ConsumeStackOperand(rs, stmt.Tokens);
                     break;
             }
@@ -738,6 +743,9 @@ public sealed class SfxRuntime
                     TargetMotionId = h.MotionId,
                     SelfMotionId   = h.MotionId,
                     Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                    SelfName = stmt.Tokens.Count > 0 && stmt.Tokens[0].StartsWith("$")
+                        ? stmt.Tokens[0]
+                        : null,
                 });
                 break;
             }
@@ -750,6 +758,9 @@ public sealed class SfxRuntime
                     Scale    = h.Scale,
                     Rate     = h.Rate,
                     TargetMotionId = h.TargetMotionId,
+                    SelfName = stmt.Tokens.Count > 0 && stmt.Tokens[0].StartsWith("$")
+                        ? stmt.Tokens[0]
+                        : null,
                 });
                 break;
         }
@@ -861,6 +872,185 @@ public sealed class SfxRuntime
 
         StoreMutatedHandle(rs, stmt.Tokens[0], h);
     }
+
+    // Phase 21-SC-SPELL-VISUAL-E — additional sfx_script verbs that previously
+    // logged as `unhandled verb`. Implementing them turns ~30 PARTIAL spells
+    // from "fires the right primitives at the wrong location" into "fires at
+    // the location DS1 authored." The underlying infrastructure (motion
+    // handles, named handle dict, persistent emitters with TargetMotionId)
+    // is already in place; these methods just route the verb's mutation onto
+    // it.
+
+    void ExecAttach(RunningScript rs, SfxStatement stmt)
+    {
+        // `sfx attach <parent> <child>` — pin <child>'s emitter so its live
+        // Position is driven by <parent>'s motion handle each tick. Different
+        // from `sfx target` (which mutates a handle's far-end) by argument
+        // order: target's <handle> is the source/owner; attach's <child> is
+        // the dependent. fireball_base ships the redundant pair
+        //     sfx target $fire $trackball
+        //     sfx attach $trackball $fire
+        // so failing the verb leaves a duplicate-but-harmless wire-up in
+        // place. Other scripts use attach as the SOLE wire, so dropping it
+        // strands the child at #SOURCE.
+        if (stmt.Tokens.Count < 2) return;
+        if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var parent)) return;
+        if (parent.MotionId <= 0) return; // attach to non-motion is a no-op
+
+        // Mutate the named child handle so any not-yet-started emitter picks
+        // up the new TargetMotionId on its eventual `sfx start`.
+        var childTok = stmt.Tokens[1];
+        if (childTok.StartsWith("$") &&
+            rs.NamedHandles.TryGetValue(childTok, out var child))
+        {
+            child.TargetMotionId = parent.MotionId;
+            rs.NamedHandles[childTok] = child;
+        }
+
+        // Re-target any already-started persistent emitter whose SelfName
+        // matches the child token. Covers the fireball_base ordering where
+        // `sfx start $fire` precedes `sfx attach $trackball $fire`.
+        for (int i = 0; i < _emitters.Count; i++)
+        {
+            if (_emitters[i].SelfName == childTok)
+            {
+                var e = _emitters[i];
+                e.TargetMotionId = parent.MotionId;
+                _emitters[i] = e;
+            }
+        }
+    }
+
+    void ExecRat(RunningScript rs, SfxStatement stmt)
+    {
+        // `sfx rat <handle>` — random angle theta. DS1 uses this as a per-
+        // emitter rotation jitter so stacked emitters at the same anchor
+        // (fireball's three layered fire creates) don't render as a single
+        // axis-aligned plume. Concrete effect: roll a uniform Y-rotation
+        // and apply to the handle's OtherEnd around Anchor, plus stash
+        // it on OrbitPhi so orbiter handles get a randomized starting
+        // azimuth instead of always firing east.
+        if (stmt.Tokens.Count == 0) return;
+        if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h)) return;
+
+        float angle = (float)Random.Shared.NextDouble() * MathF.Tau;
+        // Rotate (OtherEnd - Anchor) around Y by `angle` and write back.
+        var rel = h.OtherEnd - h.Anchor;
+        float c = MathF.Cos(angle), s = MathF.Sin(angle);
+        h.OtherEnd = h.Anchor + new Vector3(rel.X * c - rel.Z * s, rel.Y, rel.X * s + rel.Z * c);
+        h.OrbitPhi = (h.OrbitPhi + angle) % MathF.Tau;
+        // For motion handles, also rotate the live MotionState.Phi so the
+        // orbiter actually starts at the randomized azimuth this tick.
+        if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+        {
+            motion.Phi = h.OrbitPhi;
+            _motionHandles[h.MotionId] = motion;
+        }
+        StoreMutatedHandle(rs, stmt.Tokens[0], h);
+    }
+
+    void ExecOffset(RunningScript rs, SfxStatement stmt)
+    {
+        // `sfx offset_bone <handle> <[x,y,z]> <source|target>` — re-anchor
+        // a handle to a point near the resolved bone position with a per-
+        // axis offset. The DS1 grammar uses the literal `[0]` (one-element
+        // bracket) to mean "zero offset" — i.e. plain re-anchor without
+        // displacement; that's how fireball_base "adds variance" by pairing
+        // it with a prior `sfx rat`. Multi-component literals like
+        // `[0,1,0]` apply a real offset.
+        if (stmt.Tokens.Count < 3) return;
+        if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h)) return;
+
+        var offsetTok = stmt.Tokens[1];
+        var trailing  = stmt.Tokens[stmt.Tokens.Count - 1];
+
+        Vector3 baseAnchor = trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase)
+            ? rs.Ctx.SourcePos
+            : rs.Ctx.TargetPos;
+        Vector3 offset = ParseOffsetLiteral(offsetTok);
+        var resolved = baseAnchor + offset;
+
+        h.OtherEnd = resolved;
+        // For motion-backed handles (trackball aim-point), updating
+        // MotionState.Target is the equivalent of sfx position_at's Position
+        // mutation but for the destination, not the start point.
+        if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+        {
+            motion.Target = resolved;
+            _motionHandles[h.MotionId] = motion;
+        }
+        StoreMutatedHandle(rs, stmt.Tokens[0], h);
+    }
+
+    void ExecDirection(RunningScript rs, SfxStatement stmt)
+    {
+        // `sfx direction <handle> <where>` — set the handle's aim vector. For
+        // primitives that read a directional field (fireb's velocity cone,
+        // sray's emit ray) this turns "default forward" into "toward the
+        // resolved position." When the renderer ignores VelocityVec (Fire/
+        // Smoke), the field is harmlessly stashed.
+        if (stmt.Tokens.Count < 2) return;
+        if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h)) return;
+
+        Vector3 to;
+        var whereTok = stmt.Tokens[1];
+        if (whereTok.StartsWith("$") && rs.NamedHandles.TryGetValue(whereTok, out var named))
+            to = named.Anchor;
+        else if (string.Equals(whereTok, "#POP", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(whereTok, "#PEEK", StringComparison.OrdinalIgnoreCase))
+        {
+            bool pop = string.Equals(whereTok, "#POP", StringComparison.OrdinalIgnoreCase);
+            if (rs.Stack.Count == 0) return;
+            var stk = pop ? rs.Stack.Pop() : rs.Stack.Peek();
+            to = stk.Anchor;
+        }
+        else
+            to = ResolveAnchor(whereTok, rs.Ctx);
+
+        var dir = to - h.Anchor;
+        float lenSq = dir.LengthSquared();
+        if (lenSq > 1e-6f)
+        {
+            dir /= MathF.Sqrt(lenSq);
+            // Preserve magnitude when caller already authored a velocity
+            // (fireb scripts ship velocity(0,0,N) and want the direction
+            // override to keep the speed); otherwise default to 10 u/s
+            // matching SpawnFireb's fallback.
+            float mag = h.VelocityVec.Length();
+            if (mag < 0.01f) mag = 10.0f;
+            h.VelocityVec = dir * mag;
+        }
+        StoreMutatedHandle(rs, stmt.Tokens[0], h);
+    }
+
+    static Vector3 ParseOffsetLiteral(string tok)
+    {
+        // `[0]`, `[0,0,0]`, `[1.5,0,2]` — strip brackets, split on commas.
+        // `[0]` (single-element) reads as zero offset, which matches DS1
+        // author intent (a no-displacement marker sitting next to the real
+        // randomization in `sfx rat`).
+        if (tok.Length < 2 || tok[0] != '[' || tok[tok.Length - 1] != ']')
+            return Vector3.Zero;
+        var inner = tok.Substring(1, tok.Length - 2);
+        var parts = inner.Split(',', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            // `[N]` = scalar zero pad. Even non-zero scalars read as a no-op
+            // because DS1 hasn't authored a meaningful single-axis convention
+            // here.
+            return Vector3.Zero;
+        }
+        if (parts.Length >= 3)
+        {
+            return new Vector3(
+                ParseF(parts[0]), ParseF(parts[1]), ParseF(parts[2]));
+        }
+        return Vector3.Zero;
+    }
+
+    static float ParseF(string s)
+        => float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+            ? v : 0f;
 
     void ExecSet(RunningScript rs, SfxStatement stmt)
     {
@@ -1389,6 +1579,11 @@ public sealed class SfxRuntime
         public int     SelfMotionId;
         public float   AgeSec;        // time since spawn — for `dur` expiry
         public float   Duration;      // 0 = never expire
+        // Phase 21-SC-SPELL-VISUAL-E — `$name` of the originating handle when
+        // the script bound one with `set $h #POP`. Lets `sfx attach $parent
+        // $child` re-target an already-started child by matching this string.
+        // null when the operand was anonymous (#POP without a `set $name`).
+        public string? SelfName;
     }
 
     /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion state for

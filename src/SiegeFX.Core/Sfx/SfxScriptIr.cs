@@ -38,8 +38,12 @@ public enum StatementKind
     /// <summary>sfx offset &lt;handle-token&gt; v&lt;x y z&gt; &lt;source/target&gt;</summary>
     SfxOffset,
 
-    /// <summary>sfx rat &lt;handle-token&gt; — rotate around target</summary>
+    /// <summary>sfx rat &lt;handle-token&gt; — random angle theta (rotation jitter)</summary>
     SfxRat,
+
+    /// <summary>sfx direction &lt;handle-token&gt; &lt;where&gt; — aim vector toward
+    /// the resolved position (Phase 21-SC-SPELL-VISUAL-E).</summary>
+    SfxDirection,
 
     /// <summary>sfx friendly target &lt;handle&gt;</summary>
     SfxFriendlyTarget,

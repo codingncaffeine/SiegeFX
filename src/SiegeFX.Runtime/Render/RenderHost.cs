@@ -201,23 +201,6 @@ public sealed class RenderHost : IDisposable
         public float Remaining;
         public float Total;
     }
-    // Phase 17b — short-lived projectile glyph traveling source→target. Pure
-    // Phase 21-SC-SPELL-VFX retired the screen-space _spellBolts trail; the
-    // primary cast visual is now a 3D world-space beam or projectile from the
-    // ParticleSystem (see SpawnSpellVisual). _spellImpacts stays as the
-    // screen-space "compass-dot" flash at the impact point — cheap, always
-    // visible regardless of camera angle, and complements the 3D burst with
-    // a bright HUD-space punctuation.
-    private readonly List<SpellImpact> _spellImpacts = new();
-    private const float SpellImpactDuration = 0.25f;
-    private sealed class SpellImpact
-    {
-        public Vector3 Position;
-        public Vector4 Color;
-        public float Delay;     // ticks down first; impact dormant until 0
-        public float Remaining; // then ticks down; controls fade + radius
-        public float Total;
-    }
     // Phase 17-SC-B — element → projectile/impact tint. DS1 ships per-spell
     // sfx_scripts (call_sfx_script("fireball") etc.) that pick the actual
     // particle system; until the script runtime lands we lean on the name
@@ -7359,16 +7342,6 @@ void main()
         // run continuous-emitter spawn budgets. Must run after the particle
         // Tick so this frame's spawns get drawn rather than waiting one tick.
         _sfxRuntime?.Tick((float)dt);
-        // Phase 17-SC-B — impact flashes: dwell on Delay until the bolt
-        // arrives, then count down Remaining to drive the expanding-ring
-        // animation. Reverse-iterate for in-place compaction on expiry.
-        for (int i = _spellImpacts.Count - 1; i >= 0; i--)
-        {
-            var im = _spellImpacts[i];
-            if (im.Delay > 0f) { im.Delay -= (float)dt; continue; }
-            im.Remaining -= (float)dt;
-            if (im.Remaining <= 0f) _spellImpacts.RemoveAt(i);
-        }
         // Phase 9-SC-9 — advance toss arcs on freshly-dropped piles. Linear
         // XZ lerp from feet to target with a parabolic Y arc (0 → ArcHeight
         // at midpoint → 0 at landing). Once Elapsed reaches Duration the
@@ -8316,31 +8289,6 @@ void main()
                     // viii-d wooden-card scaffold so the creator stays
                     // usable rather than presenting an empty screen.
                     _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
-                }
-            }
-            // Phase 17-SC-B — impact rings. Four compass dots expanding from
-            // the target position with linearly fading alpha. Active only
-            // after Delay drains, i.e. the moment the bolt would have hit.
-            if (_spellImpacts.Count > 0 && _barRenderer is not null)
-            {
-                foreach (var im in _spellImpacts)
-                {
-                    if (im.Delay > 0f) continue;
-                    float t = 1f - (im.Remaining / MathF.Max(0.0001f, im.Total));
-                    if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
-                    var clip = Vector4.Transform(new Vector4(im.Position, 1f), vp);
-                    if (clip.W <= 0.001f) continue;
-                    float ndcXX = clip.X / clip.W;
-                    float ndcYY = clip.Y / clip.W;
-                    int sx = (int)((ndcXX * 0.5f + 0.5f) * size.X);
-                    int sy = (int)((1f - (ndcYY * 0.5f + 0.5f)) * size.Y);
-                    int radius = 4 + (int)(t * 28f);
-                    int sz = 6;
-                    var c = im.Color; c.W *= 1f - t;
-                    _barRenderer.DrawRect(size.X, size.Y, sx - radius - sz / 2, sy - sz / 2, sz, sz, c);
-                    _barRenderer.DrawRect(size.X, size.Y, sx + radius - sz / 2, sy - sz / 2, sz, sz, c);
-                    _barRenderer.DrawRect(size.X, size.Y, sx - sz / 2, sy - radius - sz / 2, sz, sz, c);
-                    _barRenderer.DrawRect(size.X, size.Y, sx - sz / 2, sy + radius - sz / 2, sz, sz, c);
                 }
             }
             // Phase 20c — quest goal marker. Picks the first active quest with
