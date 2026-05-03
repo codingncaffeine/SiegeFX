@@ -6350,7 +6350,17 @@ void main()
         _cursorTexturesAttempted = true;
         _cursorPointer    = TryGetGuiTexture("b_gui_c_pointer");
         _cursorAttack     = TryGetGuiTexture("b_gui_c_attack1");
-        _cursorCastAttack = TryGetGuiTexture("b_gui_c_magic3");
+        // Phase 21-SC-BARREL-FOLD — DS1's b_gui_c_magic3 is authored as
+        // a red sword overlaid with a blue magic glow ("magic strike on
+        // enemy"); reads visually as two-icons-stacked because it
+        // composes both the melee (red sword) AND magic (blue glow)
+        // signals into one sprite. Per the user's eyes-on, the cleaner
+        // read is "red = melee, blue = magic" with no overlap; using
+        // b_gui_c_magic2 (the cast-on-terrain glow without the sword)
+        // for spell-mode enemy hover gives that clean split. Falls back
+        // to magic3 then attack/pointer if magic2.raw is missing.
+        _cursorCastAttack = TryGetGuiTexture("b_gui_c_magic2")
+                         ?? TryGetGuiTexture("b_gui_c_magic3");
         _cursorTalk       = TryGetGuiTexture("b_gui_c_talk");
         _cursorSmash      = LoadFlmFrames("b_gui_c_smash1.flm");
         _cursorGrab       = LoadFlmFrames("b_gui_c_grab1.flm");
