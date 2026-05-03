@@ -7469,6 +7469,32 @@ void main()
         }
         _audio.SetAmbientBed(mood.AmbientTrack);
         Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' → '{mood.AmbientTrack}'");
+        // Phase 22-SC-MUSIC-C — also kick the mood's music track. DS1
+        // moods author standard_track + battle_track alongside the
+        // ambient bed; standard is the looping region music, battle
+        // takes over during combat (SC-MUSIC-D scope). Strip the s_m_
+        // prefix because PlayMusicTrack adds it back; tracks ship
+        // mixed-case in the moods (s_m_Farmhouse_02) but the mp3 files
+        // on disc are lowercase, and TankReader is case-insensitive so
+        // either works.
+        ApplyMoodMusic(mood);
+    }
+
+    /// <summary>Phase 22-SC-MUSIC-C — translate a mood's
+    /// <see cref="SiegeFX.Core.Assets.MoodSetting.StandardTrack"/> into a
+    /// <see cref="PlayMusicTrack"/> call. Empty StandardTrack leaves
+    /// the active music alone (some moods only carry an ambient bed
+    /// and inherit music from the previous mood — DS1's transition
+    /// behavior). Pulled out of <see cref="ApplyAmbientForRegion"/> so
+    /// the same logic can be reused if a future trigger-driven mood
+    /// change wants to swap music without re-applying the bed.</summary>
+    private void ApplyMoodMusic(SiegeFX.Core.Assets.MoodSetting mood)
+    {
+        if (string.IsNullOrEmpty(mood.StandardTrack)) return;
+        var basename = mood.StandardTrack;
+        if (basename.StartsWith("s_m_", StringComparison.OrdinalIgnoreCase))
+            basename = basename.Substring(4);
+        PlayMusicTrack(basename);
     }
 
     /// <summary>Phase 17-SC-H-DBG — step the Primary slot through every
