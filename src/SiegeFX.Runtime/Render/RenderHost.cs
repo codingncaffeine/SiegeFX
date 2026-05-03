@@ -4118,13 +4118,17 @@ void main()
         var section = _templateStore.GetSection(template, "physics", "break_particulate");
         if (section is null) return;
 
-        // Per-shatter rng seeded off prop position so the burst is
-        // reproducible for a given placement (helps when comparing visual
-        // tweaks across runs without RNG-noise drift).
+        // Per-shatter rng seeded off prop position + template name so two
+        // stacked barrels (same X,Z, different Y, or two different templates
+        // sharing the same X,Z) don't burst identical patterns from the same
+        // point. Phase 21-SC-BARREL-FOLD widens a Y-collision-prone (X,Z)
+        // hash to (X,Y,Z, templateNameHash).
         var origin = prop.World.Translation;
         int seed = unchecked(
-            BitConverter.SingleToInt32Bits(origin.X) * 397 ^
-            BitConverter.SingleToInt32Bits(origin.Z));
+            BitConverter.SingleToInt32Bits(origin.X) * 73856093 ^
+            BitConverter.SingleToInt32Bits(origin.Y) * 83492791 ^
+            BitConverter.SingleToInt32Bits(origin.Z) * 19349663 ^
+            (prop.Template?.GetHashCode() ?? 0));
         var rng = new Random(seed);
 
         int spawned = 0;
@@ -7659,10 +7663,25 @@ void main()
             Console.WriteLine($"  loot: {actor.Template.Name} dropped nothing this kill");
             return;
         }
+        // Phase 21-SC-BARREL-FOLD — split gold from items so [gold*] entries
+        // (krug.gas / heroes.gas top-level + the regional barrel templates)
+        // credit gold + show "+N gold" instead of landing in inventory as a
+        // ghost "12-15" template. Pre-fold this logic only existed on the
+        // prop-shatter path; without it actor-death gold buckets would
+        // resolve into inventory once FromTemplate started accepting them.
+        var (items, goldTotal) = SplitGoldFromDrops(drops, rng);
         var parts = new List<string>(drops.Count);
-        foreach (var d in drops)
+        if (goldTotal > 0) parts.Add($"{goldTotal} gold");
+        foreach (var d in items)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
+        if (goldTotal > 0)
+        {
+            _progression?.CreditGold(goldTotal);
+            AddFloatingText($"+{goldTotal} gold", deathPos + new Vector3(0f, 1.6f, 0f),
+                            new Vector4(1.00f, 0.92f, 0.40f, 1f));
+        }
+        if (items.Count == 0) return;
         // Phase 9-SC-9 — enemy drops get the same toss arc as PC drops so
         // the kill→loot moment reads as "items flew off the body" instead of
         // "cube appeared." Random horizontal angle keeps repeated kills from
@@ -7677,7 +7696,7 @@ void main()
         // the body. DS1 enemies drop loot in a tight scatter, not flung
         // 1.4u out. Was 1.4f.
         var dropTarget = deathPos + new Vector3(dropDir.X * 0.6f, 0f, dropDir.Y * 0.6f);
-        var deathPile = new LootPile(deathPos, new List<SiegeFX.Core.Actors.LootEntry>(drops))
+        var deathPile = new LootPile(deathPos, items)
         {
             Throw = new LootThrow
             {
@@ -7692,12 +7711,37 @@ void main()
         };
         // Phase 9-SC-10 — first resolvable item drives the pile's rest pitch
         // (shields lie flat on the ground, weapons stay upright).
-        foreach (var d in drops)
+        foreach (var d in items)
         {
             var pitch = ComputeLootRestPitch(d.Reference);
             if (pitch != 0f) { deathPile.RestPitch = pitch; break; }
         }
         _lootPiles.Add(deathPile);
+    }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — extracted helper. Walks the drop
+    /// list, sums gold (resolving each entry's min-max range against the
+    /// supplied RNG), and returns the non-gold items as a fresh list. Both
+    /// LogLootDrop (actor death) and LogPropLootDrop (prop shatter) need
+    /// this split or the synthetic gold entries land in inventory.</summary>
+    private static (List<SiegeFX.Core.Actors.LootEntry> Items, long GoldTotal)
+        SplitGoldFromDrops(IReadOnlyList<SiegeFX.Core.Actors.LootEntry> drops, Random rng)
+    {
+        var items = new List<SiegeFX.Core.Actors.LootEntry>(drops.Count);
+        long goldTotal = 0;
+        foreach (var d in drops)
+        {
+            if (d.IsGold)
+            {
+                var (lo, hi) = d.GoldRange();
+                goldTotal += hi > lo ? rng.Next(lo, hi + 1) : Math.Max(0, lo);
+            }
+            else
+            {
+                items.Add(d);
+            }
+        }
+        return (items, goldTotal);
     }
 
     /// <summary>Phase 21-SC-BARREL-D — roll a shattered breakable's
@@ -7719,9 +7763,13 @@ void main()
         if (table.IsEmpty) return;
 
         var origin = prop.World.Translation;
+        // Phase 21-SC-BARREL-FOLD — same seed widening as SpawnPropDebris:
+        // include Y + template name so stacked barrels roll different loot.
         int seed = unchecked(
             BitConverter.SingleToInt32Bits(origin.X) * 73856093 ^
-            BitConverter.SingleToInt32Bits(origin.Z) * 19349663);
+            BitConverter.SingleToInt32Bits(origin.Y) * 83492791 ^
+            BitConverter.SingleToInt32Bits(origin.Z) * 19349663 ^
+            (prop.Template?.GetHashCode() ?? 0));
         var rng = new Random(seed);
         var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
         if (drops.Count == 0)
@@ -7730,20 +7778,7 @@ void main()
             return;
         }
 
-        var items = new List<SiegeFX.Core.Actors.LootEntry>(drops.Count);
-        long goldTotal = 0;
-        foreach (var d in drops)
-        {
-            if (d.IsGold)
-            {
-                var (lo, hi) = d.GoldRange();
-                goldTotal += hi > lo ? rng.Next(lo, hi + 1) : Math.Max(0, lo);
-            }
-            else
-            {
-                items.Add(d);
-            }
-        }
+        var (items, goldTotal) = SplitGoldFromDrops(drops, rng);
         var parts = new List<string>(drops.Count);
         if (goldTotal > 0) parts.Add($"{goldTotal} gold");
         foreach (var d in items)
@@ -9691,6 +9726,26 @@ void main()
         _mesh?.Dispose();
         _lootCube?.Dispose();
         _grid?.Dispose();
+        // Phase 21-SC-BARREL-FOLD — release sprite cursor textures and
+        // restore the OS pointer. Without restoring CursorMode here, an
+        // abnormal shutdown leaves the OS cursor permanently hidden in
+        // any reentrant tooling that re-uses the IInputContext.
+        _cursorPointer?.Dispose();
+        _cursorAttack?.Dispose();
+        _cursorTalk?.Dispose();
+        if (_cursorSmash is not null) foreach (var t in _cursorSmash) t.Dispose();
+        if (_cursorGrab  is not null) foreach (var t in _cursorGrab)  t.Dispose();
+        if (_osCursorHidden && _input is not null && _input.Mice.Count > 0)
+        {
+            try { _input.Mice[0].Cursor.CursorMode = CursorMode.Normal; }
+            catch { /* input layer may already be down */ }
+        }
+        // Phase 21-SC-BARREL-FOLD — frag debris held references into
+        // _propGlMeshCache, which the loop above just disposed. Clear the
+        // dangling refs here so any stray draw call after teardown is a
+        // no-op rather than a use-after-dispose on a freed GL handle.
+        _fragDebris.Clear();
+        _fragAssets.Clear();
         _textRenderer?.Dispose();
         _barRenderer?.Dispose();
         _iconRenderer?.Dispose();

@@ -95,7 +95,13 @@ public sealed class LootTable
 
         foreach (var bucket in pcontent.Children)
         {
-            if (!IsOneof(bucket.Header)) continue;
+            // Phase 21-SC-BARREL-FOLD — krug.gas + heroes.gas put [gold*]
+            // directly under [pcontent] (no enclosing [oneof*]). Without
+            // accepting Gold here those gold drops were silently dropped
+            // on the floor. [all*] is still pre-existing-unsupported (see
+            // splinter SC-LOOT-ALL); accepting it would over-emit since
+            // ParseBucket reads it as a oneof — separate slice.
+            if (!IsOneof(bucket.Header) && !IsGold(bucket.Header)) continue;
             var parsed = ParseBucket(bucket);
             if (parsed is null) continue;
             if (IsEquippedBucket(parsed)) equipped.Add(parsed);
