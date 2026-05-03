@@ -147,6 +147,15 @@ public sealed class Actor
     /// truncated DS1's 0.83s fs1 swing by ~27%).</summary>
     public float PrepNextSwingClip()
     {
+        // Pad the swing-clip duration to give the post-swing pose a beat
+        // before the override expires. NPC brains pass SwingPeriod * 0.85
+        // (≈1.28s for SwingPeriod=1.5) for the same reason — without the
+        // pad the clip plays in 0.83s and snaps straight back to idle,
+        // which reads as "sped up" because there's no follow-through.
+        // 1.5x matches the NPC cadence on a 0.83s clip (0.83 * 1.5 ≈ 1.25)
+        // and lets the per-actor advance loop hold the final frame via
+        // its non-dead end-hold path while the override drains.
+        const float RecoveryPadding = 1.5f;
         int idx = GetClipIndex("chore_attack");
         if (idx < 0) return 0.6f;
         var variants = AttackVariants;
@@ -155,9 +164,9 @@ public sealed class Actor
             var pick = variants[SwingIndex % variants.Length];
             SwingIndex++;
             Clips[idx] = pick;
-            return pick.AnimLength > 0f ? pick.AnimLength : 0.6f;
+            return (pick.AnimLength > 0f ? pick.AnimLength : 0.6f) * RecoveryPadding;
         }
         var current = Clips[idx];
-        return current.AnimLength > 0f ? current.AnimLength : 0.6f;
+        return (current.AnimLength > 0f ? current.AnimLength : 0.6f) * RecoveryPadding;
     }
 }

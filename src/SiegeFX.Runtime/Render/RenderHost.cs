@@ -4928,6 +4928,20 @@ void main()
                             float endHold = clip.AnimLength - 0.01f;
                             if (s.AnimTime < endHold) s.AnimTime = Math.Min(s.AnimTime + dt, endHold);
                         }
+                        else if (s.Actor.Host.IsOverrideActive)
+                        {
+                            // Phase 21-SC-BARREL-FOLD — chore overrides
+                            // (chore_attack, chore_magic, etc.) get the
+                            // same end-hold treatment dead actors do.
+                            // PrepNextSwingClip pads override duration past
+                            // the clip's natural length so there's a beat
+                            // of follow-through; without the clamp the clip
+                            // would wrap and replay during that pad window,
+                            // which reads as a glitchy "swinging-twice"
+                            // visual.
+                            float endHold = clip.AnimLength - 0.01f;
+                            if (s.AnimTime < endHold) s.AnimTime = Math.Min(s.AnimTime + dt, endHold);
+                        }
                         else
                         {
                             s.AnimTime += dt;
