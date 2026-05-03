@@ -5984,7 +5984,20 @@ void main()
     // (hero baseline ships AttackRange=0.5u which is wrist-length, too tight
     // to land a swing on a 1.8u-radius krug bubble). 2u mirrors ActorBrain's
     // mob fallback.
-    private const float MeleeReachFallback = 2f;
+    // Phase 21-SC-BARREL-FOLD — bumped 2 → 2.5. Combined with the 0.95x
+    // standoff in ComputeApproachPoint that puts the hero ~2.4u from the
+    // target's center on approach, leaving ~1.4u of clearance from a
+    // 1u-radius krug body (and proportionately more from a 0.5u-radius
+    // barrel) — DS1's "stand close to but not on top of" feel.
+    private const float MeleeReachFallback = 2.5f;
+    // Phase 21-SC-BARREL-FOLD — was 0.1f. HeroBaselineStats authors a
+    // 0.5u AttackRange (wrist length, intentional for bare-fist attacks)
+    // which the old 0.1 gate accepted as the player's real reach — net
+    // effect was the hero stopping 0.475u from any target's center, deep
+    // inside the body. 1.5u threshold means anything below "weapon-tip
+    // reach" falls back to MeleeReachFallback; only authored long-reach
+    // weapons (polearms, two-handers) override it.
+    private const float MeleeReachAttackRangeThreshold = 1.5f;
     // Phase 12-SC-1 — once latched, abandon the walk-up if the target wandered
     // farther than this. Bigger than reach so a moving krug doesn't break the
     // chase mid-stride; smaller than aggro so we don't track across the map.
@@ -6005,7 +6018,7 @@ void main()
         Strength: 10f, Dexterity: 10f, Intelligence: 10f);
 
     static float PlayerMeleeReach(SiegeFX.Core.Actors.ActorStats attacker) =>
-        attacker.AttackRange > 0.1f ? attacker.AttackRange : MeleeReachFallback;
+        attacker.AttackRange > MeleeReachAttackRangeThreshold ? attacker.AttackRange : MeleeReachFallback;
 
     private void TryClickToAttack(Vector2 cursorPx)
     {
