@@ -37,6 +37,7 @@ try
         "mood"      => DispatchMood(args[1..]),
         "ui"        => DispatchUi(args[1..]),
         "flm"       => DispatchFlm(args[1..]),
+        "music"     => DispatchMusic(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -6355,6 +6356,106 @@ static int CmdFlmDump(string[] a)
         SiegeFX.Core.IO.Png.EncodeRgba(fs, frames[i], sz, sz);
         Console.WriteLine($"  frame {i,2}: {path}");
     }
+    return 0;
+}
+
+static int DispatchMusic(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx music <list|play> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "list" => CmdMusicList(a[1..]),
+        "play" => CmdMusicPlay(a[1..]),
+        _      => UnknownCommand("music " + a[0]),
+    };
+}
+
+// Phase 22-SC-MUSIC-A — list every mp3 under /sound/music/ in a given
+// sound tank. Surfaces the 131 shipped DS1 music tracks + their byte
+// sizes so the resolver wiring (slices C+D) has a concrete inventory.
+static int CmdMusicList(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx music list <Sound.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    long total = 0; int count = 0;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.StartsWith("/sound/music/", StringComparison.OrdinalIgnoreCase)) continue;
+        if (!path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase)) continue;
+        if (!reader.TryGetFile(path, out var entry)) continue;
+        Console.WriteLine($"  {entry.Size,10:N0}  {path}");
+        total += entry.Size;
+        count++;
+    }
+    Console.WriteLine($"  ----");
+    Console.WriteLine($"  {count} tracks, {total:N0} bytes total");
+    return 0;
+}
+
+// Phase 22-SC-MUSIC-A — extract a track from the sound tank, hand it to
+// MusicPlayer, and pump Tick() on a 60Hz timer until the track ends.
+// Headless verifier — confirms decoder + OpenAL streaming work without
+// the renderer / window stack.
+static int CmdMusicPlay(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx music play <Sound.dsres> <track-basename> [--seconds=N]");
+        Console.Error.WriteLine("  track basename omits the leading 's_m_' and trailing '.mp3'");
+        Console.Error.WriteLine("  e.g. siegefx music play Sound.dsres maintheme");
+        return 1;
+    }
+    int maxSeconds = 0;
+    for (int i = 2; i < a.Length; i++)
+    {
+        const string p = "--seconds=";
+        if (a[i].StartsWith(p) && int.TryParse(a[i][p.Length..], out var n)) maxSeconds = n;
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var basename = a[1].StartsWith("s_m_", StringComparison.OrdinalIgnoreCase) ? a[1] : "s_m_" + a[1];
+    if (!basename.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase)) basename += ".mp3";
+    var path = "/sound/music/" + basename;
+    if (!reader.TryGetFile(path, out _))
+    {
+        Console.Error.WriteLine($"track not found: {path}");
+        return 2;
+    }
+    var bytes = reader.ExtractToMemory(path);
+    Console.WriteLine($"  loaded {path} ({bytes.Length:N0} bytes)");
+
+    var engine = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
+    if (engine is null)
+    {
+        Console.Error.WriteLine("AudioEngine.TryCreate failed — no audio device?");
+        return 3;
+    }
+    using var music = SiegeFX.Runtime.Audio.MusicPlayer.TryCreate(engine);
+    if (music is null)
+    {
+        Console.Error.WriteLine("MusicPlayer.TryCreate failed");
+        engine.Dispose();
+        return 4;
+    }
+    if (!music.Play(bytes))
+    {
+        Console.Error.WriteLine("MusicPlayer.Play returned false (decoder failure)");
+        return 5;
+    }
+    Console.WriteLine($"  playing — Ctrl+C or wait{(maxSeconds > 0 ? $" {maxSeconds}s" : " for end")}");
+
+    var started = DateTime.UtcNow;
+    while (music.Tick())
+    {
+        Thread.Sleep(16); // ~60Hz pump
+        if (maxSeconds > 0 && (DateTime.UtcNow - started).TotalSeconds >= maxSeconds) break;
+    }
+    music.Stop();
+    engine.Dispose();
+    Console.WriteLine($"  done after {(DateTime.UtcNow - started).TotalSeconds:F1}s");
     return 0;
 }
 

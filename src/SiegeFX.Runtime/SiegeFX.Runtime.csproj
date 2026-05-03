@@ -5,6 +5,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="NLayer" Version="1.16.0" />
     <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
     <PackageReference Include="Silk.NET.OpenAL" Version="2.23.0" />

@@ -132,6 +132,15 @@ public sealed unsafe class AudioEngine : IDisposable
         }
     }
 
+    /// <summary>Phase 22-SC-MUSIC-A — share the OpenAL handle with
+    /// MusicPlayer. Both the SFX and music paths play through the same
+    /// device + context (one process can only hold one current OpenAL
+    /// context at a time anyway), so MusicPlayer constructs sources +
+    /// buffers via this AL handle and lives alongside the SFX pool.
+    /// Internal scope so external callers don't take a dependency on
+    /// the AL handle directly.</summary>
+    internal AL? GetAl() => _disposed ? null : _al;
+
     /// <summary>Decode a WAV byte array, upload to a buffer, and key it by
     /// <paramref name="id"/>. Subsequent calls with the same id replace the
     /// previous buffer. Returns false (and logs) on any failure so the

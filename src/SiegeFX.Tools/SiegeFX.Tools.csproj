@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
+    <ProjectReference Include="..\SiegeFX.Runtime\SiegeFX.Runtime.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
