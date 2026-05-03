@@ -85,6 +85,11 @@ public sealed class SfxRuntime
             // them via `sfx target $emitter $motion` get per-frame
             // position updates from the runtime's motion-handle pump.
             "orbiter", "trackball", "lightsource", "curve",
+            // Phase 21-SC-SPELL-VISUAL-H — sphere primitive (firebomb /
+            // bombard / dave_shield / energy_globe / explosion_volume etc.).
+            // First-pass renders as omni-directional SpawnSpark scaled by
+            // the authored radius.
+            "sphere",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -806,7 +811,13 @@ public sealed class SfxRuntime
                     fadeIn:          h.FadeIn  > 0f ? h.FadeIn  : 0.10f,
                     fadeOut:         h.FadeOut > 0f ? h.FadeOut : 0.30f,
                     duration:        h.Duration > 0.10f ? h.Duration : 1.0f,
-                    texSlot:         11,                             // b_sfx_cyl_03 — most-used; tex-honor in slice H
+                    // Phase 21-SC-SPELL-VISUAL-H — honor the script's
+                    // authored `texture(b_sfx_cyl_NN)` instead of
+                    // hardcoding slot 11. Falls back to b_sfx_cyl_03
+                    // when nothing was authored, matching the pre-H
+                    // default. ~5 cylinder spells ship cyl_01 / cyl_02
+                    // explicitly.
+                    texSlot:         TextureNameToSlot(h.TextureName, 11),
                     segments:        (byte)Math.Min(96, segments));
                 break;
             }
@@ -837,6 +848,28 @@ public sealed class SfxRuntime
                     widthEnd:    we,
                     duration:    h.Duration > 0.05f ? h.Duration : 0.40f,
                     rayCount:    rayCount);
+                break;
+            }
+            case EmitterMode.OneShotSphere:
+            {
+                // Phase 21-SC-SPELL-VISUAL-H — sphere = expanding shell of
+                // particles around the anchor. firebomb_base / bombard_
+                // base ship `scale($scale)` for the authored radius +
+                // `grow_params(start, mid, end)` for the size envelope.
+                // First-pass renders as omni-directional sparks; the
+                // peak radius scales by the grow_params middle so a
+                // grow(.1, 1.5, 3) authored sphere blows out to 1.5x
+                // the base radius mid-life. Honors duration via the
+                // particle lifetime field.
+                float radius = h.Scale > 0.05f ? h.Scale : 1.0f;
+                float life   = h.Duration > 0.05f ? h.Duration : 0.50f;
+                int   count  = h.BurstCount > 0 ? h.BurstCount : 32;
+                _particles.SpawnSpark(
+                    h.Anchor,
+                    h.Color,
+                    radius,
+                    life,
+                    count);
                 break;
             }
             case EmitterMode.Unsupported:
@@ -1723,6 +1756,7 @@ public sealed class SfxRuntime
             case "fireb":     return EmitterMode.Fireb;
             case "cylinder":  return EmitterMode.OneShotCylinder;
             case "sray":      return EmitterMode.OneShotSray;
+            case "sphere":    return EmitterMode.OneShotSphere;
             // Phase 21-SC-SPELL-VFX-3q outliers (1 spell each). Mapped onto
             // existing primitives to clear MISS without the bespoke
             // implementation cost — these are unique to one spell, low
@@ -1764,12 +1798,19 @@ public sealed class SfxRuntime
         "orbiter"            => new Vector4(1f, 1f, 1f, 1f),        // typically invisible(); white if not
         "lightsource"        => new Vector4(1.00f, 0.85f, 0.45f, 1f), // warm glow
         "curve"              => new Vector4(1f, 1f, 1f, 1f),        // motion handle, usually invisible
+        "sphere"             => new Vector4(1.00f, 0.55f, 0.20f, 1f), // typical authored fireball-orange
         _                    => new Vector4(1f, 1f, 1f, 1f),
     };
 
     static void ApplyParamString(ref Handle h, string raw)
     {
         if (string.IsNullOrEmpty(raw)) return;
+
+        // Phase 21-SC-SPELL-VISUAL-H — read authored `texture(NAME)` so
+        // dispatch arms can pick a renderer slot from the actual DS1
+        // texture name instead of falling back to a hardcoded default.
+        if (TryReadIdentifier(raw, "texture", out var texName))
+            h.TextureName = texName;
 
         // Scale knobs — different param names per effect type, all map to
         // our single Scale field.
@@ -1932,6 +1973,68 @@ public sealed class SfxRuntime
             NumberStyles.Float, CultureInfo.InvariantCulture, out value);
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-H — read a single identifier
+    /// (non-numeric) argument from a `keyword(arg)` block. Used for
+    /// `texture(b_sfx_xxx)` where the arg is a path-like name rather
+    /// than a number; TryReadFloat would silently reject it.</summary>
+    static bool TryReadIdentifier(string raw, string keyword, out string value)
+    {
+        value = "";
+        var args = ExtractArgs(raw, keyword);
+        if (args is null || args.Length == 0) return false;
+        var v = args[0].Trim();
+        if (v.Length == 0) return false;
+        value = v;
+        return true;
+    }
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-H — DS1 texture name to renderer
+    /// slot. The renderer pre-loads the most-referenced textures into
+    /// fixed slots (see ParticleSystem.LoadTextures); this maps the
+    /// authored `texture(NAME)` value to one of those, with sensible
+    /// family fallbacks (any sparkle-class name → slot 2, any cyl-class
+    /// → 9/10/11, etc.). Returns the supplied default when the name
+    /// is unrecognized so dispatch arms still pick a usable slot.</summary>
+    public static byte TextureNameToSlot(string? name, byte fallback)
+    {
+        if (string.IsNullOrEmpty(name)) return fallback;
+        // Strip any path / extension that crept into the param.
+        var n = name;
+        int slash = n.LastIndexOf('/');
+        if (slash >= 0) n = n.Substring(slash + 1);
+        int dot = n.LastIndexOf('.');
+        if (dot >= 0) n = n.Substring(0, dot);
+        n = n.ToLowerInvariant();
+        return n switch
+        {
+            "b_sfx_fireball-01"   => 0,
+            "b_sfx_fireball-02"   => 0,    // close-enough family fallback
+            "b_sfx_smoke"         => 1,
+            "b_sfx_snow_01"       => 1,    // smoke-class billboard
+            "b_sfx_mist_01"       => 1,
+            "b_sfx_sparkle01"     => 2,
+            "b_sfx_sparkle_02"    => 2,
+            "b_sfx_star_01"       => 2,
+            "b_sfx_star_02"       => 2,
+            "b_sfx_010"           => 2,    // sparkle-class
+            "b_sfx_002"           => 3,
+            "b_sfx_033"           => 3,
+            "b_sfx_lightray_01"   => 4,
+            "b_sfx_lightray_02"   => 5,
+            "b_sfx_lightray_04"   => 6,
+            "b_sfx_streaks"       => 7,
+            "b_sfx_lightray01"    => 8,
+            "b_sfx_blueflare_01"  => 8,    // lightray-family fallback
+            "b_sfx_armor_shock"   => 4,
+            "b_sfx_cyl_01"        => 9,
+            "b_sfx_cyl_02"        => 10,
+            "b_sfx_cyl_03"        => 11,
+            "b_sfx_splotches_02"  => 0,    // warm fireball-class
+            "b_sfx_rock_single_01"=> 1,    // chunky smoke-ish
+            _ => fallback,
+        };
+    }
+
     static bool TryReadVec4(string raw, string keyword, out Vector4 value)
     {
         value = default;
@@ -2006,6 +2109,13 @@ public sealed class SfxRuntime
         Fireb,            // 3g — fire one-shot with directional puff, ≈SpawnFire
         OneShotCylinder,  // SC-SPELL-VISUAL-A — flat textured ground ring at anchor, rp0-mid radius
         OneShotSray,      // 3h — directional ray, ≈SpawnSpark dense + slight bias
+        // Phase 21-SC-SPELL-VISUAL-H — sphere primitive. firebomb_base /
+        // bombard_base / dave_shield etc. author this as an expanding
+        // particle shell around the anchor. First-pass renders as omni-
+        // directional SpawnSpark scaled by the authored radius + grow
+        // params; flips the last MISS primitive (2 spells: bombard,
+        // firebomb) to OK in the catalog audit.
+        OneShotSphere,
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion handles that other
         // emitters can target via `sfx target $emitter $motion`. Each gets
         // a slot in _motionHandles whose Position advances every tick;
@@ -2042,6 +2152,12 @@ public sealed class SfxRuntime
         public float       Displace;     // maxdisplace amplitude
         public int         BurstCount;   // explosion/sparkles count(N)
         public EmitterMode Mode;
+        // Phase 21-SC-SPELL-VISUAL-H — authored texture name from the
+        // create's `texture(b_sfx_xxx)` param. null when the script
+        // didn't author one; the per-mode dispatch falls back to a
+        // sensible default slot. Mapped to a renderer texture-slot
+        // via TextureNameToSlot at dispatch time.
+        public string?     TextureName;
         // Phase 21-SC-SPELL-VISUAL-A — cylinder-specific knobs.
         public float       SpinRate;     // spin(N) — radians/sec around axis
         public float       FadeIn;       // tin(N)  — seconds to ramp alpha 0→1
