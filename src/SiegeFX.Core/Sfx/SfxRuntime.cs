@@ -31,13 +31,16 @@ namespace SiegeFX.Core.Sfx;
 /// shipped zap renders as a hand-to-target beam rather than a 1-unit vertical
 /// stub at the impact point.</para>
 ///
-/// <para>Verbs the VM still doesn't recognize (sphere / spawn / waitfor / get /
-/// worldmsg / sfx attach / sfx rat / sfx offset_bone / sfx direction / sfx
-/// friendly) log once and continue — same Phase 17-SC-F policy as the parser's
-/// <see cref="StatementKind.Raw"/> fallthrough. Keeps every region's emitters
-/// running rather than freezing on the first un-modeled verb. Phase 21-SC-
-/// SPELL-VISUAL slices A–D landed cylinder / sray / fireb / orbiter / trackball
-/// / lightsource / curve so those are no longer in this list.</para></summary>
+/// <para>Verbs the VM still doesn't recognize (sphere / spawn / worldmsg /
+/// frandrange / randrange / camerashake) log once and continue — same Phase
+/// 17-SC-F policy as the parser's <see cref="StatementKind.Raw"/> fallthrough.
+/// Keeps every region's emitters running rather than freezing on the first
+/// un-modeled verb. Phase 21-SC-SPELL-VISUAL slices A–G landed cylinder /
+/// sray / fireb / orbiter / trackball / lightsource / curve / additive Glow /
+/// sfx attach / rat / offset_bone / direction / waitfor + collision gate /
+/// get target_position + collision point/direction / minimal if-evaluator —
+/// 54 of 61 offensive spells now flip COVERED in the visual-audit, with the
+/// remaining gap being two `sphere`-using spells.</para></summary>
 public sealed class SfxRuntime
 {
     readonly SfxScriptStore _store;
@@ -214,23 +217,44 @@ public sealed class SfxRuntime
             // (we don't yet distinguish actor vs world hits — both branches
             // in shipped DS1 fireball scripts paint impact at the same
             // world point).
-            if (rs.WaitMotionId > 0)
+            // Phase 21-SC-SPELL-VISUAL-G fold — pending resolution from
+            // the previous tick's AdvanceMotionHandles pass takes
+            // priority. AdvanceMotionHandles tagged the script with the
+            // proper collision_type before pruning the motion entry, so
+            // the !found-defaults-to-object-collision fallback below
+            // only fires for never-resolved waits.
+            if (!string.IsNullOrEmpty(rs.PendingCollisionTag))
+            {
+                rs.Stack.Push(new Handle
+                {
+                    Kind = rs.PendingCollisionTag,
+                    Anchor = rs.PendingCollisionPos,
+                    OtherEnd = rs.PendingCollisionPos
+                });
+                rs.PendingCollisionTag = null;
+                rs.PendingCollisionPos = Vector3.Zero;
+            }
+            else if (rs.WaitMotionId > 0)
             {
                 rs.WaitTimeout -= dt;
                 bool resumed = false;
                 string collisionTag = "no_collision";
                 Vector3 resolvedPos = rs.Ctx.TargetPos;
                 bool found = _motionHandles.TryGetValue(rs.WaitMotionId, out var watched);
-                // Three resume paths:
-                //   1. Motion is present AND Done → object_collision.
-                //   2. Motion is GONE (AdvanceMotionHandles prunes Done
-                //      motions at the end of the same tick where they
-                //      finished, so the very next coroutine pass sees no
-                //      entry — that's still "the motion completed").
-                //   3. Timeout expired → no_collision (matches DS1 semantics).
+                // Same-tick resume paths (rare — the typical resolution
+                // happens via PendingCollisionTag above):
+                //   1. Motion just went Done in THIS tick before we got
+                //      back to the coroutine pass — read DoneByCollision
+                //      to pick the right tag.
+                //   2. Motion is GONE without a pending tag (race or a
+                //      script that hit waitfor on an already-vanished
+                //      handle) — default to object_collision.
+                //   3. WaitTimeout expired with the motion still live —
+                //      no_collision; the trackball never reached its
+                //      target within the script's window.
                 if (found && watched.Done)
                 {
-                    collisionTag = "object_collision";
+                    collisionTag = watched.DoneByCollision ? "object_collision" : "no_collision";
                     resolvedPos  = watched.Position;
                     resumed = true;
                 }
@@ -246,9 +270,6 @@ public sealed class SfxRuntime
                     resumed = true;
                 }
                 if (!resumed) continue;
-                // Resume: push a tagged handle so `set $name #POP` captures
-                // the collision_type into the script's Vars (ExecSet bridges
-                // the Kind field into Vars[$name] for if-evaluation).
                 rs.Stack.Push(new Handle { Kind = collisionTag, Anchor = resolvedPos, OtherEnd = resolvedPos });
                 rs.WaitMotionId = 0;
                 rs.WaitTimeout  = 0f;
@@ -377,10 +398,13 @@ public sealed class SfxRuntime
 
                 case "trackball":
                     // Homing toward Target at fixed Speed. Done when within
-                    // 0.5u of Target — collision-aware impact gating
-                    // (waitfor) is a future SC slice; for now the trackball
-                    // simply expires on arrival and child emitters get
-                    // dropped via the Done flag.
+                    // 0.5u of Target. SC-SPELL-VISUAL-G wired the wait-on-
+                    // arrival path: scripts that `waitfor collision $h
+                    // #DEFAULT_TIMEOUT` resume on the same tick this Done
+                    // flag flips, with collision_type = object_collision.
+                    // Child emitters following the trackball still drop
+                    // when this flag flips, matching DS1's per-projectile
+                    // lifetime contract.
                     {
                         var to = m.Target - m.Position;
                         float distSq = to.LengthSquared();
@@ -388,6 +412,7 @@ public sealed class SfxRuntime
                         {
                             m.Position = m.Target;
                             m.Done = true;
+                            m.DoneByCollision = true;
                         }
                         else
                         {
@@ -426,6 +451,27 @@ public sealed class SfxRuntime
             m.Elapsed += dt;
             if (m.Duration > 0f && m.Elapsed >= m.Duration) m.Done = true;
             _motionHandles[id] = m;
+        }
+
+        // Phase 21-SC-SPELL-VISUAL-G fold — resolve any waiters BEFORE we
+        // prune Done motion handles, so the post-collision branch reads
+        // the right collision_type. Pre-fold the prune ran first and the
+        // Tick coroutine's `!found` path defaulted to object_collision,
+        // which mis-tagged Duration-driven trackball expiries as if they
+        // had hit something. After this pass each waiting RunningScript
+        // either picks up a tagged PendingCollisionTag (consumed at the
+        // next coroutine pass) or stays waiting if its motion is still
+        // live.
+        for (int s = 0; s < _scripts.Count; s++)
+        {
+            var rs = _scripts[s];
+            if (rs.WaitMotionId == 0) continue;
+            if (!_motionHandles.TryGetValue(rs.WaitMotionId, out var watched)) continue;
+            if (!watched.Done) continue;
+            rs.PendingCollisionTag = watched.DoneByCollision ? "object_collision" : "no_collision";
+            rs.PendingCollisionPos = watched.Position;
+            rs.WaitMotionId = 0;
+            rs.WaitTimeout  = 0f;
         }
 
         // Cleanup: prune Done motion handles. Doing this AFTER the emitter
@@ -1235,7 +1281,20 @@ public sealed class SfxRuntime
         // doesn't yet evaluate expressions but stores them so future
         // diagnostics can replay the script).
         if (stmt.Tokens.Count >= 3 && stmt.Tokens[1] == "=")
+        {
             rs.Vars[name] = stmt.Tokens[2];
+            return;
+        }
+        // Shape C: `set $name LITERAL` — bare literal, no `=`. fireball_
+        // base / fireshot_base / firebomb_base author this for scalar
+        // tweaks like `set $scale .7; set $detail 20` that later
+        // interpolate into param strings as `scale($scale)`. Capture the
+        // literal so future param-string $name interpolation (slice H or
+        // its own splinter) can read it; today the value sits unused
+        // until the substitution pass lands, but stack-balance and Vars
+        // bookkeeping are correct now.
+        if (stmt.Tokens.Count >= 2 && !stmt.Tokens[1].StartsWith("$"))
+            rs.Vars[name] = stmt.Tokens[1];
     }
 
     // Phase 21-SC-SPELL-VISUAL-G — coroutine gate. Returns true when the
@@ -1275,6 +1334,21 @@ public sealed class SfxRuntime
             rs.Stack.Push(new Handle { Kind = "no_collision", Anchor = rs.Ctx.TargetPos, OtherEnd = rs.Ctx.TargetPos });
             return false;
         }
+        // `waitfor script <handle> <timeout>` — wrapper scripts (fireball,
+        // fireshot, firestorm, braak_iceblast wrappers) push a subscript
+        // handle from `call <name>` and waitfor on its completion before
+        // firing `worldmsg WE_SPELL_SYNC_END`. Subscript-completion
+        // tracking is its own splinter — for now we POP the operand to
+        // keep the stack balanced and resolve immediately. Visual side
+        // is unaffected (the subscript already ran inside ExecCall);
+        // gameplay-sync timing slips earlier than DS1's design, but no
+        // shipped logic depends on that ordering today.
+        if (string.Equals(verb, "script", StringComparison.OrdinalIgnoreCase))
+        {
+            if (stmt.Tokens.Count >= 2)
+                ConsumeStackOperand(rs, new[] { stmt.Tokens[1] });
+            return false;
+        }
         return false;
     }
 
@@ -1291,20 +1365,25 @@ public sealed class SfxRuntime
     void ExecGet(RunningScript rs, SfxStatement stmt)
     {
         // Verb shapes shipped in DS1:
-        //   get target_position <handle> [source|target]
-        //   get collision point <handle> [source|target]
-        //   get collision direction <handle>
-        // Each pushes a Handle onto the stack whose Anchor encodes the
-        // queried position (or unit direction encoded as Anchor for
-        // collision direction — callers consume it via #POP and pass to
-        // sfx direction, which we already handle).
+        //   get target_position <handle> [source|target]   tokens[1] = handle
+        //   get collision point <handle> [source|target]   tokens[2] = handle
+        //   get collision direction <handle>               tokens[2] = handle
+        // The handle index DEPENDS on the sub-verb: "target_position" puts
+        // the handle at tokens[1], whereas "collision" reserves tokens[1]
+        // for "point" / "direction" and the handle moves to tokens[2].
+        // Resolving tokens[1] unconditionally up-front (the pre-fold bug)
+        // returned false on the literal "point" / "direction" string and
+        // silently dropped the entire collision dispatch, so every
+        // `get collision point $h; sfx create explosion #POP` chain
+        // popped a stale stack handle and anchored the explosion at the
+        // wrong world position.
         if (stmt.Tokens.Count < 2) return;
         var sub = stmt.Tokens[0].ToLowerInvariant();
-        if (!TryResolveHandleOperand(rs, stmt.Tokens[1], pop: false, out var h)) return;
 
         Vector3 result;
         if (sub == "target_position")
         {
+            if (!TryResolveHandleOperand(rs, stmt.Tokens[1], pop: false, out var h)) return;
             // Trailing source/target qualifier picks which endpoint of
             // the motion handle to read; default to target so callers that
             // omit it still land on the impact point.
@@ -1318,15 +1397,14 @@ public sealed class SfxRuntime
         }
         else if (sub == "collision")
         {
-            string? what = stmt.Tokens.Count >= 2 && stmt.Tokens[1].Equals("point",     StringComparison.OrdinalIgnoreCase) ? "point"
-                         : stmt.Tokens.Count >= 2 && stmt.Tokens[1].Equals("direction", StringComparison.OrdinalIgnoreCase) ? "direction"
-                         : null;
-            // Token layout for collision: get collision point/direction <handle> ...
-            // So sub="collision" means tokens[0]="collision", tokens[1]="point|direction", tokens[2]=handle.
             if (stmt.Tokens.Count < 3) return;
-            if (!TryResolveHandleOperand(rs, stmt.Tokens[2], pop: false, out h)) return;
-            if (string.Equals(stmt.Tokens[1], "direction", StringComparison.OrdinalIgnoreCase))
+            if (!TryResolveHandleOperand(rs, stmt.Tokens[2], pop: false, out var h)) return;
+            var what = stmt.Tokens[1].ToLowerInvariant();
+            if (what == "direction")
             {
+                // Unit vector from motion start to motion end. fireball_base
+                // pipes this into `sfx direction $explosion #POP` so the
+                // explosion blows in the trackball's flight direction.
                 var src = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
                     ? motion.Anchor : h.Anchor;
                 var dst = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out motion))
@@ -1335,9 +1413,23 @@ public sealed class SfxRuntime
                 float len = dir.Length();
                 result = len > 1e-4f ? dir / len : new Vector3(0f, 0f, 1f);
             }
+            else if (what == "target")
+            {
+                // `get collision target $h target` — fireshot_base and
+                // fireball_explosive_trap author this. Push the motion's
+                // authored target position so a follow-up `sfx create
+                // explosion #POP` anchors at the intended landing spot.
+                // Pre-fold this fell into the else and pushed
+                // motion.Position, leaking a stale handle on the stack.
+                result = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
+                    ? motion.Target : h.OtherEnd;
+            }
             else
             {
-                // collision point — live impact world position
+                // Default to "point" — the live impact world position
+                // from the motion's current Position; falls back to the
+                // handle's OtherEnd when the motion entry has been
+                // pruned (Done-and-cleaned-up).
                 result = (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
                     ? motion.Position : h.OtherEnd;
             }
@@ -1397,14 +1489,18 @@ public sealed class SfxRuntime
         if (parts.Count == 1)
             return EvalLeafCondition(rs, tokens, parts[0].start, parts[0].end);
 
-        // Evaluate left-to-right; honor each part's PRECEDING op.
+        // Evaluate left-to-right; honor each part's PRECEDING op. Left-
+        // fold gives `A || B && C` = `(A || B) && C` rather than the
+        // standard `A || (B && C)`; that's wrong for unparenthesized
+        // mixed-operator expressions but DS1 only ships explicitly
+        // parenthesized forms (`(A) || (B) || (C)` etc.) so the wrong
+        // precedence doesn't fire on any shipped script. Real precedence
+        // climbing would be its own splinter — flagged in the audit
+        // fold, deferred until a script trips it.
         bool acc = EvalLeafCondition(rs, tokens, parts[0].start, parts[0].end);
         for (int p = 1; p < parts.Count; p++)
         {
             bool next = EvalLeafCondition(rs, tokens, parts[p].start, parts[p].end);
-            // The op stored on parts[p-1] is the one that splits this leaf
-            // from the previous; left-to-right semantics suffice for the
-            // `(A) || (B) || (C)` shapes DS1 ships.
             if (parts[p - 1].op == "||") acc = acc || next;
             else                          acc = acc && next;
         }
@@ -1450,6 +1546,21 @@ public sealed class SfxRuntime
         // pushed by waitfor and stored by ExecSet.
         if (token.StartsWith("#"))
             return token.Substring(1).ToLowerInvariant();
+        // [N] → caller-arg index lookup. fireball_base ships
+        // `if ( [1] == 3 )` to gate the firestorm-only branch and
+        // `if ( [1] == 1 )` for the plain-fireball-only sound + scale.
+        // Pre-fold both tested false because [N] was treated as a
+        // string literal, so plain fireball shipped with rain-hit
+        // sound + scale=0.4 instead of normal-hit + scale=0.7.
+        if (token.Length >= 3 && token[0] == '[' && token[token.Length - 1] == ']'
+            && rs.CallerArgs is not null)
+        {
+            var inner = token.Substring(1, token.Length - 2);
+            if (int.TryParse(inner, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx)
+                && idx >= 1 && idx <= rs.CallerArgs.Count)
+                return rs.CallerArgs[idx - 1].ToLowerInvariant();
+            return ""; // out of bounds → empty (compares unequal to anything)
+        }
         return token.ToLowerInvariant();
     }
 
@@ -1479,10 +1590,33 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count == 0) return;
         var name = stmt.Tokens[0];
         if (!_store.TryGet(name, out var script)) return;
+        // Caller-args are tokens AFTER the script name. The compiler pre-
+        // splits the verb so stmt.Tokens[0] is the script name and the
+        // rest are positional args. fireball wrapper authors `call
+        // fireball_base v<0 0 0> u<1>;` — args 1 and 2 are the literal
+        // strings `v<0 0 0>` and `u<1>` which `[1]`/`[2]` references in
+        // fireball_base then read via SubstituteCallerArgs.
+        IReadOnlyList<string>? subArgs;
+        if (stmt.Tokens.Count > 1)
+        {
+            var collected = new List<string>(stmt.Tokens.Count - 1);
+            for (int t = 1; t < stmt.Tokens.Count; t++) collected.Add(stmt.Tokens[t]);
+            subArgs = collected;
+        }
+        else
+        {
+            subArgs = rs.CallerArgs;
+        }
         var prog = SfxScriptCompiler.Compile(name, script.Body);
-        var sub = new RunningScript(prog, rs.Ctx, rs.CallerArgs);
+        var sub = new RunningScript(prog, rs.Ctx, subArgs);
         StepUntilYield(sub);
         if (!sub.Done) _scripts.Add(sub);
+        // Phase 21-SC-SPELL-VISUAL-G fold — push a marker handle so the
+        // wrapper's `waitfor script #POP #DEFAULT_TIMEOUT` has something
+        // to consume. Tag is "subscript" so a future splinter that
+        // wires real subscript-completion tracking can match the kind
+        // without changing the call site.
+        rs.Stack.Push(new Handle { Kind = "subscript", Anchor = rs.Ctx.TargetPos, OtherEnd = rs.Ctx.TargetPos });
     }
 
     // ---- handle resolution ---------------------------------------------
@@ -2010,6 +2144,12 @@ public sealed class SfxRuntime
         public float   Duration;          // dur(N) lifetime; 0 = never expire
         public float   Elapsed;           // time since spawn
         public bool    Done;              // true when expired or trackball arrived
+        // Phase 21-SC-SPELL-VISUAL-G — distinguish "trackball reached its
+        // target" (collision) from "Duration expired without arrival"
+        // (timeout). The Tick pass needs this to push the right
+        // collision_type onto the waiter's stack — pre-G both paths
+        // collapsed to object_collision.
+        public bool    DoneByCollision;
     }
 
     sealed class RunningScript
@@ -2033,12 +2173,25 @@ public sealed class SfxRuntime
         // / #NO_COLLISION happens at resume.
         public int   WaitMotionId;
         public float WaitTimeout;
+        // Phase 21-SC-SPELL-VISUAL-G fold — set by AdvanceMotionHandles
+        // when the watched motion went Done, BEFORE the prune step
+        // wipes the handle entry. Consumed at the next coroutine pass:
+        // we push a tagged Handle and clear the pending state. Empty
+        // string ("" or null) means no pending resolution; a non-empty
+        // tag triggers the resume.
+        public string? PendingCollisionTag;
+        public Vector3 PendingCollisionPos;
         // Phase 21-SC-SPELL-VISUAL-G — outcome of the most recent IfBegin
         // so an immediately-following ElseBegin can pick the opposite
         // branch. Nested if/else on the same RunningScript is fine
         // because the inner if/else fully resolves between the outer
         // IfBegin and its matching IfEnd — by the time control returns
         // to the outer level, the inner result has already been consumed.
+        // Note: the default value (false) means a stray `else { … }`
+        // without a preceding `if { … }` runs unconditionally — that
+        // matches the pre-G "always run both branches" pragmatism for
+        // un-paired authoring but is technically undefined in DS1's
+        // grammar. No shipped script trips it.
         public bool  LastIfTaken;
 
         public RunningScript(SfxProgram prog, in SfxContext ctx, IReadOnlyList<string>? args)
