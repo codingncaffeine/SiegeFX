@@ -383,6 +383,16 @@ public sealed class RenderHost : IDisposable
     // (hit, death, level-up) without re-opening the file.
     private SiegeFX.Core.Tank.TankFile? _playSoundTank;
     private SiegeFX.Runtime.Audio.AudioEngine? _audio;
+    // Phase 22-SC-MUSIC-B — single-channel streaming mp3 player for the
+    // game's music track. Constructed alongside _audio (shares the
+    // OpenAL device + context) and ticked once per frame to refill the
+    // streaming buffer queue. Track changes go through PlayMusicTrack
+    // (extract from _playSoundTank, hand bytes to MusicPlayer.Play).
+    private SiegeFX.Runtime.Audio.MusicPlayer? _music;
+    // Phase 22-SC-MUSIC-B — last-loaded music track basename so a redundant
+    // PlayMusicTrack with the same name (region re-entry, save-load) is a
+    // no-op rather than restarting the clip. Empty until first Play.
+    private string _currentMusicTrack = "";
     // Clip-id constants — tying RenderHost call sites to the AudioEngine
     // dictionary keys through symbols rather than magic strings keeps a typo
     // in one place from silently disabling a sound.
@@ -3142,6 +3152,12 @@ void main()
                 _playSoundTank = TankFile.Open(soundTankPath);
                 var soundReader = new TankReader(_playSoundTank);
                 _audio = SiegeFX.Runtime.Audio.AudioEngine.TryCreate();
+                // Phase 22-SC-MUSIC-B — share the OpenAL context with the
+                // music player. Null-tolerant: TryCreate returns null when
+                // _audio itself failed (no device), and every PlayMusicTrack
+                // call below null-checks so the runtime stays playable
+                // without music.
+                _music = SiegeFX.Runtime.Audio.MusicPlayer.TryCreate(_audio);
                 if (_audio is not null)
                 {
                     // Phase 21d-2a-xii — load DS1's SED (sound effect descriptor)
@@ -4990,6 +5006,12 @@ void main()
         var navMesh = _pendingNavMesh;
         _pendingSpawner = null;
         _pendingNavMesh = null;
+        // Phase 22-SC-MUSIC-B — stop the menu music as Begin/Cancel
+        // commits the creator. Region music (SC-MUSIC-C) will fade in
+        // from the player region's mood; until that lands, leaving the
+        // creator results in silence — better than holding the menu
+        // track over gameplay.
+        PlayMusicTrack(null);
         if (_creator.Confirmed)
         {
             var name = string.IsNullOrEmpty(_creator.HeroName) ? null : _creator.HeroName;
@@ -5022,6 +5044,11 @@ void main()
             _pendingSpawner = spawner;
             _pendingNavMesh = navMesh;
             _creator.Reset();
+            // Phase 22-SC-MUSIC-B — kick the menu music as the creator
+            // panel comes up. DS1's frontend track is s_m_frontend.mp3
+            // (~986 KB / ~2:30). Stops automatically when FlushCreator
+            // commits Begin/Cancel and a region track takes over.
+            PlayMusicTrack("frontend");
             Console.WriteLine("  player: character creator open (Begin to spawn, Cancel for env-var defaults)");
             return;
         }
@@ -6776,6 +6803,48 @@ void main()
     /// authored the cue (chickens go quietly).
     /// Phase 18c added <paramref name="worldPos"/> so the death scream
     /// pans + falls off from the corpse's location.</summary>
+    /// <summary>Phase 22-SC-MUSIC-B — extract the named track from
+    /// Sound.dsres and hand it to <see cref="_music"/>. <paramref name="trackBasename"/>
+    /// omits the leading <c>s_m_</c> and trailing <c>.mp3</c>, so callers
+    /// pass <c>frontend</c>, <c>maintheme</c>, <c>battle</c> verbatim.
+    /// Idempotent on the same track — re-calling with the active track
+    /// is a no-op so region re-entry / quickload don't restart the clip.
+    /// Pass <c>null</c> or empty to stop music entirely.</summary>
+    private void PlayMusicTrack(string? trackBasename)
+    {
+        if (_music is null) return;
+        if (string.IsNullOrEmpty(trackBasename))
+        {
+            if (_currentMusicTrack.Length == 0) return;
+            _music.Stop();
+            _currentMusicTrack = "";
+            return;
+        }
+        if (string.Equals(_currentMusicTrack, trackBasename, StringComparison.OrdinalIgnoreCase))
+            return; // already playing this track
+        if (_playSoundTank is null) return;
+        var path = $"/sound/music/s_m_{trackBasename}.mp3";
+        var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+        if (!reader.TryGetFile(path, out _))
+        {
+            Console.Error.WriteLine($"  music: track '{path}' not in Sound.dsres");
+            return;
+        }
+        try
+        {
+            var bytes = reader.ExtractToMemory(path);
+            if (_music.Play(bytes))
+            {
+                _currentMusicTrack = trackBasename;
+                Console.WriteLine($"  music: playing {path} ({bytes.Length:N0} bytes)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  music: track '{trackBasename}' failed — {ex.Message}");
+        }
+    }
+
     private void PlayDeathSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
     {
         if (_audio is null || template is null || _templateStore is null) return;
@@ -8175,6 +8244,11 @@ void main()
         // _spellBolts trail was retired here; primary cast visuals are now
         // the 3D world-space primitives spawned through SpawnSpellVisual.
         _particles?.Tick((float)dt);
+        // Phase 22-SC-MUSIC-A/B — refill the music streaming queue every
+        // frame. Cheap when nothing's playing (one OpenAL state read);
+        // when a track is active it decodes ~0-3 chunks per tick to
+        // refill drained buffers.
+        _music?.Tick();
         // Phase 21-SC-BARREL-C — integrate frag debris (gravity + ground
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
@@ -10252,6 +10326,9 @@ void main()
         // Audio first — DeleteSources/Buffers before tearing down the
         // Sound.dsres handle isn't required (we already extracted bytes),
         // but the OpenAL context wants to outlive any pending playback.
+        // Music before the engine because MusicPlayer's source + buffers
+        // are owned by it but live in the engine's OpenAL context.
+        _music?.Dispose();
         _audio?.Dispose();
         _playSoundTank?.Dispose();
         _playMapTank?.Dispose();
