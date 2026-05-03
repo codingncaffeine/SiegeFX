@@ -6180,6 +6180,12 @@ void main()
     private void PerformPropBreak(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || prop.IsDestroyed) return;
+        // Phase 21-SC-BARREL-FOLD — same one-swing-per-animation gate
+        // PerformPlayerSwing uses. Click-spam on a barrel pre-fold
+        // shattered the prop on the first click but kept firing damage
+        // / debris / loot rolls on every queued click; the gate makes
+        // that a no-op while the swing chore is in flight.
+        if (_player.Actor.Host.IsOverrideActive) return;
         // Phase 21-SC-BARREL-FOLD — face the prop before swinging so
         // pivoting from a finished enemy to a barrel (or vice-versa)
         // doesn't swing in the stale direction.
@@ -6554,6 +6560,14 @@ void main()
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
+        // Phase 21-SC-BARREL-FOLD — gate rapid clicks on the swing
+        // animation. Pre-fold a click-spammed RMB fired full damage +
+        // swing audio per click while the chore override silently got
+        // replaced each time, producing 5-6 audible "hits" per visible
+        // swing arc. DS1 locks the player to one swing per animation;
+        // mirroring that by ignoring the click while a chore_attack
+        // override is still draining is the simplest faithful version.
+        if (_player.Actor.Host.IsOverrideActive) return;
         // Phase 12-SC-2 / 21-SC-BARREL-FOLD — face the target before the
         // swing fires so finishing enemy 1 then attacking enemy 2 in the
         // same melee position pivots the hero to face the new victim
