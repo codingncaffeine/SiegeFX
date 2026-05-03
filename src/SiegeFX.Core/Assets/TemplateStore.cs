@@ -104,10 +104,38 @@ public sealed class TemplateStore
     /// <paramref name="node"/>. Case-insensitive. Does not descend into children.</summary>
     public static string? FindAttr(GasNode node, string attrName)
     {
+        // First pass: literal case-insensitive match.
         for (int i = 0; i < node.Attributes.Count; i++)
             if (string.Equals(node.Attributes[i].Name, attrName, StringComparison.OrdinalIgnoreCase))
                 return node.Attributes[i].Value;
+        // Second pass: whitespace-tolerant match. DS1 GAS authoring sometimes
+        // sneaks tabs and spaces into colon-shorthand attribute names — e.g.
+        // `voice:die:	* = s_e_env_break_container_wood;` stores literally
+        // as `voice:die:\t*`. Stripping whitespace from both sides lets the
+        // shipped barrel/crate break sounds resolve via
+        // GetAttribute("aspect","voice","die","*").
+        if (HasInternalWhitespace(attrName)) return null; // queried name is already clean
+        for (int i = 0; i < node.Attributes.Count; i++)
+        {
+            var a = node.Attributes[i].Name;
+            if (!HasInternalWhitespace(a)) continue;
+            if (string.Equals(StripWhitespace(a), attrName, StringComparison.OrdinalIgnoreCase))
+                return node.Attributes[i].Value;
+        }
         return null;
+    }
+
+    static bool HasInternalWhitespace(string s)
+    {
+        for (int i = 0; i < s.Length; i++) if (char.IsWhiteSpace(s[i])) return true;
+        return false;
+    }
+
+    static string StripWhitespace(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var c in s) if (!char.IsWhiteSpace(c)) sb.Append(c);
+        return sb.ToString();
     }
 
     /// <summary>Finds the first child block on <paramref name="node"/> whose header
@@ -137,24 +165,32 @@ public sealed class TemplateStore
     public string? GetAttribute(Template template, params string[] path)
     {
         if (path.Length == 0) return null;
-        var flatName = path.Length >= 2 ? string.Join(':', path) : null;
         for (var t = template; t is not null; t = t.Specializes)
         {
-            if (flatName is not null)
-            {
-                var flat = FindAttr(t.Node, flatName);
-                if (flat is not null) return flat;
-            }
+            // Progressive walk: at every depth, try the remaining-path
+            // colon-joined as an attribute name in the current node BEFORE
+            // attempting to descend further. This covers every flavor of
+            // DS1 GAS inline-shorthand:
+            //   - `aspect:model = X;` at root (whole path as one attr)
+            //   - `[aspect] { voice:die: * = X; }` inside a block
+            //   - `[aspect:voice] { die: * = X; }` (rare but legal)
+            //   - native nested `[aspect] { [voice] { [die] { * = X } } }`
+            // Pre-fold the lookup only checked the fully-flat shape and
+            // the fully-nested shape, missing the mixed forms — which is
+            // how shipped barrels' break sounds were silently dropped.
             var node = t.Node;
-            for (int i = 0; i < path.Length - 1; i++)
+            for (int i = 0; i < path.Length; i++)
             {
+                var remainder = path.Length - i == 1
+                    ? path[i]
+                    : string.Join(':', path, i, path.Length - i);
+                var hit = FindAttr(node, remainder);
+                if (hit is not null) return hit;
+                if (i == path.Length - 1) break;
                 var next = FindChild(node, path[i]);
                 if (next is null) { node = null!; break; }
                 node = next;
             }
-            if (node is null) continue;
-            var v = FindAttr(node, path[^1]);
-            if (v is not null) return v;
         }
         return null;
     }

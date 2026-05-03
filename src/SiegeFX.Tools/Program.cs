@@ -3346,6 +3346,7 @@ static int DispatchTemplates(string[] a)
         "loot"   => CmdTemplatesLoot(a[1..]),
         "equipment-audit" => CmdTemplatesEquipmentAudit(a[1..]),
         "hero-variants"   => CmdTemplatesHeroVariants(a[1..]),
+        "attrs"           => CmdTemplateAttrDump(a[1..]),
         _        => UnknownCommand("templates " + a[0]),
     };
 }
@@ -4560,7 +4561,7 @@ static int CmdRegionBreakableAudit(string[] a)
     int totalPlacements = 0, totalBreakable = 0, totalWithPcontent = 0;
     int totalFragEntries = 0, totalGoldBuckets = 0, totalItemBuckets = 0;
     var perTemplate = new SortedDictionary<string,
-        (int placements, bool breakable, int fragEntries, int frags, bool hasPcontent, int goldBuckets, int itemBuckets, float maxLife)>(
+        (int placements, bool breakable, int fragEntries, int frags, bool hasPcontent, int goldBuckets, int itemBuckets, float maxLife, string? breakSound)>(
         StringComparer.OrdinalIgnoreCase);
     var perRegion = new List<(string path, int placements, int breakables, int withPcontent)>();
 
@@ -4600,6 +4601,12 @@ static int CmdRegionBreakableAudit(string[] a)
                 if (!string.IsNullOrEmpty(lifeAttr))
                     float.TryParse(lifeAttr, System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out maxLife);
+                // Phase 21-SC-BARREL-FOLD verification — resolve the break-
+                // sound cue under both authored paths so the audit shows
+                // which templates would actually play a shatter sound.
+                var breakSound = store.GetAttribute(template, "aspect", "voice", "die", "*")
+                              ?? store.GetAttribute(template, "physics", "break_sound");
+                if (string.IsNullOrWhiteSpace(breakSound)) breakSound = null;
                 var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
                 bool hasPcontent = !table.IsEmpty;
                 int goldBuckets = 0, itemBuckets = 0;
@@ -4622,7 +4629,8 @@ static int CmdRegionBreakableAudit(string[] a)
                     hasPcontent,
                     entry.goldBuckets == 0 ? goldBuckets : entry.goldBuckets,
                     entry.itemBuckets == 0 ? itemBuckets : entry.itemBuckets,
-                    maxLife);
+                    maxLife,
+                    entry.breakSound ?? breakSound);
             }
         }
         perRegion.Add((regionPath, regPlacements, regBreakable, regPcontent));
@@ -4644,7 +4652,8 @@ static int CmdRegionBreakableAudit(string[] a)
         var v = kv.Value;
         Console.WriteLine(
             $"  {v.placements,4}x  life={v.maxLife,5:F0}  frags={v.frags,3}({v.fragEntries} entries)  " +
-            $"pcontent={(v.hasPcontent ? "Y" : "-")}  gold={v.goldBuckets} item={v.itemBuckets}  {kv.Key}");
+            $"pcontent={(v.hasPcontent ? "Y" : "-")}  gold={v.goldBuckets} item={v.itemBuckets}  " +
+            $"break={v.breakSound ?? "<none>"}  {kv.Key}");
     }
 
     Console.WriteLine();
@@ -6274,6 +6283,42 @@ static int DispatchUi(string[] a)
         "mesh-info" => CmdUiMeshInfo(a[1..]),
         _           => UnknownCommand("ui " + a[0]),
     };
+}
+
+static int CmdTemplateAttrDump(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx templates attrs <Logic.dsres> <template-name> [--depth=N]");
+        return 1;
+    }
+    int depth = 99;
+    for (int i = 2; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--depth=") && int.TryParse(a[i][8..], out var d)) depth = d;
+    }
+    using var tank = TankFile.Open(a[0]);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(new TankReader(tank));
+    if (!store.TryGet(a[1], out var t))
+    {
+        Console.Error.WriteLine($"no such template: {a[1]}");
+        return 2;
+    }
+    void Dump(SiegeFX.Core.Assets.GasNode n, int indent)
+    {
+        if (indent > depth) return;
+        var pad = new string(' ', indent * 2);
+        Console.WriteLine($"{pad}[{n.Header}]");
+        foreach (var attr in n.Attributes)
+            Console.WriteLine($"{pad}  {attr.Name} = {attr.Value}");
+        foreach (var c in n.Children) Dump(c, indent + 1);
+    }
+    for (var cur = t; cur is not null; cur = cur.Specializes)
+    {
+        Console.WriteLine($"=== {cur.Name} (from {cur.SourcePath}) ===");
+        Dump(cur.Node, 0);
+    }
+    return 0;
 }
 
 static int DispatchFlm(string[] a)
