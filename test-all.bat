@@ -161,6 +161,7 @@ echo   88. Phase 21-SC-SPELL-VFX-AUDIT - Visual-coverage audit across every offe
 echo   89. Phase 21-SC-SPELL-VFX-AUDIT - Visual verify fireball + iceshard (SIEGEFX_DEBUG_SPELLS launch)
 echo   90. Phase 21-SC-SCROLL          - Full scroll-UI test (16-spell roster + ground pile + glitter)
 echo   91. Phase 21-SC-SPELL-VISUAL    - Primitive sweep (10 spells, one per slice A-H + sphere)
+echo   92. Phase 21-SC-BARREL          - Breakable barrels (cursor + spell + frags + loot, fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -258,6 +259,7 @@ if /i "%CHOICE%"=="88" goto T88
 if /i "%CHOICE%"=="89" goto T89
 if /i "%CHOICE%"=="90" goto T90
 if /i "%CHOICE%"=="91" goto T91
+if /i "%CHOICE%"=="92" goto T92
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -1973,6 +1975,46 @@ echo [The PC's nav follower is reseated onto the new mesh — clicks route into 
 echo [Already-spawned actors (NPCs + player) keep their world coords across re-anchors]
 echo [Walk far enough and the ring keeps extending — no fixed outer wall anymore]
 echo [Memory grows monotonically (no eviction in MVP) — fine for ~150-region single sessions]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T92
+echo.
+echo --- Phase 21-SC-BARREL: cursor + spell-break + frag debris + loot ---
+echo [Sub-slices A1, B, C, D bundled. fh_r1 ships 13 barrel_glb_fh_r1 +]
+echo [5 crate_glb_fh_r1 placements with regional pcontent (35%% gold@2-8,]
+echo [5%% potion_mana/health_small, ~62%% empty per the [oneof*] read).]
+echo [Plus 2 breakable doors (no pcontent, frags only).]
+echo.
+echo [What to look for:]
+echo   1. Cursor states - hover the mouse over:
+echo      - empty terrain  -^> sword (b_gui_c_pointer.raw, 64x64)
+echo      - a goblin       -^> red sword (b_gui_c_attack1.raw, 64x64)
+echo      - a barrel/crate -^> animated hammer (b_gui_c_smash1.flm, 21 frames)
+echo      - a loot pile    -^> animated hand (b_gui_c_grab1.flm, 30 frames)
+echo      - Edward (NPC)   -^> talk marker (b_gui_c_talk.raw, 32x32)
+echo   2. Melee a barrel: LMB while close. Wood + metal frags fly out, fall,
+echo      and settle on the ground. Console logs the drop.
+echo   3. Spell a barrel: cast Q/W (zap) at a barrel. Same shatter + frag
+echo      burst as melee. Spell damage debits mana per the cast.
+echo   4. Loot drop: ~35%% of barrels drop 2-8 gold (auto-credited, "+N gold"
+echo      banner); ~5%% drop a potion (lands as a LootPile, click to pickup).
+echo      ~60%% drop nothing — that's the authored distribution.
+echo   5. Frag debris: each shatter spawns ~6-12 frag instances (frag_glb_wood_*
+echo      + frag_glb_metal_*). They tumble, fall under gravity, settle.
+echo.
+echo [Audit CLI receipts before launch:]
+"%TOOL%" region breakable-audit "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --top=8
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%

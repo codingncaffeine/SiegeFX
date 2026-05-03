@@ -744,6 +744,7 @@ static int DispatchRegion(string[] a)
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
         "prop-textures" => CmdRegionPropTextures(a[1..]),
+        "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -4502,6 +4503,165 @@ static int CmdRegionPropTextures(string[] a)
     }
     terrainTank?.Dispose();
     return unresolved == 0 ? 0 : 4;
+}
+
+// Phase 21-SC-BARREL-E — breakable-prop audit. Walks every region's static-prop
+// placements; for each whose template carries [physics][break_particulate] and
+// is not aspect:is_invincible, tallies (template, life, has-pcontent, frag
+// count, gold-bucket count, item-bucket count). Output: per-template summary
+// + per-region totals + a global rollup. Use as the structural-completeness
+// receipt for sub-slices C+D — every shipped breakable should resolve a
+// non-zero frag count and (for regional templates) a non-empty pcontent.
+static int CmdRegionBreakableAudit(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region breakable-audit <map-tank> <logic-tank> <objects-tank> <region-path|all> [--top=N]");
+        return 1;
+    }
+    int top = 30;
+    for (int i = 4; i < a.Length; i++)
+    {
+        const string topPrefix = "--top=";
+        if (a[i].StartsWith(topPrefix) && int.TryParse(a[i][topPrefix.Length..], out var n)) top = n;
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var mapTank     = TankFile.Open(a[0]);
+    using var logicTank   = TankFile.Open(a[1]);
+    using var objectsTank = TankFile.Open(a[2]);
+    var mapReader     = new TankReader(mapTank);
+    var logicReader   = new TankReader(logicTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+
+    var regionPaths = new List<string>();
+    if (a[3].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"auditing {regionPaths.Count} regions...");
+    }
+    else
+    {
+        regionPaths.Add(a[3]);
+    }
+
+    int totalPlacements = 0, totalBreakable = 0, totalWithPcontent = 0;
+    int totalFragEntries = 0, totalGoldBuckets = 0, totalItemBuckets = 0;
+    var perTemplate = new SortedDictionary<string,
+        (int placements, bool breakable, int fragEntries, int frags, bool hasPcontent, int goldBuckets, int itemBuckets, float maxLife)>(
+        StringComparer.OrdinalIgnoreCase);
+    var perRegion = new List<(string path, int placements, int breakables, int withPcontent)>();
+
+    foreach (var regionPath in regionPaths)
+    {
+        int regPlacements = 0, regBreakable = 0, regPcontent = 0;
+        foreach (var fileName in SiegeFX.Core.Assets.RegionObjects.StaticPropFiles)
+        {
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, regionPath, fileName);
+            foreach (var p in placements)
+            {
+                totalPlacements++;
+                regPlacements++;
+                if (!store.TryGet(p.TemplateName, out var template)) continue;
+
+                var breakSection = store.GetSection(template, "physics", "break_particulate");
+                if (breakSection is null) continue;
+                var inv = store.GetAttribute(template, "aspect", "is_invincible");
+                bool invincible = inv is not null &&
+                    (inv.Equals("true", StringComparison.OrdinalIgnoreCase) || inv == "1");
+                if (invincible) continue;
+
+                int fragEntries = 0, frags = 0;
+                foreach (var attr in breakSection.Attributes)
+                {
+                    if (int.TryParse(attr.Value,
+                        System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out var c) && c > 0)
+                    {
+                        fragEntries++;
+                        frags += c;
+                    }
+                }
+                var lifeAttr = store.GetAttribute(template, "aspect", "max_life") ??
+                               store.GetAttribute(template, "aspect", "life");
+                float maxLife = 1f;
+                if (!string.IsNullOrEmpty(lifeAttr))
+                    float.TryParse(lifeAttr, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out maxLife);
+                var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
+                bool hasPcontent = !table.IsEmpty;
+                int goldBuckets = 0, itemBuckets = 0;
+                foreach (var bucket in table.Drops)
+                    CountBucketKinds(bucket, ref goldBuckets, ref itemBuckets);
+
+                totalBreakable++;
+                regBreakable++;
+                if (hasPcontent) { totalWithPcontent++; regPcontent++; }
+                totalFragEntries += fragEntries;
+                totalGoldBuckets += goldBuckets;
+                totalItemBuckets += itemBuckets;
+
+                perTemplate.TryGetValue(p.TemplateName, out var entry);
+                perTemplate[p.TemplateName] = (
+                    entry.placements + 1,
+                    breakable: true,
+                    entry.fragEntries == 0 ? fragEntries : entry.fragEntries,
+                    entry.frags == 0 ? frags : entry.frags,
+                    hasPcontent,
+                    entry.goldBuckets == 0 ? goldBuckets : entry.goldBuckets,
+                    entry.itemBuckets == 0 ? itemBuckets : entry.itemBuckets,
+                    maxLife);
+            }
+        }
+        perRegion.Add((regionPath, regPlacements, regBreakable, regPcontent));
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"siegefx region breakable-audit  —  {regionPaths.Count} region(s) walked");
+    Console.WriteLine($"  total placements          : {totalPlacements}");
+    Console.WriteLine($"  breakable placements      : {totalBreakable}");
+    Console.WriteLine($"  …with [inventory.pcontent]: {totalWithPcontent}");
+    Console.WriteLine($"  total break_particulate frag entries: {totalFragEntries}");
+    Console.WriteLine($"  total [gold*] buckets        : {totalGoldBuckets}");
+    Console.WriteLine($"  total item-drop buckets      : {totalItemBuckets}");
+
+    Console.WriteLine();
+    Console.WriteLine($"top {top} breakable templates by placement count:");
+    foreach (var kv in perTemplate.OrderByDescending(x => x.Value.placements).Take(top))
+    {
+        var v = kv.Value;
+        Console.WriteLine(
+            $"  {v.placements,4}x  life={v.maxLife,5:F0}  frags={v.frags,3}({v.fragEntries} entries)  " +
+            $"pcontent={(v.hasPcontent ? "Y" : "-")}  gold={v.goldBuckets} item={v.itemBuckets}  {kv.Key}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"top regions by breakable count:");
+    foreach (var r in perRegion.OrderByDescending(x => x.breakables).Take(top))
+        Console.WriteLine($"  {r.breakables,4} breakable / {r.withPcontent,3} with pcontent / {r.placements,5} placements  {r.path}");
+    return 0;
+}
+
+static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold, ref int items)
+{
+    foreach (var entry in bucket.Entries)
+    {
+        if (entry.IsGold) gold++;
+        else items++;
+    }
+    foreach (var child in bucket.Children)
+        CountBucketKinds(child, ref gold, ref items);
 }
 
 // Phase 21d-2a-iii prep — actor-coverage audit. Mirror of prop-textures but for the
