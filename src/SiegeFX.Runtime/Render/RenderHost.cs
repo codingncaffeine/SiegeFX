@@ -893,6 +893,11 @@ public sealed class RenderHost : IDisposable
     private readonly HashSet<string> _registeredPutDownCues = new(StringComparer.OrdinalIgnoreCase);
     private bool _questLogOpen;  // 'L' toggles; sibling overlay to inventory
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
+    // Phase 23-SC-OPTIONS-A — F10 (and pause menu's "Options" button in
+    // a future slice once we wire it through) opens the modal Options
+    // dialog with four tabs: Video, Audio, Input, Game. Skeleton lands
+    // chrome + state machine; per-tab controls follow in slices B–F.
+    private readonly OptionsMenuPanel _optionsMenu = new();
     // Phase 21d-2a-viii-b — pre-spawn character creator. Opens by default when
     // a play-region path runs and SIEGEFX_CREATOR != "0"; closes on Begin (then
     // TrySpawnPlayerWithPicker fires) or Cancel (falls through to env-var-only
@@ -1393,9 +1398,14 @@ void main()
                         CancelScrollDrag();
                         return;
                     }
+                    // Phase 23-SC-OPTIONS-A — Esc inside the Options dialog
+                    // closes it as Cancel (matches DS1's onescape →
+                    // notify(cancel_options) on the Cancel button) before
+                    // the pause-menu / dialogue / vendor handlers see it.
+                    if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     // Phase 20a/d: dialogue + vendor swallow Esc first so closing
                     // a chat or trade doesn't double up into the pause menu.
-                    if (_vendor.IsOpen) _vendor.Close();
+                    else if (_vendor.IsOpen) _vendor.Close();
                     else if (_dialogue.IsOpen) _dialogue.Close();
                     else _pauseMenu.Toggle();
                 }
@@ -1500,11 +1510,14 @@ void main()
                     _particles.SpawnSmoke(p + new Vector3(0f, 0.6f, 0f), new Vector4(0.4f, 0.4f, 0.42f, 0.6f), 0.9f, 3.0f, 16);
                     _particles.SpawnSpark(p, new Vector4(1.00f, 0.85f, 0.30f, 1f), 1.0f, 0.8f, 24);
                 }
-                else if (key == Key.F10 && _particles is not null && _player is not null)
+                else if (key == Key.F10 && _player is not null)
                 {
-                    var p = _player.CurrentTransform.Translation + new Vector3(0f, 0.4f, 0f);
-                    _particles.SpawnLightning(p + new Vector3(0f, 4.5f, 0f), p,
-                        new Vector4(0.7f, 0.85f, 1.0f, 1f), 0.35f);
+                    // Phase 23-SC-OPTIONS-A — F10 opens the Options Menu.
+                    // Matches DS1's `[game_options] input = key_f10` in
+                    // /config/input_bindings.gas. Toggle: a second F10
+                    // closes the menu (treated as Cancel).
+                    if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
+                    else _optionsMenu.Open();
                 }
                 else if (key == Key.F9)
                 {
@@ -1565,6 +1578,17 @@ void main()
                             _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
                         }
                     }
+                    return;
+                }
+                // Phase 23-SC-OPTIONS-A — Options dialog is modal and
+                // sits above pause menu / dialogue / vendor (in case
+                // they're somehow stacked). Its press handler latches
+                // OK / Cancel / Defaults so the click registers only on
+                // a press-and-release-on-the-same-button stroke.
+                if (_optionsMenu.IsOpen && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _optionsMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
@@ -1871,6 +1895,16 @@ void main()
                     }
                     return;
                 }
+                // Phase 23-SC-OPTIONS-A — same modal-priority order as
+                // OnMouseDown. Click-up on a tab swaps the active tab;
+                // click-up on OK / Cancel / Defaults fires the matching
+                // edge flag (consumed in OnUpdate's FlushOptionsMenu).
+                if (_optionsMenu.IsOpen && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _optionsMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
@@ -2009,6 +2043,13 @@ void main()
                                         _playerInventory.Count, _window.Size.X, _window.Size.Y);
                 if (_inventoryOpen)
                     _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
+                // Phase 23-SC-OPTIONS-A — hover state for tab + bottom
+                // buttons so the options dialog highlights under the cursor.
+                if (_optionsMenu.IsOpen)
+                {
+                    var sz = _window.FramebufferSize;
+                    _optionsMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -2039,7 +2080,7 @@ void main()
             {
                 if (_cameraMode != CameraMode.Chase) return;
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
-                    _pauseMenu.IsOpen || _creator.IsOpen) return;
+                    _pauseMenu.IsOpen || _creator.IsOpen || _optionsMenu.IsOpen) return;
                 if (wheel.Y == 0f) return;
                 _chaseDistance = Math.Clamp(
                     _chaseDistance - wheel.Y * ChaseZoomStep,
@@ -9334,6 +9375,13 @@ void main()
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
                 _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+            }
+            // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
+            // menu so a future "open Options from pause" hookup stacks
+            // visually correctly (Options on top of Pause's dim layer).
+            if (_optionsMenu.IsOpen && _barRenderer is not null)
+            {
+                _optionsMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
             }
             // Phase 21d-2a-viii-b: character creator. Topmost UI when open
             // (gates player spawn). Sits above pause because Esc-while-creator
