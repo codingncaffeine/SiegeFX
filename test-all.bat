@@ -163,6 +163,7 @@ echo   90. Phase 21-SC-SCROLL          - Full scroll-UI test (16-spell roster + 
 echo   91. Phase 21-SC-SPELL-VISUAL    - Primitive sweep (10 spells, one per slice A-H + sphere)
 echo   92. Phase 21-SC-BARREL          - Breakable barrels (cursor + spell + frags + loot, fh_r1)
 echo   93. Phase 23-SC-OPTIONS         - Options Menu (F10 in-game; 4 tabs Video/Audio/Input/Game)
+echo   94. Phase 24-MAINMENU            - Boot to main menu (no args; splash to logo drop to 7 buttons)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -262,6 +263,7 @@ if /i "%CHOICE%"=="90" goto T90
 if /i "%CHOICE%"=="91" goto T91
 if /i "%CHOICE%"=="92" goto T92
 if /i "%CHOICE%"=="93" goto T93
+if /i "%CHOICE%"=="94" goto T94
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2110,6 +2112,41 @@ set SIEGEFX_CREATOR=0
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_CREATOR=
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T94
+echo.
+echo --- Phase 24-MAINMENU: boot to main menu ---
+echo [Default no-args launch. Resolves DS1 install via SIEGEFX_DS1 env var or]
+echo [the GOG / Steam / retail-DVD common paths, then runs the splash sequence:]
+echo.
+echo   1. Microsoft splash (intro_microsoft.gas, 3-panel RAW alpha-anim)
+echo   2. GPG splash (intro_gaspowered.gas, same)
+echo   3. Bink-stub fade (1s placeholder for SC-MAINMENU-BINK)
+echo   4. "Dungeon Siege" sword drop on logo.asp via logo-enter.prs (2.17s)
+echo   5. Main menu - 7 buttons (Single Player / Multiplayer / Options / Continue
+echo                            / About / Exit / Credits)
+echo.
+echo [Working actions: Options (opens F10 dialog), About (overlay), Exit (close)]
+echo [Stubs (log "splinter SC-MAINMENU-X pending" on click): Single Player,
+echo  Continue, Multiplayer, Credits — region launch and sub-screens deferred]
+echo.
+echo [Esc on splash skips ahead to main menu. Esc on main menu quits.]
+echo.
+echo [Distributable: dotnet publish src/SiegeFX.Runtime -c Release -r win-x64]
+echo [               --self-contained -p:PublishSingleFile=true]
+echo [Produces a single ~36 MB SiegeFX.Runtime.exe under publish/win-x64/]
+echo.
+dotnet "%RUN%"
+set EXITCODE=%ERRORLEVEL%
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (

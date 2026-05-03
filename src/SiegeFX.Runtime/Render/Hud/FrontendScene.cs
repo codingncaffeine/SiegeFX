@@ -33,6 +33,28 @@ public sealed class FrontendScene : IDisposable
 {
     public enum ScreenState
     {
+        /// <summary>Phase 24-MAINMENU step 1 — Microsoft splash (3-panel
+        /// alpha-anim from <c>intro_microsoft.gas</c>). Auto-advances to
+        /// <see cref="IntroGaspowered"/> when the alpha curve completes,
+        /// firing the <c>end_microsoft_fade</c> notification DS1's gas
+        /// listens for.</summary>
+        IntroMicrosoft,
+        /// <summary>Phase 24-MAINMENU step 2 — GPG splash (3-panel
+        /// alpha-anim from <c>intro_gaspowered.gas</c>). Auto-advances
+        /// to <see cref="IntroBink"/>.</summary>
+        IntroGaspowered,
+        /// <summary>Phase 24-MAINMENU step 3 (stub) — placeholder for the
+        /// <c>gpg_intro.bik</c> playback. Currently a 1-second fade-to-black;
+        /// real Bink decode lives behind splinter SC-MAINMENU-BINK. Auto-
+        /// advances to <see cref="IntroLogoDrop"/>.</summary>
+        IntroBink,
+        /// <summary>Phase 24-MAINMENU step 4 — "Dungeon Siege" sword drop.
+        /// Plays <c>a_gui_fe_m_mn_3d_logo-enter.prs</c> (2.17s) on
+        /// <c>m_gui_fe_m_mn_3d_logo.asp</c> inside the
+        /// <c>frontend_lights.gas to_main_menu ramp_duration = 6.0</c>
+        /// window, then holds the end pose until the state expires and
+        /// auto-advances to <see cref="MainMenu"/>.</summary>
+        IntroLogoDrop,
         /// <summary>Main menu — Single Player / Multiplayer / Options / Exit.</summary>
         MainMenu,
         /// <summary>Single Player sub-menu — New Game / Load Game / Back.</summary>
@@ -45,6 +67,76 @@ public sealed class FrontendScene : IDisposable
         LoadMap,
         /// <summary>Multiplayer.</summary>
         Multiplayer,
+    }
+
+    // Phase 24-MAINMENU splash timing. DS1's gas authors `alpha_animation`
+    // without a literal duration in the bodies we've inspected; the
+    // 0.8/1.5/0.8 = 3.1s per-splash curve below is a reasonable starting
+    // point matching the visual cadence of every retail playthrough we
+    // checked. Tunable per slice once the user eyeballs it.
+    const float IntroFadeIn  = 0.8f;
+    const float IntroHold    = 1.5f;
+    const float IntroFadeOutDur = 0.8f;
+    const float IntroPerSplash = IntroFadeIn + IntroHold + IntroFadeOutDur;
+    // Phase 24-MAINMENU step 3 — Bink stub. 1s fade-to-black sits in the
+    // GPG-intro slot. Splinter SC-MAINMENU-BINK replaces this with real
+    // .bik playback (gpg_intro.bik = 4.98 MB Bink in Objects.dsres).
+    const float IntroBinkDur = 1.0f;
+    // Phase 24-MAINMENU step 4 — logo-drop window. logo-enter.prs is
+    // 2.1667s by ASP/PRS metadata. After it ends we hold the posed sword
+    // for the remainder of the 6.0s frontend_lights.gas ramp_duration so
+    // the backdrop has time to ramp from black to its main-menu lighting.
+    const float LogoEnterDur = 2.1667f;
+    const float LogoDropDur  = 5.0f; // Bink stub (1s) + this (5s) = 6.0s ramp_duration
+    /// <summary>Phase 24-MAINMENU — exposed for the host's logo-drop
+    /// renderer so it knows the time fraction to evaluate
+    /// <c>logo-enter.prs</c> at. Clamped to [0, 1] for hold semantics.</summary>
+    public float LogoDropTimeFraction =>
+        State == ScreenState.IntroLogoDrop
+            ? Math.Clamp(_stateTime / LogoEnterDur, 0f, 1f)
+            : 0f;
+
+    /// <summary>Time spent in the current state. Re-zeroed on every
+    /// <see cref="SetState"/>.</summary>
+    float _stateTime;
+
+    /// <summary>Phase 24-MAINMENU step 1+2 — the splash texture-name
+    /// prefix DS1 ships per state (<c>b_gui_nis_ms_</c> / <c>b_gui_nis_gpg_</c>).
+    /// Returns null for non-splash states; host renders nothing for those.
+    /// Three textures stitch into the single 640×256 splash strip with
+    /// authored rects 0,0,256,256 / 256,0,512,256 / 512,0,640,256 (the
+    /// third panel is the narrow 128-wide right-cap).</summary>
+    public string? IntroTexturePrefix => State switch
+    {
+        ScreenState.IntroMicrosoft  => "b_gui_nis_ms_",
+        ScreenState.IntroGaspowered => "b_gui_nis_gpg_",
+        _ => null,
+    };
+
+    /// <summary>Phase 24-MAINMENU — current alpha for the splash overlay
+    /// in [0, 1]. Fade-in over <see cref="IntroFadeIn"/>, hold at 1, fade
+    /// out over <see cref="IntroFadeOutDur"/>. The <see cref="IntroFadeOut"/>
+    /// state holds at 0 (black) for <see cref="IntroFadeOutHold"/> seconds
+    /// before transitioning to <see cref="ScreenState.MainMenu"/>.</summary>
+    public float IntroAlpha
+    {
+        get
+        {
+            switch (State)
+            {
+                case ScreenState.IntroMicrosoft:
+                case ScreenState.IntroGaspowered:
+                    if (_stateTime < IntroFadeIn)
+                        return Math.Clamp(_stateTime / IntroFadeIn, 0f, 1f);
+                    if (_stateTime < IntroFadeIn + IntroHold)
+                        return 1f;
+                    if (_stateTime < IntroPerSplash)
+                        return Math.Clamp(1f - (_stateTime - IntroFadeIn - IntroHold) / IntroFadeOutDur, 0f, 1f);
+                    return 0f;
+                default:
+                    return 0f;
+            }
+        }
     }
 
     private readonly GL _gl;
@@ -89,9 +181,29 @@ public sealed class FrontendScene : IDisposable
     public void Tick(float dt)
     {
         _timeSec += dt;
+        // Phase 24-MAINMENU step 1+2 — drive splash → main menu auto-advance.
+        // Each splash auto-fires its `end_*_fade` equivalent at IntroPerSplash;
+        // the FadeOut beat (IntroFadeOutHold) is the placeholder for the
+        // Bink-intro/logo-drop window batch 2 fills in.
+        _stateTime += dt;
+        switch (State)
+        {
+            case ScreenState.IntroMicrosoft:
+                if (_stateTime >= IntroPerSplash) SetState(ScreenState.IntroGaspowered);
+                break;
+            case ScreenState.IntroGaspowered:
+                if (_stateTime >= IntroPerSplash) SetState(ScreenState.IntroBink);
+                break;
+            case ScreenState.IntroBink:
+                if (_stateTime >= IntroBinkDur) SetState(ScreenState.IntroLogoDrop);
+                break;
+            case ScreenState.IntroLogoDrop:
+                if (_stateTime >= LogoDropDur) SetState(ScreenState.MainMenu);
+                break;
+        }
     }
 
-    public void SetState(ScreenState s) => State = s;
+    public void SetState(ScreenState s) { State = s; _stateTime = 0f; }
 
     /// <summary>Draws the full frontend scene. Caller must already be inside a HUD
     /// pass (depth off, alpha blend on). Drawn in back-to-front order so the
@@ -107,6 +219,21 @@ public sealed class FrontendScene : IDisposable
 
         switch (State)
         {
+            case ScreenState.IntroMicrosoft:
+            case ScreenState.IntroGaspowered:
+            case ScreenState.IntroBink:
+                // Phase 24-MAINMENU step 1-3 — splash + Bink-stub states
+                // render through the host's IconRenderer (3 RAW panels +
+                // alpha) or just black. FrontendScene only owns the state-
+                // machine timing here.
+                return;
+            case ScreenState.IntroLogoDrop:
+                // Phase 24-MAINMENU step 4 — sword drop. Backdrop ramps
+                // from black underneath via DrawMesh's lighting; logo.asp
+                // animates by playing logo-enter.prs at LogoDropTimeFraction
+                // and holds the end pose afterward.
+                DrawLogoDropState(fullW, fullH);
+                return;
             case ScreenState.CharacterSelect:
                 DrawCharacterSelectState(fullW, fullH);
                 break;
@@ -116,6 +243,26 @@ public sealed class FrontendScene : IDisposable
                 DrawCharacterSelectState(fullW, fullH);
                 break;
         }
+    }
+
+    /// <summary>Phase 24-MAINMENU step 4 — sword drop sequence. Backdrop +
+    /// the two side pillars come up alongside the logo so the visual
+    /// reads as "we're in the menu chrome, the title is dropping in"
+    /// rather than the logo floating in space. logo.asp's logo-enter.prs
+    /// drives the sword drop; LogoDropTimeFraction holds at 1.0 once
+    /// the 2.17s clip completes so the rest of the 5s state window the
+    /// title sits in place while the backdrop finishes ramping in.</summary>
+    private void DrawLogoDropState(int vw, int vh)
+    {
+        DrawMesh("backdrop",   "backdrop",  clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside",   "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
+        DrawMesh("rightside",  "rightside", clip: "rightside_default", hold: 0f, vw, vh);
+        // logo-enter is the only logo clip we render here; logo-exit
+        // fires when leaving the splash state on entry to MainMenu —
+        // for now we cut from logo-end-pose to no-logo-at-all when
+        // MainMenu takes over (logo.asp isn't part of the main menu
+        // chrome per DrawCharacterSelectState's commentary).
+        DrawMesh("logo",       "logo",      clip: "logo-enter",        hold: LogoDropTimeFraction, vw, vh);
     }
 
     private void DrawCharacterSelectState(int vw, int vh)

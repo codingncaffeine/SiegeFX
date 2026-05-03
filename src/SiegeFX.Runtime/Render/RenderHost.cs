@@ -35,6 +35,14 @@ public sealed class RenderHost : IDisposable
     private readonly IReadOnlyList<string>? _skritClipPaths;
     private readonly string? _playLogicTankPath;
     private readonly string? _playObjectsTankPath;
+    // Phase 24-MAINMENU — boot-mode state. _bootMode=true when the user
+    // launched siegefx.exe with no positional args; OnLoad opens the standard
+    // DS1 tanks under _ds1ResourcesDir, builds a frontend resolver, and
+    // drives the splash → main menu state machine via _frontendScene.
+    // _noVideo (DS1's nointro=true) skips the splash sequence entirely.
+    private readonly bool _bootMode;
+    private readonly string? _ds1ResourcesDir;
+    private readonly bool _noVideo;
 
     // Phase 10e — play-region mode. Populated by LoadPlayActors from a spawned ActorSpawner;
     // OnUpdate ticks the runtime + drains the bus each 20 Hz step, OnRender issues a skinned
@@ -904,6 +912,13 @@ public sealed class RenderHost : IDisposable
     // chrome + state machine; per-tab controls follow in slices B–F.
     private readonly OptionsMenuPanel _optionsMenu = new();
     bool _optionsAudioHookWired;
+    // Phase 24-MAINMENU step 5+6 — main menu panel. Active only while the
+    // FrontendScene is in the MainMenu state (boot path); click events
+    // surface through ConsumeAction in OnUpdate.
+    private readonly MainMenuPanel _mainMenu = new();
+    // Phase 24-MAINMENU step 6 — About sub-screen overlay. Toggle from main
+    // menu's About button; Esc / clicking outside dismisses.
+    private bool _aboutOpen;
     // Phase 23-SC-OPTIONS-FOLD2 — Game-tab "Show Framerate" toggle. ApplyOptionsRuntime
     // sets it on commit; OnRender draws a small string at top-right when true.
     bool _showFps;
@@ -1323,7 +1338,15 @@ void main()
         string? animAspPath = null, string? animPrsPath = null, string? animTexturePath = null,
         string? skritPath = null, IReadOnlyList<string>? skritClipPaths = null,
         string? playLogicTankPath = null, string? playObjectsTankPath = null,
-        bool diagMode = false)
+        bool diagMode = false,
+        // Phase 24-MAINMENU step 1+2 — when bootMode is set, OnLoad opens the
+        // standard DS1 tanks under ds1ResourcesDir and the splash → main menu
+        // sequence drives the scene instead of any per-CLI-flag region/anim
+        // entry. noVideo skips the splash sequence and jumps straight to the
+        // main menu state (DS1's `nointro=true`).
+        bool bootMode = false,
+        string? ds1ResourcesDir = null,
+        bool noVideo = false)
     {
         _meshPath = meshPath;
         _texturePath = texturePath;
@@ -1341,6 +1364,9 @@ void main()
         _playLogicTankPath = playLogicTankPath;
         _playObjectsTankPath = playObjectsTankPath;
         _diagMode = diagMode;
+        _bootMode = bootMode;
+        _ds1ResourcesDir = ds1ResourcesDir;
+        _noVideo = noVideo;
         var opts = WindowOptions.Default with
         {
             Title = title,
@@ -1416,6 +1442,35 @@ void main()
                         CancelScrollDrag();
                         return;
                     }
+                    // Phase 24-MAINMENU step 1+2-FOLD — Esc during the splash
+                    // sequence skips straight to the main menu state (DS1's
+                    // canonical "skip the intro" behavior). Without this gate,
+                    // Esc fell through to _pauseMenu.Toggle() which opened a
+                    // Save/Load/Resume menu over a half-faded splash with no
+                    // _player to act on.
+                    if (_bootMode && _frontendScene is not null
+                        && (_frontendScene.State == Hud.FrontendScene.ScreenState.IntroMicrosoft
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroGaspowered
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroBink
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoDrop))
+                    {
+                        _frontendScene.SetState(Hud.FrontendScene.ScreenState.MainMenu);
+                        return;
+                    }
+                    // Phase 24-MAINMENU step 6 — About overlay closes on
+                    // Esc before any other handler. Gameplay-stack pause
+                    // menu has no business in boot mode anyway since
+                    // there's no game state to pause.
+                    if (_aboutOpen) { _aboutOpen = false; return; }
+                    // Phase 24-MAINMENU step 5+6 — Esc on main menu = quit
+                    // (DS1's behavior). No pause menu to fall through to.
+                    if (_bootMode && _frontendScene is not null
+                        && _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
+                        && !_optionsMenu.IsOpen)
+                    {
+                        _window.Close();
+                        return;
+                    }
                     // Phase 23-SC-OPTIONS-A — Esc inside the Options dialog
                     // closes it as Cancel (matches DS1's onescape →
                     // notify(cancel_options) on the Cancel button) before
@@ -1425,6 +1480,13 @@ void main()
                     // a chat or trade doesn't double up into the pause menu.
                     else if (_vendor.IsOpen) _vendor.Close();
                     else if (_dialogue.IsOpen) _dialogue.Close();
+                    // Phase 24-MAINMENU step 5+6-FOLD — pause menu is a
+                    // gameplay-stack overlay with Save / Load / Resume; in
+                    // boot mode there's no loaded world to act on, so Esc
+                    // falling through to a Save-against-null-state would
+                    // either NRE or write a corrupt save. Quit the window
+                    // instead, matching DS1's "Esc on the menu = exit."
+                    else if (_bootMode) _window.Close();
                     else _pauseMenu.Toggle();
                 }
                 // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
@@ -1607,6 +1669,22 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _optionsMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
+                // Phase 24-MAINMENU step 5+6 — main menu eats LMB while
+                // active. About sub-screen click-outside-to-close also
+                // swallows LMB regardless of where it lands.
+                if (_aboutOpen && btn == MouseButton.Left)
+                {
+                    _aboutOpen = false;
+                    return;
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mainMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
@@ -1933,6 +2011,17 @@ void main()
                     _optionsMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                // Phase 24-MAINMENU step 5+6 — main menu click-up commits
+                // the action; OnUpdate's HandleMainMenuActions drains
+                // _mainMenu.ConsumeAction() the same frame.
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mainMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
@@ -2077,6 +2166,14 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _optionsMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                // Phase 24-MAINMENU step 5+6 — main menu hover updates so
+                // buttons highlight under the cursor while it's active.
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mainMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -2225,6 +2322,15 @@ void main()
         if (_regionMapTankPath is not null && _playLogicTankPath is not null
             && _playObjectsTankPath is not null && _regionPath is not null)
             DiagTime("play actors", () => LoadPlayActors(_regionMapTankPath, _playLogicTankPath, _playObjectsTankPath, _regionPath));
+
+        // Phase 24-MAINMENU step 1+2 — no-args boot path. Opens the DS1 tanks
+        // resolved by Program.cs, builds the frontend asset resolver, and
+        // kicks off the splash sequence (or jumps straight to main menu when
+        // --noVideo was passed). The hosting flow shares OnRender + OnUpdate
+        // with every other mode, so the splash is just another HUD layer
+        // that runs while the world isn't loaded.
+        if (_bootMode && _ds1ResourcesDir is not null)
+            DiagTime("boot mode", () => LoadBootMode(_ds1ResourcesDir, _noVideo));
 
         if (_animAspPath is not null && _animPrsPath is not null)
             DiagTime("anim", () => LoadAnim(_animAspPath, _animPrsPath, _animTexturePath));
@@ -2425,6 +2531,91 @@ void main()
         _camera.Yaw = 0;
         _camera.Pitch = 0;
     }
+
+    /// <summary>Phase 24-MAINMENU step 1+2 — bring up the minimum surface needed for
+    /// the splash → main menu sequence. Opens Logic.dsres + Objects.dsres under
+    /// <paramref name="ds1Resources"/> (which Program.cs already verified contains
+    /// Logic.dsres) and stashes them on the RenderHost fields that gameplay
+    /// later reuses, builds the same <c>AssetResolver</c> shape <c>LoadPlayActors</c>
+    /// uses (Objects last → Logic patches over Objects), spins the audio engine
+    /// + music player so the frontend mp3 can stream during the menu, and seeds
+    /// the <c>FrontendScene</c> at the splash entry state. <paramref name="noVideo"/>
+    /// (DS1's <c>nointro=true</c> equivalent) skips the splash entirely and jumps
+    /// straight to the main menu state.
+    /// <para>Doesn't load a region or actor list — those only spawn after New
+    /// Game / Continue / Load Game commits the player to gameplay (Phase 24
+    /// step 5+).</para></summary>
+    private void LoadBootMode(string ds1Resources, bool noVideo)
+    {
+        if (_gl is null) return;
+        var logicPath   = Path.Combine(ds1Resources, "Logic.dsres");
+        var objectsPath = Path.Combine(ds1Resources, "Objects.dsres");
+        // Phase 24-MAINMENU step 1+2-FOLD — fail loudly when the tanks
+        // we resolved aren't actually openable. Pre-fold this returned
+        // silently with _bootSplashActive=false and the user got a
+        // black window forever; now we close the window so the
+        // top-level catch can persist a crash-log entry the .exe
+        // double-launcher can find.
+        if (!File.Exists(logicPath) || !File.Exists(objectsPath))
+        {
+            var msg = $"boot: Logic.dsres or Objects.dsres missing under {ds1Resources} — set SIEGEFX_DS1 to a valid Dungeon Siege install.";
+            Console.Error.WriteLine("  " + msg);
+            throw new FileNotFoundException(msg);
+        }
+        try
+        {
+            _playLogicTank   = TankFile.Open(logicPath);
+            _playObjectsTank = TankFile.Open(objectsPath);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  boot: tank open failed — {ex.Message}");
+            throw;
+        }
+        var logicReader   = new TankReader(_playLogicTank);
+        var objectsReader = new TankReader(_playObjectsTank);
+        var resolver = new SiegeFX.Core.Assets.AssetResolver();
+        resolver.Add(objectsReader, "Objects.dsres");
+        resolver.Add(logicReader,   "Logic.dsres");
+        _playResolver = resolver;
+        Console.WriteLine($"  boot: tanks open ({logicPath}, {objectsPath})");
+
+        // Audio comes up so the frontend music slot (s_m_Frontend.mp3 per
+        // /ui/config/frontend_music/frontend_music.gas) can stream during
+        // the menu. Sound.dsres is the music + SFX tank; same path treatment
+        // as LoadPlayActors so we don't drift between the two boot routes.
+        try
+        {
+            var soundPath = Path.Combine(ds1Resources, "Sound.dsres");
+            if (File.Exists(soundPath))
+            {
+                _playSoundTank = TankFile.Open(soundPath);
+                _audio = SiegeFX.Audio.AudioEngine.TryCreate();
+                _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
+            }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"  boot: audio init failed — {ex.Message}"); }
+
+        // Spin the frontend scene now that GL + resolver are live. EnsureFrontendScene
+        // builds the 8-mesh chrome composer; SetState below picks the start screen.
+        EnsureFrontendScene();
+        if (_frontendScene is not null)
+        {
+            // --noVideo (DS1 nointro=true) skips both splashes and the logo
+            // drop, jumping straight to the main menu state. Otherwise we
+            // start at the Microsoft splash and let the state machine
+            // advance through GPG → logo drop → main menu on its own.
+            _frontendScene.SetState(noVideo
+                ? SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.MainMenu
+                : SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.IntroMicrosoft);
+            _bootSplashActive = !noVideo;
+        }
+    }
+
+    // Phase 24-MAINMENU — true while the splash → main menu transition is
+    // running so OnRender knows to draw the frontend layer instead of the
+    // (non-existent) gameplay scene. Cleared once the menu state stabilizes.
+    private bool _bootSplashActive;
 
     /// <summary>Loads every region in the map tank stitched into one world. Shares the
     /// per-mesh / per-texture caches so the 77k-instance MpWorld costs the same in GPU
@@ -4728,6 +4919,16 @@ void main()
         // main thread). Both branches clear the pending args.
         FlushCreator();
         FlushOptionsMenu();
+        // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
+        // (not inside DrawBootScene) so the boot sequence keeps advancing
+        // even when the render loop is paused (e.g. minimized window).
+        if (_bootMode && _frontendScene is not null) _frontendScene.Tick((float)dt);
+        // Phase 24-MAINMENU step 5+6 — drain main menu click actions one
+        // per frame. Drives state transitions, opens sub-screens, fires
+        // _window.Close on Exit. Stub buttons (Multiplayer / Continue /
+        // Credits) currently no-op so a click is consumed without effect
+        // until their splinters land.
+        FlushMainMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -5095,6 +5296,50 @@ void main()
     /// DungeonSiege.ini writeback splinter to actually take effect
     /// on next launch). Cancel discards staged. Defaults resets the
     /// active tab from /config/options.gas defaults inline.</summary>
+    /// <summary>Phase 24-MAINMENU step 5+6 — translate main menu button
+    /// actions into runtime side-effects. Each branch is the click handler
+    /// for one of main_menu.gas's seven notify() names.</summary>
+    private void FlushMainMenu()
+    {
+        if (!_bootMode) return;
+        if (_frontendScene is null
+            || _frontendScene.State != Hud.FrontendScene.ScreenState.MainMenu) return;
+        // The menu only takes input while no sub-screen / dialog is on top.
+        _mainMenu.IsActive = !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen;
+        var act = _mainMenu.ConsumeAction();
+        switch (act)
+        {
+            case MainMenuPanel.Action.None:
+                break;
+            case MainMenuPanel.Action.Options:
+                _optionsMenu.Open();
+                break;
+            case MainMenuPanel.Action.About:
+                _aboutOpen = true;
+                break;
+            case MainMenuPanel.Action.Exit:
+                _window.Close();
+                break;
+            case MainMenuPanel.Action.SinglePlayer:
+            case MainMenuPanel.Action.Continue:
+            case MainMenuPanel.Action.Multiplayer:
+            case MainMenuPanel.Action.Credits:
+                // Stubs — SinglePlayer routes to splinter SC-MAINMENU-NEWGAME
+                // which has to wire region paths from _ds1ResourcesDir +
+                // open the creator panel + run LoadPlayActors without
+                // --play-region CLI args; pre-fold the quick-and-dirty
+                // version transitioned the FrontendScene to CharacterSelect
+                // but left the user stuck because the creator never opened
+                // and Esc didn't close the menu (audit finding #1, batch 3).
+                // Continue / Multiplayer / Credits get their own splinters.
+                // Each click is consumed but no-op for now; clear hover so
+                // the button doesn't read as "still selectable" after.
+                Console.WriteLine($"  main menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
+                _mainMenu.ClearHover();
+                break;
+        }
+    }
+
     private void FlushOptionsMenu()
     {
         // Phase 23-SC-OPTIONS-FOLD — wire the live-apply event once
@@ -5281,6 +5526,168 @@ void main()
             Console.WriteLine($"  frontend scene load failed: {ex.Message} (falling back to scaffold)");
             _frontendScene = null;
         }
+    }
+
+    // Phase 24-MAINMENU step 1+2 — splash texture cache. Loaded lazily as the
+    // state machine enters each splash; both sets stay resident afterward
+    // (~1.6 MB total, never enough to matter). Keyed by texture name so the
+    // same lookup pattern works once batch 2 wires logo.asp's PRS clip
+    // textures through the same path.
+    private readonly Dictionary<string, GlTexture?> _splashTexCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Phase 24-MAINMENU step 1+2 — render the splash → main menu
+    /// frame for boot mode. Drives the FrontendScene state machine via
+    /// Tick(dt) and renders the active splash's three panels with the
+    /// state-driven alpha. Subsequent batches replace the FadeOut beat
+    /// with the gpg_intro.bik playback + logo drop, and the MainMenu
+    /// state with the real 7-button frontend chrome.</summary>
+    private void DrawBootScene(float dt, int viewportW, int viewportH)
+    {
+        if (_frontendScene is null || _barRenderer is null || _iconRenderer is null
+            || _textRenderer is null || _playResolver is null) return;
+        // Phase 24-MAINMENU step 1+2-FOLD — Tick moved to OnUpdate so the
+        // splash advances even when Render is paused (e.g. window minimized).
+        // Solid black backdrop — the splash strip is centered on a 640×480
+        // authored canvas and we letterbox the rest.
+        _textRenderer.BeginPass();
+        _barRenderer.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH,
+            new Vector4(0f, 0f, 0f, 1f));
+
+        var prefix = _frontendScene.IntroTexturePrefix;
+        var alpha  = _frontendScene.IntroAlpha;
+        if (prefix is not null && alpha > 0f)
+        {
+            // Authored canvas is 640×480; uniform-scale by the smaller of
+            // the two viewport-to-authored ratios so the splash never
+            // crops, then center on whatever space remains.
+            float s = MathF.Min(viewportH / 480f, viewportW / 640f);
+            int dx = (viewportW - (int)MathF.Round(640 * s)) / 2;
+            int dy = (viewportH - (int)MathF.Round(480 * s)) / 2;
+            // intro_microsoft.gas / intro_gaspowered.gas authored rects:
+            //   panel_1 = 0,0,256,256 → b_gui_nis_<set>_01
+            //   panel_2 = 256,0,512,256 → b_gui_nis_<set>_02
+            //   panel_3 = 512,0,640,256 → b_gui_nis_<set>_03 (memory says
+            //              .raw is 256×128; rect is 128×256 — host stretches
+            //              non-uniformly. Visual verification pending in
+            //              batch 1 self-test; flag in
+            //              project_siegefx_frontend_assets.md if wrong.)
+            DrawSplashPanel(prefix + "01", 0,   0, 256, 256, s, dx, dy, alpha, viewportW, viewportH);
+            DrawSplashPanel(prefix + "02", 256, 0, 256, 256, s, dx, dy, alpha, viewportW, viewportH);
+            DrawSplashPanel(prefix + "03", 512, 0, 128, 256, s, dx, dy, alpha, viewportW, viewportH);
+        }
+        // Phase 24-MAINMENU step 1-6 — once the splash sequence drains
+        // past the Bink-stub fade, hand drawing to the existing
+        // FrontendScene composer. IntroLogoDrop renders backdrop + sides
+        // + logo.asp with logo-enter.prs; MainMenu reuses the existing
+        // CharacterSelect chrome as a known-working backdrop and drops
+        // the 7-button MainMenuPanel + optional About overlay on top.
+        else if (_frontendScene.State != Hud.FrontendScene.ScreenState.IntroBink)
+        {
+            _frontendScene.Draw(viewportW, viewportH);
+            if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
+            {
+                _mainMenu.Draw(_barRenderer, _textRenderer, viewportW, viewportH);
+                if (_aboutOpen)
+                    DrawAboutOverlay(viewportW, viewportH);
+            }
+        }
+        _textRenderer.EndPass();
+    }
+
+    /// <summary>Phase 24-MAINMENU step 6 — placeholder About sub-screen.
+    /// Modal dim + a centered card with title + copyright text + a "click
+    /// anywhere to close" hint. Future splinter SC-MAINMENU-ABOUT-RAW will
+    /// load the shipped <c>about_dialog.gas</c> layout + swap the card for
+    /// DS1's wood-bordered chrome.</summary>
+    private void DrawAboutOverlay(int viewportW, int viewportH)
+    {
+        if (_barRenderer is null || _textRenderer is null) return;
+        // Modal scrim — same 60% black PauseMenu / OptionsMenu use, so
+        // the About card reads as the topmost layer regardless of what's
+        // behind it.
+        _barRenderer.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH,
+            new Vector4(0f, 0f, 0f, 0.60f));
+        // Centered card sized at 800x600-authored 480x240 (so it scales
+        // proportionally with the menu chrome).
+        float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
+        int fontScale = Math.Max(1, (int)MathF.Round(scale));
+        int cw = (int)MathF.Round(480 * scale);
+        int ch = (int)MathF.Round(240 * scale);
+        int cx = (viewportW - cw) / 2;
+        int cy = (viewportH - ch) / 2;
+        _barRenderer.DrawRect(viewportW, viewportH, cx, cy, cw, ch,
+            new Vector4(0.10f, 0.06f, 0.04f, 0.95f));
+        // Hand-rolled 1px border (matches MainMenuPanel.DrawBorder).
+        var border = new Vector4(0.65f, 0.50f, 0.30f, 1f);
+        _barRenderer.DrawRect(viewportW, viewportH, cx,          cy,            cw, 1,  border);
+        _barRenderer.DrawRect(viewportW, viewportH, cx,          cy + ch - 1,   cw, 1,  border);
+        _barRenderer.DrawRect(viewportW, viewportH, cx,          cy,            1,  ch, border);
+        _barRenderer.DrawRect(viewportW, viewportH, cx + cw - 1, cy,            1,  ch, border);
+        var ink    = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+        var inkDim = new Vector4(0.65f, 0.55f, 0.40f, 1f);
+        // Multi-line text. Plain copperplate, scale_aware vertical stride.
+        var lines = new[]
+        {
+            "About SiegeFX",
+            "",
+            "Open-source Dungeon Siege 1 reimplementation.",
+            "MIT-licensed; ships no copyrighted assets.",
+            "Requires the original Dungeon Siege game data.",
+            "",
+            "Dungeon Siege © 2002 Gas Powered Games / Microsoft.",
+            "",
+            "(click anywhere or press Esc to close)",
+        };
+        int lineH = 16 * fontScale;
+        int totalH = lines.Length * lineH;
+        int ty = cy + (ch - totalH) / 2;
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var s = lines[i];
+            int tw = _textRenderer.MeasureWidth(s, fontScale);
+            int tx = cx + (cw - tw) / 2;
+            var color = (i == 0 || i == lines.Length - 1) ? ink : inkDim;
+            _textRenderer.DrawString(viewportW, viewportH, s, tx, ty + i * lineH, color, fontScale);
+        }
+    }
+
+    /// <summary>Helper for <see cref="DrawBootScene"/>: resolve a splash
+    /// RAW by basename through the play resolver, cache the upload, and
+    /// blit at the authored rect (scale-translated to viewport pixels).
+    /// Silent no-op when the texture can't be resolved so a missing asset
+    /// just leaves a black hole rather than crashing the boot path.</summary>
+    private void DrawSplashPanel(string texName, int ax, int ay, int aw, int ah,
+                                 float scale, int dx, int dy, float alpha,
+                                 int viewportW, int viewportH)
+    {
+        if (_iconRenderer is null || _gl is null || _playResolver is null) return;
+        if (!_splashTexCache.TryGetValue(texName, out var tex))
+        {
+            try
+            {
+                if (!_playResolver.TryLoadByBasename(texName + ".raw", out var bytes))
+                {
+                    _splashTexCache[texName] = null!;
+                    Console.Error.WriteLine($"  boot: splash tex '{texName}.raw' not found");
+                    return;
+                }
+                var raw = SiegeFX.Core.Assets.RawImage.Load(bytes);
+                tex = new GlTexture(_gl, raw);
+                _splashTexCache[texName] = tex;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  boot: splash tex '{texName}' load failed — {ex.Message}");
+                return;
+            }
+        }
+        if (tex is null) return;
+        int rx = dx + (int)MathF.Round(ax * scale);
+        int ry = dy + (int)MathF.Round(ay * scale);
+        int rw = (int)MathF.Round(aw * scale);
+        int rh = (int)MathF.Round(ah * scale);
+        _iconRenderer.DrawIcon(viewportW, viewportH, tex, rx, ry, rw, rh,
+            new Vector4(1f, 1f, 1f, alpha));
     }
 
     /// <summary>21d-2a-viii-b — entry point shared by env-var spawn (no UI) and
@@ -8679,6 +9086,13 @@ void main()
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
         var size = _window.FramebufferSize;
+
+        // Phase 24-MAINMENU step 1+2 — boot mode renders the splash → main
+        // menu sequence in the absence of a loaded region. Runs early so
+        // the gameplay-render block below (which checks for null tanks /
+        // null player and silently skips) sees a black-cleared frame; the
+        // splash overlay is drawn by DrawBootScene at the HUD-pass site.
+        if (_bootMode) DrawBootScene((float)dt, size.X, size.Y);
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
 
@@ -10290,6 +10704,12 @@ void main()
         _staticProps.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
+        // Phase 24-MAINMENU step 1+2-FOLD — splash texture cache. Six
+        // GlTextures across both splash sets; trivial leak in raw bytes
+        // but the OnClosing invariant is "every cache disposed before
+        // the GL context dies."
+        foreach (var tex in _splashTexCache.Values) tex?.Dispose();
+        _splashTexCache.Clear();
         // Phase 21d-2a-ii — multiple slot keys may resolve to the same GlTexture
         // when a template overrides slot 0 to the same name shipped in slot 1
         // (or via texset suffix probing). Dispose unique instances only.

@@ -18,12 +18,20 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 };
 
 // Invocation shapes:
+//   SiegeFX.Runtime                                          → boot to main menu (Phase 24)
 //   SiegeFX.Runtime [mesh.sno|mesh.asp] [texture.raw | tank.dsres]
 //   SiegeFX.Runtime --region <map-tank> <terrain-tank> <region-path>
 //   SiegeFX.Runtime --world  <map-tank> <terrain-tank> [root-region]
 //   SiegeFX.Runtime --anim   <rigged.asp> <clip.prs> [texture.raw]
 //   SiegeFX.Runtime --skrit-anim <rigged.asp> <skrit> <clip0.prs> [clip1.prs ...] [--texture <raw>]
 //   SiegeFX.Runtime --play-region <map-tank> <terrain-tank> <logic-tank> <objects-tank> <region-path>
+//
+// Phase 24-MAINMENU step 1+2 — when invoked with no positional args (or with
+// only the top-level --diag / --noVideo flags), the runtime enters boot mode:
+// resolves a DS1 install via env var SIEGEFX_DS1 or a list of common paths,
+// opens Logic.dsres + Objects.dsres, and runs the splash → main menu sequence.
+// All --<verb> shapes above remain available for dev use; test-all.bat keeps
+// working unchanged.
 string? meshPath = null;
 string? texturePath = null;
 string? regionMap = null;
@@ -40,6 +48,9 @@ List<string>? skritClips = null;
 string? playLogic = null;
 string? playObjects = null;
 bool diagMode = false;
+bool noVideo = false;
+bool bootMode = false;
+string? ds1Resources = null;
 
 // Phase 21b-1 — `--diag` is a top-level flag that pairs with any other
 // invocation. It enables: per-stage Stopwatch timing inside OnLoad and a
@@ -52,6 +63,11 @@ bool diagMode = false;
     foreach (var a in args)
     {
         if (string.Equals(a, "--diag", StringComparison.OrdinalIgnoreCase)) diagMode = true;
+        // Phase 24-MAINMENU — DS1's nointro=true equivalent. Skips the
+        // Microsoft + GPG splashes and the logo drop, going straight to
+        // the main menu state. Pairs cleanly with boot mode but is also
+        // honored on --play-region paths that route through the frontend.
+        else if (string.Equals(a, "--noVideo", StringComparison.OrdinalIgnoreCase)) noVideo = true;
         else filtered.Add(a);
     }
     args = filtered.ToArray();
@@ -145,14 +161,86 @@ else if (args.Length >= 1 && args[0] == "--skrit-anim")
     }
     if (skritClips.Count == 0) { Console.Error.WriteLine("--skrit-anim requires at least one clip"); return 1; }
 }
+else if (args.Length == 0)
+{
+    // Phase 24-MAINMENU step 1+2 — no-args = boot to main menu.
+    // Resolve a DS1 install: env var SIEGEFX_DS1 wins, then probe the
+    // common GOG / Steam / retail-DVD paths. If nothing resolves, the
+    // user gets a friendly hint instead of a silent black window.
+    bootMode = true;
+    ds1Resources = ResolveDs1Resources();
+    if (ds1Resources is null)
+    {
+        // Persist the failure to siegefx_crash.log too — the .exe is
+        // typically double-launched without a console attached, so stderr
+        // alone is invisible. Same pattern the host.Run crash net uses.
+        var msg = new System.Text.StringBuilder();
+        msg.AppendLine("siegefx: couldn't find a Dungeon Siege install. Tried:");
+        foreach (var p in CandidateDs1Paths()) msg.AppendLine($"   {p}");
+        msg.AppendLine("Set the SIEGEFX_DS1 env var to your install path (the folder");
+        msg.AppendLine("containing Resources\\Logic.dsres) and re-launch.");
+        Console.Error.Write(msg.ToString());
+        try { System.IO.File.WriteAllText(crashLogPath, msg.ToString()); } catch { }
+        return 1;
+    }
+}
 else
 {
     meshPath    = args.Length > 0 ? args[0] : null;
     texturePath = args.Length > 1 ? args[1] : null;
 }
 
+static IEnumerable<string> CandidateDs1Paths()
+{
+    var env = Environment.GetEnvironmentVariable("SIEGEFX_DS1");
+    if (!string.IsNullOrEmpty(env)) yield return env;
+    yield return @"D:\GOG Games\Dungeon Siege";
+    yield return @"C:\GOG Games\Dungeon Siege";
+    yield return @"C:\Program Files (x86)\GOG Galaxy\Games\Dungeon Siege";
+    yield return @"C:\Program Files (x86)\Steam\steamapps\common\Dungeon Siege 1";
+    yield return @"C:\Program Files\Steam\steamapps\common\Dungeon Siege 1";
+    yield return @"C:\Program Files (x86)\Microsoft Games\Dungeon Siege";
+    yield return @"C:\Program Files\Microsoft Games\Dungeon Siege";
+}
+
+static string? ResolveDs1Resources()
+{
+    // Honor SIEGEFX_DS1 strictly — if the user set it, treat it as a hard
+    // override. Falling silently through to the autodetect candidates
+    // when the env var points to a missing path swallows a configuration
+    // error the user is actively trying to make visible.
+    var env = Environment.GetEnvironmentVariable("SIEGEFX_DS1");
+    if (!string.IsNullOrEmpty(env))
+    {
+        var resolved = TryResolveOne(env);
+        if (resolved is not null) return resolved;
+        Console.Error.WriteLine($"siegefx: SIEGEFX_DS1='{env}' set but no Logic.dsres found there.");
+        return null;
+    }
+    foreach (var root in CandidateDs1Paths())
+    {
+        var resolved = TryResolveOne(root);
+        if (resolved is not null) return resolved;
+    }
+    return null;
+
+    static string? TryResolveOne(string root)
+    {
+        if (string.IsNullOrEmpty(root)) return null;
+        // Honor either the install root (containing Resources\) or a
+        // direct pointer to the Resources folder so power-users can
+        // skip the install-root layer entirely.
+        var withResources = System.IO.Path.Combine(root, "Resources");
+        if (System.IO.File.Exists(System.IO.Path.Combine(withResources, "Logic.dsres")))
+            return withResources;
+        if (System.IO.File.Exists(System.IO.Path.Combine(root, "Logic.dsres")))
+            return root;
+        return null;
+    }
+}
+
 using var host = new RenderHost(
-    "SiegeFX  —  RMB+WASD to fly, Shift to sprint, Esc to quit",
+    bootMode ? "Dungeon Siege" : "SiegeFX  —  RMB+WASD to fly, Shift to sprint, Esc to quit",
     meshPath: meshPath,
     texturePath: texturePath,
     regionMapTankPath: regionMap,
@@ -168,7 +256,10 @@ using var host = new RenderHost(
     skritClipPaths: skritClips,
     playLogicTankPath: playLogic,
     playObjectsTankPath: playObjects,
-    diagMode: diagMode);
+    diagMode: diagMode,
+    bootMode: bootMode,
+    ds1ResourcesDir: ds1Resources,
+    noVideo: noVideo);
 try
 {
     host.Run();
