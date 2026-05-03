@@ -613,18 +613,30 @@ public sealed class SfxRuntime
             }
             case EmitterMode.Fireb:
             {
-                // Phase 21-SC-SPELL-VFX-3g — `fireb` is a directional fire
-                // emitter (dragon_fire's flame cones, spell_flame's burst).
-                // First-pass: SpawnFire one-shot at the anchor, sized by
-                // flamesize, with count from the param string. Real DS1
-                // shape (forward-emitting cone with velocity/accel) needs
-                // a directional-emitter primitive — flagged as a tweak
-                // candidate.
+                // Phase 21-SC-SPELL-VISUAL-C — DS1 fireb = directional fire
+                // cone. Per the agent inventory of 5 fireb sites
+                // (dragon_fire / flame / inferno / pestilence / pestilence_
+                // cloud), particles emit in `velocity(x,y,z)` direction,
+                // scattered laterally within a cone defined by lower_r0/r1
+                // and upper_r0/r1. Layered flame+inferno scripts stack 4
+                // creates with different velocities to build a flamethrower.
+                // accel applies (e.g. -10 Z for arc-fall on dragon's
+                // lateral cones). max_displace = per-particle turbulence.
                 int count = h.BurstCount > 0 ? h.BurstCount : 30;
-                _particles.SpawnFire(h.Anchor, h.Color,
-                    MathF.Max(0.40f, h.Scale * 1.3f),
-                    MathF.Max(0.50f, h.Duration),
-                    count);
+                float life = h.AlphaFade > 0.10f ? h.AlphaFade : 1.0f;
+                Vector3 vel = h.VelocityVec.LengthSquared() > 0.001f
+                    ? h.VelocityVec : new Vector3(0f, 0f, 10f);
+                _particles.SpawnFireb(
+                    anchor:       h.Anchor,
+                    color:        h.Color,
+                    velocity:     vel,
+                    accel:        h.AccelVec,
+                    lifetime:     life,
+                    maxDisplace:  h.MaxDisplace > 0f ? h.MaxDisplace : 0.5f,
+                    lowerRadius:  h.LowerRadius,
+                    upperRadius:  h.UpperRadius != 0f ? h.UpperRadius : 1.0f,
+                    count:        count,
+                    flameSize:    h.FlameSize > 0.05f ? h.FlameSize : 1.0f);
                 break;
             }
             case EmitterMode.OneShotCylinder:
@@ -654,16 +666,31 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotSray:
             {
-                // Phase 21-SC-SPELL-VFX-3h — `sray` is a directional ray
-                // (sun ray, death blast streamer) with theta/phi/lmin/lmax
-                // and offset params. First-pass: dense SpawnSpark burst at
-                // the anchor sized by `radius`. Directional bias (the actual
-                // ray shape) needs a streak/billboard primitive — tweak list.
-                int count = h.BurstCount > 0 ? h.BurstCount : 32;
-                _particles.SpawnSpark(h.Anchor, h.Color,
-                    MathF.Max(0.25f, h.Scale * 1.4f),
-                    MathF.Max(0.25f, h.Duration),
-                    count);
+                // Phase 21-SC-SPELL-VISUAL-B — DS1 sray = a tapered streak
+                // emitted radially from anchor. Per the agent inventory of
+                // 7 sray sites: untextured, lmin/lmax length range,
+                // wsmin/wsmax start width, wemin/wemax end width, count
+                // for fan size. Color gradient color0→color1 (typically
+                // black→gold). theta/phi always 0 — direction is purely
+                // radial-azimuth or straight up for count=1.
+                int rayCount = h.BurstCount > 0 ? h.BurstCount : 1;
+                float lmin = h.LengthMin > 0.05f ? h.LengthMin
+                            : MathF.Max(0.5f, h.Scale);
+                float lmax = h.LengthMax > lmin ? h.LengthMax : lmin * 1.4f;
+                float ws = h.WidthStart > 0.01f ? h.WidthStart : 0.10f;
+                float we = h.WidthEnd   > 0.01f ? h.WidthEnd   : 0.05f;
+                var c1 = h.ColorTail.W > 0.001f ? h.ColorTail
+                        : new Vector4(h.Color.X, h.Color.Y * 0.5f, h.Color.Z * 0.2f, h.Color.W);
+                _particles.SpawnSray(
+                    anchor:      h.Anchor,
+                    colorStart:  h.Color,
+                    colorEnd:    c1,
+                    lengthMin:   lmin,
+                    lengthMax:   lmax,
+                    widthStart:  ws,
+                    widthEnd:    we,
+                    duration:    h.Duration > 0.05f ? h.Duration : 0.40f,
+                    rayCount:    rayCount);
                 break;
             }
             case EmitterMode.Unsupported:
@@ -1071,6 +1098,39 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "tout",     out var to))     h.FadeOut  = MathF.Max(0f, to);
         if (TryReadFloat(raw, "segments", out var sg) && sg >= 4f) h.Segments = (int)sg;
         if (TryReadFloat(raw, "rp0", out var rpMid, argIndex: 1)) h.RpMid = rpMid;
+
+        // Phase 21-SC-SPELL-VISUAL-B — sray knobs.
+        if (TryReadFloat(raw, "lmin", out var lmin)) h.LengthMin = lmin;
+        if (TryReadFloat(raw, "lmax", out var lmax)) h.LengthMax = lmax;
+        if (TryReadFloat(raw, "wsmin", out var wsmin)) h.WidthStart = wsmin;
+        else if (TryReadFloat(raw, "wsmax", out var wsmax)) h.WidthStart = wsmax;
+        if (TryReadFloat(raw, "wemin", out var wemin)) h.WidthEnd = wemin;
+        else if (TryReadFloat(raw, "wemax", out var wemax)) h.WidthEnd = wemax;
+        if (TryReadVec4(raw, "color1", out var c1tail)) h.ColorTail = c1tail;
+
+        // Phase 21-SC-SPELL-VISUAL-C — fireb knobs. velocity(x,y,z) full
+        // 3-vector. accel(x,y,z) full 3-vector. lower_r0/r1 + upper_r0/r1
+        // mid values (we use the average start/end for a single cone radius).
+        // alphafade(N) = particle lifetime. fctrl(0,0,N) flicker — only
+        // the third arg is the rate.
+        if (TryReadFloat(raw, "velocity", out var vx, argIndex: 0)
+         && TryReadFloat(raw, "velocity", out var vy, argIndex: 1)
+         && TryReadFloat(raw, "velocity", out var vz, argIndex: 2))
+            h.VelocityVec = new Vector3(vx, vy, vz);
+        if (TryReadFloat(raw, "accel", out var ax, argIndex: 0)
+         && TryReadFloat(raw, "accel", out var ay, argIndex: 1)
+         && TryReadFloat(raw, "accel", out var az, argIndex: 2))
+            h.AccelVec = new Vector3(ax, ay, az);
+        if (TryReadFloat(raw, "max_displace", out var maxd))
+            h.MaxDisplace = MathF.Abs(maxd);
+        if (TryReadFloat(raw, "alphafade", out var afade))
+            h.AlphaFade = MathF.Max(0.10f, afade);
+        if (TryReadFloat(raw, "lower_r1", out var lr1))    h.LowerRadius = lr1;
+        else if (TryReadFloat(raw, "lower_r0", out var lr0)) h.LowerRadius = lr0;
+        if (TryReadFloat(raw, "upper_r1", out var ur1))    h.UpperRadius = ur1;
+        else if (TryReadFloat(raw, "upper_r0", out var ur0)) h.UpperRadius = ur0;
+        if (TryReadFloat(raw, "flamesize", out var flsz))
+            h.FlameSize = MathF.Max(0.05f, flsz);
     }
 
     static string SubstituteCallerArgs(string? param, IReadOnlyList<string>? callerArgs)
@@ -1235,6 +1295,20 @@ public sealed class SfxRuntime
         /// precedence when present so 3-float profiles aren't truncated
         /// by the ApplyParamString radius→Scale shortcut.</summary>
         public float       RpMid;
+        // Phase 21-SC-SPELL-VISUAL-B — sray-specific knobs.
+        public float       LengthMin;    // lmin
+        public float       LengthMax;    // lmax
+        public float       WidthStart;   // wsmin..wsmax
+        public float       WidthEnd;     // wemin..wemax
+        public Vector4     ColorTail;    // color1
+        // Phase 21-SC-SPELL-VISUAL-C — fireb-specific knobs.
+        public Vector3     VelocityVec;  // velocity(x,y,z) — directional vector
+        public Vector3     AccelVec;     // accel(x,y,z)
+        public float       MaxDisplace;  // max_displace
+        public float       AlphaFade;    // alphafade — particle lifetime
+        public float       LowerRadius;  // lower_r0/r1 average
+        public float       UpperRadius;  // upper_r0/r1 average
+        public float       FlameSize;    // flamesize
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion-tracking fields.
         /// <summary>Non-zero when this handle IS a motion source (orbiter,
         /// trackball, lightsource, curve). The id maps into the runtime's

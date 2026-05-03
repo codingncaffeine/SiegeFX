@@ -80,6 +80,31 @@ public struct SpellCylinder
     public byte    Segments;        // segments(N), default 24
 }
 
+/// <summary>Phase 21-SC-SPELL-VISUAL-B — DS1 sray primitive: a tapered
+/// streak/lightray emitted radially out from an anchor. Used by 7 spells
+/// (firebomb_base impact tail, death_blast, explode_body, implosion,
+/// killing_fist, dust_explosion_cast). Inventory finding: sray is
+/// untextured (no texture param ever shipped), uses lmin/lmax for length,
+/// wsmin/wsmax + wemin/wemax for taper width, and count for fan size.
+/// theta/phi are always (0,0,0) when present — rays distribute evenly in
+/// azimuth around the Y axis. Single-ray scripts (implosion's pillar)
+/// shoot straight up; multi-ray scripts (explode_body's count(50)) form
+/// a radial fan.</summary>
+public struct SpellSray
+{
+    public Vector3 Anchor;
+    public Vector4 ColorStart;      // color0 (typically dark/black)
+    public Vector4 ColorEnd;        // color1 (typically gold/orange)
+    public float   LengthMin;       // lmin
+    public float   LengthMax;       // lmax
+    public float   WidthStart;      // wsmin..wsmax average
+    public float   WidthEnd;        // wemin..wemax average
+    public float   TotalLife;       // dur
+    public float   Elapsed;
+    public ushort  RayCount;        // count(N) — fan spokes around Y axis
+    public uint    Seed;            // per-ray jitter (length/width within their ranges)
+}
+
 /// <summary>Phase 21-SC-SPELL-VFX — flying spell projectile (DS1 trackball
 /// stand-in). Travels Source→Target at <see cref="Speed"/> world units/sec,
 /// stamping a fire/ember trail every tick and detonating a fire+spark
@@ -152,6 +177,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive, drawn via the
     // ribbon path with a different texture slot.
     private readonly List<SpellCylinder>   _cylinders   = new(16);
+    // Phase 21-SC-SPELL-VISUAL-B — sray streaks; emit into the same ribbon
+    // pipeline as bolts/cylinders, third pass with a separate slot.
+    private readonly List<SpellSray>       _srays       = new(16);
+    private int _srayVertStart = 0;
     private readonly List<SpellProjectile> _projectiles = new(32);
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
@@ -177,6 +206,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     public int LiveParticleCount   => _particles.Count;
     public int LiveBoltCount       => _bolts.Count;
     public int LiveCylinderCount   => _cylinders.Count;
+    public int LiveSrayCount       => _srays.Count;
     public int LiveProjectileCount => _projectiles.Count;
 
     public ParticleSystem(GL gl)
@@ -443,6 +473,88 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         });
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-C — DS1 fireb directional fire-cone
+    /// emitter. Spawns a one-shot batch of fire-textured particles flying
+    /// outward from <paramref name="anchor"/> in <paramref name="velocity"/>
+    /// direction, with a cone-shaped lateral spread defined by
+    /// <paramref name="lowerRadius"/> (start) → <paramref name="upperRadius"/>
+    /// (end). Used by 5 spells (dragon_fire, flame, inferno, pestilence,
+    /// pestilence_cloud) typically layered with different velocities to
+    /// build flamethrower / breath-weapon visuals.</summary>
+    public void SpawnFireb(Vector3 anchor, Vector4 color, Vector3 velocity,
+                           Vector3 accel, float lifetime, float maxDisplace,
+                           float lowerRadius, float upperRadius,
+                           int count, float flameSize)
+    {
+        if (count <= 0) return;
+        // Direction-aligned basis: forward = velocity normalized; perp1/perp2
+        // span the lateral plane so we can scatter the cone radius.
+        Vector3 fwd = velocity.LengthSquared() > 0.0001f
+            ? Vector3.Normalize(velocity) : Vector3.UnitZ;
+        Vector3 up = MathF.Abs(fwd.Y) < 0.9f ? Vector3.UnitY : Vector3.UnitX;
+        Vector3 perp1 = Vector3.Normalize(Vector3.Cross(fwd, up));
+        Vector3 perp2 = Vector3.Cross(fwd, perp1);
+
+        for (int i = 0; i < count; i++)
+        {
+            float ang = Rand(0f, MathF.Tau);
+            // Lerp lower→upper radius along the particle's life (proxy:
+            // randomized, since each particle ages independently). Picks
+            // a radius in the cone profile.
+            float r = MathF.Abs(lowerRadius) + Rand(0f, MathF.Abs(upperRadius - lowerRadius));
+            var lateral = (perp1 * MathF.Cos(ang) + perp2 * MathF.Sin(ang)) * r;
+            // Per-particle turbulence — DS1's min_displace/max_displace.
+            var turb = new Vector3(Rand(-1f, 1f), Rand(-1f, 1f), Rand(-1f, 1f)) * maxDisplace;
+
+            // Each particle gets the script's velocity (forward direction)
+            // plus a small lateral spread proportional to cone radius.
+            var pVel = velocity + lateral * 0.25f;
+
+            float scale = MathF.Max(0.20f, flameSize * 0.40f);
+            _particles.Add(new Particle
+            {
+                Position  = anchor + lateral + turb,
+                Velocity  = pVel,
+                Accel     = accel,
+                Color0    = color,
+                // Color1: warm-biased fade by default (matches fire texture).
+                // Slice H will eventually honor color1(...) from the script.
+                Color1    = new Vector4(color.X * 0.6f, color.Y * 0.3f, color.Z * 0.10f, 0f),
+                Scale0    = scale * 0.6f,
+                Scale1    = scale * 1.2f,
+                Life      = lifetime,
+                TotalLife = lifetime,
+                TexSlot   = 0,         // b_sfx_fireball-01
+                Additive  = 1,
+            });
+        }
+    }
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-B — register a DS1 sray streak.
+    /// Lengths/widths randomized per-ray within the supplied ranges using
+    /// the auto-incrementing Seed; <paramref name="rayCount"/> rays
+    /// distribute evenly in azimuth around the anchor's Y axis.</summary>
+    public void SpawnSray(Vector3 anchor, Vector4 colorStart, Vector4 colorEnd,
+                          float lengthMin, float lengthMax,
+                          float widthStart, float widthEnd,
+                          float duration, int rayCount)
+    {
+        _srays.Add(new SpellSray
+        {
+            Anchor      = anchor,
+            ColorStart  = colorStart,
+            ColorEnd    = colorEnd,
+            LengthMin   = MathF.Max(0.05f, lengthMin),
+            LengthMax   = MathF.Max(lengthMin, lengthMax),
+            WidthStart  = MathF.Max(0.01f, widthStart),
+            WidthEnd    = MathF.Max(0.01f, widthEnd),
+            TotalLife   = MathF.Max(0.05f, duration),
+            Elapsed     = 0f,
+            RayCount    = (ushort)Math.Clamp(rayCount, 1, 96),
+            Seed        = (uint)((int)(anchor.X * 73856093f) ^ (int)(anchor.Z * 19349663f) ^ rayCount),
+        });
+    }
+
     public void SpawnSpark(Vector3 position, Vector4 color, float scale, float duration, int count = 16)
     {
         for (int i = 0; i < count; i++)
@@ -559,6 +671,14 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (c.Elapsed >= c.TotalLife) { _cylinders.RemoveAt(i); continue; }
             _cylinders[i] = c;
         }
+        // Phase 21-SC-SPELL-VISUAL-B — advance sray lifetimes.
+        for (int i = _srays.Count - 1; i >= 0; i--)
+        {
+            var s = _srays[i];
+            s.Elapsed += dt;
+            if (s.Elapsed >= s.TotalLife) { _srays.RemoveAt(i); continue; }
+            _srays[i] = s;
+        }
         // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
         // stamp a fire/ember trail along the way, detonate on arrival.
         for (int i = _projectiles.Count - 1; i >= 0; i--)
@@ -651,23 +771,27 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _bolts.Clear();
         _projectiles.Clear();
         _cylinders.Clear();
+        _srays.Clear();
     }
 
     public void Draw(Matrix4x4 view, Matrix4x4 proj, Vector3 cameraPos)
     {
         if (_particles.Count == 0 && _bolts.Count == 0
-            && _projectiles.Count == 0 && _cylinders.Count == 0) return;
+            && _projectiles.Count == 0 && _cylinders.Count == 0
+            && _srays.Count == 0) return;
 
-        // Bolts + cylinders compile into ribbon segments (separate draw path);
-        // projectile heads stamp transient particles into the main billboard
-        // list. Bolts emit first so they fill _ribbonVerts at index 0..N;
-        // cylinders take the next slice. _cylinderVertStart records the
-        // boundary so DrawRibbons can issue two glDrawArrays calls with
-        // different uSlot values.
+        // Bolts + cylinders + srays all compile into the ribbon vertex
+        // buffer. Each takes its own slice; DrawRibbons issues 3 draw
+        // calls with different uSlot values for the texture choice.
+        // Order: bolts at [0, _cylinderVertStart), cylinders at
+        // [_cylinderVertStart, _srayVertStart), srays at [_srayVertStart,
+        // _ribbonVertCount).
         _ribbonVertCount = 0;
         EmitBoltQuads(cameraPos);
         _cylinderVertStart = _ribbonVertCount;
         EmitCylinderQuads(cameraPos);
+        _srayVertStart = _ribbonVertCount;
+        EmitSrayQuads(cameraPos);
         EmitProjectileHeads();
 
         // Ribbon (lightning bolts + cylinders) draw before particles so
@@ -864,13 +988,71 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _ribbonVerts = new float[Math.Max(_ribbonVerts.Length * 2, needed)];
     }
 
+    /// <summary>Phase 21-SC-SPELL-VISUAL-B — build a fan of camera-facing
+    /// tapered streaks for each sray. Each ray is a single quad: base at
+    /// the anchor with WidthStart, tip at anchor+dir*length with WidthEnd.
+    /// Direction: single-ray scripts shoot straight up; multi-ray fans
+    /// distribute evenly in azimuth around the Y axis. Color gradient
+    /// goes ColorStart at base → ColorEnd at tip. Lifetime alpha ramps
+    /// in for the first 20% then out for the last 30%.</summary>
+    void EmitSrayQuads(Vector3 cameraPos)
+    {
+        if (_srays.Count == 0) return;
+        for (int si = 0; si < _srays.Count; si++)
+        {
+            var s = _srays[si];
+            float t01 = s.Elapsed / s.TotalLife;
+            float alpha = 1f;
+            if (t01 < 0.20f) alpha = t01 / 0.20f;
+            else if (t01 > 0.70f) alpha = MathF.Max(0f, 1f - (t01 - 0.70f) / 0.30f);
+
+            int n = s.RayCount;
+            uint rng = s.Seed;
+            EnsureRibbonCapacity(_ribbonVertCount + n * 6);
+            var c0 = s.ColorStart; c0.W *= alpha;
+            var c1 = s.ColorEnd;   c1.W *= alpha;
+
+            for (int k = 0; k < n; k++)
+            {
+                rng = rng * 1664525u + 1013904223u;
+                float lenT = (rng & 0xFFFF) / 65535f;
+                rng = rng * 1664525u + 1013904223u;
+                float widT = (rng & 0xFFFF) / 65535f;
+                float length = s.LengthMin + (s.LengthMax - s.LengthMin) * lenT;
+                float ws     = s.WidthStart * (0.7f + 0.6f * widT);
+                float we     = s.WidthEnd   * (0.7f + 0.6f * widT);
+
+                Vector3 dir;
+                if (n == 1) dir = Vector3.UnitY;
+                else
+                {
+                    float ang = (float)k / n * MathF.Tau;
+                    dir = new Vector3(MathF.Cos(ang), 0.05f, MathF.Sin(ang));
+                    dir = Vector3.Normalize(dir);
+                }
+                var basePos = s.Anchor;
+                var tipPos  = s.Anchor + dir * length;
+                var toCam   = cameraPos - (basePos + tipPos) * 0.5f;
+                var perp    = Vector3.Cross(dir, toCam);
+                if (perp.LengthSquared() < 0.0001f) perp = Vector3.UnitX;
+                perp = Vector3.Normalize(perp);
+
+                var bL = basePos + perp * ws;
+                var bR = basePos - perp * ws;
+                var tL = tipPos  + perp * we;
+                var tR = tipPos  - perp * we;
+                EmitRibbonVert(bL, 0f, 0f, c0);
+                EmitRibbonVert(bR, 1f, 0f, c0);
+                EmitRibbonVert(tL, 0f, 1f, c1);
+                EmitRibbonVert(bR, 1f, 0f, c0);
+                EmitRibbonVert(tR, 1f, 1f, c1);
+                EmitRibbonVert(tL, 0f, 1f, c1);
+            }
+        }
+    }
+
     /// <summary>Phase 21-SC-SPELL-VISUAL-A — build a flat textured ring at
-    /// each cylinder's anchor. N segments forming a donut on the Y-up
-    /// plane, U coordinate wrapping around the circumference (with a
-    /// `Spin*Elapsed` offset so the ring rotates), V mapping inner→outer.
-    /// Each segment is two triangles (quad strip). Lifetime fade combines
-    /// tin/tout: alpha ramps 0→1 over FadeIn, holds at 1, ramps 1→0 over
-    /// the last FadeOut seconds.</summary>
+    /// each cylinder's anchor.</summary>
     void EmitCylinderQuads(Vector3 cameraPos)
     {
         if (_cylinders.Count == 0) return;
@@ -954,20 +1136,31 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
 
         _gl.BindVertexArray(_ribbonVao);
-        // Phase 21-SC-SPELL-VISUAL-A — 2-pass: bolts at [0, _cylinderVertStart)
-        // with the bolt-streak texture, cylinders at [_cylinderVertStart,
-        // _ribbonVertCount) with the cylinder texture. Single VBO, two
-        // DrawArrays calls with different uSlot values.
+        // Phase 21-SC-SPELL-VISUAL-A/B — 3-pass ribbon draw, single VBO:
+        //   bolts     [0, _cylinderVertStart)        — BoltTexSlot
+        //   cylinders [_cylinderVertStart, _srayVertStart) — CylinderTexSlot
+        //   srays     [_srayVertStart, _ribbonVertCount)   — slot 2 (sparkle01,
+        //                                                     soft glow read)
         if (_cylinderVertStart > 0)
         {
             _ribbonShader.SetInt("uSlot", BoltTexSlot);
             _gl.DrawArrays(GLEnum.Triangles, 0, (uint)_cylinderVertStart);
         }
-        if (_ribbonVertCount > _cylinderVertStart)
+        if (_srayVertStart > _cylinderVertStart)
         {
             _ribbonShader.SetInt("uSlot", CylinderTexSlot);
             _gl.DrawArrays(GLEnum.Triangles, _cylinderVertStart,
-                (uint)(_ribbonVertCount - _cylinderVertStart));
+                (uint)(_srayVertStart - _cylinderVertStart));
+        }
+        if (_ribbonVertCount > _srayVertStart)
+        {
+            // sray uses slot 2 (b_sfx_sparkle01) — DS1 ships srays with NO
+            // texture param, but a soft sparkle billboard reads as the
+            // additive black-to-gold streak the color0/color1 gradient
+            // implies, far better than a hard solid quad would.
+            _ribbonShader.SetInt("uSlot", 2);
+            _gl.DrawArrays(GLEnum.Triangles, _srayVertStart,
+                (uint)(_ribbonVertCount - _srayVertStart));
         }
         _gl.BindVertexArray(0);
         _gl.DepthMask(true);

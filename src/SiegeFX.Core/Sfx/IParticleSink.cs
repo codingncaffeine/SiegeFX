@@ -47,4 +47,21 @@ public interface IParticleSink
                        float radiusOuter, float thicknessRatio,
                        float spinPerSec,  float fadeIn, float fadeOut,
                        float duration,    byte texSlot, byte segments);
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-B — DS1 sray streak. Tapered ray
+    /// emitted radially out from <paramref name="anchor"/>; <paramref name="rayCount"/>
+    /// rays distribute evenly in azimuth. Headless sinks no-op.</summary>
+    void SpawnSray(Vector3 anchor, Vector4 colorStart, Vector4 colorEnd,
+                   float lengthMin, float lengthMax,
+                   float widthStart, float widthEnd,
+                   float duration, int rayCount);
+
+    /// <summary>Phase 21-SC-SPELL-VISUAL-C — DS1 fireb directional cone.
+    /// Spawns a one-shot batch of fire particles flying in
+    /// <paramref name="velocity"/> direction at the cone radii defined
+    /// by lower/upper. Headless sinks no-op.</summary>
+    void SpawnFireb(Vector3 anchor, Vector4 color, Vector3 velocity,
+                    Vector3 accel,  float lifetime, float maxDisplace,
+                    float lowerRadius, float upperRadius,
+                    int count, float flameSize);
 }
