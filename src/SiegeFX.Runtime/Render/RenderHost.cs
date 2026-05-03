@@ -731,12 +731,17 @@ public sealed class RenderHost : IDisposable
         _triggerRuntime?.PostInboundMessage(toScid, name);
     }
 
+    private string? _lastLoggedMoodChange;
     internal void OnTriggerMoodChange(string moodName)
     {
         // Mood swap is Phase 18 territory — the trigger runtime fires the request
         // and the mood subsystem consumes it. For now we log so audits can confirm
         // the action is reaching dispatch even when the mood pipeline doesn't yet
-        // accept arbitrary names.
+        // accept arbitrary names. Some fh_r1 triggers re-fire per tick; only log
+        // on actual change so the console stays readable.
+        if (string.Equals(_lastLoggedMoodChange, moodName, StringComparison.OrdinalIgnoreCase))
+            return;
+        _lastLoggedMoodChange = moodName;
         Console.WriteLine($"[trigger] mood_change → '{moodName}'");
     }
 
@@ -7616,20 +7621,23 @@ void main()
         if (string.IsNullOrEmpty(mood.AmbientTrack))
         {
             // Mood found but bed is intentionally silent — clear the loop.
+            // Most moods (487/520) ship with a standard_track even when the
+            // ambient bed is empty (fh_r1 is the canary), so we still fall
+            // through to ApplyMoodMusic below.
             _audio.SetAmbientBed(null);
-            Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' (silent)");
-            return;
+            Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' (silent bed)");
         }
-        _audio.SetAmbientBed(mood.AmbientTrack);
-        Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' → '{mood.AmbientTrack}'");
+        else
+        {
+            _audio.SetAmbientBed(mood.AmbientTrack);
+            Console.WriteLine($"  ambient: region '{regionName}' → mood '{mood.Name}' → '{mood.AmbientTrack}'");
+        }
         // Phase 22-SC-MUSIC-C — also kick the mood's music track. DS1
         // moods author standard_track + battle_track alongside the
         // ambient bed; standard is the looping region music, battle
-        // takes over during combat (SC-MUSIC-D scope). Strip the s_m_
-        // prefix because PlayMusicTrack adds it back; tracks ship
-        // mixed-case in the moods (s_m_Farmhouse_02) but the mp3 files
-        // on disc are lowercase, and TankReader is case-insensitive so
-        // either works.
+        // takes over during combat (SC-MUSIC-D scope). Runs even when
+        // the bed is silent — fh_r1 has no bed but ships standard_track
+        // = s_m_Farmhouse_01 which is the music the player should hear.
         ApplyMoodMusic(mood);
     }
 

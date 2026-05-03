@@ -6432,7 +6432,112 @@ static int CmdMusicSelftest(string[] a)
         return 6;
     }
     Console.WriteLine($"  selftest OK: sr={sr}Hz ch={ch} decoded={produced} bytes (~{produced / (sr * ch * 2.0) * 1000.0:F1}ms)");
+    // Sample peak detection: scan whole buffer, report min/max/RMS for both
+    // int16 and float interpretations so we can tell which encoding NLayer
+    // emits. Real PCM int16 peaks ride near +-32k with RMS in the thousands;
+    // a float buffer reinterpreted as int16 produces uniform-large garbage.
+    long sumSq = 0; short minS = short.MaxValue, maxS = short.MinValue;
+    int sampleCount = produced / 2;
+    for (int i = 0; i < produced; i += 2)
+    {
+        short s = (short)(buffer[i] | (buffer[i + 1] << 8));
+        if (s < minS) minS = s;
+        if (s > maxS) maxS = s;
+        sumSq += (long)s * s;
+    }
+    double rmsS = sampleCount > 0 ? Math.Sqrt((double)sumSq / sampleCount) : 0;
+    double sumSqF = 0; float minF = float.PositiveInfinity, maxF = float.NegativeInfinity;
+    int floatCount = produced / 4;
+    for (int i = 0; i + 4 <= produced; i += 4)
+    {
+        float f = BitConverter.ToSingle(buffer, i);
+        if (f < minF) minF = f;
+        if (f > maxF) maxF = f;
+        sumSqF += (double)f * f;
+    }
+    double rmsF = floatCount > 0 ? Math.Sqrt(sumSqF / floatCount) : 0;
+    Console.WriteLine($"  as int16: min={minS} max={maxS} rms={rmsS:F1}");
+    Console.WriteLine($"  as f32  : min={minF:F4} max={maxF:F4} rms={rmsF:F4}");
+    // Dump 8 samples around the peak so we can eyeball data shape.
+    int peakIdx = 0; short peakV = 0;
+    for (int i = 0; i < produced; i += 2)
+    {
+        short s = (short)(buffer[i] | (buffer[i + 1] << 8));
+        if (Math.Abs(s) > Math.Abs(peakV)) { peakV = s; peakIdx = i; }
+    }
+    Console.Write($"  16 int16 around peak (offs={peakIdx}): ");
+    int start = Math.Max(0, peakIdx - 16);
+    for (int i = start; i < Math.Min(produced, start + 32); i += 2)
+    {
+        short s = (short)(buffer[i] | (buffer[i + 1] << 8));
+        Console.Write($"{s} ");
+    }
+    Console.WriteLine();
+
+    // Re-decode 1MB+ via the byte path AND the float path; write both as WAV
+    // so we can audibly verify which path is producing valid PCM.
+    var d2 = new NLayer.MpegFile(new MemoryStream(bytes, writable: false));
+    var bytePcm = new byte[2 * 1024 * 1024];
+    int byteWritten = 0;
+    while (byteWritten < bytePcm.Length)
+    {
+        int got = d2.ReadSamples(bytePcm, byteWritten, bytePcm.Length - byteWritten);
+        if (got <= 0) break;
+        byteWritten += got;
+    }
+    d2.Dispose();
+
+    var d3 = new NLayer.MpegFile(new MemoryStream(bytes, writable: false));
+    int floatBufLen = 1024 * 1024;
+    var floats = new float[floatBufLen];
+    int floatsRead = 0;
+    while (floatsRead < floatBufLen)
+    {
+        int got = d3.ReadSamples(floats, floatsRead, floatBufLen - floatsRead);
+        if (got <= 0) break;
+        floatsRead += got;
+    }
+    int srOut = d3.SampleRate; int chOut = d3.Channels;
+    d3.Dispose();
+
+    // Convert floats to int16 ourselves
+    var floatPcm = new byte[floatsRead * 2];
+    for (int i = 0; i < floatsRead; i++)
+    {
+        short s = (short)Math.Clamp(floats[i] * 32767f, -32768f, 32767f);
+        floatPcm[i * 2] = (byte)(s & 0xff);
+        floatPcm[i * 2 + 1] = (byte)((s >> 8) & 0xff);
+    }
+
+    string outDir = Path.Combine(Path.GetTempPath(), "siegefx_diag");
+    Directory.CreateDirectory(outDir);
+    string byteWav = Path.Combine(outDir, "nlayer_byte_path.wav");
+    string floatWav = Path.Combine(outDir, "nlayer_float_path.wav");
+    WriteWav(byteWav, srOut, chOut, bytePcm.AsSpan(0, byteWritten).ToArray());
+    WriteWav(floatWav, srOut, chOut, floatPcm);
+    Console.WriteLine($"  byte-path WAV  : {byteWav}  ({byteWritten:N0} bytes PCM)");
+    Console.WriteLine($"  float-path WAV : {floatWav}  ({floatPcm.Length:N0} bytes PCM)");
     return 0;
+}
+
+static void WriteWav(string path, int sampleRate, int channels, byte[] pcm16)
+{
+    int dataSize = pcm16.Length;
+    using var fs = File.Create(path);
+    using var w = new BinaryWriter(fs);
+    w.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+    w.Write(36 + dataSize);
+    w.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt "));
+    w.Write(16);                  // fmt chunk size
+    w.Write((short)1);            // PCM
+    w.Write((short)channels);
+    w.Write(sampleRate);
+    w.Write(sampleRate * channels * 2); // byte rate
+    w.Write((short)(channels * 2));     // block align
+    w.Write((short)16);                 // bits per sample
+    w.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+    w.Write(dataSize);
+    w.Write(pcm16);
 }
 
 // Phase 22-SC-MUSIC-A — list every mp3 under /sound/music/ in a given

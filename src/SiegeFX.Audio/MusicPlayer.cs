@@ -34,13 +34,21 @@ public sealed unsafe class MusicPlayer : IDisposable
     // of headroom for a 60-fps Tick to refill before underrun, but small
     // enough that a Stop reacts within a quarter-second.
     const int ChunkBytes = 16384;
-    readonly byte[] _chunkScratch = new byte[ChunkBytes];
+    // NLayer 1.16.0's byte-array ReadSamples overload emits noise on the
+    // DS1 mp3 corpus (verified via int16 dump: chaotic adjacent samples,
+    // CLI playback = static). The float[] overload is the NAudio-canonical
+    // path. We decode floats then pack to int16 PCM ourselves.
+    const int FloatsPerChunk = ChunkBytes / 2; // 16-bit int = 1 float in
+    readonly float[] _floatScratch = new float[FloatsPerChunk];
+    readonly byte[] _pcmScratch = new byte[ChunkBytes];
 
     MpegFile? _decoder;
     BufferFormat _decodedFormat;
     int _decodedSampleRate;
     bool _eosReached;
     bool _disposed;
+    bool _loop;
+    byte[]? _trackBytes; // kept around so we can re-seat the decoder on loop
     float _volume = 0.7f; // music defaults a touch under SFX so the mix doesn't drown effects
 
     /// <summary>True once <see cref="Play"/> has queued at least one chunk
@@ -101,13 +109,17 @@ public sealed unsafe class MusicPlayer : IDisposable
     /// header to learn channel count + sample rate, prime the queue with
     /// three chunks, and start playback. Safe to call back-to-back without
     /// an explicit Stop in between — the new Play implies a stop. Returns
-    /// false if NLayer can't open the stream.</summary>
-    public bool Play(byte[] mp3Bytes)
+    /// false if NLayer can't open the stream. <paramref name="loop"/>
+    /// (default true) re-seats the decoder at EOS so DS1 region/menu
+    /// music loops indefinitely; pass false for one-shot stings.</summary>
+    public bool Play(byte[] mp3Bytes, bool loop = true)
     {
         if (_disposed) return false;
         Stop();
         try
         {
+            _trackBytes = mp3Bytes;
+            _loop = loop;
             _decoder = new MpegFile(new MemoryStream(mp3Bytes, writable: false));
             _decodedSampleRate = _decoder.SampleRate;
             _decodedFormat = _decoder.Channels == 2 ? BufferFormat.Stereo16 : BufferFormat.Mono16;
@@ -117,14 +129,18 @@ public sealed unsafe class MusicPlayer : IDisposable
             // hits the speakers; otherwise the first frame plays a single
             // chunk's worth and underflows on the next tick.
             int primed = 0;
+            int totalBytes = 0;
             for (int i = 0; i < _bufferPool.Length; i++)
             {
+                int before = _eosReached ? -1 : 0;
                 if (!FillBuffer(_bufferPool[i])) break;
                 uint b = _bufferPool[i];
                 _al.SourceQueueBuffers(_source, 1, &b);
                 primed++;
+                totalBytes += ChunkBytes; // approximate; real fill could be < ChunkBytes only at EOS
             }
             if (primed == 0) { Stop(); return false; }
+            Console.WriteLine($"  music: prime — {primed} chunk(s), {_decodedSampleRate}Hz {(_decodedFormat == BufferFormat.Stereo16 ? "stereo" : "mono")}16, ~{(totalBytes * 1000) / Math.Max(1, _decodedSampleRate * (_decodedFormat == BufferFormat.Stereo16 ? 4 : 2))}ms cushion");
             _al.SourcePlay(_source);
             return true;
         }
@@ -155,7 +171,9 @@ public sealed unsafe class MusicPlayer : IDisposable
         _al.SetSourceProperty(_source, SourceInteger.Buffer, 0);
         _decoder?.Dispose();
         _decoder = null;
+        _trackBytes = null;
         _eosReached = false;
+        _loop = false;
     }
 
     /// <summary>Set music volume in [0,1]. Independent of SFX volume —
@@ -191,15 +209,35 @@ public sealed unsafe class MusicPlayer : IDisposable
             _al.SourceQueueBuffers(_source, 1, &reusable);
         }
 
-        // OpenAL stops the source automatically when it runs out of queued
-        // buffers — but only if we don't promptly re-queue. Once EOS hits
-        // and the queue empties, the source goes Stopped and we can report
-        // "track finished" so the host advances.
+        // Phase 23-SC-OPTIONS-FOLD — distinguish natural EOS from buffer
+        // underrun. Music starts during the synchronous LoadPlayActors
+        // region build (5800+ static props, neighbor-region preload, nav
+        // mesh weld); no Tick fires until the render loop spins up several
+        // seconds later. The 3-buffer 280ms cushion drains long before then,
+        // so the source goes Stopped from underrun rather than from the
+        // decoder running out. The pre-fold path treated every Stopped
+        // state as "track ended", cleared _currentMusicTrack on the host
+        // side, and the player heard 1-2 seconds of static then nothing.
+        // Recovery: if the source stopped while we still have decoder
+        // bytes ahead of us, refill any queued buffer and SourcePlay
+        // again. Real EOS = _eosReached is set AND the queue is empty,
+        // and only then do we report "track finished" so the host
+        // advances.
         _al.GetSourceProperty(_source, GetSourceInteger.SourceState, out int state);
         if (state != (int)SourceState.Playing && state != (int)SourceState.Paused)
         {
-            // Track finished. Caller can drive the next track via Play().
-            return false;
+            _al.GetSourceProperty(_source, GetSourceInteger.BuffersQueued, out int queued);
+            if (_eosReached && queued == 0)
+            {
+                // Track finished. Caller can drive the next track via Play().
+                return false;
+            }
+            // Stopped mid-track: either an underrun we need to ride out, or
+            // EOS partway through the pool with the tail still queued.
+            // Either way, kick the source back to Playing so the queued
+            // buffers actually drain. SourcePlay on a queue with content
+            // is the canonical OpenAL "resume after underrun" idiom.
+            if (queued > 0) _al.SourcePlay(_source);
         }
         return true;
     }
@@ -211,23 +249,50 @@ public sealed unsafe class MusicPlayer : IDisposable
     bool FillBuffer(uint buffer)
     {
         if (_decoder is null) return false;
-        int written = 0;
-        while (written < ChunkBytes)
+        int floatsWritten = 0;
+        while (floatsWritten < FloatsPerChunk)
         {
-            // NLayer 1.x ReadSamples(byte[], offset, count) returns the
-            // byte count actually decoded (interleaved 16-bit PCM, native
-            // endian). Returns 0 at EOS.
-            int got = _decoder.ReadSamples(_chunkScratch, written, ChunkBytes - written);
+            // NLayer's float ReadSamples is the NAudio-canonical path —
+            // returns interleaved [-1, 1] float samples. The byte-array
+            // overload in 1.16.0 produces garbage on at least the DS1
+            // corpus, which is why we go through floats.
+            int got = _decoder.ReadSamples(_floatScratch, floatsWritten,
+                                           FloatsPerChunk - floatsWritten);
             if (got <= 0)
             {
+                // Loop mode: re-seat the decoder at the start and keep
+                // filling this same chunk so the loop point is sample-
+                // continuous (no audible click from queueing a partial
+                // tail buffer). Re-creating MpegFile on the cached bytes
+                // is cheap relative to the rest of the audio path and
+                // avoids depending on NLayer's seek implementation.
+                if (_loop && _trackBytes is not null)
+                {
+                    _decoder.Dispose();
+                    _decoder = new MpegFile(new MemoryStream(_trackBytes, writable: false));
+                    continue;
+                }
                 _eosReached = true;
                 break;
             }
-            written += got;
+            floatsWritten += got;
         }
-        if (written == 0) return false;
-        fixed (byte* p = _chunkScratch)
-            _al.BufferData(buffer, _decodedFormat, p, written, _decodedSampleRate);
+        if (floatsWritten == 0) return false;
+        // Pack floats → little-endian int16 PCM. Hot path; clamp + cast
+        // is faster than Math.Clamp/Math.Round and matches the canonical
+        // NAudio quantization (truncation, not dither — fine for music).
+        for (int i = 0; i < floatsWritten; i++)
+        {
+            float f = _floatScratch[i] * 32767f;
+            short s = f >  32767f ?  (short) 32767 :
+                      f < -32768f ?  (short)-32768 :
+                                     (short)f;
+            _pcmScratch[i * 2]     = (byte)(s & 0xff);
+            _pcmScratch[i * 2 + 1] = (byte)((s >> 8) & 0xff);
+        }
+        int byteCount = floatsWritten * 2;
+        fixed (byte* p = _pcmScratch)
+            _al.BufferData(buffer, _decodedFormat, p, byteCount, _decodedSampleRate);
         return true;
     }
 
