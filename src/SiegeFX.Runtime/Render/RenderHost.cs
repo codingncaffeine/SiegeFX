@@ -793,13 +793,14 @@ public sealed class RenderHost : IDisposable
     // happen per render frame via a ground-plane raycast through the
     // mouse, mirroring TryClickToAttack / TryClickToBreakProp / TryClickToTalk
     // so cursor visual tracks 1:1 with what a click actually picks.
-    private enum CursorState { Pointer, Attack, Smash, Grab, Talk }
+    private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk }
     private CursorState _cursorState = CursorState.Pointer;
     private GlTexture? _cursorPointer;          // sword (default)
-    private GlTexture? _cursorAttack;           // red sword (enemy under cursor)
+    private GlTexture? _cursorAttack;           // red sword (enemy under cursor in melee/ranged)
+    private GlTexture? _cursorCastAttack;       // blue-glow sword (enemy under cursor in spell mode)
     private GlTexture? _cursorTalk;             // talk marker
-    private GlTexture[]? _cursorSmash;          // animated hammer (21 frames)
-    private GlTexture[]? _cursorGrab;           // animated hand (30 frames)
+    private GlTexture[]? _cursorSmash;          // animated hammer (smash1.flm)
+    private GlTexture[]? _cursorGrab;           // animated hand (grab1.flm)
     private bool _cursorTexturesAttempted;
     private bool _osCursorHidden;
     // Phase 17-SC-E — billboard particle backend (fire, smoke, sparks,
@@ -6287,14 +6288,16 @@ void main()
         if (_cursorTexturesAttempted) return;
         if (_gl is null || _playResolver is null) return;
         _cursorTexturesAttempted = true;
-        _cursorPointer = TryGetGuiTexture("b_gui_c_pointer");
-        _cursorAttack  = TryGetGuiTexture("b_gui_c_attack1");
-        _cursorTalk    = TryGetGuiTexture("b_gui_c_talk");
-        _cursorSmash   = LoadFlmFrames("b_gui_c_smash1.flm");
-        _cursorGrab    = LoadFlmFrames("b_gui_c_grab1.flm");
+        _cursorPointer    = TryGetGuiTexture("b_gui_c_pointer");
+        _cursorAttack     = TryGetGuiTexture("b_gui_c_attack1");
+        _cursorCastAttack = TryGetGuiTexture("b_gui_c_magic3");
+        _cursorTalk       = TryGetGuiTexture("b_gui_c_talk");
+        _cursorSmash      = LoadFlmFrames("b_gui_c_smash1.flm");
+        _cursorGrab       = LoadFlmFrames("b_gui_c_grab1.flm");
         Console.WriteLine(
             $"[cursor] pointer={(_cursorPointer is not null ? "ok" : "MISS")}" +
             $" attack={(_cursorAttack is not null ? "ok" : "MISS")}" +
+            $" castattack={(_cursorCastAttack is not null ? "ok" : "MISS")}" +
             $" talk={(_cursorTalk is not null ? "ok" : "MISS")}" +
             $" smash={(_cursorSmash is null ? "MISS" : _cursorSmash.Length + " frames")}" +
             $" grab={(_cursorGrab is null ? "MISS" : _cursorGrab.Length + " frames")}");
@@ -6347,14 +6350,23 @@ void main()
         var groundHit = near + dir * t;
 
         float r2 = ClickAttackRadius * ClickAttackRadius;
-        // 1) enemy under cursor → red sword.
+        // 1) enemy under cursor → red sword (melee/ranged) or blue-glow
+        //    sword (spell-mode). Active ability slot drives the swap:
+        //    0=melee, 1=ranged → cursor_attack; 2=spell-Q, 3=spell-W →
+        //    cursor_cast_attack. Mirrors the DS1 cursors.gas split
+        //    between b_gui_c_attack1 and b_gui_c_magic3.
+        bool spellMode = _activeAbilityIdx >= 2;
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer) continue;
             if (!s.Actor.Stats.IsCombatant) continue;
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
-            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Attack; return; }
+            if (dx * dx + dz * dz < r2)
+            {
+                _cursorState = spellMode ? CursorState.CastAttack : CursorState.Attack;
+                return;
+            }
         }
         // 2) live breakable static prop under cursor → hammer.
         foreach (var prop in _staticProps)
@@ -6409,6 +6421,8 @@ void main()
         {
             case CursorState.Attack:
                 return (_cursorAttack ?? _cursorPointer, hsBigX, hsBigY, big);
+            case CursorState.CastAttack:
+                return (_cursorCastAttack ?? _cursorAttack ?? _cursorPointer, hsBigX, hsBigY, big);
             case CursorState.Smash when _cursorSmash is { Length: > 0 }:
             {
                 int frame = (int)(_terrainTime * 12.0) % _cursorSmash.Length;
