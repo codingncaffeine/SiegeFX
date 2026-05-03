@@ -121,4 +121,43 @@ public sealed class Actor
         if (idx < 0) return;
         Host.OverrideAnimIndex(idx, durationSec);
     }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — DS1 chore_attack ships up to 5
+    /// sub-anims per stance (0mid / high / loww / extr / qffg). The Skrit
+    /// runtime's <c>select_attack</c> picks among them per swing — alternating
+    /// 0mid + high gives the "horizontal R→L / backhand L→R" cadence the
+    /// player expects. <see cref="AttackVariants"/> stores each loaded
+    /// sub-anim PRS for the player template's resolved stance, parallel to
+    /// the single-clip slot in <see cref="Clips"/>; <see cref="SwingIndex"/>
+    /// counts swings and lets PerformPlayerSwing rotate which variant to
+    /// publish into <c>Clips[chore_attack_idx]</c> before <see cref="PlayChoreOnce"/>
+    /// fires. Empty / null when the template only authored one sub-anim.</summary>
+    public PrsAnimation[]? AttackVariants { get; internal set; }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — running swing counter; rotates the
+    /// active <see cref="AttackVariants"/> entry on each successful melee
+    /// swing. Wraps modulo the variant count so the alternation stays even.</summary>
+    public int SwingIndex { get; internal set; }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — call before each swing to swap
+    /// the currently-active chore_attack clip to the next variant. No-op if
+    /// the template only loaded a single attack sub-anim. Returns the
+    /// authored AnimLength of the picked variant so the caller can pass it
+    /// straight to <see cref="PlayChoreOnce"/> (the Phase 12 hardcoded 0.6s
+    /// truncated DS1's 0.83s fs1 swing by ~27%).</summary>
+    public float PrepNextSwingClip()
+    {
+        int idx = GetClipIndex("chore_attack");
+        if (idx < 0) return 0.6f;
+        var variants = AttackVariants;
+        if (variants is not null && variants.Length > 0)
+        {
+            var pick = variants[SwingIndex % variants.Length];
+            SwingIndex++;
+            Clips[idx] = pick;
+            return pick.AnimLength > 0f ? pick.AnimLength : 0.6f;
+        }
+        var current = Clips[idx];
+        return current.AnimLength > 0f ? current.AnimLength : 0.6f;
+    }
 }

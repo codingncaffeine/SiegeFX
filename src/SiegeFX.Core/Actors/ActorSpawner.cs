@@ -325,7 +325,73 @@ public sealed class ActorSpawner
             var newClip = TryLoadChoreClip(chorePrefix, section, actor.Instance, preferredStance);
             if (newClip is not null)
                 actor.Clips[clipIdx] = newClip;
+
+            // Phase 21-SC-BARREL-FOLD — for chore_attack specifically, also
+            // load every other authored sub-anim so combat can rotate
+            // between them. DS1 ships 5 (0mid/high/loww/extr/qffg) and the
+            // shipped select_attack skrit alternates among them per swing —
+            // the player perceives this as "horizontal R→L slash, then a
+            // L→R backhand" cadence. Without the variants the actor swings
+            // the same direction every time.
+            if (name.Equals("chore_attack", StringComparison.OrdinalIgnoreCase))
+            {
+                var variants = TryLoadAllChoreVariants(chorePrefix, section, actor.Instance, preferredStance);
+                if (variants is not null && variants.Length > 0)
+                    actor.AttackVariants = variants;
+            }
         }
+    }
+
+    /// <summary>Phase 21-SC-BARREL-FOLD — load every sub-anim a chore section
+    /// authors, in the order they appear in [anim_files]. Returns null when
+    /// nothing resolves; otherwise an array (length 1..N) parallel to the
+    /// authored entry order so combat can rotate predictably (0,1,0,1,…)
+    /// instead of stochastic shuffling. Mirrors <see cref="TryLoadChoreClip"/>'s
+    /// stance + ignore-stance logic; only difference is "first match wins"
+    /// becomes "every match collected".</summary>
+    PrsAnimation[]? TryLoadAllChoreVariants(string prefix, GasNode section, ActorInstance inst, int? preferredStance)
+    {
+        var animFiles = TemplateStore.FindChild(section, "anim_files");
+        if (animFiles is null || animFiles.Attributes.Count == 0) return null;
+
+        var stancesRaw = TemplateStore.FindAttr(section, "chore_stances");
+        bool ignoreStance = stancesRaw is not null
+            && stancesRaw.Trim().Equals("ignore", StringComparison.OrdinalIgnoreCase);
+
+        // Cap at the first two resolved sub-anims. DS1 ships 5
+        // (0mid/high/loww/extr/qffg) but the user's observed cadence is a
+        // simple 50/50 R→L vs L→R alternation — that maps to the first two
+        // shipped sub-anims (0mid mid-swing + high overhead). Loading all 5
+        // would mix in low / extreme-reach / quaff variants the player
+        // didn't trigger by intent and reads as random/twitchy. Future
+        // SC-SELECT-ATTACK can re-introduce the longer roster with proper
+        // selection cues (target distance / height) — for now, two-way is
+        // exactly what the player sees in DS1.
+        const int VariantCap = 2;
+        var picks = new List<PrsAnimation>();
+        if (ignoreStance)
+        {
+            foreach (var attr in animFiles.Attributes)
+            {
+                if (string.IsNullOrWhiteSpace(attr.Value)) continue;
+                var clip = TryLoadFullNameClip(attr.Value, inst);
+                if (clip is not null) picks.Add(clip);
+                if (picks.Count >= VariantCap) break;
+            }
+        }
+        else
+        {
+            var stances = ParseChoreStances(stancesRaw);
+            foreach (var attr in animFiles.Attributes)
+            {
+                var suffix = attr.Value;
+                if (string.IsNullOrWhiteSpace(suffix)) continue;
+                var clip = TryLoadAnyStanceClip(prefix, stances, suffix, inst, preferredStance);
+                if (clip is not null) picks.Add(clip);
+                if (picks.Count >= VariantCap) break;
+            }
+        }
+        return picks.Count == 0 ? null : picks.ToArray();
     }
 
     /// <summary>Phase 10-SC-2 — load a representative PRS clip for one chore_* section.

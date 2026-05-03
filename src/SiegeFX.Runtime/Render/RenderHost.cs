@@ -5142,6 +5142,14 @@ void main()
             Console.WriteLine($"    .. {spawner.Diagnostics[i]}");
 
         var player = spawned[0];
+        // Phase 21-SC-BARREL-FOLD — load every chore_attack sub-anim into
+        // AttackVariants so PerformPlayerSwing / PerformPropBreak can rotate
+        // 0mid ↔ high (R→L slash + L→R backhand) per swing. Spawn loads only
+        // the first sub-anim; RefreshMotionClips is the single place that
+        // also walks variants. Running it once at spawn time means combat
+        // gets the alternating swing from frame zero, not just after the
+        // first equipment change.
+        spawner.RefreshMotionClips(player, preferredStance);
         if (!_actorMeshCache.TryGetValue(player.Mesh, out var gl))
         {
             gl = new SkinnedMesh(_gl!, player.Mesh);
@@ -6136,11 +6144,13 @@ void main()
     private void PerformPropBreak(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || prop.IsDestroyed) return;
-        _player.Actor.PlayChoreOnce("chore_attack", 0.6f);
-        // Phase 21-SC-BARREL-FOLD — every hit on a breakable plays the
-        // melee swing whoosh, mirroring the actor-target swing in
-        // PerformPlayerSwing. Without this, smashing barrels was silent
-        // until the moment of shatter.
+        // Phase 21-SC-BARREL-FOLD — rotate through chore_attack sub-anims
+        // (0mid + high alternates as a R→L / L→R cadence per the user's
+        // observed DS1 behavior) and play the picked clip's full authored
+        // duration instead of the old hardcoded 0.6s — DS1's fs1 (1H melee)
+        // is 0.83s, so 0.6 was cutting the swing off at ~72%.
+        float swingDur = _player.Actor.PrepNextSwingClip();
+        _player.Actor.PlayChoreOnce("chore_attack", swingDur);
         _audio?.Play(SfxMeleeSwingGroup);
         // Single-hit shatter is the DS1 default for life=1 props; we still
         // roll real damage so heavier crates (if any) would survive a weak
@@ -6468,10 +6478,13 @@ void main()
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
-        // Phase 12-SC-2 — play the swing chore on the player. Duration is keyed
-        // to the audio-cue cadence; the renderer uses CurrentClipIndex which
-        // reads through the override layer in ActorHostBridge.
-        _player.Actor.PlayChoreOnce("chore_attack", 0.6f);
+        // Phase 12-SC-2 / 21-SC-BARREL-FOLD — play the swing chore on the
+        // player. Variant alternation (0mid ↔ high so the swing alternates
+        // R→L horizontal and L→R backhand) plus the clip's authored
+        // duration replace the pre-fold hardcoded 0.6s that truncated DS1's
+        // 0.83s fs1 swing.
+        float swingDur = _player.Actor.PrepNextSwingClip();
+        _player.Actor.PlayChoreOnce("chore_attack", swingDur);
         // Phase 14c: damage derives from the equipped weapon when es_weapon_hand is
         // populated; otherwise the 1-3 HeroBaselineStats fallback stands in for
         // bare-fisted swings. DS1 hero templates author damage=0 because the real
