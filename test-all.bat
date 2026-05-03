@@ -162,6 +162,7 @@ echo   89. Phase 21-SC-SPELL-VFX-AUDIT - Visual verify fireball + iceshard (SIEG
 echo   90. Phase 21-SC-SCROLL          - Full scroll-UI test (16-spell roster + ground pile + glitter)
 echo   91. Phase 21-SC-SPELL-VISUAL    - Primitive sweep (10 spells, one per slice A-H + sphere)
 echo   92. Phase 21-SC-BARREL          - Breakable barrels (cursor + spell + frags + loot, fh_r1)
+echo   93. Phase 23-SC-OPTIONS         - Options Menu (F10 in-game; 4 tabs Video/Audio/Input/Game)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -260,6 +261,7 @@ if /i "%CHOICE%"=="89" goto T89
 if /i "%CHOICE%"=="90" goto T90
 if /i "%CHOICE%"=="91" goto T91
 if /i "%CHOICE%"=="92" goto T92
+if /i "%CHOICE%"=="93" goto T93
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2018,6 +2020,77 @@ echo [Audit CLI receipts before launch:]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
+echo.
+echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
+  echo --- crash log ---
+  type "%%~F"
+  echo ------------------
+)
+pause
+goto MENU
+
+:T93
+echo.
+echo --- Phase 23-SC-OPTIONS: in-game Options Menu (4 tabs) ---
+echo [Slices A-F bundled. Modal dialog over fh_r1, scales by viewport]
+echo [height: 968x828 panel at 1080p, 1290x1104 at 1440p ultrawide,]
+echo [1935x1656 at 4K. Bitmap font scales at integer steps so the]
+echo [12px copperplate stays crisp at every target resolution.]
+echo.
+echo [How to open:]
+echo   F10            - opens / closes the dialog (DS1's [game_options] hotkey)
+echo   Esc            - closes as Cancel
+echo.
+echo [What to look for once it's open:]
+echo   1. Tabs at top — Video / Audio / Input / Game. Click a tab to swap
+echo      the inner panel content. Active tab gets the inner-panel bg
+echo      color (visually attached to the content area).
+echo   2. Each row is a label on the left + a control on the right:
+echo      - Cycle button (string options): LMB steps forward, RMB steps back
+echo      - Slider: click anywhere on the track to jump the thumb;
+echo                LMB-drag continues
+echo      - Bool toggle: cycle button labeled "Off" / "On"
+echo   3. Bottom bar: OK commits, Cancel discards, Defaults resets just
+echo      the active tab. NO Apply button (DS1 is OK / Cancel only).
+echo.
+echo [Per-tab content:]
+echo   Video   : Resolution / Shadows / Texture Filtering / Gamma / Object Detail
+echo   Audio   : Sound on/off + 5 volume sliders + EAX
+echo             - Master / Music / SFX volumes apply LIVE during drag
+echo               (drag the master slider down — you should hear it fade)
+echo             - Ambient / Voice / EAX persist-only (labels say "(inactive)")
+echo   Input   : Invert X/Y, Lock X/Y, Edge Tracking, Camera + Mouse Sensitivity
+echo             - "Hotkeys..." button opens a read-only listing sub-screen
+echo               (full rebinding pending splinter SC-OPTIONS-REBIND)
+echo   Game    : Two pages (More / Back paging)
+echo             - Page 1: Framerate, Priority, Text Scroll, Max Text,
+echo               Game Speed, Tutorial Tips, Difficulty
+echo             - Page 2: Tooltips, Blood Color, Dismemberment
+echo.
+echo [Things that work runtime-wise this slice:]
+echo   - Audio Master / Music / SFX volumes (live during drag + on OK)
+echo   - Sound on/off (Master goes to 0 when off)
+echo   - Defaults click on Audio tab applies live so you hear the reset
+echo.
+echo [Things that persist into the menu state but DON'T apply at runtime yet:]
+echo   - Video resolution / shadows / texture filtering / gamma / object detail
+echo   - Input invert/lock/sensitivities
+echo   - Game framerate display / priority / blood color / dismemberment / etc.
+echo   These need DungeonSiege.ini / prefs.gas writeback (splinter
+echo   SC-OPTIONS-PERSIST) and runtime knobs (splinter SC-OPTIONS-VIDEO-RUNTIME
+echo   etc.). The menu remembers them within the session but resets on relaunch.
+echo.
+echo [Reach the menu the cheap way:]
+echo   1. Game launches into fh_r1 (skip creator with SIEGEFX_CREATOR=0 — see below)
+echo   2. Press F10 once you can move
+echo   3. Try every tab + drag the Master Volume slider
+echo   4. Hit OK or Cancel to close
+echo.
+set SIEGEFX_CREATOR=0
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set EXITCODE=%ERRORLEVEL%
+set SIEGEFX_CREATOR=
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do if exist "%%~F" (
