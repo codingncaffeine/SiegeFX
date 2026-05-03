@@ -166,7 +166,15 @@ internal sealed class OptionsMenuPanel
     // DS1 authoring rects — see header comment for the source. Stored as
     // (l, t, w, h) so Layout's Scale helper composes cleanly.
     static readonly (int X, int Y, int W, int H) RectOuter   = (105,  22, 430, 368);
-    static readonly (int X, int Y, int W, int H) RectInner   = (117,  80, 407, 265);
+    // Phase 23-SC-OPTIONS-FOLD2 — drop inner Y from 80 to 86 so the tabs
+    // (y=67..83) keep their bottom edge clear of the panel fill. Pre-fold
+    // the 3-pixel authored overlap (DS1's "tabs visually attach" pattern)
+    // ate the bottom ~35% of the tab labels at the integer-scaled font
+    // because we draw with solid fills instead of DS1's transparent-bottom
+    // tab strip art. The same height-shrink (265→259) keeps the bottom
+    // edge at y=345 so OK/Cancel/Defaults rects below stay where DS1
+    // authored them.
+    static readonly (int X, int Y, int W, int H) RectInner   = (117,  86, 407, 259);
     static readonly (int X, int Y, int W, int H) RectTitle   = (200,  38, 240,  20);
     static readonly (int X, int Y, int W, int H) RectTabRow  = (118,  67, 406,  16);
     // Each tab is ~100×16. The active tab in DS1 is shifted down 3px to
@@ -482,7 +490,11 @@ internal sealed class OptionsMenuPanel
         DrawBorder(bars, vw, vh, r, Border);
         int labelW = text.MeasureWidth(label, _fontScale);
         int lx = r.X + (r.W - labelW) / 2;
-        int ly = r.Y + (r.H - 12) / 2;
+        // Phase 23-SC-OPTIONS-FOLD2 — match DrawButton's font-scale-aware
+        // centering (was using bare `12` which dropped labels ~3-7px low
+        // at 1080p / 1440p / 4K integer scales, eating into the inner-
+        // panel border once the panel was visible-adjacent to tabs).
+        int ly = r.Y + (r.H - 12 * _fontScale) / 2;
         text.DrawString(vw, vh, label, lx, ly, active ? Ink : InkDim, _fontScale);
     }
 
@@ -529,7 +541,15 @@ internal sealed class OptionsMenuPanel
     /// cascade from the top of the inner panel at 30px DS1
     /// stride. All coords are AUTHORED in 640×480 space — the
     /// caller-side Layout() runs every Draw to re-scale.</summary>
-    const int RowStride = 30;
+    // Phase 23-SC-OPTIONS-FOLD2 — RowStride dropped 30→24. Pre-fold,
+    // tabs that ship 8 rows (Input ends with Hotkeys at row 7; Game
+    // page 1 ends with More at row 7) put their last row's widget at
+    // authored y=310..326, which sat directly underneath Defaults at
+    // y=318..334 and produced two stacked buttons at the same x band.
+    // Shrinking the stride packs 8 rows into y=100..284 with 34px of
+    // clearance above the Defaults band; 7-row Audio and 5-row Video
+    // had plenty of slack already and stay readable.
+    const int RowStride = 24;
     const int RowHeight = 16;
     const int LabelLeftX = 40;
     const int LabelW = 160;
@@ -554,7 +574,9 @@ internal sealed class OptionsMenuPanel
         // Add LabelLeftX / WidgetX offsets in authored space, scale, then
         // translate to viewport pixels using the live _inner rect.
         int innerAuthorX = 117;
-        int innerAuthorY = 80;
+        // Phase 23-SC-OPTIONS-FOLD2 — keep this in sync with RectInner.Y
+        // above; the Y origin moved from 80 → 86 to clear the tab labels.
+        int innerAuthorY = 86;
         int yAuthor = innerAuthorY + FirstRowY + i * RowStride;
         labelR = (
             (int)MathF.Round((innerAuthorX + LabelLeftX) * s) + (_inner.X - (int)MathF.Round(innerAuthorX * s)),
@@ -867,20 +889,26 @@ internal sealed class OptionsMenuPanel
     void DrawHotkeysSubscreen(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
         // Read-only key-binding listing. Header row + scrolling list.
+        // Phase 23-SC-OPTIONS-FOLD2 — pre-fold this method used bare
+        // pixel constants (12/36/20/220/320 etc.) which were unscaled
+        // device pixels at 4K, leaving the header glued to the inner
+        // top edge and the columns crowded into a left strip. Multiply
+        // each authored offset by _fontScale so the layout breathes
+        // proportionally at 1080p / 1440p / 4K.
         int innerCx = _inner.X + _inner.W / 2;
         var header = "Hotkeys (read-only — rebinding pending splinter SC-OPTIONS-REBIND)";
         int hW = text.MeasureWidth(header, _fontScale);
-        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12, InkDim, _fontScale);
+        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12 * _fontScale, InkDim, _fontScale);
 
         // Column headers
-        int colY = _inner.Y + 36;
-        int cmdX = _inner.X + 20;
-        int priX = _inner.X + 220;
-        int secX = _inner.X + 320;
+        int colY = _inner.Y + 36 * _fontScale;
+        int cmdX = _inner.X + 20 * _fontScale;
+        int priX = _inner.X + 220 * _fontScale;
+        int secX = _inner.X + 320 * _fontScale;
         text.DrawString(vw, vh, "Command",   cmdX, colY, Ink, _fontScale);
         text.DrawString(vw, vh, "Primary",   priX, colY, Ink, _fontScale);
         text.DrawString(vw, vh, "Secondary", secX, colY, Ink, _fontScale);
-        bars.DrawRect(vw, vh, _inner.X + 12, colY + 14, _inner.W - 24, 1, Border);
+        bars.DrawRect(vw, vh, _inner.X + 12 * _fontScale, colY + 14 * _fontScale, _inner.W - 24 * _fontScale, 1, Border);
 
         // Phase 23-SC-OPTIONS-FOLD — scale rowH with the font so the
         // listing reads at the same line-height proportion at every
@@ -897,16 +925,19 @@ internal sealed class OptionsMenuPanel
             text.DrawString(vw, vh, b.Secondary, secX, rowY + i * rowH, InkDim, _fontScale);
         }
 
-        // Back button at the bottom of the inner panel.
-        int backW = 120, backH = 22;
+        // Back button at the bottom of the inner panel. Sized in
+        // authored × _fontScale so the click target stays comfortably
+        // hittable at 4K (was 120×22 device px = thumbnail-tiny on a
+        // 1935×1656 panel).
+        int backW = 120 * _fontScale, backH = 22 * _fontScale;
         int backX = innerCx - backW / 2;
-        int backY = _inner.Y + _inner.H - 36;
+        int backY = _inner.Y + _inner.H - 36 * _fontScale;
         var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
         bars.DrawRect(vw, vh, backX, backY, backW, backH, bg);
         DrawBorder(bars, vw, vh, (backX, backY, backW, backH), Border);
         var lbl = "← Back";
         int lW = text.MeasureWidth(lbl, _fontScale);
-        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + 4, Ink, _fontScale);
+        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + (backH - 12 * _fontScale) / 2, Ink, _fontScale);
         _widgets.Add(new W { Rect = (backX, backY, backW, backH), OnClick = () => _hotkeysOpen = false });
     }
 

@@ -2068,18 +2068,29 @@ echo             - Page 1: Framerate, Priority, Text Scroll, Max Text,
 echo               Game Speed, Tutorial Tips, Difficulty
 echo             - Page 2: Tooltips, Blood Color, Dismemberment
 echo.
-echo [Things that work runtime-wise this slice:]
+echo [Things that work runtime-wise (post SC-OPTIONS-FOLD2):]
 echo   - Audio Master / Music / SFX volumes (live during drag + on OK)
 echo   - Sound on/off (Master goes to 0 when off)
 echo   - Defaults click on Audio tab applies live so you hear the reset
+echo   - Game tab: Show Framerate (top-right FPS HUD on/off)
+echo   - Game tab: Game Speed (multiplies world tick rate)
+echo   - Input tab: Invert Camera X/Y, Camera Sensitivity, Mouse Sensitivity
 echo.
 echo [Things that persist into the menu state but DON'T apply at runtime yet:]
 echo   - Video resolution / shadows / texture filtering / gamma / object detail
-echo   - Input invert/lock/sensitivities
-echo   - Game framerate display / priority / blood color / dismemberment / etc.
+echo   - Input lock-camera-x/y, screen edge tracking
+echo   - Game tooltips (no tooltip system shipped yet - SC-TOOLTIP)
+echo   - Game blood color / dismemberment / priority / text scroll / max text / tutorial / difficulty
 echo   These need DungeonSiege.ini / prefs.gas writeback (splinter
 echo   SC-OPTIONS-PERSIST) and runtime knobs (splinter SC-OPTIONS-VIDEO-RUNTIME
 echo   etc.). The menu remembers them within the session but resets on relaunch.
+echo.
+echo [SC-OPTIONS-FOLD2 visible fixes:]
+echo   - Tab labels no longer covered by inner panel (panel Y dropped 80 to 86,
+echo     tab font centering now factors in _fontScale)
+echo   - Defaults button no longer overlaps Hotkeys (Input) or More (Game) -
+echo     RowStride dropped 30 to 24 so 8 rows fit above the Defaults band
+echo   - mood_change trigger flood log dedupes by name (was 100s/frame in fh_r1)
 echo.
 echo [Reach the menu the cheap way:]
 echo   1. Game launches into fh_r1 (skip creator with SIEGEFX_CREATOR=0 — see below)

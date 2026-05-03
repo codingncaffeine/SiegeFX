@@ -904,6 +904,10 @@ public sealed class RenderHost : IDisposable
     // chrome + state machine; per-tab controls follow in slices B–F.
     private readonly OptionsMenuPanel _optionsMenu = new();
     bool _optionsAudioHookWired;
+    // Phase 23-SC-OPTIONS-FOLD2 — Game-tab "Show Framerate" toggle. ApplyOptionsRuntime
+    // sets it on commit; OnRender draws a small string at top-right when true.
+    bool _showFps;
+    double _fpsEmaMs = 16.6667; // exponential moving average of frame ms (60fps default)
     // Phase 21d-2a-viii-b — pre-spawn character creator. Opens by default when
     // a play-region path runs and SIEGEFX_CREATOR != "0"; closes on Begin (then
     // TrySpawnPlayerWithPicker fires) or Cancel (falls through to env-var-only
@@ -2087,7 +2091,11 @@ void main()
                     {
                         // Orbit only (no pitch change) — chase pitch is derived from the
                         // look-at target each frame so mouse-Y would fight that logic.
-                        _chaseYaw += dx * _camera.MouseSens;
+                        // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
+                        // so chase mode and first-person mode can never drift on the
+                        // sensitivity/invert formula (the duplicate-formula version was a
+                        // splinter waiting to happen the first time someone tweaked it).
+                        _chaseYaw += _camera.YawIncrement(dx);
                     }
                     else
                     {
@@ -5102,6 +5110,7 @@ void main()
         {
             _optionsMenu.CommitStaged();
             ApplyOptionsAudio();
+            ApplyOptionsRuntime();
             _optionsMenu.ClearEdgeFlags();
         }
         else if (_optionsMenu.CancelledThisFrame)
@@ -5117,8 +5126,43 @@ void main()
             // listening as they reset; other tabs can wait for OK.
             if (_optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Audio)
                 ApplyOptionsAudio();
+            // Input + Game tab Defaults reset runtime-applied knobs too —
+            // a "reset to defaults" that needs an OK click to take effect
+            // is confusing UX. Audio is the same precedent.
+            if (_optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Input
+                || _optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Game)
+                ApplyOptionsRuntime();
             _optionsMenu.ClearEdgeFlags();
         }
+    }
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD2 — push the menu's non-audio runtime
+    /// knobs to the live engine. Today: Input tab (camera invert + mouse
+    /// sensitivity) and Game tab (Show Framerate). Resolution/Gamma/Shadows
+    /// etc. stay persist-only until splinter SC-OPTIONS-VIDEO-RUNTIME wires
+    /// them. Game Speed is deferred — it threads through actor + particle
+    /// + nav tick scaling and needs more care than this fold.
+    ///
+    /// Reads Staged not Live because Defaults updates Staged only (Live
+    /// stays put until OK commits). Audio's live-apply has the same
+    /// contract — Defaults must take effect immediately for the user to
+    /// understand the click did anything. After CommitStaged on the OK
+    /// path, Staged == Live, so reading either is equivalent there.</summary>
+    private void ApplyOptionsRuntime()
+    {
+        var s = _optionsMenu.Staged;
+        if (_camera is not null)
+        {
+            _camera.InvertX = s.CameraInverseX;
+            _camera.InvertY = s.CameraInverseY;
+            // DS1's slider is 0..100; map so default 50 → 1.0x (no behavior
+            // change vs pre-fold), 100 → 2.0x (fast), 0 → tiny floor (still
+            // technically usable rather than completely frozen). Linear so
+            // the value-readout above the slider tracks intuition.
+            float mouse = MathF.Max(0.1f, s.MouseSensitivity / 50f);
+            _camera.SensitivityScale = mouse;
+        }
+        _showFps = s.ShowFramerate;
     }
 
     /// <summary>Phase 23-SC-OPTIONS-C — push the menu's audio settings
@@ -9348,6 +9392,23 @@ void main()
                 int textW = _textRenderer.MeasureWidth(_heroName);
                 int hx = (size.X - textW) / 2;
                 _textRenderer.DrawString(size.X, size.Y, _heroName, hx, 12, col);
+            }
+
+            // Phase 23-SC-OPTIONS-FOLD2 — Show Framerate top-right. EMA
+            // smoothing on dt so the counter doesn't flicker every frame;
+            // 1/16 weight is a reasonable balance for a 60fps source.
+            // Clamp dt to 100ms before mixing so a multi-second region
+            // load (where dt spikes to 1000+ ms) doesn't poison the EMA
+            // and leave the counter showing single-digit fps for ~1s
+            // after the load completes.
+            if (_showFps)
+            {
+                double sample = Math.Min(dt * 1000.0, 100.0);
+                _fpsEmaMs += (sample - _fpsEmaMs) / 16.0;
+                int fps = _fpsEmaMs > 0 ? (int)(1000.0 / _fpsEmaMs) : 0;
+                var fpsStr = $"{fps} fps";
+                int fw = _textRenderer.MeasureWidth(fpsStr);
+                _textRenderer.DrawString(size.X, size.Y, fpsStr, size.X - fw - 8, 8, col);
             }
 
             if (_player is not null && _barRenderer is not null)

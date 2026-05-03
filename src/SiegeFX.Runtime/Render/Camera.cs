@@ -16,6 +16,13 @@ public sealed class Camera
     public float FarPlane    { get; set; } = 1000f;
     public float MoveSpeed   { get; set; } = 6f;              // units/sec
     public float MouseSens   { get; set; } = 0.0025f;         // radians/pixel
+    // Phase 23-SC-OPTIONS-FOLD2 — runtime mouse-look knobs from the
+    // Options Menu's Input tab. SensitivityScale rides on top of MouseSens
+    // (OptionsMenu maps slider 0..100 → 0.25..2.0x, default 50 → 1.0x).
+    // InvertX flips horizontal yaw; InvertY flips vertical pitch.
+    public float SensitivityScale { get; set; } = 1f;
+    public bool  InvertX { get; set; }
+    public bool  InvertY { get; set; }
 
     private const float PitchLimit = MathF.PI / 2f - 0.01f;
 
@@ -36,9 +43,31 @@ public sealed class Camera
 
     public void LookDelta(float dxPixels, float dyPixels)
     {
-        Yaw   += dxPixels * MouseSens;
-        Pitch -= dyPixels * MouseSens;
+        Yaw   += YawIncrement(dxPixels);
+        Pitch -= PitchIncrement(dyPixels);
         Pitch = Math.Clamp(Pitch, -PitchLimit, PitchLimit);
+    }
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD2 — yaw delta in radians for a
+    /// horizontal mouse drag of <paramref name="dxPixels"/> pixels, with
+    /// the active sensitivity + invert-X knobs applied. Exposed so the
+    /// chase-camera path can compute the same value without re-deriving
+    /// the formula and drifting from <see cref="LookDelta"/>.</summary>
+    public float YawIncrement(float dxPixels)
+    {
+        float sx = InvertX ? -1f : 1f;
+        return dxPixels * MouseSens * SensitivityScale * sx;
+    }
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD2 — pitch delta companion for
+    /// <see cref="YawIncrement"/>. Subtract this from Pitch (positive
+    /// dy = mouse moved down = look down by default), then clamp to
+    /// PitchLimit. Currently only first-person mode uses this — chase
+    /// derives pitch from the look-at target.</summary>
+    public float PitchIncrement(float dyPixels)
+    {
+        float sy = InvertY ? -1f : 1f;
+        return dyPixels * MouseSens * SensitivityScale * sy;
     }
 
     /// <summary>
