@@ -833,13 +833,17 @@ public sealed class SfxRuntime
         if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h))
             return;
 
-        // Trailing token: source / target. Bone token (tokens[1]) is parsed
-        // when we wire skeletal resolution; for now we always use WeaponBonePos
-        // when the trailing word is `source` and TargetPos when `target`.
+        // Trailing token: source / target. The middle token is the @bone
+        // name DS1 ships (Phase 21-SC-SPELL-VISUAL-F): for `source` we
+        // resolve THAT bone on the caster's skeleton via SfxContext.
+        // ResolveBone (falls back to WeaponBonePos if the resolver doesn't
+        // know the bone). For `target` we land on the target position;
+        // bone-on-target lookup isn't a thing in any shipped script.
+        var boneTok  = stmt.Tokens[1];
         var trailing = stmt.Tokens[stmt.Tokens.Count - 1];
         Vector3 resolved;
         if (trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase))
-            resolved = rs.Ctx.WeaponBonePos;
+            resolved = rs.Ctx.ResolveBone(boneTok);
         else if (trailing.StartsWith("target", StringComparison.OrdinalIgnoreCase))
             resolved = rs.Ctx.TargetPos;
         else
@@ -993,8 +997,16 @@ public sealed class SfxRuntime
         var offsetTok = stmt.Tokens[1];
         var trailing  = stmt.Tokens[stmt.Tokens.Count - 1];
 
+        // Phase 21-SC-SPELL-VISUAL-F — `source` resolves to the caster's
+        // weapon_bone via the live skeletal resolver when one is wired
+        // (drops back to the static WeaponBonePos field on a resolver-
+        // less SfxContext). DS1 author convention: bare `source` in
+        // offset_bone means "the caster's default attach bone," which
+        // shipped templates (heroes.gas's bone_translator) map to
+        // weapon_grip. `target` lands on the live target position
+        // unchanged.
         Vector3 baseAnchor = trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase)
-            ? rs.Ctx.WeaponBonePos
+            ? rs.Ctx.ResolveBone("weapon_bone")
             : rs.Ctx.TargetPos;
         Vector3 offset = ParseOffsetLiteral(offsetTok);
         var resolved = baseAnchor + offset;

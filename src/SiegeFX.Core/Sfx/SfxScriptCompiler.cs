@@ -317,7 +317,15 @@ public static class SfxScriptCompiler
                 char d = s[i];
                 if (char.IsWhiteSpace(d)) break;
                 if (d == ';' || d == '{' || d == '}' || d == '"' || d == '<') break;
-                // Keep ()[] inside a word so [0] / radius(0) tokens stay glued.
+                // Phase 21-SC-SPELL-VISUAL-F — also break on `(` and `)`
+                // so DS1's `if(` / `if (` / `else (` author shapes both
+                // tokenize the same way. The `radius(0)` and similar
+                // parenthesized argument forms only appear INSIDE the
+                // sfx_create param string, which is lexed separately as
+                // a quoted region above — splitting parens here doesn't
+                // touch them.
+                if (d == '(' || d == ')') break;
+                // Keep []{} together inside a word so [0,0,0] / [N] stay glued.
                 i++;
             }
             if (i > wordStart) tokens.Add(s.Substring(wordStart, i - wordStart));

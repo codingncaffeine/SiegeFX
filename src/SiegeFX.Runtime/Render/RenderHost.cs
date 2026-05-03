@@ -217,6 +217,53 @@ public sealed class RenderHost : IDisposable
         _                                           => new Vector4(0.55f, 0.85f, 1.00f, 1f),
     };
 
+    // Phase 21-SC-SPELL-VISUAL-F — caster-side bone resolver handed to
+    // SfxContext. Maps DS1 logical bone names to skeleton bone names per
+    // heroes.gas's [bone_translator] block (weapon_bone → weapon_grip,
+    // kill_bone → bip01_spine2, body_anterior → bip01_head, …) and
+    // returns the live world position by combining the cached bone-world
+    // matrix with the player's current transform. Returns null when the
+    // bone is unknown so SfxContext.ResolveBone falls back to its
+    // approximation table (lerps body bones along Y from feet).
+    //
+    // _boneWorldsScratch is repopulated each render frame; at cast time
+    // it's at most one frame stale (~16ms), well within shipped DS1 sfx
+    // timing tolerances. No need to recompute on the cast thread.
+    private Vector3? ResolvePlayerBone(string logicalName)
+    {
+        if (_player is null) return null;
+        var pcMesh = _player.Actor.Mesh;
+        if (pcMesh is null) return null;
+        // DS1 logical name → skeleton bone name. Heroes (and most actors)
+        // share the canonical mapping below; rare bone_translator overrides
+        // would need a per-template lookup, which we'll fold into a future
+        // slice if any shipped spell trips on it.
+        string skeletalName = logicalName.ToLowerInvariant() switch
+        {
+            "weapon_bone"     => "weapon_grip",
+            "shield_bone"     => "shield_grip",
+            "kill_bone"       => "bip01_spine2",
+            "kill"            => "bip01_spine2",
+            "body_anterior"   => "bip01_head",
+            "head"            => "bip01_head",
+            "body_mid"        => "bip01_spine2",
+            "body_posterior"  => "bip01_pelvis",
+            _                 => logicalName,
+        };
+        int boneIdx = -1;
+        for (int bi = 0; bi < pcMesh.BoneNames.Count; bi++)
+        {
+            if (string.Equals(pcMesh.BoneNames[bi], skeletalName, StringComparison.OrdinalIgnoreCase))
+            { boneIdx = bi; break; }
+        }
+        if (boneIdx < 0 || boneIdx >= _boneWorldsScratch.Length) return null;
+        // Bone world matrix (mesh-local) × player transform → world.
+        // Translation only; SfxContext returns a Vector3 and we don't yet
+        // honor bone orientation (no shipped spell needs a per-bone basis).
+        var world = _boneWorldsScratch[boneIdx] * _player.CurrentTransform;
+        return world.Translation;
+    }
+
     // Phase 21-SC-SPELL-VFX — element-aware 3D cast visual. Always emits a
     // primary primitive (beam or projectile) so every one of the 69 shipped
     // OffensiveInstantHit spells has a clear cast read at gameplay distance,
@@ -6945,7 +6992,8 @@ void main()
                             var ctx = new SiegeFX.Core.Sfx.SfxContext(
                                 SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
                                 TargetPos:     dst,
-                                WeaponBonePos: src);
+                                WeaponBonePos: src,
+                                Resolver:      ResolvePlayerBone);
                             int boltsBefore       = _particles?.LiveBoltCount ?? 0;
                             int particlesBefore   = _particles?.LiveParticleCount ?? 0;
                             int persistentBefore  = _sfxRuntime.LivePersistentCount;
