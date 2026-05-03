@@ -898,6 +898,7 @@ public sealed class RenderHost : IDisposable
     // dialog with four tabs: Video, Audio, Input, Game. Skeleton lands
     // chrome + state machine; per-tab controls follow in slices B–F.
     private readonly OptionsMenuPanel _optionsMenu = new();
+    bool _optionsAudioHookWired;
     // Phase 21d-2a-viii-b — pre-spawn character creator. Opens by default when
     // a play-region path runs and SIEGEFX_CREATOR != "0"; closes on Begin (then
     // TrySpawnPlayerWithPicker fires) or Cancel (falls through to env-var-only
@@ -1384,6 +1385,14 @@ void main()
                 // Esc isn't trapped — gives the user a back-out path even
                 // though there's no formal "creator pause" state.
                 if (_creator.IsOpen) return;
+                // Phase 23-SC-OPTIONS-FOLD — same suppression while
+                // the Options dialog is up: F5 quicksave / F9 quickload
+                // / F11 / B / I / L / H / Q / W / [ / ] / \ all fire
+                // off this lambda and would mutate world state during
+                // an in-progress options edit. Esc still flows through
+                // (handled above by the early Options branch) so the
+                // user's back-out path works.
+                if (_optionsMenu.IsOpen && key != Key.F10) return;
                 // Phase 15d: Esc opens/closes the pause menu instead of slamming the
                 // window shut. Quit-from-menu still routes through _window.Close, so
                 // there's a one-button-press exit (Esc, click Quit).
@@ -5075,6 +5084,15 @@ void main()
     /// active tab from /config/options.gas defaults inline.</summary>
     private void FlushOptionsMenu()
     {
+        // Phase 23-SC-OPTIONS-FOLD — wire the live-apply event once
+        // (idempotent so a hot-reload of the panel doesn't double-
+        // subscribe). Slider drags inside the Audio tab fire this so
+        // the user hears the volume change during drag, not just on OK.
+        if (!_optionsAudioHookWired)
+        {
+            _optionsMenu.AudioStagedChanged += ApplyStagedAudio;
+            _optionsAudioHookWired = true;
+        }
         if (_optionsMenu.ConfirmedThisFrame)
         {
             _optionsMenu.CommitStaged();
@@ -5105,9 +5123,17 @@ void main()
     /// MusicPlayer source gain stacked on top; SFX volume caps the
     /// per-Play SFX mix below master. DS1's 0..127 range maps to
     /// our [0,1] OpenAL gains.</summary>
-    private void ApplyOptionsAudio()
+    private void ApplyOptionsAudio() => ApplyAudioVolumes(_optionsMenu.Live);
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — live-preview applier for
+    /// Audio-tab slider drags. Reads the staged (in-flight) settings
+    /// instead of Live so the user hears the volume change during
+    /// drag instead of waiting for OK. Cancel reverts by re-syncing
+    /// Staged from Live and re-firing this through the event.</summary>
+    private void ApplyStagedAudio() => ApplyAudioVolumes(_optionsMenu.Staged);
+
+    private void ApplyAudioVolumes(SiegeFX.Runtime.Render.Hud.OptionsMenuPanel.Settings s)
     {
-        var s = _optionsMenu.Live;
         if (_audio is not null)
         {
             float master = s.SoundEnabled ? s.MasterVolume / 127f : 0f;

@@ -105,13 +105,33 @@ void main() {
         return w;
     }
 
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — width at a given pixel scale.
+    /// Mirrors the integer-scaled DrawString so layout code that
+    /// centers a string in a scaled rect can ask for the actual
+    /// drawn width.</summary>
+    public int MeasureWidth(string text, int pixelScale)
+    {
+        if (pixelScale < 1) pixelScale = 1;
+        return MeasureWidth(text) * pixelScale;
+    }
+
     /// <summary>Draw <paramref name="text"/> at pixel (<paramref name="x"/>, <paramref name="y"/>)
     /// (origin top-left of the framebuffer). Color is RGBA 0..1. Caller is responsible
     /// for setting up GL state to allow blending — see
     /// <see cref="BeginPass"/>/<see cref="EndPass"/>.</summary>
     public void DrawString(int viewportW, int viewportH, string text, int x, int y, Vector4 color)
+        => DrawString(viewportW, viewportH, text, x, y, color, 1);
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — integer-scaled DrawString.
+    /// `pixelScale` multiplies glyph width/height/advance so a 12px
+    /// bitmap font reads as 24/36/48px at 1080p / 1440p / 4K. Integer
+    /// scale keeps the bitmap font crisp (no bilinear smear); 1 is
+    /// the legacy unity-size path the existing call sites use.</summary>
+    public void DrawString(int viewportW, int viewportH, string text,
+                           int x, int y, Vector4 color, int pixelScale)
     {
         if (_font is null || _atlasTex is null || string.IsNullOrEmpty(text)) return;
+        if (pixelScale < 1) pixelScale = 1;
 
         int neededFloats = text.Length * FloatsPerVertex * VerticesPerQuad;
         if (_verts.Length < neededFloats) Array.Resize(ref _verts, neededFloats);
@@ -123,24 +143,19 @@ void main() {
         foreach (var c in text)
         {
             var g = _font.Find(c);
-            if (g is null) { cursorX += _font.Height / 3; continue; }
+            if (g is null) { cursorX += (_font.Height / 3) * pixelScale; continue; }
             var gv = g.Value;
-            if (gv.Width <= 0) { cursorX += gv.Advance; continue; }
+            if (gv.Width <= 0) { cursorX += gv.Advance * pixelScale; continue; }
 
-            // DS1 .raw atlases are stored bottom-up — file-row 0 is the image's
-            // visual BOTTOM. Our scan reports gv.Y as the cell's "top" in file
-            // coords (the low-file-y end), which is visually the BOTTOM. To
-            // render right-side-up in screen-down coords, the top vertex of the
-            // quad must sample the high-file-y end of the cell.
             float u0 = gv.X / aw;
             float u1 = (gv.X + gv.Width) / aw;
-            float v0 = (gv.Y + gv.Height) / ah; // top of quad → visual top of glyph
-            float v1 = gv.Y / ah;                // bottom of quad → visual bottom
+            float v0 = (gv.Y + gv.Height) / ah;
+            float v1 = gv.Y / ah;
 
             float px0 = cursorX;
             float py0 = y;
-            float px1 = cursorX + gv.Width;
-            float py1 = y + gv.Height;
+            float px1 = cursorX + gv.Width  * pixelScale;
+            float py1 = y       + gv.Height * pixelScale;
 
             // Two triangles, CCW in screen space (origin top-left, +Y down).
             void V(float px, float py, float uu, float vv)
@@ -157,7 +172,7 @@ void main() {
             V(px1, py1, u1, v1);
             V(px1, py0, u1, v0);
 
-            cursorX += gv.Advance;
+            cursorX += gv.Advance * pixelScale;
         }
         if (written == 0) return;
 

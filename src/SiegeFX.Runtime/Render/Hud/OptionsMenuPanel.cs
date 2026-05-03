@@ -92,6 +92,19 @@ internal sealed class OptionsMenuPanel
 
     public Settings Live { get; private set; } = new();
     Settings _staged = new();
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — exposes the staged settings
+    /// so the host's live-preview audio applier reads the in-flight
+    /// edit (not yet committed) during a slider drag. After OK
+    /// commits, Staged == Live and either reads the same values.</summary>
+    public Settings Staged => _staged;
+
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — fired by the panel whenever
+    /// an Audio-tab slider changes mid-drag (e.g. Master Volume drag
+    /// from 108→0). Caller wires this to <c>ApplyOptionsAudio</c> so
+    /// the user hears the volume change live during drag instead of
+    /// only after pressing OK. Other tabs don't fire this — their
+    /// runtime hooks are persist-only or commit-only today.</summary>
+    public event Action? AudioStagedChanged;
     int _gamePage; // 0 = page 1, 1 = page 2 (Game tab paging via More/Back)
 
     /// <summary>Phase 23-SC-OPTIONS-E — read-only snapshot of the
@@ -237,12 +250,27 @@ internal sealed class OptionsMenuPanel
     /// 4:3 aspect; horizontal centering keeps it floating in the middle
     /// of widescreen / ultrawide windows. Called from every Draw and
     /// every input handler so a mid-frame resize doesn't desync rects.</summary>
+    /// <summary>Phase 23-SC-OPTIONS-FOLD — integer pixel scale for the
+    /// bitmap font, derived from the panel scale. Clamped to ≥1 so
+    /// the legacy code path for sub-480p test windows still draws.
+    /// Exposed so each Draw call can pass it to TextRenderer.</summary>
+    int _fontScale = 1;
+
     void Layout(int viewportW, int viewportH, out float scale)
     {
-        scale = viewportH / 480f;
+        // Phase 23-SC-OPTIONS-FOLD — clamp to viewportW too so a
+        // portrait-orientation window (vh > vw) doesn't push the
+        // 640×480-aspect panel past the viewport edges with negative dx.
+        scale = MathF.Min(viewportH / 480f, viewportW / 640f);
         int scaledBaseW = (int)MathF.Round(640 * scale);
-        int dx = (viewportW - scaledBaseW) / 2; // center horizontally on the window
-        int dy = 0;
+        int scaledBaseH = (int)MathF.Round(480 * scale);
+        int dx = (viewportW - scaledBaseW) / 2; // center horizontally
+        int dy = (viewportH - scaledBaseH) / 2; // center vertically (kicks in only when viewport is wider than 4:3)
+        // Integer font scale: 1080p (scale ≈2.25) → 2; 1440p ultrawide
+        // (scale ≈3.0) → 3; 4K (scale ≈4.5) → 4. Bitmap font stays crisp
+        // at integer multiples instead of the bilinear-blur a fractional
+        // multiplier would produce.
+        _fontScale = Math.Max(1, (int)MathF.Round(scale));
         _outer    = Scale(RectOuter,    dx, dy, scale);
         _inner    = Scale(RectInner,    dx, dy, scale);
         _title    = Scale(RectTitle,    dx, dy, scale);
@@ -324,10 +352,23 @@ internal sealed class OptionsMenuPanel
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
         // Tabs fire on click-up if the cursor is still over the tab.
-        if (Hits(_tabVideo, px, py)) { ActiveTab = Tab.Video; _gamePage = 0; _hotkeysOpen = false; }
-        else if (Hits(_tabAudio, px, py)) { ActiveTab = Tab.Audio; _gamePage = 0; _hotkeysOpen = false; }
-        else if (Hits(_tabInput, px, py)) { ActiveTab = Tab.Input; _gamePage = 0; _hotkeysOpen = false; }
-        else if (Hits(_tabGame,  px, py)) { ActiveTab = Tab.Game;  _gamePage = 0; _hotkeysOpen = false; }
+        // Phase 23-SC-OPTIONS-FOLD — clear _activeWidget on tab change
+        // so a slider drag that ended on a tab doesn't leave a stale
+        // index pointing at the now-rebuilt widget list.
+        bool tabSwapped = false;
+        if (Hits(_tabVideo, px, py)) { ActiveTab = Tab.Video; tabSwapped = true; }
+        else if (Hits(_tabAudio, px, py)) { ActiveTab = Tab.Audio; tabSwapped = true; }
+        else if (Hits(_tabInput, px, py)) { ActiveTab = Tab.Input; tabSwapped = true; }
+        else if (Hits(_tabGame,  px, py)) { ActiveTab = Tab.Game;  tabSwapped = true; }
+        if (tabSwapped)
+        {
+            _gamePage = 0;
+            _hotkeysOpen = false;
+            _activeWidget = -1;
+            _hoveredWidget = -1;
+            _pressedBtn = Btn.None;
+            return; // don't also fire OK/Cancel/widget click on the tab swap
+        }
 
         // Bottom buttons.
         var btn =
@@ -406,10 +447,10 @@ internal sealed class OptionsMenuPanel
 
         // Title.
         var titleStr = "Options Menu";
-        int titleW = text.MeasureWidth(titleStr);
+        int titleW = text.MeasureWidth(titleStr, _fontScale);
         int titleX = _outer.X + (_outer.W - titleW) / 2;
         int titleY = _title.Y;
-        text.DrawString(viewportW, viewportH, titleStr, titleX, titleY, Ink);
+        text.DrawString(viewportW, viewportH, titleStr, titleX, titleY, Ink, _fontScale);
 
         // Tab bar — four equal-ish strips. Active tab uses the inner-panel
         // background colour so it visually attaches to the content area.
@@ -439,10 +480,10 @@ internal sealed class OptionsMenuPanel
         var bg = active ? TabActiveBg : (hover ? TabHoverBg : TabIdleBg);
         bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
         DrawBorder(bars, vw, vh, r, Border);
-        int labelW = text.MeasureWidth(label);
+        int labelW = text.MeasureWidth(label, _fontScale);
         int lx = r.X + (r.W - labelW) / 2;
         int ly = r.Y + (r.H - 12) / 2;
-        text.DrawString(vw, vh, label, lx, ly, active ? Ink : InkDim);
+        text.DrawString(vw, vh, label, lx, ly, active ? Ink : InkDim, _fontScale);
     }
 
     void DrawButton(BarRenderer bars, TextRenderer text, int vw, int vh,
@@ -454,10 +495,10 @@ internal sealed class OptionsMenuPanel
         else bg = BtnIdle;
         bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
         DrawBorder(bars, vw, vh, r, Border);
-        int labelW = text.MeasureWidth(label);
+        int labelW = text.MeasureWidth(label, _fontScale);
         int lx = r.X + (r.W - labelW) / 2;
-        int ly = r.Y + (r.H - 12) / 2;
-        text.DrawString(vw, vh, label, lx, ly, Ink);
+        int ly = r.Y + (r.H - 12 * _fontScale) / 2;
+        text.DrawString(vw, vh, label, lx, ly, Ink, _fontScale);
     }
 
     static void DrawBorder(BarRenderer bars, int vw, int vh,
@@ -537,9 +578,9 @@ internal sealed class OptionsMenuPanel
                 Func<float> get, Action<float> set, int displayMin, int displayMax)
     {
         RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
-        int labelTextW = text.MeasureWidth(label);
+        int labelTextW = text.MeasureWidth(label, _fontScale);
         text.DrawString(vw, vh, label,
-            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim);
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
         bars.DrawRect(vw, vh, widgetR.X, widgetR.Y + widgetR.H / 2 - 1,
             widgetR.W, 2, Border);
         float v01 = Math.Clamp(get(), 0f, 1f);
@@ -551,7 +592,7 @@ internal sealed class OptionsMenuPanel
         int valDisp = displayMin + (int)MathF.Round((displayMax - displayMin) * v01);
         var valStr = valDisp.ToString();
         text.DrawString(vw, vh, valStr,
-            widgetR.X + widgetR.W + 8, widgetR.Y + 1, Ink);
+            widgetR.X + widgetR.W + 8, widgetR.Y + 1, Ink, _fontScale);
         // Hit + drag state recorded in _activeWidget / _hoveredWidget
         // by a parent-loop pass below.
     }
@@ -564,17 +605,17 @@ internal sealed class OptionsMenuPanel
                      Func<int> getIdx, Action<int> setIdx, string[] options)
     {
         RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
-        int labelTextW = text.MeasureWidth(label);
+        int labelTextW = text.MeasureWidth(label, _fontScale);
         text.DrawString(vw, vh, label,
-            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim);
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
         var bg = _activeWidget == widgetIdx ? BtnPress
                : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle;
         bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
         DrawBorder(bars, vw, vh, widgetR, Border);
         var optStr = options[Math.Clamp(getIdx(), 0, options.Length - 1)];
-        int oW = text.MeasureWidth(optStr);
+        int oW = text.MeasureWidth(optStr, _fontScale);
         text.DrawString(vw, vh, optStr,
-            widgetR.X + (widgetR.W - oW) / 2, widgetR.Y + 1, Ink);
+            widgetR.X + (widgetR.W - oW) / 2, widgetR.Y + 1, Ink, _fontScale);
     }
 
     /// <summary>Per-tab widget descriptor — the `_widgets` list
@@ -659,20 +700,31 @@ internal sealed class OptionsMenuPanel
 
     void LayoutAudio(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
+        // Phase 23-SC-OPTIONS-FOLD — Audio sliders fire AudioStagedChanged
+        // on every set so the host can re-apply volumes live during
+        // drag. Without this the master/music/sfx sliders feel dead
+        // until OK. Ambient + Voice + EAX are persist-only (SiegeFX
+        // doesn't separate those channels) — labels render in InkDim
+        // to hint that they don't apply yet.
         int r = 0;
+        Action notify = () => AudioStagedChanged?.Invoke();
         BoolCycle(bars, text, vw, vh, r++, "Sound",
-            () => _staged.SoundEnabled, v => _staged.SoundEnabled = v);
+            () => _staged.SoundEnabled,
+            v => { _staged.SoundEnabled = v; notify(); });
         IntSlider(bars, text, vw, vh, r++, "Master Volume",
-            () => _staged.MasterVolume, v => _staged.MasterVolume = v, 0, 127);
+            () => _staged.MasterVolume,
+            v => { _staged.MasterVolume = v; notify(); }, 0, 127);
         IntSlider(bars, text, vw, vh, r++, "Music Volume",
-            () => _staged.MusicVolume, v => _staged.MusicVolume = v, 0, 127);
+            () => _staged.MusicVolume,
+            v => { _staged.MusicVolume = v; notify(); }, 0, 127);
         IntSlider(bars, text, vw, vh, r++, "SFX Volume",
-            () => _staged.SfxVolume, v => _staged.SfxVolume = v, 0, 127);
-        IntSlider(bars, text, vw, vh, r++, "Ambient Volume",
+            () => _staged.SfxVolume,
+            v => { _staged.SfxVolume = v; notify(); }, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "Ambient Volume (inactive)",
             () => _staged.AmbientVolume, v => _staged.AmbientVolume = v, 0, 127);
-        IntSlider(bars, text, vw, vh, r++, "Voice Volume",
+        IntSlider(bars, text, vw, vh, r++, "Voice Volume (inactive)",
             () => _staged.VoiceVolume, v => _staged.VoiceVolume = v, 0, 127);
-        BoolCycle(bars, text, vw, vh, r++, "EAX",
+        BoolCycle(bars, text, vw, vh, r++, "EAX (inactive)",
             () => _staged.EaxEnabled, v => _staged.EaxEnabled = v);
     }
 
@@ -738,8 +790,8 @@ internal sealed class OptionsMenuPanel
         var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
         bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
         DrawBorder(bars, vw, vh, widgetR, Border);
-        int lW = text.MeasureWidth(label);
-        text.DrawString(vw, vh, label, widgetR.X + (widgetR.W - lW) / 2, widgetR.Y + 1, Ink);
+        int lW = text.MeasureWidth(label, _fontScale);
+        text.DrawString(vw, vh, label, widgetR.X + (widgetR.W - lW) / 2, widgetR.Y + 1, Ink, _fontScale);
         AddButtonWidget(rowIdx, onClick, vw, vh);
     }
 
@@ -817,28 +869,32 @@ internal sealed class OptionsMenuPanel
         // Read-only key-binding listing. Header row + scrolling list.
         int innerCx = _inner.X + _inner.W / 2;
         var header = "Hotkeys (read-only — rebinding pending splinter SC-OPTIONS-REBIND)";
-        int hW = text.MeasureWidth(header);
-        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12, InkDim);
+        int hW = text.MeasureWidth(header, _fontScale);
+        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12, InkDim, _fontScale);
 
         // Column headers
         int colY = _inner.Y + 36;
         int cmdX = _inner.X + 20;
         int priX = _inner.X + 220;
         int secX = _inner.X + 320;
-        text.DrawString(vw, vh, "Command",   cmdX, colY, Ink);
-        text.DrawString(vw, vh, "Primary",   priX, colY, Ink);
-        text.DrawString(vw, vh, "Secondary", secX, colY, Ink);
+        text.DrawString(vw, vh, "Command",   cmdX, colY, Ink, _fontScale);
+        text.DrawString(vw, vh, "Primary",   priX, colY, Ink, _fontScale);
+        text.DrawString(vw, vh, "Secondary", secX, colY, Ink, _fontScale);
         bars.DrawRect(vw, vh, _inner.X + 12, colY + 14, _inner.W - 24, 1, Border);
 
-        int rowH = 18;
-        int rowY = colY + 22;
-        int maxRows = (_inner.Y + _inner.H - rowY - 50) / rowH;
-        for (int i = 0; i < Math.Min(maxRows, DefaultBindings.Length); i++)
+        // Phase 23-SC-OPTIONS-FOLD — scale rowH with the font so the
+        // listing reads at the same line-height proportion at every
+        // resolution. 18 authored px × _fontScale = 18/36/54/72 at
+        // 1×/2×/3×/4×.
+        int rowH = 18 * _fontScale;
+        int rowY = colY + 22 * _fontScale;
+        int maxRows = Math.Max(1, (_inner.Y + _inner.H - rowY - 50 * _fontScale) / rowH);
+        for (int i = 0; i < Math.Min(maxRows, DefaultBindings.Length - _hotkeysScroll); i++)
         {
             var b = DefaultBindings[i + _hotkeysScroll];
-            text.DrawString(vw, vh, b.Command,   cmdX, rowY + i * rowH, Ink);
-            text.DrawString(vw, vh, b.Primary,   priX, rowY + i * rowH, InkDim);
-            text.DrawString(vw, vh, b.Secondary, secX, rowY + i * rowH, InkDim);
+            text.DrawString(vw, vh, b.Command,   cmdX, rowY + i * rowH, Ink,    _fontScale);
+            text.DrawString(vw, vh, b.Primary,   priX, rowY + i * rowH, InkDim, _fontScale);
+            text.DrawString(vw, vh, b.Secondary, secX, rowY + i * rowH, InkDim, _fontScale);
         }
 
         // Back button at the bottom of the inner panel.
@@ -849,8 +905,8 @@ internal sealed class OptionsMenuPanel
         bars.DrawRect(vw, vh, backX, backY, backW, backH, bg);
         DrawBorder(bars, vw, vh, (backX, backY, backW, backH), Border);
         var lbl = "← Back";
-        int lW = text.MeasureWidth(lbl);
-        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + 4, Ink);
+        int lW = text.MeasureWidth(lbl, _fontScale);
+        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + 4, Ink, _fontScale);
         _widgets.Add(new W { Rect = (backX, backY, backW, backH), OnClick = () => _hotkeysOpen = false });
     }
 
@@ -871,6 +927,12 @@ internal sealed class OptionsMenuPanel
     /// `notify(default_options_<tab>)` behavior.</summary>
     public void ApplyDefaultsForActiveTab()
     {
+        // Phase 23-SC-OPTIONS-FOLD — Defaults pressed while the
+        // Hotkeys sub-screen is open shouldn't silently rewrite
+        // Input-tab settings; the user thinks they're resetting
+        // bindings, not invert-camera-Y. Until rebinding lands the
+        // sub-screen is read-only so Defaults is a no-op there.
+        if (_hotkeysOpen) return;
         var d = new Settings();
         switch (ActiveTab)
         {
