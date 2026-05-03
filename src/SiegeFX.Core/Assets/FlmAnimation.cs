@@ -5,18 +5,24 @@ namespace SiegeFX.Core.Assets;
 /// (b_gui_c_grab1.flm) cursors referenced from
 /// /ui/interfaces/cursors/cursors.gas via <c>loadanimatedtexture(...)</c>.
 ///
-/// Format (deduced from sizing):
+/// Format (verified by reading shipped bytes — see project memory
+/// reference_ds1_cursors_flm.md for the byte-level investigation):
 /// <list type="bullet">
-///   <item>2048-byte zero-padded header (descriptor / palette slot).</item>
+///   <item>Frame 0 starts at offset 0 — there is NO leading header.</item>
 ///   <item>N frames of 32x32 BGRA8888 = 4096 bytes each, written in
 ///         scanline order.</item>
+///   <item>A 2048-byte zero-padded trailer follows the last frame.</item>
 /// </list>
-/// Validated against the two shipped .flms: smash1 = 2048 + 21*4096 =
-/// 88064, grab1 = 2048 + 30*4096 = 124928.</summary>
+/// Validated against the two shipped .flms: smash1 = 21*4096 + 2048 =
+/// 88064 bytes (21 frames); grab1 = 30*4096 + 2048 = 124928 bytes (30
+/// frames). Reading from offset 2048 (the original mis-hypothesis)
+/// puts every decoded frame on a half-frame split between two real
+/// frames, producing the visible "cycling through random images"
+/// effect that triggered this rewrite.</summary>
 public static class FlmAnimation
 {
     public const int FrameSize = 32;
-    const int HeaderBytes = 2048;
+    const int TrailerBytes = 2048;
     const int FrameBytes = FrameSize * FrameSize * 4;
 
     /// <summary>Returns one RGBA8888 buffer per frame in the bottom-up row
@@ -26,8 +32,11 @@ public static class FlmAnimation
     /// at least one full frame.</summary>
     public static byte[][] LoadFrames(byte[] bytes)
     {
-        if (bytes.Length < HeaderBytes + FrameBytes) return Array.Empty<byte[]>();
-        int frameCount = (bytes.Length - HeaderBytes) / FrameBytes;
+        if (bytes.Length < FrameBytes) return Array.Empty<byte[]>();
+        // Frames pack from offset 0; integer division naturally rounds
+        // down past the 2048-byte trailer. smash1 = 21.5 frames as a
+        // float → 21 frames integer, which is the correct count.
+        int frameCount = bytes.Length / FrameBytes;
         if (frameCount <= 0) return Array.Empty<byte[]>();
 
         const int rowBytes = FrameSize * 4;
@@ -40,7 +49,7 @@ public static class FlmAnimation
             // D3D's V=0-at-top → our shader V-flips on sample). Without this
             // the .flm hammer/hand cursors render upside-down vs the static
             // .raw cursors (sword / red sword / talk) that share IconRenderer.
-            int srcBase = HeaderBytes + i * FrameBytes;
+            int srcBase = i * FrameBytes;
             for (int row = 0; row < FrameSize; row++)
             {
                 int src = srcBase + row * rowBytes;
