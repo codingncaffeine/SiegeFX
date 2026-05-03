@@ -462,6 +462,20 @@ public sealed class RenderHost : IDisposable
     // still fall back to the generic SfxGuiInventory.
     const string SfxGuiPutDownScroll = "gui_put_down_scroll";
     const string SfxGuiOutOfMana   = "gui_out_of_mana";
+    // Phase 24-POLISH-C — frontend menu click cue. DS1 ships
+    // s_e_frontend_big_button.wav (79 KB) as the main-menu button click;
+    // tiny_button is the spinner arrow. Hover SFX is a follow-up — the
+    // Sound.dsres inventory doesn't list a dedicated rollover cue, so a
+    // softer pitched-down version of the click would be a synthesizer
+    // job rather than a "play this clip" wire-up.
+    const string SfxFrontendBigButton  = "frontend_big_button";
+    const string SfxFrontendArrowButton = "frontend_arrow_button";
+    // Phase 25-CHROME — logo "fly-in" + "fly-out" cues. DS1 plays these
+    // during the splash → main menu sequence: flyin = sword drop into
+    // log (the heavy thunk you hear); flyout = sword withdraws + the
+    // logo flies up off-screen.
+    const string SfxFrontendLogoFlyin  = "frontend_logo_flyin";
+    const string SfxFrontendLogoFlyout = "frontend_logo_flyout";
     // Phase 9-SC-2 — death cues are derived from the actor's template's
     // [aspect][voice][die] `*` attribute (universal DS1 pattern). Cache the
     // cue stems we've already pulled out of Sound.dsres so the per-kill
@@ -1452,7 +1466,10 @@ void main()
                         && (_frontendScene.State == Hud.FrontendScene.ScreenState.IntroMicrosoft
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroGaspowered
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroBink
-                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoDrop))
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoDrop
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoHold
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoExit
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn))
                     {
                         _frontendScene.SetState(Hud.FrontendScene.ScreenState.MainMenu);
                         return;
@@ -2592,6 +2609,20 @@ void main()
                 _playSoundTank = TankFile.Open(soundPath);
                 _audio = SiegeFX.Audio.AudioEngine.TryCreate();
                 _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
+                // Phase 24-POLISH-C — register the frontend button click
+                // cues. Skipped silently when the audio device is missing.
+                if (_audio is not null)
+                {
+                    var soundReader = new TankReader(_playSoundTank);
+                    TryRegisterSfx(soundReader, SfxFrontendBigButton,
+                        "/sound/effects/s_e_frontend_big_button.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendArrowButton,
+                        "/sound/effects/s_e_frontend_arrow_button.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendLogoFlyin,
+                        "/sound/effects/s_e_frontend_logo_flyin.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendLogoFlyout,
+                        "/sound/effects/s_e_frontend_logo_flyout.wav");
+                }
             }
         }
         catch (Exception ex) { Console.Error.WriteLine($"  boot: audio init failed — {ex.Message}"); }
@@ -2609,6 +2640,50 @@ void main()
                 ? SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.MainMenu
                 : SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.IntroMicrosoft);
             _bootSplashActive = !noVideo;
+        }
+        // Phase 24-POLISH-B — preload the DS1 wood-button textures so
+        // MainMenuPanel can render textured quads instead of the fallback
+        // colored rectangles. Six textures total (3 idle/hov/down for the
+        // shared wood button + 3 for exitback). Failure-tolerant — null
+        // textures fall through to the fallback path.
+        if (_iconRenderer is not null)
+        {
+            var up      = LoadBootRaw("b_gui_fe_m_mn_3d_button_wood_up");
+            var hov     = LoadBootRaw("b_gui_fe_m_mn_3d_button_wood_hov");
+            var down    = LoadBootRaw("b_gui_fe_m_mn_3d_button_wood_down");
+            var exitUp  = LoadBootRaw("b_gui_fe_m_mn_3d_exitback-up");
+            var exitHov = LoadBootRaw("b_gui_fe_m_mn_3d_exitback");      // no -hov suffix in DS1; idle reused
+            var exitDn  = LoadBootRaw("b_gui_fe_m_mn_3d_exitback-down");
+            _mainMenu.SetButtonTextures(up, hov, down, exitUp, exitHov, exitDn);
+        }
+    }
+
+    /// <summary>Phase 24-POLISH-B — basename → cached GlTexture helper for
+    /// the boot-mode UI. Reuses <see cref="_splashTexCache"/> so OnClosing
+    /// disposes uniformly. Returns null on miss/parse-fail; caller falls
+    /// back to a non-textured visual.</summary>
+    private GlTexture? LoadBootRaw(string basename)
+    {
+        if (_gl is null || _playResolver is null) return null;
+        if (_splashTexCache.TryGetValue(basename, out var hit)) return hit;
+        try
+        {
+            if (!_playResolver.TryLoadByBasename(basename + ".raw", out var bytes))
+            {
+                Console.Error.WriteLine($"  boot: '{basename}.raw' not found");
+                _splashTexCache[basename] = null;
+                return null;
+            }
+            var raw = SiegeFX.Core.Assets.RawImage.Load(bytes);
+            var tex = new GlTexture(_gl, raw);
+            _splashTexCache[basename] = tex;
+            return tex;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  boot: '{basename}' load failed — {ex.Message}");
+            _splashTexCache[basename] = null;
+            return null;
         }
     }
 
@@ -4922,7 +4997,23 @@ void main()
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
         // (not inside DrawBootScene) so the boot sequence keeps advancing
         // even when the render loop is paused (e.g. minimized window).
-        if (_bootMode && _frontendScene is not null) _frontendScene.Tick((float)dt);
+        // Phase 25-CHROME — fire the splash-stage SFX on each state edge:
+        // sword "thunk" (logo_flyin) when the logo starts dropping; sword
+        // withdraw (logo_flyout) when it starts rising. The state machine
+        // owns the timing; this just listens at the boundary.
+        if (_bootMode && _frontendScene is not null)
+        {
+            var prev = _frontendScene.State;
+            _frontendScene.Tick((float)dt);
+            var now = _frontendScene.State;
+            if (prev != now)
+            {
+                if (now == Hud.FrontendScene.ScreenState.IntroLogoDrop)
+                    _audio?.Play(SfxFrontendLogoFlyin);
+                else if (now == Hud.FrontendScene.ScreenState.IntroLogoExit)
+                    _audio?.Play(SfxFrontendLogoFlyout);
+            }
+        }
         // Phase 24-MAINMENU step 5+6 — drain main menu click actions one
         // per frame. Drives state transitions, opens sub-screens, fires
         // _window.Close on Exit. Stub buttons (Multiplayer / Continue /
@@ -5304,9 +5395,20 @@ void main()
         if (!_bootMode) return;
         if (_frontendScene is null
             || _frontendScene.State != Hud.FrontendScene.ScreenState.MainMenu) return;
+        // Phase 24-POLISH-A — frontend music. /ui/config/frontend_music/
+        // frontend_music.gas authors `sample = s_m_Frontend.mp3`.
+        // PlayMusicTrack short-circuits when the active track basename
+        // matches, so calling every frame in MainMenu state is idempotent.
+        // Splash + logo-drop run silent (matches DS1's tempo where the
+        // logo settle is the cue for the music to enter).
+        PlayMusicTrack("Frontend");
         // The menu only takes input while no sub-screen / dialog is on top.
         _mainMenu.IsActive = !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen;
         var act = _mainMenu.ConsumeAction();
+        // Phase 24-POLISH-C — play the click cue on every consumed action
+        // including stubs, so the user gets audible feedback for the press
+        // even when the slot is "splinter pending" no-op.
+        if (act != MainMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
         switch (act)
         {
             case MainMenuPanel.Action.None:
@@ -5577,16 +5679,27 @@ void main()
         }
         // Phase 24-MAINMENU step 1-6 — once the splash sequence drains
         // past the Bink-stub fade, hand drawing to the existing
-        // FrontendScene composer. IntroLogoDrop renders backdrop + sides
-        // + logo.asp with logo-enter.prs; MainMenu reuses the existing
-        // CharacterSelect chrome as a known-working backdrop and drops
-        // the 7-button MainMenuPanel + optional About overlay on top.
-        else if (_frontendScene.State != Hud.FrontendScene.ScreenState.IntroBink)
+        // FrontendScene composer for IntroLogoDrop (backdrop + sides
+        // + logo.asp with logo-enter.prs) AND for MainMenu state. The
+        // chrome is correct DS1 art but currently in the wrong pose
+        // (cd-state placeholder until splinter SC-MAINMENU-CHROME-PROPER
+        // wires the real main-menu-pose PRS clips + subset masks); it
+        // still reads as "DS1 chrome" rather than a black void, which
+        // the user prefers per the polish triage even before the pose
+        // pass lands.
+        else if (_frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoDrop
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoHold
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoExit
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
         {
             _frontendScene.Draw(viewportW, viewportH);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
-                _mainMenu.Draw(_barRenderer, _textRenderer, viewportW, viewportH);
+                // MainMenuPanel only renders Exit (textured wood quad);
+                // the 5 menubars buttons render through menubars.asp's
+                // chrome subsets, and Credits is invisible-by-design.
+                _mainMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, viewportW, viewportH);
                 if (_aboutOpen)
                     DrawAboutOverlay(viewportW, viewportH);
             }
@@ -9092,7 +9205,14 @@ void main()
         // the gameplay-render block below (which checks for null tanks /
         // null player and silently skips) sees a black-cleared frame; the
         // splash overlay is drawn by DrawBootScene at the HUD-pass site.
-        if (_bootMode) DrawBootScene((float)dt, size.X, size.Y);
+        // Phase 24-POLISH-A — early-return so the dev fly-cam grid + any
+        // other always-on debug helpers don't peek through behind the
+        // splash / main menu. Only the boot-scene draw runs in boot mode.
+        if (_bootMode)
+        {
+            DrawBootScene((float)dt, size.X, size.Y);
+            return; // Silk.NET swaps buffers automatically when OnRender returns
+        }
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
 

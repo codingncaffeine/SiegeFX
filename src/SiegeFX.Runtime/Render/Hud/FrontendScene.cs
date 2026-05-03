@@ -52,9 +52,22 @@ public sealed class FrontendScene : IDisposable
         /// Plays <c>a_gui_fe_m_mn_3d_logo-enter.prs</c> (2.17s) on
         /// <c>m_gui_fe_m_mn_3d_logo.asp</c> inside the
         /// <c>frontend_lights.gas to_main_menu ramp_duration = 6.0</c>
-        /// window, then holds the end pose until the state expires and
-        /// auto-advances to <see cref="MainMenu"/>.</summary>
+        /// window with <c>s_e_frontend_logo_flyin.wav</c> on entry.</summary>
         IntroLogoDrop,
+        /// <summary>Phase 25-CHROME — logo holds posed at the end of
+        /// logo-enter for a short beat before flyout starts. Gives the
+        /// user a moment to read the title before the sword flies up
+        /// and the menu drops in.</summary>
+        IntroLogoHold,
+        /// <summary>Phase 25-CHROME — sword flies up out of the log via
+        /// <c>logo-exit.prs</c> (0.58s) with <c>s_e_frontend_logo_flyout.wav</c>
+        /// on entry. Auto-advances to <see cref="IntroMenuFlyIn"/>.</summary>
+        IntroLogoExit,
+        /// <summary>Phase 25-CHROME — main menu chrome drops down from
+        /// above. mainmenu_flyin / menubars_flyin / leftside_flyin /
+        /// rightside_flyin / backbutton_flyin all run simultaneously
+        /// (~1.5s longest). Auto-advances to <see cref="MainMenu"/>.</summary>
+        IntroMenuFlyIn,
         /// <summary>Main menu — Single Player / Multiplayer / Options / Exit.</summary>
         MainMenu,
         /// <summary>Single Player sub-menu — New Game / Load Game / Back.</summary>
@@ -82,19 +95,37 @@ public sealed class FrontendScene : IDisposable
     // GPG-intro slot. Splinter SC-MAINMENU-BINK replaces this with real
     // .bik playback (gpg_intro.bik = 4.98 MB Bink in Objects.dsres).
     const float IntroBinkDur = 1.0f;
-    // Phase 24-MAINMENU step 4 — logo-drop window. logo-enter.prs is
-    // 2.1667s by ASP/PRS metadata. After it ends we hold the posed sword
-    // for the remainder of the 6.0s frontend_lights.gas ramp_duration so
-    // the backdrop has time to ramp from black to its main-menu lighting.
-    const float LogoEnterDur = 2.1667f;
-    const float LogoDropDur  = 5.0f; // Bink stub (1s) + this (5s) = 6.0s ramp_duration
+    // Phase 24-MAINMENU step 4 / Phase 25-CHROME — logo-drop window.
+    // logo-enter.prs is 2.1667s; logo-exit.prs is 0.5833s. The
+    // 6.0s frontend_lights.gas to_main_menu ramp_duration covers
+    // Bink (1s) + LogoDrop (2.17s) + LogoHold (~1.0s) + LogoExit
+    // (0.58s) + MenuFlyIn (~1.25s) ≈ 6s total. Tunable per slice
+    // once the user eyeballs the cadence end-to-end.
+    const float LogoEnterDur    = 2.1667f;
+    const float LogoExitDur     = 0.5833f;
+    const float LogoHoldDur     = 1.0f;
+    const float MenuFlyInDur    = 1.6667f; // mainmenu_flyin / menubars_flyin both 1.6667s
     /// <summary>Phase 24-MAINMENU — exposed for the host's logo-drop
     /// renderer so it knows the time fraction to evaluate
     /// <c>logo-enter.prs</c> at. Clamped to [0, 1] for hold semantics.</summary>
     public float LogoDropTimeFraction =>
-        State == ScreenState.IntroLogoDrop
-            ? Math.Clamp(_stateTime / LogoEnterDur, 0f, 1f)
-            : 0f;
+        State == ScreenState.IntroLogoDrop ? Math.Clamp(_stateTime / LogoEnterDur, 0f, 1f) :
+        State == ScreenState.IntroLogoHold ? 1f :
+        State == ScreenState.IntroLogoExit ? 0f /* logo holds end pose; exit clip drives sword bone */ :
+        0f;
+    /// <summary>Phase 25-CHROME — exposed for the host so logo-exit.prs
+    /// runs over the 0.58s exit window. Clamped to [0, 1].</summary>
+    public float LogoExitTimeFraction =>
+        State == ScreenState.IntroLogoExit ? Math.Clamp(_stateTime / LogoExitDur, 0f, 1f) : 0f;
+    /// <summary>Phase 25-CHROME — exposed for the host so the
+    /// mainmenu/menubars/sides/backbutton _flyin clips run together
+    /// at the same time-fraction. Clamped to [0, 1]; held at 1 once
+    /// the menu has settled into MainMenu state so the post-flyin
+    /// pose persists.</summary>
+    public float MenuFlyInTimeFraction =>
+        State == ScreenState.IntroMenuFlyIn ? Math.Clamp(_stateTime / MenuFlyInDur, 0f, 1f) :
+        State == ScreenState.MainMenu       ? 1f :
+        0f;
 
     /// <summary>Time spent in the current state. Re-zeroed on every
     /// <see cref="SetState"/>.</summary>
@@ -198,7 +229,16 @@ public sealed class FrontendScene : IDisposable
                 if (_stateTime >= IntroBinkDur) SetState(ScreenState.IntroLogoDrop);
                 break;
             case ScreenState.IntroLogoDrop:
-                if (_stateTime >= LogoDropDur) SetState(ScreenState.MainMenu);
+                if (_stateTime >= LogoEnterDur) SetState(ScreenState.IntroLogoHold);
+                break;
+            case ScreenState.IntroLogoHold:
+                if (_stateTime >= LogoHoldDur) SetState(ScreenState.IntroLogoExit);
+                break;
+            case ScreenState.IntroLogoExit:
+                if (_stateTime >= LogoExitDur) SetState(ScreenState.IntroMenuFlyIn);
+                break;
+            case ScreenState.IntroMenuFlyIn:
+                if (_stateTime >= MenuFlyInDur) SetState(ScreenState.MainMenu);
                 break;
         }
     }
@@ -228,11 +268,41 @@ public sealed class FrontendScene : IDisposable
                 // machine timing here.
                 return;
             case ScreenState.IntroLogoDrop:
-                // Phase 24-MAINMENU step 4 — sword drop. Backdrop ramps
-                // from black underneath via DrawMesh's lighting; logo.asp
-                // animates by playing logo-enter.prs at LogoDropTimeFraction
-                // and holds the end pose afterward.
+            case ScreenState.IntroLogoHold:
+                // Phase 24-MAINMENU step 4 / Phase 25-CHROME — sword drop +
+                // hold. logo.asp plays logo-enter.prs over LogoDropDur,
+                // then holds the end pose for LogoHoldDur (sword sits in
+                // the log) before flyout begins.
                 DrawLogoDropState(fullW, fullH);
+                return;
+            case ScreenState.IntroLogoExit:
+                // Phase 25-CHROME — sword rises out of the log via
+                // logo-exit.prs (0.58s). Backdrop + sides stay; logo
+                // mesh animates upward off-screen.
+                DrawLogoExitState(fullW, fullH);
+                return;
+            case ScreenState.IntroMenuFlyIn:
+                // Phase 25-CHROME — main menu chrome drops down from
+                // above. mainmenu_flyin / menubars_flyin / leftside_flyin
+                // / rightside_flyin / backbutton_flyin all share the
+                // same MenuFlyInTimeFraction so the parts arrive in
+                // sync. End-pose matches MainMenu's resting state so
+                // the transition is seamless.
+                DrawMenuFlyInState(fullW, fullH);
+                return;
+            case ScreenState.MainMenu:
+                // Phase 25-CHROME — proper main-menu chrome (was falling
+                // back to DrawCharacterSelectState which used the wrong
+                // pose + showed the spinner column with character-creator
+                // labels). DS1's main menu = backdrop / leftside /
+                // rightside in default poses + mainmenu.asp in
+                // `mainmenu_sp2mm` end pose (Bone01 Y=2.01, panel slid
+                // down) + menubars.asp in `menubars_sp2mm` end pose
+                // (Bone01 Y=-0.99, the 5 menu buttons visible). heromenu
+                // / backbutton / logo are intentionally skipped — they
+                // belong to other states (logo is splash-only per the
+                // existing memory).
+                DrawMainMenuState(fullW, fullH);
                 return;
             case ScreenState.CharacterSelect:
                 DrawCharacterSelectState(fullW, fullH);
@@ -243,6 +313,95 @@ public sealed class FrontendScene : IDisposable
                 DrawCharacterSelectState(fullW, fullH);
                 break;
         }
+    }
+
+    /// <summary>Phase 25-CHROME — main menu chrome assembly. Reads each
+    /// shipped frontend ASP at the pose + subset mask appropriate for
+    /// MainMenu state (NOT cd-state, which the pre-Phase-25 fallback was
+    /// rendering). Pose research receipts:
+    /// <list type="bullet">
+    ///   <item><c>mainmenu_sp2mm</c> end-frame Bone01 Y=2.01 (down into
+    ///         screen), PanelBASE1+2 at Z=-0.85 (visible title slot).
+    ///         End-pose matches <c>mainmenu_flyin</c> end (the boot-from-
+    ///         logo entry); both converge to the same MainMenu-state pose.</item>
+    ///   <item><c>menubars_sp2mm</c> end-frame Bone01 Y=-0.99 (slid down
+    ///         into screen) with MenuBase1..5 at Z=0.37/0.67/0.98/1.29/1.59
+    ///         (5 button rows). Z pitch ≈0.30u matches the 74-px row
+    ///         pitch authored in <c>main_menu.gas</c>'s 5 button rects, so
+    ///         <c>MainMenuPanel</c>'s hit-tests line up with the rendered
+    ///         button rows by construction.</item>
+    ///   <item><c>menubars_default</c> end-frame Bone01 Y=1.70 — parked
+    ///         above the visible frame (the "before menu" pose). Used by
+    ///         the splash sequence's IntroBink/IntroLogoDrop states; not
+    ///         here.</item>
+    /// </list>
+    /// <para>All subsets render today. Text atlases (subsets 6-15) ship
+    /// state-keyed labels — DS1's main menu labels live in some subset
+    /// of them. Once the user eyeballs and reports which atlas rows hold
+    /// "SINGLE PLAYER / MULTIPLAYER / OPTIONS / CONTINUE / ABOUT," we'll
+    /// add a state-specific subset mask the way <c>DrawCharacterSelectState</c>
+    /// masks out text-02 to keep DIFFICULTY from painting over CHOOSE
+    /// HERO. Splinter SC-MAINMENU-MENUBARS-LABELS tracks the mask.</para></summary>
+    private void DrawMainMenuState(int vw, int vh)
+    {
+        // Backdrop + side pillars: same poses as cd-state (these are the
+        // always-on chrome that doesn't morph between menu screens).
+        DrawMesh("backdrop",  "backdrop",  clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside",  "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
+        DrawMesh("rightside", "rightside", clip: "rightside_default", hold: 0f, vw, vh);
+        // Inner panel: the title bar drops down into the visible frame.
+        // No subset mask yet — DS1's title-bar text rows for MainMenu
+        // state live in some PanelBASE bones we haven't mapped (memory
+        // has the cd-state mapping but not the mm-state mapping). The
+        // MainMenuPanel's font-rendered button labels read on top
+        // regardless, so any peek-through from the mainmenu mesh's text
+        // atlases is cosmetic until SC-MAINMENU-MENUBARS-LABELS lands.
+        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_sp2mm",    hold: 1f, vw, vh);
+        // Menubars: 5 button rows slide into screen. MenuBase1..5 carry
+        // the button chrome subsets (1-5) + their per-row text atlases
+        // (subsets 6-15 across both columns). The MainMenuPanel's hit-
+        // rects are aligned with these row positions per main_menu.gas.
+        DrawMesh("menubars",  "menubars",  clip: "menubars_sp2mm",    hold: 1f, vw, vh);
+        // logo / heromenu / backbutton intentionally NOT drawn at MainMenu
+        // state. logo is splash-only (fades out via logo-exit.prs on the
+        // splash → MainMenu transition; future SC-MAINMENU-LOGO-EXIT
+        // splinter wires that 0.58s tail). heromenu + backbutton belong
+        // to character-creator + sub-menu states.
+    }
+
+    /// <summary>Phase 25-CHROME — sword rises out of the log via
+    /// logo-exit.prs over the 0.58s exit window. Backdrop + sides hold;
+    /// logo mesh animates upward via the exit clip. Once the clip
+    /// completes, IntroMenuFlyIn takes over and the chrome drops in
+    /// from above so the user never sees a frame without something
+    /// posed.</summary>
+    private void DrawLogoExitState(int vw, int vh)
+    {
+        DrawMesh("backdrop",  "backdrop",  clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside",  "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
+        DrawMesh("rightside", "rightside", clip: "rightside_default", hold: 0f, vw, vh);
+        DrawMesh("logo",      "logo",      clip: "logo-exit",         hold: LogoExitTimeFraction, vw, vh);
+    }
+
+    /// <summary>Phase 25-CHROME — main menu chrome flies in. mainmenu_flyin
+    /// (1.6667s, drops Bone01 from Y=2.94 to Y=2.01) + menubars_flyin
+    /// (drops menubars from above into screen) + leftside_flyin /
+    /// rightside_flyin (gear flourishes) + backbutton_flyin run together.
+    /// All driven by the same MenuFlyInTimeFraction so they stay synced.
+    /// End pose matches MainMenu's rest pose, making the transition
+    /// to MainMenu state visually seamless.</summary>
+    private void DrawMenuFlyInState(int vw, int vh)
+    {
+        DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,                   vw, vh);
+        DrawMesh("leftside",  "leftside",  clip: "leftside_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
+        DrawMesh("rightside", "rightside", clip: "rightside_flyin",    hold: MenuFlyInTimeFraction, vw, vh);
+        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
+        DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
+        // backbutton has its own flyin too — keep it in the assembly
+        // even though MainMenu state itself doesn't draw the back button.
+        // Wait — actually MainMenu DOES NOT show backbutton (no Previous/Next
+        // nav at the menu top level). Skipping it on flyin keeps the
+        // visual aligned with MainMenu's steady state.
     }
 
     /// <summary>Phase 24-MAINMENU step 4 — sword drop sequence. Backdrop +

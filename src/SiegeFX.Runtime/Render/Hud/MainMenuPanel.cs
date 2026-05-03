@@ -124,6 +124,21 @@ internal sealed class MainMenuPanel
     (int X, int Y, int W, int H)[] _rects = new (int, int, int, int)[Buttons.Length];
     (int X, int Y, int W, int H) _creditsRect;
 
+    // Phase 24-POLISH-B — DS1 wood-button textures. Host loads via the
+    // play resolver (b_gui_fe_m_mn_3d_button_wood_up/hov/down.raw 128×128)
+    // and exitback variants 256×256, calls SetButtonTextures once. When
+    // non-null Draw renders textured quads instead of the placeholder
+    // colored rectangles. Stays null when textures fail to resolve so
+    // the menu degrades gracefully on a stripped install.
+    GlTexture? _texUp, _texHov, _texDown;
+    GlTexture? _texExitUp, _texExitHov, _texExitDown;
+    public void SetButtonTextures(GlTexture? up, GlTexture? hov, GlTexture? down,
+                                  GlTexture? exitUp, GlTexture? exitHov, GlTexture? exitDown)
+    {
+        _texUp = up; _texHov = hov; _texDown = down;
+        _texExitUp = exitUp; _texExitHov = exitHov; _texExitDown = exitDown;
+    }
+
     void Layout(int viewportW, int viewportH)
     {
         // Authored at 800×600. Same height-driven scale OptionsMenuPanel uses
@@ -195,53 +210,42 @@ internal sealed class MainMenuPanel
         return Action.None;
     }
 
-    /// <summary>Phase 24-MAINMENU step 5+6 — placeholder rectangle visuals
-    /// over the existing FrontendScene chrome. The real DS1 menu uses the
-    /// shipped <c>button_wood_up/down/hov.raw</c> textures stretched to each
-    /// authored rect; folding those in is a polish slice once the click-
-    /// through state machine is verified end-to-end.</summary>
-    public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
+    /// <summary>Phase 25-CHROME — visuals for the 5 menubars buttons
+    /// (Single Player / Multiplayer / Options / Continue / About) come
+    /// from menubars.asp's chrome subsets, NOT from this panel. The user
+    /// sees DS1's authored wood-and-engraved-text buttons rendered as
+    /// part of the 3D scene; this panel only owns hit-testing for those
+    /// rects (the rect Y pitch in main_menu.gas matches MenuBase Z pitch
+    /// in menubars_sp2mm by construction). The Exit button (uses
+    /// exitback*.raw, separate widget anchored bottom-center) and the
+    /// 16×16 Credits hit zone (anchored bottom-right) are NOT in
+    /// menubars.asp, so they keep their textured-quad visuals here.</summary>
+    public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
+                     int viewportW, int viewportH)
     {
         if (!IsActive) return;
         Layout(viewportW, viewportH);
 
-        // Per-button visual: idle = transparent dark, hover = brighter, press
-        // = slightly inverted. DS1 ships a rich button atlas for these — the
-        // splinter SC-MAINMENU-BUTTONS-RAW will swap in the real wood-button
-        // graphics; the rectangle scaffolding here proves the layout +
-        // click-through plumbing first.
-        var idle  = new Vector4(0.10f, 0.06f, 0.04f, 0.80f);
-        var hover = new Vector4(0.30f, 0.20f, 0.10f, 0.85f);
-        var press = new Vector4(0.50f, 0.35f, 0.20f, 0.90f);
-        var border = new Vector4(0.65f, 0.50f, 0.30f, 1f);
-        var ink    = new Vector4(0.95f, 0.85f, 0.65f, 1f);
-        var inkDim = new Vector4(0.65f, 0.55f, 0.40f, 1f);
+        var tint = new Vector4(1f, 1f, 1f, 1f);
 
+        // Exit button only — the 5 menubars buttons render through the
+        // chrome, not here.
         for (int i = 0; i < Buttons.Length; i++)
         {
-            var r = _rects[i];
             var act = Buttons[i].OnClick;
-            // Multiplayer / Continue / Credits — clearly stub-state until
-            // their sub-screens land. Render with InkDim so they read as
-            // not-yet-implemented rather than enabled-but-broken.
-            bool isStub = act == Action.Multiplayer || act == Action.Continue || act == Action.Credits;
-            var fill = (_pressed == act && _hovered == act) ? press
-                     : _hovered == act ? hover
-                     : idle;
-            bars.DrawRect(viewportW, viewportH, r.X, r.Y, r.W, r.H, fill);
-            DrawBorder(bars, viewportW, viewportH, r, border);
-            int lW = text.MeasureWidth(Buttons[i].Label, _fontScale);
-            int lx = r.X + (r.W - lW) / 2;
-            int ly = r.Y + (r.H - 12 * _fontScale) / 2;
-            text.DrawString(viewportW, viewportH, Buttons[i].Label,
-                lx, ly, isStub ? inkDim : ink, _fontScale);
+            if (act != Action.Exit) continue;
+            var r = _rects[i];
+            var stateTex = (_pressed == act && _hovered == act) ? _texExitDown
+                         : _hovered == act ? _texExitHov
+                         : _texExitUp;
+            if (stateTex is not null && icons is not null)
+                icons.DrawIcon(viewportW, viewportH, stateTex, r.X, r.Y, r.W, r.H, tint);
+            // No font label drawn — exitback*.raw textures already carry
+            // the "EXIT" word baked into the wood-button art.
         }
-        // Credits glyph as a tiny dim rectangle. No label; intent is "click
-        // here for credits" but at this size the visual is more of a hint
-        // than a button.
-        bars.DrawRect(viewportW, viewportH, _creditsRect.X, _creditsRect.Y,
-            _creditsRect.W, _creditsRect.H,
-            _hovered == Action.Credits ? hover : idle);
+        // Credits hit zone — invisible by design (DS1's anchored 16×16
+        // glyph at the bottom-right is a discoverable corner click, not
+        // a primary nav). No fill or label.
     }
 
     static void DrawBorder(BarRenderer bars, int vw, int vh,
