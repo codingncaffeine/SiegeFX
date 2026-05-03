@@ -393,6 +393,21 @@ public sealed class RenderHost : IDisposable
     // PlayMusicTrack with the same name (region re-entry, save-load) is a
     // no-op rather than restarting the clip. Empty until first Play.
     private string _currentMusicTrack = "";
+    // Phase 22-SC-MUSIC-C/D — active region mood. ApplyMoodMusic stores
+    // this so a later combat-state transition can reach back into the
+    // mood's battle_track / standard_track without re-resolving the
+    // region→mood lookup. Null when no mood has been applied (viewer
+    // modes, headless smoke runs).
+    private SiegeFX.Core.Assets.MoodSetting? _activeMood;
+    // Phase 22-SC-MUSIC-D — combat-music state. _inCombat flips the
+    // moment any hostile NPC enters Chase/Attack against the player;
+    // _combatExitTimer accumulates wall time since the LAST hostile left
+    // combat state and only after CombatExitDelay does the music revert
+    // to standard_track. Without the delay, transient encounters
+    // (single-skirmish in fh_r1) would flicker the music inside ~3s.
+    private bool _inCombat;
+    private float _combatExitTimer;
+    private const float CombatExitDelay = 3f;
     // Clip-id constants — tying RenderHost call sites to the AudioEngine
     // dictionary keys through symbols rather than magic strings keeps a typo
     // in one place from silently disabling a sound.
@@ -7480,21 +7495,82 @@ void main()
         ApplyMoodMusic(mood);
     }
 
-    /// <summary>Phase 22-SC-MUSIC-C — translate a mood's
-    /// <see cref="SiegeFX.Core.Assets.MoodSetting.StandardTrack"/> into a
-    /// <see cref="PlayMusicTrack"/> call. Empty StandardTrack leaves
-    /// the active music alone (some moods only carry an ambient bed
-    /// and inherit music from the previous mood — DS1's transition
-    /// behavior). Pulled out of <see cref="ApplyAmbientForRegion"/> so
-    /// the same logic can be reused if a future trigger-driven mood
-    /// change wants to swap music without re-applying the bed.</summary>
+    /// <summary>Phase 22-SC-MUSIC-C/D — translate the active mood into a
+    /// <see cref="PlayMusicTrack"/> call, picking battle_track when
+    /// combat is active and standard_track otherwise. Stores the mood
+    /// on <see cref="_activeMood"/> so <see cref="TickCombatMusic"/> can
+    /// switch tracks on the in-combat ↔ out-of-combat edge without
+    /// re-resolving the region→mood lookup. Empty track inherits — DS1
+    /// has bed-only moods that carry forward the previous mood's music.</summary>
     private void ApplyMoodMusic(SiegeFX.Core.Assets.MoodSetting mood)
     {
-        if (string.IsNullOrEmpty(mood.StandardTrack)) return;
-        var basename = mood.StandardTrack;
+        _activeMood = mood;
+        var track = _inCombat && !string.IsNullOrEmpty(mood.BattleTrack)
+            ? mood.BattleTrack
+            : mood.StandardTrack;
+        if (!string.IsNullOrEmpty(track)) PlayMusicTrackBasename(track);
+    }
+
+    /// <summary>Phase 22-SC-MUSIC-D — strip the optional <c>s_m_</c>
+    /// prefix from a track name and hand the basename to
+    /// <see cref="PlayMusicTrack"/>. Moods author tracks like
+    /// <c>s_m_Farmhouse_02</c>; PlayMusicTrack rebuilds the full path
+    /// from the basename. Centralized here so combat-music swaps,
+    /// region-mood applies, and any future trigger-driven changes go
+    /// through one stripping path.</summary>
+    private void PlayMusicTrackBasename(string trackWithMaybePrefix)
+    {
+        var basename = trackWithMaybePrefix;
         if (basename.StartsWith("s_m_", StringComparison.OrdinalIgnoreCase))
             basename = basename.Substring(4);
         PlayMusicTrack(basename);
+    }
+
+    /// <summary>Phase 22-SC-MUSIC-D — drive battle music in response to
+    /// hostile NPCs aggro-ing the player. Walk the actor list once per
+    /// frame; if any non-player non-dead actor's brain is in
+    /// <see cref="SiegeFX.Core.Actors.ActorBrain.BrainState.Chase"/> or
+    /// <see cref="SiegeFX.Core.Actors.ActorBrain.BrainState.Attack"/>,
+    /// flip into combat (immediately swap to the active mood's
+    /// battle_track if it has one). Out of combat is gated by
+    /// <see cref="CombatExitDelay"/> so single-skirmish encounters
+    /// don't flicker the music. Boss music (DS1 ships dedicated boss
+    /// tracks like s_m_boss_01) is a future polish item — needs a
+    /// per-template "is_boss" flag we don't extract yet.</summary>
+    private void TickCombatMusic(float dt)
+    {
+        if (_player is null || _activeMood is null) return;
+        bool nowInCombat = false;
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            if (s.IsPlayer || s.IsDead) continue;
+            var brain = s.Brain;
+            if (brain is null) continue;
+            if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+             || brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)
+            { nowInCombat = true; break; }
+        }
+        if (nowInCombat)
+        {
+            _combatExitTimer = 0f;
+            if (!_inCombat)
+            {
+                _inCombat = true;
+                if (!string.IsNullOrEmpty(_activeMood.BattleTrack))
+                    PlayMusicTrackBasename(_activeMood.BattleTrack);
+            }
+            return;
+        }
+        if (!_inCombat) return;
+        _combatExitTimer += dt;
+        if (_combatExitTimer >= CombatExitDelay)
+        {
+            _inCombat = false;
+            _combatExitTimer = 0f;
+            if (!string.IsNullOrEmpty(_activeMood.StandardTrack))
+                PlayMusicTrackBasename(_activeMood.StandardTrack);
+        }
     }
 
     /// <summary>Phase 17-SC-H-DBG — step the Primary slot through every
@@ -8275,6 +8351,12 @@ void main()
         // when a track is active it decodes ~0-3 chunks per tick to
         // refill drained buffers.
         _music?.Tick();
+        // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
+        // hostile NPC is engaging the player; revert to standard_track
+        // after CombatExitDelay seconds without aggro. Cheap loop over
+        // _actors; bails on the first hostile so worst-case is
+        // population-bounded but typically O(few).
+        TickCombatMusic((float)dt);
         // Phase 21-SC-BARREL-C — integrate frag debris (gravity + ground
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
