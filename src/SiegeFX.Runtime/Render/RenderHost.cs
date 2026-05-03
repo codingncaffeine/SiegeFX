@@ -5986,6 +5986,107 @@ void main()
         }
     }
 
+    /// <summary>Phase 21-SC-BARREL-B — cast the spell in <paramref name="slot"/>
+    /// at a breakable static prop instead of an actor. Mirrors the actor cast
+    /// path (range / mana / cooldown gate, chore_magic on success, native
+    /// sfx_script + fallback SpawnSpellVisual, cast SFX, floating damage),
+    /// but routes the rolled damage into the prop's life pool. On Life&lt;=0
+    /// the prop disappears + smoke/spark debris kicks (frag-mesh debris and
+    /// pcontent drops are sub-slices C and D respectively).</summary>
+    private void PerformSpellOnProp(SiegeFX.Core.Actors.SpellSlot slot,
+                                    SiegeFX.Core.Assets.SpellTemplate spell,
+                                    StaticPropInstance prop, float magicLevel)
+    {
+        if (_player is null || _playerSpellbook is null || prop.IsDestroyed) return;
+        var playerPos = _player.CurrentTransform.Translation;
+        var propPos = prop.World.Translation;
+        float dx = propPos.X - playerPos.X;
+        float dz = propPos.Z - playerPos.Z;
+        float dist = MathF.Sqrt(dx * dx + dz * dz);
+
+        var result = _playerSpellbook.TryCastAtPoint(slot, dist, magicLevel);
+        var anchor = propPos + new Vector3(0f, 0.6f, 0f);
+        switch (result.Outcome)
+        {
+            case SiegeFX.Core.Actors.CastOutcome.OutOfRange:
+                AddFloatingText("out of range", anchor + new Vector3(0f, 1.0f, 0f),
+                                new Vector4(0.95f, 0.65f, 0.20f, 1f));
+                return;
+            case SiegeFX.Core.Actors.CastOutcome.NoMana:
+                AddFloatingText("no mana", playerPos + new Vector3(0f, 2.1f, 0f),
+                                new Vector4(0.45f, 0.65f, 1.00f, 1f));
+                _audio?.Play(SfxGuiOutOfMana);
+                return;
+            case SiegeFX.Core.Actors.CastOutcome.OnCooldown:
+                return;
+            case SiegeFX.Core.Actors.CastOutcome.Cast:
+                break;
+            default:
+                return;
+        }
+
+        _player.Actor.PlayChoreOnce("chore_magic", 0.7f);
+        // Snap player facing so the bolt visibly originates *toward* the prop.
+        if (dx * dx + dz * dz > 1e-6f)
+        {
+            float fl = MathF.Sqrt(dx * dx + dz * dz);
+            _playerFacing = new Vector3(dx / fl, 0f, dz / fl);
+            float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
+            _player.CurrentTransform =
+                Matrix4x4.CreateRotationY(pyaw) *
+                Matrix4x4.CreateTranslation(playerPos);
+            _playerRenderFacingPrev = _playerFacing;
+            _playerRenderFacingNext = _playerFacing;
+        }
+        var src = playerPos + _playerFacing * 0.45f + new Vector3(0f, 1.25f, 0f);
+        var dst = anchor;
+        var elemColor = SpellElementColor(spell.Element);
+
+        bool ranNativeScript = false;
+        bool nativeProducedVisual = false;
+        if (_sfxRuntime is not null && _sfxStore is not null
+            && !string.IsNullOrEmpty(spell.CastSfxScript)
+            && _sfxStore.TryGet(spell.CastSfxScript, out var castScript)
+            && IsCastScriptFullyCovered(spell, castScript))
+        {
+            var ctx = new SiegeFX.Core.Sfx.SfxContext(
+                SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
+                TargetPos:     dst,
+                WeaponBonePos: src,
+                Resolver:      ResolvePlayerBone);
+            int boltsBefore       = _particles?.LiveBoltCount ?? 0;
+            int particlesBefore   = _particles?.LiveParticleCount ?? 0;
+            int persistentBefore  = _sfxRuntime.LivePersistentCount;
+            ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
+            nativeProducedVisual = ((_particles?.LiveBoltCount ?? 0) > boltsBefore)
+                                || ((_particles?.LiveParticleCount ?? 0) > particlesBefore)
+                                || (_sfxRuntime.LivePersistentCount > persistentBefore);
+        }
+        if (!ranNativeScript || !nativeProducedVisual)
+            SpawnSpellVisual(src, dst, spell.Element, elemColor);
+        _audio?.Play(ResolveSpellCastSound(spell));
+
+        float dealt = MathF.Max(1f, result.Damage);
+        prop.Life = MathF.Max(0f, prop.Life - dealt);
+        AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(dealt)}",
+                        anchor + new Vector3(0f, 1.4f, 0f), elemColor);
+        AwardCombatXp((long)dealt, 0, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+        Console.WriteLine(
+            $"cast {spell.ScreenName}: hit {prop.Template} for {dealt:F0} " +
+            $"({prop.Life:F0}/{prop.MaxLife:F0})" +
+            (prop.Life <= 0f ? "  *** SHATTERED ***" : ""));
+        if (prop.Life <= 0f)
+        {
+            prop.IsDestroyed = true;
+            if (_particles is not null)
+            {
+                var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
+                _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
+                _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
+            }
+        }
+    }
+
     /// <summary>Phase 21-SC-BARREL-A1 — first-touch lazy load of every cursor
     /// sprite. Static cursors are direct .raw lookups; animated ones decode
     /// .flm into per-frame 32x32 BGRA buffers. Run once per session — if any
@@ -7038,6 +7139,30 @@ void main()
                 float dz = pos.Z - groundHit.Z;
                 float d  = MathF.Sqrt(dx * dx + dz * dz);
                 if (d < bestDist) { bestDist = d; best = s; }
+            }
+
+            // Phase 21-SC-BARREL-B — no actor under cursor? Try a breakable
+            // static prop. The cursor sprite already previews this state
+            // (CursorState.Smash), so casting in that frame should land on
+            // the barrel/crate the user was aiming at.
+            if (best is null)
+            {
+                StaticPropInstance? bestProp = null;
+                float bestPropDist = ClickAttackRadius;
+                foreach (var prop in _staticProps)
+                {
+                    if (!prop.IsBreakable || prop.IsDestroyed) continue;
+                    var pos = prop.World.Translation;
+                    float dx = pos.X - groundHit.X;
+                    float dz = pos.Z - groundHit.Z;
+                    float d  = MathF.Sqrt(dx * dx + dz * dz);
+                    if (d < bestPropDist) { bestPropDist = d; bestProp = prop; }
+                }
+                if (bestProp is not null)
+                {
+                    PerformSpellOnProp(slot, spell, bestProp, magicLevel);
+                    return;
+                }
             }
         }
 

@@ -179,6 +179,40 @@ public sealed class PlayerSpellbook
         return new CastResult(CastOutcome.Cast, spell, spent, dealt, 0f, killed);
     }
 
+    /// <summary>Phase 21-SC-BARREL-B — cast variant for non-actor targets
+    /// (breakable props). Same gating as <see cref="TryCast(SpellSlot, Actor?, float, float)"/>
+    /// — cooldown / range / mana — but the damage roll uses the caster as
+    /// both the cost and damage context (no target maxlife / life to read).
+    /// Returns the rolled damage in <see cref="CastResult.Damage"/>; the
+    /// caller is responsible for applying it to the prop's life pool.</summary>
+    public CastResult TryCastAtPoint(SpellSlot slot, float distance, float magicLevel)
+    {
+        var spell = slot == SpellSlot.Primary ? Primary : Secondary;
+        if (spell is null) return new CastResult(CastOutcome.NoSpell, null, 0, 0, 0, false);
+
+        float cd = slot == SpellSlot.Primary ? PrimaryCooldownRemaining : SecondaryCooldownRemaining;
+        if (cd > 0f) return new CastResult(CastOutcome.OnCooldown, spell, 0, 0, 0, false);
+
+        // Self-heal slots can't target props — pass through to the actor path.
+        if (spell.Kind == SpellKind.SelfHeal)
+            return new CastResult(CastOutcome.NoTarget, spell, 0, 0, 0, false);
+
+        if (distance > spell.CastRange) return new CastResult(CastOutcome.OutOfRange, spell, 0, 0, 0, false);
+
+        var ctx = new SpellEvalContext(magicLevel,
+            maxLife: _player.Stats.MaxLife,
+            life:    _player.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+        float cost = spell.ManaCost(ctx);
+        if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
+
+        float spent = _player.Combat.SpendMana(cost);
+        float damage = spell.RollDamage(ctx, _rng);
+        StartCooldown(slot, spell.CastReloadDelay);
+        return new CastResult(CastOutcome.Cast, spell, spent, damage, 0f, false);
+    }
+
     CastResult TryCastSelfHeal(SpellSlot slot, SpellTemplate spell, float magicLevel)
     {
         // No-op when already at full life — DS1 grays out heal icons in that
