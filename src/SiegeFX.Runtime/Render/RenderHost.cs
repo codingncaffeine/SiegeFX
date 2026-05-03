@@ -124,6 +124,37 @@ public sealed class RenderHost : IDisposable
     private readonly List<StaticPropInstance> _staticProps = new();
     private readonly Dictionary<string, AspMesh?> _propAspCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<AspMesh, StaticMesh> _propGlMeshCache = new();
+
+    // Phase 21-SC-BARREL-C — frag debris from `[physics][break_particulate]`.
+    // Each shipped breakable lists per-material frag template names + counts
+    // (frag_glb_wood_01..06 for wood barrels, frag_glb_metal_* for the metal-
+    // bound variants, frag_glb_pot_clay_* for pots, etc.). On shatter we
+    // spawn a ballistic instance per count with a random outward velocity
+    // and spin; the per-tick integrator pulls them down under gravity to
+    // the prop's authored Y, lets them settle, and despawns after the
+    // lifetime. Asset cache survives region changes — frag meshes are
+    // tiny (a handful of tris each) and reused across many barrels.
+    private readonly List<FragDebris> _fragDebris = new();
+    private readonly Dictionary<string, FragAsset?> _fragAssets =
+        new(StringComparer.OrdinalIgnoreCase);
+    private sealed class FragAsset
+    {
+        public StaticMesh Mesh = null!;
+        public GlTexture? Texture;
+    }
+    private sealed class FragDebris
+    {
+        public FragAsset Asset = null!;
+        public Vector3 Pos;
+        public Vector3 Vel;
+        public Vector3 SpinAxis;
+        public float SpinRadPerSec;
+        public float SpinAngle;
+        public float Age;
+        public float Lifetime;
+        public float RestY;
+        public bool Settled;
+    }
     // Phase 21c-1 — barrel investigation: emit a corner-by-corner dump (UV/normal/color)
     // for the first placement of selected debug templates so we can confirm UVs cover
     // the band rows and normals aren't pointing the lit faces inward. One-shot per
@@ -3867,14 +3898,19 @@ void main()
                     var defaultSkrit = _templateStore.GetAttribute(template, "body", "chore_dictionary", "chore_default", "skrit");
                     TryParseRotateSkrit(defaultSkrit, out var spinAxis, out var spinRad);
 
-                    // Phase 17-SC-K — breakability lives in [aspect][break_particulate].
-                    // Non-breakable variants ship `aspect:is_invincible = true` (e.g.
-                    // base_container_barrel-still vs base_container_barrel). Default
-                    // life=1 matches DS1's barrel/crate authoring; we read max_life
-                    // off the chain in case heavier crates ship a higher value.
+                    // Phase 17-SC-K / 21-SC-BARREL-C — breakability lives in
+                    // [physics][break_particulate] on every shipped breakable
+                    // template (ctn_container.gas, obj_breakable.gas, the
+                    // regional ctn_container_regional.gas variants). Phase
+                    // 17-SC-K originally looked under [aspect] and missed
+                    // every barrel; the sub-slice-C fix corrects the path.
+                    // Non-breakable variants ship `aspect:is_invincible = true`
+                    // (e.g. barrel_glb_inv). Default life=1 matches DS1's
+                    // barrel/crate authoring; max_life off the chain covers
+                    // the heavier crate variants (1500 for cav_boarded_wall).
                     bool isBreakable = false;
                     float maxLife = 1f;
-                    var breakSection = _templateStore.GetSection(template, "aspect", "break_particulate");
+                    var breakSection = _templateStore.GetSection(template, "physics", "break_particulate");
                     if (breakSection is not null)
                     {
                         var inv = _templateStore.GetAttribute(template, "aspect", "is_invincible");
@@ -4025,6 +4061,148 @@ void main()
         {
             _propAspCache[modelName] = null;
             return null;
+        }
+    }
+
+    /// <summary>Phase 21-SC-BARREL-C — resolve a frag template (e.g.
+    /// frag_glb_wood_01) into a renderable (mesh, texture) pair. Cached
+    /// across all shatters in the session — frag meshes are tiny and
+    /// reused across many barrels / pots / windows. Returns null if the
+    /// template isn't in the store, has no aspect.model, or the asp
+    /// failed to load (fragments are graceful-fail content; an unfound
+    /// frag just gets dropped from the burst, not aborts the shatter).</summary>
+    private FragAsset? TryResolveFragAsset(string fragTemplateName)
+    {
+        if (_fragAssets.TryGetValue(fragTemplateName, out var cached)) return cached;
+        if (_gl is null || _templateStore is null || _playResolver is null)
+        { _fragAssets[fragTemplateName] = null; return null; }
+        if (!_templateStore.TryGet(fragTemplateName, out var template))
+        { _fragAssets[fragTemplateName] = null; return null; }
+        var modelName = _templateStore.GetAttribute(template, "aspect", "model");
+        if (string.IsNullOrEmpty(modelName))
+        { _fragAssets[fragTemplateName] = null; return null; }
+        var asp = GetOrLoadPropAsp(modelName);
+        if (asp is null) { _fragAssets[fragTemplateName] = null; return null; }
+        if (!_propGlMeshCache.TryGetValue(asp, out var glMesh))
+        {
+            try
+            {
+                glMesh = new StaticMesh(_gl, asp);
+                _propGlMeshCache[asp] = glMesh;
+            }
+            catch { _fragAssets[fragTemplateName] = null; return null; }
+        }
+        GlTexture? tex = null;
+        if (asp.TextureNames.Count > 0 &&
+            _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+        {
+            try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); }
+            catch { tex = null; }
+        }
+        var asset = new FragAsset { Mesh = glMesh, Texture = tex };
+        _fragAssets[fragTemplateName] = asset;
+        return asset;
+    }
+
+    /// <summary>Phase 21-SC-BARREL-C — kick a ballistic-frag burst from the
+    /// shattered prop. Walks the template's [physics][break_particulate]
+    /// block (chain-resolved so leaves inherit the base list when they
+    /// don't override) and spawns one <see cref="FragDebris"/> per count
+    /// per frag template, with random outward velocity and spin. Frags
+    /// fall under gravity to the prop's authored Y, settle, and despawn
+    /// after the lifetime — no real collision, just a planar floor.</summary>
+    private void SpawnPropDebris(StaticPropInstance prop)
+    {
+        if (_templateStore is null) return;
+        if (!_templateStore.TryGet(prop.Template, out var template)) return;
+        var section = _templateStore.GetSection(template, "physics", "break_particulate");
+        if (section is null) return;
+
+        // Per-shatter rng seeded off prop position so the burst is
+        // reproducible for a given placement (helps when comparing visual
+        // tweaks across runs without RNG-noise drift).
+        var origin = prop.World.Translation;
+        int seed = unchecked(
+            BitConverter.SingleToInt32Bits(origin.X) * 397 ^
+            BitConverter.SingleToInt32Bits(origin.Z));
+        var rng = new Random(seed);
+
+        int spawned = 0;
+        foreach (var attr in section.Attributes)
+        {
+            if (!int.TryParse(attr.Value,
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var count))
+                continue;
+            if (count <= 0) continue;
+            // DS1 sometimes ships counts in the 6-10 range — visually that's
+            // a lot of frags. Cap per-frag-template to keep the burst from
+            // becoming a pixel snowstorm; the total stays in the
+            // visually-reasonable 20-40 range across all entries.
+            count = Math.Min(count, 8);
+            var asset = TryResolveFragAsset(attr.Name);
+            if (asset is null) continue;
+            for (int i = 0; i < count; i++)
+            {
+                // Outward XZ unit vector + a small horizontal speed; vertical
+                // bias up so frags arc cleanly. Spin axis is unit-random
+                // (Marsaglia-style cube-reject is overkill for a burst,
+                // simple spherical-ish sample reads fine).
+                float ang = (float)(rng.NextDouble() * Math.PI * 2.0);
+                float horiz = 2.5f + (float)(rng.NextDouble() * 3.5);
+                float vertUp = 2.5f + (float)(rng.NextDouble() * 2.5);
+                var vel = new Vector3(MathF.Cos(ang) * horiz, vertUp, MathF.Sin(ang) * horiz);
+                var spinAxis = Vector3.Normalize(new Vector3(
+                    (float)(rng.NextDouble() * 2.0 - 1.0),
+                    (float)(rng.NextDouble() * 2.0 - 1.0),
+                    (float)(rng.NextDouble() * 2.0 - 1.0)));
+                if (!float.IsFinite(spinAxis.X)) spinAxis = Vector3.UnitY;
+                float spinRate = 4f + (float)(rng.NextDouble() * 8.0);
+                _fragDebris.Add(new FragDebris
+                {
+                    Asset = asset,
+                    Pos = origin + new Vector3(0f, 0.4f, 0f),
+                    Vel = vel,
+                    SpinAxis = spinAxis,
+                    SpinRadPerSec = spinRate,
+                    Lifetime = 6f + (float)(rng.NextDouble() * 2.0),
+                    RestY = origin.Y,
+                });
+                spawned++;
+            }
+        }
+        if (spawned > 0)
+            Console.WriteLine($"  debris: {spawned} frag instance(s) from {prop.Template}");
+    }
+
+    /// <summary>Phase 21-SC-BARREL-C — integrate frag-debris ballistic
+    /// motion. Called once per logic frame from <see cref="OnUpdate"/>.
+    /// Settled frags freeze in place until lifetime expires; airborne
+    /// frags accelerate under gravity and settle on contact with the
+    /// prop's authored ground Y. Spinning runs only while airborne so
+    /// settled frags read as "lying on the ground", not "floating
+    /// twitchily on the spot".</summary>
+    private void TickFragDebris(float dt)
+    {
+        if (_fragDebris.Count == 0) return;
+        const float gravity = 14f;
+        for (int i = _fragDebris.Count - 1; i >= 0; i--)
+        {
+            var f = _fragDebris[i];
+            f.Age += dt;
+            if (f.Age > f.Lifetime) { _fragDebris.RemoveAt(i); continue; }
+            if (!f.Settled)
+            {
+                f.Vel.Y -= gravity * dt;
+                f.Pos += f.Vel * dt;
+                f.SpinAngle += f.SpinRadPerSec * dt;
+                if (f.Pos.Y <= f.RestY)
+                {
+                    f.Pos.Y = f.RestY;
+                    f.Vel = Vector3.Zero;
+                    f.Settled = true;
+                }
+            }
         }
     }
 
@@ -5975,8 +6153,11 @@ void main()
         if (prop.Life <= 0f)
         {
             prop.IsDestroyed = true;
-            // Debris — small smoke puff plus a sparkle ring so the visual
-            // disappearance reads as "broke" rather than "popped out".
+            // Phase 21-SC-BARREL-C — frag-mesh debris from the template's
+            // [physics][break_particulate] block. The smoke puff + sparkle
+            // ring stays as the on-impact "shatter" cue; the frag instances
+            // are the lasting visual that DS1 ships.
+            SpawnPropDebris(prop);
             if (_particles is not null)
             {
                 var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
@@ -7702,6 +7883,10 @@ void main()
         // _spellBolts trail was retired here; primary cast visuals are now
         // the 3D world-space primitives spawned through SpawnSpellVisual.
         _particles?.Tick((float)dt);
+        // Phase 21-SC-BARREL-C — integrate frag debris (gravity + ground
+        // settle). Same per-tick cadence as particles; a frag's settled
+        // pose then lasts until lifetime expires.
+        TickFragDebris((float)dt);
         // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
         // run continuous-emitter spawn budgets. Must run after the particle
         // Tick so this frame's spawns get drawn rather than waiting one tick.
@@ -8185,6 +8370,40 @@ void main()
                 prop.Mesh.Draw();
             }
             _gl.Enable(GLEnum.CullFace);
+        }
+
+        // Phase 21-SC-BARREL-C — frag-debris pass. Same shader and uFlipV
+        // convention as the static-prop layer (frag .asps are authored
+        // bottom-up like every other DS1 prop), but the model matrix is
+        // rebuilt per frame from the integrated position + spin axis.
+        // Cull-face stays enabled — frag fragments are solid little
+        // bone/wood/metal chunks, not foliage cards.
+        if (_meshShader is not null && _fragDebris.Count > 0)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uFlipV", 0);
+            ApplyLightingUniforms(_meshShader);
+            GlTexture? lastTex = null;
+            int lastHas = -1;
+            foreach (var f in _fragDebris)
+            {
+                if (!ReferenceEquals(f.Asset.Texture, lastTex))
+                {
+                    if (f.Asset.Texture is not null)
+                    {
+                        f.Asset.Texture.Bind(TextureUnit.Texture0);
+                        if (lastHas != 1) { _meshShader.SetInt("uHasTexture", 1); lastHas = 1; }
+                    }
+                    else if (lastHas != 0) { _meshShader.SetInt("uHasTexture", 0); lastHas = 0; }
+                    lastTex = f.Asset.Texture;
+                }
+                var spin = Matrix4x4.CreateFromAxisAngle(f.SpinAxis, f.SpinAngle);
+                var model = spin * Matrix4x4.CreateTranslation(f.Pos);
+                _meshShader.SetMatrix4("uModel", model);
+                f.Asset.Mesh.Draw();
+            }
         }
 
         // Phase 14d — render the PC's equipped weapon attached to the weapon_grip
