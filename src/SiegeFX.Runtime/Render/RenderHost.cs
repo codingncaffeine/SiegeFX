@@ -5984,12 +5984,13 @@ void main()
     // (hero baseline ships AttackRange=0.5u which is wrist-length, too tight
     // to land a swing on a 1.8u-radius krug bubble). 2u mirrors ActorBrain's
     // mob fallback.
-    // Phase 21-SC-BARREL-FOLD — bumped 2 → 2.5. Combined with the 0.95x
-    // standoff in ComputeApproachPoint that puts the hero ~2.4u from the
-    // target's center on approach, leaving ~1.4u of clearance from a
-    // 1u-radius krug body (and proportionately more from a 0.5u-radius
-    // barrel) — DS1's "stand close to but not on top of" feel.
-    private const float MeleeReachFallback = 2.5f;
+    // Phase 21-SC-BARREL-FOLD — 2 → 2.5 was a touch too far per the
+    // user's eyes-on; settled at 2.3 which puts the hero ~2.18u from
+    // target center (0.95 standoff multiplier in ComputeApproachPoint)
+    // — ~1.18u clearance from a 1u-radius krug body, ~1.68u from a
+    // 0.5u-radius barrel. Adjacent enough to swing but visibly not
+    // overlapping.
+    private const float MeleeReachFallback = 2.3f;
     // Phase 21-SC-BARREL-FOLD — was 0.1f. HeroBaselineStats authors a
     // 0.5u AttackRange (wrist length, intentional for bare-fist attacks)
     // which the old 0.1 gate accepted as the player's real reach — net
@@ -6179,6 +6180,10 @@ void main()
     private void PerformPropBreak(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || prop.IsDestroyed) return;
+        // Phase 21-SC-BARREL-FOLD — face the prop before swinging so
+        // pivoting from a finished enemy to a barrel (or vice-versa)
+        // doesn't swing in the stale direction.
+        SnapPlayerFacingTo(prop.World.Translation);
         // Phase 21-SC-BARREL-FOLD — rotate through chore_attack sub-anims
         // (0mid + high alternates as a R→L / L→R cadence per the user's
         // observed DS1 behavior) and play the picked clip's full authored
@@ -6510,11 +6515,41 @@ void main()
         _osCursorHidden = true;
     }
 
+    /// <summary>Phase 21-SC-BARREL-FOLD — pivot the hero to face
+    /// <paramref name="targetPos"/>. Pre-fold the player's facing only
+    /// updated from movement deltas, so finishing one enemy and pivoting
+    /// to a second adjacent target swung in the OLD direction (the hero
+    /// hadn't moved between kills, so _playerFacing was stale). Same
+    /// facing-snap pattern the spell-cast paths use; safe to call when
+    /// already facing the target (the e2-radius gate skips the no-op
+    /// case so we don't recreate the matrix on every swing).</summary>
+    private void SnapPlayerFacingTo(Vector3 targetPos)
+    {
+        if (_player is null) return;
+        var playerPos = _player.CurrentTransform.Translation;
+        float dx = targetPos.X - playerPos.X;
+        float dz = targetPos.Z - playerPos.Z;
+        float fl2 = dx * dx + dz * dz;
+        if (fl2 < 1e-6f) return;
+        float fl = MathF.Sqrt(fl2);
+        _playerFacing = new Vector3(dx / fl, 0f, dz / fl);
+        float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
+        _player.CurrentTransform =
+            Matrix4x4.CreateRotationY(pyaw) *
+            Matrix4x4.CreateTranslation(playerPos);
+        _playerRenderFacingPrev = _playerFacing;
+        _playerRenderFacingNext = _playerFacing;
+    }
+
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
-        // Phase 12-SC-2 / 21-SC-BARREL-FOLD — play the swing chore on the
-        // player. Variant alternation (0mid ↔ high so the swing alternates
+        // Phase 12-SC-2 / 21-SC-BARREL-FOLD — face the target before the
+        // swing fires so finishing enemy 1 then attacking enemy 2 in the
+        // same melee position pivots the hero to face the new victim
+        // instead of swinging in the previous direction.
+        SnapPlayerFacingTo(best.CurrentTransform.Translation);
+        // Variant alternation (0mid ↔ high so the swing alternates
         // R→L horizontal and L→R backhand) plus the clip's authored
         // duration replace the pre-fold hardcoded 0.6s that truncated DS1's
         // 0.83s fs1 swing.
