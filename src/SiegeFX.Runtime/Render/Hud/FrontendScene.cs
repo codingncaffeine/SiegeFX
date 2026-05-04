@@ -1519,6 +1519,13 @@ public sealed class FrontendScene : IDisposable
     private GlTexture? GetOrLoadTextureBase(string baseName)
         => GetOrLoadTexture("b_gui_fe_m_mn_3d_" + baseName);
 
+    /// <summary>Public accessor for the cached chrome texture by bare
+    /// base name (e.g. "text-small" → b_gui_fe_m_mn_3d_text-small.raw).
+    /// Used by RenderHost to crop label sprites out of text-small.raw
+    /// for the character creator row labels.</summary>
+    public GlTexture? GetChromeTexture(string baseName)
+        => GetOrLoadTextureBase(baseName);
+
 
     private GlTexture? GetOrLoadTexture(string textureName)
     {

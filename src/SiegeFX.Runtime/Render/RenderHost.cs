@@ -6296,6 +6296,55 @@ void main()
         // (curved, only at the actual ◄ ► geometry); painting a flat
         // alpha rectangle on top stretches that glow into a boxy bar
         // across the whole 102px half-bar. Texture swap stands alone.
+        // Engraved row labels (GENDER / HEAD / SKIN / HAIR / SHIRT /
+        // PANTS) cropped out of text-small.raw and rendered via
+        // IconRenderer.DrawIcon's UV-cropped overload. Atlas layout
+        // (visual top-down, after IconRenderer's V flip): NEXT/PREV,
+        // NAME/HERO, GENDER/HEAD, SKIN/HAIR, SHIRT/PANTS, EXIT/BACK.
+        // Each row is ~16.7% atlas height; left column U[0,0.5],
+        // right column U[0.5,1.0]. UV ranges are estimates — refine
+        // empirically. Per-label rect width sized to keep aspect
+        // matching the atlas region (visual w / visual h).
+        var textSmall = _frontendScene.GetChromeTexture("text-small-up");
+        if (textSmall is not null && _iconRenderer is not null)
+        {
+            // Visual UV coords (IconRenderer flips internally for the
+            // bottom-up raw). Atlas top-down: EXIT/BACK, SHIRT/PANTS,
+            // SKIN/HAIR, GENDER/HEAD, NAME/HERO, PREVIOUS/NEXT — each
+            // row ~16.7% of atlas height. Left column U[0, 0.5], right
+            // column U[0.5, 1.0].
+            (string label, float u0, float v0, float u1, float v1)[] labelUVs =
+            {
+                ("GENDER", 0.00f, 0.46f, 0.50f, 0.58f),
+                ("HEAD",   0.50f, 0.46f, 1.00f, 0.58f),
+                ("SKIN",   0.00f, 0.32f, 0.50f, 0.48f),
+                ("HAIR",   0.50f, 0.32f, 1.00f, 0.48f),
+                ("SHIRT",  0.00f, 0.16f, 0.50f, 0.32f),
+                ("PANTS",  0.50f, 0.16f, 1.00f, 0.32f),
+            };
+            int[] rowGasY = { 206, 256, 306, 355, 399, 450 };
+            float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
+            int authoredW = (int)MathF.Round(800 * scale);
+            int authoredH = (int)MathF.Round(600 * scale);
+            int dx = (viewportW - authoredW) / 2;
+            int dy = (viewportH - authoredH) / 2;
+            const int labelGasW = 70;
+            const int labelGasH = 18;
+            const int barCenterGasX = 277;
+            const int rowHeightGas = 20;
+            var tint = new Vector4(1f, 1f, 1f, 1f);
+            for (int i = 0; i < labelUVs.Length; i++)
+            {
+                int w = (int)MathF.Round(labelGasW * scale);
+                int h = (int)MathF.Round(labelGasH * scale);
+                int cx = dx + (int)MathF.Round(barCenterGasX * scale);
+                int cy = dy + (int)MathF.Round((rowGasY[i] + rowHeightGas * 0.5f) * scale);
+                _iconRenderer.DrawIcon(viewportW, viewportH, textSmall,
+                    cx - w / 2, cy - h / 2, w, h, tint,
+                    labelUVs[i].u0, labelUVs[i].v0, labelUVs[i].u1, labelUVs[i].v1);
+            }
+        }
+
         // Phase 29-CD-CREATOR-FIX2 — "CHOOSE HERO" title overlay.
         // The mainmenu mesh (which carried this label via its text-01
         // atlas at sng2cd@1.0) is masked off at cd state because its
