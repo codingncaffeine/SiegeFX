@@ -89,18 +89,21 @@ internal sealed class CharacterCreatorPanel
         // Gas hit rects (37px) only covered the outer tips and left
         // a visible gap where the plate-half pixels weren't being
         // overlaid, hence the "arrows separated" look.
-        (Action.GenderLeft,  176, 204, 100, 20),
-        (Action.GenderRight, 277, 204, 100, 20),
-        (Action.HeadLeft,    176, 255, 100, 20),
-        (Action.HeadRight,   277, 255, 100, 20),
-        (Action.FaceLeft,    176, 306, 100, 20),
-        (Action.FaceRight,   277, 306, 100, 20),
-        (Action.HairLeft,    176, 355, 100, 20),
-        (Action.HairRight,   277, 355, 100, 20),
-        (Action.ShirtLeft,   176, 403, 100, 20),
-        (Action.ShirtRight,  277, 403, 100, 20),
-        (Action.PantsLeft,   176, 453, 100, 20),
-        (Action.PantsRight,  277, 453, 100, 20),
+        // 2px overlap at the L/R meeting edge so bilinear filtering at
+        // the quad boundary doesn't produce a visible seam. L extends
+        // to gas X 278; R starts at gas X 275; both 102 wide.
+        (Action.GenderLeft,  176, 204, 102, 20),
+        (Action.GenderRight, 275, 204, 102, 20),
+        (Action.HeadLeft,    176, 255, 102, 20),
+        (Action.HeadRight,   275, 255, 102, 20),
+        (Action.FaceLeft,    176, 306, 102, 20),
+        (Action.FaceRight,   275, 306, 102, 20),
+        (Action.HairLeft,    176, 355, 102, 20),
+        (Action.HairRight,   275, 355, 102, 20),
+        (Action.ShirtLeft,   176, 403, 102, 20),
+        (Action.ShirtRight,  275, 403, 102, 20),
+        (Action.PantsLeft,   176, 453, 102, 20),
+        (Action.PantsRight,  275, 453, 102, 20),
     };
     // Listener (3D preview) — character_select.gas[t:listener,n:listener] rect 408,73,649,494.
     const int ListenerGasX = 408, ListenerGasY = 73, ListenerGasW = 649 - 408, ListenerGasH = 494 - 73;

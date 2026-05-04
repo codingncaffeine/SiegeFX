@@ -6291,19 +6291,11 @@ void main()
             _frontendScene.DrawHeromenuButton(viewportW, viewportH,
                 x, y, w, h, hov, pr, widget);
         }
-        if (_barRenderer is not null)
-        {
-            var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
-            var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
-            foreach (var (act, _) in actions)
-            {
-                if (!_creator.TryGetButtonStateAndRect(act, viewportW, viewportH,
-                        out int x, out int y, out int w, out int h,
-                        out bool hov, out bool pr)) continue;
-                if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
-                else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
-            }
-        }
+        // Flat _barRenderer hover/press tint removed. heromenu-up.raw and
+        // heromenu-down.raw already bake the proper arrow-tip glow shape
+        // (curved, only at the actual ◄ ► geometry); painting a flat
+        // alpha rectangle on top stretches that glow into a boxy bar
+        // across the whole 102px half-bar. Texture swap stands alone.
         // Phase 29-CD-CREATOR-FIX2 — "CHOOSE HERO" title overlay.
         // The mainmenu mesh (which carried this label via its text-01
         // atlas at sng2cd@1.0) is masked off at cd state because its
