@@ -68,27 +68,45 @@ internal sealed class CharacterCreatorPanel
 
     public string HeroName { get; private set; } = "";
 
-    // 800×600 reference rects from /ui/interfaces/frontend/character_select/
-    // character_select.gas. Source-of-truth: the gas; don't eyeball.
+    // 800×600 reference rects. character_select.gas authors arrows as
+    // 37×20 spinners 164px apart (X 176-213 / 340-377), but those rects
+    // only cover the OUTER ARROW TIPS — the heromenu.asp L/R subsets
+    // sample UVs that span "arrow tip + adjacent half of plate," so a
+    // 37px-wide overlay leaves the plate UV pixels un-overlaid and the
+    // bar reads as floating arrows with a gap. Widened each rect to
+    // 100px so L and R meet at gas X ~277 — same row Y as gas, native
+    // 20px height. Name plate bumped up 5px from gas (518 → 513).
     static readonly (Action Act, int X, int Y, int W, int H)[] Buttons =
     {
-        (Action.GenderLeft,  176, 204, 213 - 176, 224 - 204),
-        (Action.GenderRight, 340, 204, 377 - 340, 224 - 204),
-        (Action.HeadLeft,    176, 255, 213 - 176, 275 - 255),
-        (Action.HeadRight,   340, 255, 377 - 340, 275 - 255),
-        (Action.FaceLeft,    176, 306, 213 - 176, 326 - 306),
-        (Action.FaceRight,   340, 305, 377 - 340, 325 - 305),
-        (Action.HairLeft,    176, 355, 213 - 176, 375 - 355),
-        (Action.HairRight,   340, 355, 377 - 340, 375 - 355),
-        (Action.ShirtLeft,   176, 403, 213 - 176, 423 - 403),
-        (Action.ShirtRight,  340, 403, 377 - 340, 423 - 403),
-        (Action.PantsLeft,   176, 453, 213 - 176, 473 - 453),
-        (Action.PantsRight,  340, 453, 377 - 340, 473 - 453),
+        // Per-row spinner widths span HALF the bar so L and R touch
+        // in the middle, matching the chrome's authored layout. The
+        // heromenu.asp L/R subsets sample UVs that include the arrow
+        // tip AND the adjacent half of the plate, so each per-widget
+        // overlay needs to be ~half the bar wide (~100px in 800x600
+        // reference) to land its texture on the same area the chrome
+        // bakes. trace-pose heromenu_begin@1.0 confirmed L mesh-X
+        // [-0.971, -0.505] meets R mesh-X [-0.505, -0.036] at -0.505.
+        // Gas hit rects (37px) only covered the outer tips and left
+        // a visible gap where the plate-half pixels weren't being
+        // overlaid, hence the "arrows separated" look.
+        (Action.GenderLeft,  176, 204, 100, 20),
+        (Action.GenderRight, 277, 204, 100, 20),
+        (Action.HeadLeft,    176, 255, 100, 20),
+        (Action.HeadRight,   277, 255, 100, 20),
+        (Action.FaceLeft,    176, 306, 100, 20),
+        (Action.FaceRight,   277, 306, 100, 20),
+        (Action.HairLeft,    176, 355, 100, 20),
+        (Action.HairRight,   277, 355, 100, 20),
+        (Action.ShirtLeft,   176, 403, 100, 20),
+        (Action.ShirtRight,  277, 403, 100, 20),
+        (Action.PantsLeft,   176, 453, 100, 20),
+        (Action.PantsRight,  277, 453, 100, 20),
     };
     // Listener (3D preview) — character_select.gas[t:listener,n:listener] rect 408,73,649,494.
     const int ListenerGasX = 408, ListenerGasY = 73, ListenerGasW = 649 - 408, ListenerGasH = 494 - 73;
-    // Name edit box — character_select.gas[t:edit_box,n:name_edit_box] rect 297,518,530,542.
-    const int NameGasX = 297, NameGasY = 518, NameGasW = 530 - 297, NameGasH = 542 - 518;
+    // Name edit box — gas authors 297,518,530,542; bumped up 5px so the
+    // typed text sits a hair higher above the prev/next pair.
+    const int NameGasX = 297, NameGasY = 513, NameGasW = 530 - 297, NameGasH = 542 - 518;
 
     Action _hovered = Action.None;
     Action _pressed = Action.None;
