@@ -376,19 +376,26 @@ public sealed class AspMesh
                 // v2.5/v4.0): each (cornerStart, cornerSpan) pair means subset N's faces
                 // are 0-based within its own corner range, so we offset by cornerStart.
                 //
-                // For v2.2 (and earlier) the header bytes exist but cornerStartsHdr stays
-                // all-zero — face indices are absolute into the shared corner pool. An
-                // earlier rev tried to interpret v2.2's header as cornerSpan and accumulate
-                // into starts; that pushed indices past the corner count and crashed
-                // rightside.asp on load. The visible "bottom of the pillar poking out"
-                // symptom isn't a missing cornerStart offset in v2.2, it's somewhere else.
+                // v2.2 stores ONE u32 per subtexture (= cornerStart, same role as v2.3's
+                // first u32, just no cornerSpan companion). v2.3+ stores TWO u32s
+                // (cornerStart, cornerSpan). Both versions: face corner indices are
+                // subtexture-local and need the per-subtexture offset added.
+                //
+                // History: a prior rev treated v2.2's u32 as cornerSpan and accumulated
+                // into starts — that produced offsets past the corner count and crashed
+                // rightside.asp. The all-zero fallback "worked" for single-subtexture
+                // submeshes but corrupts multi-subtexture meshes (rightside has 6).
                 int[] cornerStartsHdr = new int[Math.Max(curSubTextures, 1)];
-                if (vdec > 22)
+                if (vdec == 22)
+                {
+                    for (int i = 0; i < curSubTextures; i++)
+                        cornerStartsHdr[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + i * 4));
+                }
+                else if (vdec > 22)
                 {
                     for (int i = 0; i < curSubTextures; i++)
                         cornerStartsHdr[i] = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(pos + i * 8));
                 }
-                // vdec <= 22: cornerStartsHdr stays all-zero (face indices absolute).
 
                 pos += headerBytes;
                 if (pos + numFaces * 12 > body.Length)

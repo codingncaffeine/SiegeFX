@@ -712,10 +712,15 @@ public sealed class FrontendScene : IDisposable
         var leftsidePillarMask = new[] { true,  true,  true,  true,  true,  false };
         DrawMesh("backdrop",        "backdrop", clip: null,                hold: 0f, vw, vh);
         DrawMesh("leftside-shadow", "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask);
-        DrawMesh("rightside-shadow","leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask, xMirror: true);
-        DrawMesh("leftside",        "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask);
-        // Phase 25-CHROME-FOLD — rightside mirrored from leftside (rightside.asp v2.2 parses stretched).
-        DrawMesh("rightside",       "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask, xMirror: true);
+        // SC-CD-RIGHTSIDE — native rightside.asp render after fixing the
+        // BTRI v2.2 cornerStart parse in AspMesh.cs (was reading the
+        // 4-byte-per-subtexture header but never decoding the values,
+        // leaving cornerStartsHdr all zero → multi-subtexture v2.2
+        // meshes corrupted). v2.2 stores cornerStart directly as one
+        // u32 per subtexture, mirroring v2.3's first u32 with stride 4.
+        DrawMesh("rightside-shadow","rightside", clip: "rightside_default", hold: 0f, vw, vh, leftsideShadowMask);
+        DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask);
+        DrawMesh("rightside",       "rightside", clip: "rightside_default", hold: 0f, vw, vh, leftsidePillarMask);
 
         // Phase 29-CD-CREATOR-FIX4 — DO NOT draw mainmenu / menubars in
         // cd-state. Those are the main-menu / SP-submenu panels — at
