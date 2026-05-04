@@ -6333,7 +6333,12 @@ void main()
             var nameRect = _creator.NameRectInViewport(viewportW, viewportH);
             string typed = string.IsNullOrEmpty(_creator.HeroName) ? "" : _creator.HeroName;
             int fontScale = _creator.FontScale + 1;
-            var ink = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+            // DS1's typed hero name is plain white (verified against
+            // _scratch_creator/ref_character_select.png — "Zingter" is
+            // single-tone white). The metallic two-tone styling is for
+            // the engraved labels (GENDER/HEAD/SKIN/HAIR/SHIRT/PANTS
+            // and HERO), which come from text-small.raw via the chrome.
+            var ink = new Vector4(1.00f, 0.98f, 0.92f, 1f);
             int padX = Math.Max(2, fontScale * 2);
             if (typed.Length == 0)
             {
