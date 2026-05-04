@@ -346,22 +346,75 @@ public sealed class FrontendScene : IDisposable
     {
         // Backdrop + side pillars: same poses as cd-state (these are the
         // always-on chrome that doesn't morph between menu screens).
-        DrawMesh("backdrop",  "backdrop",  clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside",  "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
-        DrawMesh("rightside", "rightside", clip: "rightside_default", hold: 0f, vw, vh);
-        // Inner panel: the title bar drops down into the visible frame.
-        // No subset mask yet — DS1's title-bar text rows for MainMenu
-        // state live in some PanelBASE bones we haven't mapped (memory
-        // has the cd-state mapping but not the mm-state mapping). The
-        // MainMenuPanel's font-rendered button labels read on top
-        // regardless, so any peek-through from the mainmenu mesh's text
-        // atlases is cosmetic until SC-MAINMENU-MENUBARS-LABELS lands.
-        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_sp2mm",    hold: 1f, vw, vh);
-        // Menubars: 5 button rows slide into screen. MenuBase1..5 carry
-        // the button chrome subsets (1-5) + their per-row text atlases
-        // (subsets 6-15 across both columns). The MainMenuPanel's hit-
-        // rects are aligned with these row positions per main_menu.gas.
-        DrawMesh("menubars",  "menubars",  clip: "menubars_sp2mm",    hold: 1f, vw, vh);
+        // Phase 25-CHROME-FOLD — rightside replaced by an X-mirrored
+        // leftside.asp draw because rightside.asp ships as ASP v2.2 (the
+        // others are v2.3) and the parser produces a stretched render
+        // with the gear bones not animating. Mirroring leftside gives a
+        // symmetric pair with the gear spinning the same on both sides.
+        // Phase 25-CHROME-FOLD4 — leftside.asp ships shadows (subset 5)
+        // that draws AFTER columns (subset 2) in asp subset order, so
+        // alpha-over reads as a dark stripe over the pillars; mask off.
+        // Phase 25-CHROME-FOLD6 — leftside.asp also ships doors-01
+        // (subset 0) and doors-03 (subset 1) BEFORE columns (subset 2)
+        // in the authored subset order, so the pillar columns paint
+        // OVER the door panels — exactly the inverse of DS1's intended
+        // depth (doors are static wood panels that sit IN FRONT of the
+        // pillar, immediately to the left and right of each menu
+        // button). DS1's render order is implicit-3D; ours is 2D draw-
+        // order. Two-pass fix: leftsideBodyMask draws columns +
+        // backgrounds (no doors, no shadows); leftsideDoorsMask draws
+        // doors only on a second pass so they end up on top.
+        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
+        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
+        DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
+        // Doors second pass — draws AFTER mainmenu+menubars below would
+        // also be valid (then doors would sit above the menu chrome)
+        // but DS1's intent reads as "doors sit on the PILLAR, in front
+        // of columns but behind the menu panel," so we draw doors
+        // before the menu chrome and let the menu paint over them
+        // where they overlap.
+        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
+        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+
+        // Phase 25-CHROME-FOLD2 — subset masks. mainmenu.asp ships 6
+        // subsets: 0=chrome, 1+2=text-01L/R (SP-tree labels per atlas
+        // dump: NEW GAME / SINGLE PLAYER / CHOOSE HERO / LOAD GAME /
+        // OPTIONS), 3+4=text-02L/R (LOAD MAP top / blank middle /
+        // DIFFICULTY + WARRIOR bottom), 5=shadows. The user reports
+        // a title slot at the top of the inner panel — none of the
+        // four text atlases obviously says "MAIN MENU", so we render
+        // ALL of them and let the bone-Z visibility determine which
+        // label lands in the slot at sp2mm's end pose. PanelBASE1+2
+        // sit at Z=-0.85 (visible), PanelBASE3..10 at Z>=-0.49 (parked).
+        // Shadows stays off (alpha-over of the drop-shadow layer reads
+        // as a dark-tinted-glass overlay across the chrome).
+        // Phase 25-CHROME-FOLD5 — masking out subsets 1-4 (the previous
+        // "chrome only" approach) cleared the wrong-state corruption
+        // but also erased whatever DS1 was painting in the title slot.
+        // User flagged the regression: "we lost the Main Menu words at
+        // the top." Re-enable both atlases; if either produces
+        // wrong-state peek-through we can narrow down per-atlas later
+        // (splinter SC-MAINMENU-TITLE-ATLAS).
+        var mainmenuMask = new[] { true, true, true, true, true, false };
+        // menubars.asp has 17 subsets: 0=chrome, 1-5=per-row button
+        // chrome (the 5 wood buttons themselves), 6-15=per-row text
+        // atlases (the actual button labels SINGLE PLAYER etc.),
+        // 16=shadows. Keep everything except shadows (same dark-tint
+        // bug) so the buttons + their labels render correctly. Per-state
+        // text atlas masking (some subsets hold non-MainMenu labels)
+        // is a future polish slice once we figure out which atlas row
+        // is which state — for now all 10 atlases render and the
+        // wrong-state ones happen to land off-screen via bone Z.
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 16; i++) menubarsMask[i] = true; // 16 stays false (shadow)
+        // Inner panel: chrome + frame only (mainmenuMask above kills the
+        // title-bar text atlases that produced the misplaced labels).
+        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_sp2mm",    hold: 1f, vw, vh, mainmenuMask);
+        // Menubars: 5 button rows + their text labels; shadow subset
+        // killed by menubarsMask to drop the dark-tinted-glass overlay.
+        DrawMesh("menubars",  "menubars",  clip: "menubars_sp2mm",    hold: 1f, vw, vh, menubarsMask);
         // logo / heromenu / backbutton intentionally NOT drawn at MainMenu
         // state. logo is splash-only (fades out via logo-exit.prs on the
         // splash → MainMenu transition; future SC-MAINMENU-LOGO-EXIT
@@ -377,9 +430,13 @@ public sealed class FrontendScene : IDisposable
     /// posed.</summary>
     private void DrawLogoExitState(int vw, int vh)
     {
+        var bodyMask  = new[] { false, false, true,  true,  true,  false };
+        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",  "backdrop",  clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside",  "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
-        DrawMesh("rightside", "rightside", clip: "rightside_default", hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask,  xMirror: true);
+        DrawMesh("leftside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask);
+        DrawMesh("rightside-doors","leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask, xMirror: true);
         DrawMesh("logo",      "logo",      clip: "logo-exit",         hold: LogoExitTimeFraction, vw, vh);
     }
 
@@ -392,11 +449,23 @@ public sealed class FrontendScene : IDisposable
     /// to MainMenu state visually seamless.</summary>
     private void DrawMenuFlyInState(int vw, int vh)
     {
+        // Phase 25-CHROME-FOLD2 — same subset masks as DrawMainMenuState
+        // so the tinted-glass shadow + wrong-state title atlases don't
+        // pop in during the fly-in beat. End pose matches MainMenu's
+        // resting state, so the masks have to match too for a seamless
+        // transition.
+        var mainmenuMask = new[] { true, true, true, true, true, false };
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 16; i++) menubarsMask[i] = true;
+        var bodyMask  = new[] { false, false, true,  true,  true,  false };
+        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,                   vw, vh);
-        DrawMesh("leftside",  "leftside",  clip: "leftside_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
-        DrawMesh("rightside", "rightside", clip: "rightside_flyin",    hold: MenuFlyInTimeFraction, vw, vh);
-        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
-        DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: MenuFlyInTimeFraction, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, bodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, bodyMask,  xMirror: true);
+        DrawMesh("leftside-doors", "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, doorsMask);
+        DrawMesh("rightside-doors","leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, doorsMask, xMirror: true);
+        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: MenuFlyInTimeFraction, vw, vh, mainmenuMask);
+        DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: MenuFlyInTimeFraction, vw, vh, menubarsMask);
         // backbutton has its own flyin too — keep it in the assembly
         // even though MainMenu state itself doesn't draw the back button.
         // Wait — actually MainMenu DOES NOT show backbutton (no Previous/Next
@@ -413,9 +482,13 @@ public sealed class FrontendScene : IDisposable
     /// title sits in place while the backdrop finishes ramping in.</summary>
     private void DrawLogoDropState(int vw, int vh)
     {
+        var bodyMask  = new[] { false, false, true,  true,  true,  false };
+        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",   "backdrop",  clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside",   "leftside",  clip: "leftside_default",  hold: 0f, vw, vh);
-        DrawMesh("rightside",  "rightside", clip: "rightside_default", hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask,  xMirror: true);
+        DrawMesh("leftside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask);
+        DrawMesh("rightside-doors","leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask, xMirror: true);
         // logo-enter is the only logo clip we render here; logo-exit
         // fires when leaving the splash state on entry to MainMenu —
         // for now we cut from logo-end-pose to no-logo-at-all when
@@ -436,7 +509,8 @@ public sealed class FrontendScene : IDisposable
 
         DrawMesh("backdrop",   "backdrop",          clip: null,                           hold: 0f, vw, vh);
         DrawMesh("leftside",   "leftside",          clip: "leftside_default",             hold: 0f, vw, vh);
-        DrawMesh("rightside",  "rightside",         clip: "rightside_default",            hold: 0f, vw, vh);
+        // Phase 25-CHROME-FOLD — rightside mirrored from leftside (rightside.asp v2.2 parses stretched).
+        DrawMesh("rightside",  "leftside",          clip: "leftside_default",             hold: 0f, vw, vh, xMirror: true);
         // logo.asp ships only the "Dungeon Siege" title splash that plays
         // BEFORE the main menu (logo-enter / logo-exit transitions). It is
         // not part of the main-menu / character_select chrome — drawing it
@@ -487,7 +561,7 @@ public sealed class FrontendScene : IDisposable
 
     /// <param name="hold">Time-fraction to evaluate the clip at: 0=start of clip,
     /// 1=end of clip, -1=looped real-time idle (for ambient default clips).</param>
-    private void DrawMesh(string meshKey, string meshSuffix, string? clip, float hold, int vw, int vh, bool[]? subsetMask = null)
+    private void DrawMesh(string meshKey, string meshSuffix, string? clip, float hold, int vw, int vh, bool[]? subsetMask = null, bool xMirror = false)
     {
         var renderer = GetOrLoadMesh(meshSuffix);
         if (renderer is null) return;
@@ -515,6 +589,29 @@ public sealed class FrontendScene : IDisposable
         // and re-scale each mesh to fill the viewport independently —
         // exactly the wrong thing for a multi-mesh authored scene.
         var model = BuildSharedSceneModel(vw, vh);
+        // Phase 25-CHROME-FOLD — xMirror flips the mesh across the world
+        // Y-axis (X=0). Used to render leftside.asp again on the right
+        // half so the gear-pillar animation is symmetric: rightside.asp
+        // ships as ASP v2.2 (everything else is v2.3) and the parser drift
+        // produces a stretched render with no gear animation. Mesh-space
+        // mirror prepended so the flip happens before the centering /
+        // scaling math, producing a clean right-side reflection.
+        if (xMirror)
+        {
+            model = Matrix4x4.CreateScale(-1f, 1f, 1f) * model;
+            // Phase 25-CHROME-FOLD3 — when X is negated, triangle winding
+            // flips CCW → CW. If GL_CULL_FACE is enabled upstream with
+            // FrontFace=CCW (the default), every mirrored triangle gets
+            // culled as a back-face — which is why the user saw only the
+            // gear (rendered double-sided by authored geometry) on the
+            // right side; the pillar body got eaten by culling. Force
+            // cull off for this draw + restore after.
+            _gl.GetInteger(GLEnum.CullFace, out int wasCull);
+            _gl.Disable(EnableCap.CullFace);
+            renderer.DrawWithModel(vw, vh, model, textures, anim, timeSec, tint: null, subsetMask: subsetMask);
+            if (wasCull != 0) _gl.Enable(EnableCap.CullFace);
+            return;
+        }
         renderer.DrawWithModel(vw, vh, model, textures, anim, timeSec, tint: null, subsetMask: subsetMask);
     }
 

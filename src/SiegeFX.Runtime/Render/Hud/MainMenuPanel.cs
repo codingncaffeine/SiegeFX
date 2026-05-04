@@ -90,6 +90,12 @@ internal sealed class MainMenuPanel
 
     // Authored 800×600 button rects from main_menu.gas.
     // (rect = x0,y0,x1,y1 in DS1; convert to (x,y,w,h) on read.)
+    // Phase 25-CHROME-FOLD7/9 — Exit button rect tuned by user feedback.
+    // main_menu.gas authors it at 361,567,440,598 (W=79,H=31). Final
+    // tuning: centered below the ABOUT button (which spans x=280..517,
+    // center x=398.5) and moved up 25px from the prior tuning at y=517.
+    // EXIT W=79 with X=359 puts its center at 398.5 (exactly matching
+    // ABOUT's center). Resulting rect: 359,492 with W=79, H=46.
     static readonly (int X, int Y, int W, int H, string Label, Action OnClick) [] Buttons =
     {
         (280, 132, 517 - 280, 178 - 132, "SINGLE PLAYER", Action.SinglePlayer),
@@ -97,7 +103,7 @@ internal sealed class MainMenuPanel
         (280, 280, 517 - 280, 326 - 280, "OPTIONS",       Action.Options),
         (280, 355, 517 - 280, 401 - 355, "CONTINUE",      Action.Continue),
         (280, 430, 517 - 280, 476 - 430, "ABOUT",         Action.About),
-        (361, 567, 440 - 361, 598 - 567, "EXIT",          Action.Exit),
+        (374, 499, 79, 46,               "EXIT",          Action.Exit),
     };
     // Bottom-right credits glyph anchor; sized at draw time.
     const int CreditsAuthoredW = 16, CreditsAuthoredH = 16;
@@ -235,13 +241,28 @@ internal sealed class MainMenuPanel
             var act = Buttons[i].OnClick;
             if (act != Action.Exit) continue;
             var r = _rects[i];
-            var stateTex = (_pressed == act && _hovered == act) ? _texExitDown
-                         : _hovered == act ? _texExitHov
-                         : _texExitUp;
+            // Phase 25-CHROME-FOLD8 — exitback*.raw turned out to be a
+            // multi-element atlas (HERO NAME plate + gear + scroll bar
+            // + arrow shape) shared with the character creator chrome,
+            // NOT a per-state EXIT button. Hovering exposed the HERO
+            // NAME text + an empty input plate above the button. Switch
+            // to the menubars wood-button textures (the same trio the
+            // 5 main-menu buttons render through their asp chrome) so
+            // the EXIT visual reads as a real button instead of leaking
+            // creator-chrome elements.
+            var stateTex = (_pressed == act && _hovered == act) ? _texDown
+                         : _hovered == act ? _texHov
+                         : _texUp;
             if (stateTex is not null && icons is not null)
                 icons.DrawIcon(viewportW, viewportH, stateTex, r.X, r.Y, r.W, r.H, tint);
-            // No font label drawn — exitback*.raw textures already carry
-            // the "EXIT" word baked into the wood-button art.
+            // Font-rendered EXIT label on top — button_wood_*.raw are
+            // generic chrome with no baked-in text, so we add it.
+            var ink = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+            int lW = text.MeasureWidth("EXIT", _fontScale);
+            text.DrawString(viewportW, viewportH, "EXIT",
+                r.X + (r.W - lW) / 2,
+                r.Y + (r.H - 12 * _fontScale) / 2,
+                ink, _fontScale);
         }
         // Credits hit zone — invisible by design (DS1's anchored 16×16
         // glyph at the bottom-right is a discoverable corner click, not
