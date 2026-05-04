@@ -2135,9 +2135,17 @@ echo   4. "Dungeon Siege" sword drop on logo.asp via logo-enter.prs (2.17s)
 echo   5. Main menu - 7 buttons (Single Player / Multiplayer / Options / Continue
 echo                            / About / Exit / Credits)
 echo.
-echo [Working actions: Options (opens F10 dialog), About (overlay), Exit (close)]
-echo [Stubs (log "splinter SC-MAINMENU-X pending" on click): Single Player,
-echo  Continue, Multiplayer, Credits — region launch and sub-screens deferred]
+echo [Working actions: Single Player (opens SP submenu via mm2sp transition),
+echo  Options (F10 dialog), About (overlay), Exit (close)]
+echo [Stubs (log "splinter SC-MAINMENU-X pending" on click): Continue,
+echo  Multiplayer, Credits — region launch + sub-screens deferred]
+echo.
+echo [Phase 27-SP-FLYOUT: Single Player click animates the panel + button
+echo  column (mainmenu_mm2sp + menubars_mm2sp PRS) to a 2-button SP screen
+echo  (Start New Game / Load Game) with EXIT replaced by BACK. Sword cursor
+echo  shows in all menu states. Hover overlays on every button. Back unwinds
+echo  via sp2mm clips. New Game / Load Game still log SC-MAINMENU-NEWGAME /
+echo  -LOADGAME pending for now.]
 echo.
 echo [Esc on splash skips ahead to main menu. Esc on main menu quits.]
 echo.

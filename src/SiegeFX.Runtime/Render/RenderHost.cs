@@ -930,6 +930,11 @@ public sealed class RenderHost : IDisposable
     // FrontendScene is in the MainMenu state (boot path); click events
     // surface through ConsumeAction in OnUpdate.
     private readonly MainMenuPanel _mainMenu = new();
+    // Phase 27-SP-FLYOUT — Single Player sub-menu panel. Active only while
+    // the FrontendScene is in the SinglePlayer state. Two buttons (NEW
+    // GAME / LOAD GAME) + Back. Replaces _mainMenu's input ownership for
+    // the duration of the SP submenu.
+    private readonly SinglePlayerMenuPanel _spMenu = new();
     // Phase 24-MAINMENU step 6 — About sub-screen overlay. Toggle from main
     // menu's About button; Esc / clicking outside dismisses.
     private bool _aboutOpen;
@@ -1704,6 +1709,14 @@ void main()
                     _mainMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _spMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
                 // backward (DS1 lets the cycle buttons go either way
                 // via onrbuttondown). Also swallow RMB camera-look
@@ -2039,6 +2052,14 @@ void main()
                     _mainMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _spMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
@@ -2191,6 +2212,12 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _mainMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
+                {
+                    var sz = _window.FramebufferSize;
+                    _spMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -2596,6 +2623,36 @@ void main()
         resolver.Add(logicReader,   "Logic.dsres");
         _playResolver = resolver;
         Console.WriteLine($"  boot: tanks open ({logicPath}, {objectsPath})");
+
+        // Phase 27-SP-FLYOUT-FIX3 — load the HUD font at boot so the
+        // frontend menu can render TextRenderer overlays. Previously
+        // SetFont was only called inside LoadPlayActors (region load),
+        // so HasFont was false at the menu screen and every DrawString
+        // silently returned — hence "no text on any buttons" in SP
+        // state where atlas-driven labels are masked off. Idempotent
+        // (LoadPlayActors's later SetFont just re-applies the same
+        // font with the same atlas).
+        if (_textRenderer is not null && !_textRenderer.HasFont)
+        {
+            try
+            {
+                var bootFont = SiegeFX.Core.Assets.BitmapFont.TryLoadByName(
+                    resolver, "b_gui_fnt_12p_copperplate-light");
+                if (bootFont is not null)
+                {
+                    _textRenderer.SetFont(bootFont);
+                    Console.WriteLine($"  boot font: {bootFont.Name} ({bootFont.Atlas.Width}x{bootFont.Atlas.Height} atlas)");
+                }
+                else
+                {
+                    Console.Error.WriteLine("  !! boot font missing — menu overlay text disabled");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  boot font load failed: {ex.Message}");
+            }
+        }
 
         // Audio comes up so the frontend music slot (s_m_Frontend.mp3 per
         // /ui/config/frontend_music/frontend_music.gas) can stream during
@@ -5022,6 +5079,15 @@ void main()
                     _audio?.Play(SfxFrontendLogoFlyin);
                 else if (now == Hud.FrontendScene.ScreenState.IntroLogoExit)
                     _audio?.Play(SfxFrontendLogoFlyout);
+                // Phase 27-SP-FLYOUT — panel-morph swoosh on the Main ↔ SP
+                // transitions. The big-button click already played on the
+                // press; this is the layered "panel slides" cue so the
+                // motion has audible weight. Reuses the logo-flyout wav
+                // (wood-panel chrome swoosh) since DS1 doesn't ship a
+                // dedicated sub-menu transition wav.
+                else if (now == Hud.FrontendScene.ScreenState.MainMenuToSp
+                      || now == Hud.FrontendScene.ScreenState.SinglePlayerToMm)
+                    _audio?.Play(SfxFrontendLogoFlyout);
             }
         }
         // Phase 24-MAINMENU step 5+6 — drain main menu click actions one
@@ -5030,6 +5096,10 @@ void main()
         // Credits) currently no-op so a click is consumed without effect
         // until their splinters land.
         FlushMainMenu();
+        // Phase 27-SP-FLYOUT — drain SP submenu actions while in the
+        // SinglePlayer state. Activated only after the mm2sp transition
+        // settles; clicks during the transition are dropped.
+        FlushSinglePlayerMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -5433,21 +5503,64 @@ void main()
                 _window.Close();
                 break;
             case MainMenuPanel.Action.SinglePlayer:
+                // Phase 27-SP-FLYOUT — drive the Main → SP transition.
+                // FrontendScene plays mainmenu_mm2sp / menubars_mm2sp;
+                // _stateTime auto-advances to SinglePlayer at MmToSpDur.
+                // _spMenu activates only after the transition settles
+                // (handled in FlushSinglePlayerMenu) so clicks during
+                // the fly-out don't fire the new screen.
+                _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MainMenuToSp);
+                _mainMenu.IsActive = false;
+                _mainMenu.ClearHover();
+                break;
             case MainMenuPanel.Action.Continue:
             case MainMenuPanel.Action.Multiplayer:
             case MainMenuPanel.Action.Credits:
-                // Stubs — SinglePlayer routes to splinter SC-MAINMENU-NEWGAME
-                // which has to wire region paths from _ds1ResourcesDir +
-                // open the creator panel + run LoadPlayActors without
-                // --play-region CLI args; pre-fold the quick-and-dirty
-                // version transitioned the FrontendScene to CharacterSelect
-                // but left the user stuck because the creator never opened
-                // and Esc didn't close the menu (audit finding #1, batch 3).
-                // Continue / Multiplayer / Credits get their own splinters.
-                // Each click is consumed but no-op for now; clear hover so
-                // the button doesn't read as "still selectable" after.
+                // Stubs — SC-MAINMENU-CONTINUE / -MULTIPLAYER / -CREDITS
+                // splinters track the routing for these. Each click is
+                // consumed but no-op for now; clear hover so the button
+                // doesn't read as "still selectable" after.
                 Console.WriteLine($"  main menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
                 _mainMenu.ClearHover();
+                break;
+        }
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — translate Single Player sub-menu
+    /// button actions into runtime side-effects. Mirror of
+    /// <see cref="FlushMainMenu"/> for the SP submenu screen.</summary>
+    private void FlushSinglePlayerMenu()
+    {
+        if (!_bootMode) return;
+        if (_frontendScene is null) return;
+        var state = _frontendScene.State;
+        // _spMenu is active only when the SP screen has settled. During
+        // the MainMenuToSp / SinglePlayerToMm transitions input is
+        // suppressed so a fast click doesn't fire on a half-flown panel.
+        _spMenu.IsActive = state == Hud.FrontendScene.ScreenState.SinglePlayer
+                           && !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen;
+        if (state != Hud.FrontendScene.ScreenState.SinglePlayer) return;
+        var act = _spMenu.ConsumeAction();
+        if (act != SinglePlayerMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case SinglePlayerMenuPanel.Action.None:
+                break;
+            case SinglePlayerMenuPanel.Action.Back:
+                // Reverse-transition back to MainMenu. _stateTime
+                // auto-advances to MainMenu at SpToMmDur.
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.SinglePlayerToMm);
+                _spMenu.IsActive = false;
+                _spMenu.ClearHover();
+                break;
+            case SinglePlayerMenuPanel.Action.NewGame:
+            case SinglePlayerMenuPanel.Action.LoadGame:
+                // Stubs — SC-MAINMENU-NEWGAME wires the region launch
+                // path that opens the creator panel + runs LoadPlayActors
+                // without --play-region CLI args; SC-MAINMENU-LOADGAME
+                // wires the SaveStore-backed load_game.gas screen.
+                Console.WriteLine($"  sp menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
+                _spMenu.ClearHover();
                 break;
         }
     }
@@ -5701,8 +5814,44 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoHold
               || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoExit
               || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn
-              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm)
         {
+            // Phase 26-VIEWPORT — clip rendering to the chrome's letterbox
+            // area so meshes that extend BEYOND backdrop's authored bounds
+            // (pillars at ±2.17 vs backdrop's ±1.64; mainmenu/menubars at Y
+            // up to 5.18 in bind pose) don't bleed into the side bars or
+            // above/below the visible screen frame. DS1 was authored 4:3
+            // with the assumption that the viewport crops the outer
+            // fringes; at modern 16:9 / ultrawide / 4K resolutions we have
+            // to enforce that crop explicitly.
+            //
+            // Letterbox aspect = backdrop's authored aspect (~1.32, very
+            // close to 4:3). On widescreen the chrome fills vertical
+            // height, the sides letterbox to black. On taller-than-4:3
+            // the chrome fills horizontal width, top/bottom letterbox.
+            const float chromeAspect = 1.32f;
+            int boxW, boxH;
+            float vpAspect = viewportW / (float)viewportH;
+            if (vpAspect > chromeAspect)
+            {
+                boxH = viewportH;
+                boxW = (int)(viewportH * chromeAspect);
+            }
+            else
+            {
+                boxW = viewportW;
+                boxH = (int)(viewportW / chromeAspect);
+            }
+            int boxX = (viewportW - boxW) / 2;
+            // glScissor uses framebuffer coords (origin BOTTOM-left); our
+            // y values are top-left so we have to flip when computing scissor Y.
+            int boxYTop = (viewportH - boxH) / 2;
+            int boxYGlBottom = viewportH - boxYTop - boxH;
+            _gl?.Enable(EnableCap.ScissorTest);
+            _gl?.Scissor(boxX, boxYGlBottom, (uint)boxW, (uint)boxH);
             _frontendScene.Draw(viewportW, viewportH);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
@@ -5726,8 +5875,84 @@ void main()
                     _frontendScene.DrawExitButton(viewportW, viewportH,
                         ex, ey, ew, eh, eHover, ePress);
                 }
+                // Phase 27-SP-FLYOUT — hover overlay on every main menu
+                // button so the user gets visual feedback under the cursor.
+                // Subtle white tint (alpha .12) layered over the wood
+                // chrome — reads as a soft glow without obscuring the
+                // engraved label. Same overlay applies to EXIT.
+                DrawMainMenuHoverOverlays(viewportW, viewportH);
                 if (_aboutOpen)
                     DrawAboutOverlay(viewportW, viewportH);
+            }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm)
+            {
+                // Phase 27-SP-FLYOUT-FIX3 — per-button asp render via
+                // art_mapping.gas. NEW GAME / LOAD GAME each render
+                // through DrawMenubarsButton, BACK through
+                // DrawSpBackButton. One asp draw per widget with ONLY
+                // its art_mapping-specified subsets — adjacent atlas
+                // regions can't bleed because their subsets are masked.
+                if (_spMenu.TryGetButtonStateAndRect(
+                        Hud.SinglePlayerMenuPanel.Action.NewGame,
+                        viewportW, viewportH,
+                        out int ngx, out int ngy, out int ngw, out int ngh,
+                        out bool ngHover, out bool ngPress))
+                {
+                    _frontendScene.DrawMenubarsButton(viewportW, viewportH,
+                        ngx, ngy, ngw, ngh, ngHover, ngPress, "button_start_new_game");
+                }
+                if (_spMenu.TryGetButtonStateAndRect(
+                        Hud.SinglePlayerMenuPanel.Action.LoadGame,
+                        viewportW, viewportH,
+                        out int lgx, out int lgy, out int lgw, out int lgh,
+                        out bool lgHover, out bool lgPress))
+                {
+                    _frontendScene.DrawMenubarsButton(viewportW, viewportH,
+                        lgx, lgy, lgw, lgh, lgHover, lgPress, "button_load_game");
+                }
+                if (_spMenu.TryGetButtonStateAndRect(
+                        Hud.SinglePlayerMenuPanel.Action.Back,
+                        viewportW, viewportH,
+                        out int bx, out int by, out int bw, out int bh,
+                        out bool bHover, out bool bPress))
+                {
+                    _frontendScene.DrawSpBackButton(viewportW, viewportH,
+                        bx, by, bw, bh, bHover, bPress);
+                }
+                // Hover overlays for the SP submenu buttons (only meaningful
+                // in the settled SinglePlayer state where _spMenu has
+                // hover state).
+                if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
+                    DrawSpMenuHoverOverlays(viewportW, viewportH);
+            }
+            // Phase 26-VIEWPORT — disable scissor so any HUD layers that
+            // intentionally fill the framebuffer (e.g. About overlay's
+            // 60% black scrim) aren't clipped to the chrome letterbox.
+            _gl?.Disable(EnableCap.ScissorTest);
+            // Phase 27-SP-FLYOUT — sword cursor in the frontend menu.
+            // Render only in the post-logo chrome states (the same set
+            // EnsureOsCursorHidden uses to hide the OS cursor) so the
+            // intro splash + sword-drop frames keep the OS cursor and
+            // we don't double-render. Always the Pointer state — combat
+            // / talk / loot icons make no sense outside gameplay.
+            var fs = _frontendScene.State;
+            bool inMenu = fs == Hud.FrontendScene.ScreenState.MainMenu
+                       || fs == Hud.FrontendScene.ScreenState.MainMenuToSp
+                       || fs == Hud.FrontendScene.ScreenState.SinglePlayer
+                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                       || fs == Hud.FrontendScene.ScreenState.IntroMenuFlyIn;
+            if (inMenu)
+            {
+                EnsureCursorTextures();
+                if (_iconRenderer is not null && !_mouseLookActive && _cursorPointer is not null)
+                {
+                    const int big = 64, hsBigX = 21, hsBigY = 13;
+                    int cx = (int)_currentMousePos.X - hsBigX;
+                    int cy = (int)_currentMousePos.Y - hsBigY;
+                    _iconRenderer.DrawIcon(viewportW, viewportH, _cursorPointer, cx, cy, big, big, Vector4.One);
+                }
             }
         }
         _textRenderer.EndPass();
@@ -5788,6 +6013,88 @@ void main()
             var color = (i == 0 || i == lines.Length - 1) ? ink : inkDim;
             _textRenderer.DrawString(viewportW, viewportH, s, tx, ty + i * lineH, color, fontScale);
         }
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — translucent white overlay on the
+    /// hovered main menu button so the cursor leaves a visual trail
+    /// over the wood-button chrome. Pressed buttons get a darker
+    /// overlay so press is visible too. Alphas tuned to read clearly
+    /// over the wood-orange chrome (0.12 was too subtle on the
+    /// engraved label per user feedback).</summary>
+    private void DrawMainMenuHoverOverlays(int viewportW, int viewportH)
+    {
+        if (_barRenderer is null) return;
+        var actions = new[]
+        {
+            Hud.MainMenuPanel.Action.SinglePlayer,
+            Hud.MainMenuPanel.Action.Multiplayer,
+            Hud.MainMenuPanel.Action.Options,
+            Hud.MainMenuPanel.Action.Continue,
+            Hud.MainMenuPanel.Action.About,
+            Hud.MainMenuPanel.Action.Exit,
+        };
+        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
+        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
+        foreach (var a in actions)
+        {
+            if (!_mainMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
+                    out int x, out int y, out int w, out int h,
+                    out bool hov, out bool pr)) continue;
+            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
+            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
+        }
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — same hover overlay treatment for
+    /// the SP submenu's three buttons.</summary>
+    private void DrawSpMenuHoverOverlays(int viewportW, int viewportH)
+    {
+        if (_barRenderer is null) return;
+        var actions = new[]
+        {
+            Hud.SinglePlayerMenuPanel.Action.NewGame,
+            Hud.SinglePlayerMenuPanel.Action.LoadGame,
+            Hud.SinglePlayerMenuPanel.Action.Back,
+        };
+        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
+        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
+        foreach (var a in actions)
+        {
+            if (!_spMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
+                    out int x, out int y, out int w, out int h,
+                    out bool hov, out bool pr)) continue;
+            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
+            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
+        }
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT-FIX — render the SP submenu's two
+    /// button labels via TextRenderer. Replaces the masked-off
+    /// menubars.asp text subsets (6-15) which bled adjacent atlas
+    /// rows onto the visible slots at SP pose. Same overlay-on-wood
+    /// approach as <c>DrawBackButton</c>; centered in each slot rect
+    /// at the same font-scale the panel uses for hit testing so
+    /// label position tracks viewport size.</summary>
+    private void DrawSinglePlayerLabels(int viewportW, int viewportH)
+    {
+        if (_textRenderer is null || !_textRenderer.HasFont) return;
+        int fontScale = _spMenu.FontScale;
+        var ink = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+        DrawSlotLabel(Hud.SinglePlayerMenuPanel.Action.NewGame,  "START NEW GAME", fontScale, ink, viewportW, viewportH);
+        DrawSlotLabel(Hud.SinglePlayerMenuPanel.Action.LoadGame, "LOAD GAME",      fontScale, ink, viewportW, viewportH);
+    }
+
+    private void DrawSlotLabel(Hud.SinglePlayerMenuPanel.Action a, string label,
+                               int fontScale, Vector4 ink, int viewportW, int viewportH)
+    {
+        if (_textRenderer is null) return;
+        if (!_spMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
+                out int x, out int y, out int w, out int h, out _, out _)) return;
+        int tw = _textRenderer.MeasureWidth(label, fontScale);
+        int th = (_textRenderer.Font?.Height ?? 12) * fontScale;
+        int tx = x + (w - tw) / 2;
+        int ty = y + (h - th) / 2;
+        _textRenderer.DrawString(viewportW, viewportH, label, tx, ty, ink, fontScale);
     }
 
     /// <summary>Helper for <see cref="DrawBootScene"/>: resolve a splash
@@ -7295,13 +7602,27 @@ void main()
     /// <summary>Phase 21-SC-BARREL-A1 — hide the OS cursor once we've
     /// committed to drawing our own sprite. Idempotent; cheap to call
     /// every frame. Skipped while RMB camera-look is active (CursorMode
-    /// is in Raw there for the look-grab).</summary>
+    /// is in Raw there for the look-grab).
+    /// Phase 27-SP-FLYOUT — also hides during the frontend menu flow
+    /// so the sword cursor (b_gui_c_pointer) sits in the menus too.</summary>
     private void EnsureOsCursorHidden()
     {
         if (_osCursorHidden) return;
         if (_input is null || _input.Mice.Count == 0) return;
         if (_mouseLookActive) return;
-        if (_player is null) return; // viewer modes keep the OS cursor
+        // In-game: hide once player is spawned. Boot/frontend: hide once
+        // the FrontendScene has reached the main-menu chrome stage so
+        // the sword sprite owns the cursor in the menus too. The earlier
+        // splash + Bink-stub frames keep the OS cursor (no menu ever
+        // requires aiming during them and the brief flicker is fine).
+        bool inGame = _player is not null;
+        bool inMenuChrome = _bootMode && _frontendScene is not null
+            && (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn);
+        if (!inGame && !inMenuChrome) return;
         _input.Mice[0].Cursor.CursorMode = Silk.NET.Input.CursorMode.Hidden;
         _osCursorHidden = true;
     }

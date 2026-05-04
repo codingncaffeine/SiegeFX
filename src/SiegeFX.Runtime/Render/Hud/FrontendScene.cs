@@ -70,8 +70,19 @@ public sealed class FrontendScene : IDisposable
         IntroMenuFlyIn,
         /// <summary>Main menu — Single Player / Multiplayer / Options / Exit.</summary>
         MainMenu,
+        /// <summary>Phase 27-SP-FLYOUT — Main → Single Player transition.
+        /// mainmenu_mm2sp / menubars_mm2sp / backbutton_e2b run together
+        /// over <see cref="MmToSpDur"/>; auto-advances to
+        /// <see cref="SinglePlayer"/> at completion. Mirrors the
+        /// Intro→MainMenu fly-in pattern.</summary>
+        MainMenuToSp,
         /// <summary>Single Player sub-menu — New Game / Load Game / Back.</summary>
         SinglePlayer,
+        /// <summary>Phase 27-SP-FLYOUT — Single Player → Main reverse
+        /// transition. mainmenu_sp2mm / menubars_sp2mm / backbutton_b2e
+        /// over <see cref="SpToMmDur"/>; auto-advances to
+        /// <see cref="MainMenu"/> at completion.</summary>
+        SinglePlayerToMm,
         /// <summary>Start New Game — character template selection.</summary>
         SingleNewGame,
         /// <summary>Character design — the spinner-driven hero creator.</summary>
@@ -126,6 +137,24 @@ public sealed class FrontendScene : IDisposable
         State == ScreenState.IntroMenuFlyIn ? Math.Clamp(_stateTime / MenuFlyInDur, 0f, 1f) :
         State == ScreenState.MainMenu       ? 1f :
         0f;
+
+    // Phase 27-SP-FLYOUT — Main → SP and SP → Main transitions.
+    // mainmenu_mm2sp / menubars_mm2sp run authored at ~1.0s each
+    // (rough heuristic; PRS lengths in DS1's main-menu set cluster
+    // around 1.0–1.5s for the cross-state morphs). Tunable.
+    const float MmToSpDur = 1.0f;
+    const float SpToMmDur = 1.0f;
+    /// <summary>Phase 27-SP-FLYOUT — fraction along mm2sp clips
+    /// (clamped 0..1). Held at 1 while in <see cref="ScreenState.SinglePlayer"/>
+    /// so the SP pose persists between transitions.</summary>
+    public float MmToSpTimeFraction =>
+        State == ScreenState.MainMenuToSp ? Math.Clamp(_stateTime / MmToSpDur, 0f, 1f) :
+        State == ScreenState.SinglePlayer ? 1f :
+        0f;
+    /// <summary>Phase 27-SP-FLYOUT — fraction along sp2mm clips
+    /// (clamped 0..1). Used only during the reverse transition.</summary>
+    public float SpToMmTimeFraction =>
+        State == ScreenState.SinglePlayerToMm ? Math.Clamp(_stateTime / SpToMmDur, 0f, 1f) : 0f;
 
     /// <summary>Time spent in the current state. Re-zeroed on every
     /// <see cref="SetState"/>.</summary>
@@ -240,6 +269,12 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.IntroMenuFlyIn:
                 if (_stateTime >= MenuFlyInDur) SetState(ScreenState.MainMenu);
                 break;
+            case ScreenState.MainMenuToSp:
+                if (_stateTime >= MmToSpDur) SetState(ScreenState.SinglePlayer);
+                break;
+            case ScreenState.SinglePlayerToMm:
+                if (_stateTime >= SpToMmDur) SetState(ScreenState.MainMenu);
+                break;
         }
     }
 
@@ -303,6 +338,28 @@ public sealed class FrontendScene : IDisposable
                 // belong to other states (logo is splash-only per the
                 // existing memory).
                 DrawMainMenuState(fullW, fullH);
+                return;
+            case ScreenState.MainMenuToSp:
+                // Phase 27-SP-FLYOUT — Main → SP transition. mainmenu_mm2sp
+                // + menubars_mm2sp run together; backbutton plays e2b
+                // so the wood button on the bottom morphs from EXIT to
+                // BACK. Backdrop + sides hold their default poses.
+                DrawMmToSpState(fullW, fullH);
+                return;
+            case ScreenState.SinglePlayer:
+                // Phase 27-SP-FLYOUT — SP submenu settled pose. Same chrome
+                // as MainMenu but mainmenu_mm2sp / menubars_mm2sp /
+                // backbutton_e2b held at end-frame so the title bar shows
+                // SINGLE PLAYER, the menubars column shows the 2 SP rows
+                // (NEW GAME / LOAD GAME) instead of the 5 main-menu rows,
+                // and the bottom button reads BACK.
+                DrawSinglePlayerState(fullW, fullH);
+                return;
+            case ScreenState.SinglePlayerToMm:
+                // Phase 27-SP-FLYOUT — reverse transition (Back click).
+                // mainmenu_sp2mm + menubars_sp2mm + backbutton_b2e
+                // unwind to the MainMenu pose.
+                DrawSpToMmState(fullW, fullH);
                 return;
             case ScreenState.CharacterSelect:
                 DrawCharacterSelectState(fullW, fullH);
@@ -409,8 +466,14 @@ public sealed class FrontendScene : IDisposable
         // wrong-state ones happen to land off-screen via bone Z.
         var menubarsMask = new bool[17];
         for (int i = 0; i < 16; i++) menubarsMask[i] = true; // 16 stays false (shadow)
-        // Inner panel: chrome + frame only (mainmenuMask above kills the
-        // title-bar text atlases that produced the misplaced labels).
+        // Inner panel: chrome + frame + text atlases (mainmenuMask kills
+        // shadows only). Mirror-the-whole-chrome-subset approach didn't
+        // work because the chrome subset's right side is opaque wood,
+        // which either covers the mirror's right-hand or gets covered
+        // by it depending on draw order. SC-MAINMENU-RIGHT-HAND splinter
+        // tracks the proper fix: render a UV-cropped 2D quad sourced
+        // from b_gui_fe_m_mn_3d_mainmenu.raw at the upper-right of the
+        // menu, sampling just the left-hand region X-mirrored.
         DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_sp2mm",    hold: 1f, vw, vh, mainmenuMask);
         // Menubars: 5 button rows + their text labels; shadow subset
         // killed by menubarsMask to drop the dark-tinted-glass overlay.
@@ -420,6 +483,72 @@ public sealed class FrontendScene : IDisposable
         // splash → MainMenu transition; future SC-MAINMENU-LOGO-EXIT
         // splinter wires that 0.58s tail). heromenu + backbutton belong
         // to character-creator + sub-menu states.
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — Main → Single Player forward
+    /// transition. Renders the always-on chrome (backdrop + sides) at
+    /// rest while mainmenu_mm2sp / menubars_mm2sp animate the inner
+    /// panel + button column from MainMenu to SP poses. End-frame of
+    /// each clip matches <see cref="DrawSinglePlayerState"/>'s hold pose
+    /// for a seamless settle.</summary>
+    private void DrawMmToSpState(int vw, int vh)
+    {
+        DrawSpChrome(vw, vh, MmToSpTimeFraction, mmToSp: true);
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — SP submenu resting pose. Same as
+    /// the end-frame of the mm2sp clips so the user reads it as the
+    /// settled SP screen.</summary>
+    private void DrawSinglePlayerState(int vw, int vh)
+    {
+        DrawSpChrome(vw, vh, hold: 1f, mmToSp: true);
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — Single Player → Main reverse
+    /// transition (Back click). Plays sp2mm clips so the panel +
+    /// button column unwind back to the MainMenu pose.</summary>
+    private void DrawSpToMmState(int vw, int vh)
+    {
+        DrawSpChrome(vw, vh, SpToMmTimeFraction, mmToSp: false);
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT — shared chrome assembly for the
+    /// MainMenuToSp / SinglePlayer / SinglePlayerToMm states. <paramref name="mmToSp"/>
+    /// picks the forward (mm2sp / e2b) vs. reverse (sp2mm / b2e) clip
+    /// set; <paramref name="hold"/> is the 0..1 time-fraction along
+    /// those clips.</summary>
+    private void DrawSpChrome(int vw, int vh, float hold, bool mmToSp)
+    {
+        // Backdrop + sides: same masks as MainMenu state.
+        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
+        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
+        DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
+        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
+        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+
+        // mainmenu text-01 (subsets 1+2) renders the "SINGLE PLAYER"
+        // title at the panel header at SP state — leave enabled.
+        // text-02 (subsets 3+4, MP-tree labels) and shadows masked off.
+        var mainmenuMask = new[] { true, true, true, false, false, false };
+        // Phase 27-SP-FLYOUT-FIX3 — SP state menubars: render ONLY the
+        // panel chrome + per-row wood buttons (subsets 0-5). Mask off
+        // text subsets (6-15) so the multi-bone text quads can't bleed
+        // adjacent atlas rows onto slots 1+2. The actual button labels
+        // (NEW GAME / LOAD GAME) come from per-button DrawMenubarsButton
+        // calls in RenderHost using the art_mapping.gas[button_*]
+        // recipe — exactly how DS1 renders these widgets.
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 6; i++) menubarsMask[i] = true; // chrome only
+
+        var mainClip = mmToSp ? "mainmenu_mm2sp" : "mainmenu_sp2mm";
+        var barsClip = mmToSp ? "menubars_mm2sp" : "menubars_sp2mm";
+        DrawMesh("mainmenu",  "mainmenu",  clip: mainClip,  hold: hold, vw, vh, mainmenuMask);
+        DrawMesh("menubars",  "menubars",  clip: barsClip,  hold: hold, vw, vh, menubarsMask);
+        // Per-button text rendering is layered on top by the host (see
+        // DrawMenubarsButton + DrawSpBackButton), one asp draw per
+        // widget, exactly the way DS1's engine does it.
     }
 
     /// <summary>Phase 25-CHROME — sword rises out of the log via
@@ -647,8 +776,19 @@ public sealed class FrontendScene : IDisposable
             targetH = vw / targetAspect;
         }
 
-        float sx = targetW / refW;
-        float sy = targetH / refH;
+        // Phase 26-VIEWPORT — overscan zoom (split X / Y). DS1 was authored
+        // expecting the viewport to crop the outer fringe of the chrome,
+        // and the right ratio differs per axis: horizontal pillars only
+        // need the outer ~25% trimmed, but vertical chrome (mainmenu /
+        // menubars at bind-pose Y up to 5.18) extends much further past
+        // the backdrop frame and needs more aggressive vertical cropping.
+        // User-tuned: 1.30 X (pillar outer ~25% gone, backdrop edges
+        // visible) + 1.45 Y (top/bottom of mesh garbage that DS1 expected
+        // the framebuffer to crop is now actually clipped).
+        const float overscanX = 1.30f;
+        const float overscanY = 1.30f;
+        float sx = (targetW / refW) * overscanX;
+        float sy = (targetH / refH) * overscanY;
         float tx = vw * 0.5f;
         float ty = vh * 0.5f;
 
@@ -730,6 +870,118 @@ public sealed class FrontendScene : IDisposable
         return arr;
     }
 
+    // GetMenubarsButtonScreenRect / GetExitButtonScreenRect /
+    // GetTitleSlotScreenRect were attempted projection-aware rect
+    // helpers; reverted because the trace-pose-derived mesh values
+    // didn't match my axis assumptions and broke hit-testing. Panels
+    // use their gas-authored rects directly.
+    private bool GetMenubarsButtonScreenRect_unused(int slotIdx, int viewportW, int viewportH,
+                                                    out int x, out int y, out int w, out int h)
+    {
+        x = y = w = h = 0;
+        // Slot mesh-space rects per state, sourced from
+        // `siegefx asp trace-pose menubars.asp <clip> 1.0`
+        // for subsets 1-5 (per-row chrome bboxes). Mesh +Y projects to
+        // smaller screen Y (top of screen) since BuildSharedSceneModel
+        // negates Y. So at MM state the TOP visible button (slot 0) is
+        // the one with the LARGEST mesh Y (subset 1 = MenuLogBASE5).
+        // First-attempt code had slot 0 → subset 5 (MenuLogBASE1, mesh
+        // Y ≈ -0.6) which projected to the BOTTOM of the screen and
+        // broke hit-testing on Single Player at MM state.
+        bool inSp = State == ScreenState.SinglePlayer
+                 || State == ScreenState.MainMenuToSp
+                 || State == ScreenState.SinglePlayerToMm;
+        (float mxMin, float myMin, float mxMax, float myMax)? rect = null;
+        if (inSp)
+        {
+            // SP state: top 2 visible buttons are MenuLogBASE2 (chrome
+            // subset 4, mesh Y[0.016, 0.272]) and MenuLogBASE1 (subset 5,
+            // mesh Y[-0.300, -0.044]). MenuLogBASE3..5 are parked
+            // off-top of viewport at this state pose.
+            rect = slotIdx switch
+            {
+                0 => (-0.568f,  0.016f, 0.558f,  0.272f),  // top: NEW GAME
+                1 => (-0.568f, -0.300f, 0.558f, -0.044f),  // bottom: LOAD GAME
+                _ => null,
+            };
+        }
+        else
+        {
+            // MM state: 5 visible buttons. MenuLogBASE5 (subset 1) is
+            // the TOP slot, MenuLogBASE1 (subset 5) is the BOTTOM.
+            rect = slotIdx switch
+            {
+                0 => (-0.568f,  0.477f, 0.558f,  0.733f),  // top:    SINGLE PLAYER
+                1 => (-0.568f,  0.169f, 0.558f,  0.425f),  //         MULTIPLAYER
+                2 => (-0.568f, -0.137f, 0.558f,  0.119f),  //         OPTIONS
+                3 => (-0.568f, -0.445f, 0.558f, -0.190f),  //         CONTINUE
+                4 => (-0.568f, -0.754f, 0.558f, -0.498f),  // bottom: ABOUT
+                _ => null,
+            };
+        }
+        if (rect is null) return false;
+        var r = rect.Value;
+        EnsureReference();
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var p0 = Vector4.Transform(new Vector4(r.mxMin, r.myMin, 0f, 1f), model);
+        var p1 = Vector4.Transform(new Vector4(r.mxMax, r.myMax, 0f, 1f), model);
+        int sx0 = (int)MathF.Round(MathF.Min(p0.X, p1.X));
+        int sx1 = (int)MathF.Round(MathF.Max(p0.X, p1.X));
+        int sy0 = (int)MathF.Round(MathF.Min(p0.Y, p1.Y));
+        int sy1 = (int)MathF.Round(MathF.Max(p0.Y, p1.Y));
+        x = sx0;
+        y = sy0;
+        w = Math.Max(1, sx1 - sx0);
+        h = Math.Max(1, sy1 - sy0);
+        return true;
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT-FIX2 — companion to
+    /// <see cref="GetMenubarsButtonScreenRect"/> for the EXIT/BACK button.
+    /// Same projection-aware computation, returning the actual screen
+    /// rect of backbutton.asp's NameBase wood-button chrome (subset 0+5).
+    /// Trace-pose-derived: at bind pose (the only pose DrawExitButton
+    /// uses today; e2b clip in BACK swaps internal Z but not the outer
+    /// rect), NameBase chrome spans roughly mesh-space (-0.7..0.7) X
+    /// and (-0.4..0.0) Y above the menubars panel. Empirically tuned to
+    /// match the existing user-tuned EXIT rect (359,492 W=79 H=46 in
+    /// 800x600 ref space) so the visual position carries over.</summary>
+    private bool GetTitleSlotScreenRect_unused(int viewportW, int viewportH,
+                                               out int x, out int y, out int w, out int h)
+    {
+        EnsureReference();
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var p0 = Vector4.Transform(new Vector4(-0.60f, 1.05f, 0f, 1f), model);
+        var p1 = Vector4.Transform(new Vector4( 0.60f, 1.30f, 0f, 1f), model);
+        int sx0 = (int)MathF.Round(MathF.Min(p0.X, p1.X));
+        int sx1 = (int)MathF.Round(MathF.Max(p0.X, p1.X));
+        int sy0 = (int)MathF.Round(MathF.Min(p0.Y, p1.Y));
+        int sy1 = (int)MathF.Round(MathF.Max(p0.Y, p1.Y));
+        x = sx0;
+        y = sy0;
+        w = Math.Max(1, sx1 - sx0);
+        h = Math.Max(1, sy1 - sy0);
+        return true;
+    }
+
+    private bool GetExitButtonScreenRect_unused(int viewportW, int viewportH,
+                                                out int x, out int y, out int w, out int h)
+    {
+        EnsureReference();
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var p0 = Vector4.Transform(new Vector4(-0.30f, 0.82f, 0f, 1f), model);
+        var p1 = Vector4.Transform(new Vector4( 0.30f, 1.05f, 0f, 1f), model);
+        int sx0 = (int)MathF.Round(MathF.Min(p0.X, p1.X));
+        int sx1 = (int)MathF.Round(MathF.Max(p0.X, p1.X));
+        int sy0 = (int)MathF.Round(MathF.Min(p0.Y, p1.Y));
+        int sy1 = (int)MathF.Round(MathF.Max(p0.Y, p1.Y));
+        x = sx0;
+        y = sy0;
+        w = Math.Max(1, sx1 - sx0);
+        h = Math.Max(1, sy1 - sy0);
+        return true;
+    }
+
     /// <summary>Phase 26-ARTMAP — render the EXIT button using DS1's actual
     /// asset chain: render <c>m_gui_fe_m_mn_3d_backbutton.asp</c> (the
     /// mesh family that owns the EXIT button visual) into the supplied
@@ -741,7 +993,8 @@ public sealed class FrontendScene : IDisposable
     /// full schema.</summary>
     public void DrawExitButton(int viewportW, int viewportH,
                                int x, int y, int w, int h,
-                               bool hovered, bool pressed)
+                               bool hovered, bool pressed,
+                               bool drawLabel = true)
     {
         var renderer = GetOrLoadMesh("backbutton");
         if (renderer is null) return;
@@ -789,7 +1042,10 @@ public sealed class FrontendScene : IDisposable
         if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(exitTex); mask[1] = true; }
         if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(exitTex); mask[2] = true; }
         if (3 < arr.Length) { arr[3] = GetOrLoadTextureBase(exitTex); mask[3] = true; }
-        if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
+        // Subset 8 = EXIT text from text-small atlas. Skipped when the
+        // caller wants to overlay a different label (e.g. BACK in SP
+        // state) — see DrawBackButton.
+        if (drawLabel && 8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
 
         // Phase 26-ARTMAP — compute tight bounds from active subsets and
         // map them to a VISUAL rect that's wider than the hit-test rect.
@@ -799,8 +1055,8 @@ public sealed class FrontendScene : IDisposable
         // 3.0× width / 1.6× height, centered on the rect midpoint, gives
         // the arrows room to breathe while keeping the EXIT button
         // visually anchored at the same spot the user tuned.
-        const float visualWMul = 4.0f;
-        const float visualHMul = 2.2f;
+        const float visualWMul = 5.0f;
+        const float visualHMul = 2.0f;
         int vw = (int)(w * visualWMul);
         int vh = (int)(h * visualHMul);
         int vx = x + (w - vw) / 2;
@@ -809,6 +1065,168 @@ public sealed class FrontendScene : IDisposable
         var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
         renderer.DrawWithModel(viewportW, viewportH, model, arr,
             anim: null, timeSec: 0f, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT-FIX3 — render one menubars-button
+    /// widget (button_start_new_game / button_load_game) using the
+    /// art_mapping.gas recipe, exactly the way DS1's engine does and
+    /// the way <see cref="DrawExitButton"/> already handles button_exit.
+    /// Each widget renders as ONE asp draw with ONLY its own subsets
+    /// active — adjacent atlas regions can't bleed because their
+    /// subsets are masked off. The asp's vertex UVs already point at
+    /// the right atlas regions; we just bind the right .raw to each
+    /// subset per the gas-specified mouseover/mouseout/mousedown
+    /// recipe and the engine renders the authored result.
+    ///
+    /// <para>Recipes from /ui/config/art_mapping/art_mapping.gas:</para>
+    /// <list type="bullet">
+    ///   <item><c>button_start_new_game</c>: subsets 4 / 12 / 13 →
+    ///         menubars / text-menubars1 / text-menubars2</item>
+    ///   <item><c>button_load_game</c>: subsets 5 / 14 / 15 → same
+    ///         atlas triplet pattern</item>
+    /// </list>
+    ///
+    /// <para>Each recipe swaps to <c>-up</c> / <c>-down</c> variants
+    /// per mouse state.</para></summary>
+    public void DrawMenubarsButton(int viewportW, int viewportH,
+                                   int x, int y, int w, int h,
+                                   bool hovered, bool pressed,
+                                   string widgetName)
+    {
+        int chromeSubset, text1Subset;
+        switch (widgetName)
+        {
+            case "button_start_new_game":
+                chromeSubset = 4; text1Subset = 12;
+                break;
+            case "button_load_game":
+                chromeSubset = 5; text1Subset = 14;
+                break;
+            default:
+                return;
+        }
+
+        var renderer = GetOrLoadMesh("menubars");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string menubarsTex = pressed ? "menubars-down" : hovered ? "menubars-up" : "menubars";
+        string text1Tex    = pressed ? "text-menubars1-down" : hovered ? "text-menubars1-up" : "text-menubars1";
+
+        // Default-fill: every asp slot gets its authored default so any
+        // un-masked subset has SOMETHING bound (mask=false → won't render
+        // anyway, but renderer reads textures unconditionally).
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        // art_mapping.gas[button_start_new_game] / [button_load_game]
+        // both list THREE subsets per state — chrome (4 or 5),
+        // text-menubars1 (12 or 14), text-menubars2 (13 or 15). But
+        // text-menubars2.raw on disk visibly contains the MP-screen
+        // labels (NETWORK / INTERNET / etc.), and binding it on top of
+        // text-menubars1 paints "NETWORK" over the LOAD GAME label.
+        // text-menubars1 alone produces the correct full SP label
+        // (verified visually — START NEW GAME reads cleanly underneath
+        // when text-menubars2 isn't drawn over it). Skipping the
+        // text-menubars2 subset until we understand why DS1's engine
+        // doesn't surface its content here (open splinter — likely a
+        // state-aware texture-name resolver in the engine that we
+        // don't replicate yet).
+        if (chromeSubset < arr.Length) { arr[chromeSubset] = GetOrLoadTextureBase(menubarsTex); mask[chromeSubset] = true; }
+        if (text1Subset  < arr.Length) { arr[text1Subset]  = GetOrLoadTextureBase(text1Tex);    mask[text1Subset]  = true; }
+
+        // Use the chrome's shared scene projection (same as the
+        // full-menubars DrawMesh path), NOT the bind-pose bbox-to-rect
+        // mapping DrawExitButton uses. The menubars_mm2sp PRS clip
+        // moves bones FAR from bind pose to position the SP atlas
+        // rows at slots 1+2 — that motion is large enough that the
+        // bind-pose-bbox approach pushes skinned vertices outside the
+        // screen rect (no text visible). Chrome projection lets the
+        // bones land naturally at their SP-pose mesh positions, which
+        // project through backdrop reference into slots 1+2 the same
+        // way the full menubars draw already does. The (x,y,w,h)
+        // params stay for hit-testing only — visual placement is
+        // entirely bone-driven now.
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var anim = GetOrLoadClip("menubars_mm2sp");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Phase 27-SP-FLYOUT-FIX3 — render the SP-state Back button
+    /// (widget <c>button_sp_back</c>). Different from
+    /// <see cref="DrawExitButton"/> in two ways per art_mapping.gas:
+    /// (a) uses subset 4 of backbutton.asp instead of subset 3 — that
+    /// subset's UV samples a different decoration region of exitback*.raw,
+    /// (b) subset 8 needs the <c>backbutton_e2b</c> PRS clip applied at
+    /// hold=1 so the BackBase bone wins over ExitBase at the visible Z
+    /// slot of the text-small atlas, flipping the label from EXIT to
+    /// BACK.</summary>
+    public void DrawSpBackButton(int viewportW, int viewportH,
+                                 int x, int y, int w, int h,
+                                 bool hovered, bool pressed)
+    {
+        var renderer = GetOrLoadMesh("backbutton");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        //   art_mapping.gas[button_sp_back]:
+        //     [mouseover]  { 4 = exitback-up;   8 = text-small-up;   }
+        //     [mousedown]  { 4 = exitback-down; 8 = text-small-down; }
+        //     [mouseout]   { 4 = exitback;      8 = text-small;      }
+        string backTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
+        string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
+
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        // Same chrome strategy as DrawExitButton (subsets 0/1/2 carry
+        // the wood button shape + arrows), but use [4] for the BACK
+        // decoration per art_mapping (button_exit uses [3], button_sp_back
+        // uses [4] — both subsets sample different regions of exitback).
+        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
+        if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(backTex); mask[1] = true; }
+        if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(backTex); mask[2] = true; }
+        if (4 < arr.Length) { arr[4] = GetOrLoadTextureBase(backTex); mask[4] = true; }
+        if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
+
+        // Same visual-rect padding as DrawExitButton so the wood button
+        // has room for the decorative arrow subsets.
+        const float visualWMul = 5.0f;
+        const float visualHMul = 2.0f;
+        int vw = (int)(w * visualWMul);
+        int vh = (int)(h * visualHMul);
+        int vx = x + (w - vw) / 2;
+        int vy = y + (h - vh) / 2;
+        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
+        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+
+        // Apply backbutton_e2b at hold=1 — subset 8 is owned by both
+        // ExitBase and BackBase; at bind pose ExitBase is at the
+        // visible Z (label = EXIT), the e2b clip swaps so BackBase
+        // wins (label = BACK). Verified via `siegefx asp subsets
+        // backbutton.asp` (subset 8 bones: BackBase, ExitBase).
+        var anim = GetOrLoadClip("backbutton_e2b");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Legacy text-overlay BACK button (kept to avoid breaking
+    /// callers during the migration). Prefer <see cref="DrawSpBackButton"/>
+    /// — it renders the authentic atlas BACK label via the
+    /// art_mapping.gas[button_sp_back] recipe.</summary>
+    public void DrawBackButton(int viewportW, int viewportH,
+                               int x, int y, int w, int h,
+                               bool hovered, bool pressed,
+                               TextRenderer? text, int fontScale)
+    {
+        DrawSpBackButton(viewportW, viewportH, x, y, w, h, hovered, pressed);
     }
 
     /// <summary>Phase 26-ARTMAP — walk the active subsets' triangles to find
@@ -875,6 +1293,7 @@ public sealed class FrontendScene : IDisposable
     /// RE notes; we replicate it here.</summary>
     private GlTexture? GetOrLoadTextureBase(string baseName)
         => GetOrLoadTexture("b_gui_fe_m_mn_3d_" + baseName);
+
 
     private GlTexture? GetOrLoadTexture(string textureName)
     {

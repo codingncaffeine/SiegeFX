@@ -103,7 +103,7 @@ internal sealed class MainMenuPanel
         (280, 280, 517 - 280, 326 - 280, "OPTIONS",       Action.Options),
         (280, 355, 517 - 280, 401 - 355, "CONTINUE",      Action.Continue),
         (280, 430, 517 - 280, 476 - 430, "ABOUT",         Action.About),
-        (359, 499, 79, 46,               "EXIT",          Action.Exit),
+        (359, 570, 79, 46,               "EXIT",          Action.Exit),
     };
     // Bottom-right credits glyph anchor; sized at draw time.
     const int CreditsAuthoredW = 16, CreditsAuthoredH = 16;
