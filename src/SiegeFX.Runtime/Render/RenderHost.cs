@@ -935,6 +935,11 @@ public sealed class RenderHost : IDisposable
     // GAME / LOAD GAME) + Back. Replaces _mainMenu's input ownership for
     // the duration of the SP submenu.
     private readonly SinglePlayerMenuPanel _spMenu = new();
+    // Phase 28-CD-FLYOUT — Character Creator nav panel (Previous / Next).
+    // Active only while FrontendScene is in CharacterSelect state. The
+    // spinner-axis buttons live on the existing _creator panel; this
+    // panel only owns the two backbutton.asp-driven nav buttons.
+    private readonly CharacterSelectMenuPanel _csMenu = new();
     // Phase 24-MAINMENU step 6 — About sub-screen overlay. Toggle from main
     // menu's About button; Esc / clicking outside dismisses.
     private bool _aboutOpen;
@@ -1677,7 +1682,8 @@ void main()
                         }
                         else
                         {
-                            _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                            var sz = _window.FramebufferSize;
+                            _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                         }
                     }
                     return;
@@ -1715,6 +1721,23 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _spMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    // Phase 29-CD-CREATOR-FIX3 — route to BOTH panels.
+                    // _creator owns the 12 spinner-arrow rects on the
+                    // left panel; _csMenu owns the bottom-nav
+                    // Previous/Next rects. They don't overlap (top vs
+                    // bottom of screen) so both can fire OnMouseDown
+                    // safely; whichever rect contains the click sets
+                    // its own _pressed and the matching OnMouseUp
+                    // commits the action.
+                    _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _csMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
@@ -2027,7 +2050,10 @@ void main()
                         if (_heroPreview is not null && _heroPreview.IsDragging)
                             _heroPreview.EndDrag();
                         else
-                            _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                        {
+                            var sz = _window.FramebufferSize;
+                            _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                        }
                     }
                     return;
                 }
@@ -2058,6 +2084,15 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _spMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _csMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
@@ -2179,7 +2214,8 @@ void main()
                 // highlight under the cursor.
                 if (_creator.IsOpen)
                 {
-                    _creator.OnMouseMove((int)pos.X, (int)pos.Y);
+                    var csz = _window.FramebufferSize;
+                    _creator.OnMouseMove((int)pos.X, (int)pos.Y, csz.X, csz.Y);
                     // 21d-2a-viii-FE-2 — feed drag delta to the live preview
                     // when the user is mid-drag (LMB held inside the listener
                     // rect). Bidirectional yaw so dragging either way spins
@@ -2218,6 +2254,13 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _spMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect)
+                {
+                    var sz = _window.FramebufferSize;
+                    _creator.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                    _csMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -2623,6 +2666,24 @@ void main()
         resolver.Add(logicReader,   "Logic.dsres");
         _playResolver = resolver;
         Console.WriteLine($"  boot: tanks open ({logicPath}, {objectsPath})");
+
+        // Phase 29-CD-CREATOR-FIX — build the template store at boot
+        // (was previously only built inside LoadPlayActors → region
+        // load) so HeroPreviewRenderer can spawn the live 3D farmboy /
+        // farmgirl preview at the boot CharacterSelect state without
+        // needing a region. EnsurePreview's only other requirement is
+        // _skinShader (set in OnLoad) + _playResolver (just set above).
+        // LoadPlayActors reassigns _templateStore later — harmless.
+        try
+        {
+            var (store, storeDiags) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+            _templateStore = store;
+            Console.WriteLine($"  boot: template store loaded ({store.Count} templates)");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  boot: template store load failed — {ex.Message}");
+        }
 
         // Phase 27-SP-FLYOUT-FIX3 — load the HUD font at boot so the
         // frontend menu can render TextRenderer overlays. Previously
@@ -5086,8 +5147,20 @@ void main()
                 // (wood-panel chrome swoosh) since DS1 doesn't ship a
                 // dedicated sub-menu transition wav.
                 else if (now == Hud.FrontendScene.ScreenState.MainMenuToSp
-                      || now == Hud.FrontendScene.ScreenState.SinglePlayerToMm)
+                      || now == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                      || now == Hud.FrontendScene.ScreenState.SinglePlayerToCd
+                      || now == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
                     _audio?.Play(SfxFrontendLogoFlyout);
+                // Phase 29-CD-CREATOR-FIX2 — one-shot creator reset on
+                // ENTRY to CharacterSelect (from the SP→CD transition).
+                // Previously Reset() was called every frame whenever
+                // _creator.IsOpen was false, which clobbered HeroName
+                // continuously while typing. Now Reset only fires on
+                // the state-machine edge.
+                if (now == Hud.FrontendScene.ScreenState.CharacterSelect)
+                {
+                    _creator.Reset();
+                }
             }
         }
         // Phase 24-MAINMENU step 5+6 — drain main menu click actions one
@@ -5100,6 +5173,8 @@ void main()
         // SinglePlayer state. Activated only after the mm2sp transition
         // settles; clicks during the transition are dropped.
         FlushSinglePlayerMenu();
+        // Phase 28-CD-FLYOUT — drain Character Creator nav actions.
+        FlushCharacterSelectMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -5554,13 +5629,66 @@ void main()
                 _spMenu.ClearHover();
                 break;
             case SinglePlayerMenuPanel.Action.NewGame:
-            case SinglePlayerMenuPanel.Action.LoadGame:
-                // Stubs — SC-MAINMENU-NEWGAME wires the region launch
-                // path that opens the creator panel + runs LoadPlayActors
-                // without --play-region CLI args; SC-MAINMENU-LOADGAME
-                // wires the SaveStore-backed load_game.gas screen.
-                Console.WriteLine($"  sp menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
+                // Phase 28-CD-FLYOUT — SP → Character Creator transition.
+                // mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn /
+                // heromenu_begin run together; auto-advances to
+                // CharacterSelect at SpToCdDur.
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.SinglePlayerToCd);
+                _spMenu.IsActive = false;
                 _spMenu.ClearHover();
+                break;
+            case SinglePlayerMenuPanel.Action.LoadGame:
+                // Stub — SC-MAINMENU-LOADGAME wires the SaveStore-backed
+                // load_game.gas screen.
+                Console.WriteLine($"  sp menu: '{act}' click — splinter SC-MAINMENU-LOADGAME pending");
+                _spMenu.ClearHover();
+                break;
+        }
+    }
+
+    /// <summary>Phase 28-CD-FLYOUT — translate Character Creator
+    /// Previous / Next clicks into runtime side-effects. Mirror of
+    /// <see cref="FlushSinglePlayerMenu"/>.</summary>
+    private void FlushCharacterSelectMenu()
+    {
+        if (!_bootMode) return;
+        if (_frontendScene is null) return;
+        var state = _frontendScene.State;
+        // _csMenu is active only while CharacterSelect has settled. During
+        // SinglePlayerToCd / CharacterSelectToSp transitions input is
+        // suppressed so a fast click doesn't fire on a half-flown panel.
+        _csMenu.IsActive = state == Hud.FrontendScene.ScreenState.CharacterSelect
+                           && !_aboutOpen && !_optionsMenu.IsOpen;
+        if (state != Hud.FrontendScene.ScreenState.CharacterSelect) return;
+        var act = _csMenu.ConsumeAction();
+        if (act != CharacterSelectMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case CharacterSelectMenuPanel.Action.None:
+                break;
+            case CharacterSelectMenuPanel.Action.Previous:
+                // notify(back_to_single_player) per character_select.gas.
+                // Set Cancelled on the creator so FlushCreator's existing
+                // env-var-fallback path picks it up if a region launch
+                // ever happens via this panel.
+                _creator.Cancelled = true;
+                _creator.IsOpen = false;
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.CharacterSelectToSp);
+                _csMenu.IsActive = false;
+                _csMenu.ClearHover();
+                break;
+            case CharacterSelectMenuPanel.Action.Next:
+                // notify(on_change_map) per character_select.gas — should
+                // launch the map_chooser / LoadPlayActors flow. Set the
+                // creator's Confirmed flag so FlushCreator picks it up
+                // on the next frame and runs TrySpawnPlayerWithPicker.
+                // The actual region-launch wiring (resolving fh_r1 paths
+                // from _ds1ResourcesDir without --play-region CLI args)
+                // is splinter SC-CD-NEXT-LAUNCH.
+                _creator.Confirmed = true;
+                _creator.IsOpen = false;
+                Console.WriteLine("  cs menu: 'Next' click — Confirmed=true, splinter SC-CD-NEXT-LAUNCH for region launch");
+                _csMenu.ClearHover();
                 break;
         }
     }
@@ -5817,7 +5945,10 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
               || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
-              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm)
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
         {
             // Phase 26-VIEWPORT — clip rendering to the chrome's letterbox
             // area so meshes that extend BEYOND backdrop's authored bounds
@@ -5927,6 +6058,62 @@ void main()
                 if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
                     DrawSpMenuHoverOverlays(viewportW, viewportH);
             }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
+            {
+                // Phase 28-CD-FLYOUT — render the Previous/Next nav
+                // buttons via art_mapping.gas[button_previous/next]
+                // recipes. Same per-button pattern as the SP submenu's
+                // BACK button. Hit-testing settles only after the
+                // transition completes (panel sets IsActive=false
+                // during transitions); rendering during transitions
+                // keeps the visual stable.
+                if (_csMenu.TryGetButtonStateAndRect(
+                        Hud.CharacterSelectMenuPanel.Action.Previous,
+                        viewportW, viewportH,
+                        out int px, out int py, out int pw, out int ph,
+                        out bool pHover, out bool pPress))
+                {
+                    _frontendScene.DrawPreviousButton(viewportW, viewportH,
+                        px, py, pw, ph, pHover, pPress);
+                }
+                if (_csMenu.TryGetButtonStateAndRect(
+                        Hud.CharacterSelectMenuPanel.Action.Next,
+                        viewportW, viewportH,
+                        out int nx, out int ny, out int nw, out int nh,
+                        out bool nHover, out bool nPress))
+                {
+                    _frontendScene.DrawNextButton(viewportW, viewportH,
+                        nx, ny, nw, nh, nHover, nPress);
+                }
+                if (_frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect)
+                {
+                    DrawCsMenuHoverOverlays(viewportW, viewportH);
+                    // Phase 29-CD-CREATOR-FIX2 — Reset() moved to the
+                    // state-edge handler in OnUpdate so HeroName isn't
+                    // clobbered every frame while typing.
+                    // Build hero preview lazily once the deps are ready
+                    // (LoadPlayActors populates _skinShader / _templateStore /
+                    // _playResolver — but at boot only _playResolver is set,
+                    // so the preview renders empty until a region loads).
+                    if (_heroPreview is null && _gl is not null && _skinShader is not null
+                        && _templateStore is not null && _playResolver is not null)
+                    {
+                        _heroPreview = new HeroPreviewRenderer(
+                            _gl, _skinShader, _templateStore, _playResolver,
+                            ResolveActorTexture);
+                    }
+                    if (_heroPreview is not null)
+                    {
+                        _heroPreview.EnsurePreview(_creator.Picker);
+                        _heroPreview.Tick(dt);
+                        _heroPreview.Draw(viewportW, viewportH);
+                    }
+                    // Per-button asp render + hover overlays + name overlay.
+                    DrawCharacterCreatorOverlays(viewportW, viewportH);
+                }
+            }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
             // 60% black scrim) aren't clipped to the chrome letterbox.
@@ -5942,6 +6129,9 @@ void main()
                        || fs == Hud.FrontendScene.ScreenState.MainMenuToSp
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayer
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToCd
+                       || fs == Hud.FrontendScene.ScreenState.CharacterSelect
+                       || fs == Hud.FrontendScene.ScreenState.CharacterSelectToSp
                        || fs == Hud.FrontendScene.ScreenState.IntroMenuFlyIn;
             if (inMenu)
             {
@@ -6061,6 +6251,129 @@ void main()
         foreach (var a in actions)
         {
             if (!_spMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
+                    out int x, out int y, out int w, out int h,
+                    out bool hov, out bool pr)) continue;
+            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
+            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
+        }
+    }
+
+    /// <summary>Phase 29-CD-CREATOR — render the 12 spinner-arrow
+    /// buttons (per art_mapping.gas) + their hover overlays + the
+    /// typed-name TextRenderer overlay. Caller must already have
+    /// drawn the chrome (FrontendScene) and the live hero preview
+    /// (HeroPreviewRenderer). Used both from the boot CharacterSelect
+    /// chrome render block and from the in-region _creator.IsOpen
+    /// block — same overlay layer in both cases.</summary>
+    private void DrawCharacterCreatorOverlays(int viewportW, int viewportH)
+    {
+        if (_frontendScene is null) return;
+        var actions = new[]
+        {
+            (Hud.CharacterCreatorPanel.Action.GenderLeft,  "button_gender_left"),
+            (Hud.CharacterCreatorPanel.Action.GenderRight, "button_gender_right"),
+            (Hud.CharacterCreatorPanel.Action.HeadLeft,    "button_head_left"),
+            (Hud.CharacterCreatorPanel.Action.HeadRight,   "button_head_right"),
+            (Hud.CharacterCreatorPanel.Action.FaceLeft,    "button_face_left"),
+            (Hud.CharacterCreatorPanel.Action.FaceRight,   "button_face_right"),
+            (Hud.CharacterCreatorPanel.Action.HairLeft,    "button_hair_left"),
+            (Hud.CharacterCreatorPanel.Action.HairRight,   "button_hair_right"),
+            (Hud.CharacterCreatorPanel.Action.ShirtLeft,   "button_shirt_left"),
+            (Hud.CharacterCreatorPanel.Action.ShirtRight,  "button_shirt_right"),
+            (Hud.CharacterCreatorPanel.Action.PantsLeft,   "button_pants_left"),
+            (Hud.CharacterCreatorPanel.Action.PantsRight,  "button_pants_right"),
+        };
+        foreach (var (act, widget) in actions)
+        {
+            if (!_creator.TryGetButtonStateAndRect(act, viewportW, viewportH,
+                    out int x, out int y, out int w, out int h,
+                    out bool hov, out bool pr)) continue;
+            _frontendScene.DrawHeromenuButton(viewportW, viewportH,
+                x, y, w, h, hov, pr, widget);
+        }
+        if (_barRenderer is not null)
+        {
+            var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
+            var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
+            foreach (var (act, _) in actions)
+            {
+                if (!_creator.TryGetButtonStateAndRect(act, viewportW, viewportH,
+                        out int x, out int y, out int w, out int h,
+                        out bool hov, out bool pr)) continue;
+                if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
+                else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
+            }
+        }
+        // Phase 29-CD-CREATOR-FIX2 — "CHOOSE HERO" title overlay.
+        // The mainmenu mesh (which carried this label via its text-01
+        // atlas at sng2cd@1.0) is masked off at cd state because its
+        // chrome rail rendered as an unwanted "menu in the middle"
+        // and the same text-01 atlas bled MM/SP-tree labels across
+        // the column. TextRenderer overlay at the authored top-of-
+        // screen position keeps the title without the atlas baggage.
+        if (_textRenderer is not null && _textRenderer.HasFont)
+        {
+            float titleScale = MathF.Min(viewportH / 600f, viewportW / 800f);
+            int titleFontScale = Math.Max(1, (int)MathF.Round(titleScale)) + 1;
+            const string title = "CHOOSE HERO";
+            int titleW = _textRenderer.MeasureWidth(title, titleFontScale);
+            int titleH = (_textRenderer.Font?.Height ?? 12) * titleFontScale;
+            // Center horizontally on the spinner column (gas X 176-377,
+            // center 276), at gas Y ≈ 90 above the first spinner row.
+            int authoredW = (int)MathF.Round(800 * titleScale);
+            int authoredH = (int)MathF.Round(600 * titleScale);
+            int dx = (viewportW - authoredW) / 2;
+            int dy = (viewportH - authoredH) / 2;
+            int titleCenterX = dx + (int)MathF.Round(276 * titleScale);
+            int titleY = dy + (int)MathF.Round(90 * titleScale);
+            int titleX = titleCenterX - titleW / 2;
+            var titleInk = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+            _textRenderer.DrawString(viewportW, viewportH, title, titleX, titleY, titleInk, titleFontScale);
+        }
+
+        // Typed-name overlay at the gas-authored name_edit_box rect.
+        // Phase 29-CD-CREATOR-FIX — bump font scale by 1 (12px → ~24px
+        // → 36px for clearer reading on the name plate, per user feedback)
+        // and left-align inside the rect (text sits to the LEFT of the
+        // image plate it's drawn over, not centered).
+        if (_textRenderer is not null && _textRenderer.HasFont)
+        {
+            var nameRect = _creator.NameRectInViewport(viewportW, viewportH);
+            string typed = string.IsNullOrEmpty(_creator.HeroName) ? "" : _creator.HeroName;
+            int fontScale = _creator.FontScale + 1;
+            var ink = new Vector4(0.95f, 0.85f, 0.65f, 1f);
+            int padX = Math.Max(2, fontScale * 2);
+            if (typed.Length == 0)
+            {
+                _barRenderer?.DrawRect(viewportW, viewportH,
+                    nameRect.X + padX, nameRect.Y + nameRect.H - 2,
+                    nameRect.W - padX * 2, 1, new Vector4(0.65f, 0.55f, 0.40f, 0.75f));
+            }
+            else
+            {
+                int th = (_textRenderer.Font?.Height ?? 12) * fontScale;
+                int tx = nameRect.X + padX;
+                int ty = nameRect.Y + (nameRect.H - th) / 2;
+                _textRenderer.DrawString(viewportW, viewportH, typed, tx, ty, ink, fontScale);
+            }
+        }
+    }
+
+    /// <summary>Phase 28-CD-FLYOUT — hover overlay for the Character
+    /// Creator's Previous / Next bottom-nav buttons.</summary>
+    private void DrawCsMenuHoverOverlays(int viewportW, int viewportH)
+    {
+        if (_barRenderer is null) return;
+        var actions = new[]
+        {
+            Hud.CharacterSelectMenuPanel.Action.Previous,
+            Hud.CharacterSelectMenuPanel.Action.Next,
+        };
+        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
+        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
+        foreach (var a in actions)
+        {
+            if (!_csMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
                     out int x, out int y, out int w, out int h,
                     out bool hov, out bool pr)) continue;
             if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
@@ -7621,6 +7934,9 @@ void main()
              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp
              || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn);
         if (!inGame && !inMenuChrome) return;
         _input.Mice[0].Cursor.CursorMode = Silk.NET.Input.CursorMode.Hidden;
@@ -10425,7 +10741,14 @@ void main()
             // Phase 21d-2a-viii-b: character creator. Topmost UI when open
             // (gates player spawn). Sits above pause because Esc-while-creator
             // is meaningless; the panel owns the screen until Begin/Cancel.
-            if (_creator.IsOpen && _barRenderer is not null)
+            // Phase 29-CD-CREATOR-FIX — skip this in-region block when the
+            // FrontendScene is already in CharacterSelect (boot path); the
+            // boot chrome render block already drew the full chrome + preview
+            // + per-button overlays, and re-running here would paint an
+            // opaque black backdrop over the pillars and chrome.
+            bool inBootCreatorPath = _bootMode && _frontendScene is not null
+                && _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect;
+            if (_creator.IsOpen && _barRenderer is not null && !inBootCreatorPath)
             {
                 // Phase 21d-2a-viii-FE — render the full DS1 frontend scene
                 // (8 layered ASPs, cd-state PRS pose). Lazy-loaded on first
@@ -10469,20 +10792,11 @@ void main()
                         _heroPreview.Draw(size.X, size.Y);
                     }
 
-                    // Hero name typed-text overlay — the chrome's text-small
-                    // atlas carries the STATIC labels (HERO / NAME / GENDER
-                    // / HEAD / etc); the dynamic state (typed name + axis
-                    // values) still needs a TextRenderer pass. Input rects
-                    // remain in CharacterCreatorPanel using the same 800×600
-                    // gas reference layout the meshes are authored against.
-                    _creator.DrawTextOverlay(_barRenderer, _textRenderer, size.X, size.Y);
-                }
-                else
-                {
-                    // Fallback: meshes / clips failed to load. Draw the
-                    // viii-d wooden-card scaffold so the creator stays
-                    // usable rather than presenting an empty screen.
-                    _creator.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                    // Phase 29-CD-CREATOR — per-button asp render for the
+                    // 12 spinner widgets (gender / head / face / hair /
+                    // shirt / pants × L/R) via art_mapping.gas, plus
+                    // typed-name overlay via TextRenderer.
+                    DrawCharacterCreatorOverlays(size.X, size.Y);
                 }
             }
             // Phase 20c — quest goal marker. Picks the first active quest with

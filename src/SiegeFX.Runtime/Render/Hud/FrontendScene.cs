@@ -83,10 +83,21 @@ public sealed class FrontendScene : IDisposable
         /// over <see cref="SpToMmDur"/>; auto-advances to
         /// <see cref="MainMenu"/> at completion.</summary>
         SinglePlayerToMm,
+        /// <summary>Phase 28-CD-FLYOUT — Single Player → Character
+        /// Creator forward transition. mainmenu_sng2cd / menubars_lm2cd
+        /// / backbutton_b2pn / heromenu_begin run together over
+        /// <see cref="SpToCdDur"/>; auto-advances to
+        /// <see cref="CharacterSelect"/> at completion.</summary>
+        SinglePlayerToCd,
         /// <summary>Start New Game — character template selection.</summary>
         SingleNewGame,
         /// <summary>Character design — the spinner-driven hero creator.</summary>
         CharacterSelect,
+        /// <summary>Phase 28-CD-FLYOUT — Character Creator → Single
+        /// Player reverse transition. mainmenu_cd2sng / menubars_cd2lm
+        /// / backbutton_pn2b over <see cref="CdToSpDur"/>;
+        /// auto-advances to <see cref="SinglePlayer"/> at completion.</summary>
+        CharacterSelectToSp,
         /// <summary>Load Map — final screen before world load.</summary>
         LoadMap,
         /// <summary>Multiplayer.</summary>
@@ -155,6 +166,26 @@ public sealed class FrontendScene : IDisposable
     /// (clamped 0..1). Used only during the reverse transition.</summary>
     public float SpToMmTimeFraction =>
         State == ScreenState.SinglePlayerToMm ? Math.Clamp(_stateTime / SpToMmDur, 0f, 1f) : 0f;
+
+    // Phase 28-CD-FLYOUT — SP → Character Creator and reverse.
+    // mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn / heromenu_begin
+    // run together. Authored clip lengths cluster around 1.0–1.7s in
+    // the main-menu PRS catalog; tunable.
+    const float SpToCdDur = 1.5f;
+    const float CdToSpDur = 1.5f;
+    /// <summary>Phase 28-CD-FLYOUT — fraction along sng2cd / lm2cd /
+    /// b2pn / heromenu_begin clips (clamped 0..1). Held at 1 while in
+    /// <see cref="ScreenState.CharacterSelect"/> so the cd pose persists
+    /// between transitions.</summary>
+    public float SpToCdTimeFraction =>
+        State == ScreenState.SinglePlayerToCd ? Math.Clamp(_stateTime / SpToCdDur, 0f, 1f) :
+        State == ScreenState.CharacterSelect  ? 1f :
+        0f;
+    /// <summary>Phase 28-CD-FLYOUT — fraction along cd2sng / cd2lm /
+    /// pn2b clips (clamped 0..1). Used only during the reverse
+    /// transition.</summary>
+    public float CdToSpTimeFraction =>
+        State == ScreenState.CharacterSelectToSp ? Math.Clamp(_stateTime / CdToSpDur, 0f, 1f) : 0f;
 
     /// <summary>Time spent in the current state. Re-zeroed on every
     /// <see cref="SetState"/>.</summary>
@@ -275,6 +306,12 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.SinglePlayerToMm:
                 if (_stateTime >= SpToMmDur) SetState(ScreenState.MainMenu);
                 break;
+            case ScreenState.SinglePlayerToCd:
+                if (_stateTime >= SpToCdDur) SetState(ScreenState.CharacterSelect);
+                break;
+            case ScreenState.CharacterSelectToSp:
+                if (_stateTime >= CdToSpDur) SetState(ScreenState.SinglePlayer);
+                break;
         }
     }
 
@@ -361,9 +398,21 @@ public sealed class FrontendScene : IDisposable
                 // unwind to the MainMenu pose.
                 DrawSpToMmState(fullW, fullH);
                 return;
+            case ScreenState.SinglePlayerToCd:
+                // Phase 28-CD-FLYOUT — SP → Character Creator. mainmenu_sng2cd
+                // + menubars_lm2cd + backbutton_b2pn + heromenu_begin all run
+                // synchronized over SpToCdDur.
+                DrawSpToCdState(fullW, fullH);
+                return;
             case ScreenState.CharacterSelect:
                 DrawCharacterSelectState(fullW, fullH);
                 break;
+            case ScreenState.CharacterSelectToSp:
+                // Phase 28-CD-FLYOUT — Character Creator → SP reverse
+                // transition (Previous click). Reverse clips unwind
+                // back to the SP submenu pose.
+                DrawCdToSpState(fullW, fullH);
+                return;
             default:
                 // Other states are stubs for now — fall back to character_select
                 // visual so the composer is never blank during development.
@@ -626,66 +675,98 @@ public sealed class FrontendScene : IDisposable
         DrawMesh("logo",       "logo",      clip: "logo-enter",        hold: LogoDropTimeFraction, vw, vh);
     }
 
-    private void DrawCharacterSelectState(int vw, int vh)
-    {
-        // Layer order: backdrop → leftside / rightside (decorative frame) → logo
-        // (top header) → menubars (button bar) → mainmenu (inner panel) →
-        // backbutton (Previous/Next nav) → heromenu (axis spinners).
-        //
-        // For each mesh, a clip + time-fraction defines the cd-state pose.
-        // Where the clip is null, the bind pose is used (good for static
-        // chrome that doesn't morph between screens, e.g. backdrop).
+    /// <summary>Phase 28-CD-FLYOUT — SP → Character Creator forward
+    /// transition. mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn /
+    /// heromenu_begin run together.</summary>
+    private void DrawSpToCdState(int vw, int vh)
+        => DrawCdChrome(vw, vh, SpToCdTimeFraction, fromSp: true);
 
-        DrawMesh("backdrop",   "backdrop",          clip: null,                           hold: 0f, vw, vh);
-        DrawMesh("leftside",   "leftside",          clip: "leftside_default",             hold: 0f, vw, vh);
+    /// <summary>Phase 28-CD-FLYOUT — settled cd pose. Same as the
+    /// end-frame of the sng2cd / lm2cd / b2pn clips so the user reads
+    /// it as the settled CharacterSelect screen.</summary>
+    private void DrawCharacterSelectState(int vw, int vh)
+        => DrawCdChrome(vw, vh, hold: 1f, fromSp: true);
+
+    /// <summary>Phase 28-CD-FLYOUT — Character Creator → SP reverse
+    /// transition (Previous click). Plays cd2sng / cd2lm / pn2b clips
+    /// so the panel + button column unwind back to the SP submenu pose.</summary>
+    private void DrawCdToSpState(int vw, int vh)
+        => DrawCdChrome(vw, vh, CdToSpTimeFraction, fromSp: false);
+
+    /// <summary>Phase 28-CD-FLYOUT — shared chrome assembly for the
+    /// SinglePlayerToCd / CharacterSelect / CharacterSelectToSp states.
+    /// Mirrors <see cref="DrawSpChrome"/>: <paramref name="fromSp"/>
+    /// picks the forward (sng2cd / lm2cd / b2pn) vs. reverse (cd2sng /
+    /// cd2lm / pn2b) clip set; <paramref name="hold"/> is the 0..1
+    /// time-fraction along those clips.</summary>
+    private void DrawCdChrome(int vw, int vh, float hold, bool fromSp)
+    {
+        // Phase 29-CD-CREATOR-FIX5 — split leftside into a shadows-first
+        // pass and a body+doors pass so the translucent shadow strip
+        // (subset 5, b_gui_fe_m_mn_3d_shadows) doesn't paint on top of
+        // the prev/next buttons + heromenu chrome. leftside.asp authors
+        // shadows AS THE LAST SUBSET, so a single all-in draw renders
+        // them last (on top). Doing them in their own pass before the
+        // pillars lets later UI layers (backbutton, heromenu) sit clean.
+        var leftsideShadowMask = new[] { false, false, false, false, false, true  };
+        var leftsidePillarMask = new[] { true,  true,  true,  true,  true,  false };
+        DrawMesh("backdrop",        "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-shadow", "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask);
+        DrawMesh("rightside-shadow","leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask, xMirror: true);
+        DrawMesh("leftside",        "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask);
         // Phase 25-CHROME-FOLD — rightside mirrored from leftside (rightside.asp v2.2 parses stretched).
-        DrawMesh("rightside",  "leftside",          clip: "leftside_default",             hold: 0f, vw, vh, xMirror: true);
-        // logo.asp ships only the "Dungeon Siege" title splash that plays
-        // BEFORE the main menu (logo-enter / logo-exit transitions). It is
-        // not part of the main-menu / character_select chrome — drawing it
-        // here puts the DS title floating in the middle of the menu, which
-        // is wrong. Leaving it out of the cd-state composition.
-        // DrawMesh("logo", ...);
-        // Inner panels: hold the END-frame of the transition INTO cd-state.
-        // `prs compare` against `_default` confirmed the cd-state pose is NOT
-        // the static rest pose — it's the destination of the *2cd transitions:
-        //
-        //   mainmenu_sng2cd end vs mainmenu_default: 7 bones differ. The Bone01
-        //     root drops Y=2.94→2.01 (mesh moves DOWN into screen) and 6
-        //     PanelBASE bones reshuffle their Z slots — Z is a row-visibility
-        //     axis, where the visible row sits near Z=-0.85 and parked rows
-        //     get pushed to Z>0.5. PanelBASE7 returns to visible (-0.85)
-        //     while PanelBASE2 parks off-screen (Z=1.84). That row swap IS
-        //     how the title bar shows CHOOSE HERO vs DIFFICULTY.
-        //
-        //   menubars_lm2cd end vs menubars_default: 17 bones differ — Bone01
-        //     drops Y=1.70→-0.99 (the whole spinner column slides down into
-        //     screen-center) plus MenuBase1..5 take new Z slots.
-        //
-        // Using `_default` was the bug: it captures the rest pose with no
-        // state applied (mesh at top, default row showing). The *2cd end is
-        // what frontend_lights.gas calls the `show_character_selection`
-        // destination, and matches the visual reference screenshot.
-        // Per-state subset mask for mainmenu: skip text-02L/R (subsets 3,4).
-        // mainmenu.asp ships TWO independent text atlases — text-01 (5 rows
-        // for the SP-state-tree title labels: NEW GAME / SINGLE PLAYER /
-        // CHOOSE HERO / LOAD GAME / OPTIONS) and text-02 (5 rows for the
-        // MP-state-tree labels: DIFFICULTY / WAR... etc, mostly blank). PRS
-        // sng2cd hold=1 places PanelBASE3 (text-01 row 3 = CHOOSE HERO) AND
-        // PanelBASE7 (text-02 row 7 = DIFFICULTY) at IDENTICAL slot Y=1.16.
-        // Both atlases overlap; text-02 paints over text-01 and the user
-        // sees DIFFICULTY instead of CHOOSE HERO. The original DS1 engine
-        // disambiguates per state — cd-state uses the SP-tree atlas only.
-        // (Confirmed empirically by `siegefx asp trace-pose` + comparing
-        // text-01l.png / text-02l.png atlas content.)
-        var mainmenuMask = new[] { true, true, true, false, false, true };
-        DrawMesh("mainmenu",   "mainmenu",          clip: "mainmenu_sng2cd",              hold: 1f, vw, vh, mainmenuMask);
-        DrawMesh("menubars",   "menubars",          clip: "menubars_lm2cd",               hold: 1f, vw, vh);
-        // backbutton uses ac/b/e/pn state codes. Character_select shows the
-        // Previous/Next button pair (pn). End of ac2pn = pn pose.
-        DrawMesh("backbutton", "backbutton",        clip: "backbutton_ac2pn",             hold: 1f, vw, vh);
-        // heromenu has no per-screen morph; play its idle default clip looping.
-        DrawMesh("heromenu",   "heromenu",          clip: "heromenu_default",             hold: -1f, vw, vh);
+        DrawMesh("rightside",       "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask, xMirror: true);
+
+        // Phase 29-CD-CREATOR-FIX4 — DO NOT draw mainmenu / menubars in
+        // cd-state. Those are the main-menu / SP-submenu panels — at
+        // sng2cd@1.0 their chrome geometry hangs around in the upper
+        // half of the viewport and reads as "the normal menu sitting
+        // on top of the creator." The character_select screen's actual
+        // left-panel chrome ships in heromenu.asp itself: subset 0 is
+        // the carved spinner-column plate, subsets 1-11+13 are the 12
+        // arrow buttons (drawn per-widget by DrawHeromenuButton), 12 is
+        // the column shadow, and 14 is the "GENDER/HEAD/FACE/HAIR/
+        // SHIRT/PANTS" label strip. Rendering heromenu_begin@1.0 below
+        // gives us all of that in one mesh. The right half is just the
+        // backdrop's stone wall + the gear-pillar pair — clear viewport
+        // for HeroPreviewRenderer to paint the 3D char into the
+        // gas-authored listener rect (408,73,649,494 in 800x600).
+        // backbutton uses ac/b/e/pn state codes. Character_select shows
+        // the Previous/Next button pair (pn). End of b2pn = pn pose
+        // (same destination as ac2pn — which the pre-Phase-28 code used
+        // — but b2pn starts from BACK pose so it picks up smoothly from
+        // the SP submenu's e2b@1 end-pose without a visual pop).
+        var backClip = fromSp ? "backbutton_b2pn" : "backbutton_pn2b";
+        // Phase 29-CD-CREATOR-FIX6 — drop backbutton subset 10 (shadows
+        // atlas). At pn pose its quad lands across the hero-name plate
+        // and the previous/next pair, painting a translucent grey haze
+        // over both. backbutton.asp authored that shadow for an earlier
+        // pose where it sat beneath the chrome; in pn pose it's just in
+        // the way. The pillar-shadow tier already covers the bottom
+        // chrome's drop shadow, so we lose nothing visually here.
+        var backbuttonMask = new bool[11];
+        for (int i = 0; i < 10; i++) backbuttonMask[i] = true;
+        DrawMesh("backbutton", "backbutton",        clip: backClip, hold: hold, vw, vh, backbuttonMask);
+
+        // heromenu — fly in during forward transition, settled at
+        // begin@1.0 (cd-state pose) when held, fly out during reverse.
+        // Phase 29-CD-CREATOR-FIX: settled state uses heromenu_begin@1.0
+        // not heromenu_default — heromenu_default is bind-pose where
+        // the chrome plate (subset 0) and label strip (subset 14)
+        // project off the top of the viewport. begin@1.0 drops the
+        // column into the visible spinner area where it belongs.
+        if (State == ScreenState.CharacterSelect)
+        {
+            DrawMesh("heromenu", "heromenu", clip: "heromenu_begin", hold: 1f, vw, vh);
+        }
+        else if (fromSp)
+        {
+            DrawMesh("heromenu", "heromenu", clip: "heromenu_begin", hold: hold, vw, vh);
+        }
+        else
+        {
+            DrawMesh("heromenu", "heromenu", clip: "heromenu_begin", hold: 1f - hold, vw, vh);
+        }
     }
 
     /// <param name="hold">Time-fraction to evaluate the clip at: 0=start of clip,
@@ -1227,6 +1308,150 @@ public sealed class FrontendScene : IDisposable
                                TextRenderer? text, int fontScale)
     {
         DrawSpBackButton(viewportW, viewportH, x, y, w, h, hovered, pressed);
+    }
+
+    /// <summary>Phase 28-CD-FLYOUT — Previous nav button on the
+    /// CharacterSelect screen. Per art_mapping.gas[button_previous]:
+    /// subsets 2 + 6 of backbutton.asp, textures exitback / text-small.
+    /// Subset 2 is the PREV-arrow chrome region of exitback*.raw;
+    /// subset 6 is the PREV row of text-small atlas. No PRS clip
+    /// needed — the bind pose has the Previous-button bones at the
+    /// visible Z slot when backbutton is in pn (Previous/Next) state,
+    /// which is the cd settled pose end-frame of b2pn.</summary>
+    public void DrawPreviousButton(int viewportW, int viewportH,
+                                   int x, int y, int w, int h,
+                                   bool hovered, bool pressed)
+    {
+        var renderer = GetOrLoadMesh("backbutton");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string backTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
+        string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
+
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
+        if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(backTex); mask[2] = true; }
+        if (6 < arr.Length) { arr[6] = GetOrLoadTextureBase(textTex); mask[6] = true; }
+
+        const float visualWMul = 5.0f;
+        const float visualHMul = 2.0f;
+        int vw = (int)(w * visualWMul);
+        int vh = (int)(h * visualHMul);
+        int vx = x + (w - vw) / 2;
+        int vy = y + (h - vh) / 2;
+        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
+        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+
+        // Apply backbutton_b2pn at hold=1 so subset 6's PrevBase bone
+        // is at the visible Z slot — same bone-Z-swap mechanism the
+        // backbutton_e2b clip uses for EXIT→BACK on subset 8.
+        var anim = GetOrLoadClip("backbutton_b2pn");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Phase 28-CD-FLYOUT — Next nav button on the
+    /// CharacterSelect screen. Per art_mapping.gas[button_next]:
+    /// subsets 1 + 7 of backbutton.asp, textures exitback / text-small.
+    /// Subset 1 is the NEXT-arrow chrome; subset 7 is the NEXT row of
+    /// text-small atlas. Same b2pn clip as Previous so both arrow
+    /// bones (PrevBase + NextBase) are at the visible Z slot.</summary>
+    public void DrawNextButton(int viewportW, int viewportH,
+                               int x, int y, int w, int h,
+                               bool hovered, bool pressed)
+    {
+        var renderer = GetOrLoadMesh("backbutton");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string backTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
+        string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
+
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
+        if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(backTex); mask[1] = true; }
+        if (7 < arr.Length) { arr[7] = GetOrLoadTextureBase(textTex); mask[7] = true; }
+
+        // Phase 29-CD-CREATOR-FIX2 — drop visual padding entirely so
+        // the visible button matches the gas-authored hit-test rect
+        // 1:1. EXIT's 5×/2× padding is for its arrow flank decoration;
+        // Previous/Next's authored 101×20 rect is the full visible
+        // size, no flanking decoration to fit.
+        const float visualWMul = 1.0f;
+        const float visualHMul = 1.0f;
+        int vw = (int)(w * visualWMul);
+        int vh = (int)(h * visualHMul);
+        int vx = x + (w - vw) / 2;
+        int vy = y + (h - vh) / 2;
+        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
+        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+
+        var anim = GetOrLoadClip("backbutton_b2pn");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Phase 29-CD-CREATOR — render one heromenu spinner-arrow
+    /// widget using the art_mapping.gas recipe. Receipts (from
+    /// <c>siegefx asp subsets heromenu.asp</c> + art_mapping):
+    /// all 12 spinners share atlas <c>b_gui_fe_m_mn_3d_heromenu.raw</c>
+    /// with <c>-up</c>/<c>-down</c> hover/press variants. The asp is
+    /// single-bone (Bone01 only) so no PRS clip is needed — bind pose
+    /// is the settled cd-state pose per <c>asp trace-pose ... 1.0</c>
+    /// (bind == skin everywhere). Each spinner is its own subset; the
+    /// <c>-mapN</c> material-slot suffix lines up 1:1 with the
+    /// art_mapping slot index.</summary>
+    public void DrawHeromenuButton(int viewportW, int viewportH,
+                                   int x, int y, int w, int h,
+                                   bool hovered, bool pressed,
+                                   string widgetName)
+    {
+        int subset = widgetName switch
+        {
+            "button_shirt_left"   => 1,
+            "button_pants_left"   => 2,
+            "button_face_left"    => 3,
+            "button_hair_left"    => 4,
+            "button_gender_left"  => 5,
+            "button_shirt_right"  => 6,
+            "button_pants_right"  => 7,
+            "button_face_right"   => 8,
+            "button_hair_right"   => 9,
+            "button_gender_right" => 10,
+            "button_head_right"   => 11,
+            "button_head_left"    => 13,
+            _ => -1,
+        };
+        if (subset < 0) return;
+
+        var renderer = GetOrLoadMesh("heromenu");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string heromenuTex = pressed ? "heromenu-down" : hovered ? "heromenu-up" : "heromenu";
+
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        if (subset < arr.Length) { arr[subset] = GetOrLoadTextureBase(heromenuTex); mask[subset] = true; }
+
+        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
+        var model = BuildSubsetRectModel(x, y, w, h, subMin, subMax);
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: null, timeSec: 0f, tint: null, subsetMask: mask);
     }
 
     /// <summary>Phase 26-ARTMAP — walk the active subsets' triangles to find
