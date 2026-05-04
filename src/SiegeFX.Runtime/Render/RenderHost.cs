@@ -2654,7 +2654,17 @@ void main()
             var exitUp  = LoadBootRaw("b_gui_fe_m_mn_3d_exitback-up");
             var exitHov = LoadBootRaw("b_gui_fe_m_mn_3d_exitback");      // no -hov suffix in DS1; idle reused
             var exitDn  = LoadBootRaw("b_gui_fe_m_mn_3d_exitback-down");
-            _mainMenu.SetButtonTextures(up, hov, down, exitUp, exitHov, exitDn);
+            // Phase 25-CHROME-FOLD12 — text-small trio carries the EXIT
+            // (and BACK / NEXT / PREVIOUS / NAME / HERO / etc.) labels
+            // baked in. Three states for idle / hover / pressed; user
+            // confirmed via PNG inspection that "EXIT" lives in the
+            // visual bottom-left of the atlas (= upper-right after the
+            // RAW bottom-up storage flip).
+            var smIdle  = LoadBootRaw("b_gui_fe_m_mn_3d_text-small");
+            var smUp    = LoadBootRaw("b_gui_fe_m_mn_3d_text-small-up");
+            var smDown  = LoadBootRaw("b_gui_fe_m_mn_3d_text-small-down");
+            _mainMenu.SetButtonTextures(up, hov, down, exitUp, exitHov, exitDn,
+                                        smIdle, smUp, smDown);
         }
     }
 
@@ -5696,10 +5706,26 @@ void main()
             _frontendScene.Draw(viewportW, viewportH);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
-                // MainMenuPanel only renders Exit (textured wood quad);
-                // the 5 menubars buttons render through menubars.asp's
-                // chrome subsets, and Credits is invisible-by-design.
+                // MainMenuPanel owns hit-testing + the click→action pipeline
+                // for all 7 buttons; it renders nothing visual now (Phase 26-
+                // ARTMAP). The 5 menubars buttons render through menubars.asp
+                // chrome inside FrontendScene.Draw above; the EXIT button
+                // renders through backbutton.asp + art_mapping.gas overrides
+                // immediately below.
                 _mainMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, viewportW, viewportH);
+                // Phase 26-ARTMAP — render the EXIT button via the proper
+                // DS1 asset chain. MainMenuPanel exposes the screen rect +
+                // hover/press state; FrontendScene runs the asp draw with
+                // art_mapping.gas's [button_exit] texture-swap recipe.
+                if (_mainMenu.TryGetButtonStateAndRect(
+                        Hud.MainMenuPanel.Action.Exit,
+                        viewportW, viewportH,
+                        out int ex, out int ey, out int ew, out int eh,
+                        out bool eHover, out bool ePress))
+                {
+                    _frontendScene.DrawExitButton(viewportW, viewportH,
+                        ex, ey, ew, eh, eHover, ePress);
+                }
                 if (_aboutOpen)
                     DrawAboutOverlay(viewportW, viewportH);
             }

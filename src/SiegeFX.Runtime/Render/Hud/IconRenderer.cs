@@ -72,6 +72,17 @@ void main() {
     /// <see cref="TextRenderer.BeginPass"/>.</summary>
     public void DrawIcon(int viewportW, int viewportH, GlTexture tex,
                          int x, int y, int w, int h, Vector4 tint)
+        => DrawIcon(viewportW, viewportH, tex, x, y, w, h, tint, 0f, 0f, 1f, 1f);
+
+    /// <summary>Phase 25-CHROME-FOLD10 — UV-cropped overload for blitting
+    /// a SUB-REGION of an atlas texture. Useful for DS1's multi-element
+    /// frontend atlases where a "button" widget actually means "crop to
+    /// these UV coords of this 256x256 atlas." UV inputs are in VISUAL
+    /// space (top-left = 0,0; bottom-right = 1,1) — the V flip for
+    /// bottom-up RAW textures is handled internally.</summary>
+    public void DrawIcon(int viewportW, int viewportH, GlTexture tex,
+                         int x, int y, int w, int h, Vector4 tint,
+                         float uMin, float vMin, float uMax, float vMax)
     {
         if (w <= 0 || h <= 0 || tint.W <= 0f) return;
 
@@ -79,23 +90,27 @@ void main() {
         float py0 = y;
         float px1 = x + w;
         float py1 = y + h;
-        // V flipped: top of quad samples v=1 (visual top of bottom-up image).
-        const float u0 = 0f, u1 = 1f, v0 = 1f, v1 = 0f;
+        // V flip: visual top (vMin) maps to OpenGL V=1-vMin (top of stored
+        // bottom-up image); visual bottom (vMax) maps to V=1-vMax. So at
+        // the quad's top vertex we sample V=1-vMin, at the bottom V=1-vMax.
+        float u0 = uMin, u1 = uMax;
+        float v0 = 1f - vMin;
+        float v1 = 1f - vMax;
 
         int wi = 0;
-        void V(float px, float py, float uu, float vv)
+        void EmitVert(float px, float py, float uu, float vv)
         {
             _verts[wi++] = px;
             _verts[wi++] = py;
             _verts[wi++] = uu;
             _verts[wi++] = vv;
         }
-        V(px0, py0, u0, v0);
-        V(px0, py1, u0, v1);
-        V(px1, py1, u1, v1);
-        V(px0, py0, u0, v0);
-        V(px1, py1, u1, v1);
-        V(px1, py0, u1, v0);
+        EmitVert(px0, py0, u0, v0);
+        EmitVert(px0, py1, u0, v1);
+        EmitVert(px1, py1, u1, v1);
+        EmitVert(px0, py0, u0, v0);
+        EmitVert(px1, py1, u1, v1);
+        EmitVert(px1, py0, u1, v0);
 
         _shader.Use();
         _shader.SetVec4("uTint", tint.X, tint.Y, tint.Z, tint.W);

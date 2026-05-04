@@ -730,6 +730,152 @@ public sealed class FrontendScene : IDisposable
         return arr;
     }
 
+    /// <summary>Phase 26-ARTMAP — render the EXIT button using DS1's actual
+    /// asset chain: render <c>m_gui_fe_m_mn_3d_backbutton.asp</c> (the
+    /// mesh family that owns the EXIT button visual) into the supplied
+    /// 2D screen rect with per-subset textures bound per art_mapping.gas's
+    /// [button_exit] swap recipe for the current mouse state. The mesh's
+    /// vertex UVs already point at the right atlas regions; we just
+    /// supply the right .raw to each subset and the engine renders the
+    /// authored result. See <c>reference_ds1_art_mapping.md</c> for the
+    /// full schema.</summary>
+    public void DrawExitButton(int viewportW, int viewportH,
+                               int x, int y, int w, int h,
+                               bool hovered, bool pressed)
+    {
+        var renderer = GetOrLoadMesh("backbutton");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        // art_mapping.gas[button_exit] override recipe (hardcoded for
+        // now; a generic art_mapping.gas parser is the broader Phase 26
+        // scope). Keys are 1-based asp subset indices matching the
+        // -mapN suffix; values are the texture base name (engine
+        // prepends b_gui_fe_m_mn_3d_ and appends .raw).
+        //
+        //   [mouseover]  { 3 = exitback-up;   8 = text-small-up;   }
+        //   [mousedown]  { 3 = exitback-down; 8 = text-small-down; }
+        //   [mouseout]   { 3 = exitback;      8 = text-small;      }
+        string exitTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
+        string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
+
+        // Phase 26-ARTMAP-FIX — keys in art_mapping.gas are DIRECT
+        // 0-based subset indices, NOT -mapN suffix matches. Cross-
+        // verified across multiple widget entries:
+        //   button_next:     1 + 7   → subset[1] (arrow) + subset[7] (NEXT text)
+        //   button_previous: 2 + 6   → subset[2] + subset[6] (PREV text)
+        //   button_exit:     3 + 8   → subset[3] (EXIT deco) + subset[8] (EXIT text)
+        //   button_continue: 4+12+13 → subset[4] (4th menubar row) + subset[12]+[13] (text)
+        // Subset[3]'s UV in backbutton.asp samples the EXIT-decoration
+        // region of exitback*.raw; subset[8]'s UV samples the EXIT/BACK
+        // row of text-small*.raw (visual bottom — V[0.795, 1.002]).
+        // Default fill the texture array so the rest of the asp's slots
+        // have something bound (won't render due to mask=false anyway).
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+        // Activate subsets per art_mapping.gas + decorative chrome:
+        // [0] = "exitback" base (EXIT button chrome — the wood-button shape)
+        // [1] = NEXT arrow geometry (UV sample = horizontal arrow shape;
+        //       visually behind the button as a decorative right-pointer)
+        // [2] = PREVIOUS arrow geometry (mirror of [1] — left-pointer;
+        //       same UV sample, different vertex positions in the asp)
+        // [3] = EXIT-specific decoration (per art_mapping key 3)
+        // [8] = EXIT text from text-small atlas (per art_mapping key 8)
+        // SKIP [5] — that's the HERO NAME plate / name_edit_box backdrop,
+        //         confirmed by the user's retest after we enabled it.
+        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(exitTex); mask[0] = true; }
+        if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(exitTex); mask[1] = true; }
+        if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(exitTex); mask[2] = true; }
+        if (3 < arr.Length) { arr[3] = GetOrLoadTextureBase(exitTex); mask[3] = true; }
+        if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
+
+        // Phase 26-ARTMAP — compute tight bounds from active subsets and
+        // map them to a VISUAL rect that's wider than the hit-test rect.
+        // The decorative arrow subsets [1] + [2] make the geometry's
+        // natural aspect ratio wide; squeezing them into the user-tuned
+        // 79×46 hit-test rect scrunches everything horizontally.
+        // 3.0× width / 1.6× height, centered on the rect midpoint, gives
+        // the arrows room to breathe while keeping the EXIT button
+        // visually anchored at the same spot the user tuned.
+        const float visualWMul = 4.0f;
+        const float visualHMul = 2.2f;
+        int vw = (int)(w * visualWMul);
+        int vh = (int)(h * visualHMul);
+        int vx = x + (w - vw) / 2;
+        int vy = y + (h - vh) / 2;
+        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
+        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: null, timeSec: 0f, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Phase 26-ARTMAP — walk the active subsets' triangles to find
+    /// the 2D (XY) bounding box of just those subsets' vertices. Used to
+    /// place a single widget's geometry inside a shared mesh family
+    /// without the other widgets' bounds dragging the placement.</summary>
+    private static (System.Numerics.Vector2 min, System.Numerics.Vector2 max)
+        ComputeSubsetBounds2D(SiegeFX.Core.Assets.AspMesh asp, bool[] mask)
+    {
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+        var corners = asp.Corners;
+        var triIdx = asp.TriangleIndices;
+        var positions = asp.Positions;
+        for (int s = 0; s < asp.Subsets.Length; s++)
+        {
+            if (s >= mask.Length || !mask[s]) continue;
+            var sub = asp.Subsets[s];
+            int triEnd = sub.FirstTriangle + sub.TriangleCount;
+            for (int t = sub.FirstTriangle; t < triEnd; t++)
+            {
+                for (int k = 0; k < 3; k++)
+                {
+                    int cornerIdx = triIdx[t * 3 + k];
+                    int vIdx = corners[cornerIdx].VertexIndex;
+                    var p = positions[vIdx];
+                    if (p.X < minX) minX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y > maxY) maxY = p.Y;
+                }
+            }
+        }
+        if (float.IsInfinity(minX))
+            return (System.Numerics.Vector2.Zero, System.Numerics.Vector2.One);
+        return (new System.Numerics.Vector2(minX, minY),
+                new System.Numerics.Vector2(maxX, maxY));
+    }
+
+    /// <summary>Phase 26-ARTMAP — variant of UiMeshRenderer.BuildScreenRectModel
+    /// that takes explicit subset-bounds instead of the asp's full extents.
+    /// Y is negated so mesh-up renders as screen-up.</summary>
+    private static Matrix4x4 BuildSubsetRectModel(int targetX, int targetY,
+        int targetW, int targetH, System.Numerics.Vector2 boundsMin, System.Numerics.Vector2 boundsMax)
+    {
+        float meshW = MathF.Max(1e-4f, boundsMax.X - boundsMin.X);
+        float meshH = MathF.Max(1e-4f, boundsMax.Y - boundsMin.Y);
+        float scaleX = targetW / meshW;
+        float scaleY = targetH / meshH;
+        float meshCenterX = 0.5f * (boundsMin.X + boundsMax.X);
+        float meshCenterY = 0.5f * (boundsMin.Y + boundsMax.Y);
+        float targetCenterX = targetX + targetW * 0.5f;
+        float targetCenterY = targetY + targetH * 0.5f;
+        var t1 = Matrix4x4.CreateTranslation(-meshCenterX, -meshCenterY, 0f);
+        var s  = Matrix4x4.CreateScale(scaleX, -scaleY, 1f);
+        var t2 = Matrix4x4.CreateTranslation(targetCenterX, targetCenterY, 0f);
+        return t1 * s * t2;
+    }
+
+    /// <summary>Phase 26-ARTMAP helper — like <see cref="GetOrLoadTexture"/>
+    /// but takes a bare base name (no <c>b_gui_fe_m_mn_3d_</c> prefix,
+    /// no <c>-mapN</c> suffix) and resolves to the actual .raw file. The
+    /// engine's hardcoded prefix lives at EXE offset 0x378e1c per the
+    /// RE notes; we replicate it here.</summary>
+    private GlTexture? GetOrLoadTextureBase(string baseName)
+        => GetOrLoadTexture("b_gui_fe_m_mn_3d_" + baseName);
+
     private GlTexture? GetOrLoadTexture(string textureName)
     {
         // Strip the -mapN atlas-cell aliases (heromenu-map7 → heromenu) so all

@@ -103,7 +103,7 @@ internal sealed class MainMenuPanel
         (280, 280, 517 - 280, 326 - 280, "OPTIONS",       Action.Options),
         (280, 355, 517 - 280, 401 - 355, "CONTINUE",      Action.Continue),
         (280, 430, 517 - 280, 476 - 430, "ABOUT",         Action.About),
-        (374, 499, 79, 46,               "EXIT",          Action.Exit),
+        (359, 499, 79, 46,               "EXIT",          Action.Exit),
     };
     // Bottom-right credits glyph anchor; sized at draw time.
     const int CreditsAuthoredW = 16, CreditsAuthoredH = 16;
@@ -136,13 +136,27 @@ internal sealed class MainMenuPanel
     // non-null Draw renders textured quads instead of the placeholder
     // colored rectangles. Stays null when textures fail to resolve so
     // the menu degrades gracefully on a stripped install.
+    // Phase 25-CHROME-FOLD12 — also takes the text-small atlas trio
+    // (text-small / text-small-up / text-small-down) which carries the
+    // EXIT label baked in alongside other state-tree button labels
+    // (NEXT / PREVIOUS / NAME / HERO / BACK / etc.). Per user inspection
+    // of the bulk-decoded PNGs: EXIT lives in the bottom-LEFT region of
+    // the atlas's visual layout (the user's viewer description was top-
+    // right, which corresponds to bottom-left in the V-flipped renderer
+    // convention — RAW textures store bottom-up, so visual-bottom of the
+    // PNG maps to stored-top in the byte order).
     GlTexture? _texUp, _texHov, _texDown;
     GlTexture? _texExitUp, _texExitHov, _texExitDown;
+    GlTexture? _texSmall, _texSmallUp, _texSmallDown;
     public void SetButtonTextures(GlTexture? up, GlTexture? hov, GlTexture? down,
-                                  GlTexture? exitUp, GlTexture? exitHov, GlTexture? exitDown)
+                                  GlTexture? exitUp, GlTexture? exitHov, GlTexture? exitDown,
+                                  GlTexture? textSmall = null,
+                                  GlTexture? textSmallUp = null,
+                                  GlTexture? textSmallDown = null)
     {
         _texUp = up; _texHov = hov; _texDown = down;
         _texExitUp = exitUp; _texExitHov = exitHov; _texExitDown = exitDown;
+        _texSmall = textSmall; _texSmallUp = textSmallUp; _texSmallDown = textSmallDown;
     }
 
     void Layout(int viewportW, int viewportH)
@@ -208,6 +222,29 @@ internal sealed class MainMenuPanel
     /// off the button. Called per-frame from FlushMainMenu.</summary>
     public void ClearHover() => _hovered = Action.None;
 
+    /// <summary>Phase 26-ARTMAP — expose per-button state + screen rect so
+    /// the host can render via the proper asp + art_mapping.gas pipeline
+    /// (each widget kind has its own mesh family and texture-swap recipe).
+    /// Returns <c>false</c> if the action isn't one of the 7 main menu
+    /// buttons or if Layout hasn't run yet for this viewport.</summary>
+    public bool TryGetButtonStateAndRect(Action act, int viewportW, int viewportH,
+                                         out int x, out int y, out int w, out int h,
+                                         out bool hovered, out bool pressed)
+    {
+        Layout(viewportW, viewportH);
+        for (int i = 0; i < Buttons.Length; i++)
+        {
+            if (Buttons[i].OnClick != act) continue;
+            x = _rects[i].X; y = _rects[i].Y; w = _rects[i].W; h = _rects[i].H;
+            hovered = _hovered == act;
+            pressed = _pressed == act;
+            return true;
+        }
+        x = y = w = h = 0;
+        hovered = pressed = false;
+        return false;
+    }
+
     Action HitTest(int px, int py)
     {
         for (int i = 0; i < Buttons.Length; i++)
@@ -234,36 +271,12 @@ internal sealed class MainMenuPanel
 
         var tint = new Vector4(1f, 1f, 1f, 1f);
 
-        // Exit button only — the 5 menubars buttons render through the
-        // chrome, not here.
-        for (int i = 0; i < Buttons.Length; i++)
-        {
-            var act = Buttons[i].OnClick;
-            if (act != Action.Exit) continue;
-            var r = _rects[i];
-            // Phase 25-CHROME-FOLD8 — exitback*.raw turned out to be a
-            // multi-element atlas (HERO NAME plate + gear + scroll bar
-            // + arrow shape) shared with the character creator chrome,
-            // NOT a per-state EXIT button. Hovering exposed the HERO
-            // NAME text + an empty input plate above the button. Switch
-            // to the menubars wood-button textures (the same trio the
-            // 5 main-menu buttons render through their asp chrome) so
-            // the EXIT visual reads as a real button instead of leaking
-            // creator-chrome elements.
-            var stateTex = (_pressed == act && _hovered == act) ? _texDown
-                         : _hovered == act ? _texHov
-                         : _texUp;
-            if (stateTex is not null && icons is not null)
-                icons.DrawIcon(viewportW, viewportH, stateTex, r.X, r.Y, r.W, r.H, tint);
-            // Font-rendered EXIT label on top — button_wood_*.raw are
-            // generic chrome with no baked-in text, so we add it.
-            var ink = new Vector4(0.95f, 0.85f, 0.65f, 1f);
-            int lW = text.MeasureWidth("EXIT", _fontScale);
-            text.DrawString(viewportW, viewportH, "EXIT",
-                r.X + (r.W - lW) / 2,
-                r.Y + (r.H - 12 * _fontScale) / 2,
-                ink, _fontScale);
-        }
+        // Phase 26-ARTMAP — the EXIT button visual is now rendered by
+        // the host through FrontendScene.DrawExitButton() using the
+        // proper backbutton.asp mesh + art_mapping.gas texture-swap
+        // recipe (per reference_ds1_art_mapping.md). MainMenuPanel
+        // owns hit-testing only for that button; the host queries the
+        // rect + hover/press state via TryGetButtonStateAndRect.
         // Credits hit zone — invisible by design (DS1's anchored 16×16
         // glyph at the bottom-right is a discoverable corner click, not
         // a primary nav). No fill or label.

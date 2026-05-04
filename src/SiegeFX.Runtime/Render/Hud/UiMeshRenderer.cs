@@ -155,12 +155,13 @@ void main() {
     /// as magenta debug fill so unbound subsets are visually loud.</param>
     public void DrawAt(int viewportW, int viewportH,
         int targetX, int targetY, int targetW, int targetH,
-        GlTexture?[] textures, PrsAnimation? anim = null, float timeSec = 0f, Vector4? tint = null)
+        GlTexture?[] textures, PrsAnimation? anim = null, float timeSec = 0f, Vector4? tint = null,
+        bool[]? subsetMask = null)
     {
         if (targetW <= 0 || targetH <= 0) return;
         DrawWithModel(viewportW, viewportH,
             BuildScreenRectModel(targetX, targetY, targetW, targetH),
-            textures, anim, timeSec, tint);
+            textures, anim, timeSec, tint, subsetMask);
     }
 
     /// <summary>Lower-level draw with a caller-supplied model matrix. Useful when
