@@ -437,13 +437,15 @@ public sealed class FrontendScene : IDisposable
                 DrawCdToSpState(fullW, fullH);
                 return;
             case ScreenState.CharacterSelectToDifficulty:
+                DrawDifficultyChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / CdToDiffDur, 0f, 1f), fromCd: true);
+                return;
             case ScreenState.Difficulty:
+                DrawDifficultyChrome(fullW, fullH, hold: 1f, fromCd: true);
+                return;
             case ScreenState.DifficultyToCharacterSelect:
-                // SC-DIFF Phase A — placeholder. Renders cd-state chrome
-                // for now so the screen isn't black; Phase B replaces
-                // this with proper Difficulty chrome (text-02 title +
-                // 3 menubars buttons via lm2cd pose).
-                DrawCharacterSelectState(fullW, fullH);
+                DrawDifficultyChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / DiffToCdDur, 0f, 1f), fromCd: false);
                 return;
             default:
                 // Other states are stubs for now — fall back to character_select
@@ -817,6 +819,61 @@ public sealed class FrontendScene : IDisposable
         {
             DrawMesh("heromenu", "heromenu", clip: "heromenu_begin", hold: 1f - hold, vw, vh);
         }
+    }
+
+    /// <summary>SC-DIFF Phase B — Difficulty screen chrome. Mirrors
+    /// DrawCdChrome but with text-02 (DIFFICULTY) title instead of
+    /// text-01 (CHOOSE HERO), 3-button menubars (EASY/MEDIUM/HARD) at
+    /// lm2cd@1.0 pose instead of heromenu spinners, and a single BACK
+    /// button instead of the prev/next pair. Backdrop + pillars +
+    /// rightside slide stay open (3D char preview still showing through
+    /// at this state). <paramref name="fromCd"/> picks forward (cd→diff)
+    /// vs reverse (diff→cd) clip set.</summary>
+    private void DrawDifficultyChrome(int vw, int vh, float hold, bool fromCd)
+    {
+        var leftsideShadowMask = new[] { false, false, false, false, false, true  };
+        var leftsidePillarMask = new[] { true,  true,  true,  true,  true,  false };
+        DrawMesh("backdrop",        "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-shadow", "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask);
+        // Right pillar held open at the cd-state end pose so the 3D
+        // char + stone backdrop stay visible behind the difficulty
+        // buttons (DS1's actual difficulty screen does the same).
+        DrawMesh("rightside-shadow","rightside", clip: "rightside_open",   hold: 1f, vw, vh, leftsideShadowMask);
+        DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f, vw, vh, leftsidePillarMask);
+        DrawMesh("rightside",       "rightside", clip: "rightside_open",   hold: 1f, vw, vh, leftsidePillarMask);
+
+        // Title chrome: same mainmenu.asp at sng2cd@1.0 (the chrome
+        // settles at the cd pose and STAYS there for difficulty —
+        // only the visible Z slot changes the title row from text-01
+        // to text-02 implicitly via the bone-Z swap that's already
+        // in the clip end-pose). Mask {0, 3, 4} = chrome plate +
+        // text-02L "DIFFI" + text-02R "CULTY" instead of text-01
+        // CHOOSE / HERO. text-01 (subsets 1, 2) and shadows masked off.
+        var mainmenuMask = new[] { true, false, false, true, true, false };
+        DrawMesh("mainmenu", "mainmenu", clip: "mainmenu_sng2cd", hold: 1f, vw, vh, mainmenuMask);
+
+        // Menubars chrome at lm2cd@1.0 pose. art_mapping.gas:
+        //   button_easy   = subsets 3 + 10 + 11 (chrome + text labels)
+        //   button_medium = subsets 4 + 12 + 13
+        //   button_hard   = subsets 5 + 14 + 15
+        // Mask all three buttons' chrome + text subsets.
+        var menubarsMask = new bool[17];
+        // Chrome subsets (button bodies)
+        menubarsMask[3] = true; menubarsMask[4] = true; menubarsMask[5] = true;
+        // Text subsets (DS1 labels for EASY/MEDIUM/HARD via text-menubars1+3)
+        menubarsMask[10] = true; menubarsMask[11] = true;
+        menubarsMask[12] = true; menubarsMask[13] = true;
+        menubarsMask[14] = true; menubarsMask[15] = true;
+        DrawMesh("menubars", "menubars", clip: "menubars_lm2cd", hold: 1f, vw, vh, menubarsMask);
+
+        // BACK button only (no Next pair). Use backbutton_pn2b on the
+        // forward path so the prev/next from cd state unwinds to a
+        // single BACK at the difficulty pose. b2pn on reverse goes
+        // back to the prev/next pair.
+        var backClip = fromCd ? "backbutton_pn2b" : "backbutton_b2pn";
+        var backbuttonMask = new bool[11];
+        for (int i = 0; i < 10; i++) backbuttonMask[i] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backbuttonMask);
     }
 
     /// <param name="hold">Time-fraction to evaluate the clip at: 0=start of clip,
