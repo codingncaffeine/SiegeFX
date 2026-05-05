@@ -5753,13 +5753,7 @@ void main()
             case DifficultyMenuPanel.Action.Easy:
             case DifficultyMenuPanel.Action.Medium:
             case DifficultyMenuPanel.Action.Hard:
-                // SC-DIFF Phase A — store the chosen difficulty. Region
-                // launch + spawn-at-bridge + Norick NIS playback are
-                // SC-DIFF-LAUNCH and SC-NIS-CORE respectively (future
-                // splinters). _creator.Confirmed flag is set here so
-                // when SC-DIFF-LAUNCH wires the menu→region path, the
-                // existing TrySpawnPlayerWithPicker plumbing picks up
-                // the saved hero variant alongside this difficulty.
+                // SC-DIFF Phase A — store the chosen difficulty.
                 _difficulty = act switch
                 {
                     DifficultyMenuPanel.Action.Easy   => GameDifficulty.Easy,
@@ -5768,9 +5762,105 @@ void main()
                     _ => GameDifficulty.Normal,
                 };
                 _creator.Confirmed = true;
-                Console.WriteLine($"  diff menu: '{_difficulty}' selected — splinter SC-DIFF-LAUNCH for region launch + SC-NIS-CORE for Norick bridge NIS");
                 _diffMenu.ClearHover();
+                // SC-DIFF-LAUNCH (interim) — relaunch the runtime with
+                // --play-region args pointing at fh_r1. Crude but
+                // functional: process exits, splash flashes briefly,
+                // ends up in fh_r1 with the hero (picker + difficulty
+                // forwarded via env vars). The proper menu→region
+                // refactor is the SC-DIFF-LAUNCH-NATIVE splinter.
+                if (_bootMode && _ds1ResourcesDir is not null)
+                {
+                    LaunchRegionViaRelaunch(_ds1ResourcesDir);
+                }
                 break;
+        }
+    }
+
+    /// <summary>SC-DIFF-LAUNCH (interim) — relaunch SiegeFX.Runtime
+    /// with --play-region args so the menu flow ends up in fh_r1.
+    /// Crude but functional until the proper menu→region refactor
+    /// (SC-DIFF-LAUNCH-NATIVE splinter) lands. Hero picker + chosen
+    /// difficulty are forwarded via env vars (HeroVariantPicker.FromEnv
+    /// already reads SIEGEFX_HERO_*; SIEGEFX_DIFFICULTY is new but
+    /// safely ignored by older code paths).</summary>
+    private void LaunchRegionViaRelaunch(string ds1ResourcesDir)
+    {
+        try
+        {
+            string installRoot = System.IO.Path.GetDirectoryName(ds1ResourcesDir.TrimEnd('\\', '/'))
+                                 ?? ds1ResourcesDir;
+            string mapTank   = System.IO.Path.Combine(installRoot, "Maps", "World.dsmap");
+            string terrain   = System.IO.Path.Combine(ds1ResourcesDir, "Terrain.dsres");
+            string logic     = System.IO.Path.Combine(ds1ResourcesDir, "Logic.dsres");
+            string objects   = System.IO.Path.Combine(ds1ResourcesDir, "Objects.dsres");
+            const string regionPath = "/world/maps/map_world/regions/fh_r1";
+
+            // Resolve the right command. Two cases:
+            //   (1) Self-contained published exe: ProcessPath is our
+            //       SiegeFX.Runtime.exe — invoke directly.
+            //   (2) `dotnet run` / framework-dependent: ProcessPath is
+            //       dotnet.exe. Need to pass our .dll path as the
+            //       first arg, otherwise dotnet treats `--play-region`
+            //       as a built-in command and bails ("specified command
+            //       or file was not found").
+            string? exePath = Environment.ProcessPath;
+            if (exePath is null)
+            {
+                Console.Error.WriteLine("SC-DIFF-LAUNCH: can't resolve own ProcessPath; aborting relaunch");
+                return;
+            }
+            string exeFile = System.IO.Path.GetFileNameWithoutExtension(exePath);
+            bool runningUnderDotnet = string.Equals(exeFile, "dotnet", StringComparison.OrdinalIgnoreCase);
+
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false,
+            };
+            if (runningUnderDotnet)
+            {
+                // Find SiegeFX.Runtime.dll alongside the running assembly.
+                string asmPath = typeof(RenderHost).Assembly.Location;
+                if (string.IsNullOrEmpty(asmPath) || !System.IO.File.Exists(asmPath))
+                {
+                    Console.Error.WriteLine("SC-DIFF-LAUNCH: can't locate SiegeFX.Runtime.dll for dotnet relaunch");
+                    return;
+                }
+                psi.ArgumentList.Add(asmPath);
+            }
+            psi.ArgumentList.Add("--play-region");
+            psi.ArgumentList.Add(mapTank);
+            psi.ArgumentList.Add(terrain);
+            psi.ArgumentList.Add(logic);
+            psi.ArgumentList.Add(objects);
+            psi.ArgumentList.Add(regionPath);
+
+            // Forward picker via env vars. HeroVariantPicker.FromEnv
+            // reads these on the new process boot.
+            psi.Environment["SIEGEFX_HERO_GENDER"] = _creator.Picker.Gender == HeroGender.Girl ? "girl" : "boy";
+            if (_creator.Picker.BodyTypeIdx >= 0)
+                psi.Environment["SIEGEFX_HERO_BODY"] = (_creator.Picker.BodyTypeIdx + 1).ToString();
+            if (_creator.Picker.SkinSuffix is not null)
+                psi.Environment["SIEGEFX_HERO_SKIN"] = _creator.Picker.SkinSuffix;
+            if (_creator.Picker.HairSuffix is not null)
+                psi.Environment["SIEGEFX_HERO_HAIR"] = _creator.Picker.HairSuffix;
+            if (_creator.Picker.PantsSuffix is not null)
+                psi.Environment["SIEGEFX_HERO_PANTS"] = _creator.Picker.PantsSuffix;
+            psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
+            // Skip the splash on relaunch — we already saw it.
+            psi.Environment["SIEGEFX_NOVIDEO"] = "1";
+            // Null SIEGEFX_CREATOR so the new process doesn't pop the
+            // creator modal again — the picker is already chosen.
+            psi.Environment["SIEGEFX_CREATOR"] = "0";
+
+            Console.WriteLine($"SC-DIFF-LAUNCH: relaunching '{exePath}' --play-region {regionPath} (difficulty={_difficulty})");
+            System.Diagnostics.Process.Start(psi);
+            _window.Close();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SC-DIFF-LAUNCH failed: {ex.Message}");
         }
     }
 
