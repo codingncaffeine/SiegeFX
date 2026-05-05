@@ -5,6 +5,13 @@ namespace SiegeFX.Runtime;
 
 internal enum HeroGender { Boy, Girl }
 
+/// <summary>SC-DIFF Phase A — chosen game difficulty. Set by the
+/// Difficulty screen Easy/Normal/Hard button click; consumed by future
+/// damage / loot / encounter scaling logic (splinter SC-DIFF-SCALING).
+/// Default Normal so a launch path that bypasses the menu (e.g. dev
+/// --play-region) still has a sane baseline.</summary>
+internal enum GameDifficulty { Easy, Normal, Hard }
+
 /// <summary>21d-2a-viii — env-var driven character creator picks. Slice viii-a
 /// ships this CLI/launch interface; slice viii-b will replace the env-var
 /// reads with in-game widgets while keeping <see cref="BuildOverride"/> as

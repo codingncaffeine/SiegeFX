@@ -941,6 +941,10 @@ public sealed class RenderHost : IDisposable
     // panel only owns the two backbutton.asp-driven nav buttons.
     private readonly CharacterSelectMenuPanel _csMenu = new();
     private readonly DifficultyMenuPanel _diffMenu = new();
+    /// <summary>SC-DIFF Phase A — set by Easy/Normal/Hard click on the
+    /// Difficulty screen, defaulted to Normal. Future damage/loot/
+    /// encounter scaling reads this (splinter SC-DIFF-SCALING).</summary>
+    private GameDifficulty _difficulty = GameDifficulty.Normal;
     // Phase 24-MAINMENU step 6 — About sub-screen overlay. Toggle from main
     // menu's About button; Esc / clicking outside dismisses.
     private bool _aboutOpen;
@@ -5749,10 +5753,22 @@ void main()
             case DifficultyMenuPanel.Action.Easy:
             case DifficultyMenuPanel.Action.Medium:
             case DifficultyMenuPanel.Action.Hard:
-                // SC-DIFF Phase C — region launch lands here. For now
-                // log the choice; TrySpawnPlayerWithPicker(_creator.Picker)
-                // wiring is the next splinter (SC-DIFF-LAUNCH).
-                Console.WriteLine($"  diff menu: '{act}' click — splinter SC-DIFF-LAUNCH for region launch");
+                // SC-DIFF Phase A — store the chosen difficulty. Region
+                // launch + spawn-at-bridge + Norick NIS playback are
+                // SC-DIFF-LAUNCH and SC-NIS-CORE respectively (future
+                // splinters). _creator.Confirmed flag is set here so
+                // when SC-DIFF-LAUNCH wires the menu→region path, the
+                // existing TrySpawnPlayerWithPicker plumbing picks up
+                // the saved hero variant alongside this difficulty.
+                _difficulty = act switch
+                {
+                    DifficultyMenuPanel.Action.Easy   => GameDifficulty.Easy,
+                    DifficultyMenuPanel.Action.Medium => GameDifficulty.Normal,
+                    DifficultyMenuPanel.Action.Hard   => GameDifficulty.Hard,
+                    _ => GameDifficulty.Normal,
+                };
+                _creator.Confirmed = true;
+                Console.WriteLine($"  diff menu: '{_difficulty}' selected — splinter SC-DIFF-LAUNCH for region launch + SC-NIS-CORE for Norick bridge NIS");
                 _diffMenu.ClearHover();
                 break;
         }

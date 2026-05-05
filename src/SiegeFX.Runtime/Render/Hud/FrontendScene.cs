@@ -840,6 +840,11 @@ public sealed class FrontendScene : IDisposable
         {
             DrawMesh("heromenu", "heromenu", clip: "heromenu_begin", hold: 1f - hold, vw, vh);
         }
+
+        // Menubars not drawn during cd state — at lm2cd@1f the chrome
+        // wasn't actually parked off-stage, it was sitting behind the
+        // 3D character preview area. The "lm == sp pose" hypothesis
+        // didn't pan out empirically. cd→sp slide animation parked.
     }
 
     /// <summary>SC-DIFF Phase B — Difficulty screen chrome. Mirrors
