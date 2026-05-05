@@ -208,15 +208,23 @@ internal sealed class HeroPreviewRenderer : IDisposable
         int glY = viewportH - (ry + rh);
 
         // Save state — we restore everything we touch so the caller's pass
-        // continues unaffected.
+        // continues unaffected. SC-CD-SCISSOR-FIX (2026-05-04): also save
+        // the scissor BOX coordinates, not just the enable bit. Earlier
+        // code only saved/restored EnableCap.ScissorTest, so when called
+        // with a caller-active scissor (e.g. boot path's chromeAspect
+        // letterbox), the scissor was left pinned to the listener rect
+        // after our draw — clipping subsequent overlay rendering
+        // (spinners, name input, row labels) to the 3D char rect only.
         bool wasScissor = _gl.IsEnabled(EnableCap.ScissorTest);
         bool wasDepth = _gl.IsEnabled(EnableCap.DepthTest);
         bool wasCull = _gl.IsEnabled(EnableCap.CullFace);
         bool wasBlend = _gl.IsEnabled(EnableCap.Blend);
         Span<int> prevViewport = stackalloc int[4];
+        Span<int> prevScissor  = stackalloc int[4];
         unsafe
         {
             fixed (int* p = prevViewport) _gl.GetInteger(GLEnum.Viewport, p);
+            fixed (int* p = prevScissor)  _gl.GetInteger(GLEnum.ScissorBox, p);
         }
 
         _gl.Enable(EnableCap.ScissorTest);
@@ -347,8 +355,9 @@ internal sealed class HeroPreviewRenderer : IDisposable
             }
         }
 
-        // Restore viewport, scissor, GL state.
+        // Restore viewport, scissor box + enable, GL state.
         _gl.Viewport(prevViewport[0], prevViewport[1], (uint)prevViewport[2], (uint)prevViewport[3]);
+        _gl.Scissor(prevScissor[0], prevScissor[1], (uint)prevScissor[2], (uint)prevScissor[3]);
         if (!wasScissor) _gl.Disable(EnableCap.ScissorTest);
         if (!wasDepth) _gl.Disable(EnableCap.DepthTest);
         if (!wasCull) _gl.Disable(EnableCap.CullFace);
