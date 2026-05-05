@@ -629,9 +629,26 @@ public sealed class FrontendScene : IDisposable
         var barsClip = mmToSp ? "menubars_mm2sp" : "menubars_sp2mm";
         DrawMesh("mainmenu",  "mainmenu",  clip: mainClip,  hold: hold, vw, vh, mainmenuMask);
         DrawMesh("menubars",  "menubars",  clip: barsClip,  hold: hold, vw, vh, menubarsMask);
-        // Per-button text rendering is layered on top by the host (see
-        // DrawMenubarsButton + DrawSpBackButton), one asp draw per
-        // widget, exactly the way DS1's engine does it.
+        // SC-SP-BACK-FIX — backbutton chrome with state-aware clip so
+        // the BACK→EXIT label flip ("block turning" motion) animates
+        // during the SP↔MM transition. mm2sp plays backbutton_e2b
+        // (EXIT flips up to BACK on the way in); sp2mm plays
+        // backbutton_b2e (BACK flips back to EXIT on the way out).
+        // Mask = {0, 4, 8} per art_mapping.gas[button_sp_back] minus
+        // subsets 1 (NextBase) and 2 (PrevBase) — those are the
+        // prev/next arrow decorations that belong on the cd-state's
+        // pn pose; trace-pose at e2b@1.0 showed them landing on-screen
+        // near center even at the BACK pose, which bleeds the cd
+        // state's arrow chrome onto the SP screen. Recipe step 5:
+        // drop gas-listed bindings whose content doesn't match the
+        // active screen.
+        var backbuttonMask = new bool[11];
+        backbuttonMask[0] = true; backbuttonMask[4] = true; backbuttonMask[8] = true;
+        var backClip = mmToSp ? "backbutton_e2b" : "backbutton_b2e";
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backbuttonMask);
+        // Per-widget DrawSpBackButton overlays the hover/press texture
+        // swap on top, gated to fire only on hov/pr (the chrome above
+        // is the mouseout source of truth).
     }
 
     /// <summary>Phase 25-CHROME — sword rises out of the log via
@@ -1386,16 +1403,17 @@ public sealed class FrontendScene : IDisposable
         if (4 < arr.Length) { arr[4] = GetOrLoadTextureBase(backTex); mask[4] = true; }
         if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
 
-        // Same visual-rect padding as DrawExitButton so the wood button
-        // has room for the decorative arrow subsets.
-        const float visualWMul = 5.0f;
-        const float visualHMul = 2.0f;
-        int vw = (int)(w * visualWMul);
-        int vh = (int)(h * visualHMul);
-        int vx = x + (w - vw) / 2;
-        int vy = y + (h - vh) / 2;
-        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
-        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+        // SC-SP-BACK-FIX (2026-05-04) — switched from BuildSubsetRectModel
+        // + 5×W/2×H multiplier hack to BuildSharedSceneModel. Per the
+        // frontend recipe (step 3): when a PRS clip is applied (here
+        // backbutton_e2b@1.0 to swap subset 8's bone-Z so BACK wins
+        // over EXIT), the bind-pose subset bbox doesn't represent
+        // where the skinned vertices actually land — they follow the
+        // clip's bone positions in mesh space. trace-pose confirms
+        // subsets 0/1/2/4/8 land at sensible positions at e2b@1.0
+        // when projected through the chrome's shared scene matrix.
+        // The (x,y,w,h) panel rect is hit-test only.
+        var model = BuildSharedSceneModel(viewportW, viewportH);
 
         // Apply backbutton_e2b at hold=1 — subset 8 is owned by both
         // ExitBase and BackBase; at bind pose ExitBase is at the

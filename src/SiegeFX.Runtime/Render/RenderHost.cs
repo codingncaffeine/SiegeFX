@@ -6111,11 +6111,16 @@ void main()
                     _frontendScene.DrawMenubarsButton(viewportW, viewportH,
                         lgx, lgy, lgw, lgh, lgHover, lgPress, "button_load_game");
                 }
+                // SC-SP-BACK-FIX — only fire per-widget overlay when
+                // hovered/pressed. Chrome's DrawSpChrome backbutton
+                // draw (with state-aware e2b / b2e clip) is the
+                // mouseout source of truth; per-widget renders the
+                // hover/press swap on top.
                 if (_spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.Back,
                         viewportW, viewportH,
                         out int bx, out int by, out int bw, out int bh,
-                        out bool bHover, out bool bPress))
+                        out bool bHover, out bool bPress) && (bHover || bPress))
                 {
                     _frontendScene.DrawSpBackButton(viewportW, viewportH,
                         bx, by, bw, bh, bHover, bPress);
