@@ -6065,6 +6065,11 @@ void main()
                 // DS1 asset chain. MainMenuPanel exposes the screen rect +
                 // hover/press state; FrontendScene runs the asp draw with
                 // art_mapping.gas's [button_exit] texture-swap recipe.
+                // SC-MAIN-HOVER — DrawExitButton is the source of truth
+                // for the EXIT button render (chrome's mainmenu draw
+                // doesn't isolate this widget cleanly). Fire always so
+                // mouseout state shows the engraved EXIT; hover/press
+                // swap to exitback-up/-down + text-small-up/-down.
                 if (_mainMenu.TryGetButtonStateAndRect(
                         Hud.MainMenuPanel.Action.Exit,
                         viewportW, viewportH,
@@ -6073,6 +6078,31 @@ void main()
                 {
                     _frontendScene.DrawExitButton(viewportW, viewportH,
                         ex, ey, ew, eh, eHover, ePress);
+                }
+                // SC-MAIN-HOVER — per-widget chrome render for each main
+                // menu button via DrawMenubarsButton + art_mapping.gas
+                // recipe. Fires always (text labels live on text-menubars1
+                // subsets that DrawMainMenuState's menubarsMask doesn't
+                // include); hover/press swap to menubars-up/-down +
+                // text-menubars1-up/-down. Same engraved-button pattern
+                // SP submenu uses.
+                (Hud.MainMenuPanel.Action act, string widget)[] mmButtons =
+                {
+                    (Hud.MainMenuPanel.Action.SinglePlayer, "button_single_player"),
+                    (Hud.MainMenuPanel.Action.Multiplayer,  "button_multi_player"),
+                    (Hud.MainMenuPanel.Action.Options,      "button_options"),
+                    (Hud.MainMenuPanel.Action.Continue,     "button_continue"),
+                    (Hud.MainMenuPanel.Action.About,        "button_about"),
+                };
+                foreach (var (act, widget) in mmButtons)
+                {
+                    if (_mainMenu.TryGetButtonStateAndRect(act, viewportW, viewportH,
+                            out int mx, out int my, out int mw, out int mh,
+                            out bool mHov, out bool mPr))
+                    {
+                        _frontendScene.DrawMenubarsButton(viewportW, viewportH,
+                            mx, my, mw, mh, mHov, mPr, widget);
+                    }
                 }
                 // Phase 27-SP-FLYOUT — hover overlay on every main menu
                 // button so the user gets visual feedback under the cursor.
@@ -6093,6 +6123,12 @@ void main()
                 // DrawSpBackButton. One asp draw per widget with ONLY
                 // its art_mapping-specified subsets — adjacent atlas
                 // regions can't bleed because their subsets are masked.
+                // SC-SP-HOVER — DrawMenubarsButton is the source of truth
+                // for NEW GAME / LOAD GAME (chrome's DrawSpChrome menubars
+                // mask is chrome-only subsets 0-5; text labels live on
+                // subsets 12/14 which only render through this per-widget
+                // call). Fire always so mouseout shows the engraved label;
+                // hover swaps to menubars-up + text-menubars1-up.
                 if (_spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.NewGame,
                         viewportW, viewportH,
@@ -6180,18 +6216,48 @@ void main()
                   || _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
                   || _frontendScene.State == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect)
             {
-                // SC-DIFF Phase C — BACK button hover/press overlay.
-                // Easy/Medium/Hard hover overlays would follow the same
-                // pattern with DrawMenubarsButton; for now BACK is the
-                // only fully-wired button.
-                if (_diffMenu.TryGetButtonStateAndRect(
-                        Hud.DifficultyMenuPanel.Action.Back,
-                        viewportW, viewportH,
-                        out int bx, out int by, out int bw, out int bh,
-                        out bool bHov, out bool bPr) && (bHov || bPr))
+                // Per-button hover/press flags. Only valid in settled
+                // Difficulty state; transitions render with no hover.
+                bool eHov = false, ePr = false;
+                bool mHov = false, mPr = false;
+                bool hHov = false, hPr = false;
+                bool bkHov = false, bkPr = false;
+                if (_frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty)
                 {
-                    _frontendScene.DrawDiffBackButton(viewportW, viewportH,
-                        bx, by, bw, bh, bHov, bPr);
+                    _diffMenu.TryGetButtonStateAndRect(Hud.DifficultyMenuPanel.Action.Easy,
+                        viewportW, viewportH, out _, out _, out _, out _, out eHov, out ePr);
+                    _diffMenu.TryGetButtonStateAndRect(Hud.DifficultyMenuPanel.Action.Medium,
+                        viewportW, viewportH, out _, out _, out _, out _, out mHov, out mPr);
+                    _diffMenu.TryGetButtonStateAndRect(Hud.DifficultyMenuPanel.Action.Hard,
+                        viewportW, viewportH, out _, out _, out _, out _, out hHov, out hPr);
+                    _diffMenu.TryGetButtonStateAndRect(Hud.DifficultyMenuPanel.Action.Back,
+                        viewportW, viewportH, out _, out _, out _, out _, out bkHov, out bkPr);
+                }
+                // Chrome subset hover/press swap for each difficulty
+                // button — paint menubars-up/-down on top of the
+                // chrome's mouseout state. Same pattern as cd's
+                // prev/next + SP submenu's NEW GAME / LOAD GAME.
+                if (eHov || ePr) _frontendScene.DrawDifficultyButton(viewportW, viewportH, eHov, ePr, "button_easy");
+                if (mHov || mPr) _frontendScene.DrawDifficultyButton(viewportW, viewportH, mHov, mPr, "button_medium");
+                if (hHov || hPr) _frontendScene.DrawDifficultyButton(viewportW, viewportH, hHov, hPr, "button_hard");
+                // Engraved EASY / NORMAL / HARD labels via UV-cropped
+                // IconRenderer; per-row hover/press swaps text-menubars3
+                // → -up / -down so only the hovered row's label glows.
+                if (_iconRenderer is not null)
+                    _frontendScene.TryDrawDifficultyLabels(viewportW, viewportH, _iconRenderer,
+                        eHov, ePr, mHov, mPr, hHov, hPr);
+                // BACK button hover/press overlay (chrome owns mouseout).
+                if (bkHov || bkPr)
+                {
+                    if (_diffMenu.TryGetButtonStateAndRect(
+                            Hud.DifficultyMenuPanel.Action.Back,
+                            viewportW, viewportH,
+                            out int bx, out int by, out int bw, out int bh,
+                            out _, out _))
+                    {
+                        _frontendScene.DrawDiffBackButton(viewportW, viewportH,
+                            bx, by, bw, bh, bkHov, bkPr);
+                    }
                 }
             }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
@@ -6305,50 +6371,24 @@ void main()
     /// engraved label per user feedback).</summary>
     private void DrawMainMenuHoverOverlays(int viewportW, int viewportH)
     {
-        if (_barRenderer is null) return;
-        var actions = new[]
-        {
-            Hud.MainMenuPanel.Action.SinglePlayer,
-            Hud.MainMenuPanel.Action.Multiplayer,
-            Hud.MainMenuPanel.Action.Options,
-            Hud.MainMenuPanel.Action.Continue,
-            Hud.MainMenuPanel.Action.About,
-            Hud.MainMenuPanel.Action.Exit,
-        };
-        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
-        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
-        foreach (var a in actions)
-        {
-            if (!_mainMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
-                    out int x, out int y, out int w, out int h,
-                    out bool hov, out bool pr)) continue;
-            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
-            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
-        }
+        // SC-MAIN-HOVER — flat alpha-rect tint replaced by per-widget
+        // texture swap on the chrome (DrawExitButton on hover, mainmenu
+        // body chrome handles non-EXIT buttons). The flat tint was
+        // painting boxy rectangles over the engraved chrome — same
+        // regression mode the cd / Difficulty / SP back chrome had.
+        // Per-button chrome render for SinglePlayer/Multiplayer/etc.
+        // is parked under SC-MAINMENU-BUTTONS-CHROME (currently
+        // those use the menu chrome's natural draw with no hover swap).
     }
 
-    /// <summary>Phase 27-SP-FLYOUT — same hover overlay treatment for
-    /// the SP submenu's three buttons.</summary>
-    private void DrawSpMenuHoverOverlays(int viewportW, int viewportH)
-    {
-        if (_barRenderer is null) return;
-        var actions = new[]
-        {
-            Hud.SinglePlayerMenuPanel.Action.NewGame,
-            Hud.SinglePlayerMenuPanel.Action.LoadGame,
-            Hud.SinglePlayerMenuPanel.Action.Back,
-        };
-        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
-        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
-        foreach (var a in actions)
-        {
-            if (!_spMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
-                    out int x, out int y, out int w, out int h,
-                    out bool hov, out bool pr)) continue;
-            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
-            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
-        }
-    }
+    /// <summary>Phase 27-SP-FLYOUT — was a flat alpha rect over the
+    /// SP submenu buttons on hover/press. SC-SP-HOVER no-op'd it:
+    /// the chrome's per-widget DrawMenubarsButton + DrawSpBackButton
+    /// calls already swap textures for the proper engraved hover/press
+    /// look (menubars-up/-down + text-menubars1-up/-down + exitback-up/-down
+    /// + text-small-up/-down per art_mapping.gas). Function kept as
+    /// stub so callers don't break.</summary>
+    private void DrawSpMenuHoverOverlays(int viewportW, int viewportH) { }
 
     /// <summary>Phase 29-CD-CREATOR — render the 12 spinner-arrow
     /// buttons (per art_mapping.gas) + their hover overlays + the

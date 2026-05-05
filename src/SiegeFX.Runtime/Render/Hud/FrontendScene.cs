@@ -852,12 +852,17 @@ public sealed class FrontendScene : IDisposable
         var leftsidePillarMask = new[] { true,  true,  true,  true,  true,  false };
         DrawMesh("backdrop",        "backdrop", clip: null,                hold: 0f, vw, vh);
         DrawMesh("leftside-shadow", "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask);
-        // Right pillar held open at the cd-state end pose so the 3D
-        // char + stone backdrop stay visible behind the difficulty
-        // buttons (DS1's actual difficulty screen does the same).
-        DrawMesh("rightside-shadow","rightside", clip: "rightside_open",   hold: 1f, vw, vh, leftsideShadowMask);
-        DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f, vw, vh, leftsidePillarMask);
-        DrawMesh("rightside",       "rightside", clip: "rightside_open",   hold: 1f, vw, vh, leftsidePillarMask);
+        // Right pillar animates closed during cd→Diff (no 3D char on
+        // the difficulty screen so the panel returns); reverses on
+        // BACK. Forward: rightside_close at hold=fraction (gears
+        // spin, door slides back into place). Settled Difficulty:
+        // hold=1f (panel fully closed). Reverse Diff→cd: rightside_open
+        // at hold=fraction so the door re-slides and the 3D char
+        // becomes visible again.
+        string rightClip = fromCd ? "rightside_close" : "rightside_open";
+        DrawMesh("rightside-shadow","rightside", clip: rightClip,          hold: hold, vw, vh, leftsideShadowMask);
+        DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f,   vw, vh, leftsidePillarMask);
+        DrawMesh("rightside",       "rightside", clip: rightClip,          hold: hold, vw, vh, leftsidePillarMask);
 
         // Title chrome: mainmenu.asp. Forward (cd→diff) plays sng2cd
         // at hold=fraction so the bone-Z bus swap settles into the
@@ -874,13 +879,14 @@ public sealed class FrontendScene : IDisposable
         // Forward: lm2cd at hold=fraction so they spring down into
         // place; settled at 1f. Reverse: cd2lm at hold=fraction so
         // they fold up out of the way as we head back to cd state.
-        // Mask drops text-menubars1 (subsets 10/12/14) which contains
-        // SP submenu labels (NEW GAME / LOAD GAME) and would bleed
-        // onto Medium/Hard at this pose. Keeps text-menubars3
-        // (subsets 11/13/15) = EASY / MEDIUM / HARD per art_mapping.gas.
+        // Mask = chrome only (subsets 3/4/5). Text subsets 10-15 ALL
+        // bind text-menubars1 (verified via trace-pose) which
+        // contains main-menu labels (SINGLE PLAYER / MULTIPLAYER /
+        // OPTIONS / etc), no EASY/NORMAL/HARD content. Engraved
+        // EASY/NORMAL/HARD labels render via IconRenderer UV-crops
+        // of text-menubars3.raw — see TryDrawDifficultyLabels.
         var menubarsMask = new bool[17];
         menubarsMask[3] = true; menubarsMask[4] = true; menubarsMask[5] = true;
-        menubarsMask[11] = true; menubarsMask[13] = true; menubarsMask[15] = true;
         var menubarsClip = fromCd ? "menubars_lm2cd" : "menubars_cd2lm";
         DrawMesh("menubars", "menubars", clip: menubarsClip, hold: hold, vw, vh, menubarsMask);
 
@@ -1255,22 +1261,14 @@ public sealed class FrontendScene : IDisposable
         // state) — see DrawBackButton.
         if (drawLabel && 8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
 
-        // Phase 26-ARTMAP — compute tight bounds from active subsets and
-        // map them to a VISUAL rect that's wider than the hit-test rect.
-        // The decorative arrow subsets [1] + [2] make the geometry's
-        // natural aspect ratio wide; squeezing them into the user-tuned
-        // 79×46 hit-test rect scrunches everything horizontally.
-        // 3.0× width / 1.6× height, centered on the rect midpoint, gives
-        // the arrows room to breathe while keeping the EXIT button
-        // visually anchored at the same spot the user tuned.
-        const float visualWMul = 5.0f;
-        const float visualHMul = 2.0f;
-        int vw = (int)(w * visualWMul);
-        int vh = (int)(h * visualHMul);
-        int vx = x + (w - vw) / 2;
-        int vy = y + (h - vh) / 2;
-        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
-        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+        // SC-MAIN-HOVER — switched from BuildSubsetRectModel + 5×W/2×H
+        // multiplier hack to BuildSharedSceneModel. EXIT is a bind-pose
+        // widget (no PRS clip needed), but the chrome-projection path
+        // lands subsets at their natural mesh-space positions —
+        // matching the cd-state's natural backbutton render so the
+        // hover swap aligns 1:1. Per-widget call is now gated to fire
+        // only on hov/pr (chrome owns the mouseout state).
+        var model = BuildSharedSceneModel(viewportW, viewportH);
         renderer.DrawWithModel(viewportW, viewportH, model, arr,
             anim: null, timeSec: 0f, tint: null, subsetMask: mask);
     }
@@ -1302,14 +1300,32 @@ public sealed class FrontendScene : IDisposable
                                    string widgetName)
     {
         int chromeSubset, text1Subset;
+        string clip;
         switch (widgetName)
         {
+            // SP submenu (mm2sp pose)
             case "button_start_new_game":
-                chromeSubset = 4; text1Subset = 12;
-                break;
+                chromeSubset = 4; text1Subset = 12; clip = "menubars_mm2sp"; break;
             case "button_load_game":
-                chromeSubset = 5; text1Subset = 14;
-                break;
+                chromeSubset = 5; text1Subset = 14; clip = "menubars_mm2sp"; break;
+            // Main menu (sp2mm pose) — art_mapping.gas:
+            //   button_single_player = subsets 1 + 6 + 7
+            //   button_multi_player  = 2 + 8 + 9
+            //   button_options       = 3 + 10 + 11
+            //   button_continue      = 4 + 12 + 13
+            //   button_about         = 5 + 14 + 15
+            // text-menubars2 (odd text subsets) holds wrong-screen
+            // content; drop per recipe step 5. Keep chrome + text-menubars1.
+            case "button_single_player":
+                chromeSubset = 1; text1Subset = 6;  clip = "menubars_sp2mm"; break;
+            case "button_multi_player":
+                chromeSubset = 2; text1Subset = 8;  clip = "menubars_sp2mm"; break;
+            case "button_options":
+                chromeSubset = 3; text1Subset = 10; clip = "menubars_sp2mm"; break;
+            case "button_continue":
+                chromeSubset = 4; text1Subset = 12; clip = "menubars_sp2mm"; break;
+            case "button_about":
+                chromeSubset = 5; text1Subset = 14; clip = "menubars_sp2mm"; break;
             default:
                 return;
         }
@@ -1358,7 +1374,7 @@ public sealed class FrontendScene : IDisposable
         // params stay for hit-testing only — visual placement is
         // entirely bone-driven now.
         var model = BuildSharedSceneModel(viewportW, viewportH);
-        var anim = GetOrLoadClip("menubars_mm2sp");
+        var anim = GetOrLoadClip(clip);
         float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
         renderer.DrawWithModel(viewportW, viewportH, model, arr,
             anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
@@ -1494,7 +1510,110 @@ public sealed class FrontendScene : IDisposable
     /// Subset 1 is the NEXT-arrow chrome; subset 7 is the NEXT row of
     /// text-small atlas. Same b2pn clip as Previous so both arrow
     /// bones (PrevBase + NextBase) are at the visible Z slot.</summary>
-    /// <summary>SC-DIFF — BACK button on the Difficulty screen.
+    /// <summary>SC-DIFF — chrome hover/press overlay for EASY / NORMAL /
+    /// HARD buttons. art_mapping.gas[button_easy/medium/hard] subset
+    /// 3/4/5 swap to menubars-up on hover, menubars-down on press.
+    /// Same overlay-on-chrome pattern as DrawMenubarsButton for the SP
+    /// submenu — projects through BuildSharedSceneModel at the
+    /// menubars_lm2cd@1.0 pose so subsets land at their natural
+    /// difficulty-screen position.</summary>
+    public void DrawDifficultyButton(int viewportW, int viewportH,
+                                     bool hovered, bool pressed,
+                                     string widgetName)
+    {
+        int chromeSubset = widgetName switch
+        {
+            "button_easy"   => 3,
+            "button_medium" => 4,
+            "button_hard"   => 5,
+            _ => -1,
+        };
+        if (chromeSubset < 0) return;
+
+        var renderer = GetOrLoadMesh("menubars");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string menubarsTex = pressed ? "menubars-down" : hovered ? "menubars-up" : "menubars";
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+        if (chromeSubset < arr.Length)
+        {
+            arr[chromeSubset] = GetOrLoadTextureBase(menubarsTex);
+            mask[chromeSubset] = true;
+        }
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var anim = GetOrLoadClip("menubars_lm2cd");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>SC-DIFF — engraved EASY / NORMAL / HARD labels on the
+    /// Difficulty buttons. text-menubars3.raw contains the three labels
+    /// stacked vertically (visual top→bottom: EASY, NORMAL, HARD).
+    /// menubars.asp's subsets that should bind text-menubars3 per
+    /// art_mapping (11, 13, 15) actually authored as text-menubars1
+    /// on disk — that's the SP-submenu / main-menu label atlas, no
+    /// EASY/NORMAL/HARD content. Render direct UV crops via
+    /// IconRenderer.DrawIcon at the gas-authored button rects, same
+    /// pattern as the row labels on the character creator.</summary>
+    public bool TryDrawDifficultyLabels(int viewportW, int viewportH,
+        IconRenderer iconRenderer,
+        bool easyHov = false, bool easyPr = false,
+        bool medHov  = false, bool medPr  = false,
+        bool hardHov = false, bool hardPr = false)
+    {
+        // Pick per-row texture: -up on hover, -down on press, base on
+        // mouseout. Each row independent so only the moused row glows.
+        GlTexture? PickTex(bool hov, bool pr)
+        {
+            string name = pr ? "text-menubars3-down" : hov ? "text-menubars3-up" : "text-menubars3";
+            return GetChromeTexture(name);
+        }
+        var texEasy = PickTex(easyHov, easyPr);
+        var texMed  = PickTex(medHov,  medPr);
+        var texHard = PickTex(hardHov, hardPr);
+        if (texEasy is null || texMed is null || texHard is null) return false;
+
+        // text-menubars3 atlas (and its -up/-down variants) all share
+        // the same row layout: 3 labels stacked.
+        (GlTexture tex, int gasY, float vMin, float vMax)[] rows =
+        {
+            (texEasy, 192, 0.00f, 0.30f),
+            (texMed,  273, 0.27f, 0.60f),
+            (texHard, 342, 0.55f, 0.92f),
+        };
+        float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
+        int authoredW = (int)MathF.Round(800 * scale);
+        int authoredH = (int)MathF.Round(600 * scale);
+        int dx = (viewportW - authoredW) / 2;
+        int dy = (viewportH - authoredH) / 2;
+        // Button rect from difficulty_menu.gas: X 283-519 (236 wide),
+        // Y from rows array (49 tall each). Label 180×36 centered on
+        // each button — atlas glyph is ~6:1 aspect; rect at ~5:1 keeps
+        // letters readable without squish.
+        const int labelGasW = 180;
+        const int labelGasH = 36;
+        const int buttonGasH = 49;
+        const int buttonCenterGasX = (283 + 519) / 2;
+        var tint = new Vector4(1f, 1f, 1f, 1f);
+        foreach (var (rowTex, gasY, vMin, vMax) in rows)
+        {
+            int w = (int)MathF.Round(labelGasW * scale);
+            int h = (int)MathF.Round(labelGasH * scale);
+            int cx = dx + (int)MathF.Round(buttonCenterGasX * scale);
+            int cy = dy + (int)MathF.Round((gasY + buttonGasH * 0.5f) * scale);
+            iconRenderer.DrawIcon(viewportW, viewportH, rowTex,
+                cx - w / 2, cy - h / 2, w, h, tint,
+                0.00f, vMin, 1.00f, vMax);
+        }
+        return true;
+    }
+
+    /// <summary>SC-DIFF — BACK button on the Difficulty screen.</summary>
     /// art_mapping.gas[button_diff_back]: subsets 4 (exitback chrome)
     /// + 8 (text-small BACK label). hover/press swap to exitback-up/down
     /// + text-small-up/down. Same overlay-on-chrome pattern as the
