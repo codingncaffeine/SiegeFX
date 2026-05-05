@@ -712,15 +712,35 @@ public sealed class FrontendScene : IDisposable
         var leftsidePillarMask = new[] { true,  true,  true,  true,  true,  false };
         DrawMesh("backdrop",        "backdrop", clip: null,                hold: 0f, vw, vh);
         DrawMesh("leftside-shadow", "leftside", clip: "leftside_default",  hold: 0f, vw, vh, leftsideShadowMask);
-        // SC-CD-RIGHTSIDE — native rightside.asp render after fixing the
-        // BTRI v2.2 cornerStart parse in AspMesh.cs (was reading the
-        // 4-byte-per-subtexture header but never decoding the values,
-        // leaving cornerStartsHdr all zero → multi-subtexture v2.2
-        // meshes corrupted). v2.2 stores cornerStart directly as one
-        // u32 per subtexture, mirroring v2.3's first u32 with stride 4.
-        DrawMesh("rightside-shadow","rightside", clip: "rightside_default", hold: 0f, vw, vh, leftsideShadowMask);
-        DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f, vw, vh, leftsidePillarMask);
-        DrawMesh("rightside",       "rightside", clip: "rightside_default", hold: 0f, vw, vh, leftsidePillarMask);
+        // SC-CD-RIGHTSIDE Phase B — state-driven rightside clip. During the
+        // SinglePlayerToCd transition, rightside_open plays as a peer to
+        // mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn / heromenu_begin
+        // (all run at the same `hold` fraction over SpToCdDur). The door
+        // bone slides X 0.009 → 1.613 in mesh units alongside gear rotations
+        // and piston extends, revealing the stone backdrop + 3D char rect.
+        // CharacterSelect holds the open end-pose at hold=1f. The reverse
+        // CharacterSelectToSp uses the dedicated rightside_close clip
+        // (its own authored easing), NOT 1-hold of open.
+        string rightsideClip;
+        float  rightsideHold;
+        if (State == ScreenState.CharacterSelect)
+        {
+            rightsideClip = "rightside_open";
+            rightsideHold = 1f;
+        }
+        else if (fromSp)
+        {
+            rightsideClip = "rightside_open";
+            rightsideHold = hold;
+        }
+        else
+        {
+            rightsideClip = "rightside_close";
+            rightsideHold = hold;
+        }
+        DrawMesh("rightside-shadow","rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsideShadowMask);
+        DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f,           vw, vh, leftsidePillarMask);
+        DrawMesh("rightside",       "rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsidePillarMask);
 
         // Phase 29-CD-CREATOR-FIX4 — DO NOT draw mainmenu / menubars in
         // cd-state. Those are the main-menu / SP-submenu panels — at
