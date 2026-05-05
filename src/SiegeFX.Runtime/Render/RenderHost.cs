@@ -5687,16 +5687,15 @@ void main()
                 _csMenu.ClearHover();
                 break;
             case CharacterSelectMenuPanel.Action.Next:
-                // notify(on_change_map) per character_select.gas — should
-                // launch the map_chooser / LoadPlayActors flow. Set the
-                // creator's Confirmed flag so FlushCreator picks it up
-                // on the next frame and runs TrySpawnPlayerWithPicker.
-                // The actual region-launch wiring (resolving fh_r1 paths
-                // from _ds1ResourcesDir without --play-region CLI args)
-                // is splinter SC-CD-NEXT-LAUNCH.
+                // SC-DIFF Phase A — cd → Difficulty transition. Skips
+                // map_chooser entirely (we have one main world). Saves
+                // the picker; difficulty selection later kicks off the
+                // region launch with this picker via TrySpawnPlayerWithPicker.
                 _creator.Confirmed = true;
                 _creator.IsOpen = false;
-                Console.WriteLine("  cs menu: 'Next' click — Confirmed=true, splinter SC-CD-NEXT-LAUNCH for region launch");
+                if (_bootMode)
+                    _frontendScene.SetState(Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty);
+                _csMenu.IsActive = false;
                 _csMenu.ClearHover();
                 break;
         }

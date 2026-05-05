@@ -98,6 +98,21 @@ public sealed class FrontendScene : IDisposable
         /// / backbutton_pn2b over <see cref="CdToSpDur"/>;
         /// auto-advances to <see cref="SinglePlayer"/> at completion.</summary>
         CharacterSelectToSp,
+        /// <summary>SC-DIFF — cd → Difficulty forward transition. Same
+        /// chrome family as the cd state but with the title row swapping
+        /// from text-01 (CHOOSE HERO) to text-02 (DIFFICULTY) and the
+        /// button column swapping from heromenu spinners to the three
+        /// menubars buttons (EASY/MEDIUM/HARD). Auto-advances to
+        /// <see cref="Difficulty"/> at <see cref="CdToDiffDur"/>.</summary>
+        CharacterSelectToDifficulty,
+        /// <summary>SC-DIFF — settled Difficulty screen. Easy/Medium/Hard
+        /// buttons + BACK. Hard click kicks off the region-launch flow
+        /// using the saved hero picker.</summary>
+        Difficulty,
+        /// <summary>SC-DIFF — Difficulty → cd reverse transition (BACK
+        /// click). Auto-advances to <see cref="CharacterSelect"/> at
+        /// <see cref="DiffToCdDur"/>.</summary>
+        DifficultyToCharacterSelect,
         /// <summary>Load Map — final screen before world load.</summary>
         LoadMap,
         /// <summary>Multiplayer.</summary>
@@ -173,6 +188,8 @@ public sealed class FrontendScene : IDisposable
     // the main-menu PRS catalog; tunable.
     const float SpToCdDur = 1.5f;
     const float CdToSpDur = 1.5f;
+    const float CdToDiffDur = 1.0f;
+    const float DiffToCdDur = 1.0f;
     /// <summary>Phase 28-CD-FLYOUT — fraction along sng2cd / lm2cd /
     /// b2pn / heromenu_begin clips (clamped 0..1). Held at 1 while in
     /// <see cref="ScreenState.CharacterSelect"/> so the cd pose persists
@@ -312,6 +329,12 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.CharacterSelectToSp:
                 if (_stateTime >= CdToSpDur) SetState(ScreenState.SinglePlayer);
                 break;
+            case ScreenState.CharacterSelectToDifficulty:
+                if (_stateTime >= CdToDiffDur) SetState(ScreenState.Difficulty);
+                break;
+            case ScreenState.DifficultyToCharacterSelect:
+                if (_stateTime >= DiffToCdDur) SetState(ScreenState.CharacterSelect);
+                break;
         }
     }
 
@@ -412,6 +435,15 @@ public sealed class FrontendScene : IDisposable
                 // transition (Previous click). Reverse clips unwind
                 // back to the SP submenu pose.
                 DrawCdToSpState(fullW, fullH);
+                return;
+            case ScreenState.CharacterSelectToDifficulty:
+            case ScreenState.Difficulty:
+            case ScreenState.DifficultyToCharacterSelect:
+                // SC-DIFF Phase A — placeholder. Renders cd-state chrome
+                // for now so the screen isn't black; Phase B replaces
+                // this with proper Difficulty chrome (text-02 title +
+                // 3 menubars buttons via lm2cd pose).
+                DrawCharacterSelectState(fullW, fullH);
                 return;
             default:
                 // Other states are stubs for now — fall back to character_select
@@ -743,12 +775,9 @@ public sealed class FrontendScene : IDisposable
         DrawMesh("rightside",       "rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsidePillarMask);
 
         // SC-CD-CHOOSEHERO — mainmenu.asp draw at sng2cd@hold for the
-        // title scroll plaque + CHOOSE HERO engraved labels. Same chrome
-        // the main menu and SP submenu screens use. Rendered BEFORE
-        // backbutton + heromenu so the heromenu chrome plate masks the
-        // body chrome where they overlap on the spinner column. Mask
-        // drops text-02L/R (DIFFICULTY row, parked at this pose) and
-        // shadows. Subsets 0+1+2 = chrome plate + text-01L + text-01R.
+        // title scroll plaque + CHOOSE HERO engraved labels. Subsets
+        // 0+1+2 = chrome plate + text-01L + text-01R; mask drops
+        // text-02L/R (DIFFICULTY) and shadows.
         var mainmenuMask = new[] { true, true, true, false, false, false };
         var mainClip = fromSp ? "mainmenu_sng2cd" : "mainmenu_cd2sng";
         DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
