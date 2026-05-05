@@ -634,18 +634,22 @@ public sealed class FrontendScene : IDisposable
         // during the SP↔MM transition. mm2sp plays backbutton_e2b
         // (EXIT flips up to BACK on the way in); sp2mm plays
         // backbutton_b2e (BACK flips back to EXIT on the way out).
-        // Mask = {0, 4, 8} per art_mapping.gas[button_sp_back] minus
-        // subsets 1 (NextBase) and 2 (PrevBase) — those are the
-        // prev/next arrow decorations that belong on the cd-state's
-        // pn pose; trace-pose at e2b@1.0 showed them landing on-screen
-        // near center even at the BACK pose, which bleeds the cd
-        // state's arrow chrome onto the SP screen. Recipe step 5:
-        // drop gas-listed bindings whose content doesn't match the
-        // active screen.
-        var backbuttonMask = new bool[11];
-        backbuttonMask[0] = true; backbuttonMask[4] = true; backbuttonMask[8] = true;
+        //
+        // Two-pass split to fix arrow-over-backing draw order: the asp
+        // authors subset 0 (backing) BEFORE subsets 1/2 (NextBase /
+        // PrevBase folded-in arrows), so the arrow quads paint on
+        // top of the backing where they overlap and visibly cover the
+        // backing's right edge. Render the folded arrows FIRST, then
+        // backing + BACK + label on top so the backing wins where
+        // they overlap (matching DS1's intended depth — arrows sit
+        // BEHIND the backing image).
         var backClip = mmToSp ? "backbutton_e2b" : "backbutton_b2e";
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backbuttonMask);
+        var arrowsFoldedMask = new bool[11];
+        arrowsFoldedMask[1] = true; arrowsFoldedMask[2] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, arrowsFoldedMask);
+        var backFrontMask = new bool[11];
+        backFrontMask[0] = true; backFrontMask[4] = true; backFrontMask[8] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backFrontMask);
         // Per-widget DrawSpBackButton overlays the hover/press texture
         // swap on top, gated to fire only on hov/pr (the chrome above
         // is the mouseout source of truth).
@@ -1399,23 +1403,21 @@ public sealed class FrontendScene : IDisposable
         var arr = new GlTexture?[names.Count];
         var mask = new bool[names.Count];
 
-        //   art_mapping.gas[button_sp_back]:
-        //     [mouseover]  { 4 = exitback-up;   8 = text-small-up;   }
-        //     [mousedown]  { 4 = exitback-down; 8 = text-small-down; }
-        //     [mouseout]   { 4 = exitback;      8 = text-small;      }
+        // art_mapping.gas[button_sp_back] = subsets 4 + 8 ONLY:
+        //   [mouseover]  { 4 = exitback-up;   8 = text-small-up;   }
+        //   [mousedown]  { 4 = exitback-down; 8 = text-small-down; }
+        //   [mouseout]   { 4 = exitback;      8 = text-small;      }
+        // Earlier code copied subsets 0/1/2 from button_exit's recipe;
+        // those bring NextBase/PrevBase decorations onto a standalone
+        // BACK and read as the cd-state's prev/next arrow flanks
+        // intruding on the SP back. Tightened to just the BACK plate
+        // (subset 4) + label (subset 8).
         string backTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
         string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
 
         for (int i = 0; i < names.Count; i++)
             arr[i] = GetOrLoadTexture(names[i]);
 
-        // Same chrome strategy as DrawExitButton (subsets 0/1/2 carry
-        // the wood button shape + arrows), but use [4] for the BACK
-        // decoration per art_mapping (button_exit uses [3], button_sp_back
-        // uses [4] — both subsets sample different regions of exitback).
-        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
-        if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(backTex); mask[1] = true; }
-        if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(backTex); mask[2] = true; }
         if (4 < arr.Length) { arr[4] = GetOrLoadTextureBase(backTex); mask[4] = true; }
         if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
 
