@@ -35,8 +35,15 @@ internal sealed class HeroPreviewRenderer : IDisposable
 {
     // 800×600 reference rect — same source as CharacterCreatorPanel.RectListener.
     // Kept in sync manually; if the panel's listener rect ever moves, update both.
-    private const int RefRectX = 408;
-    private const int RefRectY = 73;
+    // Gas-authored character_select.gas listener rect is 408,73,649,494.
+    // Shifted left 30 and down 15 to center the character in the panel
+    // area revealed by the right-pillar door slide; the gas-authored
+    // position assumed a 4:3 framebuffer where the pillars cropped out
+    // of view, but with our scissor letterbox both pillars are visible
+    // and the listener rect needs to move inward toward the visible
+    // panel center.
+    private const int RefRectX = 378;
+    private const int RefRectY = 100;
     private const int RefRectW = 649 - 408;
     private const int RefRectH = 494 - 73;
 

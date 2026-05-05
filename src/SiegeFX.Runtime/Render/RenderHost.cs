@@ -6062,31 +6062,20 @@ void main()
                   || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
                   || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
             {
-                // Phase 28-CD-FLYOUT — render the Previous/Next nav
-                // buttons via art_mapping.gas[button_previous/next]
-                // recipes. Same per-button pattern as the SP submenu's
-                // BACK button. Hit-testing settles only after the
-                // transition completes (panel sets IsActive=false
-                // during transitions); rendering during transitions
-                // keeps the visual stable.
-                if (_csMenu.TryGetButtonStateAndRect(
-                        Hud.CharacterSelectMenuPanel.Action.Previous,
-                        viewportW, viewportH,
-                        out int px, out int py, out int pw, out int ph,
-                        out bool pHover, out bool pPress))
-                {
-                    _frontendScene.DrawPreviousButton(viewportW, viewportH,
-                        px, py, pw, ph, pHover, pPress);
-                }
-                if (_csMenu.TryGetButtonStateAndRect(
-                        Hud.CharacterSelectMenuPanel.Action.Next,
-                        viewportW, viewportH,
-                        out int nx, out int ny, out int nw, out int nh,
-                        out bool nHover, out bool nPress))
-                {
-                    _frontendScene.DrawNextButton(viewportW, viewportH,
-                        nx, ny, nw, nh, nHover, nPress);
-                }
+                // SC-CD-PREVNEXT-FIX — explicit DrawPreviousButton /
+                // DrawNextButton calls were doing a SECOND full
+                // backbutton.asp draw on top of the chrome's already-
+                // rendered backbutton (DrawCdChrome's DrawMesh("backbutton",
+                // ...) line). Both stretched the same mesh with the same
+                // backbutton_b2pn clip but at different visual rects
+                // (visualWMul=5, visualHMul=2 on the per-widget draw vs
+                // shared-scene projection on the chrome draw). Result:
+                // visible "buttons overlapping buttons" only on option
+                // 94 because option 62's modal path never called these.
+                // Removed: the chrome's backbutton draw is the single
+                // source of truth for prev/next visuals; _csMenu
+                // hit-rects + DrawCsMenuHoverOverlays' translucent
+                // hover tint provide the click-feedback layer.
                 if (_frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect)
                 {
                     DrawCsMenuHoverOverlays(viewportW, viewportH);
