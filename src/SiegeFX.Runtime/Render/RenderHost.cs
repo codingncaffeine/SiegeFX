@@ -940,6 +940,7 @@ public sealed class RenderHost : IDisposable
     // spinner-axis buttons live on the existing _creator panel; this
     // panel only owns the two backbutton.asp-driven nav buttons.
     private readonly CharacterSelectMenuPanel _csMenu = new();
+    private readonly DifficultyMenuPanel _diffMenu = new();
     // Phase 24-MAINMENU step 6 — About sub-screen overlay. Toggle from main
     // menu's About button; Esc / clicking outside dismisses.
     private bool _aboutOpen;
@@ -1742,6 +1743,14 @@ void main()
                     _csMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _diffMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
                 // backward (DS1 lets the cycle buttons go either way
                 // via onrbuttondown). Also swallow RMB camera-look
@@ -2102,6 +2111,14 @@ void main()
                     _csMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _diffMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
@@ -2270,6 +2287,12 @@ void main()
                     var sz = _window.FramebufferSize;
                     _creator.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                     _csMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty)
+                {
+                    var sz = _window.FramebufferSize;
+                    _diffMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -5184,6 +5207,8 @@ void main()
         FlushSinglePlayerMenu();
         // Phase 28-CD-FLYOUT — drain Character Creator nav actions.
         FlushCharacterSelectMenu();
+        // SC-DIFF Phase C — drain Difficulty button clicks.
+        FlushDifficultyMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -5701,6 +5726,38 @@ void main()
         }
     }
 
+    /// <summary>SC-DIFF Phase C — drain Difficulty button clicks.</summary>
+    private void FlushDifficultyMenu()
+    {
+        if (_frontendScene is null) return;
+        var state = _frontendScene.State;
+        _diffMenu.IsActive = state == Hud.FrontendScene.ScreenState.Difficulty
+                             && !_aboutOpen && !_optionsMenu.IsOpen;
+        if (state != Hud.FrontendScene.ScreenState.Difficulty) return;
+        var act = _diffMenu.ConsumeAction();
+        if (act != DifficultyMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case DifficultyMenuPanel.Action.None:
+                break;
+            case DifficultyMenuPanel.Action.Back:
+                if (_bootMode)
+                    _frontendScene.SetState(Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect);
+                _diffMenu.IsActive = false;
+                _diffMenu.ClearHover();
+                break;
+            case DifficultyMenuPanel.Action.Easy:
+            case DifficultyMenuPanel.Action.Medium:
+            case DifficultyMenuPanel.Action.Hard:
+                // SC-DIFF Phase C — region launch lands here. For now
+                // log the choice; TrySpawnPlayerWithPicker(_creator.Picker)
+                // wiring is the next splinter (SC-DIFF-LAUNCH).
+                Console.WriteLine($"  diff menu: '{act}' click — splinter SC-DIFF-LAUNCH for region launch");
+                _diffMenu.ClearHover();
+                break;
+        }
+    }
+
     private void FlushOptionsMenu()
     {
         // Phase 23-SC-OPTIONS-FOLD — wire the live-apply event once
@@ -5956,7 +6013,10 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
               || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
-              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect)
         {
             // Phase 26-VIEWPORT — clip rendering to the chrome's letterbox
             // area so meshes that extend BEYOND backdrop's authored bounds
@@ -6111,6 +6171,24 @@ void main()
                     DrawCharacterCreatorOverlays(viewportW, viewportH);
                 }
             }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect)
+            {
+                // SC-DIFF Phase C — BACK button hover/press overlay.
+                // Easy/Medium/Hard hover overlays would follow the same
+                // pattern with DrawMenubarsButton; for now BACK is the
+                // only fully-wired button.
+                if (_diffMenu.TryGetButtonStateAndRect(
+                        Hud.DifficultyMenuPanel.Action.Back,
+                        viewportW, viewportH,
+                        out int bx, out int by, out int bw, out int bh,
+                        out bool bHov, out bool bPr) && (bHov || bPr))
+                {
+                    _frontendScene.DrawDiffBackButton(viewportW, viewportH,
+                        bx, by, bw, bh, bHov, bPr);
+                }
+            }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
             // 60% black scrim) aren't clipped to the chrome letterbox.
@@ -6129,6 +6207,9 @@ void main()
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayerToCd
                        || fs == Hud.FrontendScene.ScreenState.CharacterSelect
                        || fs == Hud.FrontendScene.ScreenState.CharacterSelectToSp
+                       || fs == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
+                       || fs == Hud.FrontendScene.ScreenState.Difficulty
+                       || fs == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect
                        || fs == Hud.FrontendScene.ScreenState.IntroMenuFlyIn;
             if (inMenu)
             {

@@ -842,37 +842,40 @@ public sealed class FrontendScene : IDisposable
         DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f, vw, vh, leftsidePillarMask);
         DrawMesh("rightside",       "rightside", clip: "rightside_open",   hold: 1f, vw, vh, leftsidePillarMask);
 
-        // Title chrome: same mainmenu.asp at sng2cd@1.0 (the chrome
-        // settles at the cd pose and STAYS there for difficulty —
-        // only the visible Z slot changes the title row from text-01
-        // to text-02 implicitly via the bone-Z swap that's already
-        // in the clip end-pose). Mask {0, 3, 4} = chrome plate +
-        // text-02L "DIFFI" + text-02R "CULTY" instead of text-01
-        // CHOOSE / HERO. text-01 (subsets 1, 2) and shadows masked off.
+        // Title chrome: mainmenu.asp. Forward (cd→diff) plays sng2cd
+        // at hold=fraction so the bone-Z bus swap settles into the
+        // text-02 (DIFFICULTY) row at the visible slot. Reverse
+        // (diff→cd, BACK click) plays cd2sng at hold=fraction so the
+        // chrome unwinds back to where DrawCdChrome's text-01 (CHOOSE
+        // HERO) holds. Mask {0, 3, 4} = chrome plate + text-02L/R
+        // (text-01 + shadows masked off).
         var mainmenuMask = new[] { true, false, false, true, true, false };
-        DrawMesh("mainmenu", "mainmenu", clip: "mainmenu_sng2cd", hold: 1f, vw, vh, mainmenuMask);
+        var mainClip = fromCd ? "mainmenu_sng2cd" : "mainmenu_cd2sng";
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
 
-        // Menubars chrome at lm2cd@1.0 pose. art_mapping.gas:
-        //   button_easy   = subsets 3 + 10 + 11 (chrome + text labels)
-        //   button_medium = subsets 4 + 12 + 13
-        //   button_hard   = subsets 5 + 14 + 15
-        // Mask all three buttons' chrome + text subsets.
+        // Menubars chrome — buttons animate during the transition.
+        // Forward: lm2cd at hold=fraction so they spring down into
+        // place; settled at 1f. Reverse: cd2lm at hold=fraction so
+        // they fold up out of the way as we head back to cd state.
+        // Mask drops text-menubars1 (subsets 10/12/14) which contains
+        // SP submenu labels (NEW GAME / LOAD GAME) and would bleed
+        // onto Medium/Hard at this pose. Keeps text-menubars3
+        // (subsets 11/13/15) = EASY / MEDIUM / HARD per art_mapping.gas.
         var menubarsMask = new bool[17];
-        // Chrome subsets (button bodies)
         menubarsMask[3] = true; menubarsMask[4] = true; menubarsMask[5] = true;
-        // Text subsets (DS1 labels for EASY/MEDIUM/HARD via text-menubars1+3)
-        menubarsMask[10] = true; menubarsMask[11] = true;
-        menubarsMask[12] = true; menubarsMask[13] = true;
-        menubarsMask[14] = true; menubarsMask[15] = true;
-        DrawMesh("menubars", "menubars", clip: "menubars_lm2cd", hold: 1f, vw, vh, menubarsMask);
+        menubarsMask[11] = true; menubarsMask[13] = true; menubarsMask[15] = true;
+        var menubarsClip = fromCd ? "menubars_lm2cd" : "menubars_cd2lm";
+        DrawMesh("menubars", "menubars", clip: menubarsClip, hold: hold, vw, vh, menubarsMask);
 
-        // BACK button only (no Next pair). Use backbutton_pn2b on the
-        // forward path so the prev/next from cd state unwinds to a
-        // single BACK at the difficulty pose. b2pn on reverse goes
-        // back to the prev/next pair.
+        // BACK button only. art_mapping.gas[button_diff_back] = subsets
+        // 4 (exitback chrome) + 8 (text-small BACK label). Drawing more
+        // subsets pulls in the prev/next arrow chrome from cd-state
+        // which renders as residue at the wrong position. Use
+        // backbutton_pn2b on the forward path so the cd's prev/next
+        // unwinds to BACK; b2pn on reverse goes back.
         var backClip = fromCd ? "backbutton_pn2b" : "backbutton_b2pn";
         var backbuttonMask = new bool[11];
-        for (int i = 0; i < 10; i++) backbuttonMask[i] = true;
+        backbuttonMask[4] = true; backbuttonMask[8] = true;
         DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backbuttonMask);
     }
 
@@ -1473,6 +1476,41 @@ public sealed class FrontendScene : IDisposable
     /// Subset 1 is the NEXT-arrow chrome; subset 7 is the NEXT row of
     /// text-small atlas. Same b2pn clip as Previous so both arrow
     /// bones (PrevBase + NextBase) are at the visible Z slot.</summary>
+    /// <summary>SC-DIFF — BACK button on the Difficulty screen.
+    /// art_mapping.gas[button_diff_back]: subsets 4 (exitback chrome)
+    /// + 8 (text-small BACK label). hover/press swap to exitback-up/down
+    /// + text-small-up/down. Same overlay-on-chrome pattern as the
+    /// cd state's prev/next buttons — projects through
+    /// BuildSharedSceneModel so the masked subsets land at their
+    /// natural pose position; (x,y,w,h) used for hit-test in the panel.</summary>
+    public void DrawDiffBackButton(int viewportW, int viewportH,
+                                   int x, int y, int w, int h,
+                                   bool hovered, bool pressed)
+    {
+        var renderer = GetOrLoadMesh("backbutton");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string backTex = pressed ? "exitback-down" : hovered ? "exitback-up" : "exitback";
+        string textTex = pressed ? "text-small-down" : hovered ? "text-small-up" : "text-small";
+
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+
+        if (4 < arr.Length) { arr[4] = GetOrLoadTextureBase(backTex); mask[4] = true; }
+        if (8 < arr.Length) { arr[8] = GetOrLoadTextureBase(textTex); mask[8] = true; }
+
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        // backbutton_pn2b@1.0 = end pose where prev/next has unwound to
+        // single BACK — same pose the difficulty chrome holds.
+        var anim = GetOrLoadClip("backbutton_pn2b");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
     public void DrawNextButton(int viewportW, int viewportH,
                                int x, int y, int w, int h,
                                bool hovered, bool pressed)
