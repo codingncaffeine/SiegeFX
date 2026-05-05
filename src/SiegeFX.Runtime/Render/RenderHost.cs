@@ -1684,6 +1684,8 @@ void main()
                         {
                             var sz = _window.FramebufferSize;
                             _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            // SC-CD-PREVNEXT-WIRE — register prev/next press.
+                            _csMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                         }
                     }
                     return;
@@ -2053,6 +2055,11 @@ void main()
                         {
                             var sz = _window.FramebufferSize;
                             _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            // SC-CD-PREVNEXT-WIRE — also commit Previous/Next
+                            // clicks. Without this the press registered (in
+                            // OnMouseDown) but the up never matched, so the
+                            // Previous button silently did nothing.
+                            _csMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                         }
                     }
                     return;
@@ -2216,6 +2223,8 @@ void main()
                 {
                     var csz = _window.FramebufferSize;
                     _creator.OnMouseMove((int)pos.X, (int)pos.Y, csz.X, csz.Y);
+                    // SC-CD-PREVNEXT-WIRE — prev/next hover overlay updates.
+                    _csMenu.OnMouseMove((int)pos.X, (int)pos.Y, csz.X, csz.Y);
                     // 21d-2a-viii-FE-2 — feed drag delta to the live preview
                     // when the user is mid-drag (LMB held inside the listener
                     // rect). Bidirectional yaw so dragging either way spins
