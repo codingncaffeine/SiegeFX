@@ -6358,31 +6358,44 @@ void main()
             }
         }
 
-        // Phase 29-CD-CREATOR-FIX2 — "CHOOSE HERO" title overlay.
-        // The mainmenu mesh (which carried this label via its text-01
-        // atlas at sng2cd@1.0) is masked off at cd state because its
-        // chrome rail rendered as an unwanted "menu in the middle"
-        // and the same text-01 atlas bled MM/SP-tree labels across
-        // the column. TextRenderer overlay at the authored top-of-
-        // screen position keeps the title without the atlas baggage.
-        if (_textRenderer is not null && _textRenderer.HasFont)
+        // SC-CD-CHOOSEHERO — title plaque renders via mainmenu.asp's
+        // cd-state pose draw inside DrawCdChrome (subset 0 = plaque).
+        // The label subsets 1+2 (text-01L "CHOOSE" / text-01R "HERO")
+        // park off-screen above at sng2cd@1.0 per trace-pose, so we
+        // overlay them via direct UV crops of text-01L.raw / text-01R.raw
+        // — same trick the row labels use.
+        if (_iconRenderer is not null)
         {
-            float titleScale = MathF.Min(viewportH / 600f, viewportW / 800f);
-            int titleFontScale = Math.Max(1, (int)MathF.Round(titleScale)) + 1;
-            const string title = "CHOOSE HERO";
-            int titleW = _textRenderer.MeasureWidth(title, titleFontScale);
-            int titleH = (_textRenderer.Font?.Height ?? 12) * titleFontScale;
-            // Center horizontally on the spinner column (gas X 176-377,
-            // center 276), at gas Y ≈ 90 above the first spinner row.
-            int authoredW = (int)MathF.Round(800 * titleScale);
-            int authoredH = (int)MathF.Round(600 * titleScale);
-            int dx = (viewportW - authoredW) / 2;
-            int dy = (viewportH - authoredH) / 2;
-            int titleCenterX = dx + (int)MathF.Round(276 * titleScale);
-            int titleY = dy + (int)MathF.Round(90 * titleScale);
-            int titleX = titleCenterX - titleW / 2;
-            var titleInk = new Vector4(0.95f, 0.85f, 0.65f, 1f);
-            _textRenderer.DrawString(viewportW, viewportH, title, titleX, titleY, titleInk, titleFontScale);
+            var texL = _frontendScene.GetChromeTexture("text-01L");
+            var texR = _frontendScene.GetChromeTexture("text-01R");
+            if (texL is not null && texR is not null)
+            {
+                float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
+                int authoredH = (int)MathF.Round(600 * scale);
+                int dy = (viewportH - authoredH) / 2;
+                const int titleGasY  = 60;
+                const int titleGasH  = 36;
+                const int chooseGasW = 180; // text-01L slice ~5:1
+                const int heroGasW   = 144; // text-01R slice ~4:1
+                int chooseW = (int)MathF.Round(chooseGasW * scale);
+                int chooseH = (int)MathF.Round(titleGasH  * scale);
+                int heroW   = (int)MathF.Round(heroGasW   * scale);
+                int heroH   = chooseH;
+                int totalW  = chooseW + heroW;
+                int chooseX = (viewportW - totalW) / 2;
+                int chooseY = dy + (int)MathF.Round(titleGasY * scale);
+                int heroX   = chooseX + chooseW;
+                int heroY   = chooseY;
+                var tint = new Vector4(1f, 1f, 1f, 1f);
+                // CHOOSE row = middle of text-01L atlas (5 stacked labels).
+                _iconRenderer.DrawIcon(viewportW, viewportH, texL,
+                    chooseX, chooseY, chooseW, chooseH, tint,
+                    0.00f, 0.40f, 1.00f, 0.60f);
+                // HERO row = middle of text-01R atlas (5 stacked labels).
+                _iconRenderer.DrawIcon(viewportW, viewportH, texR,
+                    heroX, heroY, heroW, heroH, tint,
+                    0.00f, 0.40f, 1.00f, 0.60f);
+            }
         }
 
         // Typed-name overlay at the gas-authored name_edit_box rect.

@@ -742,20 +742,16 @@ public sealed class FrontendScene : IDisposable
         DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f,           vw, vh, leftsidePillarMask);
         DrawMesh("rightside",       "rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsidePillarMask);
 
-        // Phase 29-CD-CREATOR-FIX4 — DO NOT draw mainmenu / menubars in
-        // cd-state. Those are the main-menu / SP-submenu panels — at
-        // sng2cd@1.0 their chrome geometry hangs around in the upper
-        // half of the viewport and reads as "the normal menu sitting
-        // on top of the creator." The character_select screen's actual
-        // left-panel chrome ships in heromenu.asp itself: subset 0 is
-        // the carved spinner-column plate, subsets 1-11+13 are the 12
-        // arrow buttons (drawn per-widget by DrawHeromenuButton), 12 is
-        // the column shadow, and 14 is the "GENDER/HEAD/FACE/HAIR/
-        // SHIRT/PANTS" label strip. Rendering heromenu_begin@1.0 below
-        // gives us all of that in one mesh. The right half is just the
-        // backdrop's stone wall + the gear-pillar pair — clear viewport
-        // for HeroPreviewRenderer to paint the 3D char into the
-        // gas-authored listener rect (408,73,649,494 in 800x600).
+        // SC-CD-CHOOSEHERO — mainmenu.asp draw at sng2cd@hold for the
+        // title scroll plaque + CHOOSE HERO engraved labels. Same chrome
+        // the main menu and SP submenu screens use. Rendered BEFORE
+        // backbutton + heromenu so the heromenu chrome plate masks the
+        // body chrome where they overlap on the spinner column. Mask
+        // drops text-02L/R (DIFFICULTY row, parked at this pose) and
+        // shadows. Subsets 0+1+2 = chrome plate + text-01L + text-01R.
+        var mainmenuMask = new[] { true, true, true, false, false, false };
+        var mainClip = fromSp ? "mainmenu_sng2cd" : "mainmenu_cd2sng";
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
         // backbutton uses ac/b/e/pn state codes. Character_select shows
         // the Previous/Next button pair (pn). End of b2pn = pn pose
         // (same destination as ac2pn — which the pre-Phase-28 code used
@@ -1546,7 +1542,6 @@ public sealed class FrontendScene : IDisposable
     /// for the character creator row labels.</summary>
     public GlTexture? GetChromeTexture(string baseName)
         => GetOrLoadTextureBase(baseName);
-
 
     private GlTexture? GetOrLoadTexture(string textureName)
     {
