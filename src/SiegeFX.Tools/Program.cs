@@ -38,6 +38,7 @@ try
         "ui"        => DispatchUi(args[1..]),
         "flm"       => DispatchFlm(args[1..]),
         "music"     => DispatchMusic(args[1..]),
+        "tsd"       => DispatchTsd(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -6357,6 +6358,82 @@ static int CmdFlmDump(string[] a)
         Console.WriteLine($"  frame {i,2}: {path}");
     }
     return 0;
+}
+
+// SC-TSD-ANIM — TSD sidecar dump for self-verification. Loads a Terrain
+// .dsres tank, parses every art/bitmaps/terrain/**.gas, and prints a
+// summary plus a sample of frame-cycle and multi-layer records so we can
+// confirm the parser is reading the data DS1 actually authors.
+static int DispatchTsd(string[] a)
+{
+    if (a.Length == 0)
+    {
+        Console.Error.WriteLine("usage: siegefx tsd dump <Terrain.dsres> [--name=NAME]");
+        return 1;
+    }
+    if (!a[0].Equals("dump", StringComparison.OrdinalIgnoreCase))
+        return UnknownCommand("tsd " + a[0]);
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx tsd dump <Terrain.dsres> [--name=NAME]"); return 1; }
+
+    string? filterName = null;
+    for (int i = 2; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--name=", StringComparison.OrdinalIgnoreCase))
+            filterName = a[i].Substring("--name=".Length);
+    }
+
+    using var tank = TankFile.Open(a[1]);
+    var reader = new TankReader(tank);
+    var store = TsdStore.LoadFromTerrain(reader);
+
+    int total = 0, multiLayer = 0, frameCycle = 0, layer1Scrolls = 0, layer2Scrolls = 0;
+    var samples = new List<TsdStore.Record>();
+    foreach (var name in EnumerateTsdNames(reader))
+    {
+        var rec = store.Get(name);
+        if (rec is null) continue;
+        total++;
+        if (rec.Layer2 is not null) multiLayer++;
+        if (rec.Layer1.Textures.Length > 1) frameCycle++;
+        if (rec.Layer1.UshiftPerSecond != 0f || rec.Layer1.VshiftPerSecond != 0f) layer1Scrolls++;
+        if (rec.Layer2 is not null && (rec.Layer2.UshiftPerSecond != 0f || rec.Layer2.VshiftPerSecond != 0f)) layer2Scrolls++;
+        if (filterName is not null && !name.Contains(filterName, StringComparison.OrdinalIgnoreCase)) continue;
+        if (samples.Count < 12) samples.Add(rec);
+    }
+
+    Console.WriteLine($"TSD records parsed:    {total}");
+    Console.WriteLine($"  multi-layer (l2):    {multiLayer}");
+    Console.WriteLine($"  frame-cycle (l1>1):  {frameCycle}");
+    Console.WriteLine($"  layer1 has scroll:   {layer1Scrolls}");
+    Console.WriteLine($"  layer2 has scroll:   {layer2Scrolls}");
+    Console.WriteLine();
+    Console.WriteLine("samples:");
+    foreach (var rec in samples)
+    {
+        Console.WriteLine($"  [{rec.Name}]");
+        DumpLayer(rec.Layer1, 1);
+        if (rec.Layer2 is not null) DumpLayer(rec.Layer2, 2);
+    }
+    return 0;
+}
+
+static IEnumerable<string> EnumerateTsdNames(TankReader reader)
+{
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+        if (path.IndexOf("/terrain/", StringComparison.OrdinalIgnoreCase) < 0) continue;
+        var bare = System.IO.Path.GetFileNameWithoutExtension(path);
+        yield return bare;
+    }
+}
+
+static void DumpLayer(TsdStore.Layer l, int idx)
+{
+    var first = l.Textures[0];
+    var last = l.Textures[^1];
+    Console.WriteLine($"    layer{idx}: textures={l.Textures.Length} ({first}{(l.Textures.Length > 1 ? " .. " + last : "")})" +
+                      $" spf={l.SecondsPerFrame} u/s={l.UshiftPerSecond} v/s={l.VshiftPerSecond} op={l.Op}");
 }
 
 static int DispatchMusic(string[] a)

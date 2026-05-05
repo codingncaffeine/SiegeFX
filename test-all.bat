@@ -164,6 +164,7 @@ echo   91. Phase 21-SC-SPELL-VISUAL    - Primitive sweep (10 spells, one per sli
 echo   92. Phase 21-SC-BARREL          - Breakable barrels (cursor + spell + frags + loot, fh_r1)
 echo   93. Phase 23-SC-OPTIONS         - Options Menu (F10 in-game; 4 tabs Video/Audio/Input/Game)
 echo   94. Phase 24-MAINMENU            - Boot to main menu (no args; splash to logo drop to 7 buttons)
+echo   95. SC-TSD-ANIM                  - Water frame-cycle + waterfall layer-2 modulate2x (fh_r1)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -264,6 +265,7 @@ if /i "%CHOICE%"=="91" goto T91
 if /i "%CHOICE%"=="92" goto T92
 if /i "%CHOICE%"=="93" goto T93
 if /i "%CHOICE%"=="94" goto T94
+if /i "%CHOICE%"=="95" goto T95
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2162,6 +2164,34 @@ for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net8.0\siegefx_crash.log") do 
   type "%%~F"
   echo ------------------
 )
+pause
+goto MENU
+
+:T95
+echo.
+echo --- SC-TSD-ANIM: water frame-cycle + waterfall layer-2 ---
+echo [DS1 stores per-texture animation in TSD .gas sidecars. Two recipes:]
+echo.
+echo   1. River surface (b_t_grs01_rvr_water-2a-*.gas): layer1numframes=4,
+echo      layer1secondsperframe=0.15, four distinct textures cycled at ~6.7fps,
+echo      timesyncanimation=true so all river tiles stay in lockstep.
+echo   2. Waterfall (b_t_grs01_wheelfallstatic-01.gas): layer 1 = static
+echo      painted-on rock, layer 2 = b_t_grs01_rvr_dynamic with
+echo      vshiftpersecond=0.5 and colorop=modulate2x. The visible cascade is
+echo      the layer-2 dynamic texture scrolling vertically and modulate2x
+echo      blended onto the static base.
+echo.
+echo [SC-TSD-ANIM-A reads every TSD .gas at terrain-tank open, indexes by
+echo  texture name. SC-TSD-ANIM-B extends the mesh fragment shader with a
+echo  second sampler (uAlbedo2), independent uv offset, and colorop selector.]
+echo.
+echo [Receipt: walk to the bridge near the farmhouse (NE of spawn). The river
+echo  surface should ripple at 6-7 frames per second. Walk around the bend to
+echo  the wheelfall — the cascade should slide downward at ~0.5 unit per second
+echo  with the modulate2x brightening on top of the static rock.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
 pause
 goto MENU
 

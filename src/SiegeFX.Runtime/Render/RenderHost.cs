@@ -1018,6 +1018,12 @@ public sealed class RenderHost : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoMesh> _regionMeshes = new();
     private readonly List<RegionInstance> _regionInstances = new();
+    // SC-TSD-ANIM — TSD sidecar index loaded once at terrain-tank open. Drives
+    // frame-cycle binding (rivers cycle 4 textures at 0.15s/frame) and
+    // multi-layer blend (waterfalls layer a scrolling _dynamic on top of a
+    // static base with modulate2x). Null on launch paths that don't open a
+    // terrain tank (the dev primitive scenes).
+    private TsdStore? _tsdStore;
     // Phase 21b-2 — pre-resolved subset texture names per (mesh, texsetAbbr).
     // ResolveTexName previously allocated a new string per subset per region
     // instance per frame (ResolveTexName does string.Concat when the basename
@@ -1165,18 +1171,130 @@ public sealed class RenderHost : IDisposable
         return false;
     }
 
-    /// <summary>Phase 17-SC-J followup — DS1 stores per-texture scroll under
-    /// <c>layer1ushiftpersecond</c> / <c>layer1vshiftpersecond</c> in each
-    /// texture's TSD <c>.gas</c> sidecar. SC-I shipped a name heuristic
-    /// (<c>fall</c> on / <c>static</c> off) which was wrong on both sides:
-    /// it scrolled autumn-grass land textures whose name contains "fall",
-    /// and it skipped the wheelfall waterfall whose layer-1 ships static
-    /// (the visible motion is a separate <c>b_t_grs01_rvr_dynamic</c> layer-2
-    /// overlay blended <c>modulate2x</c>, which a future slice will land).
-    /// For now: layer-1 never scrolls — every shipped <c>rvr_*</c> sidecar
-    /// authors layer1 vshift = 0. Until the overlay layer ships, water reads
-    /// stationary; the prior heuristic's wrong-texture scroll is gone.</summary>
-    private static Vector2 ComputeTexUvOffset(string textureName, double time) => Vector2.Zero;
+    /// <summary>SC-TSD-ANIM — build the per-region TSD index from the open
+    /// terrain tank, then pre-load every texture referenced by frame-cycle
+    /// layer 1 (frames 2..N) and layer 2 that the static-subset texture
+    /// pass would otherwise miss. Without this, a river surface authored as
+    /// a 4-frame cycle reaches the draw loop with only frame 1 in
+    /// <c>_snoTextures</c> and the cycle stalls; a waterfall has its layer 1
+    /// loaded but layer 2 (<c>_dynamic</c>) is never referenced by an SNO
+    /// subset at all, so it'd never appear without explicit preload.</summary>
+    private void BuildTsdStoreAndPreload(TankReader terrainReader, Dictionary<string, string> rawIndex)
+    {
+        if (_gl is null) return;
+        try { _tsdStore = TsdStore.LoadFromTerrain(terrainReader); }
+        catch { _tsdStore = null; return; }
+
+        // Walk the texture set referenced by every loaded subset and pull in
+        // any extra textures the TSD points to. Textures the SNO subset already
+        // loaded (frame 1, the static base of a multi-layer recipe) are
+        // skipped via the _snoTextures.ContainsKey gate.
+        var seen = new List<string>(_snoTextures.Keys);
+        foreach (var baseName in seen)
+        {
+            var rec = _tsdStore.Get(baseName);
+            if (rec is null) continue;
+            foreach (var t in rec.Layer1.Textures) PreloadTextureIfMissing(t, rawIndex, terrainReader);
+            if (rec.Layer2 is not null)
+                foreach (var t in rec.Layer2.Textures) PreloadTextureIfMissing(t, rawIndex, terrainReader);
+        }
+    }
+
+    private void PreloadTextureIfMissing(string name, Dictionary<string, string> rawIndex, TankReader terrainReader)
+    {
+        if (_gl is null) return;
+        if (_snoTextures.ContainsKey(name)) return;
+        if (!rawIndex.TryGetValue(name, out var path)) return;
+        try
+        {
+            var raw = RawImage.Load(terrainReader.ExtractToMemory(path));
+            _snoTextures[name] = new GlTexture(_gl, raw);
+        }
+        catch { /* unreadable .raw — leave it; sample will fall through to the static base */ }
+    }
+
+    /// <summary>SC-TSD-ANIM — resolve the *animated* binding for a texture
+    /// referenced by an SNO subset at the current <paramref name="time"/>.
+    /// Falls through to the authored name with zero offset when no TSD entry
+    /// exists (every static prop / floor tile takes this path). When a TSD
+    /// declares <c>layer1numframes &gt; 1</c>, returns the appropriate frame
+    /// texture (river surfaces cycle 4 frames at 6.67 fps with
+    /// <c>timesyncanimation</c>). When the TSD has a layer 2, returns it in
+    /// the out parameter so the caller can bind it on Texture1 and blend per
+    /// the colorop (waterfalls modulate2x a scrolling _dynamic over a static
+    /// base — the layer-2 v-shift is the visible motion).</summary>
+    /// <summary>SC-TSD-ANIM — drives both the layer-1 binding (frame-cycle
+    /// aware) and the optional layer-2 sampler from a single texture name.
+    /// Static surfaces hit the early-return path and pay nothing extra
+    /// (one TSD lookup that misses, one zero-offset uniform write). Multi-
+    /// layer textures bind on Texture0 + Texture1 with independent UV
+    /// offsets and a colorop selector. Caller must have set
+    /// <c>uAlbedo2 = 1</c> once before the draw run.</summary>
+    private void ApplyAnimatedTextureBinding(string textureName)
+    {
+        if (_meshShader is null) return;
+        var (l1, l1Off, l1Op, l2, l2Off, l2Op) = ResolveAnimatedTexture(textureName, _terrainTime);
+        _meshShader.SetInt("uColorop1", (int)l1Op);
+        // SC-TSD-ANIM direction fix — terrain renders with uFlipV=1 (vUv.y is
+        // inverted before sampling). DS1 authored vshiftpersecond for D3D
+        // where V=0 is at the top; after the GL V-flip, a positive +v scroll
+        // reads upside-down on screen (waterfalls would flow upward). Negate
+        // the V component so the cascade falls down as authored, and the
+        // -0.20 mist on b_t_grs01_rvr_fall-mist-08x08-dynamic correctly
+        // drifts upward to look like spray rising at the base. U is left
+        // alone (no horizontal flip is applied).
+        l1Off = new Vector2(l1Off.X, -l1Off.Y);
+        l2Off = new Vector2(l2Off.X, -l2Off.Y);
+        if (_snoTextures.TryGetValue(l1, out var t1))
+        {
+            t1.Bind(TextureUnit.Texture0);
+            _meshShader.SetInt("uHasTexture", 1);
+        }
+        else
+        {
+            _meshShader.SetInt("uHasTexture", 0);
+        }
+        _meshShader.SetVec2("uUvOffset", l1Off);
+        if (l2 is not null && _snoTextures.TryGetValue(l2, out var t2))
+        {
+            t2.Bind(TextureUnit.Texture1);
+            _meshShader.SetInt("uHasTexture2", 1);
+            _meshShader.SetVec2("uUvOffset2", l2Off);
+            _meshShader.SetInt("uColorop2", (int)l2Op);
+        }
+        else
+        {
+            _meshShader.SetInt("uHasTexture2", 0);
+        }
+    }
+
+    /// <summary>Restores layer-1-only state after a region/SNO draw run so
+    /// the next pass (actors, weapons, props) doesn't accidentally inherit
+    /// a stale UV offset or layer-2 binding. Called once after each loop.</summary>
+    private void ResetAnimatedTextureBinding()
+    {
+        if (_meshShader is null) return;
+        _meshShader.SetVec2("uUvOffset", Vector2.Zero);
+        _meshShader.SetInt("uHasTexture2", 0);
+        _meshShader.SetInt("uColorop1", 0);
+    }
+
+    private (string Layer1Tex, Vector2 Layer1Off, TsdStore.ColorOp Layer1Op,
+             string? Layer2Tex, Vector2 Layer2Off, TsdStore.ColorOp Layer2Op)
+        ResolveAnimatedTexture(string textureName, double time)
+    {
+        if (_tsdStore is null)
+            return (textureName, Vector2.Zero, TsdStore.ColorOp.Modulate, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
+        var rec = _tsdStore.Get(textureName);
+        if (rec is null)
+            return (textureName, Vector2.Zero, TsdStore.ColorOp.Modulate, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
+        var (l1Name, l1U, l1V) = rec.Layer1.Sample(time);
+        if (rec.Layer2 is null)
+            return (l1Name, new Vector2(l1U, l1V), rec.Layer1.Op, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
+        var (l2Name, l2U, l2V) = rec.Layer2.Sample(time);
+        return (l1Name, new Vector2(l1U, l1V), rec.Layer1.Op,
+                l2Name, new Vector2(l2U, l2V), rec.Layer2.Op);
+    }
 
     /// <summary>Phase 17-SC-J — pull <c>aspect.scale_multiplier</c> for a placed
     /// prop. DS1 lets the *instance* override the template (fh_r1's breakable
@@ -1320,6 +1438,21 @@ uniform int       uFlipV;
 // for everything else, which the host resets between water and non-water
 // passes so the offset doesn't leak into actors/weapons/static props.
 uniform vec2      uUvOffset;
+// SC-TSD-ANIM — optional second texture layer. When uHasTexture2 is set,
+// the host bound a layer-2 sampler (the waterfall's _dynamic overlay,
+// scrolled separately by uUvOffset2) and uColorop2 selects the blend.
+// 0 = unused (fragment uses layer-1 only), 1 = modulate, 2 = modulate2x,
+// 3 = arg2 (replace with layer 2). Default = 0 so static props/floors
+// pay nothing extra. uColorop1 carries the layer-1 colorop so the boost
+// from DS1's `layer1colorop = modulate2x` (river surface, waterfall base
+// + top, broken-bridge fall) is preserved — without it the whitewater
+// foam in the layer-2 dynamic modulates against an under-bright base
+// and reads as a flat dim tone instead of bright surface agitation.
+uniform sampler2D uAlbedo2;
+uniform int       uHasTexture2;
+uniform vec2      uUvOffset2;
+uniform int       uColorop1;
+uniform int       uColorop2;
 // Phase 21c-3 — region directional lighting. Replaces the prior single-white-sun
 // constant. uDirCount may be 0 (no lights file → fall back to ambient-only),
 // 1 (single key sun), or up to 4. uDirColor is pre-multiplied by intensity so
@@ -1338,7 +1471,45 @@ void main()
     vec4 sampled = (uHasTexture != 0)
         ? texture(uAlbedo, uv)
         : fallback;
-    if (uHasTexture != 0 && sampled.a < 0.5) discard;
+    // Single-layer surfaces use the original 0.5 cutout (foliage cards, fences,
+    // grass clumps). For multi-layer (uHasTexture2 set), DS1 ships mist quads
+    // with soft-alpha layer-1 textures whose visible shape lives in alpha < 0.5
+    // territory — discarding here would kill the entire mist quad before the
+    // layer-2 dynamic ever gets sampled. Drop the threshold to a near-zero
+    // value when layer 2 is active so mist regions survive long enough for
+    // the modulate2x blend below to paint the scrolling spray.
+    float discardThreshold = (uHasTexture2 != 0) ? 0.02 : 0.5;
+    if (uHasTexture != 0 && sampled.a < discardThreshold) discard;
+
+    // SC-TSD-ANIM — DS1 fixed-function pipeline equivalence. Stage 1 (layer 1)
+    // optionally applies modulate2x against the vertex color (we fold the
+    // 2x into the texture sample directly so the rest of the lighting math
+    // is unchanged); arg2 means the diffuse alone is the stage output. Stage
+    // 2 (layer 2) then modulates / modulate2x'es / replaces. The whitewater
+    // recipe (b_t_grs01_rvr_static, fall-bottom-static, etc.) authors layer 1
+    // = modulate2x AND layer 2 dynamic = modulate, so the bright foam reads
+    // visibly against the surrounding ground; without the layer-1 boost,
+    // the whole tile is a flat dim tone.
+    // Colorop enum matches TsdStore.ColorOp: 0=Modulate, 1=Modulate2x,
+    // 2=Arg1, 3=Arg2. (Earlier this code checked == 2 for modulate2x and
+    // therefore silently skipped every multi-layer recipe in the game —
+    // the only motion came from the layer-2 sampler's UV scroll, not the
+    // bright-foam boost the recipe is supposed to produce.)
+    if (uColorop1 == 1) {
+        sampled.rgb = clamp(sampled.rgb * 2.0, 0.0, 1.0);
+    }
+    if (uHasTexture2 != 0) {
+        vec2 uv2 = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+        uv2 += uUvOffset2;
+        vec4 s2 = texture(uAlbedo2, uv2);
+        if (uColorop2 == 1) {
+            sampled.rgb = clamp(sampled.rgb * s2.rgb * 2.0, 0.0, 1.0);
+        } else if (uColorop2 == 3) {
+            sampled.rgb = s2.rgb;
+        } else {
+            sampled.rgb = sampled.rgb * s2.rgb;
+        }
+    }
 
     vec3 N = normalize(vNormal);
     vec3 lighting = vec3(uAmbient);
@@ -2957,6 +3128,8 @@ void main()
             }
         }
 
+        BuildTsdStoreAndPreload(terrainReader, rawIndex);
+
         // Frame the camera over the root region's origin, lifted so the player sees a
         // decent patch of ground on first paint. World extents span ±1km, so the user
         // will fly a lot — WASD+sprint is the expected traversal.
@@ -3058,6 +3231,8 @@ void main()
 
             _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr));
         }
+
+        BuildTsdStoreAndPreload(terrainReader, rawIndex);
 
         // Frame the camera on the anchor: pull back along +Z by ~3× the anchor SNO's
         // bounding radius and lift by ~1× so the tile is comfortably visible on first
@@ -3330,6 +3505,12 @@ void main()
                 instancesAdded++;
             }
         }
+
+        // SC-TSD-ANIM — refresh TSD store + preload any newly-needed layer-2
+        // / frame-cycle textures whenever a fresh terrain tank gets opened
+        // for streaming. Idempotent: BuildTsdStoreAndPreload re-runs the
+        // index but only loads textures missing from _snoTextures.
+        BuildTsdStoreAndPreload(terrainReader, rawIndex);
 
         if (isInitial)
         {
@@ -10216,22 +10397,14 @@ void main()
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uFlipV", 1);
             ApplyLightingUniforms(_meshShader);
+            _meshShader.SetInt("uAlbedo2", 1);
             for (var i = 0; i < _sno.Subsets.Count; i++)
             {
                 var subset = _sno.Subsets[i];
-                if (_snoTextures.TryGetValue(subset.TextureName, out var tex))
-                {
-                    tex.Bind(TextureUnit.Texture0);
-                    _meshShader.SetInt("uHasTexture", 1);
-                }
-                else
-                {
-                    _meshShader.SetInt("uHasTexture", 0);
-                }
-                _meshShader.SetVec2("uUvOffset", ComputeTexUvOffset(subset.TextureName, _terrainTime));
+                ApplyAnimatedTextureBinding(subset.TextureName);
                 _sno.DrawSubset(i);
             }
-            _meshShader.SetVec2("uUvOffset", Vector2.Zero);
+            ResetAnimatedTextureBinding();
         }
 
         if (_skinShader is not null && _skinnedMesh is not null && _skinnedAsp is not null && _anim is not null)
@@ -10832,28 +11005,53 @@ void main()
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uFlipV", 1);
             ApplyLightingUniforms(_meshShader);
-            foreach (var inst in _regionInstances)
+            _meshShader.SetInt("uAlbedo2", 1);
+            // SC-TSD-ANIM draw-order — split the region pass in two: pass 1
+            // draws every subset that resolves to a single-layer TSD (or has
+            // no TSD at all — pure static water tiles, ground, walls,
+            // bridges); pass 2 draws every subset whose TSD authored a layer
+            // 2 (the foam recipes: wheelfallstatic-01, fall-bottom-static,
+            // fall-top-static, fall-mist-08x08-static, rvr_static, broken-
+            // bridge-fall-*-static). Without the split, an adjacent SNO
+            // carrying a plain water tile (rvr_04x08-01 in t_fh00_wfall_1b
+            // or rvr-custom-01) iterated later in the placement order
+            // depth-fights the foam plane in t_fh00_wheeletc and visually
+            // covers the bright foam streaks. Two-pass guarantees foam is
+            // last regardless of region-graph placement order.
+            for (var pass = 0; pass < 2; pass++)
             {
-                _meshShader.SetMatrix4("uModel", inst.World);
-                // Phase 21b-2 — pulled from the (mesh, texsetAbbr) cache so the
-                // inner subset loop allocates zero strings per frame.
-                var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
-                for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
+                if (pass == 1)
                 {
-                    if (_snoTextures.TryGetValue(resolvedNames[i], out var tex))
+                    // Foam decal pass: push the depth values toward the camera
+                    // so a co-planar (or marginally higher-Y) plain-water tile
+                    // from a neighboring SNO can't depth-cover the foam plane.
+                    // Standard glPolygonOffset trick used for decals; the
+                    // offset is in depth-buffer units so it doesn't visibly
+                    // shift the geometry. Restored after the pass so other
+                    // draws (HUD, particles, actors) see the default state.
+                    _gl.Enable(EnableCap.PolygonOffsetFill);
+                    _gl.PolygonOffset(-2.0f, -2.0f);
+                }
+                foreach (var inst in _regionInstances)
+                {
+                    var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
+                    bool modelSet = false;
+                    for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
                     {
-                        tex.Bind(TextureUnit.Texture0);
-                        _meshShader.SetInt("uHasTexture", 1);
+                        bool isFoam = _tsdStore is not null && _tsdStore.Get(resolvedNames[i])?.Layer2 is not null;
+                        if ((pass == 0 && isFoam) || (pass == 1 && !isFoam)) continue;
+                        if (!modelSet) { _meshShader.SetMatrix4("uModel", inst.World); modelSet = true; }
+                        ApplyAnimatedTextureBinding(resolvedNames[i]);
+                        inst.Mesh.DrawSubset(i);
                     }
-                    else
-                    {
-                        _meshShader.SetInt("uHasTexture", 0);
-                    }
-                    _meshShader.SetVec2("uUvOffset", ComputeTexUvOffset(resolvedNames[i], _terrainTime));
-                    inst.Mesh.DrawSubset(i);
+                }
+                if (pass == 1)
+                {
+                    _gl.PolygonOffset(0f, 0f);
+                    _gl.Disable(EnableCap.PolygonOffsetFill);
                 }
             }
-            _meshShader.SetVec2("uUvOffset", Vector2.Zero);
+            ResetAnimatedTextureBinding();
         }
 
         // Phase 17-SC-E — billboard particles. Sit above the world scene
