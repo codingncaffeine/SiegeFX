@@ -6257,6 +6257,30 @@ void main()
     private void DrawCharacterCreatorOverlays(int viewportW, int viewportH)
     {
         if (_frontendScene is null) return;
+        // SC-CD-PREVNEXT-HOVER — fire texture-swap overlay only when
+        // hovered or pressed. Chrome's DrawCdChrome backbutton draw is
+        // the mouseout base; per-widget overlay paints exitback-up /
+        // exitback-down + text-small-up / text-small-down on top when
+        // the user is on the button. Same pattern as DrawHeromenuButton
+        // for the spinner arrows.
+        if (_csMenu.TryGetButtonStateAndRect(
+                Hud.CharacterSelectMenuPanel.Action.Previous,
+                viewportW, viewportH,
+                out int pX, out int pY, out int pW, out int pH,
+                out bool pHov, out bool pPr) && (pHov || pPr))
+        {
+            _frontendScene.DrawPreviousButton(viewportW, viewportH,
+                pX, pY, pW, pH, pHov, pPr);
+        }
+        if (_csMenu.TryGetButtonStateAndRect(
+                Hud.CharacterSelectMenuPanel.Action.Next,
+                viewportW, viewportH,
+                out int nX, out int nY, out int nW, out int nH,
+                out bool nHov, out bool nPr) && (nHov || nPr))
+        {
+            _frontendScene.DrawNextButton(viewportW, viewportH,
+                nX, nY, nW, nH, nHov, nPr);
+        }
         var actions = new[]
         {
             (Hud.CharacterCreatorPanel.Action.GenderLeft,  "button_gender_left"),
@@ -6394,27 +6418,15 @@ void main()
         }
     }
 
-    /// <summary>Phase 28-CD-FLYOUT — hover overlay for the Character
-    /// Creator's Previous / Next bottom-nav buttons.</summary>
-    private void DrawCsMenuHoverOverlays(int viewportW, int viewportH)
-    {
-        if (_barRenderer is null) return;
-        var actions = new[]
-        {
-            Hud.CharacterSelectMenuPanel.Action.Previous,
-            Hud.CharacterSelectMenuPanel.Action.Next,
-        };
-        var hoverTint = new Vector4(1f, 1f, 1f, 0.22f);
-        var pressTint = new Vector4(0f, 0f, 0f, 0.30f);
-        foreach (var a in actions)
-        {
-            if (!_csMenu.TryGetButtonStateAndRect(a, viewportW, viewportH,
-                    out int x, out int y, out int w, out int h,
-                    out bool hov, out bool pr)) continue;
-            if (pr) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, pressTint);
-            else if (hov) _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, hoverTint);
-        }
-    }
+    /// <summary>Phase 28-CD-FLYOUT — was a flat _barRenderer alpha rect
+    /// over the prev/next hit areas on hover/press. SC-CD-PREVNEXT-HOVER
+    /// turned this into a no-op: the chrome texture-swap (DrawPreviousButton
+    /// / DrawNextButton with exitback-up/-down + text-small-up/-down per
+    /// art_mapping.gas) is the real engraved highlight; the flat tint
+    /// painted a boxy rectangle over it that overrode the authored shape,
+    /// matching the same regression we saw on the spinner arrows. Function
+    /// kept as a stub so callers don't break.</summary>
+    private void DrawCsMenuHoverOverlays(int viewportW, int viewportH) { }
 
     /// <summary>Phase 27-SP-FLYOUT-FIX — render the SP submenu's two
     /// button labels via TextRenderer. Replaces the masked-off

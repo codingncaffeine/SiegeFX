@@ -1347,6 +1347,14 @@ public sealed class FrontendScene : IDisposable
                                    int x, int y, int w, int h,
                                    bool hovered, bool pressed)
     {
+        // SC-CD-PREVNEXT-HOVER (2026-05-04) — overlay-on-chrome pattern
+        // matching DrawHeromenuButton: project through BuildSharedSceneModel
+        // (chrome's own projection) so the masked subsets land at exactly
+        // their cd-state pose position from backbutton_b2pn@1.0; no rect-
+        // fitting math, no W/H multipliers, no overlap. (x,y,w,h) are
+        // panel hit-rect coords — kept for API parity with DrawNextButton
+        // but ignored inside this draw, since the chrome's mesh
+        // projection drives where pixels land.
         var renderer = GetOrLoadMesh("backbutton");
         if (renderer is null) return;
         var names = renderer.Asp.TextureNames;
@@ -1359,22 +1367,18 @@ public sealed class FrontendScene : IDisposable
         for (int i = 0; i < names.Count; i++)
             arr[i] = GetOrLoadTexture(names[i]);
 
-        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
+        // art_mapping.gas[button_previous] = subsets 2 + 6 only. Subset 0
+        // is the shared chrome plate behind BOTH buttons — touching it on
+        // hover is incorrect per the gas (and makes the highlight pollute
+        // the Next side). 2 = exitback-up arrow chrome; 6 = text-small-up
+        // PREVIOUS label.
         if (2 < arr.Length) { arr[2] = GetOrLoadTextureBase(backTex); mask[2] = true; }
         if (6 < arr.Length) { arr[6] = GetOrLoadTextureBase(textTex); mask[6] = true; }
 
-        const float visualWMul = 5.0f;
-        const float visualHMul = 2.0f;
-        int vw = (int)(w * visualWMul);
-        int vh = (int)(h * visualHMul);
-        int vx = x + (w - vw) / 2;
-        int vy = y + (h - vh) / 2;
-        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
-        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+        var model = BuildSharedSceneModel(viewportW, viewportH);
 
-        // Apply backbutton_b2pn at hold=1 so subset 6's PrevBase bone
-        // is at the visible Z slot — same bone-Z-swap mechanism the
-        // backbutton_e2b clip uses for EXIT→BACK on subset 8.
+        // backbutton_b2pn at hold=1 so subset 6's PrevBase bone is at the
+        // visible Z slot — same bone-Z-swap the chrome uses.
         var anim = GetOrLoadClip("backbutton_b2pn");
         float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
         renderer.DrawWithModel(viewportW, viewportH, model, arr,
@@ -1391,6 +1395,9 @@ public sealed class FrontendScene : IDisposable
                                int x, int y, int w, int h,
                                bool hovered, bool pressed)
     {
+        // SC-CD-PREVNEXT-HOVER — same pattern as DrawPreviousButton.
+        // BuildSharedSceneModel projects subsets to their cd-state-pose
+        // chrome position from backbutton_b2pn@1.0. (x,y,w,h) ignored.
         var renderer = GetOrLoadMesh("backbutton");
         if (renderer is null) return;
         var names = renderer.Asp.TextureNames;
@@ -1403,23 +1410,12 @@ public sealed class FrontendScene : IDisposable
         for (int i = 0; i < names.Count; i++)
             arr[i] = GetOrLoadTexture(names[i]);
 
-        if (0 < arr.Length) { arr[0] = GetOrLoadTextureBase(backTex); mask[0] = true; }
+        // art_mapping.gas[button_next] = subsets 1 + 7 only. 1 = exitback-up
+        // arrow chrome (NEXT side); 7 = text-small-up NEXT label.
         if (1 < arr.Length) { arr[1] = GetOrLoadTextureBase(backTex); mask[1] = true; }
         if (7 < arr.Length) { arr[7] = GetOrLoadTextureBase(textTex); mask[7] = true; }
 
-        // Phase 29-CD-CREATOR-FIX2 — drop visual padding entirely so
-        // the visible button matches the gas-authored hit-test rect
-        // 1:1. EXIT's 5×/2× padding is for its arrow flank decoration;
-        // Previous/Next's authored 101×20 rect is the full visible
-        // size, no flanking decoration to fit.
-        const float visualWMul = 1.0f;
-        const float visualHMul = 1.0f;
-        int vw = (int)(w * visualWMul);
-        int vh = (int)(h * visualHMul);
-        int vx = x + (w - vw) / 2;
-        int vy = y + (h - vh) / 2;
-        var (subMin, subMax) = ComputeSubsetBounds2D(renderer.Asp, mask);
-        var model = BuildSubsetRectModel(vx, vy, vw, vh, subMin, subMax);
+        var model = BuildSharedSceneModel(viewportW, viewportH);
 
         var anim = GetOrLoadClip("backbutton_b2pn");
         float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
