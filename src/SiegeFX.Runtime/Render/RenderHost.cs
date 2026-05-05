@@ -6143,6 +6143,15 @@ void main()
                 }
             }
         }
+        // SC-OPTIONS-CHROME — Options dialog must draw in boot mode too
+        // (was only firing in the in-game render block at line ~10808
+        // which DrawBootScene's early-return skips). Without this,
+        // clicking Options on the Main Menu opens the dialog but it
+        // never renders → "nothing happens when I click it."
+        if (_optionsMenu.IsOpen && _barRenderer is not null)
+        {
+            _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH);
+        }
         _textRenderer.EndPass();
     }
 
@@ -10805,7 +10814,7 @@ void main()
             // visually correctly (Options on top of Pause's dim layer).
             if (_optionsMenu.IsOpen && _barRenderer is not null)
             {
-                _optionsMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, size.X, size.Y);
             }
             // Phase 21d-2a-viii-b: character creator. Topmost UI when open
             // (gates player spawn). Sits above pause because Esc-while-creator

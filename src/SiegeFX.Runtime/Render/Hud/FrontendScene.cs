@@ -1543,6 +1543,14 @@ public sealed class FrontendScene : IDisposable
     public GlTexture? GetChromeTexture(string baseName)
         => GetOrLoadTextureBase(baseName);
 
+    /// <summary>SC-OPTIONS-CHROME — load a common-chrome texture by
+    /// bare base name (e.g. "cpbox2_ul" → b_gui_cmn_cpbox2_ul.raw).
+    /// Different prefix from the frontend chrome accessor since the
+    /// 9-patch / button / slider chrome lives under
+    /// `/art/bitmaps/gui/common/b_gui_cmn_*.raw` in Objects.dsres.</summary>
+    public GlTexture? GetCommonTexture(string baseName)
+        => GetOrLoadTexture("b_gui_cmn_" + baseName);
+
     private GlTexture? GetOrLoadTexture(string textureName)
     {
         // Strip the -mapN atlas-cell aliases (heromenu-map7 → heromenu) so all

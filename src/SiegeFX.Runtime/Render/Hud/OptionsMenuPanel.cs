@@ -437,7 +437,9 @@ internal sealed class OptionsMenuPanel
         return Hits(_outer, px, py);
     }
 
-    public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
+    public void Draw(BarRenderer bars, TextRenderer text,
+        IconRenderer? icons, FrontendScene? scene,
+        int viewportW, int viewportH)
     {
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
@@ -448,10 +450,23 @@ internal sealed class OptionsMenuPanel
         bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH,
             new Vector4(0f, 0f, 0f, 0.60f));
 
-        // Outer panel (placeholder solid fill — slice A2 will swap in
-        // the b_gui_cmn_cpbox2 9-slice border).
-        bars.DrawRect(viewportW, viewportH, _outer.X, _outer.Y, _outer.W, _outer.H, PanelBg);
-        DrawBorder(bars, viewportW, viewportH, _outer, Border);
+        // SC-OPTIONS-CHROME — outer panel uses cpbox_wide 9-patch
+        // (b_gui_cmn_cpbox2_*) per options_video.gas common_template.
+        // Falls back to the prior solid-fill placeholder if the icon
+        // renderer or chrome scene isn't available.
+        bool drewChrome = false;
+        if (icons is not null && scene is not null)
+        {
+            NinePatch.DrawCpboxWide(icons, scene, viewportW, viewportH,
+                _outer.X, _outer.Y, _outer.W, _outer.H,
+                new Vector4(1f, 1f, 1f, 1f));
+            drewChrome = true;
+        }
+        if (!drewChrome)
+        {
+            bars.DrawRect(viewportW, viewportH, _outer.X, _outer.Y, _outer.W, _outer.H, PanelBg);
+            DrawBorder(bars, viewportW, viewportH, _outer, Border);
+        }
 
         // Title.
         var titleStr = "Options Menu";
