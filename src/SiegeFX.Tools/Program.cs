@@ -2795,6 +2795,45 @@ static int CmdAspInfo(string[] a)
             Console.WriteLine(sb.ToString());
         }
     }
+    // SC-VERTEX-COLOR-APPLY diagnostic — distribution of per-corner ARGB
+    // values. DS1 bakes per-vertex radiosity / per-instance dark shading on
+    // ASP corners (e.g. burnt farmhouse door); reading the data straight from
+    // the asp before wiring the shader proves whether the visible darkening
+    // in retail is in fact authored on the corner stream.
+    if (mesh.Corners.Length > 0)
+    {
+        long sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+        int minLum = 255, maxLum = 0;
+        var unique = new HashSet<uint>();
+        foreach (var corner in mesh.Corners)
+        {
+            int cb = (int)( corner.Color        & 0xFF);
+            int cg = (int)((corner.Color >>  8) & 0xFF);
+            int cr = (int)((corner.Color >> 16) & 0xFF);
+            int ca = (int)((corner.Color >> 24) & 0xFF);
+            sumR += cr; sumG += cg; sumB += cb; sumA += ca;
+            int lum = (cr + cg + cb) / 3;
+            if (lum < minLum) minLum = lum;
+            if (lum > maxLum) maxLum = lum;
+            unique.Add(corner.Color);
+        }
+        int n = mesh.Corners.Length;
+        Console.WriteLine($"VColor    : avg ARGB=({sumA/n:000}, {sumR/n:000}, {sumG/n:000}, {sumB/n:000})  " +
+                          $"luma min={minLum} max={maxLum}  unique={unique.Count}");
+        if (unique.Count <= 8)
+        {
+            var sb = new System.Text.StringBuilder("            distinct = ");
+            bool first = true;
+            foreach (var u in unique)
+            {
+                if (!first) sb.Append(", ");
+                sb.Append($"0x{u:X8}");
+                first = false;
+            }
+            Console.WriteLine(sb.ToString());
+        }
+    }
+
     if (mesh.HasSkin)
     {
         // Average active (non-zero-weight) influences per corner, and the max single bone
