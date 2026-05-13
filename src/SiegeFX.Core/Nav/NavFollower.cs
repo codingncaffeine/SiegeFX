@@ -64,6 +64,23 @@ public sealed class NavFollower
     private int _pathIdx;
     private int _waypointIdx;
 
+    // Phase 24-NAV fold (post-test) — stuck detection. When an actor's
+    // XZ position fails to advance by at least StuckEpsilon for
+    // StuckMaxTicks consecutive ticks despite the follower having an
+    // active path, force a Replan from the current position. Without
+    // this, a single bad TryFindTriangle tie-break at a triangle edge
+    // can pin an actor in place indefinitely — the funnel keeps trying
+    // to push forward but the per-tick advance never matches the path
+    // triangle's expected adjacency. Real DS1 doesn't have this
+    // failure mode because its BSP returns the canonical triangle for
+    // edge-on points (deferred to SC-NAV-BSP-LOOKUP); until that lands,
+    // the replan recovers.
+    private Vector3 _lastTickPos;
+    private bool _hasLastTickPos;
+    private int _stuckTicks;
+    private const float StuckEpsilon = 0.05f;
+    private const int StuckMaxTicks = 8;
+
     /// <summary>Per-actor traversal policy: which kinds (Floor / Water) the follower can
     /// enter and at what cost. Defaults to <see cref="NavTraversal.LandOnly"/>; assign
     /// <see cref="NavTraversal.Amphibious"/> (or a custom one) for swimmers. Re-read on
@@ -153,6 +170,36 @@ public sealed class NavFollower
         if (ReachedGoal || PathBlocked || _path.Count == 0 || _waypoints.Count == 0) return;
         if (dt <= 0f) return;
 
+        // Stuck detection — if the follower didn't move appreciably
+        // since the last Tick despite having an open path, replan.
+        // This is the backstop for the boundary-respect logic below:
+        // when the candidate XZ would leave the walkable mesh we
+        // clamp instead of penetrating, but a pathfinder edge case
+        // can still pin an actor in a corner. Replan resamples the
+        // waypoint sequence from the current position and usually
+        // recovers; if it can't, PathBlocked latches.
+        var tickStartPos = Position;
+        if (_hasLastTickPos)
+        {
+            float dxs = Position.X - _lastTickPos.X;
+            float dzs = Position.Z - _lastTickPos.Z;
+            if (MathF.Sqrt(dxs * dxs + dzs * dzs) < StuckEpsilon)
+            {
+                _stuckTicks++;
+                if (_stuckTicks >= StuckMaxTicks)
+                {
+                    _stuckTicks = 0;
+                    Replan();
+                    if (_path.Count == 0 || _waypoints.Count == 0) return;
+                }
+            }
+            else
+            {
+                _stuckTicks = 0;
+            }
+        }
+        _hasLastTickPos = true;
+
         float remaining = Speed * dt;
         // Chase the current funnel waypoint. When close enough, advance the waypoint
         // index; on the last waypoint (which is always the goal), declare arrival.
@@ -188,11 +235,13 @@ public sealed class NavFollower
             // hit matches (a single straight segment can span several triangles when
             // the funnel pulls a long line through a corridor).
             int standing = CurrentTriangle;
+            bool advanced = false;
             if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit))
             {
                 if (hit == _path[_pathIdx])
                 {
                     standing = hit;
+                    advanced = true;
                 }
                 else
                 {
@@ -207,9 +256,36 @@ public sealed class NavFollower
                     {
                         _pathIdx = ahead;
                         standing = hit;
+                        advanced = true;
                     }
-                    // else: drifted off-path; keep standing on _path[_pathIdx] and let
-                    // the next iteration pull us back toward the waypoint.
+                }
+            }
+            if (!advanced)
+            {
+                // Phase 24-NAV fold (post-test) — RESPECT BOUNDARIES.
+                // The candidate XZ would leave the walkable mesh (off-
+                // path, no adjacent forward tile). DS1 doesn't let the
+                // actor walk off the surface here; previous SiegeFX
+                // code DID move the position to (nx,nz) anyway and
+                // resampled Y on the old triangle, which visually
+                // pushed the actor into terrain. Clamp the candidate
+                // back onto the current triangle's nearest interior
+                // point so the actor stops at the boundary. Stuck-
+                // detection above triggers a replan if the actor stays
+                // pinned for too many ticks.
+                if (standing >= 0)
+                {
+                    var clamped = Mesh.ClampPointToTriangleXZ(standing,
+                        new Vector3(nx, Position.Y, nz));
+                    nx = clamped.X;
+                    nz = clamped.Z;
+                }
+                else
+                {
+                    // No current triangle either — don't advance at all
+                    // this tick; let the next Replan recover.
+                    nx = Position.X;
+                    nz = Position.Z;
                 }
             }
             float ny = standing >= 0 ? Mesh.SampleYOnTriangle(standing, new Vector3(nx, 0f, nz)) : Position.Y;
@@ -217,5 +293,6 @@ public sealed class NavFollower
             CurrentTriangle = standing;
             remaining -= step;
         }
+        _lastTickPos = tickStartPos;
     }
 }

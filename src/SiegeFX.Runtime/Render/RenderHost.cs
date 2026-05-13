@@ -5197,7 +5197,11 @@ void main()
     private static bool TryLoadLogicalFlags(SiegeFX.Core.Tank.TankReader reader,
         string regionPath, SiegeFX.Core.Assets.LogicalFlagsStore dest)
     {
-        var lfPath = regionPath + "/terrain_nodes/editor/logical_flags.gas";
+        // DS1 retail stores the file at <region>/editor/logical_flags.gas.
+        // The opensiege fan sample nested it under terrain_nodes/editor/
+        // which I'd wrongly copied — net effect: zero retail regions
+        // matched, gating never activated. Path corrected post-test.
+        var lfPath = regionPath + "/editor/logical_flags.gas";
         if (!reader.TryGetFile(lfPath, out _)) return false;
         try
         {
