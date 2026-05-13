@@ -39,6 +39,7 @@ try
         "flm"       => DispatchFlm(args[1..]),
         "music"     => DispatchMusic(args[1..]),
         "tsd"       => DispatchTsd(args[1..]),
+        "quests"    => DispatchQuests(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -7273,6 +7274,125 @@ static int CmdLootDump(string[] a)
         for (int i = 0; i < b.Children.Count; i++) PrintBucket($"{pad}  [child {i}]", b.Children[i], indent + 4);
     }
 }
+
+// SC-QUEST-OBJ-F-AUDIT (2026-05-13) — quest-catalog drift report.
+// Walks every region's conversations/conversations.gas, mines every
+// `activate_quest=KEY;` attribute from dialogue nodes, and cross-checks
+// against SiegeFX.Core.Actors.QuestCatalog. Three output sections:
+//   COVERED  — keys in BOTH the dialogue trees and the catalog
+//   MISSING  — keys authored in DS1 dialogue but NOT in the catalog
+//              (these are the real gaps SC-QUEST-OBJ-F needs to fill)
+//   ORPHAN   — keys in the catalog but NOT activated by any dialogue
+//              (catalog rows that no DS1 NPC will ever trigger — either
+//               wrong key spelling or pre-emptive placeholders)
+// Used to verify the catalog matches reality before / during the
+// FH->Ehb playtest. Modeled on `siegefx spells visual-audit`.
+static int DispatchQuests(string[] a)
+{
+    if (a.Length == 0)
+    {
+        Console.Error.WriteLine("usage: siegefx quests audit <map-tank>");
+        return 1;
+    }
+    if (!a[0].Equals("audit", StringComparison.OrdinalIgnoreCase))
+        return UnknownCommand("quests " + a[0]);
+    return CmdQuestsAudit(a[1..]);
+}
+
+static int CmdQuestsAudit(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx quests audit <map-tank>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+
+    // Enumerate every region path under the map tank (same shape the
+    // breakable-audit `all` mode uses).
+    var regionPaths = new List<string>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var path in mapReader.ListFiles())
+    {
+        var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) continue;
+        var rest = path[(idx + "/regions/".Length)..];
+        var slash = rest.IndexOf('/');
+        if (slash < 0) continue;
+        var regionPath = path[..(idx + "/regions/".Length + slash)];
+        if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+    }
+    regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+
+    // key -> list of (region, conversationKey) sites that activate it.
+    var perKey = new SortedDictionary<string, List<(string Region, string Conv)>>(StringComparer.OrdinalIgnoreCase);
+    int regionsWithConvs = 0;
+    foreach (var regionPath in regionPaths)
+    {
+        var (convs, _) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, regionPath);
+        if (convs.Count == 0) continue;
+        regionsWithConvs++;
+        foreach (var (convKey, conv) in convs)
+        {
+            foreach (var node in conv.Nodes)
+            {
+                var key = node.ActivateQuest;
+                if (string.IsNullOrWhiteSpace(key)) continue;
+                if (!perKey.TryGetValue(key, out var sites))
+                    perKey[key] = sites = new List<(string, string)>();
+                sites.Add((regionPath, convKey));
+            }
+        }
+    }
+
+    var catalog = SiegeFX.Core.Actors.QuestCatalog.All;
+    var covered = new List<string>();
+    var missing = new List<string>();
+    foreach (var k in perKey.Keys)
+    {
+        if (catalog.ContainsKey(k)) covered.Add(k);
+        else missing.Add(k);
+    }
+    var orphan = new List<string>();
+    foreach (var k in catalog.Keys)
+        if (!perKey.ContainsKey(k)) orphan.Add(k);
+
+    Console.WriteLine($"quest audit: {regionPaths.Count} region(s), {regionsWithConvs} with conversations");
+    Console.WriteLine($"  dialogue-authored quest keys:  {perKey.Count}");
+    Console.WriteLine($"  catalog rows:                  {catalog.Count}");
+    Console.WriteLine($"  COVERED (both):                {covered.Count}");
+    Console.WriteLine($"  MISSING (dialogue, not cat.):  {missing.Count}");
+    Console.WriteLine($"  ORPHAN  (cat., no dialogue):   {orphan.Count}");
+
+    Console.WriteLine();
+    Console.WriteLine("== COVERED ==");
+    foreach (var k in covered)
+        Console.WriteLine($"  {k,-40}  ({perKey[k].Count} dialogue site(s))");
+
+    Console.WriteLine();
+    Console.WriteLine("== MISSING (add to QuestCatalog or fix spelling) ==");
+    foreach (var k in missing)
+    {
+        Console.WriteLine($"  {k}");
+        foreach (var (region, conv) in perKey[k])
+        {
+            // Trim region path noise so the output reads as
+            // "<region-basename> [<conversation>]".
+            var slash = region.LastIndexOf('/');
+            var regBase = slash >= 0 ? region[(slash + 1)..] : region;
+            Console.WriteLine($"      {regBase}  conversation_{conv}");
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("== ORPHAN (catalog row no dialogue activates) ==");
+    foreach (var k in orphan) Console.WriteLine($"  {k}");
+
+    return 0;
+}
+
 
 /// <summary>Audit-CLI helper: pretends a single party member sits at <see cref="Position"/>.
 /// Used by `siegefx region triggers` to drive a synthetic enter/leave through the first
