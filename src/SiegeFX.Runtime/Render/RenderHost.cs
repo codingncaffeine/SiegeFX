@@ -848,9 +848,11 @@ public sealed class RenderHost : IDisposable
     internal void OnTriggerFadeNodes(IReadOnlyList<string> args)
     {
         if (args is null || args.Count == 0) return;
-        // Parse snode guid (hex or decimal).
-        if (!TryParseSnodeGuid(args[0], out var guid)) return;
-        // Walk args to find the mode token.
+        if (!TryParseSnodeGuid(args[0], out var guid))
+        {
+            Console.WriteLine($"[fade_nodes] couldn't parse snode guid from '{args[0]}'");
+            return;
+        }
         string mode = "out";
         for (int i = args.Count - 1; i >= 1; i--)
         {
@@ -858,9 +860,15 @@ public sealed class RenderHost : IDisposable
             if (a == "out" || a == "out:black" || a == "in" ||
                 a == "fade_out" || a == "fade_in") { mode = a; break; }
         }
+        bool wasHidden = _fadedSnodes.ContainsKey(guid);
         float target = (mode == "in" || mode == "fade_in") ? 1f : 0f;
         if (target >= 0.999f) _fadedSnodes.Remove(guid);
         else _fadedSnodes[guid] = target;
+        bool isHiddenNow = _fadedSnodes.ContainsKey(guid);
+        // Log every transition so we can see when (and IF) the
+        // basement trigger fires during the user's test.
+        if (wasHidden != isHiddenNow)
+            Console.WriteLine($"[fade_nodes] snode 0x{guid:X8} {mode} (hidden={isHiddenNow})");
     }
 
     private static bool TryParseSnodeGuid(string s, out uint guid)
@@ -4160,14 +4168,26 @@ void main()
             foreach (var (path, _) in _worldRegionGraphs)
                 if (path != regionPath) triggerRegions.Add(path);
         }
+        int fadeNodesBoxCount = 0;
+        int moodChangeBoxCount = 0;
         foreach (var rp in triggerRegions)
         {
             var (placements, diags) =
                 SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "special.gas");
             foreach (var d in diags) Console.WriteLine("  " + d);
             triggerPlacementCount += placements.Count;
+            foreach (var p in placements)
+            {
+                var tn = (p.TemplateName ?? "").ToLowerInvariant();
+                if (tn.Contains("fade_nodes_box") || tn.Contains("fade_node_box"))
+                    fadeNodesBoxCount++;
+                else if (tn.Contains("mood_change") || tn.Contains("mood_box"))
+                    moodChangeBoxCount++;
+            }
             spawner.SpawnTriggers(placements);
         }
+        if (fadeNodesBoxCount > 0 || moodChangeBoxCount > 0)
+            Console.WriteLine($"  trigger types: fade_nodes_box={fadeNodesBoxCount}, mood_change_box={moodChangeBoxCount}");
         // Phase 17-SC-G — emitter.gas placements ride the same trigger pipeline.
         // Their templates carry [template_triggers] rows whose action is
         // call_sfx_script("smoke_emitter") and whose condition is
