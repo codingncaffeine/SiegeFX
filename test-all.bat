@@ -166,6 +166,7 @@ echo   93. Phase 23-SC-OPTIONS         - Options Menu (F10 in-game; 4 tabs Video
 echo   94. Phase 24-MAINMENU            - Boot to main menu (no args; splash to logo drop to 7 buttons)
 echo   95. SC-TSD-ANIM                  - Water frame-cycle + waterfall layer-2 modulate2x (fh_r1)
 echo   96. SC-QUEST-OBJ-A               - Talk-to-NPC quest objective (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, talk to Edgaar)
+echo   97. SC-QUEST-OBJ-F               - Full 24-quest Ehb catalog + chain (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, watch chain follow-up activate)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -268,6 +269,7 @@ if /i "%CHOICE%"=="93" goto T93
 if /i "%CHOICE%"=="94" goto T94
 if /i "%CHOICE%"=="95" goto T95
 if /i "%CHOICE%"=="96" goto T96
+if /i "%CHOICE%"=="97" goto T97
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2210,6 +2212,29 @@ echo  position), RMB to open dialogue, click through to the close. Console
 echo  prints "[quest] talk objective complete: quest_seek_gyorn (spoke to
 echo  edgaar)" and the journal entry flips to Completed. Press L to inspect
 echo  the quest log overlay.]
+echo.
+set "SIEGEFX_DEBUG_QUEST=quest_seek_gyorn"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_QUEST="
+echo.
+pause
+goto MENU
+
+:T97
+echo.
+echo --- SC-QUEST-OBJ-F: 24-quest catalog + chain receipt ---
+echo [QuestCatalog now ships all 24 Kingdom of Ehb quests (Chapters I-IX)
+echo  with NextQuestKey chain pointers between main-quest beats.
+echo  quest_seek_gyorn -> quest_deliver_gyorn_report -> quest_clear_glitterdelve
+echo  -> quest_report_torg_findings -> quest_for_merik -> ... -> quest_vanquish_seck.]
+echo.
+echo [Receipt: console prints "[quest:debug] activated quest_seek_gyorn"
+echo  on region-load. RMB Edgaar in fh_r1 (Quest_for_Gyorn's TALK target
+echo  is stubbed to him until Stonebridge streams). Console prints:
+echo    [quest] talk objective complete: quest_seek_gyorn (spoke to edgaar)
+echo    [quest] follow-up activated: quest_deliver_gyorn_report (from quest_seek_gyorn)
+echo  Press L to see both entries in the journal overlay (quest_seek_gyorn
+echo  closed, quest_deliver_gyorn_report active).]
 echo.
 set "SIEGEFX_DEBUG_QUEST=quest_seek_gyorn"
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1

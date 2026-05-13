@@ -120,7 +120,29 @@ public sealed class QuestJournal
                 (completed ??= new List<string>()).Add(entry.Key);
             }
         }
+        ChainFollowUps(completed);
         return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
+    }
+
+    /// <summary>SC-QUEST-OBJ-F — when a quest just auto-completed, activate
+    /// any chained <see cref="QuestDefinition.NextQuestKey"/> follow-up.
+    /// Walked AFTER the credit loop so we don't iterate _entries while
+    /// mutating it. Idempotent: AddActive returns false if the key already
+    /// exists, so re-completing the same quest doesn't double-spawn the
+    /// follow-up.</summary>
+    void ChainFollowUps(List<string>? justCompleted)
+    {
+        if (justCompleted is null || justCompleted.Count == 0) return;
+        foreach (var key in justCompleted)
+        {
+            if (!_entries.TryGetValue(key, out var entry)) continue;
+            var def = entry.Definition;
+            if (def is null) continue;
+            var next = def.NextQuestKey;
+            if (string.IsNullOrWhiteSpace(next)) continue;
+            if (AddActive(next))
+                Console.WriteLine($"[quest] follow-up activated: {next} (from {key})");
+        }
     }
 
     /// <summary>SC-QUEST-OBJ-A — credit a "talk to NPC" objective. Fired by the
@@ -152,6 +174,7 @@ public sealed class QuestJournal
                 (completed ??= new List<string>()).Add(entry.Key);
             }
         }
+        ChainFollowUps(completed);
         return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
     }
 
@@ -222,10 +245,9 @@ public static class QuestCatalog
     static readonly Dictionary<string, QuestDefinition> _defs =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            // The Farmhouse opening — Norick asks for help against the krug
-            // raid. Any krug template counts (grunt / scout / commander); the
-            // shipped fh_r1 spawns are mostly grunts so the goal is reachable
-            // without fishing for a specific variant.
+            // ─── Phase 20c originals (kept for backward-compat with the existing
+            // Phase 20a Norick dialogue tree that activates Quest_for_Gyorn as a
+            // kill-3-krug stub) ──────────────────────────────────────────────────
             ["Quest_for_Gyorn"] = new QuestDefinition
             {
                 Key                 = "Quest_for_Gyorn",
@@ -234,8 +256,6 @@ public static class QuestCatalog
                 KillCountGoal       = 3,
                 ObjectiveText       = "Kill 3 krug raiding the Farmhouse.",
             },
-            // Edgaar's basement — same loop with a different label so we can
-            // exercise multi-quest tracking when both get accepted.
             ["quest_edgaar_basement"] = new QuestDefinition
             {
                 Key                 = "quest_edgaar_basement",
@@ -244,18 +264,238 @@ public static class QuestCatalog
                 KillCountGoal       = 5,
                 ObjectiveText       = "Clear 5 krug from Edgaar's basement.",
             },
-            // SC-QUEST-OBJ-A receipt — matches DS1 Chapter I "Seek Gyorn in
-            // Stonebridge", the first main-quest beat. Stub uses "edgaar" as
-            // the talk target so the smoke test can run inside fh_r1 without
-            // streaming the Stonebridge region first; the real Gyorn entry
-            // wires in during SC-QUEST-OBJ-F catalog-population.
+
+            // ─── SC-QUEST-OBJ-F catalog (all 24 Kingdom of Ehb quests from
+            // wiki audit, see reference_ds1_ehb_quests.md) ────────────────────
+            // Notes:
+            //  * Chained main-quest beats use NextQuestKey to auto-activate the
+            //    follow-up (DS1 itself splits multi-stage quests into chained
+            //    IDs rather than embedding stages).
+            //  * Pickup / Reach / Deliver / KillNamed objectives ship as DATA
+            //    today; their Register*() runtimes land in slices C/B/D/E. Until
+            //    then those entries activate but won't auto-credit — that's the
+            //    correct interim state (the data shape is forward-compatible
+            //    so future slices auto-pick them up).
+            //  * Keys use lowercase_with_underscores. The legacy Quest_for_Gyorn
+            //    above is intentionally TitleCase to match the Phase 20a dialogue
+            //    tree which can't easily be rekeyed without re-authoring the
+            //    conversations.gas.
+
+            // ── Chapter I — Stonebridge ──
             ["quest_seek_gyorn"] = new QuestDefinition
             {
                 Key                 = "quest_seek_gyorn",
                 ScreenName          = "Seek Gyorn in Stonebridge",
+                // SC-QUEST-OBJ-A stub-targets Edgaar so the FH-only receipt
+                // works before Stonebridge wiring lands. Switch to "gyorn"
+                // once Stonebridge streams (the real DS1 NPC).
                 TalkTargetTemplate  = "edgaar",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with Gyorn (stubbed to Edgaar for the FH-only receipt).",
+                ObjectiveText       = "Speak with Gyorn at Stonebridge.",
+                NextQuestKey        = "quest_deliver_gyorn_report",
+            },
+
+            // ── Chapter II — Journey to the Overseer ──
+            ["quest_deliver_gyorn_report"] = new QuestDefinition
+            {
+                Key                 = "quest_deliver_gyorn_report",
+                ScreenName          = "Deliver Gyorn's Report",
+                // DELIVER = composite (hold item + talk to receiver). For
+                // now we credit on the talk-target alone; SC-QUEST-OBJ-D
+                // tightens to "hold report AND talk Hrok".
+                TalkTargetTemplate  = "hrok",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Carry Gyorn's report to Hrok at the Stonebridge North gate.",
+                NextQuestKey        = "quest_clear_glitterdelve",
+            },
+            ["quest_clear_glitterdelve"] = new QuestDefinition
+            {
+                Key                 = "quest_clear_glitterdelve",
+                ScreenName          = "Clear Glitterdelve Pass",
+                KillTargetTemplate  = "krug",
+                KillCountGoal       = 6,
+                ObjectiveText       = "Clear the krug from Glitterdelve Pass.",
+                NextQuestKey        = "quest_report_torg_findings",
+            },
+            ["quest_report_torg_findings"] = new QuestDefinition
+            {
+                Key                 = "quest_report_torg_findings",
+                ScreenName          = "Report Torg's Findings",
+                TalkTargetTemplate  = "torg",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Speak with Torg about what he learned in the mines.",
+                NextQuestKey        = "quest_for_merik",
+            },
+            ["quest_ordus_axe"] = new QuestDefinition
+            {
+                Key                 = "quest_ordus_axe",
+                ScreenName          = "Ordus' Axe",
+                // PICKUP-based DELIVER; SC-QUEST-OBJ-D fills the composite.
+                TalkTargetTemplate  = "ordus",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Recover Ordus' lost axe and return it to him.",
+            },
+            ["quest_sisters_message"] = new QuestDefinition
+            {
+                Key                 = "quest_sisters_message",
+                ScreenName          = "A Sister's Message",
+                TalkTargetTemplate  = "sister",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Deliver a sister's message to her family.",
+            },
+            ["quest_rescue_torg"] = new QuestDefinition
+            {
+                Key                 = "quest_rescue_torg",
+                ScreenName          = "Rescue Torg",
+                // R + KN + T composite per wiki audit. Land KILL-NAMED in
+                // SC-QUEST-OBJ-E; for now this credits on the post-rescue talk.
+                TalkTargetTemplate  = "torg",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Free Torg from his krug captors.",
+            },
+
+            // ── Chapter III — The Search for Merik ──
+            ["quest_for_merik"] = new QuestDefinition
+            {
+                Key                 = "quest_for_merik",
+                ScreenName          = "Quest for Merik",
+                TalkTargetTemplate  = "merik",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Find the wizard Merik in the wilderness beyond Wesrin Cross.",
+                NextQuestKey        = "quest_reinforce_fortress_kroth",
+            },
+            ["quest_book_return"] = new QuestDefinition
+            {
+                Key                 = "quest_book_return",
+                ScreenName          = "Book Return",
+                // PICKUP + DELIVER (S/C-QUEST-OBJ-C/D).
+                TalkTargetTemplate  = "librarian",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Return the borrowed book to its owner.",
+            },
+            ["quest_reinforce_fortress_kroth"] = new QuestDefinition
+            {
+                Key                 = "quest_reinforce_fortress_kroth",
+                ScreenName          = "Reinforce Fortress Kroth",
+                // Reads as DEFEND but DS1 credits on the post-wave NPC dialogue
+                // (per audit). Talk-target lands when scripted wave completes.
+                TalkTargetTemplate  = "captain_kroth",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Hold Fortress Kroth against the goblin assault and report to the captain.",
+                NextQuestKey        = "quest_confront_bandit_boss",
+            },
+            ["quest_homeless_blacksmith"] = new QuestDefinition
+            {
+                Key                 = "quest_homeless_blacksmith",
+                ScreenName          = "Homeless Blacksmith",
+                TalkTargetTemplate  = "blacksmith",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Help the homeless blacksmith find a new home.",
+            },
+
+            // ── Chapter IV — The Warding Staff ──
+            ["quest_confront_bandit_boss"] = new QuestDefinition
+            {
+                Key                 = "quest_confront_bandit_boss",
+                ScreenName          = "Confront the Bandit Boss",
+                // KN — SC-QUEST-OBJ-E will switch to spawn-id match.
+                KillTargetTemplate  = "bandit_boss",
+                KillCountGoal       = 1,
+                ObjectiveText       = "Defeat the Bandit Boss holding the temple's relic.",
+                NextQuestKey        = "quest_meriks_staff",
+            },
+            ["quest_purify_temple"] = new QuestDefinition
+            {
+                Key                 = "quest_purify_temple",
+                ScreenName          = "Purify the Temple",
+                KillTargetTemplate  = "bandit",
+                KillCountGoal       = 4,
+                ObjectiveText       = "Cleanse the temple of bandit defilement.",
+            },
+            ["quest_meriks_staff"] = new QuestDefinition
+            {
+                Key                 = "quest_meriks_staff",
+                ScreenName          = "Merik's Staff",
+                // P — SC-QUEST-OBJ-C will switch to RegisterPickup match.
+                TalkTargetTemplate  = "merik",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Recover Merik's Warding Staff and return it to him.",
+                NextQuestKey        = "quest_missing_treasure_hunters",
+            },
+
+            // ── Chapter V — An Ancient Evil ──
+            ["quest_missing_treasure_hunters"] = new QuestDefinition
+            {
+                Key                 = "quest_missing_treasure_hunters",
+                ScreenName          = "Missing Treasure Hunters",
+                TalkTargetTemplate  = "treasure_hunter",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Find the lost treasure hunters in the depths beyond Fortress Kroth.",
+                NextQuestKey        = "quest_subdue_droog",
+            },
+
+            // ── Chapter VI — Unwise Alliance ──
+            ["quest_subdue_droog"] = new QuestDefinition
+            {
+                Key                 = "quest_subdue_droog",
+                ScreenName          = "Subdue the Droog",
+                KillTargetTemplate  = "droog",
+                KillCountGoal       = 1,
+                ObjectiveText       = "Subdue the Droog warleader to secure passage to Castle Ehb.",
+                NextQuestKey        = "quest_journey_to_castle_ehb",
+            },
+
+            // ── Chapter VII — King and Castle ──
+            ["quest_journey_to_castle_ehb"] = new QuestDefinition
+            {
+                Key                 = "quest_journey_to_castle_ehb",
+                ScreenName          = "Journey to Castle Ehb",
+                // R — SC-QUEST-OBJ-B will switch to RegisterReach match.
+                TalkTargetTemplate  = "castle_steward",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Reach the gates of Castle Ehb.",
+                NextQuestKey        = "quest_slay_dragon_rathe",
+            },
+            ["quest_slay_dragon_rathe"] = new QuestDefinition
+            {
+                Key                 = "quest_slay_dragon_rathe",
+                ScreenName          = "Slay the Ancient Dragon of Rathe",
+                KillTargetTemplate  = "dragon_rathe",
+                KillCountGoal       = 1,
+                ObjectiveText       = "Slay the Ancient Dragon of Rathe.",
+                NextQuestKey        = "quest_search_for_king",
+            },
+            ["quest_search_for_king"] = new QuestDefinition
+            {
+                Key                 = "quest_search_for_king",
+                ScreenName          = "Search for the King",
+                TalkTargetTemplate  = "king_konreid",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Find King Konreid in the depths of Castle Ehb.",
+                NextQuestKey        = "quest_chamber_of_stars",
+            },
+
+            // ── Chapter VIII — The Chamber of Stars ──
+            ["quest_chamber_of_stars"] = new QuestDefinition
+            {
+                Key                 = "quest_chamber_of_stars",
+                ScreenName          = "The Chamber of Stars",
+                // R + cutscene-trigger. Talk-target is the post-cutscene NPC.
+                TalkTargetTemplate  = "advisor",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Reach the Chamber of Stars at the heart of Castle Ehb.",
+                NextQuestKey        = "quest_vanquish_seck",
+            },
+
+            // ── Chapter IX — Dungeon Siege ──
+            ["quest_vanquish_seck"] = new QuestDefinition
+            {
+                Key                 = "quest_vanquish_seck",
+                ScreenName          = "Vanquish the Seck",
+                KillTargetTemplate  = "gom",
+                KillCountGoal       = 1,
+                ObjectiveText       = "Defeat the Seck warlord Gom and end the Resurgence.",
+                // No NextQuestKey — endgame.
             },
         };
 
@@ -294,4 +534,14 @@ public sealed class QuestDefinition
     /// auto-complete on the first talk-event to anyone. Simple "speak with
     /// X" objectives use 1; "talk to all priests" patterns set N.</summary>
     public int    TalkCountGoal      { get; init; }
+
+    /// <summary>SC-QUEST-OBJ-F — chained-quest follow-up. When this quest
+    /// auto-completes (RegisterKill / RegisterTalk hits its goal), the
+    /// journal AddActives this key as the next stage. Empty string = single-
+    /// stage quest (no follow-up). Matches DS1's own approach to multi-stage
+    /// quests like Seek Gyorn → Deliver Gyorn's Report → Clear Glitterdelve,
+    /// where each "stage" is a distinct quest-ID rather than a stage-index
+    /// inside one entry. Simpler than embedding a Stage[] in the definition
+    /// and lets the journal screen show each stage as its own row.</summary>
+    public string NextQuestKey      { get; init; } = "";
 }
