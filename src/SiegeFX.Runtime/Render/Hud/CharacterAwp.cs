@@ -38,36 +38,46 @@ public sealed class CharacterAwp
     {
         None,
         Portrait,        // notify(character) — toggle char panel
-        InventoryButton, // notify(inventory) — toggle inventory
+        CloseArrow,      // INFORAIL-C — only when rail is open; closes rail
         Slot1,           // notify(character_slot_1) — melee
         Slot2,           // notify(character_slot_2) — ranged
         Slot3,           // notify(character_slot_3) — primary spell
         Slot4,           // notify(character_slot_4) — secondary spell
     }
 
-    // 640×480 reference rects from character_awp.gas:
-    private static readonly (HitTarget Target, int X, int Y, int W, int H)[] _hits =
-    {
-        (HitTarget.Portrait,        13,  6, 39, 46),  // 13,6,52,52
-        (HitTarget.InventoryButton, 64, 40, 84, 15),  // 64,40,148,55
-        (HitTarget.Slot1,           68,  6, 16, 32),  // 68,6,84,38
-        (HitTarget.Slot2,           88,  6, 16, 32),  // 88,6,104,38
-        (HitTarget.Slot3,          108,  6, 16, 32),  // 108,6,124,38
-        (HitTarget.Slot4,          128,  6, 16, 32),  // 128,6,144,38
-    };
-
-    public HitTarget HitTest(int x, int y, int viewportH)
+    /// <summary>HitTest with rail-state awareness. When the info-rail is
+    /// open, the close-arrow at rect 64,40,87,56 is the ONLY widget below
+    /// the slots (the wide inventory button disappears per DS1's max-
+    /// mode → min-mode transformation, gas group=character_1_min vs
+    /// character_1_max). When the rail is closed neither the close arrow
+    /// nor the wide button is shown — the rail is opened solely via the
+    /// I key.</summary>
+    public HitTarget HitTest(int x, int y, int viewportH, bool railOpen)
     {
         float s = Scale(viewportH);
-        foreach (var h in _hits)
-        {
-            int sx = (int)Math.Round(h.X * s);
-            int sy = (int)Math.Round(h.Y * s);
-            int sw = (int)Math.Round(h.W * s);
-            int sh = (int)Math.Round(h.H * s);
-            if (x >= sx && y >= sy && x < sx + sw && y < sy + sh) return h.Target;
-        }
+        // Portrait (always-on, character_1 group)
+        if (Hit(x, y, s, 13, 6, 39, 46)) return HitTarget.Portrait;
+        // 4 slots (always-on per character_1 max-mode; gas wires min-
+        // mode as a single fused active-skill slot which we collapse
+        // into the same 4 hit-rects for now — SC-AUTH-AWP-MIN-MODE)
+        if (Hit(x, y, s,  68, 6, 16, 32)) return HitTarget.Slot1;
+        if (Hit(x, y, s,  88, 6, 16, 32)) return HitTarget.Slot2;
+        if (Hit(x, y, s, 108, 6, 16, 32)) return HitTarget.Slot3;
+        if (Hit(x, y, s, 128, 6, 16, 32)) return HitTarget.Slot4;
+        // Close arrow (rail-only): gas awp_button_inventory_small_1
+        // rect 64,40,87,56 (the LEFT side of the wide inventory button
+        // rect; the rest doesn't render when rail is open).
+        if (railOpen && Hit(x, y, s, 64, 40, 23, 16)) return HitTarget.CloseArrow;
         return HitTarget.None;
+    }
+
+    private static bool Hit(int x, int y, float s, int gx, int gy, int gw, int gh)
+    {
+        int sx = (int)Math.Round(gx * s);
+        int sy = (int)Math.Round(gy * s);
+        int sw = (int)Math.Round(gw * s);
+        int sh = (int)Math.Round(gh * s);
+        return x >= sx && y >= sy && x < sx + sw && y < sy + sh;
     }
 
     /// <summary>Render the AWP widget at the top-left of the viewport.
@@ -81,7 +91,8 @@ public sealed class CharacterAwp
                      float hpFrac, float mpFrac, int activeSlot,
                      GlTexture? slot1Icon = null, GlTexture? slot2Icon = null,
                      GlTexture? slot3Icon = null, GlTexture? slot4Icon = null,
-                     GlTexture? inventoryBtnAtlas = null)
+                     GlTexture? inventoryBtnAtlas = null,
+                     bool railOpen = false)
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
@@ -98,19 +109,41 @@ public sealed class CharacterAwp
             54, 6, 9, 46, mpFrac,
             0.210938f, 0.226563f, 0.246095f, 0.585938f, awpAtlas);
 
-        // Portrait — gas rect 13,6,52,52 (W=39, H=46). The portrait icon
-        // RAW (e.g. b_gui_ig_i_ic_c_fb_01 for farmboy) loads via the host
-        // and passes in; the gas authors no fallback texture, so when the
-        // portrait is null we just leave the rect empty (cpbox chrome
-        // would normally fill behind — until that lands the cpbox shows
-        // through from the character_awp panel boundary).
-        if (portrait is not null)
+        // Portrait — gas rect 13,6,52,52 (W=39, H=46). Three stacked layers:
+        //   1. awp_portrait_selection_1 — frame BEHIND the portrait icon
+        //      (uv 0.050781,0.226563,0.203125,0.585938). This is "the box
+        //      around the head" — without it the portrait floats with no
+        //      visible widget. Always-on per the gas (no visible=false).
+        //   2. portrait icon (e.g. b_gui_ig_i_ic_c_fb_01 for farmboy) from
+        //      the player template's [actor]portrait_icon. May be null
+        //      pre-load; the frame still renders.
+        //   3. (future) death / health_warning / unconscious overlays —
+        //      SC-AUTH-CHAR-AWP-STATES.
         {
             int px = (int)Math.Round(13 * s);
             int py = (int)Math.Round(6  * s);
             int pw = (int)Math.Round(39 * s);
             int ph = (int)Math.Round(46 * s);
-            iconRenderer.DrawIcon(viewportW, viewportH, portrait, px, py, pw, ph, Vector4.One);
+            // Frame (selection texture) — drawn first so the icon sits inside.
+            // V-flip per the bottom-up RAW rule.
+            iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, px, py, pw, ph, Vector4.One,
+                0.050781f, 1f - 0.585938f, 0.203125f, 1f - 0.226563f);
+            // INFORAIL-E — center the portrait icon inside the frame.
+            // DS1's portrait RAWs (b_gui_ig_i_ic_c_*) are square; the
+            // gas frame rect is 39w × 46h (taller than wide). Aspect-
+            // preserve at min(w,h)=39 and center vertically. A small
+            // inset (2px scaled) keeps the icon off the frame edge.
+            if (portrait is not null)
+            {
+                int inset = (int)Math.Max(1, Math.Round(2 * s));
+                int boxW = pw - inset * 2;
+                int boxH = ph - inset * 2;
+                int side = Math.Min(boxW, boxH);
+                int ix = px + (pw - side) / 2;
+                int iy = py + (ph - side) / 2;
+                iconRenderer.DrawIcon(viewportW, viewportH, portrait,
+                    ix, iy, side, side, Vector4.One);
+            }
         }
 
         // 4 weapon/skill slots. Each shows the slot's "active" texture
@@ -146,18 +179,44 @@ public sealed class CharacterAwp
             }
         }
 
-        // Inventory button — gas rect 64,40,148,55 (W=84, H=15). DS1 uses
-        // b_gui_ig_mnu_awp_buttons as a separate atlas with hover/press
-        // strips. When the host passes it, draw the default (unhovered)
-        // region; hover/press states are SC-AUTH-CHAR-AWP-INVBTN-STATES.
+        // INFORAIL-C — DS1's max-mode → min-mode transformation under
+        // the slot strip. There are TWO mutually exclusive widgets here:
+        //   group=character_1_max → wide "Inventory" button at rect
+        //     64,40,148,55 (gas line 169, texture b_gui_ig_mnu_awp_buttons
+        //     uv 0,0.0625,0.65625,1). Shown ONLY when the info-rail
+        //     is closed (i.e. when the AWP is in its "default playing"
+        //     state and clicking the wide button OPENS the rail).
+        //   group=character_1_min → narrow ⟵-close arrow at rect
+        //     64,40,87,56 (gas line 197 awp_button_inventory_small_1,
+        //     uv 0.820313,0,1,1). Shown ONLY when the rail is OPEN, as
+        //     the close button below skill slot 1.
+        // Previously this widget was rendered always-on which produced
+        // two arrow boxes; the rail-open gate fixes the duplication
+        // and matches DS1's group-toggle behavior.
         if (inventoryBtnAtlas is not null)
         {
-            int bx = (int)Math.Round(64 * s);
-            int by = (int)Math.Round(40 * s);
-            int bw = (int)Math.Round(84 * s);
-            int bh = (int)Math.Round(15 * s);
-            iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
-                bx, by, bw, bh, Vector4.One);
+            if (railOpen)
+            {
+                // Close ⟵ arrow (min mode), uv 0.820313,0,1,1.
+                int bx = (int)Math.Round(64 * s);
+                int by = (int)Math.Round(40 * s);
+                int bw = (int)Math.Round(23 * s); // 87-64
+                int bh = (int)Math.Round(16 * s); // 56-40
+                iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
+                    bx, by, bw, bh, Vector4.One,
+                    0.820313f, 0f, 1f, 1f);
+            }
+            else
+            {
+                // Wide Inventory button (max mode), uv 0,0.0625,0.65625,1.
+                int bx = (int)Math.Round(64 * s);
+                int by = (int)Math.Round(40 * s);
+                int bw = (int)Math.Round(84 * s); // 148-64
+                int bh = (int)Math.Round(15 * s); // 55-40
+                iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
+                    bx, by, bw, bh, Vector4.One,
+                    0f, 0.0625f, 0.65625f, 1f);
+            }
         }
     }
 

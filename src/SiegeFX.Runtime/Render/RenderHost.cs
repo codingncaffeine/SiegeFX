@@ -913,6 +913,16 @@ public sealed class RenderHost : IDisposable
     // are assigned in OnRender so they tile across the dock from left→right.
     private bool _charPanelOpen;
     private bool _spellBookOpen;
+    // INFORAIL-B/-F: user toggle for "open spellbook when I is pressed".
+    // Persisted to config in INFORAIL-F. Defaults true (DS1 default).
+    private bool _spellbookWithI = true;
+    // Tracks whether the current open spellbook was opened by I (vs by
+    // the B key or the AWP long-press). If true, the rail's close-on-I
+    // also closes the spellbook; if false (B-key path), I leaves the
+    // spellbook alone.
+    private bool _spellbookOpenedWithI;
+    private GlTexture? _spellbookToggleTex;
+    private bool _spellbookToggleTexLoaded;
     private readonly CharacterPanel _characterPanel = new();
     private readonly SpellBookPanel _spellBookPanel = new();
     // Phase 21-SC-INV-B (round 2) — basename of the player's portrait icon
@@ -981,6 +991,15 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _awpPortraitTex;
     private GlTexture? _awpInvBtnTex;
     private bool _awpLoaded;
+    // SC-AUTH-CHAR-AWP-LONGPRESS — gas wires `click_delay = 0.2` +
+    // `onclickdelay = notify(list_spells)` on slots 3/4 and the active
+    // slot radio button. We approximate by tracking the LMB-down moment
+    // on a spell slot: release before _awpClickDelay → quick-select;
+    // release after → open spellbook so the user can pick a different
+    // spell to slot. -1 means no slot is currently held.
+    private int _awpSlotPressed = -1;
+    private int _awpSlotPressedAtMs;
+    private const int _awpClickDelayMs = 200;
     private readonly Dictionary<string, GlTexture?> _awpSlotIconCache =
         new(StringComparer.OrdinalIgnoreCase);
     // Phase 22-A — world-tick gate. When true, brain/particle/sfx ticks
@@ -1783,8 +1802,36 @@ void main()
                     _cameraMode = _cameraMode == CameraMode.Chase ? CameraMode.Fly : CameraMode.Chase;
                     Console.WriteLine($"camera: {_cameraMode}");
                 }
-                // Phase 15c: 'I' toggles the grid inventory panel.
-                else if (key == Key.I) { _inventoryOpen = !_inventoryOpen; _audio?.Play(SfxGuiInventory); }
+                // Phase 22-INFORAIL-B — 'I' toggles DS1's information rail
+                // (paperdoll + inventory + optional spellbook chained edge-
+                // to-edge at gas-authored x positions). Opening behavior:
+                //   - If any rail panel is open, I closes all of them.
+                //   - Otherwise opens paperdoll + inventory; spellbook
+                //     only joins if _spellbookWithI is set (per the
+                //     vertical toggle on the paperdoll, INFORAIL-F).
+                else if (key == Key.I)
+                {
+                    bool anyOpen = _charPanelOpen || _inventoryOpen ||
+                                  (_spellBookOpen && _spellbookOpenedWithI);
+                    if (anyOpen)
+                    {
+                        _charPanelOpen  = false;
+                        _inventoryOpen  = false;
+                        if (_spellbookOpenedWithI) _spellBookOpen = false;
+                        _spellbookOpenedWithI = false;
+                    }
+                    else
+                    {
+                        _charPanelOpen = true;
+                        _inventoryOpen = true;
+                        if (_spellbookWithI)
+                        {
+                            _spellBookOpen = true;
+                            _spellbookOpenedWithI = true;
+                        }
+                    }
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // Phase 20b: 'L' toggles the quest log overlay.
                 else if (key == Key.L || key == Key.J) _questLogOpen = !_questLogOpen;
                 // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
@@ -2060,25 +2107,35 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y);
+                    bool railOpen = _charPanelOpen || _inventoryOpen ||
+                                    (_spellBookOpen && _spellbookOpenedWithI);
+                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y, railOpen);
                     switch (awpHit)
                     {
                         case Hud.CharacterAwp.HitTarget.Portrait:
+                            // Portrait click toggles paperdoll alone (DS1's
+                            // notify(character)). Does NOT touch inventory
+                            // or spellbook — only I-key drives the rail.
                             _charPanelOpen = !_charPanelOpen;
                             _audio?.Play(SfxGuiInventory);
                             return;
-                        case Hud.CharacterAwp.HitTarget.InventoryButton:
-                            _inventoryOpen = !_inventoryOpen;
+                        case Hud.CharacterAwp.HitTarget.CloseArrow:
+                            // INFORAIL-C: rail-open close arrow closes ALL
+                            // rail panels (mirrors I-key close behavior).
+                            _charPanelOpen = false;
+                            _inventoryOpen = false;
+                            if (_spellbookOpenedWithI) _spellBookOpen = false;
+                            _spellbookOpenedWithI = false;
                             _audio?.Play(SfxGuiInventory);
                             return;
                         case Hud.CharacterAwp.HitTarget.Slot1:
-                            _activeAbilityIdx = 0; _audio?.Play(SfxGuiInventory); return;
+                            _awpSlotPressed = 0; _awpSlotPressedAtMs = Environment.TickCount; return;
                         case Hud.CharacterAwp.HitTarget.Slot2:
-                            _activeAbilityIdx = 1; _audio?.Play(SfxGuiInventory); return;
+                            _awpSlotPressed = 1; _awpSlotPressedAtMs = Environment.TickCount; return;
                         case Hud.CharacterAwp.HitTarget.Slot3:
-                            _activeAbilityIdx = 2; _audio?.Play(SfxGuiInventory); return;
+                            _awpSlotPressed = 2; _awpSlotPressedAtMs = Environment.TickCount; return;
                         case Hud.CharacterAwp.HitTarget.Slot4:
-                            _activeAbilityIdx = 3; _audio?.Play(SfxGuiInventory); return;
+                            _awpSlotPressed = 3; _awpSlotPressedAtMs = Environment.TickCount; return;
                     }
                 }
                 // Phase 21-SC-INV-A — character + spell book panes are read-only
@@ -2096,9 +2153,52 @@ void main()
                     // fall through to click-to-move.
                     var dbDown = _dataBar.MouseDown(_window.Size.X, _window.Size.Y, mx, my);
                     if (dbDown is not null) return;
+                    // INFORAIL-F — spellbook-with-I toggle on paperdoll.
+                    // Rect 229,238,250,269 in gas, mapped via paperdollX.
+                    // Clicking flips _spellbookWithI; if the spellbook is
+                    // currently open AND was opened via I, this also
+                    // closes the spellbook (per DS1's notify(spell_expand)
+                    // dual-purpose: toggle BOTH the I-key behavior AND
+                    // the live spellbook visibility).
+                    if (_charPanelOpen)
+                    {
+                        var sz2 = _window.Size;
+                        float irs2 = Hud.InfoRailLayout.Scale(sz2.Y);
+                        int pdx = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 * irs2);
+                        var r2 = Hud.InfoRailLayout.SpellbookToggle;
+                        int tx2 = pdx + (int)System.Math.Round((r2.X0 - Hud.InfoRailLayout.Pane1.X0) * irs2);
+                        int ty2 = (int)System.Math.Round(r2.Y0 * irs2);
+                        int tw2 = (int)System.Math.Round(r2.W * irs2);
+                        int th2 = (int)System.Math.Round(r2.H * irs2);
+                        if (mx >= tx2 && my >= ty2 && mx < tx2 + tw2 && my < ty2 + th2)
+                        {
+                            _spellbookWithI = !_spellbookWithI;
+                            // Persist via the options round-trip so the
+                            // choice survives sessions (INFORAIL-F).
+                            _optionsMenu.Live.SpellbookOpensWithI = _spellbookWithI;
+                            if (!_spellbookWithI && _spellbookOpenedWithI)
+                            {
+                                _spellBookOpen = false;
+                                _spellbookOpenedWithI = false;
+                            }
+                            else if (_spellbookWithI && !_spellBookOpen)
+                            {
+                                _spellBookOpen = true;
+                                _spellbookOpenedWithI = true;
+                            }
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        }
+                    }
+                    // INFORAIL-D — independent X close for spellbook +
+                    // inventory. Each closes only its own panel; the rest
+                    // of the rail stays open. _spellbookOpenedWithI is
+                    // cleared on spellbook close so a subsequent I-press
+                    // doesn't try to "re-close" what's already gone.
                     if (_spellBookOpen && _spellBookPanel.IsPointInClose(mx, my))
                     {
                         _spellBookOpen = false;
+                        _spellbookOpenedWithI = false;
                         _audio?.Play(SfxGuiInventory);
                         return;
                     }
@@ -2317,6 +2417,31 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold. Per
+                // character_awp.gas: quick click selects the slot; click held
+                // past click_delay (0.2s, gas-authored) fires notify(list_spells)
+                // → we open the spellbook so the user can swap which spell sits
+                // in that slot. Slots 1/2 (melee/ranged) ignore the long-press
+                // path in DS1 (no click_delay on those gas entries) so they
+                // always quick-select regardless of hold time.
+                if (btn == MouseButton.Left && _awpSlotPressed >= 0)
+                {
+                    int slot = _awpSlotPressed;
+                    int heldMs = Environment.TickCount - _awpSlotPressedAtMs;
+                    _awpSlotPressed = -1;
+                    bool isSpellSlot = slot >= 2;
+                    if (isSpellSlot && heldMs >= _awpClickDelayMs)
+                    {
+                        _spellBookOpen = true;
+                        _audio?.Play(SfxGuiInventory);
+                    }
+                    else
+                    {
+                        _activeAbilityIdx = slot;
+                        _audio?.Play(SfxGuiInventory);
+                    }
+                    return;
+                }
                 // Phase 22-A SC-HUD-DATABAR — bottom-row HUD click resolves.
                 // Always-on layer: handle the data_bar click before any modal
                 // panel's MouseUp routes, so the user's press-release on a
@@ -6354,6 +6479,7 @@ void main()
             _camera.SensitivityScale = mouse;
         }
         _showFps = s.ShowFramerate;
+        _spellbookWithI = s.SpellbookOpensWithI;
     }
 
     /// <summary>Phase 23-SC-OPTIONS-C — push the menu's audio settings
@@ -8833,9 +8959,12 @@ void main()
         GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
         GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
 
+        bool railOpen = _charPanelOpen || _inventoryOpen ||
+                        (_spellBookOpen && _spellbookOpenedWithI);
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
-                           null, null, slot3, slot4, _awpInvBtnTex);
+                           null, null, slot3, slot4, _awpInvBtnTex,
+                           railOpen: railOpen);
     }
 
     private GlTexture? ResolveAwpSlotIcon(string? iconName)
@@ -12198,22 +12327,26 @@ void main()
             // overhead bars; per-panel modals still overlay it.
             DrawCharacterAwp(size.X, size.Y);
 
-            // Phase 21-SC-INV-A + 22-AUTH-MINIHUD-REMOVE — three docked
-            // panels (Character / Inventory / SpellBook) tile across the
-            // TOP of the screen. Each panel toggles independently (C / I /
-            // B) and sets its own OriginX/Y so the dock layout is local to
-            // this method. Top margin y=4; horizontal gap between panels
-            // keeps borders visually separate. The mini-HUD's right-edge
-            // X-anchor that used to land panels next to it is gone; panels
-            // dock from the left gutter. Per-panel rework (22-AUTH-INV /
-            // -CHAR / -SPELL) lands each panel's authentic gas position.
-            const int panelTopY    = 4;
-            const int panelGutter  = 4;
-            int dockX = panelGutter;
+            // Phase 22-INFORAIL-B — gas-cited information-rail layout.
+            // Per hud_character.gas / hud_inventory.gas / hud_spell.gas:
+            //   Paperdoll: x 87..254 (w=167, gas-x=87)
+            //   Inventory MAX (rail open): x 253..387 (gas-x=253)
+            //   Inventory MIN (rail without paperdoll): x 89..474
+            //   Spellbook: x 387..542 (gas-x=387)
+            // All values scale by viewportH/480 per the
+            // feedback_siegefx_authentic_scalable.md rule. The OriginY
+            // is 0 — panels position internally from their gas-authored
+            // y rects (paperdoll starts at gas-y=0).
+            float infoRailScale = Hud.InfoRailLayout.Scale(size.Y);
+            int paperdollX = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 * infoRailScale);
+            int inventoryMaxX = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMax.X0 * infoRailScale);
+            int inventoryMinX = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMin.X0 * infoRailScale);
+            int spellbookX = (int)System.Math.Round(Hud.InfoRailLayout.Spellbook.X0 * infoRailScale);
+            const int panelTopY    = 0;
 
             if (_charPanelOpen && _player is not null)
             {
-                _characterPanel.OriginX = dockX;
+                _characterPanel.OriginX = paperdollX;
                 _characterPanel.OriginY = panelTopY;
                 _characterPanel.IsOpen  = true;
                 int armor = ComputePlayerArmorRating();
@@ -12233,11 +12366,41 @@ void main()
                     size.X, size.Y, _heroName, _player.Actor, _progression,
                     GetPlayerAttackStats(), armor, xpFrac,
                     _iconRenderer, portrait);
-                dockX += CharacterPanel.PanelWidth + panelGutter;
+
+                // INFORAIL-F — vertical "spellbook with I" toggle at gas
+                // rect 229,238,250,269 (relative to paperdoll gas origin
+                // 87,0). Two strips in b_gui_ig_mnu_minimize-book-up:
+                //   show state (rail w/o spellbook): uv 0,0,0.65625,0.484375
+                //   hide state (rail w/ spellbook):  uv 0,0.5,0.65625,0.984375
+                // Click toggles _spellbookWithI and (per DS1's
+                // notify(spell_expand)) opens/closes the spellbook if the
+                // rail is currently open.
+                if (!_spellbookToggleTexLoaded)
+                {
+                    _spellbookToggleTexLoaded = true;
+                    _spellbookToggleTex = TryGetGuiTexture(Hud.InfoRailLayout.SpellbookToggleTex);
+                }
+                if (_spellbookToggleTex is not null && _iconRenderer is not null)
+                {
+                    float irs = Hud.InfoRailLayout.Scale(size.Y);
+                    var r = Hud.InfoRailLayout.SpellbookToggle;
+                    int tx = paperdollX + (int)System.Math.Round((r.X0 - Hud.InfoRailLayout.Pane1.X0) * irs);
+                    int ty = panelTopY  + (int)System.Math.Round(r.Y0 * irs);
+                    int tw = (int)System.Math.Round(r.W * irs);
+                    int th = (int)System.Math.Round(r.H * irs);
+                    var uv = _spellbookWithI
+                        ? Hud.InfoRailLayout.SpellbookToggleHideUv.Screen()
+                        : Hud.InfoRailLayout.SpellbookToggleShowUv.Screen();
+                    _iconRenderer.DrawIcon(size.X, size.Y, _spellbookToggleTex,
+                        tx, ty, tw, th, System.Numerics.Vector4.One,
+                        uv.u0, uv.v0, uv.u1, uv.v1);
+                }
             }
             if (_inventoryOpen && _barRenderer is not null)
             {
-                _inventoryPanel.OriginX     = dockX;
+                // INFORAIL-B: max mode (paperdoll open) → x=253; min mode
+                // (paperdoll closed) → x=89 per hud_inventory.gas.
+                _inventoryPanel.OriginX     = _charPanelOpen ? inventoryMaxX : inventoryMinX;
                 _inventoryPanel.OriginY     = panelTopY;
                 _inventoryPanel.DimBackdrop = false;
                 _inventoryPanel.Gold        = _progression?.Gold ?? 0;
@@ -12264,11 +12427,10 @@ void main()
                     arrangeUp: arrangeUp,
                     goldBg: goldBg,
                     gridTile: gridTile);
-                dockX += InventoryPanel.PanelWidth(size.Y) + panelGutter;
             }
             if (_spellBookOpen && _barRenderer is not null)
             {
-                _spellBookPanel.OriginX = dockX;
+                _spellBookPanel.OriginX = spellbookX;
                 _spellBookPanel.OriginY = panelTopY;
                 _spellBookPanel.IsOpen  = true;
                 // Phase 21-SC-SCROLL-C-1 — the 10 below-active rows are now
@@ -12280,7 +12442,6 @@ void main()
                 _spellBookPanel.Draw(_barRenderer, _textRenderer,
                     size.X, size.Y, _playerSpellbook?.Primary, _playerSpellbook?.Secondary, placed,
                     _iconRenderer, spellClose, ResolveSpellInventoryIcon);
-                dockX += SpellBookPanel.PanelWidth + panelGutter;
             }
 
             if (_player is not null)

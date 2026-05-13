@@ -82,6 +82,11 @@ internal sealed class OptionsMenuPanel
         public bool TutorialTips = true;
         public string Difficulty = "Normal"; // Easy/Normal/Hard
 
+        // INFORAIL-F — DS1's vertical paperdoll toggle for "open
+        // spellbook when I is pressed". Persists via the standard
+        // options round-trip (Live → Save → Reload on next session).
+        public bool SpellbookOpensWithI = true;
+
         // Game (page 2)
         public bool ShowTooltips = true;
         public string BloodColor = "Red";    // Red/Green/Disabled
