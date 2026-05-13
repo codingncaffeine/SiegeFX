@@ -12555,6 +12555,9 @@ void main()
             int inventoryMaxX = paperdollX + paperdollW;
             int inventoryMaxW = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMax.W * infoRailScale);
             int spellbookX    = inventoryMaxX + inventoryMaxW;
+            int spellbookW    = Hud.SpellBookPanel.WidthAt(size.Y);
+            int spellbookH    = Hud.SpellBookPanel.HeightAt(size.Y);
+            _ = spellbookW; _ = spellbookH; // (informational; SpellBookPanel.Draw computes its own scale)
             // Min-mode inventory (no paperdoll) sits flush against the
             // AWP cluster the same way paperdoll would in max mode.
             int inventoryMinX = paperdollX;
