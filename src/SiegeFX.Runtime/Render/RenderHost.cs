@@ -8917,7 +8917,15 @@ void main()
         if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
         {
             var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
+            var path = $"/sound/effects/{cue}.wav";
+            // Peek before TryRegisterSfx: some templates author voice cues
+            // whose wavs aren't actually shipped in Sound.dsres (rare, but
+            // possible for boss/scripted-NPC variants). Without this guard
+            // every miss would log "missing in Sound.dsres" loudly on first
+            // fire. The set add above is unconditional so we don't re-probe
+            // every frame.
+            if (reader.TryGetFile(path, out _))
+                TryRegisterSfx(reader, cue, path);
         }
         _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
     }
@@ -9330,6 +9338,12 @@ void main()
             {
                 var clipId = $"hit_{material}_flesh{i}";
                 var path = $"/sound/effects/s_e_hit_{material}_flesh{i}.wav";
+                // Peek before registering: PlayMeleeHit probes for 5 variants
+                // but DS1 only ships 3 for most materials (flesh4/flesh5 are
+                // missing for steeledge etc.). TryRegisterSfx would log each
+                // miss loudly, which looks like a bug when it's by-design
+                // probing. Skip silently when the file isn't shipped.
+                if (!reader.TryGetFile(path, out _)) continue;
                 if (TryRegisterSfx(reader, clipId, path)) registered.Add(clipId);
             }
             if (registered.Count == 0 && !string.Equals(material, "steelsword", StringComparison.OrdinalIgnoreCase))
