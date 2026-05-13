@@ -748,6 +748,7 @@ static int DispatchRegion(string[] a)
         "spawn"       => CmdRegionSpawn(a[1..]),
         "prop-textures" => CmdRegionPropTextures(a[1..]),
         "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
+        "loot-distribution" => CmdRegionLootDistribution(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -4713,6 +4714,190 @@ static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold
     }
     foreach (var child in bucket.Children)
         CountBucketKinds(child, ref gold, ref items);
+}
+
+// SC-BARREL-LOOT-VERIFY (2026-05-13) — Monte-Carlo roll every breakable container
+// placed in a region (or every region with --all) against its template's pcontent,
+// aggregate the outcomes into a human-readable distribution table, and compare
+// against the per-chapter loot expectations the Sybex guide documents.
+// Per-template: empty %, gold %/total, item %/named breakdown. Per-region: total
+// expected gold yield, total potions by type, total gear by slot. Drift between
+// this readout and the guide is the receipt that pcontent rolling matches DS1.
+static int CmdRegionLootDistribution(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region loot-distribution <map-tank> <logic-tank> <objects-tank> <region-path|all> [--rolls=N] [--seed=K] [--top=N]");
+        return 1;
+    }
+    int rollsPerPlacement = 1000;
+    int seed = 1;
+    int top = 30;
+    for (int i = 4; i < a.Length; i++)
+    {
+        const string rollsPrefix = "--rolls=";
+        const string seedPrefix  = "--seed=";
+        const string topPrefix   = "--top=";
+        if (a[i].StartsWith(rollsPrefix) && int.TryParse(a[i][rollsPrefix.Length..], out var r)) rollsPerPlacement = r;
+        else if (a[i].StartsWith(seedPrefix) && int.TryParse(a[i][seedPrefix.Length..], out var s)) seed = s;
+        else if (a[i].StartsWith(topPrefix) && int.TryParse(a[i][topPrefix.Length..], out var n)) top = n;
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var mapTank   = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    using var objectsTank = TankFile.Open(a[2]);
+    var mapReader   = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _)  = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+
+    var regionPaths = new List<string>();
+    if (a[3].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"loot-distribution: {regionPaths.Count} region(s), {rollsPerPlacement} rolls per placement, seed={seed}");
+    }
+    else
+    {
+        regionPaths.Add(a[3]);
+    }
+
+    // Aggregate stats per template + per region. Each placement contributes
+    // rollsPerPlacement samples to its template's bucket; region totals are
+    // the sum of (template per-roll yields × placement count).
+    var perTemplate = new SortedDictionary<string,
+        (int placements, int rolls, int emptyRolls, int goldRolls, long goldTotal,
+         SortedDictionary<string, int> itemCounts)>(StringComparer.OrdinalIgnoreCase);
+    var rng = new Random(seed);
+
+    foreach (var regionPath in regionPaths)
+    {
+        var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(
+            mapReader, regionPath, "container.gas");
+        foreach (var p in placements)
+        {
+            if (!store.TryGet(p.TemplateName, out var template)) continue;
+            var breakSection = store.GetSection(template, "physics", "break_particulate");
+            if (breakSection is null) continue;
+            var inv = store.GetAttribute(template, "aspect", "is_invincible");
+            if (inv is not null && (inv.Equals("true", StringComparison.OrdinalIgnoreCase) || inv == "1"))
+                continue;
+            var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
+            if (table.IsEmpty) continue;
+
+            if (!perTemplate.TryGetValue(p.TemplateName, out var bag))
+                bag = (0, 0, 0, 0, 0L, new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase));
+            bag.placements++;
+
+            for (int i = 0; i < rollsPerPlacement; i++)
+            {
+                var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
+                bag.rolls++;
+                if (drops.Count == 0) { bag.emptyRolls++; continue; }
+                bool gotGold = false;
+                foreach (var d in drops)
+                {
+                    if (d.IsGold)
+                    {
+                        var (lo, hi) = d.GoldRange();
+                        if (hi >= lo && hi > 0)
+                        {
+                            int pick = rng.Next(lo, hi + 1);
+                            bag.goldTotal += pick;
+                            gotGold = true;
+                        }
+                    }
+                    else
+                    {
+                        bag.itemCounts.TryGetValue(d.Reference, out var c);
+                        bag.itemCounts[d.Reference] = c + 1;
+                    }
+                }
+                if (gotGold) bag.goldRolls++;
+            }
+            perTemplate[p.TemplateName] = bag;
+        }
+    }
+
+    if (perTemplate.Count == 0)
+    {
+        Console.WriteLine("no breakable containers with pcontent found in scope.");
+        return 0;
+    }
+
+    // Sort by placement count (busiest templates first); cap to --top.
+    var ordered = perTemplate.OrderByDescending(kv => kv.Value.placements).ToList();
+    int shown = 0;
+    long sumGoldExpected = 0;
+    int sumPlacements = 0;
+    var aggregateItems = new SortedDictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+    foreach (var (templateName, bag) in ordered)
+    {
+        sumPlacements += bag.placements;
+        // Expected per-region yield = per-roll average × placements.
+        // bag.rolls = placements × rollsPerPlacement (one roll per simulated
+        // break). Average gold per break = goldTotal / rolls. Multiplying by
+        // placements gives the expected total if the player breaks each
+        // container exactly once on a region walk.
+        double expectedGoldThisTemplate = bag.rolls > 0
+            ? (double)bag.goldTotal * bag.placements / bag.rolls
+            : 0;
+        sumGoldExpected += (long)Math.Round(expectedGoldThisTemplate);
+        foreach (var (item, count) in bag.itemCounts)
+        {
+            double expected = bag.rolls > 0
+                ? (double)count * bag.placements / bag.rolls
+                : 0;
+            aggregateItems.TryGetValue(item, out var prev);
+            aggregateItems[item] = prev + expected;
+        }
+        if (shown++ >= top) continue;
+
+        double emptyPct = bag.rolls == 0 ? 0 : 100.0 * bag.emptyRolls / bag.rolls;
+        double goldPct  = bag.rolls == 0 ? 0 : 100.0 * bag.goldRolls / bag.rolls;
+        double avgGold  = bag.goldRolls == 0 ? 0 : (double)bag.goldTotal / bag.goldRolls;
+        Console.WriteLine();
+        Console.WriteLine($"  {templateName}  ({bag.placements} placement(s), {bag.rolls} rolls):");
+        Console.WriteLine($"    empty:  {bag.emptyRolls,6}  ({emptyPct,5:F1}%)");
+        Console.WriteLine($"    gold:   {bag.goldRolls,6}  ({goldPct,5:F1}%)   avg={avgGold,5:F1}g  per-template total={bag.goldTotal}g  expected/region={expectedGoldThisTemplate,5:F1}g");
+        if (bag.itemCounts.Count > 0)
+        {
+            int itemRolls = 0;
+            foreach (var v in bag.itemCounts.Values) itemRolls += v;
+            double itemPct = bag.rolls == 0 ? 0 : 100.0 * itemRolls / bag.rolls;
+            Console.WriteLine($"    items:  {itemRolls,6}  ({itemPct,5:F1}%)");
+            foreach (var (item, count) in bag.itemCounts.OrderByDescending(kv => kv.Value))
+            {
+                double pct = bag.rolls == 0 ? 0 : 100.0 * count / bag.rolls;
+                Console.WriteLine($"               {count,6}  ({pct,5:F2}%)  {item}");
+            }
+        }
+    }
+
+    if (ordered.Count > top)
+        Console.WriteLine($"  ... {ordered.Count - top} more template(s) (raise --top to see)");
+
+    Console.WriteLine();
+    Console.WriteLine($"REGION TOTALS  ({regionPaths.Count} region path(s), {sumPlacements} container placements):");
+    Console.WriteLine($"  expected gold yield: ~{sumGoldExpected}g across all containers");
+    if (aggregateItems.Count > 0)
+    {
+        Console.WriteLine($"  expected item drops:");
+        foreach (var (item, count) in aggregateItems.OrderByDescending(kv => kv.Value))
+            Console.WriteLine($"    {count,7:F2}  {item}");
+    }
+    return 0;
 }
 
 // Phase 21d-2a-iii prep — actor-coverage audit. Mirror of prop-textures but for the
