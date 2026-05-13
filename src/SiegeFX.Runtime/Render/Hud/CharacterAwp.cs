@@ -220,29 +220,17 @@ public sealed class CharacterAwp
             // Slot bg frame
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
                 0.839844f, 1f - 0.984375f, 0.902344f, 1f - 0.734375f);
-            // INFORAIL skill progress — bottom-up vertical fill BEHIND
-            // the slot's content icon. Per-slot progress mirrors the
-            // skill associated with that activation: slot 1 = melee
-            // skill XP fraction, slot 2 = ranged, slot 3 = combat magic
-            // (active spell 1 caster), slot 4 = nature/combat magic
-            // (active spell 2 caster). RenderHost picks the right
-            // progression and passes the fraction in. Color matches
-            // the info panel's #635757 ProgressFill.
-            // In min mode (railOpen + i==0) the visible slot is the
-            // ACTIVE skill — display that slot's progress, not slot 1's.
+            // INFORAIL skill progress — per-slot XP fraction. Slot 1
+            // mirrors Melee, slot 2 Ranged, slot 3 Combat Magic (primary
+            // spell's caster), slot 4 Nature Magic (secondary's). In
+            // min mode the visible slot is the active one, so display
+            // its progress instead of slot 1's.
+            // We draw the fill AFTER the icon (further below) so it
+            // sits on top with translucency — otherwise the opaque icon
+            // hides the bar behind it.
             float progFrac = (railOpen && i == 0 && activeSlot >= 0 && activeSlot < 4)
                 ? slotProgs[activeSlot] : slotProgs[i];
             progFrac = Math.Clamp(progFrac, 0f, 1f);
-            if (progFrac > 0f)
-            {
-                int fillH = (int)Math.Round(sh * progFrac);
-                var progColor = new Vector4(0.388f, 0.341f, 0.341f, 1f); // #635757
-                // Inset 1px so the slot frame's border stays visible.
-                int inset = (int)Math.Max(1, Math.Round(1 * s));
-                barRenderer.DrawRect(viewportW, viewportH,
-                    sx + inset, sy + sh - fillH,
-                    sw - inset * 2, fillH, progColor);
-            }
             // Slot content (weapon or spell icon) — drawn inside the frame
             // with a 1px inset so the chrome stays visible. In min mode
             // (i == 0 and railOpen) we display the ACTIVE skill's icon
@@ -262,6 +250,21 @@ public sealed class CharacterAwp
             {
                 iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
                     0.675781f, 1f - 0.992188f, 0.753907f, 1f - 0.710938f);
+            }
+            // Progress fill drawn LAST so it sits over the icon (with
+            // alpha so the icon stays legible). Inset 1px so the slot
+            // frame border is undisturbed.
+            if (progFrac > 0f)
+            {
+                int inset = (int)Math.Max(1, Math.Round(1 * s));
+                int fillH = (int)Math.Round((sh - inset * 2) * progFrac);
+                if (fillH > 0)
+                {
+                    var progColor = new Vector4(0.388f, 0.341f, 0.341f, 0.55f); // #635757 @ 55%
+                    barRenderer.DrawRect(viewportW, viewportH,
+                        sx + inset, sy + sh - inset - fillH,
+                        sw - inset * 2, fillH, progColor);
+                }
             }
         }
 

@@ -1849,6 +1849,16 @@ void main()
                 }
                 // Phase 20b: 'L' toggles the quest log overlay.
                 else if (key == Key.L || key == Key.J) _questLogOpen = !_questLogOpen;
+                // INFORAIL — Alt toggles ground-loot labels, matching
+                // the bottom-right data_bar checkbox (rollover help
+                // "Hide/Show labels for items on the ground (Hotkey:
+                // Alt)"). Single-press toggle so the user can leave
+                // labels off and use the same key to peek when needed.
+                else if (key == Key.AltLeft || key == Key.AltRight)
+                {
+                    _overheadLabelsVisible = !_overheadLabelsVisible;
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
                 // the data_bar's pause button. ONLY in Chase camera mode — Fly
                 // cam (dev free-cam) polls Space at line 5612 for vertical-up
@@ -12854,7 +12864,13 @@ void main()
             // Gold by default, red when the mouse pointer is over the label
             // rect — matches DS1's hover behavior. Backdrop is a thin dark
             // panel for legibility against busy terrain.
-            if (_frameLootLabels.Count > 0 && _barRenderer is not null)
+            // INFORAIL fold — gas data_bar's window_labels checkbox toggles
+            // _overheadLabelsVisible (line 8932); skip the whole label
+            // render when the user has labels hidden. Alt key + the
+            // bottom-right labels button both flip this flag, matching
+            // DS1's notify(labels_on)/notify(labels_off) behavior.
+            if (_frameLootLabels.Count > 0 && _barRenderer is not null
+                && _overheadLabelsVisible)
             {
                 int mx = -1, my = -1;
                 if (_input is not null && _input.Mice.Count > 0)
