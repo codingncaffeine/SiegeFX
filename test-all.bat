@@ -169,6 +169,7 @@ echo   96. SC-QUEST-OBJ-A               - Talk-to-NPC quest objective (SIEGEFX_D
 echo   97. SC-QUEST-OBJ-F               - Full 24-quest Ehb catalog + chain (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, watch chain follow-up activate)
 echo   98. SC-QUEST-OBJ-C               - Pickup quest objective (SIEGEFX_DEBUG_QUEST=quest_grab_fireshot, basement spell_fireshot)
 echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG_QUEST=quest_merik_staff, hold staff + talk Merik)
+echo  100. SC-HUD-DATABAR               - Bottom-row HUD buttons (pause/HP-pot/MP-pot/labels/map/journal/menu) — click each in fh_r1
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -274,6 +275,7 @@ if /i "%CHOICE%"=="96" goto T96
 if /i "%CHOICE%"=="97" goto T97
 if /i "%CHOICE%"=="98" goto T98
 if /i "%CHOICE%"=="99" goto T99
+if /i "%CHOICE%"=="100" goto T100
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2276,6 +2278,28 @@ echo.
 set "SIEGEFX_DEBUG_QUEST=quest_merik_staff"
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set "SIEGEFX_DEBUG_QUEST="
+echo.
+pause
+goto MENU
+
+:T100
+echo.
+echo --- SC-HUD-DATABAR: bottom-row HUD buttons ---
+echo [DS1's always-on data_bar at the bottom of the screen. 7 button slots:
+echo  pause/play (left), HP potion, MP potion, then on the right:
+echo  labels-toggle, mega-map (stub), quest-log (book), menu (door icon).
+echo  Click each to verify the right notify fires:
+echo    Pause/Play -- toggles world tick (Space key alias)
+echo    HP/MP Potion -- drinks lowest-tier potion from inventory
+echo    Labels       -- toggles flag (overhead rendering pending SC-HUD-OVERHEAD-BARS)
+echo    Mega-Map     -- prints "splinter SC-HUD-MEGAMAP pending"
+echo    Quest Log    -- toggles the L/J overlay
+echo    Menu (door)  -- opens the Options dialog (F10 alias)
+echo.
+echo  Quest indicator flash: when a quest activates or objective completes
+echo  the red book pulses over the journal button for ~1.5s.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.
 pause
 goto MENU

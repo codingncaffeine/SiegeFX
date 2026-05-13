@@ -942,7 +942,40 @@ public sealed class RenderHost : IDisposable
     // templates share the same put_down cue (every steel sword fires the same
     // s_e_gui_put_down_steelsword) so this keeps the per-drop path one cache hit.
     private readonly HashSet<string> _registeredPutDownCues = new(StringComparer.OrdinalIgnoreCase);
-    private bool _questLogOpen;  // 'L' toggles; sibling overlay to inventory
+    private bool _questLogOpen;  // 'L' (and SC-HUD-DATABAR-aliased 'J') toggles; sibling overlay to inventory
+    // Phase 22-A SC-HUD-DATABAR — bottom-row HUD button strip widget. Owns
+    // hover/press state for the 7 button slots; RenderHost owns the
+    // textures and the click dispatcher. Always rendered (no IsOpen
+    // toggle) — DS1's data_bar is part of the always-on HUD.
+    private readonly Hud.DataBar _dataBar = new();
+    // Per-state textures for each DataBar button: up/dwn/hov. Loaded lazily
+    // via TryGetGuiTexture on first DrawDataBar tick. Pause/Play swap-pair
+    // is two sets gated by _isPaused; Labels has TWO up textures (on/off)
+    // gated by _overheadLabelsVisible.
+    private GlTexture? _dbStatusbarBg;
+    private GlTexture? _dbPauseUp, _dbPauseDwn, _dbPauseHov;
+    private GlTexture? _dbPlayUp,  _dbPlayDwn,  _dbPlayHov;
+    private GlTexture? _dbHealthUp, _dbHealthDwn, _dbHealthHov;
+    private GlTexture? _dbManaUp,   _dbManaDwn,   _dbManaHov;
+    private GlTexture? _dbMapUp,    _dbMapDwn,    _dbMapHov;
+    private GlTexture? _dbBookUp,   _dbBookDwn,   _dbBookHov, _dbBookRed;
+    private GlTexture? _dbDoorUp,   _dbDoorDwn,   _dbDoorHov;
+    private GlTexture? _dbLabelUp,  _dbLabelDwn,  _dbLabelHov;
+    private GlTexture? _dbLabelOffUp, _dbLabelOffDwn, _dbLabelOffHov;
+    private bool _dbTexturesLoaded;
+    // Phase 22-A — world-tick gate. When true, brain/particle/sfx ticks
+    // are skipped; rendering continues so the player can interact with
+    // HUD buttons. Toggled by SC-HUD-DATABAR's pause button + Space key.
+    private bool _isPaused;
+    // Phase 22-A — labels checkbox state. Drives in-world member-label
+    // visibility once SC-HUD-OVERHEAD-BARS wires that rendering. Today
+    // the flag is set/cleared and persists across the session but has no
+    // visible effect until the bars slice lands.
+    private bool _overheadLabelsVisible = true;
+    // Phase 22-A — quest indicator flash. window_quest_indicator pulses
+    // when a quest activates or an objective completes. Counter ticks
+    // down in DrawDataBar; nonzero = render the red book overlay.
+    private float _questIndicatorFlashRemaining;
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
     // Phase 23-SC-OPTIONS-A — F10 (and pause menu's "Options" button in
     // a future slice once we wire it through) opens the modal Options
@@ -1733,7 +1766,12 @@ void main()
                 // Phase 15c: 'I' toggles the grid inventory panel.
                 else if (key == Key.I) { _inventoryOpen = !_inventoryOpen; _audio?.Play(SfxGuiInventory); }
                 // Phase 20b: 'L' toggles the quest log overlay.
-                else if (key == Key.L) _questLogOpen = !_questLogOpen;
+                else if (key == Key.L || key == Key.J) _questLogOpen = !_questLogOpen;
+                // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
+                // the data_bar's pause button. The Esc-modal save/load menu
+                // (SC-HUD-MENU slice) will pre-empt Space when open.
+                else if (key == Key.Space && _player is not null && !_player.IsDead)
+                    TogglePause();
                 // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
                 // until enemy aggro lands in a later phase, this is the only way
                 // to drain the bars to verify regen is ticking).
@@ -2025,6 +2063,13 @@ void main()
                 if (btn == MouseButton.Left)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    // Phase 22-A SC-HUD-DATABAR — bottom-row HUD buttons capture
+                    // LMB before anything else. The bar is always-on (no IsOpen
+                    // gate), so this swallows the click even when no modal is
+                    // up — otherwise pause/potion/journal/menu buttons would
+                    // fall through to click-to-move.
+                    var dbDown = _dataBar.MouseDown(_window.Size.X, _window.Size.Y, mx, my);
+                    if (dbDown is not null) return;
                     if (_spellBookOpen && _spellBookPanel.IsPointInClose(mx, my))
                     {
                         _spellBookOpen = false;
@@ -2246,6 +2291,17 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                // Phase 22-A SC-HUD-DATABAR — bottom-row HUD click resolves.
+                // Always-on layer: handle the data_bar click before any modal
+                // panel's MouseUp routes, so the user's press-release on a
+                // HUD button never falls through to anything else.
+                if (btn == MouseButton.Left)
+                {
+                    var dbClick = _dataBar.MouseUp(
+                        _window.Size.X, _window.Size.Y,
+                        (int)m.Position.X, (int)m.Position.Y);
+                    if (dbClick is not null) { OnDataBarClick(dbClick.Value); return; }
+                }
                 // Phase 21d-2a-viii-b — character creator. Begin/Cancel resolve
                 // here; the post-modal world spawn is driven by FlushCreator()
                 // on the next render frame so we don't reenter spawn from inside
@@ -2354,6 +2410,10 @@ void main()
                             Console.WriteLine(added
                                 ? $"[dialogue] quest activated: {quest}"
                                 : $"[dialogue] quest re-pitched (already in journal): {quest}");
+                            // Phase 22-A — pulse the red book indicator on the
+                            // data_bar when a quest activates so the player has
+                            // a visible cue to open the journal.
+                            if (added) FlashQuestIndicator();
                         }
                         // SC-QUEST-OBJ-A — credit any "talk to NPC X" objective
                         // against the just-closed conversation. Runs BEFORE the
@@ -2440,6 +2500,10 @@ void main()
                 // is RMB-camera-specific and gets nulled on RMB release; a
                 // separate _currentMousePos stays valid for the whole session.
                 _currentMousePos = new Vector2(pos.X, pos.Y);
+                // Phase 22-A SC-HUD-DATABAR — keep hover state fresh so per-
+                // button textures swap to _hov on rollover. Per-frame cost is
+                // 7 rect tests; negligible.
+                _dataBar.UpdateHover(_window.Size.X, _window.Size.Y, (int)pos.X, (int)pos.Y);
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
@@ -5467,6 +5531,12 @@ void main()
     private void OnUpdate(double dt)
     {
         if (_input is null) return;
+        // Phase 22-A SC-HUD-DATABAR — pause gate. Zero the dt the rest of the
+        // tick sees so brain / particle / sfx / audio-glitter all halt. Menu
+        // drain still fires above this point so resume / unpause still
+        // dispatch correctly. Camera + input still tick (rendering continues
+        // and the player can interact with HUD buttons).
+        if (_isPaused) dt = 0.0;
         // Phase 21d-2a-viii-b — drain the creator's confirm/cancel edge here
         // so the spawn happens on the main thread (input callbacks fire from
         // the Silk dispatcher; ActorSpawner + GL resource creation expect the
@@ -7980,6 +8050,7 @@ void main()
         var completed = _progression.Journal.RegisterTalk(_lastTalkedTemplate, _playerInventory);
         foreach (var key in completed)
             Console.WriteLine($"[quest] talk objective complete: {key} (spoke to {_lastTalkedTemplate})");
+        if (completed.Count > 0) FlashQuestIndicator();
     }
 
     /// <summary>Phase 20d — apply a Buy/Sell intent emitted by the vendor
@@ -8395,6 +8466,273 @@ void main()
     /// individual lookup fails (older content tank, corrupted DSRES) the
     /// matching state falls back to the pointer in
     /// <see cref="ResolveCursorVisual"/> so the cursor never disappears.</summary>
+    /// <summary>Phase 22-A SC-HUD-DATABAR — lazy-load every button-state RAW
+    /// texture for the bottom-row data bar. Mirrors EnsureCursorTextures'
+    /// pattern: idempotent, sets the loaded flag even on partial failure
+    /// so missing assets don't get probed every frame. Texture set is
+    /// authored at <c>/art/bitmaps/gui/in_game/menus/b_gui_ig_mnu_*</c>;
+    /// see <c>research_ds1_hud_authoritative.md</c> for the full roster.</summary>
+    private void EnsureDataBarTextures()
+    {
+        if (_dbTexturesLoaded) return;
+        if (_gl is null || _playResolver is null) return;
+        _dbTexturesLoaded = true;
+        _dbStatusbarBg  = TryGetGuiTexture("b_gui_ig_mnu_statusbar");
+        _dbPauseUp      = TryGetGuiTexture("b_gui_ig_mnu_icon_pause_up");
+        _dbPauseDwn     = TryGetGuiTexture("b_gui_ig_mnu_icon_pause_down");
+        _dbPauseHov     = TryGetGuiTexture("b_gui_ig_mnu_icon_pause_hov");
+        _dbPlayUp       = TryGetGuiTexture("b_gui_ig_mnu_icon_play_up");
+        _dbPlayDwn      = TryGetGuiTexture("b_gui_ig_mnu_icon_play_down");
+        _dbPlayHov      = TryGetGuiTexture("b_gui_ig_mnu_icon_play_hov");
+        _dbHealthUp     = TryGetGuiTexture("b_gui_ig_mnu_icon_health_up");
+        _dbHealthDwn    = TryGetGuiTexture("b_gui_ig_mnu_icon_health_dwn");
+        _dbHealthHov    = TryGetGuiTexture("b_gui_ig_mnu_icon_health_hov");
+        _dbManaUp       = TryGetGuiTexture("b_gui_ig_mnu_icon_mana_up");
+        _dbManaDwn      = TryGetGuiTexture("b_gui_ig_mnu_icon_mana_dwn");
+        _dbManaHov      = TryGetGuiTexture("b_gui_ig_mnu_icon_mana_hov");
+        _dbMapUp        = TryGetGuiTexture("b_gui_ig_mnu_icon_map_up");
+        _dbMapDwn       = TryGetGuiTexture("b_gui_ig_mnu_icon_map_dwn");
+        _dbMapHov       = TryGetGuiTexture("b_gui_ig_mnu_icon_map_hov");
+        _dbBookUp       = TryGetGuiTexture("b_gui_ig_mnu_icon_book_up");
+        _dbBookDwn      = TryGetGuiTexture("b_gui_ig_mnu_icon_book_dwn");
+        _dbBookHov      = TryGetGuiTexture("b_gui_ig_mnu_icon_book_hov");
+        _dbBookRed      = TryGetGuiTexture("b_gui_ig_mnu_icon_book_red");
+        _dbDoorUp       = TryGetGuiTexture("b_gui_ig_mnu_icon_door_up");
+        _dbDoorDwn      = TryGetGuiTexture("b_gui_ig_mnu_icon_door_dwn");
+        _dbDoorHov      = TryGetGuiTexture("b_gui_ig_mnu_icon_door_hov");
+        _dbLabelUp      = TryGetGuiTexture("b_gui_ig_mnu_label_up");
+        _dbLabelDwn     = TryGetGuiTexture("b_gui_ig_mnu_label_down");
+        _dbLabelHov     = TryGetGuiTexture("b_gui_ig_mnu_label_hov");
+        _dbLabelOffUp   = TryGetGuiTexture("b_gui_ig_mnu_label_off_up");
+        _dbLabelOffDwn  = TryGetGuiTexture("b_gui_ig_mnu_label_off_down");
+        _dbLabelOffHov  = TryGetGuiTexture("b_gui_ig_mnu_label_off_hov");
+        Console.WriteLine(
+            $"[data_bar] textures: " +
+            $"bg={(_dbStatusbarBg is not null ? "ok" : "MISS")}, " +
+            $"pause={(_dbPauseUp is not null ? "ok" : "MISS")}, " +
+            $"play={(_dbPlayUp is not null ? "ok" : "MISS")}, " +
+            $"health={(_dbHealthUp is not null ? "ok" : "MISS")}, " +
+            $"mana={(_dbManaUp is not null ? "ok" : "MISS")}, " +
+            $"map={(_dbMapUp is not null ? "ok" : "MISS")}, " +
+            $"book={(_dbBookUp is not null ? "ok" : "MISS")}, " +
+            $"door={(_dbDoorUp is not null ? "ok" : "MISS")}, " +
+            $"label={(_dbLabelUp is not null ? "ok" : "MISS")}");
+    }
+
+    /// <summary>Phase 22-A SC-HUD-DATABAR — render the always-on bottom-row
+    /// HUD button strip. Called from the HUD pass. Lazy-loads textures on
+    /// first call. Each button picks its texture from up/dwn/hov based on
+    /// its current hover/press state; pause/play swap-pair gates on
+    /// <see cref="_isPaused"/>; labels gates on <see cref="_overheadLabelsVisible"/>.</summary>
+    private void DrawDataBar(int viewportW, int viewportH)
+    {
+        if (_iconRenderer is null) return;
+        EnsureDataBarTextures();
+
+        // Dockbar background — stretches full viewport width. uvcoords in
+        // gas are 0..1,0..0.861 (the top 86% of the texture); DrawIcon's
+        // UV overload accepts those directly.
+        if (_dbStatusbarBg is not null)
+        {
+            var (bx, by, bw, bh) = Hud.DataBar.ProjectBgRect(viewportW, viewportH);
+            _iconRenderer.DrawIcon(viewportW, viewportH, _dbStatusbarBg,
+                bx, by, bw, bh, Vector4.One, 0f, 0f, 1f, 0.861f);
+        }
+
+        // Per-button render. Pick the right texture for each state.
+        foreach (var slot in Hud.DataBar.Slots)
+        {
+            GlTexture? tex = ResolveDataBarTexture(slot.Id);
+            if (tex is null) continue;
+            var (x, y, w, h) = Hud.DataBar.ProjectRect(slot, viewportW, viewportH);
+            _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, Vector4.One);
+        }
+
+        // Quest indicator flash overlay — pulses red over the quest_log
+        // button when a quest activated/completed in the recent past.
+        if (_questIndicatorFlashRemaining > 0f && _dbBookRed is not null)
+        {
+            // Pulse alpha via a slow sine on the remaining timer.
+            float t = _questIndicatorFlashRemaining;
+            float pulse = 0.5f + 0.5f * MathF.Sin(t * 12f);
+            var tint = new Vector4(1f, 1f, 1f, pulse);
+            // Authored rect 556,423,620,487 (64×64 ring around the book
+            // icon), right_anchor=84. Project against viewport.
+            var indicator = new Hud.DataBar.Slot(
+                Hud.DataBar.ButtonId.QuestLog,
+                556, 423, 64, 64, rightAnchor: 84);
+            var (ix, iy, iw, ih) = Hud.DataBar.ProjectRect(indicator, viewportW, viewportH);
+            _iconRenderer.DrawIcon(viewportW, viewportH, _dbBookRed, ix, iy, iw, ih, tint);
+        }
+    }
+
+    /// <summary>Picks the right texture for a DataBar slot given the current
+    /// hover / press / toggle state. Centralized so DrawDataBar stays a
+    /// straight loop over slots.</summary>
+    private GlTexture? ResolveDataBarTexture(Hud.DataBar.ButtonId id)
+    {
+        bool hover = _dataBar.IsHover(id);
+        bool press = _dataBar.IsPressed(id);
+        switch (id)
+        {
+            case Hud.DataBar.ButtonId.Pause:
+                // Swap-pair: when paused, show the play icon; otherwise pause.
+                if (_isPaused)
+                    return press ? (_dbPlayDwn ?? _dbPlayUp)
+                         : hover ? (_dbPlayHov ?? _dbPlayUp)
+                         : _dbPlayUp;
+                return press ? (_dbPauseDwn ?? _dbPauseUp)
+                     : hover ? (_dbPauseHov ?? _dbPauseUp)
+                     : _dbPauseUp;
+            case Hud.DataBar.ButtonId.HealthPotion:
+                return press ? (_dbHealthDwn ?? _dbHealthUp)
+                     : hover ? (_dbHealthHov ?? _dbHealthUp)
+                     : _dbHealthUp;
+            case Hud.DataBar.ButtonId.ManaPotion:
+                return press ? (_dbManaDwn ?? _dbManaUp)
+                     : hover ? (_dbManaHov ?? _dbManaUp)
+                     : _dbManaUp;
+            case Hud.DataBar.ButtonId.MegaMap:
+                return press ? (_dbMapDwn ?? _dbMapUp)
+                     : hover ? (_dbMapHov ?? _dbMapUp)
+                     : _dbMapUp;
+            case Hud.DataBar.ButtonId.QuestLog:
+                return press ? (_dbBookDwn ?? _dbBookUp)
+                     : hover ? (_dbBookHov ?? _dbBookUp)
+                     : _dbBookUp;
+            case Hud.DataBar.ButtonId.Menu:
+                return press ? (_dbDoorDwn ?? _dbDoorUp)
+                     : hover ? (_dbDoorHov ?? _dbDoorUp)
+                     : _dbDoorUp;
+            case Hud.DataBar.ButtonId.Labels:
+                if (_overheadLabelsVisible)
+                    return press ? (_dbLabelDwn ?? _dbLabelUp)
+                         : hover ? (_dbLabelHov ?? _dbLabelUp)
+                         : _dbLabelUp;
+                return press ? (_dbLabelOffDwn ?? _dbLabelOffUp)
+                     : hover ? (_dbLabelOffHov ?? _dbLabelOffUp)
+                     : _dbLabelOffUp;
+            default: return null;
+        }
+    }
+
+    /// <summary>Phase 22-A — click dispatcher for the data bar. Maps each
+    /// gas-authored notify to the corresponding SiegeFX runtime call.</summary>
+    private void OnDataBarClick(Hud.DataBar.ButtonId id)
+    {
+        switch (id)
+        {
+            case Hud.DataBar.ButtonId.Pause:
+                TogglePause();
+                _audio?.Play(SfxGuiInventory);
+                break;
+            case Hud.DataBar.ButtonId.HealthPotion:
+                DrinkLowestPotion(isHealth: true);
+                break;
+            case Hud.DataBar.ButtonId.ManaPotion:
+                DrinkLowestPotion(isHealth: false);
+                break;
+            case Hud.DataBar.ButtonId.MegaMap:
+                Console.WriteLine("[data_bar] mega-map click — splinter SC-HUD-MEGAMAP pending");
+                _audio?.Play(SfxGuiInventory);
+                break;
+            case Hud.DataBar.ButtonId.QuestLog:
+                _questLogOpen = !_questLogOpen;
+                _audio?.Play(SfxGuiInventory);
+                break;
+            case Hud.DataBar.ButtonId.Labels:
+                _overheadLabelsVisible = !_overheadLabelsVisible;
+                Console.WriteLine($"[data_bar] labels = {(_overheadLabelsVisible ? "ON" : "OFF")} (overhead rendering pending SC-HUD-OVERHEAD-BARS)");
+                _audio?.Play(SfxGuiInventory);
+                break;
+            case Hud.DataBar.ButtonId.Menu:
+                // data_bar.gas:114 — door button notifies options_menu DIRECTLY,
+                // NOT a save/load modal. The save/load/exit modal is opened by
+                // Esc (gas line 268's "Press escape for options" hint). Open
+                // the existing Options dialog here.
+                if (_player is not null && !_optionsMenu.IsOpen)
+                {
+                    _optionsMenu.Open();
+                    _audio?.Play(SfxGuiInventory);
+                }
+                break;
+        }
+    }
+
+    /// <summary>Phase 22-A — toggle world-tick pause. Rendering continues;
+    /// only the brain/particle/sfx/animation ticks are gated by
+    /// <see cref="_isPaused"/>. Wired to data_bar's pause/play button and
+    /// the Space key.</summary>
+    private void TogglePause()
+    {
+        _isPaused = !_isPaused;
+        Console.WriteLine($"[pause] world tick {(_isPaused ? "PAUSED" : "RESUMED")}");
+    }
+
+    /// <summary>Phase 22-A SC-HUD-DATABAR — DS1's quick-potion: scan the
+    /// player's inventory for the lowest-tier health or mana potion the
+    /// player owns and drink it. "Lowest-tier" matches the DS1 convention
+    /// (small → medium → large → super) so high-tier potions are saved for
+    /// emergencies. No-op when no matching potion exists.</summary>
+    private void DrinkLowestPotion(bool isHealth)
+    {
+        if (_player is null || _player.IsDead) return;
+        if (_templateStore is null) return;
+        var prefix = isHealth ? "potion_health" : "potion_mana";
+        // Tier ranking — lower index = lower tier (drink first).
+        // Mirrors DS1's authored sizes.
+        string[] tierOrder = { "_small", "_medium", "_large", "_super" };
+        int bestTier = int.MaxValue;
+        int bestIdx = -1;
+        for (int i = 0; i < _playerInventory.Count; i++)
+        {
+            var entry = _playerInventory[i];
+            var name = entry.Reference;
+            if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            for (int t = 0; t < tierOrder.Length; t++)
+            {
+                if (name.EndsWith(tierOrder[t], StringComparison.OrdinalIgnoreCase))
+                {
+                    if (t < bestTier) { bestTier = t; bestIdx = i; }
+                    break;
+                }
+            }
+            // Untiered fallback — any matching prefix beats nothing.
+            if (bestIdx < 0) bestIdx = i;
+        }
+        if (bestIdx < 0)
+        {
+            Console.WriteLine($"[data_bar] no {(isHealth ? "health" : "mana")} potions in inventory");
+            return;
+        }
+        var picked = _playerInventory[bestIdx];
+        _playerInventory.RemoveAt(bestIdx);
+        // Apply the heal. DS1 potion templates author [magic][enchantments][*]
+        // alter_life=value (or alter_mana). For now use a fixed-per-tier
+        // amount tuned to the small=200 the gas ships; future tier-aware
+        // splinter reads value from the template. Mana mirrored.
+        float amount = bestTier switch
+        {
+            0 => 200f,    // small
+            1 => 400f,    // medium
+            2 => 800f,    // large
+            3 => 1600f,   // super
+            _ => 200f,    // untiered fallback
+        };
+        if (isHealth) _player.Actor.Combat.Heal(amount);
+        else          _player.Actor.Combat.RestoreMana(amount);
+        Console.WriteLine($"[data_bar] drank {picked.Reference} → +{amount:F0} {(isHealth ? "HP" : "MP")}");
+        _audio?.Play(SfxGuiInventory);
+    }
+
+    /// <summary>Phase 22-A — kick the quest indicator pulse. Called whenever
+    /// RegisterTalk / RegisterKill / RegisterPickup returns a non-empty
+    /// completed list, or when a fresh quest activates.</summary>
+    private void FlashQuestIndicator()
+    {
+        _questIndicatorFlashRemaining = 1.5f;
+    }
+
     private void EnsureCursorTextures()
     {
         if (_cursorTexturesAttempted) return;
@@ -10516,6 +10854,7 @@ void main()
                 var completed = _progression.Journal.RegisterPickup(resolved);
                 foreach (var key in completed)
                     Console.WriteLine($"[quest] pickup objective complete: {key} (acquired {resolved})");
+                if (completed.Count > 0) FlashQuestIndicator();
             }
         }
         _audio?.PlayAt(SfxGuiPickup, pile.Position);
@@ -11606,6 +11945,15 @@ void main()
                     _textRenderer.DrawString(size.X, size.Y, banner, boxX + padX, boxY + padY, new Vector4(1f, 0.92f, 0.40f, 1f));
                 }
             }
+
+            // Phase 22-A SC-HUD-DATABAR — DS1's always-on bottom-row HUD
+            // button strip. Drawn at the same z-tier as the mini-HUD vials
+            // so both share the always-on layer; modal panels below this
+            // continue to overlay it. Tick down the quest-indicator flash
+            // each frame.
+            if (_questIndicatorFlashRemaining > 0f)
+                _questIndicatorFlashRemaining -= (float)dt;
+            DrawDataBar(size.X, size.Y);
 
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
