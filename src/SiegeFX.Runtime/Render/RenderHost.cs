@@ -8897,7 +8897,23 @@ void main()
     {
         if (_audio is null || template is null || _templateStore is null) return;
         var cue = _templateStore.GetAttribute(template, "aspect", "voice", "die", "*");
-        if (string.IsNullOrEmpty(cue)) return;
+        RegisterAndPlayVoiceCue(cue, worldPos);
+    }
+
+    /// <summary>SC-ENEMY-AUDIO-AUDIT — shared voice-cue register + play.
+    /// Strips a trailing <c>_SED</c> suffix off the raw cue (DS1 authors that
+    /// marker to flag the cue should look up SED pitch metadata; the actual
+    /// wav file on disk is the un-decorated name, and the SED lookup hits
+    /// via the wav basename). Mirrors the same _SED-stripping the spell
+    /// cast-script binding does. Returns silently when the cue is empty
+    /// (no state authored) or when the audio engine isn't up.</summary>
+    private void RegisterAndPlayVoiceCue(string? rawCue, Vector3 worldPos)
+    {
+        if (_audio is null || string.IsNullOrEmpty(rawCue)) return;
+        var cue = rawCue;
+        if (cue.EndsWith("_SED", StringComparison.OrdinalIgnoreCase))
+            cue = cue.Substring(0, cue.Length - 4);
+        if (cue.Length == 0) return;
         if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
         {
             var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
@@ -8948,13 +8964,7 @@ void main()
         var cue = _templateStore.GetAttribute(template, "aspect", "voice", preferred, "*");
         for (int i = 0; i < fallbacks.Length && string.IsNullOrEmpty(cue); i++)
             cue = _templateStore.GetAttribute(template, "aspect", "voice", fallbacks[i], "*");
-        if (string.IsNullOrEmpty(cue)) return;
-        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
-        {
-            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
-        }
-        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+        RegisterAndPlayVoiceCue(cue, worldPos);
     }
 
     /// <summary>SC-ENEMY-AUDIO-AUDIT — fire the authored attack-startup
@@ -8972,13 +8982,7 @@ void main()
     {
         if (_audio is null || template is null || _templateStore is null) return;
         var cue = _templateStore.GetAttribute(template, "aspect", "voice", state, "*");
-        if (string.IsNullOrEmpty(cue)) return;
-        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
-        {
-            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
-        }
-        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+        RegisterAndPlayVoiceCue(cue, worldPos);
     }
 
     /// <summary>SC-ENEMY-AUDIO-AUDIT — SCIDs of actors that were already
