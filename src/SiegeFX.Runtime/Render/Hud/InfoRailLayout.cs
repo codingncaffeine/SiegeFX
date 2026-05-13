@@ -121,8 +121,13 @@ public static class InfoRailLayout
     // RIGHT to touch paperdoll's right edge (x=254).
     // MIN mode (paperdoll closed, inventory only): inventory shifted
     // LEFT, occupying x=89..474.
+    // MAX: dialog_box_inv_bg rect=253,0,387,449 (hud_inventory.gas:94).
+    // MIN: pack_mule_dialog_box_inv_bg rect=87,0,477,449
+    //   (hud_inventory.gas:230). 22-INFORAIL-G audit fold —
+    //   originally had 89,2,474,447 cherry-picked from gridbox inner
+    //   rect, which violates the verbatim-from-gas rule.
     public static readonly Rect InventoryMax   = new(253,  0, 387, 449);
-    public static readonly Rect InventoryMin   = new( 89,  2, 474, 447);
+    public static readonly Rect InventoryMin   = new( 87,  0, 477, 449);
 
     /// <summary>Inventory close X button in MAX mode.
     /// hud_inventory.gas 76 + 83 (onbuttonpress=notify(character_exit)).</summary>
@@ -134,8 +139,11 @@ public static class InfoRailLayout
     // ============================================================
     // SPELLBOOK — hud_spell.gas
     // ============================================================
-    /// <summary>Spellbook full panel, x 387..542. Touches inventory
-    /// right edge (387=387). hud_spell.gas 382.</summary>
+    /// <summary>Spellbook full panel extent, x 387..542. This is the
+    /// UNION of gas widgets: title 387,0,542,32 + body 387,31,542,128 +
+    /// lower 387,126,542,449 (hud_spell.gas 38/27/49). No single gas
+    /// widget has rect 387,0,542,449 — but the union IS the correct
+    /// bounding extent for positioning the panel anchor.</summary>
     public static readonly Rect Spellbook         = new(387,  0, 542, 449);
 
     /// <summary>Spellbook close X (top-right corner). hud_spell.gas

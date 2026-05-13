@@ -97,6 +97,34 @@ public sealed class CharacterAwp
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
 
+        // INFORAIL-AWP-CHROME — DS1 authors a single chrome window
+        // BEHIND the portrait + HP/MP bars (gas:616 window_portait_panel_1
+        // rect 0,3,65,55 uv 0,0.59375,0.253907,1) which pre-bakes the
+        // "nifty boxes" around the bars. Without this layer the bars
+        // and portrait appear to float on the world background.
+        {
+            int wx = (int)Math.Round(0  * s);
+            int wy = (int)Math.Round(3  * s);
+            int ww = (int)Math.Round(65 * s);
+            int wh = (int)Math.Round(52 * s);
+            iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
+                0f, 1f - 1f, 0.253907f, 1f - 0.59375f);
+        }
+
+        // Slot-strip chrome behind the 4 weapon/skill slots. Gas:651
+        // window_slots_panel_1 rect 64,3,148,40 uv 0.25,0.710938,
+        // 0.578125,1 (character_1_max group). When min mode lands we
+        // swap to window_pack_panel_min_1 at rect 65,3,88,40 uv
+        // 0.65625,0.421875,0.835938,1 from b_gui_ig_mnu_awp_blank.
+        {
+            int wx = (int)Math.Round(64  * s);
+            int wy = (int)Math.Round(3   * s);
+            int ww = (int)Math.Round(84  * s); // 148-64
+            int wh = (int)Math.Round(37  * s); // 40-3
+            iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
+                0.25f, 1f - 1f, 0.578125f, 1f - 0.710938f);
+        }
+
         // HP bar — gas rect 2,6,11,52 (W=9, H=46), uv 0.007813,0.226563,
         // 0.042969,0.585938. dynamic_edge=top means fill from BOTTOM up;
         // visible height = h * frac, rendered at (y + h - fillH).
