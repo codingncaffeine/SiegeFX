@@ -165,6 +165,7 @@ echo   92. Phase 21-SC-BARREL          - Breakable barrels (cursor + spell + fra
 echo   93. Phase 23-SC-OPTIONS         - Options Menu (F10 in-game; 4 tabs Video/Audio/Input/Game)
 echo   94. Phase 24-MAINMENU            - Boot to main menu (no args; splash to logo drop to 7 buttons)
 echo   95. SC-TSD-ANIM                  - Water frame-cycle + waterfall layer-2 modulate2x (fh_r1)
+echo   96. SC-QUEST-OBJ-A               - Talk-to-NPC quest objective (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, talk to Edgaar)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -266,6 +267,7 @@ if /i "%CHOICE%"=="92" goto T92
 if /i "%CHOICE%"=="93" goto T93
 if /i "%CHOICE%"=="94" goto T94
 if /i "%CHOICE%"=="95" goto T95
+if /i "%CHOICE%"=="96" goto T96
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2191,6 +2193,27 @@ echo  the wheelfall — the cascade should slide downward at ~0.5 unit per secon
 echo  with the modulate2x brightening on top of the static rock.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T96
+echo.
+echo --- SC-QUEST-OBJ-A: talk-to-NPC objective receipt ---
+echo [QuestCatalog now ships a stub TALK quest "quest_seek_gyorn" with
+echo  TalkTargetTemplate=edgaar. Until SC-QUEST-OBJ-F wires dialogue-driven
+echo  activate_quest, an env-var pre-activates the quest at region-load.]
+echo.
+echo [Receipt: console prints "[quest:debug] activated quest_seek_gyorn"
+echo  on region-load. Walk to Edgaar (talkable NPC roster lists his world
+echo  position), RMB to open dialogue, click through to the close. Console
+echo  prints "[quest] talk objective complete: quest_seek_gyorn (spoke to
+echo  edgaar)" and the journal entry flips to Completed. Press L to inspect
+echo  the quest log overlay.]
+echo.
+set "SIEGEFX_DEBUG_QUEST=quest_seek_gyorn"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_QUEST="
 echo.
 pause
 goto MENU

@@ -2331,6 +2331,13 @@ void main()
                                 ? $"[dialogue] quest activated: {quest}"
                                 : $"[dialogue] quest re-pitched (already in journal): {quest}");
                         }
+                        // SC-QUEST-OBJ-A — credit any "talk to NPC X" objective
+                        // against the just-closed conversation. Runs BEFORE the
+                        // vendor branch because TryOpenVendorAfterTalk clears
+                        // _lastTalkedTemplate on success. RegisterTalk is a no-op
+                        // when no active quest targets this template, so calling
+                        // it eagerly on every dialogue-close is fine.
+                        TryCreditTalkObjective();
                         // Phase 20d — if dialogue just closed and the talked actor
                         // is a vendor, surface the trade panel automatically. No-op
                         // if the panel is still open or the NPC isn't in the catalog.
@@ -4210,6 +4217,25 @@ void main()
                 foreach (var t in talkables)
                     Console.WriteLine(
                         $"    {t.Name,-18} {t.Key,-40} world ({t.Pos.X:F1}, {t.Pos.Y:F1}, {t.Pos.Z:F1})");
+            }
+            // SC-QUEST-OBJ-A — env-var debug pre-activation. Until SC-QUEST-OBJ-F
+            // wires dialogue-driven activate_quest for every chapter, the talk
+            // path needs a way to surface an active TALK quest in the journal
+            // for receipt purposes. Format: SIEGEFX_DEBUG_QUEST=<key>[,<key>...].
+            // No-op when the var is unset or the key is already in the journal
+            // (AddActive is idempotent).
+            var debugQuests = Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_QUEST");
+            if (!string.IsNullOrWhiteSpace(debugQuests) && _progression is not null)
+            {
+                foreach (var raw in debugQuests.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var key = raw.Trim();
+                    if (key.Length == 0) continue;
+                    bool added = _progression.Journal.AddActive(key);
+                    Console.WriteLine(added
+                        ? $"[quest:debug] activated {key} from SIEGEFX_DEBUG_QUEST"
+                        : $"[quest:debug] {key} already in journal");
+                }
             }
         }
     }
@@ -7819,6 +7845,23 @@ void main()
         _vendor.Open(def);
         Console.WriteLine($"trade: opened vendor panel for {def.ScreenName}");
         _lastTalkedTemplate = null; // one-shot per talk
+    }
+
+    /// <summary>SC-QUEST-OBJ-A — credit "talk to NPC X" objectives against the
+    /// most recently talked-to actor when the dialogue panel just closed. Sits
+    /// alongside <see cref="TryOpenVendorAfterTalk"/> on the same close edge.
+    /// Doesn't clear <c>_lastTalkedTemplate</c> — the vendor path needs it
+    /// next, and clearing would break the auto-trade-open flow on NPCs that
+    /// are both quest-givers and vendors. RegisterTalk's per-call cost is
+    /// O(active-quests) which stays tiny.</summary>
+    private void TryCreditTalkObjective()
+    {
+        if (_dialogue.IsOpen) return;
+        if (string.IsNullOrEmpty(_lastTalkedTemplate)) return;
+        if (_progression is null) return;
+        var completed = _progression.Journal.RegisterTalk(_lastTalkedTemplate);
+        foreach (var key in completed)
+            Console.WriteLine($"[quest] talk objective complete: {key} (spoke to {_lastTalkedTemplate})");
     }
 
     /// <summary>Phase 20d — apply a Buy/Sell intent emitted by the vendor
@@ -12175,6 +12218,7 @@ void main()
                         Key          = entry.Key,
                         State        = entry.State,
                         KillProgress = entry.KillProgress,
+                        TalkProgress = entry.TalkProgress,
                     });
                 p.Gold = _progression.Gold;
             }
@@ -12289,7 +12333,7 @@ void main()
             {
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
                 _progression.Journal.RestoreFromSave(
-                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress)));
+                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress)));
                 _progression.RestoreGoldFromSave(ps.Gold);
             }
             _playerFacing = ps.Facing.ToVector3();

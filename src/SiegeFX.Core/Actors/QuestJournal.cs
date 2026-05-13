@@ -35,6 +35,13 @@ public sealed class QuestEntry
     /// Counter is monotonically non-decreasing within an active entry; flipping
     /// to Completed leaves it at goal so the journal screen still shows "5 / 5".</summary>
     public int KillProgress { get; set; }
+
+    /// <summary>SC-QUEST-OBJ-A — talks credited toward
+    /// <see cref="QuestDefinition.TalkCountGoal"/>. For simple "speak with
+    /// X" quests TalkCountGoal is 1; the field is a counter (not a bool) so
+    /// future "talk to N priests" objectives reuse the same plumbing without
+    /// another schema bump.</summary>
+    public int TalkProgress { get; set; }
 }
 
 /// <summary>
@@ -116,6 +123,38 @@ public sealed class QuestJournal
         return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
     }
 
+    /// <summary>SC-QUEST-OBJ-A — credit a "talk to NPC" objective. Fired by the
+    /// dialogue-close edge in RenderHost with the most recently talked-to
+    /// actor's template name. Matching is case-insensitive substring (same
+    /// shape as kill-target matching) so a TalkTargetTemplate of "gyorn"
+    /// catches both "gyorn" and any future variant template. Auto-promotes
+    /// to <see cref="QuestState.Completed"/> when the counter reaches the
+    /// goal; returns the keys that just flipped so the caller can flash a
+    /// HUD toast / play the level-up-style "objective met" cue.</summary>
+    public IReadOnlyList<string> RegisterTalk(string npcTemplateName)
+    {
+        if (string.IsNullOrWhiteSpace(npcTemplateName)) return Array.Empty<string>();
+        List<string>? completed = null;
+        foreach (var entry in _entries.Values)
+        {
+            if (entry.State != QuestState.Active) continue;
+            var def = entry.Definition;
+            if (def is null || string.IsNullOrEmpty(def.TalkTargetTemplate)) continue;
+            if (def.TalkCountGoal <= 0) continue;
+            if (npcTemplateName.IndexOf(def.TalkTargetTemplate,
+                                        StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+            entry.TalkProgress = Math.Min(def.TalkCountGoal, entry.TalkProgress + 1);
+            if (entry.TalkProgress >= def.TalkCountGoal)
+            {
+                entry.State = QuestState.Completed;
+                entry.ClosedAt = DateTime.UtcNow;
+                (completed ??= new List<string>()).Add(entry.Key);
+            }
+        }
+        return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
+    }
+
     /// <summary>Flip an active quest to completed and stamp the close time.
     /// Adding a completed entry for a key the journal has never seen still
     /// works — the engine sometimes hands out completions cold (cheat console,
@@ -150,10 +189,10 @@ public sealed class QuestJournal
     /// from scratch each time so a stray entry from a different save can't
     /// survive. Definitions get re-bound off the live catalog so a content
     /// patch that shipped between save and load picks up the new goal numbers.</summary>
-    public void RestoreFromSave(IEnumerable<(string Key, QuestState State, int KillProgress)> entries)
+    public void RestoreFromSave(IEnumerable<(string Key, QuestState State, int KillProgress, int TalkProgress)> entries)
     {
         _entries.Clear();
-        foreach (var (key, state, progress) in entries)
+        foreach (var (key, state, killProgress, talkProgress) in entries)
         {
             if (string.IsNullOrWhiteSpace(key)) continue;
             QuestCatalog.TryGet(key, out var def);
@@ -162,7 +201,8 @@ public sealed class QuestJournal
                 Key          = key,
                 State        = state,
                 Definition   = def,
-                KillProgress = progress,
+                KillProgress = killProgress,
+                TalkProgress = talkProgress,
             };
         }
     }
@@ -204,6 +244,19 @@ public static class QuestCatalog
                 KillCountGoal       = 5,
                 ObjectiveText       = "Clear 5 krug from Edgaar's basement.",
             },
+            // SC-QUEST-OBJ-A receipt — matches DS1 Chapter I "Seek Gyorn in
+            // Stonebridge", the first main-quest beat. Stub uses "edgaar" as
+            // the talk target so the smoke test can run inside fh_r1 without
+            // streaming the Stonebridge region first; the real Gyorn entry
+            // wires in during SC-QUEST-OBJ-F catalog-population.
+            ["quest_seek_gyorn"] = new QuestDefinition
+            {
+                Key                 = "quest_seek_gyorn",
+                ScreenName          = "Seek Gyorn in Stonebridge",
+                TalkTargetTemplate  = "edgaar",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Speak with Gyorn (stubbed to Edgaar for the FH-only receipt).",
+            },
         };
 
     public static bool TryGet(string key, out QuestDefinition? def)
@@ -226,4 +279,19 @@ public sealed class QuestDefinition
     public string KillTargetTemplate { get; init; } = "";
     public int    KillCountGoal      { get; init; }
     public string ObjectiveText      { get; init; } = "";
+
+    /// <summary>SC-QUEST-OBJ-A — talk-to-NPC objective. Template-name substring
+    /// (case-insensitive) matched against the actor the player most recently
+    /// finished a dialogue with. Empty string disables the talk path; both
+    /// kill and talk fields can be set on one definition (DS1 "kill 3 krug
+    /// then report back" composites collapse to either KILL-and-promote-on-
+    /// completion, or TALK with a separate kill-quest as prereq — D / E land
+    /// the composite shape).</summary>
+    public string TalkTargetTemplate { get; init; } = "";
+
+    /// <summary>How many distinct talk events credit the quest. Defaults
+    /// to 0 so a definition that doesn't set TalkTargetTemplate also won't
+    /// auto-complete on the first talk-event to anyone. Simple "speak with
+    /// X" objectives use 1; "talk to all priests" patterns set N.</summary>
+    public int    TalkCountGoal      { get; init; }
 }

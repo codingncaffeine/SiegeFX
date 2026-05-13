@@ -24,12 +24,14 @@ public sealed class SaveFile
     ///              pants picks from the character creator).
     ///   v5 -> v6 : added <see cref="SpellbookSnapshot.Placed"/> (the 10
     ///              user-organized inactive rows in the spellbook UI).
+    ///   v6 -> v7 : added <see cref="QuestSnapshot.TalkProgress"/>
+    ///              (SC-QUEST-OBJ-A talk-to-NPC objective counter).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v5 file loads as a v6 with the new fields zero-initialized.
+    /// so any v1..v6 file loads as a v7 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -192,6 +194,11 @@ public sealed class QuestSnapshot
     public string     Key          { get; set; } = "";
     public QuestState State        { get; set; } = QuestState.Active;
     public int        KillProgress { get; set; }
+
+    /// <summary>SC-QUEST-OBJ-A — persisted talk-to-NPC counter. Mirrors
+    /// <see cref="QuestEntry.TalkProgress"/>. Defaults to 0 so v6 saves load
+    /// cleanly without losing any state.</summary>
+    public int        TalkProgress { get; set; }
 }
 
 /// <summary>JSON-serializable Vector3 stand-in. <see cref="System.Numerics.Vector3"/>
