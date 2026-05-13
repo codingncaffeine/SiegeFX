@@ -9070,6 +9070,15 @@ void main()
 
         bool railOpen = _charPanelOpen || _inventoryOpen ||
                         (_spellBookOpen && _spellbookOpenedWithI);
+        // INFORAIL — per-slot skill progress fractions for the bottom-
+        // up vertical fill behind each AWP slot icon. Slots 1/2 read
+        // melee/ranged skill XP fractions; slots 3/4 mirror their
+        // spell's caster-skill XP. Falls back to 0 when no progression
+        // is bound (creator preview path).
+        float sp1 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0f;
+        float sp2 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0f;
+        float sp3 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0f;
+        float sp4 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0f;
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
                            slot1, slot2, slot3, slot4, _awpInvBtnTex,
@@ -9077,7 +9086,9 @@ void main()
                            inventoryBtnHovAtlas: _awpInvBtnHovTex,
                            inventoryBtnDwnAtlas: _awpInvBtnDwnTex,
                            hovered: _awpHover,
-                           pressed: _awpPressed);
+                           pressed: _awpPressed,
+                           slot1Progress: sp1, slot2Progress: sp2,
+                           slot3Progress: sp3, slot4Progress: sp4);
     }
 
     // INFORAIL-EQUIPPED-ICONS — slot-name → DS1 es_* tag, then template's
@@ -12685,7 +12696,11 @@ void main()
                 // empty cells; the scroll-drag flow (B/C-2) populates them.
                 IReadOnlyList<SiegeFX.Core.Assets.SpellTemplate?> placed =
                     _playerSpellbook?.Placed ?? System.Array.Empty<SiegeFX.Core.Assets.SpellTemplate?>();
-                var spellClose = TryGetGuiTexture("b_gui_ig_mnu_minimize-book-up");
+                // INFORAIL-SPELLBOOK-CHROME — close uses common X button
+                // (gas hud_spell.gas:12 texture=b_gui_cmn_button_x_up,
+                // common_template=x). Matches the inventory's close X.
+                var spellClose = GetCommonTexture("button_x_up")
+                                 ?? TryGetGuiTexture("b_gui_cmn_button_x_up");
                 _spellBookPanel.Draw(_barRenderer, _textRenderer,
                     size.X, size.Y, _playerSpellbook?.Primary, _playerSpellbook?.Secondary, placed,
                     _iconRenderer, spellClose, ResolveSpellInventoryIcon);
