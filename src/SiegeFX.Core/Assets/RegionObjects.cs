@@ -59,10 +59,26 @@ public static class RegionObjects
     {
         "non_interactive.gas",
         "container.gas",
-        "inventory.gas",
+        // inventory.gas was here, but DS1 ships it as the world-placed
+        // pickable-item layer (loose scrolls, potions, weapons lying on
+        // the ground) — NOT decorative props. SC-WORLD-INVENTORY-PLACED
+        // routes those entries through a separate LootPile-spawn pass
+        // (see RenderHost.LoadWorldInventory) so the player can actually
+        // pick them up. Every template in inventory.gas has `inventory`
+        // in its specializes chain, so the file is uniformly pickable —
+        // no "pickable vs decorative" partition is needed inside it.
         "interactive.gas",
         "emitter.gas",
     };
+
+    /// <summary>SC-WORLD-INVENTORY-PLACED — region's world-placed pickable
+    /// item layer. DS1 puts loose scrolls (spell_fireshot at fh_r1's
+    /// basement entrance), potions, and tool-class weapons (pitchfork
+    /// etc.) into <c>objects/inventory.gas</c>; the player picks them
+    /// up by walking over them, same auto-pickup path as enemy-death
+    /// loot piles. Kept as a separate constant so the static-prop /
+    /// pickable-item partition is data-driven and visible at a glance.</summary>
+    public const string WorldInventoryFile = "inventory.gas";
 
     public static (IReadOnlyList<ActorInstance> Actors, IReadOnlyList<string> Diagnostics) LoadActors(
         TankReader tank, string regionPath) =>

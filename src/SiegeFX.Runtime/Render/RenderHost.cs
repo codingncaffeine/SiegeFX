@@ -4182,6 +4182,7 @@ void main()
                 if (path != regionPath) allLoaded.Add(path);
         }
         LoadStaticProps(allLoaded);
+        LoadWorldInventory(allLoaded);
 
         // Phase 20a (follow-up) — print every talkable NPC's name + world
         // position so the visual walkthrough doesn't require hunting the
@@ -4359,6 +4360,7 @@ void main()
         // props too. Existing props from previously-loaded regions stay in
         // _staticProps untouched (world coords are pinned).
         LoadStaticProps(newlyLoaded);
+        LoadWorldInventory(newlyLoaded);
     }
 
     /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
@@ -4735,6 +4737,61 @@ void main()
         _dirLightColors[0] = new Vector3(0.75f, 0.75f, 0.75f);
         _ambientLevel = 0.25f;
     }
+
+    /// <summary>SC-WORLD-INVENTORY-PLACED — DS1's <c>objects/inventory.gas</c>
+    /// places loose pickable items (spell scrolls, potions, tool-class
+    /// weapons) at world positions. Spawn one <see cref="LootPile"/> per
+    /// placement so the existing player-proximity auto-pickup loop credits
+    /// them — same shape as enemy-death drops, just stationary. Skipped
+    /// when the placement's template can't be resolved (logic-only stubs);
+    /// dedup via <c>_inventoryGasLoaded</c> so re-streaming the same region
+    /// doesn't double-spawn. The user-visible symptom this fixes: in fh_r1
+    /// you could see the spell_fireshot scroll lying on the floor but
+    /// couldn't pick it up because inventory.gas entries were loading as
+    /// static decorative props instead of loot piles.</summary>
+    private void LoadWorldInventory(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _templateStore is null) return;
+        _inventoryGasLoaded ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mapReader = new TankReader(_playMapTank);
+        int spawned = 0, skippedAlready = 0, skippedNoTemplate = 0;
+
+        foreach (var rp in regionPaths)
+        {
+            if (!_inventoryGasLoaded.Add(rp)) { skippedAlready++; continue; }
+            var (placements, diags) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(
+                mapReader, rp, SiegeFX.Core.Assets.RegionObjects.WorldInventoryFile);
+            foreach (var d in diags) Console.WriteLine("  " + d);
+
+            foreach (var p in placements)
+            {
+                if (!_templateStore.TryGet(p.TemplateName, out _)) { skippedNoTemplate++; continue; }
+                // Compose region-local placement to world coords. Mirrors the
+                // actor/static-prop placement math (ComposePlacementWorld) but
+                // we only need the translation component for a LootPile.
+                var local = p.Placement.LocalPosition;
+                var world = local;
+                if (_regionLayout is not null &&
+                    _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                    world = Vector3.Transform(local, nodeWorld);
+                // Single guaranteed drop entry; empty Slot = world-drop
+                // (matches il_main / LootRoller's drop-bucket shape).
+                var pile = new LootPile(world,
+                    new List<SiegeFX.Core.Actors.LootEntry>
+                    {
+                        new SiegeFX.Core.Actors.LootEntry("", p.TemplateName),
+                    });
+                _lootPiles.Add(pile);
+                spawned++;
+            }
+        }
+
+        if (spawned + skippedNoTemplate > 0)
+            Console.WriteLine($"  world inventory: {spawned} pickup(s) placed " +
+                              $"(skippedNoTemplate={skippedNoTemplate}, alreadyLoaded={skippedAlready})");
+    }
+
+    private HashSet<string>? _inventoryGasLoaded;
 
     /// <summary>Phase 21c-3 — pulls every <c>[t:directional]</c> entry out of
     /// the player region's <c>lights/lights.gas</c>, premultiplies each by its
