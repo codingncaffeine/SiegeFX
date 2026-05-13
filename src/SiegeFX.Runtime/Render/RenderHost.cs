@@ -7853,7 +7853,14 @@ void main()
     /// Doesn't clear <c>_lastTalkedTemplate</c> — the vendor path needs it
     /// next, and clearing would break the auto-trade-open flow on NPCs that
     /// are both quest-givers and vendors. RegisterTalk's per-call cost is
-    /// O(active-quests) which stays tiny.</summary>
+    /// O(active-quests) which stays tiny.
+    ///
+    /// Call-site semantics: invoked unconditionally after each LMB during an
+    /// open dialogue. The <c>_dialogue.IsOpen</c> early-return below is the
+    /// "did this click actually close the panel" gate — clicks that merely
+    /// advance to the next node leave <c>IsOpen=true</c> and this is a no-op,
+    /// only the terminal click flips it to false and credits the objective.
+    /// Same shape as <see cref="TryOpenVendorAfterTalk"/>.</summary>
     private void TryCreditTalkObjective()
     {
         if (_dialogue.IsOpen) return;
