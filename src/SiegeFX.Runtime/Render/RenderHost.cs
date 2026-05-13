@@ -8821,6 +8821,36 @@ void main()
             var (ix, iy, iw, ih) = Hud.DataBar.ProjectRect(indicator, viewportW, viewportH);
             _iconRenderer.DrawIcon(viewportW, viewportH, _dbBookRed, ix, iy, iw, ih, tint);
         }
+
+        // INFORAIL — data_bar rollover_help tooltip. Gas:273 authors
+        // text_box_info rect 95,450,501,479 (centered between the two
+        // button clusters), font b_gui_fnt_12p_copperplate-light,
+        // justify=center. We render the DS1-authentic tooltip string
+        // (DataBar.TooltipFor) for whichever button the cursor is over.
+        var hoveredId = _dataBar.CurrentHover;
+        if (hoveredId is not null && _textRenderer is not null)
+        {
+            string tip = Hud.DataBar.TooltipFor(
+                hoveredId.Value, isPaused: _isPaused, labelsOn: _overheadLabelsVisible);
+            if (!string.IsNullOrEmpty(tip))
+            {
+                // text_box_info rect 95,450,501,479 in 640×480 ref. Use
+                // raw viewportH/480 (the same scale data_bar buttons
+                // use) so the tooltip rect aligns with the gas authoring.
+                float dbScale = viewportH / 480f;
+                int tipX0 = (int)Math.Round(95 * dbScale);
+                int tipY0 = (int)Math.Round(450 * dbScale);
+                int tipX1 = (int)Math.Round(501 * dbScale);
+                int tipY1 = (int)Math.Round(479 * dbScale);
+                int tipW  = tipX1 - tipX0;
+                int tipH  = tipY1 - tipY0;
+                int textW = _textRenderer.MeasureWidth(tip);
+                int tx = tipX0 + (tipW - textW) / 2;
+                int ty = tipY0 + (tipH - 8) / 2;
+                var ink = new Vector4(0.86f, 0.83f, 0.69f, 1f);
+                _textRenderer.DrawString(viewportW, viewportH, tip, tx, ty, ink);
+            }
+        }
     }
 
     /// <summary>Picks the right texture for a DataBar slot given the current

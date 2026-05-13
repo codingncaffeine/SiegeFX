@@ -170,6 +170,41 @@ public sealed class DataBar
     public bool IsHover(ButtonId id) => _hover[(int)id];
     public bool IsPressed(ButtonId id) => _pressed[(int)id];
 
+    /// <summary>Currently hovered button id, or null when the cursor
+    /// isn't over any data-bar slot. Drives the rollover_help tooltip
+    /// the host draws at gas rect 95,450,501,479 (data_bar.gas:273
+    /// text_box_info).</summary>
+    public ButtonId? CurrentHover
+    {
+        get
+        {
+            for (int i = 0; i < _slots.Length; i++)
+                if (_hover[(int)_slots[i].Id]) return _slots[i].Id;
+            return null;
+        }
+    }
+
+    /// <summary>DS1 rollover_help text for a data-bar button. Strings
+    /// are the canonical in-game tooltip text (sourced from the DS1
+    /// in-game help system + Sybex strategy guide button references).
+    /// The Labels button has two variants depending on toggle state:
+    /// labels-on → "Hide..."; labels-off → "Show..." (gas:316/329
+    /// dynamically swaps via setrolloverhelp).</summary>
+    public static string TooltipFor(ButtonId id, bool isPaused = false, bool labelsOn = true)
+        => id switch
+        {
+            ButtonId.Pause        => isPaused ? "Play (Hotkey: Space)" : "Pause (Hotkey: Space)",
+            ButtonId.HealthPotion => "Drink Health Potion (Hotkey: \\)",
+            ButtonId.ManaPotion   => "Drink Mana Potion (Hotkey: ;)",
+            ButtonId.Labels       => labelsOn
+                ? "Hide labels for items on the ground (Hotkey: Alt)"
+                : "Show labels for items on the ground (Hotkey: Alt)",
+            ButtonId.MegaMap      => "World Map (Hotkey: M)",
+            ButtonId.QuestLog     => "Quest Log (Hotkey: L)",
+            ButtonId.Menu         => "Menu (Hotkey: Esc)",
+            _ => "",
+        };
+
     /// <summary>Mouse-down inside a slot starts a press. Returns the
     /// button-id captured, or null when the click missed every slot. Caller
     /// should consume LMB upstream when this returns non-null.</summary>
