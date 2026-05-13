@@ -217,20 +217,43 @@ public sealed class CharacterAwp
             int sy = (int)Math.Round(6 * s);
             int sw = (int)Math.Round(16 * s);
             int sh = (int)Math.Round(32 * s);
-            // Slot bg frame
-            iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
-                0.839844f, 1f - 0.984375f, 0.902344f, 1f - 0.734375f);
-            // INFORAIL skill progress — per-slot XP fraction. Slot 1
-            // mirrors Melee, slot 2 Ranged, slot 3 Combat Magic (primary
-            // spell's caster), slot 4 Nature Magic (secondary's). In
-            // min mode the visible slot is the active one, so display
-            // its progress instead of slot 1's.
-            // We draw the fill AFTER the icon (further below) so it
-            // sits on top with translucency — otherwise the opaque icon
-            // hides the bar behind it.
+            // INFORAIL skill progress — per gas bar_slot_N_skill_1
+            // (line 75+) the SLOT FRAME TEXTURE itself is the progress
+            // indicator. It's a status_bar with dynamic_edge=top, so
+            // the texture reveals bottom-to-top as the skill XP fills
+            // toward the next level. At 0% the slot is "empty" (only
+            // the underlying dark window_slots_panel_1 chrome at
+            // #2F2C2B with rounded corners shows through); at 100%
+            // the full mauve #635757-tinted frame texture is visible.
+            // Hitting next level resets the bar to 0%.
+            //
+            // Slot 1 = Melee XP, slot 2 = Ranged, slot 3 = Combat Magic
+            // (primary spell's caster), slot 4 = Nature Magic (secondary
+            // spell's caster). In min mode the visible slot mirrors the
+            // ACTIVE slot's progress, not slot 1's.
             float progFrac = (railOpen && i == 0 && activeSlot >= 0 && activeSlot < 4)
                 ? slotProgs[activeSlot] : slotProgs[i];
             progFrac = Math.Clamp(progFrac, 0f, 1f);
+            if (progFrac > 0f)
+            {
+                // Reveal the gas-authored frame texture from bottom up.
+                // gas uv v range = 0.734375..0.984375 (height 0.25 in
+                // texture space); when we sample only the BOTTOM
+                // progFrac of that range, the drawn rect is also
+                // progFrac of the slot's screen height, anchored at
+                // the slot's bottom edge.
+                const float gasV0 = 0.734375f, gasV1 = 0.984375f;
+                int fillH = (int)Math.Round(sh * progFrac);
+                if (fillH > 0)
+                {
+                    // Sample the BOTTOM portion of the gas v-range; in
+                    // bottom-up gas space, bottom=v0 and top=v0 + delta.
+                    float gasVTop = gasV0 + (gasV1 - gasV0) * progFrac;
+                    iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas,
+                        sx, sy + sh - fillH, sw, fillH, Vector4.One,
+                        0.839844f, 1f - gasVTop, 0.902344f, 1f - gasV0);
+                }
+            }
             // Slot content (weapon or spell icon) — drawn inside the frame
             // with a 1px inset so the chrome stays visible. In min mode
             // (i == 0 and railOpen) we display the ACTIVE skill's icon
@@ -250,21 +273,6 @@ public sealed class CharacterAwp
             {
                 iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
                     0.675781f, 1f - 0.992188f, 0.753907f, 1f - 0.710938f);
-            }
-            // Progress fill drawn LAST so it sits over the icon (with
-            // alpha so the icon stays legible). Inset 1px so the slot
-            // frame border is undisturbed.
-            if (progFrac > 0f)
-            {
-                int inset = (int)Math.Max(1, Math.Round(1 * s));
-                int fillH = (int)Math.Round((sh - inset * 2) * progFrac);
-                if (fillH > 0)
-                {
-                    var progColor = new Vector4(0.388f, 0.341f, 0.341f, 0.55f); // #635757 @ 55%
-                    barRenderer.DrawRect(viewportW, viewportH,
-                        sx + inset, sy + sh - inset - fillH,
-                        sw - inset * 2, fillH, progColor);
-                }
             }
         }
 
