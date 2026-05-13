@@ -1168,6 +1168,26 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Assets.SpellTemplate? _cursorScroll;
     private CursorScrollSource _cursorScrollSource;
 
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT — generic item on
+    /// the cursor (separate from <see cref="_cursorScroll"/> which is
+    /// the spell-scroll specialization). Set when the player clicks an
+    /// inventory item or an equipped paperdoll slot; cleared when the
+    /// item is placed back into inventory, into an equipment slot, or
+    /// dropped on the ground. Reference + Slot together fully describe
+    /// the held item (Slot identifies what es_* tag it originally
+    /// occupied so a "cancel" can put it back; empty for plain
+    /// inventory items).</summary>
+    private SiegeFX.Core.Actors.LootEntry? _cursorItem;
+    /// <summary>Resolved [gui]inventory_icon GlTexture for the cursor
+    /// item, cached so the per-frame cursor render doesn't pay
+    /// TryGetGuiTexture on every tick.</summary>
+    private GlTexture? _cursorItemIcon;
+    /// <summary>Original inventory grid index when the cursor item
+    /// came from inventory — used so a "click in empty space" drop
+    /// can put it back where it was if the user later cancels. -1
+    /// when the cursor item came from an equipment slot.</summary>
+    private int _cursorItemFromInventoryIdx = -1;
+
     /// <summary>Where the spell currently being dragged came from. Used so
     /// a Cancel (ESC / right-click) can restore it to the source slot
     /// rather than dropping it. <see cref="None"/> means no drag in flight.</summary>
@@ -2381,7 +2401,7 @@ void main()
                     // latch so the intra-grid drag doesn't shadow the
                     // scroll-pickup intent. Non-scroll items still go
                     // through the existing intra-grid drag path below.
-                    if (_cursorScroll is null && _spellCatalog is not null
+                    if (_cursorScroll is null && _cursorItem is null && _spellCatalog is not null
                         && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
                     {
                         int idx = _inventoryPanel.TryHitTestItem(imx, imy,
@@ -2403,9 +2423,59 @@ void main()
                                 Console.WriteLine($"  scroll drag: pickup {spell.Name} from inventory[{idx}]");
                                 return;
                             }
-                            // Not a scroll — fall through to the intra-grid
-                            // drag path below. Existing behavior preserved.
+                            // INFORAIL-PAPERDOLL-INTERACT — generic item
+                            // pickup. Non-scroll inventory items go onto
+                            // the cursor so they can be placed into a
+                            // paperdoll slot or dropped.
+                            _cursorItem = clicked;
+                            _cursorItemFromInventoryIdx = idx;
+                            _cursorItemIcon = TryGetItemIcon(clicked.Reference);
+                            _playerInventory.RemoveAt(idx);
+                            _inventoryPanel.NotifyItemRemoved(idx);
+                            _audio?.Play(SfxGuiPickup);
+                            Console.WriteLine($"  cursor item: pickup {clicked.Reference} from inventory[{idx}]");
+                            return;
                         }
+                    }
+                    // INFORAIL-PAPERDOLL-INTERACT — paperdoll slot click.
+                    if (_charPanelOpen && _player is not null)
+                    {
+                        var sz = _window.Size;
+                        int pdx = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 *
+                            (sz.Y / 480f));
+                        var slotName = _paperdoll.TryHitTestSlot(imx, imy, pdx, 0, sz.Y);
+                        if (slotName is not null)
+                        {
+                            TryPaperdollSlotClick(slotName);
+                            return;
+                        }
+                    }
+                    // INFORAIL-PAPERDOLL-INTERACT — cursor-item placed
+                    // back into the inventory grid. When the cursor has
+                    // an item AND the LMB lands on an EMPTY inventory
+                    // cell, drop it there. Hit-testing against the same
+                    // grid the inventory panel uses for items: a null
+                    // hit on a panel-internal click means empty cell.
+                    if (_cursorItem is not null && _inventoryOpen
+                        && _inventoryPanel.IsPointInPanel(imx, imy,
+                                _window.Size.X, _window.Size.Y))
+                    {
+                        int existingIdx = _inventoryPanel.TryHitTestItem(imx, imy,
+                            _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                        if (existingIdx < 0)
+                        {
+                            // Empty cell — drop item into inventory.
+                            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                                Slot: "", Reference: _cursorItem.Value.Reference));
+                            _audio?.Play(SfxGuiInventory);
+                            Console.WriteLine($"  cursor item: placed {_cursorItem.Value.Reference} into inventory");
+                            ClearCursorItem();
+                            return;
+                        }
+                        // Non-empty cell with cursor full — for now,
+                        // ignore (no auto-stack / swap in inventory grid
+                        // for non-scroll items; SC-INFORAIL-INV-SWAP
+                        // splinter).
                     }
                     _inventoryPanel.OnMouseDown(imx, imy,
                         _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
@@ -2444,6 +2514,15 @@ void main()
                 else if (btn == MouseButton.Left && _cursorScroll is not null)
                 {
                     DropScrollToWorld(_cursorScroll);
+                    return;
+                }
+                // INFORAIL-PAPERDOLL-INTERACT — LMB outside any UI WITH
+                // a generic item on cursor = world drop. Spawn a loot
+                // pile at the player's feet so the user can later pick
+                // it back up. Mirrors the scroll-drop path above.
+                else if (btn == MouseButton.Left && _cursorItem is not null)
+                {
+                    DropCursorItemToWorld();
                     return;
                 }
                 // Phase 13c — LMB click-to-move. Unproject the cursor onto the
@@ -9230,6 +9309,121 @@ void main()
     // chain walk for stance selection. Returns null when the slot
     // isn't populated for that class so the AWP renders an empty
     // slot frame instead of the wrong icon.
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT — dispatch a click
+    /// on a paperdoll equipment slot. Three cases:
+    ///   (a) Cursor empty + slot has item → take equipped item onto
+    ///       cursor; clear the es_* tag.
+    ///   (b) Cursor item matches the slot's class + slot empty →
+    ///       equip cursor item; clear cursor.
+    ///   (c) Cursor item matches the slot's class + slot full →
+    ///       swap (equip cursor item; previous equipped becomes
+    ///       cursor item).
+    /// Class-mismatched placements are rejected with a no-op (an
+    /// audio cue is a SC-INFORAIL-PAPERDOLL-INTERACT-AUDIO splinter).</summary>
+    private void TryPaperdollSlotClick(string slotName)
+    {
+        if (_templateStore is null) return;
+        string? esTag = PaperdollSlotToEsTag(slotName);
+        if (esTag is null) return;
+
+        _playerEquipment.TryGetValue(esTag, out var currentRef);
+        bool slotHasItem = !string.IsNullOrWhiteSpace(currentRef);
+
+        if (_cursorItem is null)
+        {
+            // (a) Pickup equipped item.
+            if (!slotHasItem) return;
+            _cursorItem = new SiegeFX.Core.Actors.LootEntry(esTag, currentRef!);
+            _cursorItemIcon = TryGetItemIcon(currentRef!);
+            _cursorItemFromInventoryIdx = -1; // came from equipment
+            _playerEquipment.Remove(esTag);
+            _audio?.Play(SfxGuiPickup);
+            Console.WriteLine($"  paperdoll: unequipped {currentRef} from {esTag}");
+            // Invalidate the AWP slot-icon cache so the AWP redraws
+            // without the now-unequipped weapon icon.
+            _paperdollEquipCache.Clear();
+            return;
+        }
+
+        // Cursor has an item — check class compatibility with the slot.
+        var itemRef = _cursorItem.Value.Reference;
+        if (!IsItemClassMatchingSlot(itemRef, slotName)) return;
+
+        if (slotHasItem)
+        {
+            // (c) Swap.
+            _playerEquipment[esTag] = itemRef;
+            _cursorItem = new SiegeFX.Core.Actors.LootEntry(esTag, currentRef!);
+            _cursorItemIcon = TryGetItemIcon(currentRef!);
+            _audio?.Play(SfxGuiPickup);
+            Console.WriteLine($"  paperdoll: swapped {currentRef} ↔ {itemRef} on {esTag}");
+        }
+        else
+        {
+            // (b) Place.
+            _playerEquipment[esTag] = itemRef;
+            _cursorItem = null;
+            _cursorItemIcon = null;
+            _cursorItemFromInventoryIdx = -1;
+            _audio?.Play(SfxGuiPickup);
+            Console.WriteLine($"  paperdoll: equipped {itemRef} on {esTag}");
+        }
+        _paperdollEquipCache.Clear();
+    }
+
+    /// <summary>Maps a PaperdollPanel slot name to the DS1 es_* tag
+    /// used in [inventory][equipment]. Mirrors the table in
+    /// <see cref="ResolvePaperdollSlotIcon"/>; reuse a single source
+    /// once the surrounding code's stabilized.</summary>
+    private static string? PaperdollSlotToEsTag(string slotName) => slotName switch
+    {
+        "helmet"    => "es_helm",
+        "armor"     => "es_chest",
+        "gauntlets" => "es_gloves",
+        "boots"     => "es_feet",
+        "amulet"    => "es_amulet",
+        "shield"    => "es_shield_hand",
+        "spellbook" => "es_spellbook",
+        "melee"     => "es_weapon_hand",
+        "ranged"    => "es_weapon_hand", // shared slot in DS1
+        "ring1"     => "es_ring_1",
+        "ring2"     => "es_ring_2",
+        "ring3"     => "es_ring_3",
+        "ring4"     => "es_ring_4",
+        _ => null,
+    };
+
+    /// <summary>True when an item template's class chain matches the
+    /// paperdoll slot's expected type. Walks <c>specializes</c> chain
+    /// looking for the marker (weapon_melee, weapon_ranged, base_helm
+    /// etc.). Defensive: unknown items default to "allow" so an item
+    /// the engine doesn't yet classify can still be equipped manually
+    /// — better than locking the player out.</summary>
+    private bool IsItemClassMatchingSlot(string itemRef, string slotName)
+    {
+        if (_templateStore is null) return true;
+        if (!_templateStore.TryGet(itemRef, out var tpl)) return true;
+        string? marker = slotName switch
+        {
+            "melee"     => "weapon_melee",
+            "ranged"    => "weapon_ranged",
+            "helmet"    => "base_helm",
+            "armor"     => "base_chest",
+            "gauntlets" => "base_gloves",
+            "boots"     => "base_boot",
+            "amulet"    => "base_amulet",
+            "shield"    => "base_shield",
+            "spellbook" => "base_spellbook",
+            "ring1" or "ring2" or "ring3" or "ring4" => "base_ring",
+            _ => null,
+        };
+        if (marker is null) return true;
+        for (var t = tpl; t is not null; t = t.Specializes)
+            if (string.Equals(t.Name, marker, System.StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
     private GlTexture? ResolveAwpSlotByWeaponClass(string requiredClass)
     {
         if (_templateStore is null) return null;
@@ -13040,6 +13234,21 @@ void main()
                         cx, cy, iconSize, iconSize, Vector4.One);
                 }
             }
+            // INFORAIL-PAPERDOLL-INTERACT — generic cursor item icon.
+            // Mirrors the scroll-cursor block above: a 32×32 icon
+            // centered on the cursor that follows _currentMousePos.
+            // Drawn IN ADDITION to the standard pointer cursor below
+            // (the user can still see the world via the pointer arrow,
+            // with the item icon trailing). Stacks above panels via
+            // the same HUD-pass-end z-tier as the scroll cursor.
+            else if (_cursorItem is not null && _cursorItemIcon is not null && _iconRenderer is not null)
+            {
+                const int iconSize = 32;
+                int cx = (int)_currentMousePos.X - iconSize / 2;
+                int cy = (int)_currentMousePos.Y - iconSize / 2;
+                _iconRenderer.DrawIcon(size.X, size.Y, _cursorItemIcon,
+                    cx, cy, iconSize, iconSize, Vector4.One);
+            }
             // Phase 21-SC-BARREL-A1 — DS1 sprite cursor (sword / red sword /
             // hammer / hand / talk). Drawn after every other HUD element so
             // it stacks above panels (matches DS1 layering). Suppressed when
@@ -13181,6 +13390,51 @@ void main()
     /// behavior). The pile contains a single LootEntry whose Reference
     /// is the spell's template name; F-2 routes the pickup through
     /// AutoPickupScrollToSpellbook.</summary>
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT — drop the cursor
+    /// item onto the ground in front of the player as a loot pile.
+    /// Pattern mirrors DropScrollToWorld but reuses the cursor item's
+    /// LootEntry verbatim. After landing, the player can walk over
+    /// the pile to pick it back up (standard loot path).</summary>
+    private void DropCursorItemToWorld()
+    {
+        if (_player is null || _cursorItem is null) { ClearCursorItem(); return; }
+        var origin = _player.CurrentTransform.Translation;
+        var facing = _playerFacing.LengthSquared() > 0.01f
+            ? _playerFacing : new Vector3(1f, 0f, 0f);
+        var target = origin + facing * 0.7f;
+        // Strip any es_* tag so the dropped pile is a plain inventory
+        // entry. The Slot field comes back when the user picks it up
+        // (auto-route currently doesn't re-equip; that lands later).
+        var entry = new SiegeFX.Core.Actors.LootEntry(Slot: "",
+            Reference: _cursorItem.Value.Reference);
+        var pile = new LootPile(origin, new List<SiegeFX.Core.Actors.LootEntry> { entry })
+        {
+            Throw = new LootThrow
+            {
+                Source         = origin,
+                Target         = target,
+                Duration       = 0.55f,
+                Elapsed        = 0f,
+                ArcHeight      = 0.45f,
+                Spins          = 0.5f,
+                XSpins         = 1.0f,
+                StartRotation  = MathF.Atan2(facing.X, facing.Z),
+                StartRotationX = 0f,
+            },
+        };
+        _lootPiles.Add(pile);
+        _audio?.Play(SfxGuiPutDownScroll);
+        Console.WriteLine($"  cursor item: world drop {_cursorItem.Value.Reference}");
+        ClearCursorItem();
+    }
+
+    private void ClearCursorItem()
+    {
+        _cursorItem = null;
+        _cursorItemIcon = null;
+        _cursorItemFromInventoryIdx = -1;
+    }
+
     private void DropScrollToWorld(SiegeFX.Core.Assets.SpellTemplate spell)
     {
         if (_player is null) { ClearScrollDrag(); return; }

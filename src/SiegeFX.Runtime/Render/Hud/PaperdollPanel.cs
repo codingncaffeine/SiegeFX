@@ -188,6 +188,27 @@ public sealed class PaperdollPanel
         }
     }
 
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT — hit-test an
+    /// (x,y) screen-space point against the 13 equipment slot rects.
+    /// Returns the slot name (matches <see cref="Slots"/> entries)
+    /// when the point is inside one, null otherwise. Caller anchors
+    /// the search using the same panelOriginX/panelOriginY values it
+    /// passes to <see cref="Draw"/>.</summary>
+    public string? TryHitTestSlot(int x, int y, int panelOriginX, int panelOriginY, int viewportH)
+    {
+        float s = Scale(viewportH);
+        foreach (var slot in Slots)
+        {
+            int sx = panelOriginX + (int)System.Math.Round((slot.X0 - 87) * s);
+            int sy = panelOriginY + (int)System.Math.Round(slot.Y0 * s);
+            int sw = (int)System.Math.Round((slot.X1 - slot.X0) * s);
+            int sh = (int)System.Math.Round((slot.Y1 - slot.Y0) * s);
+            if (x >= sx && y >= sy && x < sx + sw && y < sy + sh)
+                return slot.Name;
+        }
+        return null;
+    }
+
     /// <summary>True if the given screen point is inside the View
     /// button rect (paperdoll-local). Caller passes panelOriginX
     /// matching the Draw call.</summary>
