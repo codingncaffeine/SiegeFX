@@ -8988,7 +8988,7 @@ void main()
             if (!string.IsNullOrEmpty(_playerPortraitIconName))
                 _awpPortraitTex = TryGetGuiTexture(_playerPortraitIconName);
             Console.WriteLine($"[char_awp] atlas: {(_awpAtlas is not null ? "ok" : "MISS")}, " +
-                              $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")}, " +
+                              $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")} (name='{_playerPortraitIconName}'), " +
                               $"invbtn: {(_awpInvBtnTex is not null ? "ok" : "MISS")}, " +
                               $"hov: {(_awpInvBtnHovTex is not null ? "ok" : "MISS")}, " +
                               $"dwn: {(_awpInvBtnDwnTex is not null ? "ok" : "MISS")}");
@@ -8999,11 +8999,15 @@ void main()
         float hpFrac = stats.MaxLife > 0f ? combat.CurrentLife / stats.MaxLife : 0f;
         float mpFrac = stats.MaxMana > 0f ? combat.CurrentMana / stats.MaxMana : 0f;
 
-        // SC-AUTH-CHAR-AWP-SLOT-ICONS — slots 3/4 mirror the player's
-        // Primary/Secondary spell so the user can see what RMB will cast
-        // when the corresponding slot is active. Slots 1/2 (melee/ranged)
-        // need the equipped-weapon icon and remain pending until the
-        // equipment readout splinter lands.
+        // INFORAIL — populate all 4 AWP slot icons. Slot 1 / 2 read the
+        // equipped weapon's [gui]inventory_icon (today they share the
+        // same es_weapon_hand slot since DS1 only allows one weapon at
+        // a time; per-set swapping is SC-INFORAIL-WEAPON-SETS — both
+        // slots resolve to the same icon for now). Slots 3 / 4 mirror
+        // the spellbook's Primary / Secondary so the user can see what
+        // RMB will cast when that slot is active.
+        GlTexture? slot1 = ResolvePaperdollSlotIcon("melee");
+        GlTexture? slot2 = ResolvePaperdollSlotIcon("melee");
         GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
         GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
 
@@ -9011,7 +9015,7 @@ void main()
                         (_spellBookOpen && _spellbookOpenedWithI);
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
-                           null, null, slot3, slot4, _awpInvBtnTex,
+                           slot1, slot2, slot3, slot4, _awpInvBtnTex,
                            railOpen: railOpen,
                            inventoryBtnHovAtlas: _awpInvBtnHovTex,
                            inventoryBtnDwnAtlas: _awpInvBtnDwnTex,

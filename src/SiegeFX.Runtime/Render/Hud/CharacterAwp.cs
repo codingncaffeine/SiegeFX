@@ -58,13 +58,12 @@ public sealed class CharacterAwp
         float s = Scale(viewportH);
         // Portrait (always-on, character_1 group)
         if (Hit(x, y, s, 13, 6, 39, 46)) return HitTarget.Portrait;
-        // 4 slots only exist in max mode (rail closed). When the rail
-        // is open the slot strip folds out and these rects sit over
-        // the world view, so they MUST NOT swallow clicks intended
-        // for the world below.
+        // DS1 min-mode behavior (rail open): slot 1 stays visible as
+        // the "active skill" indicator directly above the close arrow;
+        // slots 2/3/4 fold out. In max mode (rail closed) all 4 show.
+        if (Hit(x, y, s, 68, 6, 16, 32)) return HitTarget.Slot1;
         if (!railOpen)
         {
-            if (Hit(x, y, s,  68, 6, 16, 32)) return HitTarget.Slot1;
             if (Hit(x, y, s,  88, 6, 16, 32)) return HitTarget.Slot2;
             if (Hit(x, y, s, 108, 6, 16, 32)) return HitTarget.Slot3;
             if (Hit(x, y, s, 128, 6, 16, 32)) return HitTarget.Slot4;
@@ -128,12 +127,17 @@ public sealed class CharacterAwp
                 0f, 1f - 1f, 0.253907f, 1f - 0.59375f);
         }
 
-        // Slot-strip chrome. When rail is closed (gas group=
-        // character_1_max) DS1 draws window_slots_panel_1 — the wide
-        // 4-slot frame at rect 64,3,148,40 uv 0.25,0.710938,0.578125,1.
-        // When rail is open (gas group=character_1_min) DS1 folds the
-        // slot strip out entirely so the world shows through behind
-        // the AWP, leaving only the portrait cluster + close arrow.
+        // Slot-strip chrome. Two gas-authored variants:
+        //   Max mode (rail closed, group=character_1_max):
+        //     window_slots_panel_1 rect 64,3,148,40 uv 0.25,0.710938,
+        //     0.578125,1 — the wide 4-slot frame.
+        //   Min mode (rail open, group=character_1_min):
+        //     window_pack_panel_min_1 rect 65,3,88,40 uv 0.65625,
+        //     0.421875,0.835938,1 from b_gui_ig_mnu_awp_blank — the
+        //     single-slot frame that sits above the close arrow.
+        // Slot 1 stays visible in BOTH modes so the player can always
+        // see (and click) the active skill. Slots 2/3/4 fold out
+        // when the rail is open.
         if (!railOpen)
         {
             int wx = (int)Math.Round(64  * s);
@@ -143,6 +147,8 @@ public sealed class CharacterAwp
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
                 0.25f, 1f - 1f, 0.578125f, 1f - 0.710938f);
         }
+        // (Min-mode single-slot chrome from b_gui_ig_mnu_awp_blank is
+        // a separate atlas; lazy-load wiring is SC-AWP-MIN-SLOT-CHROME.)
 
         // HP bar — gas rect 2,6,11,52 (W=9, H=46), uv 0.007813,0.226563,
         // 0.042969,0.585938. dynamic_edge=top means fill from BOTTOM up;
@@ -175,21 +181,16 @@ public sealed class CharacterAwp
             // V-flip per the bottom-up RAW rule.
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, px, py, pw, ph, Vector4.One,
                 0.050781f, 1f - 0.585938f, 0.203125f, 1f - 0.226563f);
-            // INFORAIL-E — center the portrait icon inside the frame.
-            // DS1's portrait RAWs (b_gui_ig_i_ic_c_*) are square; the
-            // gas frame rect is 39w × 46h (taller than wide). Aspect-
-            // preserve at min(w,h)=39 and center vertically. A small
-            // inset (2px scaled) keeps the icon off the frame edge.
+            // INFORAIL-E (user fold) — portrait fills the gas frame
+            // rect (39w × 46h). DS1 portrait RAWs (b_gui_ig_i_ic_c_*)
+            // are authored in a matching aspect, so stretching to fill
+            // looks correct and matches the original game's "face fills
+            // the box" presentation. Previous aspect-preserve square
+            // left visible empty top/bottom strips.
             if (portrait is not null)
             {
-                int inset = (int)Math.Max(1, Math.Round(2 * s));
-                int boxW = pw - inset * 2;
-                int boxH = ph - inset * 2;
-                int side = Math.Min(boxW, boxH);
-                int ix = px + (pw - side) / 2;
-                int iy = py + (ph - side) / 2;
                 iconRenderer.DrawIcon(viewportW, viewportH, portrait,
-                    ix, iy, side, side, Vector4.One);
+                    px, py, pw, ph, Vector4.One);
             }
         }
 
@@ -197,11 +198,16 @@ public sealed class CharacterAwp
         // (uv 0.839844,0.734375,0.902344,0.984375 — the slot frame). The
         // currently-selected slot gets a selection overlay (uv 0.675781,
         // 0.710938,0.753907,0.992188) drawn on top.
-        // Same fold rule: slot frames + icons + selection overlay only
-        // draw in max mode. In min mode (rail open) the slots are
-        // visually absent so the world is visible behind the AWP.
+        // Slot frames + icons + selection overlay.
+        //   Max mode: all 4 slots draw.
+        //   Min mode: only slot 1 (the active-skill indicator) draws;
+        //     slots 2/3/4 fold out so the world is visible.
+        // In min mode the active slot shows whichever weapon/spell is
+        // selected (driven by activeSlot), and clicking it opens the
+        // spell list — same gas messages as max mode's slot 1.
         var slotIcons = new[] { slot1Icon, slot2Icon, slot3Icon, slot4Icon };
-        for (int i = 0; i < 4 && !railOpen; i++)
+        int maxSlot = railOpen ? 1 : 4;
+        for (int i = 0; i < maxSlot; i++)
         {
             int gasX = 68 + i * 20; // slots at 68, 88, 108, 128
             int sx = (int)Math.Round(gasX * s);
@@ -212,10 +218,14 @@ public sealed class CharacterAwp
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
                 0.839844f, 1f - 0.984375f, 0.902344f, 1f - 0.734375f);
             // Slot content (weapon or spell icon) — drawn inside the frame
-            // with a 1px inset so the chrome stays visible. Icons sample
-            // their full atlas extent (uv 0..1) since each is a discrete
-            // RAW, not an atlas strip.
-            if (slotIcons[i] is { } ico)
+            // with a 1px inset so the chrome stays visible. In min mode
+            // (i == 0 and railOpen) we display the ACTIVE skill's icon
+            // even though we're drawing in the slot-1 rect — slot 1 is
+            // doubling as the "currently active" indicator the way DS1's
+            // bar_slot_active_skill_1 (gas:40) does.
+            var iconToDraw = (railOpen && i == 0 && activeSlot >= 0 && activeSlot < 4)
+                ? slotIcons[activeSlot] : slotIcons[i];
+            if (iconToDraw is { } ico)
             {
                 int inset = (int)Math.Round(1 * s);
                 iconRenderer.DrawIcon(viewportW, viewportH, ico,

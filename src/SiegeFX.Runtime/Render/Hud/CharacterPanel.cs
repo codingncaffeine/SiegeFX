@@ -114,14 +114,18 @@ public sealed class CharacterPanel
         // sandwiched between the two vertical bars.
         if (player is not null)
         {
-            // Vertical Health bar — gas:879 rect 88,44,101,114. Fills bottom-up.
+            // Vertical Health bar — gas:879 rect 88,44,101,114. Fills
+            // bottom-up. INFORAIL-VIAL-GRADIENT — horizontal gradient
+            // (dark edges, bright center) like the small overhead bars
+            // and the AWP vials, instead of a flat fill. DrawHGradientFill
+            // composes the dark→bright→dark across the bar width.
             var hb = R(88, 44, 101, 114);
             float hpFrac = player.Stats.MaxLife > 0
                 ? System.Math.Clamp(player.Combat.CurrentLife / player.Stats.MaxLife, 0f, 1f) : 0f;
             bars.DrawRect(viewportW, viewportH, hb.x, hb.y, hb.w, hb.h, slotBg);
             int fillH = (int)System.Math.Round(hb.h * hpFrac);
             if (fillH > 0)
-                bars.DrawRect(viewportW, viewportH, hb.x, hb.y + hb.h - fillH, hb.w, fillH, hpFill);
+                bars.DrawHGradientFill(viewportW, viewportH, hb.x, hb.y + hb.h - fillH, hb.w, fillH, hpFill);
             bars.DrawBorder(viewportW, viewportH, hb.x, hb.y, hb.w, hb.h, slotEm);
 
             // Vertical Mana bar — gas:892 rect 238,44,251,114.
@@ -131,7 +135,7 @@ public sealed class CharacterPanel
             bars.DrawRect(viewportW, viewportH, mb.x, mb.y, mb.w, mb.h, slotBg);
             int mFillH = (int)System.Math.Round(mb.h * mpFrac);
             if (mFillH > 0)
-                bars.DrawRect(viewportW, viewportH, mb.x, mb.y + mb.h - mFillH, mb.w, mFillH, mpFill);
+                bars.DrawHGradientFill(viewportW, viewportH, mb.x, mb.y + mb.h - mFillH, mb.w, mFillH, mpFill);
             bars.DrawBorder(viewportW, viewportH, mb.x, mb.y, mb.w, mb.h, slotEm);
 
             // Labels + numeric values, all gas-cited.
