@@ -922,21 +922,18 @@ public sealed class RenderHost : IDisposable
     // placeholder cell.
     private string _playerPortraitIconName = "";
     // Phase 21-SC-INV-A2 — currently selected combat-ability slot for the
-    // mini-HUD's 4-cell ability bar. The cell that's selected gets a thicker
-    // golden ring; the other three are dim. 0=melee, 1=ranged, 2=spell-1
-    // (Q/Primary), 3=spell-2 (W/Secondary). Phase 21-SC-ABIL-RMB wires this
-    // into the RMB tap dispatch: clicking a target with cell 2/3 active casts
-    // the slotted spell instead of melee-attacking. Q/W keys still cast their
-    // own slots so keyboard-only players aren't forced through the cell ring.
-    private int _activeAbilityIdx; // 0..3
-    // Hit-rects published by the last DrawMiniStatusHud so the mouse-down
-    // handler can route clicks to ability-bar selection / open-arrows toggle.
-    private (int X, int Y, int W, int H)[] _abilitySlotRects = new (int, int, int, int)[4];
-    private (int X, int Y, int W, int H) _openArrowsRect;
-    // Phase 21-SC-INV-A2 (round 7) — right edge of the always-on HUD so the
-    // dock-layout pass can plant the three large panels immediately to its
-    // right instead of below it. Updated each DrawMiniStatusHud frame.
-    private int _miniHudRightX;
+    // Phase 22-AUTH-MINIHUD-REMOVE (2026-05-13) — _activeAbilityIdx was the
+    // selection state for the SiegeFX-invented 4-cell ability bar in the
+    // mini-HUD. DS1 doesn't have such a widget. Field is kept pinned at 0
+    // (melee) until SC-RMB-DS1-CAST splinter lands the proper "RMB casts
+    // active1 spell if slotted, else melee" DS1 behavior. While pinned, RMB
+    // always swings melee and the cursor stays in melee mode — Q/W keys
+    // continue to cast Primary/Secondary spells. Removing the field today
+    // would force a bigger gameplay-behavior revamp that belongs in its
+    // own splinter.
+#pragma warning disable CS0649  // pinned-zero field — see SC-RMB-DS1-CAST splinter
+    private int _activeAbilityIdx; // pinned at 0 (melee) post-mini-HUD removal
+#pragma warning restore CS0649
     // Phase 9-SC-9 — put_down cues lazy-registered the same way death cues are
     // (template's [aspect][voice][put_down] *). Cache hits per cue stem; many
     // templates share the same put_down cue (every steel sword fires the same
@@ -2037,34 +2034,13 @@ void main()
                     return;
                 }
                 // Phase 21-SC-INV-A2 — mini-HUD ability bar + open-arrows.
-                // Ability cells select the active combat mode (visual ring
-                // for now; LMB routing lands with -B). The open-arrows strip
-                // toggles all three large panels in unison so a mouse-only
-                // player has a one-click "show me everything" affordance.
-                if (btn == MouseButton.Left && _player is not null)
-                {
-                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    for (int i = 0; i < _abilitySlotRects.Length; i++)
-                    {
-                        var r = _abilitySlotRects[i];
-                        if (mx >= r.X && my >= r.Y && mx < r.X + r.W && my < r.Y + r.H)
-                        {
-                            _activeAbilityIdx = i;
-                            _audio?.Play(SfxGuiInventory);
-                            return;
-                        }
-                    }
-                    var ar = _openArrowsRect;
-                    if (ar.W > 0 && mx >= ar.X && my >= ar.Y && mx < ar.X + ar.W && my < ar.Y + ar.H)
-                    {
-                        bool anyOpen = _charPanelOpen || _inventoryOpen || _spellBookOpen;
-                        _charPanelOpen = !anyOpen;
-                        _inventoryOpen = !anyOpen;
-                        _spellBookOpen = !anyOpen;
-                        _audio?.Play(SfxGuiInventory);
-                        return;
-                    }
-                }
+                // Phase 22-AUTH-MINIHUD-REMOVE — the SiegeFX-invented 4-cell
+                // ability bar + open-arrows mass-toggle widget is gone. DS1
+                // doesn't ship either: ability cells were a SiegeFX shortcut
+                // for spell-slot selection, and the "open all three panels at
+                // once" toggle has no DS1 equivalent (per-panel I/B/C keys
+                // remain the canonical opens). The mini-HUD's click-routing
+                // block formerly lived here.
                 // Phase 21-SC-INV-A — character + spell book panes are read-only
                 // in this slice (their drag/drop wiring lands with -B / -SPELL-B);
                 // any LMB that lands on their rect is swallowed so the world
@@ -12128,22 +12104,27 @@ void main()
                 _textRenderer.DrawString(size.X, size.Y, fpsStr, size.X - fw - 8, 8, col);
             }
 
-            if (_player is not null && _barRenderer is not null)
-            {
-                DrawMiniStatusHud(size.X, size.Y);
-            }
+            // Phase 22-AUTH-MINIHUD-REMOVE — the always-on mini-HUD widget
+            // (HP/MP vials + portrait stub + 4-cell ability bar) was a
+            // SiegeFX invention with no DS1 equivalent. Removed. Player
+            // HP/MP now surfaces via the floating overhead bars (22-H
+            // SC-HUD-OVERHEAD-BARS) which is what DS1 actually ships.
+            // The 4-cell ability row migrates to the spellbook screen
+            // (22-AUTH-SPELL slice) — DS1 ships the active-spell roster
+            // there, not as an always-on overlay.
 
-            // Phase 21-SC-INV-A — three docked panels (Character / Inventory
-            // / SpellBook) tile across the TOP of the screen, immediately to
-            // the right of the always-on ability bar (round 7). Each panel
-            // toggles independently (C / I / B) and sets its own OriginX/Y
-            // so the dock layout is local to this method. Top margin matches
-            // the mini-HUD's so the panels and the bar share the same
-            // baseline at y=4; horizontal gap between panels keeps borders
-            // visually separate.
+            // Phase 21-SC-INV-A + 22-AUTH-MINIHUD-REMOVE — three docked
+            // panels (Character / Inventory / SpellBook) tile across the
+            // TOP of the screen. Each panel toggles independently (C / I /
+            // B) and sets its own OriginX/Y so the dock layout is local to
+            // this method. Top margin y=4; horizontal gap between panels
+            // keeps borders visually separate. The mini-HUD's right-edge
+            // X-anchor that used to land panels next to it is gone; panels
+            // dock from the left gutter. Per-panel rework (22-AUTH-INV /
+            // -CHAR / -SPELL) lands each panel's authentic gas position.
             const int panelTopY    = 4;
             const int panelGutter  = 4;
-            int dockX = (_miniHudRightX > 0 ? _miniHudRightX : panelGutter);
+            int dockX = panelGutter;
 
             if (_charPanelOpen && _player is not null)
             {
@@ -12702,231 +12683,6 @@ void main()
         _textRenderer.DrawString(viewportW, viewportH, caption, x + w + 8, y - 1, text);
     }
 
-    /// <summary>Phase 21-SC-INV-A — small always-on HUD shown in the top-left
-    /// of the screen regardless of panel state. Two thin vertical vials (HP /
-    /// MP) flank a portrait stub; the two active-spell slot icons sit to the
-    /// right with a tiny LV/XP/Gold strip below. Stays visible even when the
-    /// character pane is closed so the player never loses sight of their
-    /// pools (the user calls these "the small ones that appear all the
-    /// time"). Heavier numeric readouts live inside CharacterPanel.</summary>
-    private void DrawMiniStatusHud(int vw, int vh)
-    {
-        if (_barRenderer is null || _textRenderer is null || _player is null) return;
-
-        var combat = _player.Actor.Combat;
-        var stats  = _player.Actor.Stats;
-        var hpFill = new Vector4(0.78f, 0.10f, 0.10f, 1f);
-        var mpFill = new Vector4(0.18f, 0.40f, 0.90f, 1f);
-        var slotBg = new Vector4(0.04f, 0.04f, 0.05f, 0.92f);
-        var slotEm = new Vector4(0.78f, 0.66f, 0.42f, 1f);
-        var ink    = new Vector4(0.92f, 0.88f, 0.78f, 1f);
-        var dimInk = new Vector4(0.65f, 0.62f, 0.55f, 1f);
-        var gold   = new Vector4(1.00f, 0.85f, 0.40f, 1f);
-
-        const int x0 = 4, y0 = 4;
-        // Phase 21-SC-INV-A2 (round 7) — small vials doubled vertically so
-        // the always-on HUD reads at glance instead of pinching down to a
-        // bookmark strip; portrait stays its 32×32 between them and pins
-        // to the top so the vial extension grows downward only.
-        const int vialW = 10, vialH = 64;
-        const int portraitW = 32, portraitH = 32;
-        const int gap = 2;
-        // Phase 21-SC-INV-A2 (round 6) — cells widened (+4) and lengthened
-        // (+10) so a vertical XP bar can rise behind the icon without
-        // crowding the glyph. The icon stays square at the top; the lower
-        // strip carries the per-skill progress fill.
-        // Phase 21-SC-INV-A2 (round 9) — cells doubled vertically (28→56)
-        // so the AWP icon centers comfortably inside a tall slot and the
-        // XP fill behind it has visible vertical real-estate. Width stays
-        // the same so the bar still tucks into the upper-left corner.
-        const int abilitySlotW = 22;
-        const int abilitySlotH = 56;
-
-        int xHp = x0;
-        int xPortrait = xHp + vialW + gap;
-        int xMp = xPortrait + portraitW + gap;
-        int xA0 = xMp + vialW + gap + 4;
-        int xA1 = xA0 + abilitySlotW + gap;
-        int xA2 = xA1 + abilitySlotW + gap;
-        int xA3 = xA2 + abilitySlotW + gap;
-
-        // HP vial (vertical fill from bottom up, horizontal gradient).
-        _barRenderer.DrawRect(vw, vh, xHp, y0, vialW, vialH, slotBg);
-        if (stats.MaxLife > 0f)
-        {
-            int fh = (int)(vialH * MathF.Max(0f, MathF.Min(1f, combat.CurrentLife / stats.MaxLife)));
-            if (fh > 0) _barRenderer.DrawHGradientFill(vw, vh, xHp, y0 + (vialH - fh), vialW, fh, hpFill);
-        }
-        _barRenderer.DrawBorder(vw, vh, xHp, y0, vialW, vialH, slotEm);
-
-        // Portrait — DS1 ships the hero head between the two small vials,
-        // visible whenever the mini-HUD is up. Sourced from the player
-        // template's [actor]portrait_icon (e.g. b_gui_ig_i_ic_c_fb_01).
-        // Falls back to the hero-name initial glyph when the texture hasn't
-        // been resolved (creator dev path / pre-load).
-        _barRenderer.DrawRect  (vw, vh, xPortrait, y0, portraitW, portraitH, slotBg);
-        var portraitTex = string.IsNullOrEmpty(_playerPortraitIconName)
-            ? null
-            : TryGetGuiTexture(_playerPortraitIconName);
-        if (portraitTex is not null && _iconRenderer is not null)
-        {
-            // Centered inside the box: portrait_icon raws are square so a
-            // straight stretch keeps the head in frame.
-            _iconRenderer.DrawIcon(vw, vh, portraitTex,
-                xPortrait, y0, portraitW, portraitH, new Vector4(1f, 1f, 1f, 1f));
-        }
-        else if (!string.IsNullOrEmpty(_heroName))
-        {
-            string ch = _heroName.Substring(0, 1).ToUpperInvariant();
-            int chW = _textRenderer.MeasureWidth(ch);
-            _textRenderer.DrawString(vw, vh, ch,
-                xPortrait + (portraitW - chW) / 2, y0 + (portraitH - 8) / 2, ink);
-        }
-        _barRenderer.DrawBorder(vw, vh, xPortrait, y0, portraitW, portraitH, slotEm);
-
-        // MP vial.
-        _barRenderer.DrawRect(vw, vh, xMp, y0, vialW, vialH, slotBg);
-        if (stats.MaxMana > 0f)
-        {
-            int fh = (int)(vialH * MathF.Max(0f, MathF.Min(1f, combat.CurrentMana / stats.MaxMana)));
-            if (fh > 0) _barRenderer.DrawHGradientFill(vw, vh, xMp, y0 + (vialH - fh), vialW, fh, mpFill);
-        }
-        _barRenderer.DrawBorder(vw, vh, xMp, y0, vialW, vialH, slotEm);
-
-        // Phase 21-SC-INV-A2 — DS1 ability bar. Four selectable cells —
-        // melee, ranged, spell-1 (Q), spell-2 (W) — sit immediately right of
-        // the MP vial. Click any cell to mark it the active combat ability.
-        // The selected cell gets a thicker golden ring; the rest are dim.
-        // (Live cast/swing keys still fire from LMB/Q/W; this is the
-        // "what's primed" affordance the player sees on the HUD.)
-        // Phase 21-SC-INV-A2 (round 5) — pull dedicated AWP HUD icons. Melee
-        // tracks the equipped weapon's [gui]inventory_icon (so picking up a
-        // sword swaps the cell art), falling back to the unarmed-fist glyph;
-        // ranged is always the bow icon; Q/W use each spell's own inventory
-        // icon — same texture the spell book panel uses.
-        GlTexture? meleeIcon = null;
-        if (_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef)
-            && !string.IsNullOrEmpty(weaponRef))
-        {
-            meleeIcon = TryGetItemIcon(weaponRef);
-        }
-        meleeIcon ??= TryGetGuiTexture("b_gui_ig_mnu_combat");
-        var rangedIcon = TryGetGuiTexture("b_gui_ig_mnu_ranged");
-        var primaryIcon   = _playerSpellbook?.Primary   is { } sp ? ResolveSpellInventoryIcon(sp) : null;
-        var secondaryIcon = _playerSpellbook?.Secondary is { } ss ? ResolveSpellInventoryIcon(ss) : null;
-
-        // Phase 21-SC-INV-A2 (round 6) — per-skill progress fractions for the
-        // bar that rises behind each cell's icon. Q/W route through the spell's
-        // element to pick CombatMagic vs NatureMagic so a mage's two slots can
-        // show independent progress; null spell → 0 fill.
-        float meleeFrac   = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee) ?? 0f;
-        float rangedFrac  = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged) ?? 0f;
-        float primaryFrac   = _playerSpellbook?.Primary   is { } sp2
-            ? _progression?.SkillProgressFraction(SkillForSpell(sp2)) ?? 0f : 0f;
-        float secondaryFrac = _playerSpellbook?.Secondary is { } ss2
-            ? _progression?.SkillProgressFraction(SkillForSpell(ss2)) ?? 0f : 0f;
-
-        DrawMiniAbilitySlot(vw, vh, xA0, y0, abilitySlotW, abilitySlotH, "M", null,                          0, ink, dimInk, slotBg, slotEm, meleeIcon,     meleeFrac);
-        DrawMiniAbilitySlot(vw, vh, xA1, y0, abilitySlotW, abilitySlotH, "R", null,                          1, ink, dimInk, slotBg, slotEm, rangedIcon,    rangedFrac);
-        DrawMiniAbilitySlot(vw, vh, xA2, y0, abilitySlotW, abilitySlotH, null, _playerSpellbook?.Primary,    2, ink, dimInk, slotBg, slotEm, primaryIcon,   primaryFrac);
-        DrawMiniAbilitySlot(vw, vh, xA3, y0, abilitySlotW, abilitySlotH, null, _playerSpellbook?.Secondary,  3, ink, dimInk, slotBg, slotEm, secondaryIcon, secondaryFrac);
-        _abilitySlotRects[0] = (xA0, y0, abilitySlotW, abilitySlotH);
-        _abilitySlotRects[1] = (xA1, y0, abilitySlotW, abilitySlotH);
-        _abilitySlotRects[2] = (xA2, y0, abilitySlotW, abilitySlotH);
-        _abilitySlotRects[3] = (xA3, y0, abilitySlotW, abilitySlotH);
-        // Right edge of the always-on HUD — published for the panel-dock
-        // layout so it can plant the three large panels immediately to the
-        // right of the ability bar instead of stacking under everything.
-        _miniHudRightX = xA3 + abilitySlotW + 4;
-
-        // Phase 21-SC-INV-A2 — open-panels strip below the ability bar. A
-        // thin tan-on-dark rectangle with three rightward golden chevrons;
-        // clicking it opens (or closes) all three large panels at once so
-        // the player has a visible mouse-only path to the panes — DS1's UI
-        // exposes the same one-click "open all" affordance.
-        int arrowsX = xA0;
-        int arrowsY = y0 + abilitySlotH + 2;
-        int arrowsW = (xA3 + abilitySlotW) - xA0;
-        int arrowsH = 9;
-        _openArrowsRect = (arrowsX, arrowsY, arrowsW, arrowsH);
-        _barRenderer.DrawRect  (vw, vh, arrowsX, arrowsY, arrowsW, arrowsH, slotBg);
-        _barRenderer.DrawBorder(vw, vh, arrowsX, arrowsY, arrowsW, arrowsH, slotEm);
-        // Chevron direction tracks panel state: panels closed → arrows point
-        // LEFT (the click target sits on the left edge of the screen, so the
-        // arrow reads as "click here to summon"); panels open → arrows flip
-        // right and the click closes them again.
-        bool panelsOpen = _charPanelOpen || _inventoryOpen || _spellBookOpen;
-        DrawTinyChevrons(vw, vh, arrowsX, arrowsY, arrowsW, arrowsH, gold, panelsOpen);
-
-        // Phase 21-SC-INV-A2 (round 9) — DS1 doesn't show a Lv/XP/Gold
-        // strip on the always-on HUD. Level rolls up via the per-skill
-        // progress fills inside the ability cells; gold lives in the
-        // inventory pane's title bar. Mini-HUD ends here.
-    }
-
-    /// <summary>Phase 21-SC-INV-A2 — single ability cell of the mini-HUD's
-    /// 4-cell bar. <paramref name="glyph"/> is the static glyph for melee/
-    /// ranged ('M' / 'R'); <paramref name="spell"/> is the live spell when
-    /// the cell is a slot for Primary/Secondary (renders the spell's first
-    /// letter). The selected cell (matches <see cref="_activeAbilityIdx"/>)
-    /// gets the bright border + ink; the rest dim out.</summary>
-    private void DrawMiniAbilitySlot(int vw, int vh, int x, int y, int w, int h,
-                                     string? glyph,
-                                     SiegeFX.Core.Assets.SpellTemplate? spell,
-                                     int index,
-                                     Vector4 ink, Vector4 dimInk,
-                                     Vector4 slotBg, Vector4 slotEm,
-                                     GlTexture? icon = null,
-                                     float progressFrac = 0f)
-    {
-        if (_barRenderer is null || _textRenderer is null) return;
-        bool selected = _activeAbilityIdx == index;
-        var border = selected ? new Vector4(1.00f, 0.85f, 0.40f, 1f) : slotEm;
-        var fg     = selected ? ink : dimInk;
-        _barRenderer.DrawRect(vw, vh, x, y, w, h, slotBg);
-        // Phase 21-SC-INV-A2 (round 6) — XP-into-current-rank fill rises from
-        // the bottom of the cell behind the icon. Drawn before the icon so the
-        // glyph stays legible; quiet bronze tone so the bar reads as
-        // "background" rather than competing with the action art.
-        if (progressFrac > 0f)
-        {
-            float clamped = MathF.Min(1f, progressFrac);
-            int fh = (int)((h - 2) * clamped);
-            if (fh > 0)
-            {
-                var fill = new Vector4(0.55f, 0.42f, 0.18f, 0.55f);
-                _barRenderer.DrawRect(vw, vh, x + 1, y + h - 1 - fh, w - 2, fh, fill);
-            }
-        }
-        _barRenderer.DrawBorder(vw, vh, x, y, w, h, border);
-        if (selected)
-        {
-            // Inner ring so selection reads even at 100% scale on a dark scene.
-            _barRenderer.DrawBorder(vw, vh, x + 1, y + 1, w - 2, h - 2, border);
-        }
-        // Phase 21-SC-INV-A2 (round 9) — prefer the AWP/spell/inventory icon
-        // when the resolver gave us one. With the cell now doubled vertically
-        // the icon centers on both axes; the XP fill rises behind it from the
-        // bottom so both reads stay clear without one crowding the other.
-        int iconSz = Math.Min(w - 4, 22);
-        int iconX = x + (w - iconSz) / 2;
-        int iconY = y + (h - iconSz) / 2;
-        if (icon is not null && _iconRenderer is not null)
-        {
-            var tint = selected ? new Vector4(1f, 1f, 1f, 1f) : new Vector4(0.85f, 0.85f, 0.85f, 1f);
-            _iconRenderer.DrawIcon(vw, vh, icon, iconX, iconY, iconSz, iconSz, tint);
-            return;
-        }
-        string? ch = glyph;
-        if (ch is null && spell is not null)
-        {
-            var label = string.IsNullOrEmpty(spell.ScreenName) ? spell.Name : spell.ScreenName;
-            if (!string.IsNullOrEmpty(label)) ch = label.Substring(0, 1).ToUpperInvariant();
-        }
-        if (string.IsNullOrEmpty(ch)) return;
-        int chW = _textRenderer.MeasureWidth(ch);
-        _textRenderer.DrawString(vw, vh, ch, x + (w - chW) / 2, iconY + (iconSz - 8) / 2, fg);
-    }
 
     /// <summary>Phase 21-SC-INV-A2 (round 6) — map a spell to the per-skill
     /// XP pool that ranks it. DS1 splits offensive (combat) from supportive
