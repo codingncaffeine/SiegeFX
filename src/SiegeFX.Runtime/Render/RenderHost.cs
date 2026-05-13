@@ -130,6 +130,12 @@ public sealed class RenderHost : IDisposable
     // interactive/emitter .gas. No skrit, no animation, no nav — just transform +
     // mesh + (optional) texture, drawn through the static-mesh pipeline.
     private readonly List<StaticPropInstance> _staticProps = new();
+    // SC-DOORS-OPEN (audit fold — finding #7) — parallel list of
+    // door-only props so TickDoors doesn't scan 5810 props/frame to
+    // find ~20 doors. Populated alongside _staticProps.Add at
+    // LoadStaticProps; cleared when _staticProps clears on region
+    // unload.
+    private readonly List<StaticPropInstance> _doorProps = new();
     private readonly Dictionary<string, AspMesh?> _propAspCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<AspMesh, StaticMesh> _propGlMeshCache = new();
 
@@ -5274,7 +5280,7 @@ void main()
                         }
                     }
 
-                    _staticProps.Add(new StaticPropInstance
+                    var inst = new StaticPropInstance
                     {
                         Mesh          = glMesh,
                         Texture       = tex,
@@ -5287,7 +5293,9 @@ void main()
                         MaxLife       = maxLife,
                         IsDoor        = isDoor,
                         DoorUseRange  = useRange,
-                    });
+                    };
+                    _staticProps.Add(inst);
+                    if (isDoor) _doorProps.Add(inst);
                     spawned++;
                 }
             }
@@ -5660,14 +5668,14 @@ void main()
     /// rotation comes from DoorOpenFrac at draw time.</summary>
     private void TickDoors(float dt)
     {
-        if (dt <= 0f || _staticProps.Count == 0 || _player is null) return;
+        if (dt <= 0f || _doorProps.Count == 0 || _player is null) return;
         var playerPos = _player.CurrentTransform.Translation;
         const float OpenRate  = 1f / 0.4f;   // 0 → 1 in 0.4s
         const float CloseRate = 1f / 0.5f;   // 1 → 0 in 0.5s
         const float CloseHysteresis = 0.5f;  // u beyond use_range before re-closing
-        foreach (var prop in _staticProps)
+        foreach (var prop in _doorProps)
         {
-            if (!prop.IsDoor || prop.IsDestroyed) continue;
+            if (prop.IsDestroyed) continue;
             var doorPos = prop.World.Translation;
             float dx = doorPos.X - playerPos.X;
             float dz = doorPos.Z - playerPos.Z;
@@ -12265,12 +12273,19 @@ void main()
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
 
-        // SC-TERRAIN-WHITE-GRID — dev fly-cam reference grid. User-test
-        // catch: leaked into play-region as a "white square grid pattern
-        // on the ground" wherever the terrain mesh was thin / vertices
-        // missed / Z-test let it bleed through. Gate to dev cam ONLY;
-        // gameplay never sees the grid.
-        if (_gridShader is not null && _grid is not null && _cameraMode == CameraMode.Fly)
+        // SC-TERRAIN-WHITE-GRID (audit fold — finding #3) — dev
+        // fly-cam reference grid. Previously gated on
+        // `_cameraMode == CameraMode.Fly` but that default-Fly value
+        // ALSO covers the boot/main-menu / pre-PC-load window where
+        // the world hasn't been built yet — the grid would draw
+        // through any UI background. Tighter gate: require BOTH the
+        // Fly cam AND a player to have been spawned (means we're in
+        // play-region with the user actively flying around) AND the
+        // explicit dev-mode toggle. For gameplay the grid is OFF; in
+        // mesh-viewer / anim-viewer modes (no _player) the grid is
+        // also OFF, which is what we want.
+        if (_gridShader is not null && _grid is not null
+            && _cameraMode == CameraMode.Fly && _player is not null)
         {
             _gridShader.Use();
             _gridShader.SetMatrix4("uViewProj", vp);
@@ -13917,6 +13932,7 @@ void main()
         _propGlMeshCache.Clear();
         _propAspCache.Clear();
         _staticProps.Clear();
+        _doorProps.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
         // Phase 24-MAINMENU step 1+2-FOLD — splash texture cache. Six

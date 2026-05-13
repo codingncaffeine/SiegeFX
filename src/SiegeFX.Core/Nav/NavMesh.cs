@@ -591,51 +591,13 @@ public sealed class NavMesh
         return float.IsFinite(y) ? y : Centroids[tri].Y;
     }
 
-    /// <summary>Phase 24-NAV (post-test fold) — clamp <paramref name="worldPos"/>
-    /// to the nearest interior point of triangle <paramref name="tri"/>
-    /// in XZ. Returns the input position unchanged when it's already
-    /// inside the triangle, or the closest point on one of the three
-    /// edges otherwise. Y is resampled on the triangle plane so the
-    /// clamped point stays on the surface. Used by
-    /// <see cref="NavFollower"/> to STOP an actor at the walkable
-    /// boundary instead of letting the candidate step penetrate into
-    /// off-mesh terrain.</summary>
-    public Vector3 ClampPointToTriangleXZ(int tri, Vector3 worldPos)
-    {
-        var a = Vertices[Indices[3 * tri + 0]];
-        var b = Vertices[Indices[3 * tri + 1]];
-        var c = Vertices[Indices[3 * tri + 2]];
-        if (PointInTriangleXZ(worldPos, a, b, c))
-            return new Vector3(worldPos.X, SampleYOnTriangle(tri, worldPos), worldPos.Z);
-        // Project onto each edge, return whichever projection is
-        // closest in XZ. ClosestOnSegmentXZ returns a Vector3 on the
-        // segment with Y interpolated along the edge.
-        var p1 = ClosestOnSegmentXZ(worldPos, a, b);
-        var p2 = ClosestOnSegmentXZ(worldPos, b, c);
-        var p3 = ClosestOnSegmentXZ(worldPos, c, a);
-        float d1 = SqDistXZ(p1, worldPos);
-        float d2 = SqDistXZ(p2, worldPos);
-        float d3 = SqDistXZ(p3, worldPos);
-        if (d1 <= d2 && d1 <= d3) return p1;
-        if (d2 <= d3) return p2;
-        return p3;
-    }
-
-    private static Vector3 ClosestOnSegmentXZ(Vector3 p, Vector3 a, Vector3 b)
-    {
-        float dx = b.X - a.X, dz = b.Z - a.Z;
-        float lenSq = dx * dx + dz * dz;
-        if (lenSq < 1e-8f) return a;
-        float t = ((p.X - a.X) * dx + (p.Z - a.Z) * dz) / lenSq;
-        if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
-        return new Vector3(a.X + dx * t, a.Y + (b.Y - a.Y) * t, a.Z + dz * t);
-    }
-
-    private static float SqDistXZ(Vector3 a, Vector3 b)
-    {
-        float dx = a.X - b.X, dz = a.Z - b.Z;
-        return dx * dx + dz * dz;
-    }
+    // ClampPointToTriangleXZ + ClosestOnSegmentXZ + SqDistXZ were
+    // added during the Phase 24-NAV boundary-respect attempt (commit
+    // 2dcef74) and then orphaned when the call site was reverted in
+    // SC-NAV-FROZEN-MOBS (db6306a). Removed per audit fold to keep
+    // the file honest about what's live. The boundary-respect goal
+    // is now carried by SC-NAV-BSP-LOOKUP (BSP-accelerated point-in-
+    // mesh) and SC-NAV-OBSTACLE-AVOID (prop-based no-go zones).
 
     private static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
     {
