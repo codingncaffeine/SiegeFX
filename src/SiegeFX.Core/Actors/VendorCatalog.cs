@@ -11,32 +11,17 @@ namespace SiegeFX.Core.Actors;
 /// </summary>
 public static class VendorCatalog
 {
+    // Catalog intentionally starts empty. Phase 20d used Norick as a smoke-test
+    // vendor because he was the only authored NPC in fh_r1, but in real DS1 he's
+    // the wounded friend who delivers "Seek Gyorn in Stonebridge" and dies in
+    // the opening scripted sequence — never a merchant. The trade-panel runtime
+    // (vendor open / buy / sell / gold mutation) is exercised by unit-style
+    // calls and stays compiled even without entries here. Real vendor rows
+    // (Hrok at Stonebridge North gate, Stonebridge town merchants, etc.) land
+    // alongside SC-QUEST-OBJ-F catalog-population so vendor data and quest data
+    // come from the same authoring pass over Logic.dsres.
     static readonly Dictionary<string, VendorDefinition> _defs =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["norick"] = new VendorDefinition
-            {
-                NameMatch  = "norick",
-                ScreenName = "Norick",
-                Stock      = new[]
-                {
-                    new VendorStockItem
-                    {
-                        ItemReference = "_2hsword_iron",
-                        ScreenName    = "Iron Two-Handed Sword",
-                        Price         = 50,
-                        Slot          = "weapon_hand",
-                    },
-                    new VendorStockItem
-                    {
-                        ItemReference = "_potion_health_minor",
-                        ScreenName    = "Minor Health Potion",
-                        Price         = 15,
-                        Slot          = "consumable",
-                    },
-                },
-            },
-        };
+        new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>All catalog rows (snapshot view). Used by the vendor panel to
     /// resolve sell prices off any vendor's list, not just the open one.</summary>
