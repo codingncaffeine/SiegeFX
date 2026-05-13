@@ -26,12 +26,15 @@ public sealed class SaveFile
     ///              user-organized inactive rows in the spellbook UI).
     ///   v6 -> v7 : added <see cref="QuestSnapshot.TalkProgress"/>
     ///              (SC-QUEST-OBJ-A talk-to-NPC objective counter).
+    ///   v7 -> v8 : added <see cref="PlayerSnapshot.ConsumedInventoryScids"/>
+    ///              (SC-WORLD-INVENTORY-CONSUMED — picked-up world-pickups
+    ///              that should stay gone across save-reload).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v6 file loads as a v7 with the new fields zero-initialized.
+    /// so any v1..v7 file loads as a v8 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 7;
+    public const int CurrentSchemaVersion = 8;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -164,6 +167,15 @@ public sealed class PlayerSnapshot
     /// the load path uses these values to rebuild the variant override
     /// instead of reading the env vars again.</summary>
     public HeroVariantSnapshot? Variant { get; set; }
+
+    /// <summary>SC-WORLD-INVENTORY-CONSUMED — SCIDs of region-level
+    /// inventory.gas placements the player has already picked up. Mirrors
+    /// <c>RenderHost._consumedInventoryScids</c>. On load, world-inventory
+    /// is re-derived from each region's inventory.gas; placements whose
+    /// SCID is in this list are skipped so picked-up items stay gone.
+    /// Empty list on v7-and-earlier loads — those saves predate the SCID-
+    /// tracking and re-spawn every world inventory item on reload.</summary>
+    public List<uint> ConsumedInventoryScids { get; set; } = new();
 }
 
 /// <summary>Phase 21d-2a-viii-c — frozen snapshot of the character creator's

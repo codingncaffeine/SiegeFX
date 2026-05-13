@@ -46,12 +46,14 @@ public static class SaveStore
         //   v5 -> v6 : added SpellbookSnapshot.Placed (empty list default).
         //   v6 -> v7 : added QuestSnapshot.TalkProgress (default 0) for
         //              SC-QUEST-OBJ-A.
+        //   v7 -> v8 : added PlayerSnapshot.ConsumedInventoryScids (default
+        //              empty list) for SC-WORLD-INVENTORY-CONSUMED.
         // All deserializer-friendly — missing fields just hit their defaults —
         // so the work here is only the version-stamp bump. Pre-v1 shapes still
         // get rejected below. Forgetting to extend this whitelist when bumping
         // CurrentSchemaVersion silently breaks every prior save with an
         // InvalidDataException — caught by the SC-SCROLL-G review pass.
-        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6)
+        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }

@@ -634,6 +634,13 @@ public sealed class RenderHost : IDisposable
         /// every other spawn site (enemy-death drops, vendor sells, scroll
         /// drag-drop) so save behavior is unchanged for those.</summary>
         public bool IsWorldInventory;
+        /// <summary>SC-WORLD-INVENTORY-CONSUMED — region-source SCID for
+        /// world-inventory piles; 0 for every other pile kind. When the pile
+        /// is looted, the SCID is added to <c>_consumedInventoryScids</c> so
+        /// subsequent LoadWorldInventory passes (incl. save-reload) skip the
+        /// corresponding placement. Pairs with IsWorldInventory — Set only at
+        /// world-inventory spawn time; never reused once recorded.</summary>
+        public uint SourceScid;
         public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
         { Position = position; Items = items; }
     }
@@ -4793,6 +4800,13 @@ void main()
                     world = Vector3.Transform(local, nodeWorld);
                 // Single guaranteed drop entry; empty Slot = world-drop
                 // (matches il_main / LootRoller's drop-bucket shape).
+                // SC-WORLD-INVENTORY-CONSUMED — skip pickups the player has
+                // already grabbed (recorded by SCID on loot, persisted across
+                // save-reload). Without this, every reload would respawn the
+                // fireshot in fh_r1's basement after the player had already
+                // picked it up.
+                if (_consumedInventoryScids is not null &&
+                    _consumedInventoryScids.Contains(p.Scid)) continue;
                 var pile = new LootPile(world,
                     new List<SiegeFX.Core.Actors.LootEntry>
                     {
@@ -4800,6 +4814,7 @@ void main()
                     })
                 {
                     IsWorldInventory = true,
+                    SourceScid       = p.Scid,
                 };
                 _lootPiles.Add(pile);
                 spawned++;
@@ -4812,6 +4827,13 @@ void main()
     }
 
     private HashSet<string>? _inventoryGasLoaded;
+
+    /// <summary>SC-WORLD-INVENTORY-CONSUMED — SCIDs of world-inventory pickups
+    /// the player has already taken. Persisted in SaveFile so the fireshot
+    /// scroll the player picked up before saving stays gone on reload.
+    /// Populated in <see cref="LootPileNow"/> when a world-inventory pile is
+    /// looted; read in <see cref="LoadWorldInventory"/> before spawning.</summary>
+    private HashSet<uint>? _consumedInventoryScids;
 
     /// <summary>Phase 21c-3 — pulls every <c>[t:directional]</c> entry out of
     /// the player region's <c>lights/lights.gas</c>, premultiplies each by its
@@ -10305,6 +10327,13 @@ void main()
             TryLoadPlayerEquipment(_player.Actor.Template);
         if (weaponSwapped || nonWeaponSwapped) RefreshPlayerStance();
 
+        // SC-WORLD-INVENTORY-CONSUMED — record the source SCID before removing
+        // so the pile doesn't respawn on next region stream / save-reload.
+        if (pile.IsWorldInventory && pile.SourceScid != 0u)
+        {
+            _consumedInventoryScids ??= new HashSet<uint>();
+            _consumedInventoryScids.Add(pile.SourceScid);
+        }
         _lootPiles.RemoveAt(pileIndex);
         return true;
     }
@@ -12343,6 +12372,13 @@ void main()
                 p.Gold = _progression.Gold;
             }
 
+            // SC-WORLD-INVENTORY-CONSUMED — persist picked-up world-inventory
+            // SCIDs so the fireshot scroll the player grabbed in fh_r1's
+            // basement stays gone across save-reload. On load, these SCIDs
+            // gate LoadWorldInventory's re-spawn pass.
+            if (_consumedInventoryScids is not null && _consumedInventoryScids.Count > 0)
+                p.ConsumedInventoryScids = new List<uint>(_consumedInventoryScids);
+
             // 21d-2a-viii-c — hero name + variant pick from the creator (or
             // env-var spawn). Empty/null when the creator was bypassed; the
             // load path treats that as "no override" too.
@@ -12431,6 +12467,20 @@ void main()
             foreach (var e in pileSnap.Entries)
                 items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
             _lootPiles.Add(new LootPile(pileSnap.Position.ToVector3(), items));
+        }
+        // SC-WORLD-INVENTORY-CONSUMED — restore the consumed-pickup set before
+        // LoadWorldInventory re-fires; otherwise the re-spawn pass wouldn't
+        // know which placements the player already grabbed.
+        if (save.Player is not null && save.Player.ConsumedInventoryScids.Count > 0)
+        {
+            _consumedInventoryScids ??= new HashSet<uint>();
+            _consumedInventoryScids.Clear();
+            foreach (var scid in save.Player.ConsumedInventoryScids)
+                _consumedInventoryScids.Add(scid);
+        }
+        else
+        {
+            _consumedInventoryScids?.Clear();
         }
         if (_worldRegionGraphs is not null && _worldRegionGraphs.Count > 0)
             LoadWorldInventory(_worldRegionGraphs.Select(t => t.Path));
