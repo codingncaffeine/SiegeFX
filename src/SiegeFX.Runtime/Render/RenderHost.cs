@@ -12475,21 +12475,35 @@ void main()
             // overhead bars; per-panel modals still overlay it.
             DrawCharacterAwp(size.X, size.Y);
 
-            // Phase 22-INFORAIL-B — gas-cited information-rail layout.
-            // Per hud_character.gas / hud_inventory.gas / hud_spell.gas:
-            //   Paperdoll: x 87..254 (w=167, gas-x=87)
-            //   Inventory MAX (rail open): x 253..387 (gas-x=253)
-            //   Inventory MIN (rail without paperdoll): x 89..474
-            //   Spellbook: x 387..542 (gas-x=387)
-            // All values scale by viewportH/480 per the
-            // feedback_siegefx_authentic_scalable.md rule. The OriginY
-            // is 0 — panels position internally from their gas-authored
-            // y rects (paperdoll starts at gas-y=0).
+            // Phase 22-INFORAIL-B + anchor fold — gas-cited info-rail
+            // layout. Per hud_character.gas / hud_inventory.gas /
+            // hud_spell.gas: paperdoll 167w, inventory 134w (MAX-mode)
+            // or 390w (MIN), spellbook 155w; all 449h.
+            //
+            // ANCHOR: the rail starts to the RIGHT of the AWP's slot 1
+            // (which stays visible during the rail-open transformation).
+            // AWP scales by raw viewportH/480 (uncapped) but the rail
+            // panels use the clamped InfoRailLayout.Scale (1.5× cap).
+            // If we anchor the rail at gas-x=87 * railScale, at 1080p
+            // the rail starts at ~130px while the AWP's slot 1 right
+            // edge sits at ~189px — overlap. Anchoring at AWP-scale
+            // gas-x=87 puts the rail flush to the AWP cluster:
+            //   paperdoll X = round(AwpAnchorX * awpScale)
+            //   inv MAX X   = paperdollX + paperdollW (rail scale)
+            //   spellbook X = invX + invW
+            // Panel internal sizes still use the clamped rail scale,
+            // so the panels themselves stay at user-friendly proportions.
+            float awpScale = size.Y / 480f;
             float infoRailScale = Hud.InfoRailLayout.Scale(size.Y);
-            int paperdollX = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 * infoRailScale);
-            int inventoryMaxX = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMax.X0 * infoRailScale);
-            int inventoryMinX = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMin.X0 * infoRailScale);
-            int spellbookX = (int)System.Math.Round(Hud.InfoRailLayout.Spellbook.X0 * infoRailScale);
+            const int AwpAnchorX = 87; // gas-x where the AWP ends + rail begins
+            int paperdollX = (int)System.Math.Round(AwpAnchorX * awpScale);
+            int paperdollW = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.W * infoRailScale);
+            int inventoryMaxX = paperdollX + paperdollW;
+            int inventoryMaxW = (int)System.Math.Round(Hud.InfoRailLayout.InventoryMax.W * infoRailScale);
+            int spellbookX    = inventoryMaxX + inventoryMaxW;
+            // Min-mode inventory (no paperdoll) sits flush against the
+            // AWP cluster the same way paperdoll would in max mode.
+            int inventoryMinX = paperdollX;
             const int panelTopY    = 0;
 
             if (_charPanelOpen && _player is not null)
