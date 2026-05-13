@@ -27,7 +27,9 @@ namespace SiegeFX.Runtime.Render.Hud;
 public sealed class PaperdollPanel
 {
     public const int RefRes = 480;
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    /// <summary>Uses the same clamped scale as InfoRailLayout so all
+    /// three info-rail panels render at matching sizes.</summary>
+    public static float Scale(int viewportH) => InfoRailLayout.Scale(viewportH);
 
     /// <summary>One equipment slot definition. The slot's screen rect
     /// is the gas rect scaled; ghost_* placeholder draws inside it

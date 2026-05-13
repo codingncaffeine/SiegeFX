@@ -42,35 +42,247 @@ public sealed class CharacterPanel
                      int armorRating,
                      float skillXpFraction = 0f,
                      IconRenderer? icons = null,
-                     GlTexture? portraitIcon = null)
+                     GlTexture? portraitIcon = null,
+                     System.Func<string, GlTexture?>? chromeLookup = null,
+                     string startingClassTitle = "Farmer")
     {
         int px = OriginX, py = OriginY;
-        var panel  = new Vector4(0.08f, 0.08f, 0.10f, 0.92f);
-        var title  = new Vector4(0.16f, 0.13f, 0.10f, 1f);
-        var border = new Vector4(0.72f, 0.74f, 0.78f, 1f); // light grey
-        // DS1 panel font is #AAA78E — applied uniformly across labels, headings, and dim copy.
-        var ink    = new Vector4(0.667f, 0.655f, 0.557f, 1f);
-        var dimInk = new Vector4(0.667f, 0.655f, 0.557f, 1f);
-        var headInk = new Vector4(0.667f, 0.655f, 0.557f, 1f);
+        var ink    = new Vector4(0.667f, 0.655f, 0.557f, 1f); // DS1 panel ink #aaa78e
+        var headInk = new Vector4(0.86f, 0.83f, 0.69f, 1f);   // brighter for headings
+        var dimInk = new Vector4(0.55f, 0.55f, 0.5f, 1f);
         var hpFill = new Vector4(0.78f, 0.10f, 0.10f, 1f);
         var mpFill = new Vector4(0.18f, 0.40f, 0.90f, 1f);
         var slotBg = new Vector4(0.04f, 0.04f, 0.05f, 1f);
-        var slotEm = new Vector4(0.55f, 0.57f, 0.60f, 1f); // light grey accent
-        const int cornerR = 2;
+        var slotEm = new Vector4(0.55f, 0.57f, 0.60f, 1f);
 
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, PanelWidth, PanelHeight, panel, cornerR, cornerR);
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, PanelWidth, TitleH, title, cornerR, 0);
-        bars.DrawRoundedBorder(viewportW, viewportH, px, py, PanelWidth, PanelHeight, border, cornerR);
-        bars.DrawRect(viewportW, viewportH, px + 1, py + TitleH, PanelWidth - 2, 1, border);
+        // INFORAIL-CHROME — gas-textured upper panes. hud_character.gas:175
+        // character_pane_1 rect 87,0,254,116 tex cp_top_01 uv 0,0.09375,
+        // 0.652344,1; line 187 character_pane_2 rect 87,116,254,228 tex
+        // cp_mid_01 uv 0,0.125,0.652344,1. Uses the clamped info-rail
+        // scale (InfoRailLayout.Scale) so the upper panes match the
+        // paperdoll + inventory + spellbook sizing on modern resolutions.
+        float s = InfoRailLayout.Scale(viewportH);
+        int paneW = (int)System.Math.Round((254 - 87) * s);
+        int pane1H = (int)System.Math.Round(116 * s);
+        int pane2H = (int)System.Math.Round(112 * s); // 228-116
+        var topPane = chromeLookup?.Invoke("b_gui_ig_mnu_cp_top_01");
+        var midPane = chromeLookup?.Invoke("b_gui_ig_mnu_cp_mid_01");
+        if (icons is not null && topPane is not null)
+            icons.DrawIcon(viewportW, viewportH, topPane, px, py, paneW, pane1H, Vector4.One,
+                0f, 1f - 1f, 0.652344f, 1f - 0.09375f);
+        else
+            bars.DrawRect(viewportW, viewportH, px, py, paneW, pane1H,
+                new Vector4(0.08f, 0.08f, 0.10f, 0.92f));
+        if (icons is not null && midPane is not null)
+            icons.DrawIcon(viewportW, viewportH, midPane, px, py + pane1H, paneW, pane2H, Vector4.One,
+                0f, 1f - 1f, 0.652344f, 1f - 0.125f);
+        else
+            bars.DrawRect(viewportW, viewportH, px, py + pane1H, paneW, pane2H,
+                new Vector4(0.08f, 0.08f, 0.10f, 0.92f));
 
-        // Title — player name centered. DS1 grays the panel banner; we
-        // brighten ours slightly so the creator-typed name reads at glance.
-        var nameText = string.IsNullOrEmpty(playerName) ? "ADVENTURER" : playerName.ToUpperInvariant();
-        int nameW = text.MeasureWidth(nameText);
-        text.DrawString(viewportW, viewportH, nameText,
-                        px + (PanelWidth - nameW) / 2, py + 4, headInk);
+        // Helper: convert a gas (X0,Y0,X1,Y1) to scaled screen rect anchored
+        // at this panel's origin (panel gas-x=87 maps to px).
+        (int x, int y, int w, int h) R(int gx0, int gy0, int gx1, int gy1) =>
+            (px + (int)System.Math.Round((gx0 - 87) * s),
+             py + (int)System.Math.Round(gy0 * s),
+                  (int)System.Math.Round((gx1 - gx0) * s),
+                  (int)System.Math.Round((gy1 - gy0) * s));
 
-        int contentTop = py + TitleH + 6;
+        // INFORAIL-CHAR-NAME-CLASS — character name + dynamic class.
+        // hud_character.gas:162 character_name rect 91,5,248,17 centered.
+        // hud_character.gas:146 character_class rect 91,23,249,36 centered.
+        string nameStr = string.IsNullOrEmpty(playerName) ? "Adventurer" : playerName;
+        var nameR = R(91, 5, 248, 17);
+        int nameW = text.MeasureWidth(nameStr);
+        text.DrawString(viewportW, viewportH, nameStr,
+            nameR.x + (nameR.w - nameW) / 2,
+            nameR.y + (nameR.h - 8) / 2, headInk);
+
+        int meleeLv  = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0;
+        int rangedLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0;
+        int natureLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0;
+        int combatLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0;
+        string classStr = SiegeFX.Core.Assets.ClassTitleResolver.Resolve(
+            startingClassTitle, meleeLv, rangedLv, natureLv, combatLv);
+        var classR = R(91, 23, 249, 36);
+        int classW = text.MeasureWidth(classStr);
+        text.DrawString(viewportW, viewportH, classStr,
+            classR.x + (classR.w - classW) / 2,
+            classR.y + (classR.h - 8) / 2, ink);
+
+        // INFORAIL-VITAL-LABELS — Health/Mana labels + numeric values
+        // sandwiched between the two vertical bars.
+        if (player is not null)
+        {
+            // Vertical Health bar — gas:879 rect 88,44,101,114. Fills bottom-up.
+            var hb = R(88, 44, 101, 114);
+            float hpFrac = player.Stats.MaxLife > 0
+                ? System.Math.Clamp(player.Combat.CurrentLife / player.Stats.MaxLife, 0f, 1f) : 0f;
+            bars.DrawRect(viewportW, viewportH, hb.x, hb.y, hb.w, hb.h, slotBg);
+            int fillH = (int)System.Math.Round(hb.h * hpFrac);
+            if (fillH > 0)
+                bars.DrawRect(viewportW, viewportH, hb.x, hb.y + hb.h - fillH, hb.w, fillH, hpFill);
+            bars.DrawBorder(viewportW, viewportH, hb.x, hb.y, hb.w, hb.h, slotEm);
+
+            // Vertical Mana bar — gas:892 rect 238,44,251,114.
+            var mb = R(238, 44, 251, 114);
+            float mpFrac = player.Stats.MaxMana > 0
+                ? System.Math.Clamp(player.Combat.CurrentMana / player.Stats.MaxMana, 0f, 1f) : 0f;
+            bars.DrawRect(viewportW, viewportH, mb.x, mb.y, mb.w, mb.h, slotBg);
+            int mFillH = (int)System.Math.Round(mb.h * mpFrac);
+            if (mFillH > 0)
+                bars.DrawRect(viewportW, viewportH, mb.x, mb.y + mb.h - mFillH, mb.w, mFillH, mpFill);
+            bars.DrawBorder(viewportW, viewportH, mb.x, mb.y, mb.w, mb.h, slotEm);
+
+            // Labels + numeric values, all gas-cited.
+            DrawCentered(text, viewportW, viewportH, R(102, 45, 168, 58), "Health", ink);
+            DrawCentered(text, viewportW, viewportH, R(171, 44, 237, 58), "Mana",   ink);
+            DrawCentered(text, viewportW, viewportH, R(102, 58, 168, 72),
+                $"{(int)player.Combat.CurrentLife}/{(int)player.Stats.MaxLife}", headInk);
+            DrawCentered(text, viewportW, viewportH, R(171, 58, 237, 72),
+                $"{(int)player.Combat.CurrentMana}/{(int)player.Stats.MaxMana}", headInk);
+
+            // STR/DEX/INT — labels left, bars middle, values right, all gas rects.
+            DrawLabeledStatRow(bars, text, viewportW, viewportH,
+                R(104, 73, 211, 86), R(214, 73, 236, 86),
+                "Strength",    ((int)player.Stats.Strength).ToString(),
+                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee) ?? skillXpFraction,
+                ink, slotBg, slotEm);
+            DrawLabeledStatRow(bars, text, viewportW, viewportH,
+                R(104, 87, 211, 100), R(214, 87, 236, 100),
+                "Dexterity",   ((int)player.Stats.Dexterity).ToString(),
+                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged) ?? skillXpFraction,
+                ink, slotBg, slotEm);
+            DrawLabeledStatRow(bars, text, viewportW, viewportH,
+                R(104,101, 211, 114), R(214,101, 236, 114),
+                "Intelligence",((int)player.Stats.Intelligence).ToString(),
+                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? skillXpFraction,
+                ink, slotBg, slotEm);
+        }
+
+        // INFORAIL-LEVEL — gas:978 text_level rect 201,117,250,130.
+        var levelR = R(201, 117, 250, 130);
+        int overallLv = progression?.Level ?? 0;
+        string levelStr = $"Level {overallLv}";
+        int lvW = text.MeasureWidth(levelStr);
+        text.DrawString(viewportW, viewportH, levelStr,
+            levelR.x + (levelR.w - lvW) / 2, levelR.y + (levelR.h - 8) / 2, ink);
+
+        // INFORAIL-SKILLS-WITH-ICONS — gas rects:
+        //   bar  + value rows: 89,130..200,143 etc.
+        //   skill labels: text_skill_melee/ranged/nature/combat (gas:1080..)
+        //   skill icons:  icon_melee/ranged/nmagic/cmagic (gas:708/730/719/697)
+        DrawSkillRow(bars, text, icons, viewportW, viewportH, s, px, py,
+            "Melee",       meleeLv, progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0f,
+            89, 130, 200, 143,  183, 128, 199, 144, "b_gui_ig_mnu_combat",       chromeLookup, ink, slotBg, slotEm);
+        DrawSkillRow(bars, text, icons, viewportW, viewportH, s, px, py,
+            "Ranged",      rangedLv, progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0f,
+            89, 144, 200, 157,  184, 142, 200, 158, "b_gui_ig_mnu_ranged",       chromeLookup, ink, slotBg, slotEm);
+        DrawSkillRow(bars, text, icons, viewportW, viewportH, s, px, py,
+            "Nature Magic",natureLv, progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0f,
+            89, 158, 200, 171,  183, 156, 199, 172, "b_gui_ig_mnu_nature-magic", chromeLookup, ink, slotBg, slotEm);
+        DrawSkillRow(bars, text, icons, viewportW, viewportH, s, px, py,
+            "Combat Magic",combatLv, progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0f,
+            89, 172, 200, 185,  183, 170, 199, 186, "b_gui_ig_mnu_combat-magic", chromeLookup, ink, slotBg, slotEm);
+
+        // INFORAIL-DAMAGE-ARMOR-LABELS — gas labels + values:
+        //   Melee Damage  label 90,186..199 + value 200,186..199
+        //   Ranged Damage label 90,200..213 + value 200,200..213
+        //   Armor Rating  label 90,214..227 + value 200,214..227
+        DrawLabelValueRow(text, viewportW, viewportH,
+            R(90, 186, 199, 199), R(200, 186, 250, 199),
+            "Melee Damage",  $"{(int)attackerStats.DamageMin}-{(int)attackerStats.DamageMax}", ink);
+        DrawLabelValueRow(text, viewportW, viewportH,
+            R(90, 200, 199, 213), R(200, 200, 250, 213),
+            "Ranged Damage", $"{(int)attackerStats.DamageMin}-{(int)attackerStats.DamageMax}", dimInk);
+        DrawLabelValueRow(text, viewportW, viewportH,
+            R(90, 214, 199, 227), R(200, 214, 250, 227),
+            "Armor Rating",  armorRating.ToString(), ink);
+        return;
+    }
+
+    static void DrawCentered(TextRenderer text, int vw, int vh,
+                             (int x, int y, int w, int h) r, string s, Vector4 ink)
+    {
+        int tw = text.MeasureWidth(s);
+        text.DrawString(vw, vh, s, r.x + (r.w - tw) / 2, r.y + (r.h - 8) / 2, ink);
+    }
+
+    static void DrawLabeledStatRow(BarRenderer bars, TextRenderer text, int vw, int vh,
+                                   (int x, int y, int w, int h) labelR,
+                                   (int x, int y, int w, int h) valR,
+                                   string label, string value, float fraction,
+                                   Vector4 ink, Vector4 bg, Vector4 em)
+    {
+        bars.DrawRect(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, bg);
+        if (fraction > 0f)
+        {
+            int fw = (int)(labelR.w * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
+            if (fw > 0) bars.DrawRect(vw, vh, labelR.x, labelR.y, fw, labelR.h, ProgressFill);
+        }
+        bars.DrawBorder(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, em);
+        text.DrawString(vw, vh, label, labelR.x + 4, labelR.y + (labelR.h - 8) / 2, ink);
+        DrawCentered(text, vw, vh, valR, value, ink);
+    }
+
+    static void DrawSkillRow(BarRenderer bars, TextRenderer text, IconRenderer? icons,
+                             int vw, int vh, float s, int px, int py,
+                             string label, int level, float fraction,
+                             int barX0, int barY0, int barX1, int barY1,
+                             int iconX0, int iconY0, int iconX1, int iconY1,
+                             string iconTex,
+                             System.Func<string, GlTexture?>? chromeLookup,
+                             Vector4 ink, Vector4 bg, Vector4 em)
+    {
+        int bx = px + (int)System.Math.Round((barX0 - 87) * s);
+        int by = py + (int)System.Math.Round(barY0 * s);
+        int bw = (int)System.Math.Round((barX1 - barX0) * s);
+        int bh = (int)System.Math.Round((barY1 - barY0) * s);
+        bars.DrawRect(vw, vh, bx, by, bw, bh, bg);
+        if (fraction > 0f)
+        {
+            int fw = (int)(bw * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
+            if (fw > 0) bars.DrawRect(vw, vh, bx, by, fw, bh, ProgressFill);
+        }
+        bars.DrawBorder(vw, vh, bx, by, bw, bh, em);
+        text.DrawString(vw, vh, label, bx + 4, by + (bh - 8) / 2, ink);
+        // Value at the right column (200..250 in gas, scaled).
+        int vx = px + (int)System.Math.Round((200 - 87) * s);
+        int vy = py + (int)System.Math.Round(barY0 * s);
+        int vw2 = (int)System.Math.Round((250 - 200) * s);
+        int vh2 = (int)System.Math.Round((barY1 - barY0) * s);
+        var lvlStr = level.ToString();
+        int lvlW = text.MeasureWidth(lvlStr);
+        text.DrawString(vw, vh, lvlStr, vx + (vw2 - lvlW) / 2, vy + (vh2 - 8) / 2, ink);
+        // Skill icon (window_icon_*), inset into the right side of the bar
+        // per gas rects 183/184,128/142/156/170..199/200,144/158/172/186.
+        var iconTexLoaded = chromeLookup?.Invoke(iconTex);
+        if (icons is not null && iconTexLoaded is not null)
+        {
+            int ix = px + (int)System.Math.Round((iconX0 - 87) * s);
+            int iy = py + (int)System.Math.Round(iconY0 * s);
+            int iw = (int)System.Math.Round((iconX1 - iconX0) * s);
+            int ih = (int)System.Math.Round((iconY1 - iconY0) * s);
+            icons.DrawIcon(vw, vh, iconTexLoaded, ix, iy, iw, ih, Vector4.One);
+        }
+    }
+
+    static void DrawLabelValueRow(TextRenderer text, int vw, int vh,
+                                  (int x, int y, int w, int h) labelR,
+                                  (int x, int y, int w, int h) valR,
+                                  string label, string value, Vector4 ink)
+    {
+        text.DrawString(vw, vh, label, labelR.x, labelR.y + (labelR.h - 8) / 2, ink);
+        int vw3 = text.MeasureWidth(value);
+        text.DrawString(vw, vh, value, valR.x + (valR.w - vw3) / 2, valR.y + (valR.h - 8) / 2, ink);
+    }
+    // — legacy SiegeFX-invented stat block was here; deleted in the
+    //   INFORAIL CharacterPanel rewrite (chrome textures + gas rects).
+    //   See git history if you need the previous render. —
+#if FALSE
+    static void _LegacyDrawUnused_Body_Removed()
+    {
+        int contentTop = 0;
 
         // Phase 21-SC-INV-B (round 4) — vertical HP/MP vials flank STR/DEX/INT.
         // Layout left→right: HEALTH word (rotated rendering not feasible w/
@@ -193,6 +405,7 @@ public sealed class CharacterPanel
         int footY = py + PanelHeight - 14;
         text.DrawString(viewportW, viewportH, "C - close", px + Padding, footY, dimInk);
     }
+#endif
 
     /// <summary>Phase 21-SC-INV-B — single STR/DEX/INT row with a thin XP
     /// progress bar drawn behind the label so the player can see how close

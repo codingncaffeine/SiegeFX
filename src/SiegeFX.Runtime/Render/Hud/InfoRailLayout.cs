@@ -24,7 +24,20 @@ namespace SiegeFX.Runtime.Render.Hud;
 public static class InfoRailLayout
 {
     public const int RefRes = 480;
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    /// <summary>Uniform info-rail scale. Native DS1 ran at 800×600 /
+    /// 1024×768 where viewportH/480 was 1.25..1.6 and the 3 panels
+    /// tiled across most of the screen height naturally. On 1080p+
+    /// the raw viewportH/480 produces oversize panels that crowd the
+    /// world view, so we clamp the scale at 1.5× to keep the rail
+    /// at a usable height while still respecting the gas-authored
+    /// aspect ratios (feedback_siegefx_authentic_scalable.md
+    /// scale-only deviation rule).</summary>
+    public const float MaxScale = 1.5f;
+    public static float Scale(int viewportH)
+    {
+        float raw = viewportH / (float)RefRes;
+        return raw < MaxScale ? raw : MaxScale;
+    }
 
     // ============================================================
     // PAPERDOLL / INFO PANEL — hud_character.gas

@@ -937,6 +937,11 @@ public sealed class RenderHost : IDisposable
     // template doesn't ship one; in that case the panel falls back to a dim
     // placeholder cell.
     private string _playerPortraitIconName = "";
+    // INFORAIL-CHAR-NAME-CLASS — per-template [actor]screen_class
+    // (heroes.gas:376 farmboy = "Farmer"). Set at LoadPlayActors
+    // alongside _playerPortraitIconName. Default "Farmer" matches
+    // the shipped farmboy/farmgirl templates.
+    private string _playerStartingClass = "Farmer";
     // Phase 21-SC-INV-A2 — currently selected combat-ability slot for the
     // Phase 22-AUTH-MINIHUD-REMOVE (2026-05-13) — _activeAbilityIdx was the
     // selection state for the SiegeFX-invented 4-cell ability bar in the
@@ -7401,6 +7406,13 @@ void main()
             _playerPortraitIconName =
                 (_templateStore.GetAttribute(pcTpl, "actor", "portrait_icon") ?? "")
                 .Trim().Trim('"');
+            // INFORAIL-CHAR-NAME-CLASS — pull the template's
+            // [actor]screen_class (heroes.gas:376 farmboy="Farmer").
+            // ClassTitleResolver returns this verbatim until any skill
+            // hits level 1+.
+            var sc = (_templateStore.GetAttribute(pcTpl, "actor", "screen_class") ?? "")
+                .Trim().Trim('"');
+            if (!string.IsNullOrEmpty(sc)) _playerStartingClass = sc;
         }
         int? preferredStance = ComputePreferredPlayerStance(spawnEquip);
 
@@ -12412,7 +12424,9 @@ void main()
                 _characterPanel.Draw(_barRenderer!, _textRenderer,
                     size.X, size.Y, _heroName, _player.Actor, _progression,
                     GetPlayerAttackStats(), armor, xpFrac,
-                    _iconRenderer, portrait);
+                    _iconRenderer, portrait,
+                    chromeLookup: TryGetGuiTexture,
+                    startingClassTitle: _playerStartingClass);
 
                 // INFORAIL-PAPERDOLL — equipment paperdoll under the
                 // upper stats panes. Reads gas-cited rects from
