@@ -75,7 +75,11 @@ public static class NinePatch
 
     /// <summary>cpbox_wide template (uses b_gui_cmn_cpbox2_* textures
     /// per common_control_art.gas). DS1's wider-frame chrome used for
-    /// the options-menu outer panel and similar wide dialogs.</summary>
+    /// the options-menu outer panel and similar wide dialogs.
+    /// NOTE: the gas authors no <c>cpbox_wide_fill</c> key — only
+    /// <c>cpbox_fill = b_gui_cmn_box_alpha_154</c>. We re-use that
+    /// 154-alpha translucent black for cpbox_wide by inference. Matches
+    /// what was already shipping for the options-menu outer panel.</summary>
     public static void DrawCpboxWide(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
         int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
         => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox2", "box_alpha_154", tint);
@@ -90,7 +94,9 @@ public static class NinePatch
 
     /// <summary>cpbox_thin (cpbox3) — DS1's slim variant used where a
     /// lighter chrome reads better against a busy in-world background
-    /// (e.g. floating tooltips, world tips).</summary>
+    /// (e.g. floating tooltips, world tips).
+    /// NOTE: like cpbox_wide, the gas authors no <c>cpbox_thin_fill</c>
+    /// key — we reuse <c>box_alpha_154</c> by family-sibling inference.</summary>
     public static void DrawCpboxThin(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
         int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
         => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox3", "box_alpha_154", tint);
@@ -112,6 +118,13 @@ public static class NinePatch
     /// per common_control_art.gas's per-family key naming convention.
     /// `fillKey` is the family-specific fill texture key (cpbox uses
     /// box_alpha_154, cpbox4 uses box_alpha_255, jbox uses jbox_fill).</summary>
+    // NOT WIRED: the woodbox family in common_control_art.gas points to
+    // b_gui_cmn_brd_01_* basenames, which break the simple `prefix + "_ul"`
+    // naming convention DrawFamily relies on. No backend panel in the
+    // Phase 22 rework inventory references woodbox; if a future slice
+    // needs it, write a dedicated DrawWoodbox helper that maps each gas
+    // key (woodbox_top_left_corner = b_gui_cmn_brd_01_ul, etc.) verbatim
+    // rather than extending DrawFamily.
     private static void DrawFamily(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
         int viewportW, int viewportH, int x, int y, int w, int h,
         string prefix, string fillKey, Vector4 tint)
