@@ -8931,8 +8931,16 @@ void main()
         // all three; bosses sometimes only ship hit_solid.
         string preferred;
         string[] fallbacks;
-        if (frac > 0.15f)      { preferred = "hit_critical"; fallbacks = new[] { "hit_solid", "hit_glance" }; }
-        else if (frac > 0.05f) { preferred = "hit_solid";    fallbacks = new[] { "hit_glance", "hit_critical" }; }
+        // Audit-fold 2026-05-13: bumped thresholds 5/15 -> 15/40. The
+        // tighter bands were turning every early-game swing into a crit-
+        // voice (a fresh farmboy doing 3 dmg to an 8 HP krug = 37% frac,
+        // not actually a critical hit by DS1's feel). With 15/40 a 3/8
+        // landing is "solid" and crits land only on real heavy hits or
+        // low-HP targets. DS1's exact thresholds aren't binary-extractable
+        // so this is gut-tuned; SC-ENEMY-AUDIO-BOSS-SILENT splinter or a
+        // direct DS1-side comparison can re-tune later.
+        if (frac > 0.40f)      { preferred = "hit_critical"; fallbacks = new[] { "hit_solid", "hit_glance" }; }
+        else if (frac > 0.15f) { preferred = "hit_solid";    fallbacks = new[] { "hit_glance", "hit_critical" }; }
         else                   { preferred = "hit_glance";   fallbacks = new[] { "hit_solid", "hit_critical" }; }
         var cue = _templateStore.GetAttribute(template, "aspect", "voice", preferred, "*");
         for (int i = 0; i < fallbacks.Length && string.IsNullOrEmpty(cue); i++)
@@ -12567,6 +12575,11 @@ void main()
         // hostiles — so resetting here is correct.
         _inCombat = false;
         _combatExitTimer = 0f;
+        // SC-ENEMY-AUDIO-AUDIT — drop the prior-frame aggro set on
+        // save-reload. Stale SCIDs would otherwise suppress the
+        // enemy_spotted cue for any actor that was already aggro pre-save
+        // and is still aggro on the first post-load frame.
+        _aggroPrevFrame.Clear();
         _activeMood = null;
         _activeBedRegion = null;
         _currentMusicTrack = "";

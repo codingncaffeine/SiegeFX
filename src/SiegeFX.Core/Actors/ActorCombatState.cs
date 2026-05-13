@@ -145,6 +145,11 @@ public sealed class ActorCombatState
         CurrentMana = MathF.Max(0f, MathF.Min(_stats.MaxMana, currentMana));
         if (dead) CurrentLife = 0f;
         JustDied = false;
+        // SC-ENEMY-AUDIO-AUDIT — clear the hit edge alongside the death
+        // edge so a load doesn't fire a stale hit-voice cue on the first
+        // post-load tick. Mirrors JustDied handling above.
+        JustHit = false;
+        LastDamageTaken = 0f;
     }
 
     /// <summary>Swap the underlying stats reference so subsequent <see cref="Heal"/>
