@@ -8917,15 +8917,46 @@ void main()
         if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
         {
             var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-            var path = $"/sound/effects/{cue}.wav";
+            // SC-ENEMY-AUDIO-AUDIT cross-alias fold: 17 SED entries in
+            // Sound.dsres ship a `sound_effect_file` that differs from the
+            // SED key (e.g. s_e_call_googore_SED points at the actual wav
+            // s_e_call_worm.wav). Strip-and-load against the SED key alone
+            // would silently miss those templates (googore, mucosa_large,
+            // skrubb_farm, gargoyle_large, etc.). Consult the SED store
+            // after the strip; if the SoundEffectFile differs, redirect
+            // the wav path. Clip-id stays the post-strip basename so
+            // PlayAt + RegisterPitch resolve consistently downstream.
+            string wavName = cue;
+            SiegeFX.Core.Assets.SedDescriptor? sed = null;
+            if (_sedStore is not null && _sedStore.TryGetValue(cue, out var found))
+            {
+                sed = found;
+                if (!string.IsNullOrEmpty(sed.SoundEffectFile))
+                    wavName = sed.SoundEffectFile;
+            }
+            var path = $"/sound/effects/{wavName}.wav";
             // Peek before TryRegisterSfx: some templates author voice cues
-            // whose wavs aren't actually shipped in Sound.dsres (rare, but
-            // possible for boss/scripted-NPC variants). Without this guard
-            // every miss would log "missing in Sound.dsres" loudly on first
-            // fire. The set add above is unconditional so we don't re-probe
-            // every frame.
+            // whose wavs aren't shipped (rare; boss-scripted variants).
+            // Probe-before-register skips silently instead of logging
+            // "missing in Sound.dsres" on every first fire.
             if (reader.TryGetFile(path, out _))
-                TryRegisterSfx(reader, cue, path);
+            {
+                // Register against the clip-id (cue) but with the resolved
+                // wav path. Don't use TryRegisterSfx's internal SED lookup
+                // because it derives basename from the tank path, which
+                // for cross-aliased SEDs points at the destination wav
+                // (e.g. s_e_call_worm) instead of the SED key
+                // (s_e_call_googore) the rate is keyed on. Apply pitch
+                // range directly from the SED descriptor we already have.
+                if (!reader.TryGetFile(path, out _)) return;
+                var bytes = reader.ExtractToMemory(path);
+                if (_audio.RegisterClip(cue, bytes)
+                    && sed is not null
+                    && (sed.MinPlaybackRate != 1f || sed.MaxPlaybackRate != 1f))
+                {
+                    _audio.RegisterPitch(cue, sed.MinPlaybackRate, sed.MaxPlaybackRate);
+                }
+            }
         }
         _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
     }
@@ -9026,12 +9057,13 @@ void main()
         var cue = _templateStore.GetAttribute(template, "aspect", "voice", "die", "*")
                ?? _templateStore.GetAttribute(template, "physics", "break_sound");
         if (string.IsNullOrWhiteSpace(cue)) return;
-        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
-        {
-            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
-        }
-        _audio.PlayAt(cue, prop.World.Translation + new Vector3(0f, 0.6f, 0f));
+        // Route through the shared voice-cue helper so prop-break gets the
+        // same _SED stripping + SED cross-alias resolution + probe-before-
+        // register guard that PlayDeathSfx and the per-state voice cues do.
+        // Helper adds +1.0 Y to position the sound at head height for an
+        // actor; subtract 0.4 here so props (which are shorter than NPCs)
+        // play at the original 0.6 Y offset they used pre-refactor.
+        RegisterAndPlayVoiceCue(cue, prop.World.Translation + new Vector3(0f, -0.4f, 0f));
     }
 
     /// <summary>Phase 9-SC-9 — read the dropped item's
