@@ -4889,7 +4889,14 @@ static int CmdRegionLootDistribution(string[] a)
         Console.WriteLine($"  ... {ordered.Count - top} more template(s) (raise --top to see)");
 
     Console.WriteLine();
-    Console.WriteLine($"REGION TOTALS  ({regionPaths.Count} region path(s), {sumPlacements} container placements):");
+    // When run with --all, perTemplate aggregates ACROSS every region
+    // (barrel_glb_fh_r1 placements in fh_r1 and elsewhere merge), so the
+    // total is a grand-total across the scope, not a per-region average.
+    // Label accordingly so the reader knows what they're looking at — per-
+    // region splits would require a separate pass and are deferred until
+    // someone needs them.
+    string totalsHeader = regionPaths.Count > 1 ? "GRAND TOTALS (scope-wide)" : "REGION TOTALS";
+    Console.WriteLine($"{totalsHeader}  ({regionPaths.Count} region path(s), {sumPlacements} container placements):");
     Console.WriteLine($"  expected gold yield: ~{sumGoldExpected}g across all containers");
     if (aggregateItems.Count > 0)
     {

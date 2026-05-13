@@ -365,6 +365,14 @@ public sealed class RenderHost : IDisposable
     // walks within PickupRadius of a pile during the 20 Hz tick.
     private readonly List<SiegeFX.Core.Actors.LootEntry> _playerInventory = new();
     private const float PickupRadius = 1.8f;
+
+    /// <summary>SC-WORLD-INVENTORY-VIEW-DISTANCE — XZ radius (units) around
+    /// the player inside which `IsWorldInventory` LootPiles render their
+    /// mesh and pump glitter. Outside this radius they stay in `_lootPiles`
+    /// (so they auto-pickup when the player walks into range later) but
+    /// neither render nor emit sparkles. Shared between the render loop
+    /// and the glitter tick so the two paths cannot drift.</summary>
+    private const float WorldInventoryVisRadius = 12f;
     // Phase 14b — PC equipment slots keyed by DS1 slot tag (es_weapon_hand,
     // es_feet, es_spellbook, etc.). Populated at spawn by walking the specializes
     // chain for `[inventory][equipment]`. 14c reads damage_min/max off the
@@ -10440,12 +10448,11 @@ void main()
             const float scrollTopY  = 0.30f;        // was 0.55 — emit just above the resting scroll
             const float footprintR  = 0.16f;        // was 0.30 — tighter cluster on the scroll
             var sparkleColor = new Vector4(1f, 1f, 1f, 1f); // pure white
-            // SC-WORLD-INVENTORY-VIEW-DISTANCE — match the render cull.
-            // Glitter pumps particles every frame, so far-away world-inventory
-            // scrolls would otherwise burn CPU + emit invisible sparkles. Same
-            // radius as the render path; only world-inventory piles gated.
-            const float glitterVisRadius = 12f;
-            float glitterR2 = glitterVisRadius * glitterVisRadius;
+            // SC-WORLD-INVENTORY-VIEW-DISTANCE — match the render cull via the
+            // shared WorldInventoryVisRadius constant so the two paths can't
+            // drift. Far-away world-inventory scrolls would otherwise burn
+            // CPU emitting invisible sparkles every frame.
+            float glitterR2 = WorldInventoryVisRadius * WorldInventoryVisRadius;
             Vector3 glitterPlayerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
             bool glitterHavePlayer = _player is not null;
             for (int i = 0; i < _lootPiles.Count; i++)
@@ -11058,16 +11065,11 @@ void main()
             ApplyLightingUniforms(_meshShader);
             const float pileSize = 0.5f;
             const float itemScale = 0.6f; // matches the cube footprint visually
-            // SC-WORLD-INVENTORY-VIEW-DISTANCE — DS1 culls world-placed
-            // pickups (scrolls/potions placed via inventory.gas) to a
-            // short range so they only pop in when the player is nearby.
-            // Without this, every loose scroll in the region renders the
-            // full distance and the world reads as too-busy. Enemy-death
-            // drops and player-throw piles aren't world-inventory so they
-            // continue to render at unlimited range (those are usually
-            // already near the player anyway).
-            const float worldInvVisRadius = 12f;
-            float worldInvR2 = worldInvVisRadius * worldInvVisRadius;
+            // SC-WORLD-INVENTORY-VIEW-DISTANCE — radius shared with the
+            // glitter tick (see WorldInventoryVisRadius). Enemy-death drops
+            // and player-throw piles aren't world-inventory so they continue
+            // to render at unlimited range.
+            float worldInvR2 = WorldInventoryVisRadius * WorldInventoryVisRadius;
             Vector3 playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
             bool havePlayer = _player is not null;
             foreach (var pile in _lootPiles)
