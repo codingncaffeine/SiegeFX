@@ -123,23 +123,40 @@ public sealed class ActorFollower
     {
         var origin = Follower.Position;
         var mesh = Follower.Mesh;
-        for (int i = 0; i < MaxRetries; i++)
+        // Three radius scales — full / half / quarter. NPCs on tight
+        // islands or near a navmesh seam can fail every sample at the
+        // full radius; shrinking the disk keeps the wander selection
+        // tractable. SC-MOB-IDLE-FROZEN fold from the user-reported
+        // "second flavor" frozen mobs (mobs just standing, no
+        // boundary-clamp involved).
+        float[] radiusScales = { 1f, 0.5f, 0.25f };
+        foreach (var scale in radiusScales)
         {
-            float angle = (float)(_rng.NextDouble() * Math.PI * 2.0);
-            // Ring-biased: [0.3r, 1.0r] instead of [0, r] so samples concentrate
-            // on the outer 70% of the disk — matches the area-uniform intuition
-            // and keeps wander legs visible at human-scale distances.
-            float radius = WanderRadius * (0.3f + 0.7f * (float)_rng.NextDouble());
-            var candidate = new Vector3(
-                origin.X + MathF.Cos(angle) * radius,
-                origin.Y,
-                origin.Z + MathF.Sin(angle) * radius);
-            if (mesh.TryFindTriangle(candidate, out _))
+            for (int i = 0; i < MaxRetries; i++)
             {
-                Follower.SetTarget(candidate);
-                return;
+                float angle = (float)(_rng.NextDouble() * Math.PI * 2.0);
+                float radius = WanderRadius * scale * (0.3f + 0.7f * (float)_rng.NextDouble());
+                var candidate = new Vector3(
+                    origin.X + MathF.Cos(angle) * radius,
+                    origin.Y,
+                    origin.Z + MathF.Sin(angle) * radius);
+                if (mesh.TryFindTriangle(candidate, out _))
+                {
+                    Follower.SetTarget(candidate);
+                    return;
+                }
             }
         }
+        // Last-ditch: if EVERY scaled sample missed (mob spawned on a
+        // 1-triangle island or near a mesh hole), set the target to
+        // the mob's CURRENT position so Follower has a valid goal
+        // instead of zero-state. The follower instantly reports
+        // ReachedGoal and the next tick re-rolls PickNewTarget — still
+        // potentially fruitless, but it visibly "tries" rather than
+        // freezing. Idle backoff scales the retry rate down so we
+        // don't burn CPU on a permanently-pinned actor.
+        if (mesh.TryFindTriangle(origin, out _))
+            Follower.SetTarget(origin);
         _idleTicksRemaining = IdleAfterFail;
     }
 }

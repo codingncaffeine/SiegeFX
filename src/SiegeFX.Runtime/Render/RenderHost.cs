@@ -786,16 +786,34 @@ public sealed class RenderHost : IDisposable
     }
 
     private string? _lastLoggedMoodChange;
+    private int _lastMoodChangeTickMs;
+    private const int MoodChangeDebounceMs = 500;
     internal void OnTriggerMoodChange(string moodName)
     {
-        // Mood swap is Phase 18 territory — the trigger runtime fires the request
-        // and the mood subsystem consumes it. For now we log so audits can confirm
-        // the action is reaching dispatch even when the mood pipeline doesn't yet
-        // accept arbitrary names. Some fh_r1 triggers re-fire per tick; only log
-        // on actual change so the console stays readable.
+        // SC-TRIGGER-MOOD-DEBOUNCE (post-test fold) — fh_r1 ships two
+        // adjacent mood-change trigger boxes (fh_r1_3 / fh_r1_4) whose
+        // AABBs touch at a seam. When the player walks along that
+        // seam both fire every tick, and the condition system can't
+        // tell which is the "current" mood — flip-flopping shows up
+        // as hundreds of spam lines in the log per region cross. The
+        // earlier dedupe only suppressed REPEATS of the immediately-
+        // previous mood, so an A/B/A/B sequence passed through.
+        // Time-window debounce: ignore mood_change requests within
+        // 500ms of the last one, regardless of name. Keeps the most
+        // recent transition winning while killing the spam.
+        int now = Environment.TickCount;
+        if (now - _lastMoodChangeTickMs < MoodChangeDebounceMs &&
+            !string.Equals(_lastLoggedMoodChange, moodName, StringComparison.OrdinalIgnoreCase))
+        {
+            // Still update the stored name so the next stable mood
+            // change after the debounce window reflects reality.
+            _lastLoggedMoodChange = moodName;
+            return;
+        }
         if (string.Equals(_lastLoggedMoodChange, moodName, StringComparison.OrdinalIgnoreCase))
             return;
         _lastLoggedMoodChange = moodName;
+        _lastMoodChangeTickMs = now;
         Console.WriteLine($"[trigger] mood_change → '{moodName}'");
     }
 
