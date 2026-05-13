@@ -901,6 +901,18 @@ public sealed class RenderHost : IDisposable
         public int   SpinAxis;
         public float SpinRadPerSec;
 
+        // SC-DOORS-OPEN — door props detected at spawn (template
+        // specializes chain hits base_door, or [aspect]is_usable=true
+        // with use_range authored). DoorOpenFrac lerps 0→1 over
+        // ~0.4s when the player enters UseRange; reverses on exit
+        // with hysteresis. Rotated around Y at draw time (DS1 doors
+        // pivot around the asp origin, which sits at the hinge).
+        // Animation chore_open / chore_close from gas come later
+        // (SC-DOORS-CHORE) — for now we just rotate the rigid mesh.
+        public bool  IsDoor;
+        public float DoorOpenFrac;
+        public float DoorUseRange = 1.5f;
+
         // Phase 17-SC-K — breakable container/prop state. DS1 wires
         // `[aspect][break_particulate]` on barrels/crates/jugs that the
         // player can shatter with a click; non-breakable variants ship
@@ -5238,6 +5250,30 @@ void main()
                         }
                     }
 
+                    // SC-DOORS-OPEN — door detection. base_door
+                    // ancestor in the specializes chain identifies
+                    // every door variant (door_cav_01, door_csl_01,
+                    // door_lvw_*, etc.). Use range comes from the
+                    // [aspect]use_range attribute (1.5u default).
+                    bool isDoor = false;
+                    float useRange = 1.5f;
+                    if (_templateStore is not null && template is not null)
+                    {
+                        for (var t = template; t is not null; t = t.Specializes)
+                        {
+                            if (string.Equals(t.Name, "base_door",
+                                System.StringComparison.OrdinalIgnoreCase)) { isDoor = true; break; }
+                        }
+                        if (isDoor)
+                        {
+                            var ur = _templateStore.GetAttribute(template, "aspect", "use_range");
+                            if (ur is not null &&
+                                float.TryParse(ur, System.Globalization.NumberStyles.Float,
+                                               System.Globalization.CultureInfo.InvariantCulture, out var urv))
+                                useRange = urv;
+                        }
+                    }
+
                     _staticProps.Add(new StaticPropInstance
                     {
                         Mesh          = glMesh,
@@ -5249,6 +5285,8 @@ void main()
                         IsBreakable   = isBreakable,
                         Life          = maxLife,
                         MaxLife       = maxLife,
+                        IsDoor        = isDoor,
+                        DoorUseRange  = useRange,
                     });
                     spawned++;
                 }
@@ -5612,6 +5650,34 @@ void main()
                     f.Settled = true;
                 }
             }
+        }
+    }
+
+    /// <summary>SC-DOORS-OPEN — tick door open/close state per frame.
+    /// Each door checks player distance; when inside UseRange the
+    /// door lerps DoorOpenFrac toward 1 over ~0.4s, when outside +
+    /// hysteresis lerps back toward 0 over ~0.5s. The rendered
+    /// rotation comes from DoorOpenFrac at draw time.</summary>
+    private void TickDoors(float dt)
+    {
+        if (dt <= 0f || _staticProps.Count == 0 || _player is null) return;
+        var playerPos = _player.CurrentTransform.Translation;
+        const float OpenRate  = 1f / 0.4f;   // 0 → 1 in 0.4s
+        const float CloseRate = 1f / 0.5f;   // 1 → 0 in 0.5s
+        const float CloseHysteresis = 0.5f;  // u beyond use_range before re-closing
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsDoor || prop.IsDestroyed) continue;
+            var doorPos = prop.World.Translation;
+            float dx = doorPos.X - playerPos.X;
+            float dz = doorPos.Z - playerPos.Z;
+            float distXZ = MathF.Sqrt(dx * dx + dz * dz);
+            bool wantOpen = distXZ <= prop.DoorUseRange
+                         || (prop.DoorOpenFrac > 0.5f && distXZ <= prop.DoorUseRange + CloseHysteresis);
+            if (wantOpen)
+                prop.DoorOpenFrac = MathF.Min(1f, prop.DoorOpenFrac + OpenRate * dt);
+            else
+                prop.DoorOpenFrac = MathF.Max(0f, prop.DoorOpenFrac - CloseRate * dt);
         }
     }
 
@@ -12073,6 +12139,7 @@ void main()
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
         TickFragDebris(simDt);
+        TickDoors(simDt);
         // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
         // run continuous-emitter spawn budgets. Must run after the particle
         // Tick so this frame's spawns get drawn rather than waiting one tick.
@@ -12563,10 +12630,6 @@ void main()
                 Matrix4x4 model = prop.World;
                 if (prop.SpinRadPerSec != 0f)
                 {
-                    // Rotate around the model's local axis (wheel spindle is at
-                    // its asp origin), then apply the placement transform — this
-                    // way the wheel spins in place and the placement orientation
-                    // continues to point the spindle in the right direction.
                     var theta = (float)(_terrainTime * prop.SpinRadPerSec);
                     var spin = prop.SpinAxis switch
                     {
@@ -12575,6 +12638,18 @@ void main()
                         _ => Matrix4x4.CreateRotationX(theta),
                     };
                     model = spin * prop.World;
+                }
+                // SC-DOORS-OPEN — apply door rotation per state.
+                // DS1 doors pivot around their authored asp origin
+                // (the hinge), so the rotation is in LOCAL space
+                // (multiplied BEFORE the placement transform). Y-axis
+                // is the hinge for upright wall doors; basement
+                // hatches that hinge differently come later as
+                // SC-DOORS-HINGE-AXIS splinter.
+                if (prop.IsDoor && prop.DoorOpenFrac > 0.001f)
+                {
+                    var swing = Matrix4x4.CreateRotationY(prop.DoorOpenFrac * (MathF.PI / 2f));
+                    model = swing * prop.World;
                 }
                 _meshShader.SetMatrix4("uModel", model);
                 prop.Mesh.Draw();
