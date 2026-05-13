@@ -170,6 +170,7 @@ echo   97. SC-QUEST-OBJ-F               - Full 24-quest Ehb catalog + chain (SIE
 echo   98. SC-QUEST-OBJ-C               - Pickup quest objective (SIEGEFX_DEBUG_QUEST=quest_grab_fireshot, basement spell_fireshot)
 echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG_QUEST=quest_merik_staff, hold staff + talk Merik)
 echo  100. SC-HUD-DATABAR               - Bottom-row HUD buttons (pause/HP-pot/MP-pot/labels/map/journal/menu) — click each in fh_r1
+echo  101. SC-HUD-OVERHEAD-BARS         - Floating HP/MP bars above every combatant (PC always on; enemies on hit/aggro)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -276,6 +277,7 @@ if /i "%CHOICE%"=="97" goto T97
 if /i "%CHOICE%"=="98" goto T98
 if /i "%CHOICE%"=="99" goto T99
 if /i "%CHOICE%"=="100" goto T100
+if /i "%CHOICE%"=="101" goto T101
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2298,6 +2300,22 @@ echo    Menu (door)  -- opens the Options dialog (F10 alias)
 echo.
 echo  Quest indicator flash: when a quest activates or objective completes
 echo  the red book pulses over the journal button for ~1.5s.]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T101
+echo.
+echo --- SC-HUD-OVERHEAD-BARS: floating HP/MP above heads ---
+echo [DS1-authentic floating HP/MP bars (status_bars.gas). PC always
+echo  shows; enemies show only when wounded OR in Chase/Attack aggro.
+echo  Texture: b_gui_ig_mnu_status_bars; per-bar uvcoords with V-flip
+echo  to convert gas's bottom-up convention to screen frame; dynamic_
+echo  edge=right clips the fill to currentLife/maxLife.
+echo  Receipt: walk to a krug pack, watch each enemy's bar appear when
+echo  they engage you, and watch their HP drain on hit.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 echo.

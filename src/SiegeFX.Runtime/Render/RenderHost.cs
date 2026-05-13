@@ -963,6 +963,13 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _dbLabelUp,  _dbLabelDwn,  _dbLabelHov;
     private GlTexture? _dbLabelOffUp, _dbLabelOffDwn, _dbLabelOffHov;
     private bool _dbTexturesLoaded;
+    // Phase 22-H SC-HUD-OVERHEAD-BARS — DS1's per-actor floating HP/MP bars
+    // above heads. Source: /ui/interfaces/backend/status_bars/status_bars.gas
+    // (extracted as hud_status_bars.gas). Single atlas texture
+    // b_gui_ig_mnu_status_bars.raw shared across 8 character slots + an
+    // enemy pair; gas uvcoords pick the right strip per element.
+    private GlTexture? _statusBarsTexture;
+    private bool _statusBarsLoaded;
     // Phase 22-A — world-tick gate. When true, brain/particle/sfx ticks
     // are skipped; rendering continues so the player can interact with
     // HUD buttons. Toggled by SC-HUD-DATABAR's pause button + Space key.
@@ -8767,6 +8774,141 @@ void main()
         _questIndicatorFlashRemaining = 1.5f;
     }
 
+    /// <summary>Phase 22-H SC-HUD-OVERHEAD-BARS — DS1's authentic floating
+    /// HP/MP bars above each actor's head. Source: status_bars.gas. The
+    /// gas defines 8 health/mana bar pairs (one per character slot in MP)
+    /// + enemy pair; engine selects which to draw per-actor. Bars use the
+    /// shared b_gui_ig_mnu_status_bars atlas with per-bar uvcoords; this
+    /// implementation projects each actor's worldPos to screen and draws
+    /// the bar centered above the head.
+    ///
+    /// Visibility: player always shows; non-player combatants show when
+    /// (a) brain is in Chase/Attack (aggro), or (b) they've taken damage
+    /// in the last few seconds. Dead actors don't render.
+    ///
+    /// Reference: gas health_bar rect 209,286,265,294 (56×8 in 640×480
+    /// space); mana_bar 172,282,228,289 (56×7). The engine offsets these
+    /// rects per actor's screen position, ignoring the gas's literal X/Y.
+    /// We scale by viewportH/480 and center horizontally on the actor.
+    /// dynamic_edge=right: the bar fills from left as life ticks down, so
+    /// we scale rect width and uvR by currentFrac (V-flip per the gas
+    /// bottom-up convention same as data_bar.gas).</summary>
+    private void DrawOverheadStatusBars(int viewportW, int viewportH, Matrix4x4 viewProj)
+    {
+        if (_iconRenderer is null || _barRenderer is null) return;
+        if (!_statusBarsLoaded)
+        {
+            _statusBarsLoaded = true;
+            _statusBarsTexture = TryGetGuiTexture("b_gui_ig_mnu_status_bars");
+            Console.WriteLine($"[overhead_bars] atlas: {(_statusBarsTexture is not null ? "ok" : "MISS")}");
+        }
+        if (_statusBarsTexture is null) return;
+
+        // Gas-authored UV crops (bottom-up texture frame). Per the V-flip
+        // rule documented in DrawDataBar, the actual screen-frame V used
+        // in DrawIcon is computed as (1 - gasV1, 1 - gasV0).
+        const float HpGasU0 = 0.000000f, HpGasV0 = 0.250000f, HpGasU1 = 0.843750f, HpGasV1 = 0.562500f;
+        const float MpGasU0 = 0.000000f, MpGasV0 = 0.625000f, MpGasU1 = 0.843750f, MpGasV1 = 1.000000f;
+
+        // Reference rect (640×480): health 56×8, mana 56×7. Stack mana
+        // directly above health with a 1px gap, both centered horizontally
+        // on the actor's projected head position.
+        float refScale = viewportH / 480f;
+        int barW = (int)Math.Round(56 * refScale);
+        int hpH  = (int)Math.Round(8 * refScale);
+        int mpH  = (int)Math.Round(7 * refScale);
+
+        var dim    = new Vector4(0.05f, 0.05f, 0.05f, 0.82f);
+        var border = new Vector4(0f, 0f, 0f, 1f);
+
+        // Track which actors recently took damage so enemies surface briefly
+        // after a hit even if they're not in aggro. Uses the existing
+        // ActorCombatState — JustHit was reset by the audio voice path,
+        // so we read LastDamageTaken and a separate "shown until" stamp
+        // is overkill; instead show every non-dead actor whose
+        // CurrentLife < MaxLife (took at least one hit). DS1's exact
+        // gate is unverified; this reads as a reasonable approximation.
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            if (s.IsDead) continue;
+            bool isPlayer = s.IsPlayer;
+            var combat = s.Actor.Combat;
+            var stats = s.Actor.Stats;
+            if (stats.MaxLife <= 0f) continue;
+            // Visibility gate. Player always on; non-player only when
+            // wounded (any HP missing) or aggro.
+            if (!isPlayer)
+            {
+                bool wounded = combat.CurrentLife < stats.MaxLife;
+                bool aggro = s.Brain is not null &&
+                    (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                  || s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack);
+                if (!wounded && !aggro) continue;
+                if (!stats.IsCombatant) continue;
+            }
+            // Project worldPos + headOffset to screen via NDC.
+            var headWorld = s.CurrentTransform.Translation + new Vector3(0f, 2.6f, 0f);
+            var clip = Vector4.Transform(new Vector4(headWorld, 1f), viewProj);
+            if (clip.W <= 0.01f) continue;
+            float ndcX = clip.X / clip.W;
+            float ndcY = clip.Y / clip.W;
+            // Skip off-screen with a small margin so a bar mid-traversal
+            // off the edge doesn't pop in/out at the seam.
+            if (ndcX < -1.2f || ndcX > 1.2f || ndcY < -1.2f || ndcY > 1.2f) continue;
+            int screenX = (int)Math.Round((ndcX + 1f) * 0.5f * viewportW);
+            int screenY = (int)Math.Round((1f - ndcY) * 0.5f * viewportH);
+
+            int barX = screenX - barW / 2;
+            int hpY = screenY;
+            int mpY = hpY + hpH + 1;
+            float hpFrac = Math.Clamp(combat.CurrentLife / stats.MaxLife, 0f, 1f);
+            DrawOverheadBar(viewportW, viewportH, barX, hpY, barW, hpH, hpFrac,
+                            HpGasU0, HpGasV0, HpGasU1, HpGasV1, dim, border);
+            // Mana bar only when the actor ships max mana > 0 (skips
+            // chickens, props, mana-less brutes). Player always shows
+            // the mana bar even at 0 because DS1 PCs always have some
+            // mana from multiclass mechanics; defensive guard kept.
+            if (stats.MaxMana > 0f)
+            {
+                float mpFrac = Math.Clamp(combat.CurrentMana / stats.MaxMana, 0f, 1f);
+                DrawOverheadBar(viewportW, viewportH, barX, mpY, barW, mpH, mpFrac,
+                                MpGasU0, MpGasV0, MpGasU1, MpGasV1, dim, border);
+            }
+        }
+    }
+
+    /// <summary>Render one overhead bar: dim bg full-width, textured fill
+    /// scaled by life fraction, black 1px border. UV-V is flipped per the
+    /// gas bottom-up convention (same rule the data_bar uses). UV-U is
+    /// also clipped to the life fraction so the texture sample stays in
+    /// register with the visible fill (DS1's dynamic_edge=right shrinks
+    /// the bar from the right; we mirror by clipping U1 to U0 + frac*span).</summary>
+    private void DrawOverheadBar(int viewportW, int viewportH,
+        int x, int y, int w, int h, float frac,
+        float gasU0, float gasV0, float gasU1, float gasV1,
+        Vector4 dim, Vector4 border)
+    {
+        if (_barRenderer is null || _iconRenderer is null || _statusBarsTexture is null) return;
+        // Background (always full width so the empty portion of the bar
+        // reads as a hint of "you've lost this much").
+        _barRenderer.DrawRect(viewportW, viewportH, x, y, w, h, dim);
+        if (frac > 0f)
+        {
+            int fillW = (int)Math.Round(w * frac);
+            if (fillW > 0)
+            {
+                // Clip the U axis to the fill fraction (gas U range × frac).
+                float uClippedR = gasU0 + (gasU1 - gasU0) * frac;
+                _iconRenderer.DrawIcon(viewportW, viewportH, _statusBarsTexture,
+                    x, y, fillW, h, Vector4.One,
+                    gasU0, 1f - gasV1, uClippedR, 1f - gasV0);
+            }
+        }
+        // 1px black outline (gas draw_outline=true + border_color=0xff000000).
+        _barRenderer.DrawBorder(viewportW, viewportH, x, y, w, h, border);
+    }
+
     /// <summary>SC-HUD-DATABAR audit fold — read the actual heal/mana amount
     /// from a potion template's `[magic][enchantments][*] value` attribute.
     /// Returns null when the template isn't loaded or the attribute can't
@@ -12030,6 +12172,10 @@ void main()
             if (_questIndicatorFlashRemaining > 0f)
                 _questIndicatorFlashRemaining -= (float)dt;
             DrawDataBar(size.X, size.Y);
+            // Phase 22-H SC-HUD-OVERHEAD-BARS — DS1-authentic floating
+            // HP/MP bars above every visible combatant's head. Needs the
+            // camera's view-projection matrix to project worldPos to NDC.
+            DrawOverheadStatusBars(size.X, size.Y, vp);
 
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
