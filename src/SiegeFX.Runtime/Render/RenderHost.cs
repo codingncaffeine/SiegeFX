@@ -5147,7 +5147,7 @@ void main()
                 foreach (var p in placements)
                 {
                     considered++;
-                    if (!_templateStore.TryGet(p.TemplateName, out var template))
+                    if (!_templateStore!.TryGet(p.TemplateName, out var template))
                     {
                         missingTemplate++;
                         skippedNoTemplate.TryGetValue(p.TemplateName, out var n);
