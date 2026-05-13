@@ -95,6 +95,30 @@ public sealed class SnoModel
         public Vector3 BoundsMax { get; init; }
         public FloorKind Kind { get; init; }
         public NavFace[] Faces { get; init; } = Array.Empty<NavFace>();
+
+        /// <summary>Phase 24-NAV-BSP — per-logical-mesh BSP tree. The
+        /// SNO authors a BSP partitioning the grouping's triangles for
+        /// fast point-in-mesh queries (gas/sno.ksy lines 254-271).
+        /// Leaves carry <see cref="BspNode.TriangleIndices"/> into
+        /// <see cref="Faces"/>; interior nodes hold child subtrees.
+        /// Null on legacy/synthesized groupings; real DS1 SNOs always
+        /// ship one.</summary>
+        public BspNode? Bsp { get; init; }
+    }
+
+    /// <summary>Phase 24-NAV-BSP — recursive BSP tree node per the
+    /// kaitai <c>bsp_section</c> spec (sno.ksy 254-271). Leaves carry
+    /// triangle indices into the parent
+    /// <see cref="LogicalGrouping.Faces"/>; interior nodes carry
+    /// children. Bounding boxes are SNO-local (transformed by the
+    /// caller against the snode xform when querying world-space).</summary>
+    public sealed class BspNode
+    {
+        public Vector3 BoundsMin { get; init; }
+        public Vector3 BoundsMax { get; init; }
+        public bool IsLeaf { get; init; }
+        public ushort[] TriangleIndices { get; init; } = Array.Empty<ushort>();
+        public BspNode[] Children { get; init; } = Array.Empty<BspNode>();
     }
 
     /// <summary>One material subset: a name (matches a .raw texture) and a range of
@@ -263,7 +287,7 @@ public sealed class SnoModel
                 faces[j] = new NavFace(a, b, c, n);
             }
 
-            SkipUnknownSection(r, depth: 0);
+            var bsp = ReadBspSection(r, depth: 0);
 
             result[i] = new LogicalGrouping
             {
@@ -272,28 +296,48 @@ public sealed class SnoModel
                 BoundsMax = bMax,
                 Kind = kind,
                 Faces = faces,
+                Bsp = bsp,
             };
         }
         return result;
     }
 
-    /// <summary>Recursive "unknown" trailer that appears after each logical-grouping face
-    /// list. Structure: 6 floats (bbox), u8, u16 count + that-many u16s, u8 recurse-count,
-    /// then that-many nested copies of itself. OpenSiege reads but ignores it — we do too.
-    /// Shipped DS1 data has never exceeded a couple of levels in fuzz runs, so a 32-frame
-    /// cap is cheap insurance against a corrupt or modded file blowing the managed stack.</summary>
-    private const int MaxUnknownSectionDepth = 32;
-    private static void SkipUnknownSection(Reader r, int depth)
+    /// <summary>Phase 24-NAV-BSP — recursive BSP tree section that follows
+    /// each logical-grouping's face list. Layout per sno.ksy:254-271
+    /// (kaitai field names cited):
+    ///   bounding_box     6 f32          (24 bytes)
+    ///   is_leaf          u1
+    ///   triangle_count   u2
+    ///   triangle_data    u16 × count    (triangle indices into Faces)
+    ///   children         u1             (child count)
+    ///   bsp_child        bsp_section × children
+    /// Spec-verified by the slice 2/3 research agent against
+    /// _ds1refs/opensiege/ksy/sno.ksy. Previously skipped as an
+    /// "unknown trailer" — see SnoModel.cs git history for the old
+    /// SkipUnknownSection version.</summary>
+    private const int MaxBspSectionDepth = 32;
+    private static BspNode ReadBspSection(Reader r, int depth)
     {
-        if (depth > MaxUnknownSectionDepth)
+        if (depth > MaxBspSectionDepth)
             throw new InvalidDataException(
-                $"SNO unknown-section recursion exceeded {MaxUnknownSectionDepth} levels at 0x{r.Position:X8}");
-        r.Skip(6 * 4);                                       // bbox min/max f32s
-        r.ReadU8();
-        var shortCount = r.ReadU16();
-        r.Skip(shortCount * 2);
-        var recurseCount = r.ReadU8();
-        for (var i = 0; i < recurseCount; i++) SkipUnknownSection(r, depth + 1);
+                $"SNO BSP recursion exceeded {MaxBspSectionDepth} levels at 0x{r.Position:X8}");
+        var bMin = r.ReadVec3();
+        var bMax = r.ReadVec3();
+        var isLeaf = r.ReadU8() != 0;
+        var triCount = r.ReadU16();
+        var tris = new ushort[triCount];
+        for (int i = 0; i < triCount; i++) tris[i] = r.ReadU16();
+        var childCount = r.ReadU8();
+        var children = childCount == 0 ? Array.Empty<BspNode>() : new BspNode[childCount];
+        for (int i = 0; i < childCount; i++) children[i] = ReadBspSection(r, depth + 1);
+        return new BspNode
+        {
+            BoundsMin = bMin,
+            BoundsMax = bMax,
+            IsLeaf = isLeaf,
+            TriangleIndices = tris,
+            Children = children,
+        };
     }
 
     private static Spot[] ReadSpots(Reader r, uint count)
