@@ -8661,7 +8661,19 @@ void main()
         // hit/miss happens at the target's chest and pans accordingly.
         _audio?.Play(SfxMeleeSwingGroup);
         var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
-        if (dealt > 0f) PlayMeleeHit(hitPos);
+        if (dealt > 0f)
+        {
+            PlayMeleeHit(hitPos);
+            // SC-ENEMY-AUDIO-AUDIT — also fire the target's hit-reaction
+            // voice cue, classified by damage fraction (glance/solid/crit).
+            // ConsumeJustHit clears the edge so the per-frame scan doesn't
+            // re-fire from this same hit. Skip on the lethal swing — the
+            // death cue (PlayDeathSfx) carries the audio there.
+            if (!best.Actor.Combat.IsDead && best.Actor.Combat.ConsumeJustHit(out var dmg))
+                PlayHitVoiceSfx(best.Actor.Template,
+                                best.CurrentTransform.Translation,
+                                dmg, best.Actor.Stats.MaxLife);
+        }
         else            _audio?.PlayAt(SfxMeleeMiss, hitPos);
 
         // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
@@ -8898,9 +8910,57 @@ void main()
     /// don't (they're silent until engaged). Lazy-registers the cue on
     /// first use, same shape as PlayDeathSfx.</summary>
     private void PlayEnemySpottedSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
+        => PlayVoiceCue(template, worldPos, "enemy_spotted");
+
+    /// <summary>SC-ENEMY-AUDIO-AUDIT — fire the authored hit-reaction voice
+    /// cue. DS1 ships three flavors per template: hit_glance (light damage),
+    /// hit_solid (normal), hit_critical (heavy). Classifier picks the bucket
+    /// from the damage-to-max-life fraction so the audio reads the right
+    /// intensity without needing a real crit system to ship first. ≤5% =
+    /// glance, ≤15% = solid, >15% = critical. Many templates only author a
+    /// subset of the three — the helper falls back through the ladder so a
+    /// crit-hit on a template with only hit_solid still plays.</summary>
+    private void PlayHitVoiceSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos,
+                                 float damage, float maxLife)
     {
         if (_audio is null || template is null || _templateStore is null) return;
-        var cue = _templateStore.GetAttribute(template, "aspect", "voice", "enemy_spotted", "*");
+        if (damage <= 0f) return;
+        float frac = maxLife > 0f ? damage / maxLife : 0f;
+        // Severity ladder with fallbacks: try the authored state first;
+        // walk down through solid/glance if it's missing. Most enemies ship
+        // all three; bosses sometimes only ship hit_solid.
+        string preferred;
+        string[] fallbacks;
+        if (frac > 0.15f)      { preferred = "hit_critical"; fallbacks = new[] { "hit_solid", "hit_glance" }; }
+        else if (frac > 0.05f) { preferred = "hit_solid";    fallbacks = new[] { "hit_glance", "hit_critical" }; }
+        else                   { preferred = "hit_glance";   fallbacks = new[] { "hit_solid", "hit_critical" }; }
+        var cue = _templateStore.GetAttribute(template, "aspect", "voice", preferred, "*");
+        for (int i = 0; i < fallbacks.Length && string.IsNullOrEmpty(cue); i++)
+            cue = _templateStore.GetAttribute(template, "aspect", "voice", fallbacks[i], "*");
+        if (string.IsNullOrEmpty(cue)) return;
+        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
+        }
+        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+    }
+
+    /// <summary>SC-ENEMY-AUDIO-AUDIT — fire the authored attack-startup
+    /// voice cue. 27 DS1 templates ship this — boss-tier/elite enemies that
+    /// shout before they swing. Common-case enemies don't author it; the
+    /// shared PlayVoiceCue helper no-ops silently.</summary>
+    private void PlayAttackVoiceSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
+        => PlayVoiceCue(template, worldPos, "attack");
+
+    /// <summary>Shared lookup-and-play for any single-cue voice state. Reads
+    /// <c>[aspect][voice][&lt;state&gt;] *</c> off the template's specializes
+    /// chain, lazy-registers the wav, and plays at the actor's position.
+    /// No-op when the state isn't authored (most common path).</summary>
+    private void PlayVoiceCue(SiegeFX.Core.Assets.Template template, Vector3 worldPos, string state)
+    {
+        if (_audio is null || template is null || _templateStore is null) return;
+        var cue = _templateStore.GetAttribute(template, "aspect", "voice", state, "*");
         if (string.IsNullOrEmpty(cue)) return;
         if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
         {
@@ -9639,9 +9699,38 @@ void main()
                 if (!_aggroPrevFrame.Contains(scid))
                     PlayEnemySpottedSfx(s.Actor.Template, s.CurrentTransform.Translation);
             }
+            // SC-ENEMY-AUDIO-AUDIT — every brain swing edge fires the
+            // attacker's "attack" voice cue (no-op for the common case where
+            // the template doesn't author it). Independent of aggro state so
+            // a boss with attack-only voice still yelps mid-fight even if
+            // the brain stays in Attack between swings.
+            if (brain.ConsumeJustSwung())
+                PlayAttackVoiceSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            // SC-ENEMY-AUDIO-AUDIT — fire hit reaction for any NPC that
+            // just took damage from a non-player source (brain-on-brain
+            // or environmental). The player-swing path already fires the
+            // cue inline for its target; ConsumeJustHit clears the edge so
+            // we don't double-fire. Skipped on lethal hit — death cue
+            // owns that frame.
+            if (!s.Actor.Combat.IsDead && s.Actor.Combat.ConsumeJustHit(out var dmg))
+                PlayHitVoiceSfx(s.Actor.Template, s.CurrentTransform.Translation,
+                                dmg, s.Actor.Stats.MaxLife);
         }
         _aggroPrevFrame.Clear();
         foreach (var scid in aggroThisFrame) _aggroPrevFrame.Add(scid);
+        // SC-ENEMY-AUDIO-AUDIT — player hit-reaction voice. The main loop
+        // skips the player (IsPlayer continue), so the player-take-damage
+        // case needs its own check here. Hero templates author hit voice
+        // states like any combat NPC; on a brain swing into the PC the
+        // damage path sets JustHit on the PC's combat state and we consume
+        // it here.
+        if (_player is not null && !_player.IsDead
+            && _player.Actor.Combat.ConsumeJustHit(out var playerDmg))
+        {
+            PlayHitVoiceSfx(_player.Actor.Template,
+                            _player.CurrentTransform.Translation,
+                            playerDmg, _player.Actor.Stats.MaxLife);
+        }
         if (nowInCombat)
         {
             _combatExitTimer = 0f;

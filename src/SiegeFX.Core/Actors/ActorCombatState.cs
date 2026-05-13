@@ -26,6 +26,18 @@ public sealed class ActorCombatState
     /// render/AI layer consumes it to fire the die-chore and drop loot exactly once.</summary>
     public bool JustDied { get; private set; }
 
+    /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire — one-shot edge for "actor
+    /// just took a nonzero hit." Set by <see cref="ApplyDamage"/>, consumed
+    /// by <see cref="ConsumeJustHit"/>. The render layer uses this to fire
+    /// the authored <c>[aspect][voice][hit_glance/solid/critical]</c> cue
+    /// based on the damage fraction (see PlayHitVoiceSfx).</summary>
+    public bool JustHit { get; private set; }
+
+    /// <summary>Damage applied by the most recent ApplyDamage call (only set
+    /// when JustHit fires; zero otherwise). The render layer reads this to
+    /// classify hit severity into glance / solid / critical buckets.</summary>
+    public float LastDamageTaken { get; private set; }
+
     public ActorCombatState(ActorStats stats)
     {
         _stats = stats;
@@ -47,12 +59,29 @@ public sealed class ActorCombatState
         if (damage <= 0f) return 0f;
         float actual = MathF.Min(damage, CurrentLife);
         CurrentLife -= actual;
+        if (actual > 0f)
+        {
+            JustHit = true;
+            LastDamageTaken = actual;
+        }
         if (CurrentLife <= 0f)
         {
             CurrentLife = 0f;
             JustDied = true;
         }
         return actual;
+    }
+
+    /// <summary>SC-ENEMY-AUDIO-AUDIT — consume the one-shot hit edge. Out
+    /// param carries the most recent damage so the render layer can classify
+    /// the hit severity without re-querying state. Returns true exactly once
+    /// per landed hit; the caller that returns true owns the hit-voice play.</summary>
+    public bool ConsumeJustHit(out float damage)
+    {
+        if (!JustHit) { damage = 0f; return false; }
+        damage = LastDamageTaken;
+        JustHit = false;
+        return true;
     }
 
     /// <summary>Consume the one-shot death edge. Returns true exactly once per

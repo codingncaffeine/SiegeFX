@@ -31,6 +31,21 @@ public sealed class ActorBrain
     public enum BrainState { Wander, Chase, Attack }
     public BrainState State { get; private set; } = BrainState.Wander;
 
+    /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire — one-shot edge that fires
+    /// when the brain just resolved a melee swing (swing-cooldown reset +
+    /// chore_attack triggered). Consumed by the render layer to fire the
+    /// authored <c>[aspect][voice][attack]</c> cue. Only ~27 DS1 templates
+    /// author attack — boss-tier/elite enemies — so the common case is the
+    /// flag flips but PlayAttackVoiceSfx finds no cue and no-ops.</summary>
+    public bool JustSwung { get; private set; }
+
+    public bool ConsumeJustSwung()
+    {
+        if (!JustSwung) return false;
+        JustSwung = false;
+        return true;
+    }
+
     /// <summary>XZ distance at which we transition Wander → Chase. ~8u is one
     /// krug-sized stride; the PC has to actively step into a mob's bubble.</summary>
     public float AggroRadius { get; set; } = 8f;
@@ -119,6 +134,9 @@ public sealed class ActorBrain
                     // of looping a still-running animation. Falls back silently if
                     // the template doesn't ship a chore_attack (chickens, props).
                     _selfActor?.PlayChoreOnce("chore_attack", SwingPeriod * 0.85f);
+                    // SC-ENEMY-AUDIO-AUDIT — surface the swing event so the
+                    // render layer can fire the attack voice cue if authored.
+                    JustSwung = true;
                 }
                 break;
         }

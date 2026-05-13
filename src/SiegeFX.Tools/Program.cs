@@ -6110,14 +6110,17 @@ static int CmdAudioEnemyStates(string[] a)
 {
     if (a.Length < 1)
     {
-        Console.Error.WriteLine("usage: siegefx audio enemy-states <Logic.dsres> [--filter=PREFIX]");
+        Console.Error.WriteLine("usage: siegefx audio enemy-states <Logic.dsres> [--filter=PREFIX] [--show=STATE]");
         return 1;
     }
     string? filter = null;
+    string? showState = null;
     for (int i = 1; i < a.Length; i++)
     {
         const string filterPrefix = "--filter=";
+        const string showPrefix   = "--show=";
         if (a[i].StartsWith(filterPrefix)) filter = a[i][filterPrefix.Length..];
+        else if (a[i].StartsWith(showPrefix)) showState = a[i][showPrefix.Length..];
         else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
     }
 
@@ -6174,6 +6177,27 @@ static int CmdAudioEnemyStates(string[] a)
     }
 
     Console.WriteLine($"audio enemy-states: {perTemplate.Count} template(s) with [voice]");
+
+    // --show=STATE — focus mode: list every template that ships that state,
+    // alongside its wav cue. Skips the rest of the report so the receipt
+    // for "what is the cast catalog?" or "who shouts on attack?" is one
+    // tight list. Lands the audit's NIT-8 deliverable from the prior
+    // audit-pair review.
+    if (!string.IsNullOrEmpty(showState))
+    {
+        Console.WriteLine();
+        Console.WriteLine($"== --show={showState} ==");
+        int shown = 0;
+        foreach (var (name, states) in perTemplate)
+        {
+            if (!states.TryGetValue(showState, out var wav)) continue;
+            Console.WriteLine($"  {name,-32}  {wav}");
+            shown++;
+        }
+        Console.WriteLine($"  -> {shown} template(s) ship {showState}");
+        return 0;
+    }
+
     Console.WriteLine();
     Console.WriteLine("== STATE FREQUENCY ==");
     foreach (var (state, count) in stateCounts.OrderByDescending(kv => kv.Value))
