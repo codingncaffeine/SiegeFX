@@ -439,13 +439,17 @@ public static class QuestCatalog
             },
 
             // ── Chapter VI — Unwise Alliance ──
+            // Sybex guide correction (2026-05-12): wiki classified this as
+            // KILL-NAMED but the official strategy guide confirms it credits
+            // on dialogue with Nonataya the Droog ambassador, who then
+            // becomes a vendor. "Subdue" is a misnomer — it's a parley.
             ["quest_subdue_droog"] = new QuestDefinition
             {
                 Key                 = "quest_subdue_droog",
                 ScreenName          = "Subdue the Droog",
-                KillTargetTemplate  = "droog",
-                KillCountGoal       = 1,
-                ObjectiveText       = "Subdue the Droog warleader to secure passage to Castle Ehb.",
+                TalkTargetTemplate  = "nonataya",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Negotiate passage with Nonataya, ambassador of the Droog.",
                 NextQuestKey        = "quest_journey_to_castle_ehb",
             },
 
