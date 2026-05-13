@@ -58,13 +58,17 @@ public sealed class CharacterAwp
         float s = Scale(viewportH);
         // Portrait (always-on, character_1 group)
         if (Hit(x, y, s, 13, 6, 39, 46)) return HitTarget.Portrait;
-        // 4 slots (always-on per character_1 max-mode; gas wires min-
-        // mode as a single fused active-skill slot which we collapse
-        // into the same 4 hit-rects for now — SC-AUTH-AWP-MIN-MODE)
-        if (Hit(x, y, s,  68, 6, 16, 32)) return HitTarget.Slot1;
-        if (Hit(x, y, s,  88, 6, 16, 32)) return HitTarget.Slot2;
-        if (Hit(x, y, s, 108, 6, 16, 32)) return HitTarget.Slot3;
-        if (Hit(x, y, s, 128, 6, 16, 32)) return HitTarget.Slot4;
+        // 4 slots only exist in max mode (rail closed). When the rail
+        // is open the slot strip folds out and these rects sit over
+        // the world view, so they MUST NOT swallow clicks intended
+        // for the world below.
+        if (!railOpen)
+        {
+            if (Hit(x, y, s,  68, 6, 16, 32)) return HitTarget.Slot1;
+            if (Hit(x, y, s,  88, 6, 16, 32)) return HitTarget.Slot2;
+            if (Hit(x, y, s, 108, 6, 16, 32)) return HitTarget.Slot3;
+            if (Hit(x, y, s, 128, 6, 16, 32)) return HitTarget.Slot4;
+        }
         // Below the slot strip: mutually exclusive per character_awp.gas
         // group=character_1_max (wide InventoryButton, rail closed) vs
         // group=character_1_min (narrow CloseArrow, rail open). Both
@@ -124,11 +128,13 @@ public sealed class CharacterAwp
                 0f, 1f - 1f, 0.253907f, 1f - 0.59375f);
         }
 
-        // Slot-strip chrome behind the 4 weapon/skill slots. Gas:651
-        // window_slots_panel_1 rect 64,3,148,40 uv 0.25,0.710938,
-        // 0.578125,1 (character_1_max group). When min mode lands we
-        // swap to window_pack_panel_min_1 at rect 65,3,88,40 uv
-        // 0.65625,0.421875,0.835938,1 from b_gui_ig_mnu_awp_blank.
+        // Slot-strip chrome. When rail is closed (gas group=
+        // character_1_max) DS1 draws window_slots_panel_1 — the wide
+        // 4-slot frame at rect 64,3,148,40 uv 0.25,0.710938,0.578125,1.
+        // When rail is open (gas group=character_1_min) DS1 folds the
+        // slot strip out entirely so the world shows through behind
+        // the AWP, leaving only the portrait cluster + close arrow.
+        if (!railOpen)
         {
             int wx = (int)Math.Round(64  * s);
             int wy = (int)Math.Round(3   * s);
@@ -191,8 +197,11 @@ public sealed class CharacterAwp
         // (uv 0.839844,0.734375,0.902344,0.984375 — the slot frame). The
         // currently-selected slot gets a selection overlay (uv 0.675781,
         // 0.710938,0.753907,0.992188) drawn on top.
+        // Same fold rule: slot frames + icons + selection overlay only
+        // draw in max mode. In min mode (rail open) the slots are
+        // visually absent so the world is visible behind the AWP.
         var slotIcons = new[] { slot1Icon, slot2Icon, slot3Icon, slot4Icon };
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 4 && !railOpen; i++)
         {
             int gasX = 68 + i * 20; // slots at 68, 88, 108, 128
             int sx = (int)Math.Round(gasX * s);

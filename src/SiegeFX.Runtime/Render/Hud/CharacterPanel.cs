@@ -215,10 +215,11 @@ public sealed class CharacterPanel
                                    Vector4 ink, Vector4 bg, Vector4 em)
     {
         bars.DrawRect(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, bg);
+        // Bottom-up vertical fill matching the 4 skill rows.
         if (fraction > 0f)
         {
-            int fw = (int)(labelR.w * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
-            if (fw > 0) bars.DrawRect(vw, vh, labelR.x, labelR.y, fw, labelR.h, ProgressFill);
+            int fh = (int)(labelR.h * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
+            if (fh > 0) bars.DrawRect(vw, vh, labelR.x, labelR.y + labelR.h - fh, labelR.w, fh, ProgressFill);
         }
         bars.DrawBorder(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, em);
         text.DrawString(vw, vh, label, labelR.x + 4, labelR.y + (labelR.h - 8) / 2, ink);
@@ -239,10 +240,14 @@ public sealed class CharacterPanel
         int bw = (int)System.Math.Round((barX1 - barX0) * s);
         int bh = (int)System.Math.Round((barY1 - barY0) * s);
         bars.DrawRect(vw, vh, bx, by, bw, bh, bg);
+        // Vertical bottom-up progress fill — DS1 rises the fill from
+        // bottom to top of each skill row indicating progression toward
+        // the next level. The color (ProgressFill #635757) matches the
+        // shipped DS1 palette per user verification.
         if (fraction > 0f)
         {
-            int fw = (int)(bw * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
-            if (fw > 0) bars.DrawRect(vw, vh, bx, by, fw, bh, ProgressFill);
+            int fh = (int)(bh * System.MathF.Max(0f, System.MathF.Min(1f, fraction)));
+            if (fh > 0) bars.DrawRect(vw, vh, bx, by + bh - fh, bw, fh, ProgressFill);
         }
         bars.DrawBorder(vw, vh, bx, by, bw, bh, em);
         text.DrawString(vw, vh, label, bx + 4, by + (bh - 8) / 2, ink);

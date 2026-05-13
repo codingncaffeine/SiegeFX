@@ -130,7 +130,16 @@ public sealed class PaperdollPanel
             var equipped = equippedIconLookup?.Invoke(slot.Name);
             if (equipped is not null)
             {
-                icons.DrawIcon(viewportW, viewportH, equipped, sx, sy, sw, sh, Vector4.One);
+                // Inset so the icon fits visually inside the gas slot
+                // frame rather than touching the chrome on all sides.
+                // 2px scaled is enough at all clamped scales (1..1.5)
+                // and matches the breathing room DS1 leaves between
+                // inventory_icon RAWs and their slot borders.
+                int inset = (int)System.Math.Max(1, System.Math.Round(2 * s));
+                int ix = sx + inset, iy = sy + inset;
+                int iw = sw - inset * 2, ih = sh - inset * 2;
+                if (iw > 0 && ih > 0)
+                    icons.DrawIcon(viewportW, viewportH, equipped, ix, iy, iw, ih, Vector4.One);
             }
             else
             {
