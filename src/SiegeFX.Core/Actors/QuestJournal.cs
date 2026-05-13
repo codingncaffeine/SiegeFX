@@ -42,6 +42,12 @@ public sealed class QuestEntry
     /// future "talk to N priests" objectives reuse the same plumbing without
     /// another schema bump.</summary>
     public int TalkProgress { get; set; }
+
+    /// <summary>SC-QUEST-OBJ-C — items picked up that match the quest's
+    /// <see cref="QuestDefinition.PickupTargetTemplate"/>. Most pickup
+    /// objectives are PickupCountGoal=1 (recover one named artifact) but
+    /// the field is a counter for future "collect N relics" patterns.</summary>
+    public int PickupProgress { get; set; }
 }
 
 /// <summary>
@@ -171,6 +177,18 @@ public sealed class QuestJournal
     /// goal; returns the keys that just flipped so the caller can flash a
     /// HUD toast / play the level-up-style "objective met" cue.</summary>
     public IReadOnlyList<string> RegisterTalk(string npcTemplateName)
+        => RegisterTalk(npcTemplateName, playerInventory: null);
+
+    /// <summary>SC-QUEST-OBJ-D overload — same as RegisterTalk but checks
+    /// every active quest's <see cref="QuestDefinition.DeliverItemTemplate"/>
+    /// against the player's inventory before crediting. Deliver objectives
+    /// without the item held silently no-op (the talk just doesn't count
+    /// toward the quest until the item is in hand). Talk-only objectives
+    /// (empty DeliverItemTemplate) work unchanged. Pass null inventory to
+    /// fall back to talk-only matching — the dialogue path uses this when
+    /// it doesn't have an inventory reference at hand.</summary>
+    public IReadOnlyList<string> RegisterTalk(string npcTemplateName,
+        IReadOnlyList<SiegeFX.Core.Actors.LootEntry>? playerInventory)
     {
         if (string.IsNullOrWhiteSpace(npcTemplateName)) return Array.Empty<string>();
         List<string>? completed = null;
@@ -180,6 +198,21 @@ public sealed class QuestJournal
             var def = entry.Definition;
             if (def is null || string.IsNullOrEmpty(def.TalkTargetTemplate)) continue;
             if (def.TalkCountGoal <= 0) continue;
+            // SC-QUEST-OBJ-D — deliver gate. When DeliverItemTemplate is set,
+            // the talk only credits if the player holds a matching item. No
+            // inventory passed = treat as talk-only (legacy callers).
+            if (!string.IsNullOrEmpty(def.DeliverItemTemplate))
+            {
+                if (playerInventory is null) continue;
+                bool holdsItem = false;
+                foreach (var it in playerInventory)
+                {
+                    if (it.Reference.IndexOf(def.DeliverItemTemplate,
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                    { holdsItem = true; break; }
+                }
+                if (!holdsItem) continue;
+            }
             // SC-QUEST-OBJ-A-EXACT (post-RESYNC fold 2026-05-13): match on
             // exact NPC template OR on TalkTargetTemplate + "_" prefix. DS1
             // mixes naming conventions — some NPCs are bare-name templates
@@ -197,6 +230,38 @@ public sealed class QuestJournal
 
             entry.TalkProgress = Math.Min(def.TalkCountGoal, entry.TalkProgress + 1);
             if (entry.TalkProgress >= def.TalkCountGoal)
+            {
+                entry.State = QuestState.Completed;
+                entry.ClosedAt = DateTime.UtcNow;
+                (completed ??= new List<string>()).Add(entry.Key);
+            }
+        }
+        ChainFollowUps(completed);
+        return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
+    }
+
+    /// <summary>SC-QUEST-OBJ-C — credit "pickup item X" objectives against
+    /// the just-acquired item's template. Fired from the loot-pickup edge
+    /// in RenderHost (after the LootPile resolves into the inventory grid).
+    /// Substring match (case-insensitive) against
+    /// <see cref="QuestDefinition.PickupTargetTemplate"/>; auto-promotes to
+    /// Completed when the counter reaches the goal. Returns the keys that
+    /// just flipped so the caller can flash a toast.</summary>
+    public IReadOnlyList<string> RegisterPickup(string itemTemplateName)
+    {
+        if (string.IsNullOrWhiteSpace(itemTemplateName)) return Array.Empty<string>();
+        List<string>? completed = null;
+        foreach (var entry in _entries.Values)
+        {
+            if (entry.State != QuestState.Active) continue;
+            var def = entry.Definition;
+            if (def is null || string.IsNullOrEmpty(def.PickupTargetTemplate)) continue;
+            if (def.PickupCountGoal <= 0) continue;
+            if (itemTemplateName.IndexOf(def.PickupTargetTemplate,
+                                         StringComparison.OrdinalIgnoreCase) < 0) continue;
+
+            entry.PickupProgress = Math.Min(def.PickupCountGoal, entry.PickupProgress + 1);
+            if (entry.PickupProgress >= def.PickupCountGoal)
             {
                 entry.State = QuestState.Completed;
                 entry.ClosedAt = DateTime.UtcNow;
@@ -241,20 +306,21 @@ public sealed class QuestJournal
     /// from scratch each time so a stray entry from a different save can't
     /// survive. Definitions get re-bound off the live catalog so a content
     /// patch that shipped between save and load picks up the new goal numbers.</summary>
-    public void RestoreFromSave(IEnumerable<(string Key, QuestState State, int KillProgress, int TalkProgress)> entries)
+    public void RestoreFromSave(IEnumerable<(string Key, QuestState State, int KillProgress, int TalkProgress, int PickupProgress)> entries)
     {
         _entries.Clear();
-        foreach (var (key, state, killProgress, talkProgress) in entries)
+        foreach (var (key, state, killProgress, talkProgress, pickupProgress) in entries)
         {
             if (string.IsNullOrWhiteSpace(key)) continue;
             QuestCatalog.TryGet(key, out var def);
             _entries[key] = new QuestEntry
             {
-                Key          = key,
-                State        = state,
-                Definition   = def,
-                KillProgress = killProgress,
-                TalkProgress = talkProgress,
+                Key            = key,
+                State          = state,
+                Definition     = def,
+                KillProgress   = killProgress,
+                TalkProgress   = talkProgress,
+                PickupProgress = pickupProgress,
             };
         }
     }
@@ -479,9 +545,30 @@ public static class QuestCatalog
             {
                 Key                 = "quest_merik_staff",
                 ScreenName          = "Merik's Staff",
+                // SC-QUEST-OBJ-D — deliver composite: hold Merik's Staff AND
+                // talk to Merik. PickupTargetTemplate ALSO set so the same
+                // quest can credit on either pickup-only (if D isn't required)
+                // or the proper hand-off. The deliver-gate in RegisterTalk
+                // checks the player's inventory for the staff template at
+                // talk time; if absent, talk silently no-ops and the player
+                // has to come back with the staff.
                 TalkTargetTemplate  = "merik",
                 TalkCountGoal       = 1,
+                DeliverItemTemplate = "merik_staff",
                 ObjectiveText       = "Recover Merik's Warding Staff and return it to him.",
+            },
+            // SC-QUEST-OBJ-C smoke-test entry — single pickup gate against a
+            // template that actually exists in fh_r1's inventory.gas, so the
+            // receipt path can fire in the FH-only test region. The real DS1
+            // pickup quests (Merik's Staff above, Ordus' Axe, Book Return)
+            // target items in regions the player has to travel to first.
+            ["quest_grab_fireshot"] = new QuestDefinition
+            {
+                Key                  = "quest_grab_fireshot",
+                ScreenName           = "Test Pickup — Fireshot",
+                PickupTargetTemplate = "spell_fireshot",
+                PickupCountGoal      = 1,
+                ObjectiveText        = "Pick up the Fireshot scroll in the basement.",
             },
 
             // Ch.V side — Tower of Refuge / water dungeon (Gregor)
@@ -601,4 +688,29 @@ public sealed class QuestDefinition
     /// inside one entry. Simpler than embedding a Stage[] in the definition
     /// and lets the journal screen show each stage as its own row.</summary>
     public string NextQuestKey      { get; init; } = "";
+
+    /// <summary>SC-QUEST-OBJ-C — pickup objective. Template-name substring
+    /// (case-insensitive) matched against the just-picked-up item's
+    /// resolved template name. Empty disables the pickup path; multiple
+    /// objective types can coexist on one definition (e.g. a quest with
+    /// both a pickup gate and a follow-up talk credit). Most pickup
+    /// objectives are name-exact uniques like <c>spell_fireshot</c> or
+    /// <c>merik_staff</c> — substring is a safety net for templates that
+    /// ship with suffixes (e.g. quest item promoted across regions).</summary>
+    public string PickupTargetTemplate { get; init; } = "";
+
+    /// <summary>How many distinct pickup events credit the quest. Defaults
+    /// to 0 so a definition that doesn't set PickupTargetTemplate also
+    /// won't credit. Simple "recover X" objectives use 1; collect-N
+    /// patterns set N.</summary>
+    public int    PickupCountGoal      { get; init; }
+
+    /// <summary>SC-QUEST-OBJ-D — deliver objective. Composite of pickup +
+    /// talk: the quest's <see cref="TalkTargetTemplate"/> is the
+    /// receiving NPC, and DeliverItemTemplate names the item that must
+    /// be in the player's inventory at talk time for the credit to fire.
+    /// When set, the talk path gates on the item being held; when empty,
+    /// talk credits unconditionally (the plain TALK path). Substring
+    /// match same as PickupTargetTemplate.</summary>
+    public string DeliverItemTemplate  { get; init; } = "";
 }

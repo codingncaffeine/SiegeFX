@@ -7974,7 +7974,10 @@ void main()
         if (_dialogue.IsOpen) return;
         if (string.IsNullOrEmpty(_lastTalkedTemplate)) return;
         if (_progression is null) return;
-        var completed = _progression.Journal.RegisterTalk(_lastTalkedTemplate);
+        // SC-QUEST-OBJ-D — pass the player's current inventory so deliver
+        // quests (TalkTarget + DeliverItemTemplate) only credit when the
+        // item is in hand. Talk-only objectives ignore the inventory arg.
+        var completed = _progression.Journal.RegisterTalk(_lastTalkedTemplate, _playerInventory);
         foreach (var key in completed)
             Console.WriteLine($"[quest] talk objective complete: {key} (spoke to {_lastTalkedTemplate})");
     }
@@ -10450,6 +10453,21 @@ void main()
         if (parts.Count > 0)
             Console.WriteLine(
                 $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+        // SC-QUEST-OBJ-C — credit any active pickup objective whose target
+        // template matches one of the items we just added. Walks the parts
+        // list above to mirror the same template names that landed in the
+        // inventory. Substring match on RegisterPickup absorbs pcontent
+        // resolutions ("#weapon/9" -> "wpn_axe_001" etc).
+        if (_progression is not null)
+        {
+            foreach (var it in pile.Items)
+            {
+                var resolved = ResolveItemRef(it.Reference);
+                var completed = _progression.Journal.RegisterPickup(resolved);
+                foreach (var key in completed)
+                    Console.WriteLine($"[quest] pickup objective complete: {key} (acquired {resolved})");
+            }
+        }
         _audio?.PlayAt(SfxGuiPickup, pile.Position);
 
         // Phase 14c — auto-equip dropped weapons. If the loot entry came from
@@ -12514,10 +12532,11 @@ void main()
                 foreach (var entry in _progression.Journal.Entries)
                     p.Quests.Add(new SiegeFX.Core.Save.QuestSnapshot
                     {
-                        Key          = entry.Key,
-                        State        = entry.State,
-                        KillProgress = entry.KillProgress,
-                        TalkProgress = entry.TalkProgress,
+                        Key            = entry.Key,
+                        State          = entry.State,
+                        KillProgress   = entry.KillProgress,
+                        TalkProgress   = entry.TalkProgress,
+                        PickupProgress = entry.PickupProgress,
                     });
                 p.Gold = _progression.Gold;
             }
@@ -12667,7 +12686,7 @@ void main()
             {
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
                 _progression.Journal.RestoreFromSave(
-                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress)));
+                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress, q.PickupProgress)));
                 _progression.RestoreGoldFromSave(ps.Gold);
             }
             _playerFacing = ps.Facing.ToVector3();

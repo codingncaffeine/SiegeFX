@@ -29,12 +29,14 @@ public sealed class SaveFile
     ///   v7 -> v8 : added <see cref="PlayerSnapshot.ConsumedInventoryScids"/>
     ///              (SC-WORLD-INVENTORY-CONSUMED — picked-up world-pickups
     ///              that should stay gone across save-reload).
+    ///   v8 -> v9 : added <see cref="QuestSnapshot.PickupProgress"/>
+    ///              (SC-QUEST-OBJ-C pickup-objective counter).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v7 file loads as a v8 with the new fields zero-initialized.
+    /// so any v1..v8 file loads as a v9 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 8;
+    public const int CurrentSchemaVersion = 9;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -211,6 +213,11 @@ public sealed class QuestSnapshot
     /// <see cref="QuestEntry.TalkProgress"/>. Defaults to 0 so v6 saves load
     /// cleanly without losing any state.</summary>
     public int        TalkProgress { get; set; }
+
+    /// <summary>SC-QUEST-OBJ-C — persisted pickup-objective counter. Mirrors
+    /// <see cref="QuestEntry.PickupProgress"/>. Defaults to 0 so pre-v9
+    /// saves load with no pickup progress (zero quests use it today).</summary>
+    public int        PickupProgress { get; set; }
 }
 
 /// <summary>JSON-serializable Vector3 stand-in. <see cref="System.Numerics.Vector3"/>
