@@ -931,9 +931,12 @@ public sealed class RenderHost : IDisposable
     // continue to cast Primary/Secondary spells. Removing the field today
     // would force a bigger gameplay-behavior revamp that belongs in its
     // own splinter.
-#pragma warning disable CS0649  // pinned-zero field — see SC-RMB-DS1-CAST splinter
-    private int _activeAbilityIdx; // pinned at 0 (melee) post-mini-HUD removal
-#pragma warning restore CS0649
+    // Phase 22-AUTH-CHAR-AWP — written by the AWP click handler when the
+    // player clicks one of the 4 weapon/skill slots. Read by the RMB
+    // switch + cursor mode. 0=melee, 1=ranged, 2=primary spell, 3=secondary
+    // spell. Per character_awp.gas's radio_button character_1_slot_N
+    // notify(character_slot_N).
+    private int _activeAbilityIdx;
     // Phase 9-SC-9 — put_down cues lazy-registered the same way death cues are
     // (template's [aspect][voice][put_down] *). Cache hits per cue stem; many
     // templates share the same put_down cue (every steel sword fires the same
@@ -967,6 +970,16 @@ public sealed class RenderHost : IDisposable
     // enemy pair; gas uvcoords pick the right strip per element.
     private GlTexture? _statusBarsTexture;
     private bool _statusBarsLoaded;
+    // Phase 22-AUTH-CHAR-AWP — DS1's always-on player AWP widget (top-left
+    // of the screen). Source: /ui/interfaces/backend/character_awp/
+    // character_awp.gas. Atlas b_gui_ig_mnu_awp.raw shared across
+    // portrait + HP/MP bars + 4 weapon/spell slots for character_1 only
+    // (party slots 2-8 live in team_portraits.gas, deferred to 22-D
+    // SC-HUD-PORTRAITS).
+    private readonly Hud.CharacterAwp _characterAwp = new();
+    private GlTexture? _awpAtlas;
+    private GlTexture? _awpPortraitTex;
+    private bool _awpLoaded;
     // Phase 22-A — world-tick gate. When true, brain/particle/sfx ticks
     // are skipped; rendering continues so the player can interact with
     // HUD buttons. Toggled by SC-HUD-DATABAR's pause button + Space key.
@@ -2034,13 +2047,37 @@ void main()
                     return;
                 }
                 // Phase 21-SC-INV-A2 — mini-HUD ability bar + open-arrows.
-                // Phase 22-AUTH-MINIHUD-REMOVE — the SiegeFX-invented 4-cell
-                // ability bar + open-arrows mass-toggle widget is gone. DS1
-                // doesn't ship either: ability cells were a SiegeFX shortcut
-                // for spell-slot selection, and the "open all three panels at
-                // once" toggle has no DS1 equivalent (per-panel I/B/C keys
-                // remain the canonical opens). The mini-HUD's click-routing
-                // block formerly lived here.
+                // Phase 22-AUTH-CHAR-AWP click routing — the DS1 player AWP
+                // at top-left captures LMB on its 6 hit targets BEFORE any
+                // other panel intercepts. Notify keys match character_awp.gas
+                // [messages]: portrait → toggle char panel; inventory button
+                // → toggle inventory; slot N → set active for RMB. Cursor
+                // outside the AWP rect falls through to world / panel
+                // handlers below.
+                if (btn == MouseButton.Left && _player is not null)
+                {
+                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y);
+                    switch (awpHit)
+                    {
+                        case Hud.CharacterAwp.HitTarget.Portrait:
+                            _charPanelOpen = !_charPanelOpen;
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        case Hud.CharacterAwp.HitTarget.InventoryButton:
+                            _inventoryOpen = !_inventoryOpen;
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        case Hud.CharacterAwp.HitTarget.Slot1:
+                            _activeAbilityIdx = 0; _audio?.Play(SfxGuiInventory); return;
+                        case Hud.CharacterAwp.HitTarget.Slot2:
+                            _activeAbilityIdx = 1; _audio?.Play(SfxGuiInventory); return;
+                        case Hud.CharacterAwp.HitTarget.Slot3:
+                            _activeAbilityIdx = 2; _audio?.Play(SfxGuiInventory); return;
+                        case Hud.CharacterAwp.HitTarget.Slot4:
+                            _activeAbilityIdx = 3; _audio?.Play(SfxGuiInventory); return;
+                    }
+                }
                 // Phase 21-SC-INV-A — character + spell book panes are read-only
                 // in this slice (their drag/drop wiring lands with -B / -SPELL-B);
                 // any LMB that lands on their rect is swallowed so the world
@@ -8761,6 +8798,31 @@ void main()
         _questIndicatorFlashRemaining = 1.5f;
     }
 
+    /// <summary>Phase 22-AUTH-CHAR-AWP — render DS1's always-on player AWP
+    /// widget at top-left. Loads the atlas + portrait lazily on first call.
+    /// Player-only: party slots 2-8 live in team_portraits.gas which is the
+    /// 22-D SC-HUD-PORTRAITS slice.</summary>
+    private void DrawCharacterAwp(int viewportW, int viewportH)
+    {
+        if (_player is null || _iconRenderer is null || _barRenderer is null) return;
+        if (!_awpLoaded)
+        {
+            _awpLoaded = true;
+            _awpAtlas = TryGetGuiTexture("b_gui_ig_mnu_awp");
+            if (!string.IsNullOrEmpty(_playerPortraitIconName))
+                _awpPortraitTex = TryGetGuiTexture(_playerPortraitIconName);
+            Console.WriteLine($"[char_awp] atlas: {(_awpAtlas is not null ? "ok" : "MISS")}, " +
+                              $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")}");
+        }
+        if (_awpAtlas is null) return;
+        var combat = _player.Actor.Combat;
+        var stats  = _player.Actor.Stats;
+        float hpFrac = stats.MaxLife > 0f ? combat.CurrentLife / stats.MaxLife : 0f;
+        float mpFrac = stats.MaxMana > 0f ? combat.CurrentMana / stats.MaxMana : 0f;
+        _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
+                           _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx);
+    }
+
     /// <summary>Phase 22-H SC-HUD-OVERHEAD-BARS — DS1's authentic floating
     /// HP/MP bars above each actor's head. Source: status_bars.gas. The
     /// gas defines 8 health/mana bar pairs (one per character slot in MP)
@@ -12104,14 +12166,13 @@ void main()
                 _textRenderer.DrawString(size.X, size.Y, fpsStr, size.X - fw - 8, 8, col);
             }
 
-            // Phase 22-AUTH-MINIHUD-REMOVE — the always-on mini-HUD widget
-            // (HP/MP vials + portrait stub + 4-cell ability bar) was a
-            // SiegeFX invention with no DS1 equivalent. Removed. Player
-            // HP/MP now surfaces via the floating overhead bars (22-H
-            // SC-HUD-OVERHEAD-BARS) which is what DS1 actually ships.
-            // The 4-cell ability row migrates to the spellbook screen
-            // (22-AUTH-SPELL slice) — DS1 ships the active-spell roster
-            // there, not as an always-on overlay.
+            // Phase 22-AUTH-CHAR-AWP — DS1's always-on player AWP at
+            // top-left: HP/MP bars, portrait, 4 weapon/skill slots, and
+            // (gas-authored) inventory button. Replaces the home-grown
+            // mini-HUD from Phase 21 with the authentic character_awp.gas
+            // layout. Drawn at the same always-on z-tier as data_bar +
+            // overhead bars; per-panel modals still overlay it.
+            DrawCharacterAwp(size.X, size.Y);
 
             // Phase 21-SC-INV-A + 22-AUTH-MINIHUD-REMOVE — three docked
             // panels (Character / Inventory / SpellBook) tile across the
