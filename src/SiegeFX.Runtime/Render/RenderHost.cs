@@ -183,6 +183,14 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     private SiegeFX.Core.Actors.TriggerRuntime? _triggerRuntime;
     private RenderHostTriggerContext? _triggerCtx;
+    // SC-DUNGEON-FADE-NODES — per-snode visibility for the dungeon-
+    // basement "reveal" mechanic. DS1's special.gas ships
+    // trigger_fade_nodes_box entries that fire `fade_nodes(<guid>,...)`
+    // when the player crosses into a dungeon AABB; the named snodes
+    // hide so the underlying interior becomes visible. Dict key =
+    // snode guid; value = target alpha (0 = fully hidden, 1 = fully
+    // visible). Missing key = default visible.
+    private readonly System.Collections.Generic.Dictionary<uint, float> _fadedSnodes = new();
     // Phase 17-SC-D / SC-F — sfx_script catalogue + interpreter. Loaded once
     // at LoadPlayActors; the trigger runtime hits OnTriggerCallSfxScript which
     // forwards to _sfxRuntime.Spawn so emitter.gas placements + spell casts
@@ -799,6 +807,55 @@ public sealed class RenderHost : IDisposable
         _sfxRuntime?.Spawn(scriptName, origin, args);
     }
 
+    /// <summary>SC-DUNGEON-FADE-NODES — fade_nodes / fade_node /
+    /// fade_nodes_global trigger handler. DS1's special.gas ships
+    /// these on trigger_fade_nodes_box entries placed around dungeon
+    /// entrances; when the party crosses the AABB, the named snode
+    /// guids fade out so the upper floor is hidden + the dungeon
+    /// becomes visible. On exit (the symmetric "in" mode action) the
+    /// nodes return.
+    ///
+    /// Args from the trigger runtime, in DS1 order:
+    ///   args[0] = snode guid (hex, "0xAAA10100")
+    ///   args[1..3] = optional layer/region selectors (we ignore;
+    ///     SiegeFX renders snodes whole, not per-layer)
+    ///   args[last] = mode: "out:black" / "out" → fade to 0
+    ///                      "in"                 → fade to 1
+    ///
+    /// For this slice we SNAP the alpha (no animation); the gas-
+    /// authored fade duration becomes a SC-DUNGEON-FADE-ANIMATED
+    /// splinter. Snap reads correctly when the player is fully
+    /// inside the trigger AABB and discontinuous at the seam, which
+    /// matches DS1's behavior closely enough for navigation.</summary>
+    internal void OnTriggerFadeNodes(IReadOnlyList<string> args)
+    {
+        if (args is null || args.Count == 0) return;
+        // Parse snode guid (hex or decimal).
+        if (!TryParseSnodeGuid(args[0], out var guid)) return;
+        // Walk args to find the mode token.
+        string mode = "out";
+        for (int i = args.Count - 1; i >= 1; i--)
+        {
+            var a = args[i].Trim().Trim('"').ToLowerInvariant();
+            if (a == "out" || a == "out:black" || a == "in" ||
+                a == "fade_out" || a == "fade_in") { mode = a; break; }
+        }
+        float target = (mode == "in" || mode == "fade_in") ? 1f : 0f;
+        if (target >= 0.999f) _fadedSnodes.Remove(guid);
+        else _fadedSnodes[guid] = target;
+    }
+
+    private static bool TryParseSnodeGuid(string s, out uint guid)
+    {
+        guid = 0;
+        if (string.IsNullOrEmpty(s)) return false;
+        var t = s.Trim();
+        if (t.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
+            return uint.TryParse(t[2..], System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out guid);
+        return uint.TryParse(t, out guid);
+    }
+
     // Phase 21c — one placed prop (tree, barrel, fence, crop, candle, etc.).
     // Drawn via the static-mesh pipeline; no per-frame state besides the bake.
     private sealed class StaticPropInstance
@@ -1237,7 +1294,7 @@ public sealed class RenderHost : IDisposable
     // camera appears in Phase 14+.
     private const float ChaseLookTargetY = 1.5f;
 
-    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr);
+    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid);
 
     /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
     /// <c>texset</c> from nodes.gas fills in at load time (e.g. <c>t_xxx_flr_04x04-a</c>
@@ -3535,7 +3592,7 @@ void main()
                     catch { /* skip */ }
                 }
 
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr));
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid));
             }
         }
 
@@ -3640,7 +3697,7 @@ void main()
                 catch { /* skip unreadable textures; subset falls back to uHasTexture=0 */ }
             }
 
-            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr));
+            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr, node.Guid));
         }
 
         BuildTsdStoreAndPreload(terrainReader, rawIndex);
@@ -3912,7 +3969,7 @@ void main()
                     catch { /* skip unreadable textures */ }
                 }
 
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr));
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid));
                 instancesAdded++;
             }
         }
@@ -12786,6 +12843,12 @@ void main()
                 }
                 foreach (var inst in _regionInstances)
                 {
+                    // SC-DUNGEON-FADE-NODES — skip snodes that
+                    // trigger_fade_nodes_box has faded to alpha=0
+                    // (basement/dungeon reveal). When alpha returns
+                    // to 1 (or the snode never faded), draw normally.
+                    if (_fadedSnodes.TryGetValue(inst.SnodeGuid, out var alpha) && alpha <= 0.01f)
+                        continue;
                     var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                     bool modelSet = false;
                     for (var i = 0; i < inst.Mesh.Subsets.Count; i++)

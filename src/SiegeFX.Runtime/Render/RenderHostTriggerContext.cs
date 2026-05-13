@@ -61,4 +61,9 @@ internal sealed class RenderHostTriggerContext : TriggerContext
     {
         _host.OnTriggerCallSfxScript(scriptName, args, origin);
     }
+
+    public override void FadeNodes(IReadOnlyList<string> args)
+    {
+        _host.OnTriggerFadeNodes(args);
+    }
 }
