@@ -8793,6 +8793,40 @@ void main()
     /// dynamic_edge=right: the bar fills from left as life ticks down, so
     /// we scale rect width and uvR by currentFrac (V-flip per the gas
     /// bottom-up convention same as data_bar.gas).</summary>
+    // SC-HUD-OVERHEAD-BARS attribute-coverage block. Per
+    // feedback_audit_asset_paths.md's 2026-05-13 fold, every gas attribute
+    // either gets consumed by code OR a comment-justified skip. For
+    // status_bars.gas elements:
+    //   - alpha = 1.0          → Vector4.One default, no per-bar override
+    //   - common_control = false → SiegeFX doesn't have a common-template
+    //                             registry; bar style is hardcoded here
+    //   - draw_order = 1/2     → implicit: HP drawn first, MP stacked below
+    //   - rect (per-slot)      → IGNORED — gas authors slot-specific rects
+    //                             but the engine offsets per actor's screen
+    //                             position (we project worldPos to NDC and
+    //                             center the 56×8 ref rect on it)
+    //   - draw_outline = true  → DrawBorder call at end of DrawOverheadBar
+    //   - texture              → b_gui_ig_mnu_status_bars (atlas, lazy)
+    //   - uvcoords             → consumed per-bar with V-flip
+    //   - wrap_mode = clamp    → texture loads with GL_REPEAT (GlTexture.cs:51)
+    //                             — see U-clamp epsilon in DrawOverheadBar
+    //                             which inset the right edge by 1 texel to
+    //                             keep bilinear inside the strip even at
+    //                             frac=1.0. SC-HUD-OVERHEAD-BARS-WRAP-PROPER
+    //                             splinter: switch to ClampToEdge via a
+    //                             per-GlTexture flag once we identify all
+    //                             usages that need REPEAT (terrain tiles).
+    //   - dynamic_edge = right → fillW + uClippedR scale by life fraction
+    //   - border_color = 0xff000000 → black Vector4 passed to DrawBorder
+    //   - pass_through = true  → click-routing hint for the gas widget
+    //                             system; render-only path can ignore
+    //   - [oncreated] setvisible(false) → DS1's "engine reveals per actor"
+    //                             pattern; our visibility gate (player
+    //                             always; wounded/aggro for NPCs) is the
+    //                             equivalent at the rendering layer
+    //   - The dim bg color (0.05/0.05/0.05 @ 0.82α) is SiegeFX-invented for
+    //     readability of the empty region — NOT authored in DS1's gas
+    //     (DS1 ships no bg layer; missing fill is just transparent).
     private void DrawOverheadStatusBars(int viewportW, int viewportH, Matrix4x4 viewProj)
     {
         if (_iconRenderer is null || _barRenderer is null) return;
@@ -8899,7 +8933,18 @@ void main()
             if (fillW > 0)
             {
                 // Clip the U axis to the fill fraction (gas U range × frac).
-                float uClippedR = gasU0 + (gasU1 - gasU0) * frac;
+                // texelInset = 1 texel of safety on the right edge so a
+                // bilinear sample at frac=1.0 doesn't pull in the next
+                // atlas strip's leftmost texels — GlTexture loads with
+                // GL_REPEAT (GlTexture.cs:51) instead of the gas-authored
+                // wrap_mode=clamp; this epsilon paves over the mismatch
+                // until SC-HUD-OVERHEAD-BARS-WRAP-PROPER lands. Texture
+                // is ~128px wide; 1/256 ≈ half-texel keeps the inset
+                // visually invisible (sub-pixel) while safely inside.
+                const float texelInset = 1f / 256f;
+                float uSpan = gasU1 - gasU0;
+                float uClippedR = gasU0 + uSpan * frac - texelInset;
+                if (uClippedR < gasU0 + texelInset) uClippedR = gasU0 + texelInset;
                 _iconRenderer.DrawIcon(viewportW, viewportH, _statusBarsTexture,
                     x, y, fillW, h, Vector4.One,
                     gasU0, 1f - gasV1, uClippedR, 1f - gasV0);
