@@ -8532,14 +8532,17 @@ void main()
         if (_iconRenderer is null) return;
         EnsureDataBarTextures();
 
-        // Dockbar background — stretches full viewport width. uvcoords in
-        // gas are 0..1,0..0.861 (the top 86% of the texture); DrawIcon's
-        // UV overload accepts those directly.
+        // Dockbar background — stretches full viewport width. Gas authors
+        // uvcoords = 0,0,1,0.861 in DS1's bottom-up frame (covers the
+        // bottom 86% of the texture, leaving the top 14% as padding).
+        // Convert to screen-top-down convention via the same V-flip rule
+        // documented on the per-button draw below.
         if (_dbStatusbarBg is not null)
         {
             var (bx, by, bw, bh) = Hud.DataBar.ProjectBgRect(viewportW, viewportH);
             _iconRenderer.DrawIcon(viewportW, viewportH, _dbStatusbarBg,
-                bx, by, bw, bh, Vector4.One, 0f, 0f, 1f, 0.861f);
+                bx, by, bw, bh, Vector4.One,
+                0f, 1f - 0.861f, 1f, 1f - 0f);
         }
 
         // Per-button render. Pick the right texture for each state. The
@@ -8559,10 +8562,19 @@ void main()
             // transparent padding). Default UV (0,0,1,1) would stretch the
             // padding INTO the rect — user reported potion bottles looked
             // stretched vertically because the 22×32 rect was sampling a
-            // 32×32 texture without crop. Same shape for every authored
-            // uvcoords block in data_bar.gas.
+            // 32×32 texture without crop.
+            // V-AXIS NOTE: DS1 RAWs are stored bottom-up (see
+            // project_siegefx_raw_bottomup.md), and the gas's uvcoords V
+            // values are authored in that same bottom-up frame: gas v0 is
+            // the BOTTOM of the texture region and gas v1 is the TOP.
+            // IconRenderer.DrawIcon takes vMin/vMax in screen-top-down
+            // convention (vMin = top of rect → top of visible image). So
+            // to convert: screenVMin = 1 - gasV1, screenVMax = 1 - gasV0.
+            // U is unaffected (no horizontal flip convention). Without
+            // this flip the pause-button's V=0.125 bottom-padding crop
+            // displayed as a TOP crop, cutting into the visible icon.
             _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, tint,
-                slot.U0, slot.V0, slot.U1, slot.V1);
+                slot.U0, 1f - slot.V1, slot.U1, 1f - slot.V0);
         }
 
         // Quest indicator flash overlay — pulses red over the quest_log
