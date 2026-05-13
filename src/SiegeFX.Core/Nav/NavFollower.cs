@@ -262,28 +262,19 @@ public sealed class NavFollower
             }
             if (!advanced)
             {
-                // Phase 24-NAV fold (post-test) — RESPECT BOUNDARIES.
-                // The candidate XZ would leave the walkable mesh (off-
-                // path, no adjacent forward tile). DS1 doesn't let the
-                // actor walk off the surface here; previous SiegeFX
-                // code DID move the position to (nx,nz) anyway and
-                // resampled Y on the old triangle, which visually
-                // pushed the actor into terrain. Clamp the candidate
-                // back onto the current triangle's nearest interior
-                // point so the actor stops at the boundary. Stuck-
-                // detection above triggers a replan if the actor stays
-                // pinned for too many ticks.
-                if (standing >= 0)
+                // Phase 24-NAV fold (post-test #2) — earlier boundary-
+                // clamp was too aggressive and froze NPCs whose funnel
+                // waypoint happened to sit right on a triangle edge.
+                // Reverted to "advance anyway"; stuck-detection above
+                // (8-tick replan) catches genuinely-pinned cases. The
+                // true fix needs BSP-accelerated point-in-triangle so
+                // edge-on funnel waypoints tie-break consistently —
+                // splinter SC-NAV-BSP-LOOKUP carries that.
+                if (standing < 0)
                 {
-                    var clamped = Mesh.ClampPointToTriangleXZ(standing,
-                        new Vector3(nx, Position.Y, nz));
-                    nx = clamped.X;
-                    nz = clamped.Z;
-                }
-                else
-                {
-                    // No current triangle either — don't advance at all
-                    // this tick; let the next Replan recover.
+                    // No current triangle: leave position frozen so the
+                    // next tick / replan can re-bind; advancing here
+                    // would Y-sample on garbage.
                     nx = Position.X;
                     nz = Position.Z;
                 }
