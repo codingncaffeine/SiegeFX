@@ -167,8 +167,20 @@ public sealed class QuestJournal
             var def = entry.Definition;
             if (def is null || string.IsNullOrEmpty(def.TalkTargetTemplate)) continue;
             if (def.TalkCountGoal <= 0) continue;
-            if (npcTemplateName.IndexOf(def.TalkTargetTemplate,
-                                        StringComparison.OrdinalIgnoreCase) < 0) continue;
+            // SC-QUEST-OBJ-A-EXACT — proper-noun talk targets get exact match
+            // (case-insensitive) instead of substring. Reason: talk targets
+            // are typically named individuals (Edgaar, Nonataya, Merik, Hrok)
+            // not template families. The Sybex guide fold surfaced a real
+            // collision risk: `quest_rescue_torg` (Ch.II side) and
+            // `quest_report_torg_findings` (Ch.II main) both use "torg" as
+            // their TalkTargetTemplate and can be concurrently Active — under
+            // substring match a single talk would credit both. Exact-match
+            // eliminates that. Templates that genuinely umbrella variants
+            // (kept on the kill side for "krug" / "bandit" / etc.) are not
+            // affected because TALK targets in DS1 are always individual
+            // NPCs, never enemy families.
+            if (!string.Equals(npcTemplateName, def.TalkTargetTemplate,
+                               StringComparison.OrdinalIgnoreCase)) continue;
 
             entry.TalkProgress = Math.Min(def.TalkCountGoal, entry.TalkProgress + 1);
             if (entry.TalkProgress >= def.TalkCountGoal)
