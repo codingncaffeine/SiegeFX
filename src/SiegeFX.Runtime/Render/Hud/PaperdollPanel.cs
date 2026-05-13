@@ -96,7 +96,9 @@ public sealed class PaperdollPanel
                      int panelOriginX, int panelOriginY,
                      GlTexture? botPaneTex,
                      System.Func<string, GlTexture?> ghostLookup,
-                     System.Func<string, GlTexture?>? equippedIconLookup = null)
+                     System.Func<string, GlTexture?>? equippedIconLookup = null,
+                     bool viewHovered = false,
+                     bool viewPressed = false)
     {
         float s = Scale(viewportH);
 
@@ -139,6 +141,39 @@ public sealed class PaperdollPanel
                         uv.u0, uv.v0, uv.u1, uv.v1);
                 }
             }
+        }
+
+        // View button — hud_character.gas:107 rect 140,430,200,446
+        // with common_template=button_4 + centered "View" text (line 130).
+        // The DS1 button_4 template uses 4 edge strips
+        // (b_gui_cmn_button_{up,down,left,right}_up/hov/down per
+        // _ds1_common_control_art.gas:4-17) — texture-authentic chrome
+        // is SC-INFORAIL-VIEW-CHROME. For this slice we draw a colour-
+        // matched bordered frame using the same ink/border colours
+        // the existing CharacterPanel uses, plus the gas-authored
+        // "View" text centered in it.
+        {
+            int bx = panelOriginX + (int)System.Math.Round((ViewButton.X0 - 87) * s);
+            int by = panelOriginY + (int)System.Math.Round(ViewButton.Y0 * s);
+            int bw = (int)System.Math.Round((ViewButton.X1 - ViewButton.X0) * s);
+            int bh = (int)System.Math.Round((ViewButton.Y1 - ViewButton.Y0) * s);
+            // DS1 panel palette: dark fill #14141c-like, mauve-grey
+            // border #a3a78f, ink #aaa78e. Pressed state darkens the
+            // fill; hover lifts the border ink.
+            var fill   = viewPressed
+                ? new Vector4(0.04f, 0.04f, 0.06f, 1f)
+                : new Vector4(0.08f, 0.08f, 0.10f, 1f);
+            var brdr   = viewHovered
+                ? new Vector4(0.86f, 0.83f, 0.69f, 1f)
+                : new Vector4(0.667f, 0.655f, 0.557f, 1f);
+            var ink    = new Vector4(0.86f, 0.83f, 0.69f, 1f);
+            bars.DrawRect(viewportW, viewportH, bx, by, bw, bh, fill);
+            bars.DrawBorder(viewportW, viewportH, bx, by, bw, bh, brdr);
+            const string label = "View";
+            int lw = text.MeasureWidth(label);
+            int tx = bx + (bw - lw) / 2;
+            int ty = by + (bh - 8) / 2;
+            text.DrawString(viewportW, viewportH, label, tx, ty + (viewPressed ? 1 : 0), ink);
         }
     }
 
