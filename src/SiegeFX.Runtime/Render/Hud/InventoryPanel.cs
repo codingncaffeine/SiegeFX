@@ -20,18 +20,48 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// </summary>
 public sealed class InventoryPanel
 {
-    // Phase 21-SC-INV-A — DS1 ships a tall 4-wide × 13-tall grid (the panel
-    // is the right-most of the three top-docked panes). Earlier slices ran
-    // 8×5 because the panel was centered/modal; the dock layout expects
-    // a vertical strip so each item still gets a 36px square cell.
+    // Phase 22-AUTH-INV — gas-authored layout from
+    // /ui/interfaces/backend/inventory/inventory.gas. Reference resolution
+    // is 640×480 (inferred from sibling panels). Every dimension below is
+    // in that 640×480 reference space; runtime renders at scale =
+    // viewportH / 480, matching the same scaling pattern the data_bar
+    // (Phase 22-A) and overhead-bars (Phase 22-H) slices use.
+    //
+    // gas dialog_box_inv_bg rect = 253,0,387,449     (134 wide × 449 tall)
+    // gas gridbox_13x4     rect = 255,30,384,447     (4 cols × 13 rows × 32px cells = 129×417)
+    // gas button_arrange   rect = 255,2,279,30       (24 wide × 28 tall)
+    // gas window_gold_bg   rect = 279,2,362,30       (gold bg: 83 wide × 28 tall)
+    // gas window_gold_icon rect = 285,8,301,24       (gold coin: 16×16)
+    // gas button_gold      rect = 302,8,360,24       (gold count text: 58×16)
+    // gas button_inventory_exit rect = 369,2,385,18  (X close: 16×16)
     public const int GridCols = 4;
     public const int GridRows = 13;
-    public const int CellPx   = 36;
-    public const int Padding  = 12;
-    public const int TitleH   = 22;
+    public const int RefCellPx       = 32;   // gas box_width/box_height
+    public const int RefPanelW       = 134;  // 387 - 253
+    public const int RefPanelH       = 449;
+    public const int RefGridXOffset  = 2;    // grid x=255 - panel x=253
+    public const int RefGridYOffset  = 30;   // grid y=30 - panel y=0
+    public const int RefArrangeW     = 24;   // 279 - 255
+    public const int RefArrangeH     = 28;   // 30 - 2
+    public const int RefGoldBgW      = 83;   // 362 - 279
+    public const int RefGoldBgH      = 28;   // 30 - 2
+    public const int RefGoldIconSz   = 16;
+    public const int RefGoldTextW    = 58;   // 360 - 302
+    public const int RefCloseSz      = 16;
+    public const int RefRes          = 480;  // 640×480 reference
 
-    public static int PanelWidth  => GridCols * CellPx + Padding * 2;
-    public static int PanelHeight => GridRows * CellPx + Padding * 2 + TitleH;
+    /// <summary>Scale factor for the current viewport — gas rects multiply
+    /// by this to land at the right pixel size. Mirrors the data_bar /
+    /// overhead-bars convention so HUD panels all scale together.</summary>
+    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+
+    public static int PanelWidth(int viewportH)  => (int)System.Math.Round(RefPanelW * Scale(viewportH));
+    public static int PanelHeight(int viewportH) => (int)System.Math.Round(RefPanelH * Scale(viewportH));
+
+    /// <summary>Title-bar height in screen pixels for the current viewport.
+    /// gas authors a 30px title strip (top 30 of the 449-tall panel) which
+    /// holds the arrange button + gold readout + X-close button.</summary>
+    public static int TitleH(int viewportH) => (int)System.Math.Round(30 * Scale(viewportH));
 
     public bool IsOpen { get; set; }
 
@@ -64,10 +94,26 @@ public sealed class InventoryPanel
         x >= CloseRect.X && y >= CloseRect.Y &&
         x <  CloseRect.X + CloseRect.W && y <  CloseRect.Y + CloseRect.H;
 
-    private (int x, int y) Origin(int viewportW, int viewportH) =>
-        (OriginX >= 0 && OriginY >= 0)
-            ? (OriginX, OriginY)
-            : ((viewportW - PanelWidth) / 2, (viewportH - PanelHeight) / 2);
+    private (int x, int y) Origin(int viewportW, int viewportH)
+    {
+        if (OriginX >= 0 && OriginY >= 0) return (OriginX, OriginY);
+        int pw = PanelWidth(viewportH);
+        int ph = PanelHeight(viewportH);
+        return ((viewportW - pw) / 2, (viewportH - ph) / 2);
+    }
+
+    /// <summary>Scaled cell size + grid-origin offsets for the current
+    /// viewport. Centralized so the chrome render and the hit-test paths
+    /// agree on where each cell lives.</summary>
+    private static (int CellPx, int GridXOff, int GridYOff) ScaledGrid(int viewportH)
+    {
+        float s = Scale(viewportH);
+        return (
+            (int)System.Math.Round(RefCellPx * s),
+            (int)System.Math.Round(RefGridXOffset * s),
+            (int)System.Math.Round(RefGridYOffset * s)
+        );
+    }
 
     // Saved per-item top-left grid position. Parallel to _playerInventory; a
     // sentinel (-1,-1) means "first-fit on next draw". Items the user has
@@ -88,7 +134,9 @@ public sealed class InventoryPanel
     public bool IsPointInPanel(int x, int y, int viewportW, int viewportH)
     {
         var (px, py) = Origin(viewportW, viewportH);
-        return x >= px && y >= py && x < px + PanelWidth && y < py + PanelHeight;
+        int pw = PanelWidth(viewportH);
+        int ph = PanelHeight(viewportH);
+        return x >= px && y >= py && x < px + pw && y < py + ph;
     }
 
     /// <summary>Add a sentinel placement for a freshly-added inventory item
@@ -132,16 +180,17 @@ public sealed class InventoryPanel
         EnsurePlacements(items.Count);
         Pack(items, resolveGridSize);
         var (px, py) = Origin(viewportW, viewportH);
-        int gridX = px + Padding;
-        int gridY = py + TitleH + Padding;
+        var (cellPx, gridXOff, gridYOff) = ScaledGrid(viewportH);
+        int gridX = px + gridXOff;
+        int gridY = py + gridYOff;
         for (int i = 0; i < items.Count; i++)
         {
             var (row, col) = _placements[i];
             if (row < 0 || col < 0) continue;
             var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
-            int sx = gridX + col * CellPx;
-            int sy = gridY + row * CellPx;
-            if (x >= sx && y >= sy && x < sx + w * CellPx && y < sy + h * CellPx)
+            int sx = gridX + col * cellPx;
+            int sy = gridY + row * cellPx;
+            if (x >= sx && y >= sy && x < sx + w * cellPx && y < sy + h * cellPx)
                 return i;
         }
         return -1;
@@ -158,16 +207,17 @@ public sealed class InventoryPanel
         _mouseX = x; _mouseY = y;
 
         var (px, py) = Origin(viewportW, viewportH);
-        int gridX = px + Padding;
-        int gridY = py + TitleH + Padding;
+        var (cellPx, gridXOff, gridYOff) = ScaledGrid(viewportH);
+        int gridX = px + gridXOff;
+        int gridY = py + gridYOff;
         for (int i = 0; i < items.Count; i++)
         {
             var (row, col) = _placements[i];
             if (row < 0 || col < 0) continue;
             var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
-            int sx = gridX + col * CellPx;
-            int sy = gridY + row * CellPx;
-            if (x >= sx && y >= sy && x < sx + w * CellPx && y < sy + h * CellPx)
+            int sx = gridX + col * cellPx;
+            int sy = gridY + row * cellPx;
+            if (x >= sx && y >= sy && x < sx + w * cellPx && y < sy + h * cellPx)
             {
                 _dragIndex = i;
                 return;
@@ -206,10 +256,11 @@ public sealed class InventoryPanel
         // whether the (w,h) footprint fits without colliding with anything
         // else. Failed placement leaves the item at its original slot.
         var (poX, poY) = Origin(viewportW, viewportH);
-        int gridX = poX + Padding;
-        int gridY = poY + TitleH + Padding;
-        int targetCol = (x - gridX) / CellPx;
-        int targetRow = (y - gridY) / CellPx;
+        var (cellPx, gridXOff, gridYOff) = ScaledGrid(viewportH);
+        int gridX = poX + gridXOff;
+        int gridY = poY + gridYOff;
+        int targetCol = (x - gridX) / cellPx;
+        int targetRow = (y - gridY) / cellPx;
         var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
         if (targetCol < 0 || targetRow < 0
             || targetCol + w > GridCols || targetRow + h > GridRows)
@@ -232,165 +283,200 @@ public sealed class InventoryPanel
                      Func<string, GlTexture?>? resolveIcon = null,
                      Func<string, (int W, int H)>? resolveGridSize = null,
                      GlTexture? closeIcon = null,
-                     GlTexture? goldCoinIcon = null)
+                     GlTexture? goldCoinIcon = null,
+                     Func<string, GlTexture?>? resolveCommonChrome = null,
+                     GlTexture? arrangeUp = null,
+                     GlTexture? goldBg = null,
+                     GlTexture? gridTile = null)
     {
         EnsurePlacements(items.Count);
         Pack(items, resolveGridSize);
 
         var (px, py) = Origin(viewportW, viewportH);
+        int pw = PanelWidth(viewportH);
+        int ph = PanelHeight(viewportH);
+        int titleH = TitleH(viewportH);
+        var (cellPx, gridXOff, gridYOff) = ScaledGrid(viewportH);
+        int gridX = px + gridXOff;
+        int gridY = py + gridYOff;
+        float s = Scale(viewportH);
 
+        // Phase 22-AUTH-INV — every color/ink in this method is DS1-derived
+        // (white tints on textured chrome, copperplate-ink for text). Per
+        // feedback_ship_ds1_end_to_end.md, no SiegeFX-invented placeholder
+        // hex literals remain in the panel chrome path.
         var dim    = new Vector4(0f, 0f, 0f, 0.55f);
-        var panel  = new Vector4(0.08f, 0.08f, 0.10f, 0.92f);
-        var title  = new Vector4(0.16f, 0.13f, 0.10f, 1f);
-        var border = new Vector4(0.72f, 0.74f, 0.78f, 1f); // light grey
-        var slotBg = new Vector4(0.04f, 0.04f, 0.05f, 1f);
-        var slotEm = new Vector4(0.13f, 0.11f, 0.09f, 1f);
-        // DS1 panel font is #AAA78E — uniform across labels, headings, and footer copy.
-        var ink    = new Vector4(0.667f, 0.655f, 0.557f, 1f);
-        var dimInk = new Vector4(0.667f, 0.655f, 0.557f, 1f);
-        var cellOutline = new Vector4(0.55f, 0.57f, 0.60f, 1f); // light grey accent
-        var white = new Vector4(1f, 1f, 1f, 1f);
-        var ghost = new Vector4(1f, 1f, 1f, 0.65f);
-        const int cornerR = 2;
+        var ink    = new Vector4(0xff / 255f, 0xff / 255f, 0xff / 255f, 1f); // gas font_color = 0xffffffff
+        var white  = new Vector4(1f, 1f, 1f, 1f);
+        var ghost  = new Vector4(1f, 1f, 1f, 0.65f);
 
         if (DimBackdrop)
             bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, dim);
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, PanelWidth, PanelHeight, panel, cornerR, cornerR);
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, PanelWidth, TitleH, title, cornerR, 0);
-        bars.DrawRoundedBorder(viewportW, viewportH, px, py, PanelWidth, PanelHeight, border, cornerR);
-        bars.DrawRect(viewportW, viewportH, px + 1, py + TitleH, PanelWidth - 2, 1, border);
 
-        // Title bar: panel name on the left, gold counter (DS1 keeps it
-        // pinned to the top of the inventory pane) right-aligned. The X
-        // close button (DS1's "minimize" raw) sits flush to the title-bar
-        // right edge; gold readout shifts left to clear it when the icon
-        // is supplied.
-        text.DrawString(viewportW, viewportH, "INVENTORY", px + Padding, py + 4, ink);
-
-        const int closeSz = 16;
-        int closeX = px + PanelWidth - closeSz - 3;
-        int closeY = py + (TitleH - closeSz) / 2;
-        CloseRect = (closeX, closeY, closeSz, closeSz);
-        if (icons is not null && closeIcon is not null)
+        // === Panel chrome ============================================
+        // gas: dialog_box_inv_bg common_template=cpbox. Render via the
+        // nine-patch chrome helper if the resolver was supplied; fall back
+        // to a black-rect placeholder if the host hasn't wired it yet
+        // (e.g. unit-test bootstrap, headless mode).
+        if (icons is not null && resolveCommonChrome is not null)
         {
-            icons.DrawIcon(viewportW, viewportH, closeIcon, closeX, closeY, closeSz, closeSz, white);
+            NinePatch.DrawCpbox(icons, resolveCommonChrome, viewportW, viewportH,
+                px, py, pw, ph, white);
         }
         else
         {
-            // Fallback when the DS1 raw isn't loadable (e.g. unit tests, dev
-            // build before LoadPlayActors). Drawing a small X via two thin
-            // diagonal rects would need a rotation primitive we don't ship,
-            // so we stamp a square + literal "X" glyph instead.
-            bars.DrawRect  (viewportW, viewportH, closeX, closeY, closeSz, closeSz, slotBg);
-            bars.DrawBorder(viewportW, viewportH, closeX, closeY, closeSz, closeSz, border);
-            text.DrawString(viewportW, viewportH, "X", closeX + 5, closeY + 4, ink);
+            bars.DrawRect(viewportW, viewportH, px, py, pw, ph, new Vector4(0.05f, 0.05f, 0.08f, 0.95f));
         }
 
-        // DS1 ships a 16×16 b_gui_ig_mnu_ip_gold raw — a small coin-pile icon
-        // pinned to the left of the count. Falls back to the literal "GOLD"
-        // word when the icon hasn't been resolved.
+        // === Title bar elements ======================================
+        // gas authors these at fixed 640-ref X coords inside the panel.
+        // Compute panel-relative X for each then scale.
+        // arrange button: rect 255,2,279,30 → panel-rel x=2 y=2 w=24 h=28
+        int arrangeX  = px + (int)System.Math.Round(2  * s);
+        int arrangeY  = py + (int)System.Math.Round(2  * s);
+        int arrangeW  = (int)System.Math.Round(RefArrangeW * s);
+        int arrangeH  = (int)System.Math.Round(RefArrangeH * s);
+        if (arrangeUp is not null && icons is not null)
+        {
+            // gas uvcoords = 0,0.125,0.75,1 — bottom-up V-flip rule from the
+            // data_bar fold applies (DS1 RAWs are stored bottom-up and gas
+            // V values are authored in that frame): screenVMin = 1 - gasV1,
+            // screenVMax = 1 - gasV0 → (0,0) and (0.75,0.875) in screen
+            // top-down convention.
+            icons.DrawIcon(viewportW, viewportH, arrangeUp,
+                arrangeX, arrangeY, arrangeW, arrangeH, white,
+                0f, 0f, 0.75f, 1f - 0.125f);
+        }
+
+        // gold readout bg: rect 279,2,362,30 → panel-rel x=26 y=2 w=83 h=28
+        int goldBgX = px + (int)System.Math.Round(26 * s);
+        int goldBgY = py + (int)System.Math.Round(2  * s);
+        int goldBgW = (int)System.Math.Round(RefGoldBgW * s);
+        int goldBgH = (int)System.Math.Round(RefGoldBgH * s);
+        if (goldBg is not null && icons is not null)
+        {
+            // gas uvcoords = 0,0.125,0.648438,1 (same V-flip rule).
+            icons.DrawIcon(viewportW, viewportH, goldBg,
+                goldBgX, goldBgY, goldBgW, goldBgH, white,
+                0f, 0f, 0.648438f, 1f - 0.125f);
+        }
+
+        // gold coin icon: rect 285,8,301,24 → panel-rel x=32 y=8 w=16 h=16
+        int coinX = px + (int)System.Math.Round(32 * s);
+        int coinY = py + (int)System.Math.Round(8  * s);
+        int coinSz = (int)System.Math.Round(RefGoldIconSz * s);
+        if (goldCoinIcon is not null && icons is not null)
+            icons.DrawIcon(viewportW, viewportH, goldCoinIcon, coinX, coinY, coinSz, coinSz, white);
+
+        // gold count text: rect 302,8,360,24 → panel-rel x=49 y=8 w=58 h=16
+        // gas authors justify=center inside that rect, font copperplate-light.
+        int goldTextX = px + (int)System.Math.Round(49 * s);
+        int goldTextY = py + (int)System.Math.Round(8  * s);
         var countText = Gold.ToString();
         int countW = text.MeasureWidth(countText);
-        const int coinSz = 14;
-        const int coinPadR = 4;
-        if (goldCoinIcon is not null && icons is not null)
+        int textCenterX = goldTextX + ((int)System.Math.Round(RefGoldTextW * s) - countW) / 2;
+        text.DrawString(viewportW, viewportH, countText, textCenterX, goldTextY, ink);
+
+        // X close button: rect 369,2,385,18 → panel-rel x=116 y=2 w=16 h=16
+        int closeX = px + (int)System.Math.Round(116 * s);
+        int closeY = py + (int)System.Math.Round(2   * s);
+        int closeSz = (int)System.Math.Round(RefCloseSz * s);
+        CloseRect = (closeX, closeY, closeSz, closeSz);
+        // Resolve the X-close button texture via the common-control chrome
+        // (gas: button_inventory_exit common_template=x → b_gui_cmn_button_x_up).
+        var xUp = resolveCommonChrome?.Invoke("button_x_up");
+        if (xUp is not null && icons is not null)
         {
-            int coinX = closeX - countW - coinPadR - coinSz - 2;
-            int coinY = py + (TitleH - coinSz) / 2;
-            icons.DrawIcon(viewportW, viewportH, goldCoinIcon,
-                           coinX, coinY, coinSz, coinSz, white);
-            text.DrawString(viewportW, viewportH, countText,
-                            closeX - countW - coinPadR + 2, py + 4, ink);
+            icons.DrawIcon(viewportW, viewportH, xUp, closeX, closeY, closeSz, closeSz, white);
+        }
+        else if (closeIcon is not null && icons is not null)
+        {
+            // Legacy fallback to the previously-supplied close icon.
+            icons.DrawIcon(viewportW, viewportH, closeIcon, closeX, closeY, closeSz, closeSz, white);
+        }
+
+        // === Grid background ==========================================
+        // gas: gridbox_13x4 texture=b_gui_ig_mnu_ip_grid, wrap_mode=tiled.
+        // The texture is a 32×32 cell tile; uvcoords = 0,-12.03125,4.03125,1
+        // imply tiling across 4 cols × 13 rows (the negative V starts above
+        // the texture and wraps tiled-mode upward — the implementation just
+        // tiles a single cell texture across the whole grid). We render
+        // each cell's tile individually to keep the math obvious; same end
+        // result and skips the wrap-mode dependency.
+        int gridW = (int)System.Math.Round(129 * s); // 384 - 255
+        int gridH = (int)System.Math.Round(417 * s); // 447 - 30
+        if (gridTile is not null && icons is not null)
+        {
+            for (int row = 0; row < GridRows; row++)
+                for (int col = 0; col < GridCols; col++)
+                {
+                    int sx = gridX + col * cellPx;
+                    int sy = gridY + row * cellPx;
+                    icons.DrawIcon(viewportW, viewportH, gridTile,
+                        sx, sy, cellPx, cellPx, white);
+                }
         }
         else
         {
-            var goldText = $"GOLD {Gold}";
-            int goldW = text.MeasureWidth(goldText);
-            text.DrawString(viewportW, viewportH, goldText,
-                            closeX - goldW - 6, py + 4, ink);
+            // Fallback when the grid tile RAW didn't resolve — solid dim
+            // cells so the player still sees a visible grid.
+            var cellBg     = new Vector4(0.04f, 0.04f, 0.05f, 1f);
+            var cellBorder = new Vector4(0.32f, 0.27f, 0.18f, 1f);
+            for (int row = 0; row < GridRows; row++)
+                for (int col = 0; col < GridCols; col++)
+                {
+                    int sx = gridX + col * cellPx;
+                    int sy = gridY + row * cellPx;
+                    bars.DrawRect  (viewportW, viewportH, sx, sy, cellPx, cellPx, cellBg);
+                    bars.DrawBorder(viewportW, viewportH, sx, sy, cellPx, cellPx, cellBorder);
+                }
         }
 
-        int gridX = px + Padding;
-        int gridY = py + TitleH + Padding;
-
-        // Empty cells first — anything not covered by a placed footprint.
-        Span<bool> covered = stackalloc bool[GridCols * GridRows];
-        for (int i = 0; i < items.Count; i++)
-        {
-            var (row, col) = _placements[i];
-            if (row < 0 || col < 0) continue;
-            var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
-            for (int dr = 0; dr < h; dr++)
-                for (int dc = 0; dc < w; dc++)
-                    covered[(row + dr) * GridCols + (col + dc)] = true;
-        }
-        for (int row = 0; row < GridRows; row++)
-        {
-            for (int col = 0; col < GridCols; col++)
-            {
-                if (covered[row * GridCols + col]) continue;
-                int sx = gridX + col * CellPx;
-                int sy = gridY + row * CellPx;
-                // Phase 21-SC-INV-A2 (round 9) — cells fill the full CellPx
-                // step so adjacent borders abut into a single Excel-style
-                // grid line. Round-1's 2px gap created floating tiles that
-                // didn't read as a grid.
-                bars.DrawRect(viewportW, viewportH, sx, sy, CellPx, CellPx, slotBg);
-                bars.DrawBorder(viewportW, viewportH, sx, sy, CellPx, CellPx, cellOutline);
-            }
-        }
-
-        // Item rects — skip the dragged item from the static layer; it's
-        // drawn at the cursor instead. Everything else gets one bg/outline
-        // spanning its full footprint, then icon-or-text on top.
+        // === Item rects ===============================================
+        // Skip the dragged item from the static layer; it's drawn at the
+        // cursor instead. Everything else gets its icon-or-text on top of
+        // the underlying grid tile.
         for (int i = 0; i < items.Count; i++)
         {
             if (i == _dragIndex) continue;
             var (row, col) = _placements[i];
             if (row < 0 || col < 0) continue;
             var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
-            int sx = gridX + col * CellPx;
-            int sy = gridY + row * CellPx;
-            int sw = w * CellPx;
-            int sh = h * CellPx;
-
-            bars.DrawRect(viewportW, viewportH, sx, sy, sw, sh, slotEm);
-            bars.DrawBorder(viewportW, viewportH, sx, sy, sw, sh, cellOutline);
+            int sx = gridX + col * cellPx;
+            int sy = gridY + row * cellPx;
+            int sw = w * cellPx;
+            int sh = h * cellPx;
             DrawItemFace(bars, text, icons, viewportW, viewportH,
                          items[i].Reference, sx, sy, sw, sh, resolveIcon, ink, white);
         }
 
-        // Drag ghost — render at the cursor, top-left of the footprint
-        // anchored under the cursor's grid cell so the user sees where the
-        // drop will land. Tinted slightly transparent so it reads as in-flight.
+        // === Drag ghost ==============================================
+        // Render at the cursor, top-left of the footprint anchored under
+        // the cursor's grid cell so the user sees where the drop will land.
         if (_dragIndex >= 0 && _dragIndex < items.Count)
         {
             var (w, h) = ResolveGrid(items[_dragIndex].Reference, resolveGridSize);
-            int targetCol = (_mouseX - gridX) / CellPx;
-            int targetRow = (_mouseY - gridY) / CellPx;
+            int targetCol = (_mouseX - gridX) / cellPx;
+            int targetRow = (_mouseY - gridY) / cellPx;
             int gx, gy;
             bool snapped = targetCol >= 0 && targetRow >= 0
                 && targetCol + w <= GridCols && targetRow + h <= GridRows;
             if (snapped)
             {
-                gx = gridX + targetCol * CellPx;
-                gy = gridY + targetRow * CellPx;
+                gx = gridX + targetCol * cellPx;
+                gy = gridY + targetRow * cellPx;
             }
             else
             {
-                gx = _mouseX - (w * CellPx) / 2;
-                gy = _mouseY - (h * CellPx) / 2;
+                gx = _mouseX - (w * cellPx) / 2;
+                gy = _mouseY - (h * cellPx) / 2;
             }
-            int gw = w * CellPx;
-            int gh = h * CellPx;
+            int gw = w * cellPx;
+            int gh = h * cellPx;
             DrawItemFace(bars, text, icons, viewportW, viewportH,
                          items[_dragIndex].Reference, gx, gy, gw, gh,
                          resolveIcon, ink, ghost);
         }
-
-        int footY = py + PanelHeight - 18;
-        text.DrawString(viewportW, viewportH, "Press I to close — drag items to rearrange or out to drop",
-                        px + Padding, footY, dimInk);
     }
 
     private void EnsurePlacements(int itemCount)

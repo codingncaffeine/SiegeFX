@@ -12156,12 +12156,30 @@ void main()
                 _inventoryPanel.OriginY     = panelTopY;
                 _inventoryPanel.DimBackdrop = false;
                 _inventoryPanel.Gold        = _progression?.Gold ?? 0;
-                var invClose = TryGetGuiTexture("b_gui_ig_mnu_minimize-up");
-                var goldCoin = TryGetGuiTexture("b_gui_ig_mnu_ip_gold");
+                // Phase 22-AUTH-INV — DS1-authentic chrome assets loaded
+                // here per inventory.gas:
+                //   button_arrange    → b_gui_ig_mnu_ip_arrange_up
+                //   window_gold_bg    → b_gui_ig_mnu_ip_gold_box
+                //   window_gold_icon  → b_gui_ig_mnu_ip_gold
+                //   button_inventory_exit common_template=x → resolved via
+                //                       GetCommonTexture("button_x_up")
+                //   gridbox_13x4      → b_gui_ig_mnu_ip_grid
+                //   dialog_box_inv_bg common_template=cpbox → via NinePatch
+                // The minimize close icon kept as legacy fallback in case
+                // the cpbox X button is unresolved on first-frame.
+                var invClose   = TryGetGuiTexture("b_gui_ig_mnu_minimize-up");
+                var goldCoin   = TryGetGuiTexture("b_gui_ig_mnu_ip_gold");
+                var arrangeUp  = TryGetGuiTexture("b_gui_ig_mnu_ip_arrange_up");
+                var goldBg     = TryGetGuiTexture("b_gui_ig_mnu_ip_gold_box");
+                var gridTile   = TryGetGuiTexture("b_gui_ig_mnu_ip_grid");
                 _inventoryPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                     size.X, size.Y, _playerInventory, TryGetItemIcon, TryGetItemGridSize,
-                    invClose, goldCoin);
-                dockX += InventoryPanel.PanelWidth + panelGutter;
+                    invClose, goldCoin,
+                    resolveCommonChrome: GetCommonTexture,
+                    arrangeUp: arrangeUp,
+                    goldBg: goldBg,
+                    gridTile: gridTile);
+                dockX += InventoryPanel.PanelWidth(size.Y) + panelGutter;
             }
             if (_spellBookOpen && _barRenderer is not null)
             {
