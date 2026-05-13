@@ -337,9 +337,18 @@ public static class QuestCatalog
             {
                 Key                 = "quest_report_torg_findings",
                 ScreenName          = "Report Torg's Findings",
-                TalkTargetTemplate  = "torg",
+                // FIXME(SC-QUEST-OBJ-F-AUDIT): you REPORT Torg's findings to
+                // someone else (the Overseer's main-quest receiver), not to
+                // Torg himself. Targeting "torg" here would collide with
+                // quest_rescue_torg whose TALK target is also "torg" — under
+                // either substring OR exact match, both would credit on a
+                // single talk with Torg. Placeholder retargeted to the
+                // canonical follow-up Overseer NPC name guess until the
+                // F-AUDIT CLI mines the real activate_quest receiver from
+                // Logic.dsres.
+                TalkTargetTemplate  = "overseer",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with Torg about what he learned in the mines.",
+                ObjectiveText       = "Report Torg's findings to the Overseer.",
                 NextQuestKey        = "quest_for_merik",
             },
             ["quest_ordus_axe"] = new QuestDefinition

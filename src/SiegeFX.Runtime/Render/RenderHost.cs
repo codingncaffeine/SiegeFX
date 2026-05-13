@@ -617,6 +617,15 @@ public sealed class RenderHost : IDisposable
         public float RestPitch;
         public readonly List<SiegeFX.Core.Actors.LootEntry> Items;
         public LootThrow? Throw;
+        /// <summary>SC-WORLD-INVENTORY-PLACED — true for piles that were spawned
+        /// from a region's <c>objects/inventory.gas</c> (loose world items the
+        /// player walks over to pick up). Used to skip these piles in save
+        /// serialization: on load, <c>LoadWorldInventory</c> re-derives them
+        /// from inventory.gas so a pile that was never picked up reappears
+        /// correctly without persisting in the save file. Default false for
+        /// every other spawn site (enemy-death drops, vendor sells, scroll
+        /// drag-drop) so save behavior is unchanged for those.</summary>
+        public bool IsWorldInventory;
         public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
         { Position = position; Items = items; }
     }
@@ -4780,7 +4789,10 @@ void main()
                     new List<SiegeFX.Core.Actors.LootEntry>
                     {
                         new SiegeFX.Core.Actors.LootEntry("", p.TemplateName),
-                    });
+                    })
+                {
+                    IsWorldInventory = true,
+                };
                 _lootPiles.Add(pile);
                 spawned++;
             }
@@ -12202,6 +12214,16 @@ void main()
 
         foreach (var pile in _lootPiles)
         {
+            // SC-WORLD-INVENTORY-PLACED — piles sourced from objects/inventory.gas
+            // re-derive on load from the region data, so don't persist them
+            // here. Persisting would double-spawn (save copy restored + new
+            // copy from LoadWorldInventory re-fire on load); skipping makes
+            // un-picked-up world inventory respawn naturally and picked-up
+            // items stay gone for the session. NOTE: consumed-pickup state
+            // doesn't survive save-reload yet (splinter SC-WORLD-INVENTORY-
+            // CONSUMED); a player who picked up the fh_r1 fireshot and
+            // reloads will see it respawn until that splinter lands.
+            if (pile.IsWorldInventory) continue;
             var pileSnap = new SiegeFX.Core.Save.LootPileSnapshot
             {
                 Position = SiegeFX.Core.Save.Vec3.From(pile.Position),
@@ -12362,6 +12384,13 @@ void main()
         }
 
         _lootPiles.Clear();
+        // SC-WORLD-INVENTORY-PLACED — _inventoryGasLoaded gates LoadWorldInventory
+        // from re-spawning piles in an already-streamed region. Save serializer
+        // doesn't persist world-inventory piles (they re-derive from
+        // inventory.gas), so on load we MUST clear this set and re-fire
+        // LoadWorldInventory for every currently-loaded region — otherwise
+        // every loose scroll the player saw pre-save vanishes permanently.
+        _inventoryGasLoaded?.Clear();
         foreach (var pileSnap in save.LootPiles)
         {
             var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
@@ -12369,6 +12398,8 @@ void main()
                 items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
             _lootPiles.Add(new LootPile(pileSnap.Position.ToVector3(), items));
         }
+        if (_worldRegionGraphs is not null && _worldRegionGraphs.Count > 0)
+            LoadWorldInventory(_worldRegionGraphs.Select(t => t.Path));
 
         if (save.Player is not null && _player is not null)
         {
