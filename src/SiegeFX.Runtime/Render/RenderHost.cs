@@ -4340,6 +4340,28 @@ void main()
                     navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
                 }
                 navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+                // Phase 24-NAV-LOGICAL-FLAGS — bind region's gas-authored
+                // per-(snode,lnode) flag table (lf_human_player /
+                // lf_computer_player / surface tags). Loaded permissively
+                // — missing file or parse failure leaves the store empty,
+                // so old / fan content keeps the pre-NAV-LOGICAL-FLAGS
+                // "all triangles open" behavior.
+                try
+                {
+                    var lfPath = regionPath + "/terrain_nodes/editor/logical_flags.gas";
+                    if (mapReader.TryGetFile(lfPath, out _))
+                    {
+                        var lfBytes = mapReader.ExtractToMemory(lfPath);
+                        var lfStore = SiegeFX.Core.Assets.LogicalFlagsStore.Parse(lfBytes);
+                        navMesh.BindLogicalFlags(lfStore);
+                        if (lfStore.HasData)
+                            Console.WriteLine($"  logical_flags: {lfStore.EntryCount} entries — player/NPC gating active");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"  logical_flags load failed: {ex.Message} — gating skipped");
+                }
                 Console.WriteLine($"  nav mesh: {navMesh.TriangleCount} tri(s), " +
                                   $"{navMesh.Vertices.Length} welded vert(s), " +
                                   $"{navMesh.SourceSnodeCount} snode(s), " +
@@ -4668,7 +4690,13 @@ void main()
         {
             var pos = _playerFollower.Position;
             var speed = _playerFollower.Speed;
-            _playerFollower = new SiegeFX.Core.Nav.NavFollower(newNav, pos, speed);
+            _playerFollower = new SiegeFX.Core.Nav.NavFollower(newNav, pos, speed)
+            {
+                // Phase 24-NAV-LOGICAL-FLAGS — player respects the
+                // lf_human_player gate; computer-only zones are
+                // rejected as paths.
+                Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+            };
         }
 
         Console.WriteLine($"  rolling spawn: {newActors.Count}/{newInstances.Count} actor(s) live " +
@@ -7696,7 +7724,10 @@ void main()
         if (navMesh is not null)
         {
             var speed = player.Stats.WalkSpeed > 0f ? player.Stats.WalkSpeed : 4.5f;
-            _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed);
+            _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed)
+            {
+                Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+            };
         }
         _playerFacing = Vector3.UnitZ;
         // 9-SC-10b — re-seed the render-interp buffers for the fresh spawn so

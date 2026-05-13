@@ -22,6 +22,17 @@ public sealed class NavTraversal
     /// value for the appropriate templates.</summary>
     public float WaterCostMultiplier { get; init; } = float.PositiveInfinity;
 
+    /// <summary>Phase 24-NAV-LOGICAL-FLAGS — which actor-class gate
+    /// this policy passes. DS1's logical_flags.gas tags terrain
+    /// per-(snode,lnode) with <c>lf_human_player</c> /
+    /// <c>lf_computer_player</c> so authors can keep NPCs out of
+    /// player-only zones and vice versa. Defaults to
+    /// <see cref="LogicalFlagsStore.ActorClass.Neutral"/> (no gate
+    /// check) so existing call sites that didn't pass an ActorClass
+    /// keep working — opt-in by setting this on the policy passed to
+    /// the pathfinder.</summary>
+    public LogicalFlagsStore.ActorClass Actor { get; init; } = LogicalFlagsStore.ActorClass.Neutral;
+
     /// <summary>True when an actor with this policy can stand on / pass through the kind.</summary>
     public bool CanEnter(SnoModel.FloorKind kind) => float.IsFinite(GetMultiplier(kind));
 
@@ -44,4 +55,13 @@ public sealed class NavTraversal
     /// 30-tile detour beats a 10-tile swim — close to "swim only when there's no
     /// other way".</summary>
     public static NavTraversal Amphibious { get; } = new() { WaterCostMultiplier = 4f };
+
+    /// <summary>Player policy: land-only + lf_human_player gate. The
+    /// pathfinder rejects triangles tagged computer-only by the
+    /// region's logical_flags.gas.</summary>
+    public static NavTraversal Player { get; } = new() { Actor = LogicalFlagsStore.ActorClass.HumanPlayer };
+
+    /// <summary>NPC / brain policy: land-only + lf_computer_player gate.
+    /// Keeps NPCs out of human-only zones (towns interiors etc.).</summary>
+    public static NavTraversal Computer { get; } = new() { Actor = LogicalFlagsStore.ActorClass.ComputerPlayer };
 }

@@ -144,6 +144,18 @@ public static class NavPathfinder
         // open set looking for a goal it can never enter.
         if (!traversal.CanEnter(mesh.Kinds[startTri])) return false;
         if (!traversal.CanEnter(mesh.Kinds[goalTri])) return false;
+        // Phase 24-NAV-LOGICAL-FLAGS — per-triangle actor-class gate.
+        // When the region's logical_flags.gas tags a triangle's lnode
+        // as e.g. computer-only, a human player path-request rejects
+        // it as start/goal AND skips it during expansion. Local helper
+        // captures mesh + traversal for the inner loop.
+        bool TriPasses(int tri) =>
+            mesh.Flags is null ||
+            mesh.SourceLnodeIndex[tri] < 0 ||
+            mesh.Flags.CanEnter(mesh.SourceSnodeGuid[tri],
+                (byte)mesh.SourceLnodeIndex[tri], traversal.Actor);
+        if (!TriPasses(startTri)) return false;
+        if (!TriPasses(goalTri)) return false;
         if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
         ws ??= new Workspace();
@@ -177,6 +189,7 @@ public static class NavPathfinder
                 if (nb < 0 || closed[nb]) continue;
                 float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
                 if (float.IsPositiveInfinity(mul)) continue;
+                if (!TriPasses(nb)) continue;
                 float stepCost = Vector3.Distance(mesh.Centroids[curTri], mesh.Centroids[nb]) * mul;
                 float tentative = gScore[curTri] + stepCost;
                 if (tentative >= gScore[nb]) continue;

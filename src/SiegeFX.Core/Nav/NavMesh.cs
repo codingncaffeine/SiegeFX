@@ -52,8 +52,34 @@ public sealed class NavMesh
     /// produces.</summary>
     public int[] SourceNodeIndex { get; }
 
+    /// <summary>Per-triangle <see cref="SnoModel.LogicalGrouping.Id"/>
+    /// (the SNO-local "lnode" index, u8) from which the face came.
+    /// Phase 24-NAV-LOGICAL-FLAGS feeds the per-triangle gate lookup
+    /// in <see cref="LogicalFlagsStore"/>. -1 means "no lnode tag"
+    /// (older content or pre-NAV-LOGICAL-FLAGS-built meshes).</summary>
+    public int[] SourceLnodeIndex { get; }
+
+    /// <summary>Per-triangle snode guid (the 32-bit RegionGraph node
+    /// guid). Pairs with <see cref="SourceLnodeIndex"/> for
+    /// <see cref="LogicalFlagsStore.CanEnter"/> queries. 0 when not
+    /// available.</summary>
+    public uint[] SourceSnodeGuid { get; }
+
     /// <summary>Number of SNO instances whose nav faces were folded into the mesh.</summary>
     public int SourceSnodeCount { get; }
+
+    /// <summary>Phase 24-NAV-LOGICAL-FLAGS — optional logical-flags
+    /// store the pathfinder consults to gate triangles by actor-class.
+    /// Set via <see cref="BindLogicalFlags"/> at region-load time after
+    /// the gas has been parsed. Null when the region didn't ship the
+    /// file (older / fan content) — pathing falls back to flag-less
+    /// behavior, matching pre-NAV-LOGICAL-FLAGS.</summary>
+    public LogicalFlagsStore? Flags { get; private set; }
+
+    /// <summary>Phase 24-NAV-LOGICAL-FLAGS — bind the parsed gas store
+    /// to this mesh. Safe to call once after build; subsequent calls
+    /// overwrite (no expected use case, but no need to guard either).</summary>
+    public void BindLogicalFlags(LogicalFlagsStore store) { Flags = store; }
 
     /// <summary>How many SNO faces were dropped because their canonical vertex collapsed
     /// to a degenerate triangle (two vertices welded onto the same bucket). Zero on clean
@@ -97,6 +123,8 @@ public sealed class NavMesh
         SnoModel.FloorKind[] kinds,
         Vector3[] centroids,
         int[] sourceNodeIndex,
+        int[] sourceLnodeIndex,
+        uint[] sourceSnodeGuid,
         int sourceSnodeCount,
         int degenerateFaceCount,
         int nonManifoldEdgeCount,
@@ -113,6 +141,8 @@ public sealed class NavMesh
         Kinds = kinds;
         Centroids = centroids;
         SourceNodeIndex = sourceNodeIndex;
+        SourceLnodeIndex = sourceLnodeIndex;
+        SourceSnodeGuid = sourceSnodeGuid;
         SourceSnodeCount = sourceSnodeCount;
         DegenerateFaceCount = degenerateFaceCount;
         NonManifoldEdgeCount = nonManifoldEdgeCount;
@@ -162,6 +192,10 @@ public sealed class NavMesh
         var tris = new List<int>(capacity: 2048);
         var kinds = new List<SnoModel.FloorKind>(capacity: 2048);
         var sourceNode = new List<int>(capacity: 2048);
+        // Phase 24-NAV-LOGICAL-FLAGS — per-triangle lnode + snode-guid
+        // so the pathfinder can consult LogicalFlagsStore at run time.
+        var sourceLnode = new List<int>(capacity: 2048);
+        var sourceSnodeGuid = new List<uint>(capacity: 2048);
         int sourceSnodes = 0;
         int degenerate = 0;
         float inv = 1f / WeldToleranceUnits;
@@ -210,6 +244,8 @@ public sealed class NavMesh
                     tris.Add(ic);
                     kinds.Add(group.Kind);
                     sourceNode.Add(nodeIdx);
+                    sourceLnode.Add(group.Id);
+                    sourceSnodeGuid.Add(node.Guid);
                 }
             }
         }
@@ -359,6 +395,8 @@ public sealed class NavMesh
             kindsArr,
             centroids,
             sourceNode.ToArray(),
+            sourceLnode.ToArray(),
+            sourceSnodeGuid.ToArray(),
             sourceSnodes,
             degenerate,
             nonManifoldEdges,

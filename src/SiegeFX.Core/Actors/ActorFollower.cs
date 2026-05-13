@@ -48,7 +48,13 @@ public sealed class ActorFollower
 
     public ActorFollower(NavMesh mesh, Vector3 startPos, float speed, int rngSeed, Vector3 initialFacing)
     {
-        Follower = new NavFollower(mesh, startPos, speed);
+        Follower = new NavFollower(mesh, startPos, speed)
+        {
+            // Phase 24-NAV-LOGICAL-FLAGS — NPC / brain actors respect
+            // the lf_computer_player gate so they stay out of human-
+            // only zones (town building interiors, scripted refuges).
+            Traversal = NavTraversal.Computer,
+        };
         _rng = new Random(rngSeed);
         // Collapse to XZ unit vector; degenerate input (Y-only or zero) falls back to +Z.
         var flat = new Vector3(initialFacing.X, 0f, initialFacing.Z);
