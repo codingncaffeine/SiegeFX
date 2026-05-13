@@ -124,6 +124,19 @@ public sealed class QuestJournal
         return (IReadOnlyList<string>?)completed ?? Array.Empty<string>();
     }
 
+    /// <summary>SC-QUEST-OBJ-A-EXACT post-RESYNC matcher. Exact equality on
+    /// the actor's full template name OR the catalog target followed by an
+    /// underscore (so "merik" lights up "merik" and "merik_nis" but not
+    /// "merikalive"). Case-insensitive in both arms.</summary>
+    static bool IsTalkTargetMatch(string actorTemplate, string catalogTarget)
+    {
+        if (string.Equals(actorTemplate, catalogTarget, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return actorTemplate.Length > catalogTarget.Length
+            && actorTemplate.StartsWith(catalogTarget, StringComparison.OrdinalIgnoreCase)
+            && actorTemplate[catalogTarget.Length] == '_';
+    }
+
     /// <summary>SC-QUEST-OBJ-F — when a quest just auto-completed, activate
     /// any chained <see cref="QuestDefinition.NextQuestKey"/> follow-up.
     /// Walked AFTER the credit loop so we don't iterate _entries while
@@ -167,20 +180,20 @@ public sealed class QuestJournal
             var def = entry.Definition;
             if (def is null || string.IsNullOrEmpty(def.TalkTargetTemplate)) continue;
             if (def.TalkCountGoal <= 0) continue;
-            // SC-QUEST-OBJ-A-EXACT — proper-noun talk targets get exact match
-            // (case-insensitive) instead of substring. Reason: talk targets
-            // are typically named individuals (Edgaar, Nonataya, Merik, Hrok)
-            // not template families. The Sybex guide fold surfaced a real
-            // collision risk: `quest_rescue_torg` (Ch.II side) and
-            // `quest_report_torg_findings` (Ch.II main) both use "torg" as
-            // their TalkTargetTemplate and can be concurrently Active — under
-            // substring match a single talk would credit both. Exact-match
-            // eliminates that. Templates that genuinely umbrella variants
-            // (kept on the kill side for "krug" / "bandit" / etc.) are not
-            // affected because TALK targets in DS1 are always individual
-            // NPCs, never enemy families.
-            if (!string.Equals(npcTemplateName, def.TalkTargetTemplate,
-                               StringComparison.OrdinalIgnoreCase)) continue;
+            // SC-QUEST-OBJ-A-EXACT (post-RESYNC fold 2026-05-13): match on
+            // exact NPC template OR on TalkTargetTemplate + "_" prefix. DS1
+            // mixes naming conventions — some NPCs are bare-name templates
+            // ("torg", "skartis", "gloern") while others ship with suffixes
+            // ("merik_nis", "lord_bolingar_join", "king_konreid"). Exact-
+            // match alone would silently no-op on every suffixed variant
+            // when the catalog stores the bare name; pure substring would
+            // re-introduce false-positive collisions ("torg" matching
+            // "torgmaster", etc.). Underscore-anchored prefix splits the
+            // difference: "merik" matches "merik" and "merik_nis" but NOT
+            // "merikalive" or other non-namespace neighbors. The previous
+            // torg double-credit case (rescue+report) is gone post-RESYNC
+            // (the two quests now target distinct NPCs).
+            if (!IsTalkTargetMatch(npcTemplateName, def.TalkTargetTemplate)) continue;
 
             entry.TalkProgress = Math.Min(def.TalkCountGoal, entry.TalkProgress + 1);
             if (entry.TalkProgress >= def.TalkCountGoal)

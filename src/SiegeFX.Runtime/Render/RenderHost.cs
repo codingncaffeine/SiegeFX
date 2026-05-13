@@ -8891,6 +8891,32 @@ void main()
         _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
     }
 
+    /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire (2026-05-13): fire the
+    /// authored <c>[aspect][voice][enemy_spotted]</c> cue when an actor's
+    /// brain transitions into Chase/Attack for the first time. The audit
+    /// CLI confirmed 846 DS1 templates author this state; bosses commonly
+    /// don't (they're silent until engaged). Lazy-registers the cue on
+    /// first use, same shape as PlayDeathSfx.</summary>
+    private void PlayEnemySpottedSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
+    {
+        if (_audio is null || template is null || _templateStore is null) return;
+        var cue = _templateStore.GetAttribute(template, "aspect", "voice", "enemy_spotted", "*");
+        if (string.IsNullOrEmpty(cue)) return;
+        if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav");
+        }
+        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+    }
+
+    /// <summary>SC-ENEMY-AUDIO-AUDIT — SCIDs of actors that were already
+    /// in aggro (Chase/Attack) on the prior frame, so the per-frame combat
+    /// scan can fire enemy_spotted only on the entering edge instead of
+    /// every tick. Cleared on region change / save-reload along with the
+    /// rest of the actor state.</summary>
+    private readonly HashSet<uint> _aggroPrevFrame = new();
+
     /// <summary>Phase 21-SC-BARREL-FOLD — play the shatter cue for a
     /// breakable static prop. DS1 stores the cue under one of two
     /// attribute paths depending on which authoring tool produced the
@@ -9578,6 +9604,11 @@ void main()
     {
         if (_player is null || _activeMood is null) return;
         bool nowInCombat = false;
+        // SC-ENEMY-AUDIO-AUDIT runtime wire — track per-actor aggro state
+        // each tick so the enemy_spotted cue fires only on the entering
+        // edge (idle→Chase/Attack). A persistent HashSet across frames
+        // makes this O(1) per actor per frame.
+        var aggroThisFrame = new HashSet<uint>();
         for (int i = 0; i < _actors.Count; i++)
         {
             var s = _actors[i];
@@ -9596,8 +9627,21 @@ void main()
             if (brain is null) continue;
             if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
              || brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)
-            { nowInCombat = true; break; }
+            {
+                nowInCombat = true;
+                // Fire enemy_spotted only on the entering edge (was NOT
+                // aggro last frame). Note: we don't `break` here because
+                // every actor that just entered aggro should yelp, not
+                // just the first one — a krug pack spotting the player
+                // should hear the whole group call out.
+                var scid = s.Actor.Instance.Scid;
+                aggroThisFrame.Add(scid);
+                if (!_aggroPrevFrame.Contains(scid))
+                    PlayEnemySpottedSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            }
         }
+        _aggroPrevFrame.Clear();
+        foreach (var scid in aggroThisFrame) _aggroPrevFrame.Add(scid);
         if (nowInCombat)
         {
             _combatExitTimer = 0f;
