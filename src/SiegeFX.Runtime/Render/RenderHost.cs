@@ -3583,6 +3583,15 @@ void main()
             return;
         }
 
+        // SC-WORLD-INVENTORY-CONSUMED — clear cross-session state at the
+        // top of every play-region entry so Load -> Quit-to-menu -> New-Game
+        // on the same RenderHost instance doesn't inherit the prior run's
+        // consumed-pickup set (which would silently delete the new hero's
+        // fresh fh_r1 fireshot). Save-load reseeds the set immediately
+        // after this LoadPlayActors returns, so the clear is safe there too.
+        _consumedInventoryScids?.Clear();
+        _inventoryGasLoaded?.Clear();
+
         // Pinned to RenderHost fields (not `using var`) so _playResolver can keep
         // reading from them during gameplay — loot-swap weapon loads fire hours after
         // LoadPlayActors returns.
