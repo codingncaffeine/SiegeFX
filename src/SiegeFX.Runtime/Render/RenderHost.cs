@@ -9019,6 +9019,55 @@ void main()
                            pressed: _awpPressed);
     }
 
+    // INFORAIL-EQUIPPED-ICONS — slot-name → DS1 es_* tag, then template's
+    // [gui]inventory_icon. Cache resolved GlTextures so we don't pay
+    // TryGetGuiTexture every frame.
+    private readonly System.Collections.Generic.Dictionary<string, GlTexture?> _paperdollEquipCache =
+        new(System.StringComparer.OrdinalIgnoreCase);
+    private GlTexture? ResolvePaperdollSlotIcon(string slotName)
+    {
+        if (_templateStore is null) return null;
+        // PaperdollPanel slot names → DS1 inventory.[equipment] tags
+        // (heroes.gas:386 farmboy ships es_weapon_hand=dg_g_d_1h_fun,
+        //  es_feet=bo_bo_le_light, es_spellbook=book_glb_magic_01).
+        // melee/ranged share es_weapon_hand in DS1 — one weapon at a
+        // time. We surface the equipped weapon on whichever of the two
+        // paperdoll slots matches the weapon's class until per-set
+        // swapping lands; for now show on melee always (most farmboys
+        // have a melee starter).
+        string? esTag = slotName switch
+        {
+            "helmet"    => "es_helm",
+            "armor"     => "es_chest",
+            "gauntlets" => "es_gloves",
+            "boots"     => "es_feet",
+            "amulet"    => "es_amulet",
+            "shield"    => "es_shield_hand",
+            "spellbook" => "es_spellbook",
+            "melee"     => "es_weapon_hand",
+            "ranged"    => null, // share weapon slot; melee branch handles
+            "ring1"     => "es_ring_1",
+            "ring2"     => "es_ring_2",
+            "ring3"     => "es_ring_3",
+            "ring4"     => "es_ring_4",
+            _ => null,
+        };
+        if (esTag is null) return null;
+        if (!_playerEquipment.TryGetValue(esTag, out var templateName) ||
+            string.IsNullOrWhiteSpace(templateName)) return null;
+        string cacheKey = $"{esTag}:{templateName}";
+        if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
+        GlTexture? tex = null;
+        if (_templateStore.TryGet(templateName, out var tpl))
+        {
+            string iconName = (_templateStore.GetAttribute(tpl, "gui", "inventory_icon") ?? "")
+                .Trim().Trim('"');
+            if (!string.IsNullOrEmpty(iconName)) tex = TryGetGuiTexture(iconName);
+        }
+        _paperdollEquipCache[cacheKey] = tex;
+        return tex;
+    }
+
     private GlTexture? ResolveAwpSlotIcon(string? iconName)
     {
         if (string.IsNullOrWhiteSpace(iconName)) return null;
@@ -12450,7 +12499,8 @@ void main()
                             var t = TryGetGuiTexture(ghostName);
                             _paperdollGhostCache[ghostName] = t;
                             return t;
-                        });
+                        },
+                        equippedIconLookup: ResolvePaperdollSlotIcon);
                 }
 
                 // INFORAIL-F — vertical "spellbook with I" toggle at gas
