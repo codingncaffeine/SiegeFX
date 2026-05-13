@@ -78,7 +78,10 @@ public sealed class CharacterAwp
     public void Draw(IconRenderer iconRenderer, BarRenderer barRenderer,
                      int viewportW, int viewportH,
                      GlTexture awpAtlas, GlTexture? portrait,
-                     float hpFrac, float mpFrac, int activeSlot)
+                     float hpFrac, float mpFrac, int activeSlot,
+                     GlTexture? slot1Icon = null, GlTexture? slot2Icon = null,
+                     GlTexture? slot3Icon = null, GlTexture? slot4Icon = null,
+                     GlTexture? inventoryBtnAtlas = null)
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
@@ -114,6 +117,7 @@ public sealed class CharacterAwp
         // (uv 0.839844,0.734375,0.902344,0.984375 — the slot frame). The
         // currently-selected slot gets a selection overlay (uv 0.675781,
         // 0.710938,0.753907,0.992188) drawn on top.
+        var slotIcons = new[] { slot1Icon, slot2Icon, slot3Icon, slot4Icon };
         for (int i = 0; i < 4; i++)
         {
             int gasX = 68 + i * 20; // slots at 68, 88, 108, 128
@@ -121,10 +125,20 @@ public sealed class CharacterAwp
             int sy = (int)Math.Round(6 * s);
             int sw = (int)Math.Round(16 * s);
             int sh = (int)Math.Round(32 * s);
-            // Slot bg
+            // Slot bg frame
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
                 0.839844f, 1f - 0.984375f, 0.902344f, 1f - 0.734375f);
-            // Selection texture if this is the active slot
+            // Slot content (weapon or spell icon) — drawn inside the frame
+            // with a 1px inset so the chrome stays visible. Icons sample
+            // their full atlas extent (uv 0..1) since each is a discrete
+            // RAW, not an atlas strip.
+            if (slotIcons[i] is { } ico)
+            {
+                int inset = (int)Math.Round(1 * s);
+                iconRenderer.DrawIcon(viewportW, viewportH, ico,
+                    sx + inset, sy + inset, sw - 2 * inset, sh - 2 * inset, Vector4.One);
+            }
+            // Selection overlay on the active slot
             if (i == activeSlot)
             {
                 iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
@@ -132,10 +146,19 @@ public sealed class CharacterAwp
             }
         }
 
-        // Inventory button — gas rect 64,40,148,55 (W=84, H=15), texture
-        // b_gui_ig_mnu_awp_buttons (separate atlas; host loads + passes via
-        // Draw extension — TODO when we wire it). For now skip and let the
-        // user open via I key.
+        // Inventory button — gas rect 64,40,148,55 (W=84, H=15). DS1 uses
+        // b_gui_ig_mnu_awp_buttons as a separate atlas with hover/press
+        // strips. When the host passes it, draw the default (unhovered)
+        // region; hover/press states are SC-AUTH-CHAR-AWP-INVBTN-STATES.
+        if (inventoryBtnAtlas is not null)
+        {
+            int bx = (int)Math.Round(64 * s);
+            int by = (int)Math.Round(40 * s);
+            int bw = (int)Math.Round(84 * s);
+            int bh = (int)Math.Round(15 * s);
+            iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
+                bx, by, bw, bh, Vector4.One);
+        }
     }
 
     private static void DrawVerticalBar(

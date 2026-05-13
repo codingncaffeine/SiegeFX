@@ -979,7 +979,10 @@ public sealed class RenderHost : IDisposable
     private readonly Hud.CharacterAwp _characterAwp = new();
     private GlTexture? _awpAtlas;
     private GlTexture? _awpPortraitTex;
+    private GlTexture? _awpInvBtnTex;
     private bool _awpLoaded;
+    private readonly Dictionary<string, GlTexture?> _awpSlotIconCache =
+        new(StringComparer.OrdinalIgnoreCase);
     // Phase 22-A — world-tick gate. When true, brain/particle/sfx ticks
     // are skipped; rendering continues so the player can interact with
     // HUD buttons. Toggled by SC-HUD-DATABAR's pause button + Space key.
@@ -8809,18 +8812,39 @@ void main()
         {
             _awpLoaded = true;
             _awpAtlas = TryGetGuiTexture("b_gui_ig_mnu_awp");
+            _awpInvBtnTex = TryGetGuiTexture("b_gui_ig_mnu_awp_buttons");
             if (!string.IsNullOrEmpty(_playerPortraitIconName))
                 _awpPortraitTex = TryGetGuiTexture(_playerPortraitIconName);
             Console.WriteLine($"[char_awp] atlas: {(_awpAtlas is not null ? "ok" : "MISS")}, " +
-                              $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")}");
+                              $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")}, " +
+                              $"invbtn: {(_awpInvBtnTex is not null ? "ok" : "MISS")}");
         }
         if (_awpAtlas is null) return;
         var combat = _player.Actor.Combat;
         var stats  = _player.Actor.Stats;
         float hpFrac = stats.MaxLife > 0f ? combat.CurrentLife / stats.MaxLife : 0f;
         float mpFrac = stats.MaxMana > 0f ? combat.CurrentMana / stats.MaxMana : 0f;
+
+        // SC-AUTH-CHAR-AWP-SLOT-ICONS — slots 3/4 mirror the player's
+        // Primary/Secondary spell so the user can see what RMB will cast
+        // when the corresponding slot is active. Slots 1/2 (melee/ranged)
+        // need the equipped-weapon icon and remain pending until the
+        // equipment readout splinter lands.
+        GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
+        GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
+
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
-                           _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx);
+                           _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
+                           null, null, slot3, slot4, _awpInvBtnTex);
+    }
+
+    private GlTexture? ResolveAwpSlotIcon(string? iconName)
+    {
+        if (string.IsNullOrWhiteSpace(iconName)) return null;
+        if (_awpSlotIconCache.TryGetValue(iconName, out var cached)) return cached;
+        var tex = TryGetGuiTexture(iconName);
+        _awpSlotIconCache[iconName] = tex;
+        return tex;
     }
 
     /// <summary>Phase 22-H SC-HUD-OVERHEAD-BARS — DS1's authentic floating
