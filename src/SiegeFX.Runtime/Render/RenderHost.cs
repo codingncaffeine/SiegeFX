@@ -12103,7 +12103,12 @@ void main()
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
 
-        if (_gridShader is not null && _grid is not null)
+        // SC-TERRAIN-WHITE-GRID — dev fly-cam reference grid. User-test
+        // catch: leaked into play-region as a "white square grid pattern
+        // on the ground" wherever the terrain mesh was thin / vertices
+        // missed / Z-test let it bleed through. Gate to dev cam ONLY;
+        // gameplay never sees the grid.
+        if (_gridShader is not null && _grid is not null && _cameraMode == CameraMode.Fly)
         {
             _gridShader.Use();
             _gridShader.SetMatrix4("uViewProj", vp);
