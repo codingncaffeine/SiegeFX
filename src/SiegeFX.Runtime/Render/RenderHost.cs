@@ -990,6 +990,10 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _awpAtlas;
     private GlTexture? _awpPortraitTex;
     private GlTexture? _awpInvBtnTex;
+    private GlTexture? _awpInvBtnHovTex;
+    private GlTexture? _awpInvBtnDwnTex;
+    private Hud.CharacterAwp.HitTarget _awpHover = Hud.CharacterAwp.HitTarget.None;
+    private Hud.CharacterAwp.HitTarget _awpPressed = Hud.CharacterAwp.HitTarget.None;
     private bool _awpLoaded;
     // SC-AUTH-CHAR-AWP-LONGPRESS — gas wires `click_delay = 0.2` +
     // `onclickdelay = notify(list_spells)` on slots 3/4 and the active
@@ -2122,10 +2126,24 @@ void main()
                         case Hud.CharacterAwp.HitTarget.CloseArrow:
                             // INFORAIL-C: rail-open close arrow closes ALL
                             // rail panels (mirrors I-key close behavior).
+                            _awpPressed = Hud.CharacterAwp.HitTarget.CloseArrow;
                             _charPanelOpen = false;
                             _inventoryOpen = false;
                             if (_spellbookOpenedWithI) _spellBookOpen = false;
                             _spellbookOpenedWithI = false;
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        case Hud.CharacterAwp.HitTarget.InventoryButton:
+                            // Wide max-mode button — opens the info rail.
+                            // Same effect as pressing I (DS1 notify(inventory)).
+                            _awpPressed = Hud.CharacterAwp.HitTarget.InventoryButton;
+                            _charPanelOpen = true;
+                            _inventoryOpen = true;
+                            if (_spellbookWithI)
+                            {
+                                _spellBookOpen = true;
+                                _spellbookOpenedWithI = true;
+                            }
                             _audio?.Play(SfxGuiInventory);
                             return;
                         case Hud.CharacterAwp.HitTarget.Slot1:
@@ -2417,6 +2435,7 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                if (btn == MouseButton.Left) _awpPressed = Hud.CharacterAwp.HitTarget.None;
                 // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold. Per
                 // character_awp.gas: quick click selects the slot; click held
                 // past click_delay (0.2s, gas-authored) fires notify(list_spells)
@@ -2655,6 +2674,13 @@ void main()
                 // button textures swap to _hov on rollover. Per-frame cost is
                 // 7 rect tests; negligible.
                 _dataBar.UpdateHover(_window.Size.X, _window.Size.Y, (int)pos.X, (int)pos.Y);
+                // INFORAIL — AWP button hover swap. Tracks rail state so
+                // CharacterAwp swaps to the -hov atlas when the cursor is
+                // over either the wide Inventory button or the close arrow.
+                bool awpRailOpen = _charPanelOpen || _inventoryOpen ||
+                                  (_spellBookOpen && _spellbookOpenedWithI);
+                _awpHover = _characterAwp.HitTest((int)pos.X, (int)pos.Y,
+                                                  _window.Size.Y, awpRailOpen);
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
@@ -8938,12 +8964,16 @@ void main()
         {
             _awpLoaded = true;
             _awpAtlas = TryGetGuiTexture("b_gui_ig_mnu_awp");
-            _awpInvBtnTex = TryGetGuiTexture("b_gui_ig_mnu_awp_buttons");
+            _awpInvBtnTex    = TryGetGuiTexture("b_gui_ig_mnu_awp_buttons");
+            _awpInvBtnHovTex = TryGetGuiTexture("b_gui_ig_mnu_awp_buttons-hov");
+            _awpInvBtnDwnTex = TryGetGuiTexture("b_gui_ig_mnu_awp_buttons-dwn");
             if (!string.IsNullOrEmpty(_playerPortraitIconName))
                 _awpPortraitTex = TryGetGuiTexture(_playerPortraitIconName);
             Console.WriteLine($"[char_awp] atlas: {(_awpAtlas is not null ? "ok" : "MISS")}, " +
                               $"portrait: {(_awpPortraitTex is not null ? "ok" : "MISS")}, " +
-                              $"invbtn: {(_awpInvBtnTex is not null ? "ok" : "MISS")}");
+                              $"invbtn: {(_awpInvBtnTex is not null ? "ok" : "MISS")}, " +
+                              $"hov: {(_awpInvBtnHovTex is not null ? "ok" : "MISS")}, " +
+                              $"dwn: {(_awpInvBtnDwnTex is not null ? "ok" : "MISS")}");
         }
         if (_awpAtlas is null) return;
         var combat = _player.Actor.Combat;
@@ -8964,7 +8994,11 @@ void main()
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
                            null, null, slot3, slot4, _awpInvBtnTex,
-                           railOpen: railOpen);
+                           railOpen: railOpen,
+                           inventoryBtnHovAtlas: _awpInvBtnHovTex,
+                           inventoryBtnDwnAtlas: _awpInvBtnDwnTex,
+                           hovered: _awpHover,
+                           pressed: _awpPressed);
     }
 
     private GlTexture? ResolveAwpSlotIcon(string? iconName)
@@ -9072,17 +9106,24 @@ void main()
             var combat = s.Actor.Combat;
             var stats = s.Actor.Stats;
             if (stats.MaxLife <= 0f) continue;
-            // Visibility gate. Player always on; non-player only when
-            // wounded (any HP missing) or aggro.
-            if (!isPlayer)
-            {
-                bool wounded = combat.CurrentLife < stats.MaxLife;
-                bool aggro = s.Brain is not null &&
-                    (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
-                  || s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack);
-                if (!wounded && !aggro) continue;
-                if (!stats.IsCombatant) continue;
-            }
+            // INFORAIL fold — actively-controlled actor never shows
+            // overhead bars; their HP/MP read off the AWP at top-left
+            // (which is the canonical DS1 location for "the actor I'm
+            // playing"). When SiegeFX gains party-control swapping,
+            // IsPlayer tracks whichever actor the user currently drives,
+            // so the bar follows the un-controlled party members.
+            if (isPlayer) continue;
+            // Non-player visibility gate: wounded or aggro combatants.
+            // When party-hireling support lands those actors will need
+            // an "always-on" branch here (party members display bars
+            // even at full HP), but the only non-player actors today
+            // are enemies/NPCs so the existing gate is correct.
+            bool wounded = combat.CurrentLife < stats.MaxLife;
+            bool aggro = s.Brain is not null &&
+                (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+              || s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack);
+            if (!wounded && !aggro) continue;
+            if (!stats.IsCombatant) continue;
             // Project worldPos + headOffset to screen via NDC.
             var headWorld = s.CurrentTransform.Translation + new Vector3(0f, 2.6f, 0f);
             var clip = Vector4.Transform(new Vector4(headWorld, 1f), viewProj);

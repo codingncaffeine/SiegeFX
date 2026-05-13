@@ -38,6 +38,7 @@ public sealed class CharacterAwp
     {
         None,
         Portrait,        // notify(character) — toggle char panel
+        InventoryButton, // notify(inventory) — wide max-mode button, opens info rail
         CloseArrow,      // INFORAIL-C — only when rail is open; closes rail
         Slot1,           // notify(character_slot_1) — melee
         Slot2,           // notify(character_slot_2) — ranged
@@ -64,10 +65,18 @@ public sealed class CharacterAwp
         if (Hit(x, y, s,  88, 6, 16, 32)) return HitTarget.Slot2;
         if (Hit(x, y, s, 108, 6, 16, 32)) return HitTarget.Slot3;
         if (Hit(x, y, s, 128, 6, 16, 32)) return HitTarget.Slot4;
-        // Close arrow (rail-only): gas awp_button_inventory_small_1
-        // rect 64,40,87,56 (the LEFT side of the wide inventory button
-        // rect; the rest doesn't render when rail is open).
-        if (railOpen && Hit(x, y, s, 64, 40, 23, 16)) return HitTarget.CloseArrow;
+        // Below the slot strip: mutually exclusive per character_awp.gas
+        // group=character_1_max (wide InventoryButton, rail closed) vs
+        // group=character_1_min (narrow CloseArrow, rail open). Both
+        // gas-authored as clickable buttons with hover/press art.
+        if (railOpen)
+        {
+            if (Hit(x, y, s, 64, 40, 23, 16)) return HitTarget.CloseArrow;
+        }
+        else
+        {
+            if (Hit(x, y, s, 64, 40, 84, 15)) return HitTarget.InventoryButton;
+        }
         return HitTarget.None;
     }
 
@@ -92,7 +101,11 @@ public sealed class CharacterAwp
                      GlTexture? slot1Icon = null, GlTexture? slot2Icon = null,
                      GlTexture? slot3Icon = null, GlTexture? slot4Icon = null,
                      GlTexture? inventoryBtnAtlas = null,
-                     bool railOpen = false)
+                     bool railOpen = false,
+                     GlTexture? inventoryBtnHovAtlas = null,
+                     GlTexture? inventoryBtnDwnAtlas = null,
+                     HitTarget hovered = HitTarget.None,
+                     HitTarget pressed = HitTarget.None)
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
@@ -223,6 +236,20 @@ public sealed class CharacterAwp
         // and matches DS1's group-toggle behavior.
         if (inventoryBtnAtlas is not null)
         {
+            // Hover/press state swap per gas messages on both
+            // awp_button_inventory_1 (line 169) and
+            // awp_button_inventory_inv_small_1 (line 197):
+            //   onlbuttondown → b_gui_ig_mnu_awp_buttons-dwn
+            //   onrollover    → b_gui_ig_mnu_awp_buttons-hov
+            //   default       → b_gui_ig_mnu_awp_buttons
+            HitTarget target = railOpen ? HitTarget.CloseArrow
+                                        : HitTarget.InventoryButton;
+            GlTexture atlas = inventoryBtnAtlas;
+            if (pressed == target && inventoryBtnDwnAtlas is not null)
+                atlas = inventoryBtnDwnAtlas;
+            else if (hovered == target && inventoryBtnHovAtlas is not null)
+                atlas = inventoryBtnHovAtlas;
+
             if (railOpen)
             {
                 // Close ⟵ arrow (min mode), uv 0.820313,0,1,1.
@@ -230,7 +257,7 @@ public sealed class CharacterAwp
                 int by = (int)Math.Round(40 * s);
                 int bw = (int)Math.Round(23 * s); // 87-64
                 int bh = (int)Math.Round(16 * s); // 56-40
-                iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
+                iconRenderer.DrawIcon(viewportW, viewportH, atlas,
                     bx, by, bw, bh, Vector4.One,
                     0.820313f, 0f, 1f, 1f);
             }
@@ -241,7 +268,7 @@ public sealed class CharacterAwp
                 int by = (int)Math.Round(40 * s);
                 int bw = (int)Math.Round(84 * s); // 148-64
                 int bh = (int)Math.Round(15 * s); // 55-40
-                iconRenderer.DrawIcon(viewportW, viewportH, inventoryBtnAtlas,
+                iconRenderer.DrawIcon(viewportW, viewportH, atlas,
                     bx, by, bw, bh, Vector4.One,
                     0f, 0.0625f, 0.65625f, 1f);
             }
