@@ -545,17 +545,23 @@ public static class QuestCatalog
             {
                 Key                 = "quest_merik_staff",
                 ScreenName          = "Merik's Staff",
-                // SC-QUEST-OBJ-D — deliver composite: hold Merik's Staff AND
-                // talk to Merik. PickupTargetTemplate ALSO set so the same
-                // quest can credit on either pickup-only (if D isn't required)
-                // or the proper hand-off. The deliver-gate in RegisterTalk
-                // checks the player's inventory for the staff template at
-                // talk time; if absent, talk silently no-ops and the player
-                // has to come back with the staff.
-                TalkTargetTemplate  = "merik",
-                TalkCountGoal       = 1,
-                DeliverItemTemplate = "merik_staff",
-                ObjectiveText       = "Recover Merik's Warding Staff and return it to him.",
+                // SC-QUEST-OBJ-C + D composite: pickup the staff fires a
+                // progress toast on grab (PickupCountGoal=1 auto-completes
+                // the pickup leg), and the talk-with-deliver gate then
+                // requires the staff to still be in inventory when the
+                // player turns it in to Merik. NOTE: because PickupCountGoal
+                // is 1 the pickup leg auto-completes the entry, so the talk
+                // leg today is a redundant secondary path - DS1's intended
+                // shape is "grab AND return," not "grab OR return." Real
+                // multi-stage gating lands when the catalog grows a stage
+                // model (SC-QUEST-OBJ-F-RESYNC's deferred decision). For
+                // now the entry exercises both Register* hooks.
+                PickupTargetTemplate = "merik_staff",
+                PickupCountGoal      = 1,
+                TalkTargetTemplate   = "merik",
+                TalkCountGoal        = 1,
+                DeliverItemTemplate  = "merik_staff",
+                ObjectiveText        = "Recover Merik's Warding Staff and return it to him.",
             },
             // SC-QUEST-OBJ-C smoke-test entry — single pickup gate against a
             // template that actually exists in fh_r1's inventory.gas, so the

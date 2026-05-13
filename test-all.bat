@@ -167,6 +167,8 @@ echo   94. Phase 24-MAINMENU            - Boot to main menu (no args; splash to 
 echo   95. SC-TSD-ANIM                  - Water frame-cycle + waterfall layer-2 modulate2x (fh_r1)
 echo   96. SC-QUEST-OBJ-A               - Talk-to-NPC quest objective (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, talk to Edgaar)
 echo   97. SC-QUEST-OBJ-F               - Full 24-quest Ehb catalog + chain (SIEGEFX_DEBUG_QUEST=quest_seek_gyorn, watch chain follow-up activate)
+echo   98. SC-QUEST-OBJ-C               - Pickup quest objective (SIEGEFX_DEBUG_QUEST=quest_grab_fireshot, basement spell_fireshot)
+echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG_QUEST=quest_merik_staff, hold staff + talk Merik)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -270,6 +272,8 @@ if /i "%CHOICE%"=="94" goto T94
 if /i "%CHOICE%"=="95" goto T95
 if /i "%CHOICE%"=="96" goto T96
 if /i "%CHOICE%"=="97" goto T97
+if /i "%CHOICE%"=="98" goto T98
+if /i "%CHOICE%"=="99" goto T99
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2237,6 +2241,39 @@ echo  Press L to see both entries in the journal overlay (quest_seek_gyorn
 echo  closed, quest_deliver_gyorn_report active).]
 echo.
 set "SIEGEFX_DEBUG_QUEST=quest_seek_gyorn"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_QUEST="
+echo.
+pause
+goto MENU
+
+:T98
+echo.
+echo --- SC-QUEST-OBJ-C: pickup quest objective ---
+echo [QuestCatalog now ships quest_grab_fireshot (PickupTargetTemplate=
+echo  spell_fireshot, PickupCountGoal=1). Pre-activated via env var; walk
+echo  into the fh_r1 basement, pick up the fireshot scroll, console prints:
+echo    [quest] pickup objective complete: quest_grab_fireshot (acquired spell_fireshot)]
+echo.
+set "SIEGEFX_DEBUG_QUEST=quest_grab_fireshot"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_QUEST="
+echo.
+pause
+goto MENU
+
+:T99
+echo.
+echo --- SC-QUEST-OBJ-D: deliver quest objective ---
+echo [QuestCatalog's quest_merik_staff is a composite C+D entry:
+echo  PickupTargetTemplate=merik_staff (auto-completes the pickup leg on grab)
+echo  AND TalkTargetTemplate=merik + DeliverItemTemplate=merik_staff (the
+echo  hand-off leg gates on holding the staff at talk time). The staff and
+echo  Merik are both in Lost Cathedral - fh_r1 alone can't fully exercise
+echo  the receipt, but launching here proves the activation + journal entry.
+echo  Real receipt needs the player to reach lc_r5 with the staff in hand.]
+echo.
+set "SIEGEFX_DEBUG_QUEST=quest_merik_staff"
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set "SIEGEFX_DEBUG_QUEST="
 echo.
