@@ -923,6 +923,12 @@ public sealed class RenderHost : IDisposable
     private bool _spellbookOpenedWithI;
     private GlTexture? _spellbookToggleTex;
     private bool _spellbookToggleTexLoaded;
+    // INFORAIL-PAPERDOLL — bottom-pane chrome + ghost-slot textures.
+    private readonly PaperdollPanel _paperdoll = new();
+    private GlTexture? _paperdollBotPaneTex;
+    private bool _paperdollLoaded;
+    private readonly System.Collections.Generic.Dictionary<string, GlTexture?> _paperdollGhostCache =
+        new(System.StringComparer.OrdinalIgnoreCase);
     private readonly CharacterPanel _characterPanel = new();
     private readonly SpellBookPanel _spellBookPanel = new();
     // Phase 21-SC-INV-B (round 2) — basename of the player's portrait icon
@@ -12407,6 +12413,31 @@ void main()
                     size.X, size.Y, _heroName, _player.Actor, _progression,
                     GetPlayerAttackStats(), armor, xpFrac,
                     _iconRenderer, portrait);
+
+                // INFORAIL-PAPERDOLL — equipment paperdoll under the
+                // upper stats panes. Reads gas-cited rects from
+                // hud_character.gas via PaperdollPanel. Ghost textures
+                // cached by name to avoid per-frame GUI texture lookups;
+                // equipped icons aren't wired yet (splinter SC-INFORAIL-
+                // EQUIPPED-ICONS) so today every slot shows its ghost.
+                if (!_paperdollLoaded)
+                {
+                    _paperdollLoaded = true;
+                    _paperdollBotPaneTex = TryGetGuiTexture("b_gui_ig_mnu_cp_bot_01");
+                }
+                if (_iconRenderer is not null)
+                {
+                    _paperdoll.Draw(_iconRenderer, _barRenderer!, _textRenderer,
+                        size.X, size.Y, paperdollX, panelTopY,
+                        _paperdollBotPaneTex,
+                        ghostName =>
+                        {
+                            if (_paperdollGhostCache.TryGetValue(ghostName, out var c)) return c;
+                            var t = TryGetGuiTexture(ghostName);
+                            _paperdollGhostCache[ghostName] = t;
+                            return t;
+                        });
+                }
 
                 // INFORAIL-F — vertical "spellbook with I" toggle at gas
                 // rect 229,238,250,269 (relative to paperdoll gas origin
