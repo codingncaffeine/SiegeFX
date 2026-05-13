@@ -53,7 +53,12 @@ public sealed class InventoryPanel
     /// <summary>Scale factor for the current viewport — gas rects multiply
     /// by this to land at the right pixel size. Mirrors the data_bar /
     /// overhead-bars convention so HUD panels all scale together.</summary>
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    /// <summary>INFORAIL fold — share the clamped info-rail scale so
+    /// inventory stays the same size as paperdoll + spellbook on
+    /// modern resolutions (cap 1.5× per InfoRailLayout.MaxScale).
+    /// Previously this returned the raw viewportH/480, which made the
+    /// inventory grow past the other two rail panels at 1080p+.</summary>
+    public static float Scale(int viewportH) => InfoRailLayout.Scale(viewportH);
 
     public static int PanelWidth(int viewportH)  => (int)System.Math.Round(RefPanelW * Scale(viewportH));
     public static int PanelHeight(int viewportH) => (int)System.Math.Round(RefPanelH * Scale(viewportH));
