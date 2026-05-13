@@ -1768,9 +1768,12 @@ void main()
                 // Phase 20b: 'L' toggles the quest log overlay.
                 else if (key == Key.L || key == Key.J) _questLogOpen = !_questLogOpen;
                 // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
-                // the data_bar's pause button. The Esc-modal save/load menu
-                // (SC-HUD-MENU slice) will pre-empt Space when open.
-                else if (key == Key.Space && _player is not null && !_player.IsDead)
+                // the data_bar's pause button. ONLY in Chase camera mode — Fly
+                // cam (dev free-cam) polls Space at line 5612 for vertical-up
+                // movement; the two bindings would conflict. Chase-mode is the
+                // gameplay mode the data_bar exists to serve.
+                else if (key == Key.Space && _player is not null && !_player.IsDead
+                         && _cameraMode == CameraMode.Chase)
                     TogglePause();
                 // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
                 // until enemy aggro lands in a later phase, this is the only way
@@ -8539,13 +8542,19 @@ void main()
                 bx, by, bw, bh, Vector4.One, 0f, 0f, 1f, 0.861f);
         }
 
-        // Per-button render. Pick the right texture for each state.
+        // Per-button render. Pick the right texture for each state. The
+        // mega-map button renders at gas's `disable_color = 0xff5f5f5f`
+        // until SC-HUD-MEGAMAP wires the actual screen — a clickable
+        // button that does nothing reads as a polish regression vs a
+        // visibly-disabled one.
+        var disabledTint = new Vector4(0x5f / 255f, 0x5f / 255f, 0x5f / 255f, 1f);
         foreach (var slot in Hud.DataBar.Slots)
         {
             GlTexture? tex = ResolveDataBarTexture(slot.Id);
             if (tex is null) continue;
             var (x, y, w, h) = Hud.DataBar.ProjectRect(slot, viewportW, viewportH);
-            _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, Vector4.One);
+            var tint = slot.Id == Hud.DataBar.ButtonId.MegaMap ? disabledTint : Vector4.One;
+            _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, tint);
         }
 
         // Quest indicator flash overlay — pulses red over the quest_log
@@ -8633,8 +8642,9 @@ void main()
                 DrinkLowestPotion(isHealth: false);
                 break;
             case Hud.DataBar.ButtonId.MegaMap:
-                Console.WriteLine("[data_bar] mega-map click — splinter SC-HUD-MEGAMAP pending");
-                _audio?.Play(SfxGuiInventory);
+                // Phase 22-A — button renders disabled (grey tint, see
+                // ResolveDataBarTexture) until SC-HUD-MEGAMAP wires the full-
+                // screen map. Click is a no-op rather than a logspam.
                 break;
             case Hud.DataBar.ButtonId.QuestLog:
                 _questLogOpen = !_questLogOpen;
@@ -8707,18 +8717,22 @@ void main()
         }
         var picked = _playerInventory[bestIdx];
         _playerInventory.RemoveAt(bestIdx);
-        // Apply the heal. DS1 potion templates author [magic][enchantments][*]
-        // alter_life=value (or alter_mana). For now use a fixed-per-tier
-        // amount tuned to the small=200 the gas ships; future tier-aware
-        // splinter reads value from the template. Mana mirrored.
-        float amount = bestTier switch
-        {
-            0 => 200f,    // small
-            1 => 400f,    // medium
-            2 => 800f,    // large
-            3 => 1600f,   // super
-            _ => 200f,    // untiered fallback
-        };
+        // Apply the heal — read the actual value from the potion template's
+        // [magic][enchantments][*] alter_life / alter_mana so we match DS1's
+        // shipped numbers (verified against ptn_potion.gas):
+        //   health: 200 / 400 / 1000 / 2000  (small/medium/large/super)
+        //   mana:   200 / 500 / 1400 / 2500
+        // Falls back to a tier-table only if the template lookup misses
+        // (defensive — every shipped potion ships the value, so the fallback
+        // never fires in practice).
+        float amount = ResolvePotionRestoreAmount(picked.Reference, isHealth)
+                    ?? (bestTier switch
+                    {
+                        0 => 200f, 1 => isHealth ? 400f : 500f,
+                        2 => isHealth ? 1000f : 1400f,
+                        3 => isHealth ? 2000f : 2500f,
+                        _ => 200f,
+                    });
         if (isHealth) _player.Actor.Combat.Heal(amount);
         else          _player.Actor.Combat.RestoreMana(amount);
         Console.WriteLine($"[data_bar] drank {picked.Reference} → +{amount:F0} {(isHealth ? "HP" : "MP")}");
@@ -8731,6 +8745,40 @@ void main()
     private void FlashQuestIndicator()
     {
         _questIndicatorFlashRemaining = 1.5f;
+    }
+
+    /// <summary>SC-HUD-DATABAR audit fold — read the actual heal/mana amount
+    /// from a potion template's `[magic][enchantments][*] value` attribute.
+    /// Returns null when the template isn't loaded or the attribute can't
+    /// be parsed; caller falls back to a tier-table. Matches DS1's shipped
+    /// numbers without hand-coding them (small 200, medium 400/500, large
+    /// 1000/1400, super 2000/2500 — values vary by health vs mana).</summary>
+    private float? ResolvePotionRestoreAmount(string templateName, bool isHealth)
+    {
+        if (_templateStore is null) return null;
+        if (!_templateStore.TryGet(templateName, out var tpl) || tpl is null) return null;
+        var section = _templateStore.GetSection(tpl, "magic", "enchantments");
+        if (section is null) return null;
+        // The enchantment block ships as [*] {...} children with alter_life /
+        // alter_mana + value attributes. Walk children looking for a match.
+        string wanted = isHealth ? "alter_life" : "alter_mana";
+        foreach (var child in section.Children)
+        {
+            string? alteration = null, value = null;
+            foreach (var attr in child.Attributes)
+            {
+                if (attr.Name.Equals("alteration", StringComparison.OrdinalIgnoreCase))
+                    alteration = attr.Value;
+                else if (attr.Name.Equals("value", StringComparison.OrdinalIgnoreCase))
+                    value = attr.Value;
+            }
+            if (!string.Equals(alteration, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            if (float.TryParse(value, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var f))
+                return f;
+        }
+        return null;
     }
 
     private void EnsureCursorTextures()
@@ -9073,6 +9121,7 @@ void main()
                             (_player?.CurrentTransform.Translation ?? worldPos) + new Vector3(0f, 2.4f, 0f),
                             new Vector4(1.00f, 0.85f, 0.40f, 1f));
         }
+        if (completed.Count > 0) FlashQuestIndicator();
     }
 
     /// <summary>Phase 20d — credit a gold drop. Pulled out of the death funnel
@@ -10960,6 +11009,13 @@ void main()
         // idempotency guard still thought it was active.
         if (_music is not null && !_music.Tick() && _currentMusicTrack.Length > 0)
             _currentMusicTrack = "";
+        // Phase 22-A SC-HUD-DATABAR pause gate (OnRender side) — music ticks
+        // use real dt so the soundtrack keeps playing through pause (DS1
+        // convention). World-physics ticks (frag debris, particle
+        // integration etc.) use `simDt` which is zero when paused. Audio
+        // and UI tweens fall on the music side; anything that mutates
+        // world state falls on the sim side.
+        float simDt = _isPaused ? 0f : (float)dt;
         // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
         // hostile NPC is engaging the player; revert to standard_track
         // after CombatExitDelay seconds without aggro. Cheap loop over
@@ -10969,7 +11025,7 @@ void main()
         // Phase 21-SC-BARREL-C — integrate frag debris (gravity + ground
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
-        TickFragDebris((float)dt);
+        TickFragDebris(simDt);
         // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
         // run continuous-emitter spawn budgets. Must run after the particle
         // Tick so this frame's spawns get drawn rather than waiting one tick.
