@@ -2447,28 +2447,52 @@ void main()
             mouse.MouseUp += (m, btn) =>
             {
                 if (btn == MouseButton.Left) _awpPressed = Hud.CharacterAwp.HitTarget.None;
-                // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold. Per
-                // character_awp.gas: quick click selects the slot; click held
-                // past click_delay (0.2s, gas-authored) fires notify(list_spells)
-                // → we open the spellbook so the user can swap which spell sits
-                // in that slot. Slots 1/2 (melee/ranged) ignore the long-press
-                // path in DS1 (no click_delay on those gas entries) so they
-                // always quick-select regardless of hold time.
+                // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold per
+                // character_awp.gas.
+                //   Max mode (rail closed): quick tap selects that slot;
+                //     long-press on slot 3 or 4 fires notify(list_spells)
+                //     (DS1 gas:543/597 onclickdelay = list_spells) which
+                //     opens the spellbook to swap the active spell.
+                //   Min mode (rail open): only slot 1 is visible and it
+                //     represents the currently-active ability. Quick tap
+                //     is a no-op (you can't re-pick the already-active
+                //     slot). Long-press still opens the spellbook IF the
+                //     active ability is a spell slot (matches gas:373
+                //     awp_radio_button_character_1_slot_active wiring
+                //     which also fires list_spells on click_delay).
                 if (btn == MouseButton.Left && _awpSlotPressed >= 0)
                 {
                     int slot = _awpSlotPressed;
                     int heldMs = Environment.TickCount - _awpSlotPressedAtMs;
                     _awpSlotPressed = -1;
-                    bool isSpellSlot = slot >= 2;
-                    if (isSpellSlot && heldMs >= _awpClickDelayMs)
+                    bool slotRailOpen = _charPanelOpen || _inventoryOpen ||
+                                       (_spellBookOpen && _spellbookOpenedWithI);
+                    if (slotRailOpen)
                     {
-                        _spellBookOpen = true;
-                        _audio?.Play(SfxGuiInventory);
+                        // Min mode: visible slot represents activeAbilityIdx.
+                        bool activeIsSpell = _activeAbilityIdx >= 2;
+                        if (activeIsSpell && heldMs >= _awpClickDelayMs)
+                        {
+                            _spellBookOpen = true;
+                            _audio?.Play(SfxGuiInventory);
+                        }
+                        // Quick-tap: no-op (already the active slot).
                     }
                     else
                     {
-                        _activeAbilityIdx = slot;
-                        _audio?.Play(SfxGuiInventory);
+                        // Max mode: quick-tap reassigns active; long-press
+                        // on a spell slot opens the spellbook.
+                        bool isSpellSlot = slot >= 2;
+                        if (isSpellSlot && heldMs >= _awpClickDelayMs)
+                        {
+                            _spellBookOpen = true;
+                            _audio?.Play(SfxGuiInventory);
+                        }
+                        else
+                        {
+                            _activeAbilityIdx = slot;
+                            _audio?.Play(SfxGuiInventory);
+                        }
                     }
                     return;
                 }
