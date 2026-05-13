@@ -10440,10 +10440,24 @@ void main()
             const float scrollTopY  = 0.30f;        // was 0.55 — emit just above the resting scroll
             const float footprintR  = 0.16f;        // was 0.30 — tighter cluster on the scroll
             var sparkleColor = new Vector4(1f, 1f, 1f, 1f); // pure white
+            // SC-WORLD-INVENTORY-VIEW-DISTANCE — match the render cull.
+            // Glitter pumps particles every frame, so far-away world-inventory
+            // scrolls would otherwise burn CPU + emit invisible sparkles. Same
+            // radius as the render path; only world-inventory piles gated.
+            const float glitterVisRadius = 12f;
+            float glitterR2 = glitterVisRadius * glitterVisRadius;
+            Vector3 glitterPlayerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
+            bool glitterHavePlayer = _player is not null;
             for (int i = 0; i < _lootPiles.Count; i++)
             {
                 var pile = _lootPiles[i];
                 if (pile.Throw is not null) continue;
+                if (pile.IsWorldInventory && glitterHavePlayer)
+                {
+                    float pdx = pile.Position.X - glitterPlayerPos.X;
+                    float pdz = pile.Position.Z - glitterPlayerPos.Z;
+                    if (pdx * pdx + pdz * pdz > glitterR2) { pile.GlitterCarry = 0f; continue; }
+                }
                 bool hasScroll = false;
                 foreach (var entry in pile.Items)
                 {
@@ -11044,8 +11058,26 @@ void main()
             ApplyLightingUniforms(_meshShader);
             const float pileSize = 0.5f;
             const float itemScale = 0.6f; // matches the cube footprint visually
+            // SC-WORLD-INVENTORY-VIEW-DISTANCE — DS1 culls world-placed
+            // pickups (scrolls/potions placed via inventory.gas) to a
+            // short range so they only pop in when the player is nearby.
+            // Without this, every loose scroll in the region renders the
+            // full distance and the world reads as too-busy. Enemy-death
+            // drops and player-throw piles aren't world-inventory so they
+            // continue to render at unlimited range (those are usually
+            // already near the player anyway).
+            const float worldInvVisRadius = 12f;
+            float worldInvR2 = worldInvVisRadius * worldInvVisRadius;
+            Vector3 playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
+            bool havePlayer = _player is not null;
             foreach (var pile in _lootPiles)
             {
+                if (pile.IsWorldInventory && havePlayer)
+                {
+                    float pdx = pile.Position.X - playerPos.X;
+                    float pdz = pile.Position.Z - playerPos.Z;
+                    if (pdx * pdx + pdz * pdz > worldInvR2) continue;
+                }
                 var pos = pile.Position;
                 // Walk the pile rather than only trying Items[0] — DS1 mixes
                 // resolvable templates ("wpn_axe_001") with pcontent specs
