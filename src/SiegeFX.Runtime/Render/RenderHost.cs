@@ -2465,8 +2465,13 @@ void main()
                         if (existingIdx < 0)
                         {
                             // Empty cell — drop item into inventory.
+                            // Audit fold: every other inventory.Add
+                            // site pairs with NotifyItemAdded; this
+                            // branch was missing it, leaving the grid
+                            // placement-state out of sync.
                             _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
                                 Slot: "", Reference: _cursorItem.Value.Reference));
+                            _inventoryPanel.NotifyItemAdded();
                             _audio?.Play(SfxGuiInventory);
                             Console.WriteLine($"  cursor item: placed {_cursorItem.Value.Reference} into inventory");
                             ClearCursorItem();
@@ -2497,6 +2502,16 @@ void main()
                     if (_cursorScroll is not null)
                     {
                         CancelScrollDrag();
+                        return;
+                    }
+                    // INFORAIL-PAPERDOLL-INTERACT (audit fold) — RMB
+                    // cancels an in-flight cursor-item drag. Restores
+                    // the item to its source (equipment slot if Slot
+                    // begins with es_; original inventory index if the
+                    // item came from there; world drop otherwise).
+                    if (_cursorItem is not null)
+                    {
+                        CancelCursorItem();
                         return;
                     }
                     _mouseLookActive = true;
@@ -9268,24 +9283,25 @@ void main()
         // paperdoll slots matches the weapon's class until per-set
         // swapping lands; for now show on melee always (most farmboys
         // have a melee starter).
-        string? esTag = slotName switch
-        {
-            "helmet"    => "es_helm",
-            "armor"     => "es_chest",
-            "gauntlets" => "es_gloves",
-            "boots"     => "es_feet",
-            "amulet"    => "es_amulet",
-            "shield"    => "es_shield_hand",
-            "spellbook" => "es_spellbook",
-            "melee"     => "es_weapon_hand",
-            "ranged"    => null, // share weapon slot; melee branch handles
-            "ring1"     => "es_ring_1",
-            "ring2"     => "es_ring_2",
-            "ring3"     => "es_ring_3",
-            "ring4"     => "es_ring_4",
-            _ => null,
-        };
+        // Audit fold: single source of truth via PaperdollSlotToEsTag.
+        // Previously this table and the click-dispatch table diverged
+        // on "ranged" (this one returned null, the other es_weapon_hand)
+        // which let the user equip a bow on the ranged slot but the
+        // resulting icon rendered as if the slot were empty.
+        string? esTag = PaperdollSlotToEsTag(slotName);
         if (esTag is null) return null;
+        // Melee and ranged both map to es_weapon_hand; only the slot
+        // matching the equipped weapon's class should show an icon.
+        // Otherwise the same dagger icon would render in both slots.
+        if (string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return slotName switch
+            {
+                "melee"  => ResolveAwpSlotByWeaponClass("weapon_melee"),
+                "ranged" => ResolveAwpSlotByWeaponClass("weapon_ranged"),
+                _ => null,
+            };
+        }
         if (!_playerEquipment.TryGetValue(esTag, out var templateName) ||
             string.IsNullOrWhiteSpace(templateName)) return null;
         string cacheKey = $"{esTag}:{templateName}";
@@ -9392,12 +9408,15 @@ void main()
         if (isWeapon)
         {
             TryLoadPlayerWeapon();
+            // Stance is weapon-class-derived (fs1/fs5/fs0); only run
+            // RefreshPlayerStance when the weapon slot itself changed.
+            // Per audit fold of the unconditional-call cost.
+            RefreshPlayerStance();
         }
         else if (_player is not null)
         {
             TryLoadPlayerEquipment(_player.Actor.Template);
         }
-        RefreshPlayerStance();
     }
 
     /// <summary>Maps a PaperdollPanel slot name to the DS1 es_* tag
@@ -9422,28 +9441,34 @@ void main()
         _ => null,
     };
 
-    /// <summary>True when an item template's class chain matches the
-    /// paperdoll slot's expected type. Walks <c>specializes</c> chain
-    /// looking for the marker (weapon_melee, weapon_ranged, base_helm
-    /// etc.). Defensive: unknown items default to "allow" so an item
-    /// the engine doesn't yet classify can still be equipped manually
-    /// — better than locking the player out.</summary>
+    /// <summary>True when an item is allowed in the given paperdoll
+    /// slot. Audit fold (post-test) — switched from chain-walk markers
+    /// to a permissive policy because:
+    ///   1. DS1 itself uses gas `slot_type` attributes, not
+    ///      specializes-chain markers, to gate paperdoll slots.
+    ///      `[t:itemslot,n:armor]{slot_type=armor;}` etc. SiegeFX's
+    ///      chain-walk was a SiegeFX-invented approximation that
+    ///      happened to work for melee/ranged (weapon_melee /
+    ///      weapon_ranged are real chain ancestors) but silently
+    ///      rejected gloves (`base_gloves` plural — DS1 uses singular
+    ///      `base_glove` if it exists at all) and risked the same for
+    ///      every other slot whose marker hadn't been verified.
+    ///   2. Refusing equip on unverified slots locks the player out
+    ///      from features that were otherwise working.
+    /// Net policy: enforce strictly for melee/ranged (because both
+    /// markers are tank-verified existing template names that the
+    /// engine already uses for stance selection at
+    /// <see cref="ComputePreferredPlayerStance"/>). For every other
+    /// slot, allow. SC-INFORAIL-SLOT-TYPE-GATE will replace this
+    /// with the proper gas slot_type check.</summary>
     private bool IsItemClassMatchingSlot(string itemRef, string slotName)
     {
         if (_templateStore is null) return true;
         if (!_templateStore.TryGet(itemRef, out var tpl)) return true;
         string? marker = slotName switch
         {
-            "melee"     => "weapon_melee",
-            "ranged"    => "weapon_ranged",
-            "helmet"    => "base_helm",
-            "armor"     => "base_chest",
-            "gauntlets" => "base_gloves",
-            "boots"     => "base_boot",
-            "amulet"    => "base_amulet",
-            "shield"    => "base_shield",
-            "spellbook" => "base_spellbook",
-            "ring1" or "ring2" or "ring3" or "ring4" => "base_ring",
+            "melee"  => "weapon_melee",
+            "ranged" => "weapon_ranged",
             _ => null,
         };
         if (marker is null) return true;
@@ -13264,19 +13289,29 @@ void main()
                 }
             }
             // INFORAIL-PAPERDOLL-INTERACT — generic cursor item icon.
-            // Mirrors the scroll-cursor block above: a 32×32 icon
-            // centered on the cursor that follows _currentMousePos.
-            // Drawn IN ADDITION to the standard pointer cursor below
-            // (the user can still see the world via the pointer arrow,
-            // with the item icon trailing). Stacks above panels via
-            // the same HUD-pass-end z-tier as the scroll cursor.
-            else if (_cursorItem is not null && _cursorItemIcon is not null && _iconRenderer is not null)
+            // Audit fold: when the item template lacks a [gui]inventory_
+            // _icon (TryGetItemIcon returns null), draw a placeholder
+            // rect so the player sees they're carrying SOMETHING. An
+            // invisible cursor-item == silently lost item.
+            else if (_cursorItem is not null && _iconRenderer is not null)
             {
                 const int iconSize = 32;
                 int cx = (int)_currentMousePos.X - iconSize / 2;
                 int cy = (int)_currentMousePos.Y - iconSize / 2;
-                _iconRenderer.DrawIcon(size.X, size.Y, _cursorItemIcon,
-                    cx, cy, iconSize, iconSize, Vector4.One);
+                if (_cursorItemIcon is not null)
+                {
+                    _iconRenderer.DrawIcon(size.X, size.Y, _cursorItemIcon,
+                        cx, cy, iconSize, iconSize, Vector4.One);
+                }
+                else if (_barRenderer is not null)
+                {
+                    var bg     = new Vector4(0.08f, 0.08f, 0.10f, 0.85f);
+                    var border = new Vector4(0.86f, 0.83f, 0.69f, 1f);
+                    _barRenderer.DrawRect  (size.X, size.Y, cx, cy, iconSize, iconSize, bg);
+                    _barRenderer.DrawBorder(size.X, size.Y, cx, cy, iconSize, iconSize, border);
+                    _textRenderer.DrawString(size.X, size.Y, "?",
+                        cx + iconSize / 2 - 3, cy + iconSize / 2 - 4, border);
+                }
             }
             // Phase 21-SC-BARREL-A1 — DS1 sprite cursor (sword / red sword /
             // hammer / hand / talk). Drawn after every other HUD element so
@@ -13462,6 +13497,38 @@ void main()
         _cursorItem = null;
         _cursorItemIcon = null;
         _cursorItemFromInventoryIdx = -1;
+    }
+
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT (audit fold) — RMB
+    /// cancel for cursor items. Restores the held item to its source:
+    ///   - Slot starts with "es_" → re-equip via ApplyEquipmentChange
+    ///   - _cursorItemFromInventoryIdx ≥ 0 → re-insert in inventory at
+    ///     that index (clamped to current size for safety)
+    ///   - Otherwise → drop to world (last-resort)
+    /// Mirrors CancelScrollDrag for spell scrolls.</summary>
+    private void CancelCursorItem()
+    {
+        if (_cursorItem is null) return;
+        var entry = _cursorItem.Value;
+        if (!string.IsNullOrEmpty(entry.Slot) && entry.Slot.StartsWith("es_", System.StringComparison.OrdinalIgnoreCase))
+        {
+            _playerEquipment[entry.Slot] = entry.Reference;
+            Console.WriteLine($"  cursor item: cancel → re-equip {entry.Reference} on {entry.Slot}");
+            ClearCursorItem();
+            ApplyEquipmentChange(entry.Slot);
+            return;
+        }
+        if (_cursorItemFromInventoryIdx >= 0)
+        {
+            int idx = System.Math.Clamp(_cursorItemFromInventoryIdx, 0, _playerInventory.Count);
+            _playerInventory.Insert(idx, new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: entry.Reference));
+            _inventoryPanel.NotifyItemAdded();
+            Console.WriteLine($"  cursor item: cancel → restored {entry.Reference} to inventory[{idx}]");
+            ClearCursorItem();
+            return;
+        }
+        // No known source — drop in world.
+        DropCursorItemToWorld();
     }
 
     private void DropScrollToWorld(SiegeFX.Core.Assets.SpellTemplate spell)
