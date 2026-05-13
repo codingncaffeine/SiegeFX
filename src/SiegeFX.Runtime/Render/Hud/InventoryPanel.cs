@@ -310,6 +310,58 @@ public sealed class InventoryPanel
         var white  = new Vector4(1f, 1f, 1f, 1f);
         var ghost  = new Vector4(1f, 1f, 1f, 0.65f);
 
+        // === Attribute coverage (per feedback_audit_asset_paths.md) ====
+        // Authored attributes consumed by this method, per inventory.gas:
+        //   dialog_box_inv_bg .common_template=cpbox → NinePatch.DrawCpbox
+        //                     .uvcoords          → cpbox is per-tile, not
+        //                                          per-element; uv on a
+        //                                          dialog_box wrapper is
+        //                                          ignored by the nine-patch
+        //                                          helper (each corner/edge
+        //                                          has its own native UV).
+        //   button_arrange    .texture          → arrangeUp param
+        //                     .uvcoords         → consumed (V-flipped)
+        //                     .rect             → consumed (V-flipped)
+        //                     .rollover_help    → SC-AUTH-INV-INTERACT
+        //                                          splinter (tooltip)
+        //                     .[messages] notify(arrange_inventory) →
+        //                                         SC-AUTH-INV-INTERACT
+        //                                         splinter (sort impl)
+        //                     button down/hov state-swaps → splinter too
+        //   button_gold       .common_template=button_4 → SC-AUTH-INV-
+        //                                          BUTTON-4-CHROME splinter
+        //                                          (NinePatch helper +
+        //                                          button bg texture set)
+        //                     .[messages] notify(gold_transfer) →
+        //                                         SC-AUTH-INV-INTERACT
+        //                                         splinter (needs pack-
+        //                                         mule transfer system)
+        //   inventory_gold    .font_type=b_gui_fnt_12p_copperplate-light →
+        //                                         SC-HUD-FONT-AUTH splinter
+        //                                         (engine-wide font load)
+        //                     .text="999999"    → placeholder, replaced at
+        //                                         render with Gold.ToString()
+        //                     .justify=center   → consumed (center math)
+        //   window_gold_bg    .texture+rect+uv  → consumed (V-flipped)
+        //   window_gold_icon  .texture+rect     → consumed (goldCoin param)
+        //   button_inventory_exit .common_template=x → consumed via cpbox
+        //                                              button_x_up resolver
+        //                     .rollover_help    → SC-AUTH-INV-INTERACT
+        //                     .[messages] notify(character_exit) →
+        //                                         consumed indirectly: host
+        //                                         hit-tests CloseRect and
+        //                                         flips _inventoryOpen
+        //   gridbox_13x4      .texture=b_gui_ig_mnu_ip_grid → consumed
+        //                                          (one tile per cell)
+        //                     .wrap_mode=tiled  → replaced with per-cell
+        //                                         render (semantically
+        //                                         identical for 4×13)
+        //                     .uvcoords=0,-12.03125,4.03125,1 → the
+        //                                          negative-V tiling is
+        //                                          the gas's wrap-mode
+        //                                          shorthand; per-cell
+        //                                          render achieves the
+        //                                          same final pixels.
         if (DimBackdrop)
             bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, dim);
 

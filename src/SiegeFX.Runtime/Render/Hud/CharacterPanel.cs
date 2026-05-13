@@ -138,8 +138,12 @@ public sealed class CharacterPanel
         }
 
         int y = statsTop + vialH + 8;
-        // Portrait moved to the persistent mini-HUD (between the small HP/MP
-        // vials) per DS1 reference — see RenderHost.DrawMiniStatusHud.
+        // Phase 22-AUTH-MINIHUD-REMOVE — the SiegeFX-invented mini-HUD
+        // (which used to host a portrait stub) is gone. DS1 doesn't ship
+        // a player-portrait widget in the always-on HUD; party-member
+        // portraits surface via team_portraits.gas AWP (MP-only) when
+        // 22-D SC-HUD-PORTRAITS lands. Player HP/MP is on the floating
+        // overhead bars (22-H, shipped).
 
         // SKILLS block — header row "SKILLS / LEVEL" then four skill rows
         // pulled off the progression. 21b ships one combined progression
