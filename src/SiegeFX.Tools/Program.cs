@@ -6089,8 +6089,116 @@ static int DispatchAudio(string[] a)
     {
         "coverage" => CmdAudioCoverage(a[1..]),
         "sed-list" => CmdAudioSedList(a[1..]),
+        "enemy-states" => CmdAudioEnemyStates(a[1..]),
         _          => UnknownCommand("audio " + a[0]),
     };
+}
+
+// SC-ENEMY-AUDIO-AUDIT (2026-05-13) — walks every template that ships a
+// [voice] block in its specializes chain, lists which voice states are
+// authored (die / enemy_spotted / hit_critical / hit_glance / hit_solid /
+// fidget / etc.), and flags templates missing the `enemy_spotted` aggro
+// cue. DS1 fires `enemy_spotted` when an enemy first acquires the player
+// in its combat brain — the distinct "krug-spots-you" yelp the user
+// flagged as missing.
+//
+// Output: per-template voice-state matrix + summary tallies of which
+// states each NPC family ships. Templates without a [voice] block at
+// any chain level are excluded (props, sound emitters, decorative
+// items that never speak).
+static int CmdAudioEnemyStates(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx audio enemy-states <Logic.dsres> [--filter=PREFIX]");
+        return 1;
+    }
+    string? filter = null;
+    for (int i = 1; i < a.Length; i++)
+    {
+        const string filterPrefix = "--filter=";
+        if (a[i].StartsWith(filterPrefix)) filter = a[i][filterPrefix.Length..];
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var logicTank = TankFile.Open(a[0]);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+
+    // Walk every template. For each, look up the [voice] section via the
+    // chain-walking GetSection. Record which state subsections are present
+    // and what wav references they carry.
+    var perTemplate = new SortedDictionary<string, SortedDictionary<string, string>>(
+        StringComparer.OrdinalIgnoreCase);
+    var stateCounts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var template in store.All)
+    {
+        var name = template.Name;
+        if (filter is not null &&
+            !name.StartsWith(filter, StringComparison.OrdinalIgnoreCase)) continue;
+        // DS1 nests [voice] under [aspect] (verified against krug.gas:
+        // base_krug.aspect.voice). The other two paths are defensive in case
+        // a different actor template family puts it elsewhere.
+        var voice = store.GetSection(template, "aspect", "voice")
+                 ?? store.GetSection(template, "actor", "voice")
+                 ?? store.GetSection(template, "voice");
+        if (voice is null) continue;
+
+        var states = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var child in voice.Children)
+        {
+            // Each child is one named voice state ([die] / [enemy_spotted] / etc.)
+            // Look for a `* = WAV_REF;` attribute carrying the played wav. DS1
+            // also authors `priority` and other knobs — we just want the wav.
+            string? wav = null;
+            foreach (var attr in child.Attributes)
+            {
+                if (attr.Name == "*" || attr.Name.Equals("*", StringComparison.Ordinal))
+                {
+                    wav = attr.Value;
+                    break;
+                }
+            }
+            states[child.Header] = wav ?? "(no wav attr)";
+            stateCounts.TryGetValue(child.Header, out var c);
+            stateCounts[child.Header] = c + 1;
+        }
+        if (states.Count > 0) perTemplate[name] = states;
+    }
+
+    if (perTemplate.Count == 0)
+    {
+        Console.WriteLine("no templates with [voice] blocks found in scope.");
+        return 0;
+    }
+
+    Console.WriteLine($"audio enemy-states: {perTemplate.Count} template(s) with [voice]");
+    Console.WriteLine();
+    Console.WriteLine("== STATE FREQUENCY ==");
+    foreach (var (state, count) in stateCounts.OrderByDescending(kv => kv.Value))
+        Console.WriteLine($"  {state,-20} {count} template(s)");
+
+    Console.WriteLine();
+    Console.WriteLine("== MISSING enemy_spotted (the aggro cue) ==");
+    int missingAggro = 0;
+    foreach (var (name, states) in perTemplate)
+    {
+        if (states.ContainsKey("enemy_spotted")) continue;
+        Console.WriteLine($"  {name,-32}  states: {string.Join(",", states.Keys)}");
+        missingAggro++;
+    }
+    Console.WriteLine($"  -> {missingAggro} template(s) ship without an aggro cue");
+
+    Console.WriteLine();
+    Console.WriteLine("== FULL MATRIX (per template) ==");
+    foreach (var (name, states) in perTemplate)
+    {
+        Console.WriteLine($"  {name}:");
+        foreach (var (state, wav) in states)
+            Console.WriteLine($"    {state,-20} {wav}");
+    }
+    return 0;
 }
 
 static int CmdAudioSedList(string[] a)
