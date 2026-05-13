@@ -8554,7 +8554,15 @@ void main()
             if (tex is null) continue;
             var (x, y, w, h) = Hud.DataBar.ProjectRect(slot, viewportW, viewportH);
             var tint = slot.Id == Hud.DataBar.ButtonId.MegaMap ? disabledTint : Vector4.One;
-            _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, tint);
+            // Apply the gas-authored uvcoords so the rendered rect samples
+            // only the artwork portion of the 32×32 texture (the rest is
+            // transparent padding). Default UV (0,0,1,1) would stretch the
+            // padding INTO the rect — user reported potion bottles looked
+            // stretched vertically because the 22×32 rect was sampling a
+            // 32×32 texture without crop. Same shape for every authored
+            // uvcoords block in data_bar.gas.
+            _iconRenderer.DrawIcon(viewportW, viewportH, tex, x, y, w, h, tint,
+                slot.U0, slot.V0, slot.U1, slot.V1);
         }
 
         // Quest indicator flash overlay — pulses red over the quest_log

@@ -41,33 +41,56 @@ public sealed class DataBar
     /// right edge of the reference frame); when nonzero, the slot's X is
     /// recomputed against the viewport width on draw so widescreen layouts
     /// keep the icon glued to the right side of the screen instead of
-    /// floating in the middle of a stretched dockbar.</summary>
+    /// floating in the middle of a stretched dockbar.
+    /// <para>UV-crop fields come straight from data_bar.gas's `uvcoords`
+    /// attribute. DS1 ships every HUD icon as a 32×32 RAW with transparent
+    /// padding on one or two edges and crops to the visible artwork via
+    /// uvcoords; rendering with default (0..1, 0..1) UVs stretches the
+    /// padded edges INTO the visible rect and makes the icon look squashed
+    /// or stretched. Default (0,0,1,1) when the gas authors no crop.</para></summary>
     public readonly struct Slot
     {
         public readonly ButtonId Id;
         public readonly int X, Y, W, H;       // 640×480 reference rect
         public readonly int RightAnchorPx;    // 0 = anchor to left edge
+        public readonly float U0, V0, U1, V1; // texture UV crop, gas uvcoords
 
-        public Slot(ButtonId id, int x, int y, int w, int h, int rightAnchor = 0)
-        { Id = id; X = x; Y = y; W = w; H = h; RightAnchorPx = rightAnchor; }
+        public Slot(ButtonId id, int x, int y, int w, int h,
+                    int rightAnchor = 0,
+                    float u0 = 0f, float v0 = 0f, float u1 = 1f, float v1 = 1f)
+        {
+            Id = id; X = x; Y = y; W = w; H = h; RightAnchorPx = rightAnchor;
+            U0 = u0; V0 = v0; U1 = u1; V1 = v1;
+        }
     }
 
     static readonly Slot[] _slots =
     {
-        // Left edge — pause/play and the two potion quick-slots.
-        // Both pause and play share rect 10,441,37,469 per gas (only one
-        // visible at a time based on _isPaused). One Slot represents the
-        // swap-pair; RenderHost picks the texture based on pause state.
-        new(ButtonId.Pause,        10, 441, 27, 28),
-        new(ButtonId.HealthPotion, 45, 439, 22, 32),
-        new(ButtonId.ManaPotion,   71, 439, 22, 32),
+        // Left edge — pause/play and the two potion quick-slots. UVs from
+        // data_bar.gas: pause/play uvcoords=0,0.125,0.84375,1; potions
+        // uvcoords=0,0,0.6875,1. Both pause and play share rect 10,441,37,469
+        // per gas (only one visible at a time based on _isPaused).
+        new(ButtonId.Pause,        10, 441, 27, 28, rightAnchor: 0,
+            u0: 0f, v0: 0.125f, u1: 0.84375f, v1: 1f),
+        new(ButtonId.HealthPotion, 45, 439, 22, 32, rightAnchor: 0,
+            u0: 0f, v0: 0f, u1: 0.6875f, v1: 1f),
+        new(ButtonId.ManaPotion,   71, 439, 22, 32, rightAnchor: 0,
+            u0: 0f, v0: 0f, u1: 0.6875f, v1: 1f),
         // Right edge — gas authors these with right_anchor=N. We carry the
         // anchor value so Draw repositions against the viewport's right
         // edge instead of the 640-ref left edge.
-        new(ButtonId.Labels,   507, 439, 32, 32, rightAnchor: 133),
-        new(ButtonId.MegaMap,  541, 439, 27, 31, rightAnchor: 99),
-        new(ButtonId.QuestLog, 575, 439, 28, 32, rightAnchor: 65),
-        new(ButtonId.Menu,     611, 439, 24, 32, rightAnchor: 29),
+        // window_labels uvcoords=0,0,1,1 (no crop authored).
+        new(ButtonId.Labels,   507, 439, 32, 32, rightAnchor: 133,
+            u0: 0f, v0: 0f, u1: 1f, v1: 1f),
+        // button_mega_map uvcoords=0,0.03125,0.84375,1.
+        new(ButtonId.MegaMap,  541, 439, 27, 31, rightAnchor: 99,
+            u0: 0f, v0: 0.03125f, u1: 0.84375f, v1: 1f),
+        // button_quest_log uvcoords=0,0,0.875,1.
+        new(ButtonId.QuestLog, 575, 439, 28, 32, rightAnchor: 65,
+            u0: 0f, v0: 0f, u1: 0.875f, v1: 1f),
+        // button_menu uvcoords=0,0,0.75,1.
+        new(ButtonId.Menu,     611, 439, 24, 32, rightAnchor: 29,
+            u0: 0f, v0: 0f, u1: 0.75f, v1: 1f),
     };
 
     public static System.Collections.Generic.IReadOnlyList<Slot> Slots => _slots;
