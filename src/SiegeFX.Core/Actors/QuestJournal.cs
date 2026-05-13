@@ -129,7 +129,11 @@ public sealed class QuestJournal
     /// Walked AFTER the credit loop so we don't iterate _entries while
     /// mutating it. Idempotent: AddActive returns false if the key already
     /// exists, so re-completing the same quest doesn't double-spawn the
-    /// follow-up.</summary>
+    /// follow-up. Cycle-safe by construction — A→B→A would walk justCompleted
+    /// once (containing only A's key), AddActive would skip B's already-
+    /// queued reopen, and the second activation never gets a chance to fire.
+    /// Skipped intentionally on save-restore (the follow-up is already
+    /// persisted in the save's quest list).</summary>
     void ChainFollowUps(List<string>? justCompleted)
     {
         if (justCompleted is null || justCompleted.Count == 0) return;
@@ -492,6 +496,13 @@ public static class QuestCatalog
             {
                 Key                 = "quest_vanquish_seck",
                 ScreenName          = "Vanquish the Seck",
+                // FIXME(SC-QUEST-OBJ-E): substring match on "gom" is broad
+                // enough to land on any template containing those 3 letters
+                // ("goblin", any "g_om_*" asset). Safe today because this
+                // entry only Activates after the entire Ch.I-VIII chain
+                // completes (no Active = no kill-credit), but SC-QUEST-OBJ-E
+                // should switch this to per-spawn-id match or tighten to the
+                // exact endgame template name once verified in Logic.dsres.
                 KillTargetTemplate  = "gom",
                 KillCountGoal       = 1,
                 ObjectiveText       = "Defeat the Seck warlord Gom and end the Resurgence.",
