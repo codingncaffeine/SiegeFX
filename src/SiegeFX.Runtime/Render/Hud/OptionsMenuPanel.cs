@@ -457,7 +457,7 @@ internal sealed class OptionsMenuPanel
         bool drewChrome = false;
         if (icons is not null && scene is not null)
         {
-            NinePatch.DrawCpboxWide(icons, scene, viewportW, viewportH,
+            NinePatch.DrawCpboxWide(icons, scene.GetCommonTexture, viewportW, viewportH,
                 _outer.X, _outer.Y, _outer.W, _outer.H,
                 new Vector4(1f, 1f, 1f, 1f));
             drewChrome = true;

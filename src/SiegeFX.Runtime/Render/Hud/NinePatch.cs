@@ -1,16 +1,27 @@
+using System;
 using System.Numerics;
 
 namespace SiegeFX.Runtime.Render.Hud;
 
-/// <summary>SC-OPTIONS-CHROME — 9-patch (nine-slice) chrome rendering.
-/// DS1's backend dialogs (options, inventory, dialogue, vendor, etc)
-/// use templated `cpbox` / `cpbox_wide` / `cpbox_thin` / `jbox` /
-/// `woodbox` chrome instead of bone-driven ASPs. Each template is
-/// a 9-piece set: 4 corners (fixed-size, native pixel dims) + 4
-/// sides (stretched along their axis) + center fill (stretched).
-/// This helper wraps <see cref="IconRenderer.DrawIcon"/> with the
-/// standard 9-cell layout. Sides currently STRETCH; tiling is a
-/// follow-up if visible artifacts show on long edges.</summary>
+/// <summary>SC-OPTIONS-CHROME + Phase 22-AUTH-CHROME — 9-patch (nine-slice)
+/// chrome rendering. DS1's backend dialogs (options, inventory, dialogue,
+/// vendor, journal, etc.) use templated `cpbox` / `cpbox_wide` /
+/// `cpbox_thin` / `cpbox_thin_dark` / `jbox` / `woodbox` chrome instead
+/// of bone-driven ASPs. Each template is a 9-piece set: 4 corners
+/// (fixed-size, native pixel dims) + 4 sides (stretched along their
+/// axis) + center fill (stretched). This helper wraps
+/// <see cref="IconRenderer.DrawIcon"/> with the standard 9-cell layout.
+///
+/// Texture resolution is delegated via a <c>Func&lt;string, GlTexture?&gt;</c>
+/// resolver so the same helpers run from both the frontend scene (boot
+/// menus) and the in-game RenderHost (after the world has loaded). Pass
+/// a resolver that maps a bare common-control name like
+/// <c>"cpbox_ul"</c> to the <c>b_gui_cmn_cpbox_ul.raw</c> texture; for
+/// FrontendScene that's <c>scene.GetCommonTexture</c>; for RenderHost
+/// it's the equivalent in-game accessor.
+///
+/// Sides currently STRETCH; tiling is a follow-up if visible artifacts
+/// show on long edges (the gas authors `wrap_mode = tiled` on some sides).</summary>
 public static class NinePatch
 {
     /// <summary>Render the 9 textures across the (x,y,w,h) rect.
@@ -64,39 +75,57 @@ public static class NinePatch
 
     /// <summary>cpbox_wide template (uses b_gui_cmn_cpbox2_* textures
     /// per common_control_art.gas). DS1's wider-frame chrome used for
-    /// the options-menu outer panel.</summary>
-    public static void DrawCpboxWide(IconRenderer iconRenderer, FrontendScene scene,
+    /// the options-menu outer panel and similar wide dialogs.</summary>
+    public static void DrawCpboxWide(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
         int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
-    {
-        Draw(iconRenderer, viewportW, viewportH, x, y, w, h,
-            tlCorner:    scene.GetCommonTexture("cpbox2_ul"),
-            trCorner:    scene.GetCommonTexture("cpbox2_ur"),
-            blCorner:    scene.GetCommonTexture("cpbox2_ll"),
-            brCorner:    scene.GetCommonTexture("cpbox2_lr"),
-            topSide:     scene.GetCommonTexture("cpbox2_top"),
-            bottomSide:  scene.GetCommonTexture("cpbox2_bot"),
-            leftSide:    scene.GetCommonTexture("cpbox2_l"),
-            rightSide:   scene.GetCommonTexture("cpbox2_r"),
-            fill:        scene.GetCommonTexture("box_alpha_154"),
-            tint);
-    }
+        => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox2", "box_alpha_154", tint);
 
     /// <summary>cpbox template (uses b_gui_cmn_cpbox_* textures).
-    /// DS1's standard chrome — used for the options-menu inner
-    /// content panel.</summary>
-    public static void DrawCpbox(IconRenderer iconRenderer, FrontendScene scene,
+    /// DS1's standard chrome — used for the options-menu inner content
+    /// panel and most in-game backend panels (inventory, character,
+    /// spellbook, vendor, journal).</summary>
+    public static void DrawCpbox(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
         int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
+        => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox", "box_alpha_154", tint);
+
+    /// <summary>cpbox_thin (cpbox3) — DS1's slim variant used where a
+    /// lighter chrome reads better against a busy in-world background
+    /// (e.g. floating tooltips, world tips).</summary>
+    public static void DrawCpboxThin(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
+        int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
+        => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox3", "box_alpha_154", tint);
+
+    /// <summary>cpbox_thin_dark (cpbox4) — DS1's darker slim variant.
+    /// Uses the 255-alpha fill (fully opaque) per common_control_art.</summary>
+    public static void DrawCpboxThinDark(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
+        int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
+        => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "cpbox4", "box_alpha_255", tint);
+
+    /// <summary>jbox template — DS1's journal/log chrome (used by
+    /// journal.gas's quest list panel and chatbox sub-frames).</summary>
+    public static void DrawJbox(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
+        int viewportW, int viewportH, int x, int y, int w, int h, Vector4 tint)
+        => DrawFamily(iconRenderer, resolver, viewportW, viewportH, x, y, w, h, "jbox", "jbox_fill", tint);
+
+    /// <summary>Shared family-template dispatch. Family prefix maps to
+    /// <c>b_gui_cmn_&lt;prefix&gt;_ul/_ur/_ll/_lr/_top/_bot/_l/_r</c>
+    /// per common_control_art.gas's per-family key naming convention.
+    /// `fillKey` is the family-specific fill texture key (cpbox uses
+    /// box_alpha_154, cpbox4 uses box_alpha_255, jbox uses jbox_fill).</summary>
+    private static void DrawFamily(IconRenderer iconRenderer, Func<string, GlTexture?> resolver,
+        int viewportW, int viewportH, int x, int y, int w, int h,
+        string prefix, string fillKey, Vector4 tint)
     {
         Draw(iconRenderer, viewportW, viewportH, x, y, w, h,
-            tlCorner:    scene.GetCommonTexture("cpbox_ul"),
-            trCorner:    scene.GetCommonTexture("cpbox_ur"),
-            blCorner:    scene.GetCommonTexture("cpbox_ll"),
-            brCorner:    scene.GetCommonTexture("cpbox_lr"),
-            topSide:     scene.GetCommonTexture("cpbox_top"),
-            bottomSide:  scene.GetCommonTexture("cpbox_bot"),
-            leftSide:    scene.GetCommonTexture("cpbox_l"),
-            rightSide:   scene.GetCommonTexture("cpbox_r"),
-            fill:        scene.GetCommonTexture("box_alpha_154"),
+            tlCorner:    resolver(prefix + "_ul"),
+            trCorner:    resolver(prefix + "_ur"),
+            blCorner:    resolver(prefix + "_ll"),
+            brCorner:    resolver(prefix + "_lr"),
+            topSide:     resolver(prefix + "_top"),
+            bottomSide:  resolver(prefix + "_bot"),
+            leftSide:    resolver(prefix + "_l"),
+            rightSide:   resolver(prefix + "_r"),
+            fill:        resolver(fillKey),
             tint);
     }
 }

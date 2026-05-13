@@ -4608,6 +4608,17 @@ void main()
     // re-decode the .raw every time the user opens a pane.
     private readonly Dictionary<string, GlTexture?> _guiTextureCache =
         new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Phase 22-AUTH-CHROME — in-game accessor for the DS1
+    /// `b_gui_cmn_*` common-control nine-patch / button / slider chrome.
+    /// Mirrors <c>FrontendScene.GetCommonTexture</c> so the same
+    /// <c>NinePatch.DrawCpbox*</c> / <c>DrawJbox</c> / etc. helpers run
+    /// from both boot (frontend) and play (this RenderHost) contexts.
+    /// Auto-prefixes the bare key (<c>"cpbox_ul"</c> → loads
+    /// <c>b_gui_cmn_cpbox_ul.raw</c>); the per-family DrawFamily helper
+    /// in NinePatch.cs uses this naming convention verbatim.</summary>
+    private GlTexture? GetCommonTexture(string baseName)
+        => TryGetGuiTexture("b_gui_cmn_" + baseName);
+
     private GlTexture? TryGetGuiTexture(string baseName)
     {
         if (_gl is null || _playResolver is null || string.IsNullOrEmpty(baseName)) return null;
