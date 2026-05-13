@@ -64,6 +64,16 @@ public sealed class LogicalFlagsStore
         };
     }
 
+    /// <summary>Merge another store's entries into this one. Snode
+    /// guids are world-unique so cross-region merges can't collide
+    /// (last-write-wins on the rare collision). Used by CombinedGraph
+    /// (multi-region world) loading.</summary>
+    public void Merge(LogicalFlagsStore other)
+    {
+        if (other is null) return;
+        foreach (var kv in other._entries) _entries[kv.Key] = kv.Value;
+    }
+
     /// <summary>Parse a logical_flags.gas blob. Returns an empty store
     /// (HasData=false) when the file is missing or malformed.</summary>
     public static LogicalFlagsStore Parse(byte[] gasBytes)
@@ -87,7 +97,7 @@ public sealed class LogicalFlagsStore
                 {
                     if (!HeaderMatchesType(lnodeNode.Header, "lf_lnode")) continue;
                     if (!TryGetName(lnodeNode.Header, out var lnodeName)) continue;
-                    if (!byte.TryParse(lnodeName, out var lnodeIdx)) continue;
+                    if (!TryParseLnode(lnodeName, out var lnodeIdx)) continue;
                     bool human = false, computer = false;
                     var others = new System.Collections.Generic.List<string>();
                     foreach (var attr in lnodeNode.Attributes)
@@ -111,18 +121,22 @@ public sealed class LogicalFlagsStore
 
     /// <summary>Header format: <c>t:type,n:name</c> or just <c>type</c>
     /// for plain blocks. Returns true when the header's type prefix
-    /// matches.</summary>
+    /// matches. INFORAIL fold (audit #4): split on comma FIRST so
+    /// t:/n: matching only fires at fragment-start, never as a stray
+    /// substring inside a name.</summary>
     private static bool HeaderMatchesType(string header, string expectedType)
     {
         if (string.IsNullOrEmpty(header)) return false;
-        // Look for "t:<type>" or "t:<type>,..."
-        int tIdx = header.IndexOf("t:", System.StringComparison.OrdinalIgnoreCase);
-        if (tIdx < 0) return false;
-        int start = tIdx + 2;
-        int end = header.IndexOf(',', start);
-        if (end < 0) end = header.Length;
-        return string.Equals(header.AsSpan(start, end - start).Trim().ToString(),
-            expectedType, System.StringComparison.OrdinalIgnoreCase);
+        foreach (var fragment in header.Split(','))
+        {
+            var f = fragment.Trim();
+            if (f.StartsWith("t:", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Equals(f.AsSpan(2).Trim().ToString(), expectedType,
+                    System.StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        return false;
     }
 
     /// <summary>Plain block header (no t:/n:): just the type name.</summary>
@@ -136,15 +150,22 @@ public sealed class LogicalFlagsStore
     {
         name = "";
         if (string.IsNullOrEmpty(header)) return false;
-        int nIdx = header.IndexOf("n:", System.StringComparison.OrdinalIgnoreCase);
-        if (nIdx < 0) return false;
-        int start = nIdx + 2;
-        int end = header.IndexOf(',', start);
-        if (end < 0) end = header.Length;
-        name = header.AsSpan(start, end - start).Trim().ToString();
-        return name.Length > 0;
+        foreach (var fragment in header.Split(','))
+        {
+            var f = fragment.Trim();
+            if (f.StartsWith("n:", System.StringComparison.OrdinalIgnoreCase))
+            {
+                name = f.AsSpan(2).Trim().ToString();
+                return name.Length > 0;
+            }
+        }
+        return false;
     }
 
+    /// <summary>Hex-or-decimal u32 parse. Used for snode guids
+    /// (heroes-side hex: 0xcf30116d). INFORAIL fold (audit #3) —
+    /// generalized to a typed helper so the symmetric u8 lnode parser
+    /// shares the same accept-set.</summary>
     private static bool TryParseGuid(string s, out uint guid)
     {
         guid = 0;
@@ -154,5 +175,20 @@ public sealed class LogicalFlagsStore
             return uint.TryParse(t[2..], System.Globalization.NumberStyles.HexNumber,
                 System.Globalization.CultureInfo.InvariantCulture, out guid);
         return uint.TryParse(t, out guid);
+    }
+
+    /// <summary>Hex-or-decimal u8 parse. INFORAIL fold (audit #3) —
+    /// symmetric with TryParseGuid so modded content using `n:0x00`
+    /// hex lnode names parses successfully instead of silently
+    /// dropping the entry.</summary>
+    private static bool TryParseLnode(string s, out byte lnode)
+    {
+        lnode = 0;
+        if (string.IsNullOrEmpty(s)) return false;
+        var t = s.Trim();
+        if (t.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
+            return byte.TryParse(t[2..], System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out lnode);
+        return byte.TryParse(t, out lnode);
     }
 }

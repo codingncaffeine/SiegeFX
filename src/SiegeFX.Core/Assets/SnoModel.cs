@@ -111,7 +111,16 @@ public sealed class SnoModel
     /// triangle indices into the parent
     /// <see cref="LogicalGrouping.Faces"/>; interior nodes carry
     /// children. Bounding boxes are SNO-local (transformed by the
-    /// caller against the snode xform when querying world-space).</summary>
+    /// caller against the snode xform when querying world-space).
+    ///
+    /// SC-NAV-BSP-LOOKUP CAVEAT — TriangleIndices are NOT validated
+    /// against the parent grouping's <c>Faces.Length</c> at parse
+    /// time. The runtime consumer (the splinter that promotes BSP
+    /// into <c>NavMesh.TryFindTriangle</c>) MUST guard each lookup:
+    /// a malformed/modded SNO could ship an index past Faces.Length
+    /// and we'd otherwise array-OOB. Validate at consumption, not
+    /// at parse, because today nothing reads these and we don't want
+    /// to throw at load time on a slightly-off shipped file.</summary>
     public sealed class BspNode
     {
         public Vector3 BoundsMin { get; init; }
@@ -265,6 +274,16 @@ public sealed class SnoModel
             }
 
             // `nodal_array`: u8 + u32 (count) + count*2 u16s.
+            // Intentionally skipped per the audit fold: slice 2 of the
+            // 3-slice nav plan (project_siegefx_nav_plan.md) was
+            // deferred when the research agent (run a022c00c2524a09ee)
+            // returned LOW confidence on the u16-pair semantics — the
+            // kaitai spec names them opaquely as `data` and no source
+            // in _ds1refs/ documents whether they're triangle-pair
+            // edges, neighbor-mesh indices, or something else. Storing
+            // the raw bytes without a consumer would be dead weight;
+            // the splinter SC-NAV-NODAL-SEMANTICS will probe runtime
+            // semantics via known-adjacent SNOs before re-enabling.
             var nodalCount = r.ReadU32();
             if (TraceParse) Console.Error.WriteLine($"  [trace]     nodalCount={nodalCount} @ 0x{r.Position:X8}");
             for (var j = 0; j < nodalCount; j++)

@@ -55,8 +55,10 @@ public sealed class NavMesh
     /// <summary>Per-triangle <see cref="SnoModel.LogicalGrouping.Id"/>
     /// (the SNO-local "lnode" index, u8) from which the face came.
     /// Phase 24-NAV-LOGICAL-FLAGS feeds the per-triangle gate lookup
-    /// in <see cref="LogicalFlagsStore"/>. -1 means "no lnode tag"
-    /// (older content or pre-NAV-LOGICAL-FLAGS-built meshes).</summary>
+    /// in <see cref="LogicalFlagsStore"/>. Always in 0..255 since
+    /// BuildForRegion adds <c>group.Id</c> (a byte) — we don't carry
+    /// a negative sentinel because no SiegeFX path produces a
+    /// triangle outside that loop (audit fold).</summary>
     public int[] SourceLnodeIndex { get; }
 
     /// <summary>Per-triangle snode guid (the 32-bit RegionGraph node

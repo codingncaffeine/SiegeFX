@@ -4348,15 +4348,32 @@ void main()
                 // "all triangles open" behavior.
                 try
                 {
-                    var lfPath = regionPath + "/terrain_nodes/editor/logical_flags.gas";
-                    if (mapReader.TryGetFile(lfPath, out _))
+                    // INFORAIL-LF-MULTIREGION fold (audit finding #1) —
+                    // when the world is built from multiple regions
+                    // (CombinedGraph mode), every sub-region's
+                    // logical_flags.gas merges into one store keyed by
+                    // (snode_guid, lnode). Snode guids are world-unique
+                    // so cross-region merges can't collide. Loading just
+                    // the player's regionPath dropped gating at world-
+                    // streamed boundaries.
+                    var lfStore = new SiegeFX.Core.Assets.LogicalFlagsStore();
+                    int regionsWithFlags = 0;
+                    if (_worldRegionGraphs.Count > 1)
                     {
-                        var lfBytes = mapReader.ExtractToMemory(lfPath);
-                        var lfStore = SiegeFX.Core.Assets.LogicalFlagsStore.Parse(lfBytes);
-                        navMesh.BindLogicalFlags(lfStore);
-                        if (lfStore.HasData)
-                            Console.WriteLine($"  logical_flags: {lfStore.EntryCount} entries — player/NPC gating active");
+                        foreach (var (rp, _) in _worldRegionGraphs)
+                        {
+                            if (TryLoadLogicalFlags(mapReader, rp, lfStore))
+                                regionsWithFlags++;
+                        }
                     }
+                    else
+                    {
+                        if (TryLoadLogicalFlags(mapReader, regionPath, lfStore))
+                            regionsWithFlags++;
+                    }
+                    navMesh.BindLogicalFlags(lfStore);
+                    if (lfStore.HasData)
+                        Console.WriteLine($"  logical_flags: {lfStore.EntryCount} entries across {regionsWithFlags} region(s) — player/NPC gating active");
                 }
                 catch (Exception ex)
                 {
@@ -5173,6 +5190,26 @@ void main()
     /// the player region's <c>lights/lights.gas</c>, premultiplies each by its
     /// intensity, and stages it in the directional uniform arrays. Skips
     /// lights with <c>affects_actors=false</c> (those typically light terrain
+    /// <summary>Phase 24-NAV-LOGICAL-FLAGS fold (audit #1) — load one
+    /// region's logical_flags.gas via the given TankReader and merge
+    /// into the destination store. Returns true when the file existed,
+    /// parsed, and contributed entries.</summary>
+    private static bool TryLoadLogicalFlags(SiegeFX.Core.Tank.TankReader reader,
+        string regionPath, SiegeFX.Core.Assets.LogicalFlagsStore dest)
+    {
+        var lfPath = regionPath + "/terrain_nodes/editor/logical_flags.gas";
+        if (!reader.TryGetFile(lfPath, out _)) return false;
+        try
+        {
+            var bytes = reader.ExtractToMemory(lfPath);
+            var sub = SiegeFX.Core.Assets.LogicalFlagsStore.Parse(bytes);
+            if (!sub.HasData) return false;
+            dest.Merge(sub);
+            return true;
+        }
+        catch { return false; }
+    }
+
     /// only). On any miss falls back to <see cref="SetDefaultLighting"/> so
     /// the world never renders pitch-black just because lights.gas was
     /// absent or malformed. Point lights are intentionally ignored here —

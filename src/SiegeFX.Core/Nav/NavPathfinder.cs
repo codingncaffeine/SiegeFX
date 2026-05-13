@@ -148,10 +148,12 @@ public static class NavPathfinder
         // When the region's logical_flags.gas tags a triangle's lnode
         // as e.g. computer-only, a human player path-request rejects
         // it as start/goal AND skips it during expansion. Local helper
-        // captures mesh + traversal for the inner loop.
+        // captures mesh + traversal for the inner loop. SourceLnodeIndex
+        // is always 0..255 (byte cast from group.Id), so no sentinel
+        // check — the store returns CanEnter=true for unflagged
+        // (snode,lnode) pairs already.
         bool TriPasses(int tri) =>
             mesh.Flags is null ||
-            mesh.SourceLnodeIndex[tri] < 0 ||
             mesh.Flags.CanEnter(mesh.SourceSnodeGuid[tri],
                 (byte)mesh.SourceLnodeIndex[tri], traversal.Actor);
         if (!TriPasses(startTri)) return false;
