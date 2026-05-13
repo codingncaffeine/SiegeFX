@@ -9339,9 +9339,7 @@ void main()
             _playerEquipment.Remove(esTag);
             _audio?.Play(SfxGuiPickup);
             Console.WriteLine($"  paperdoll: unequipped {currentRef} from {esTag}");
-            // Invalidate the AWP slot-icon cache so the AWP redraws
-            // without the now-unequipped weapon icon.
-            _paperdollEquipCache.Clear();
+            ApplyEquipmentChange(esTag);
             return;
         }
 
@@ -9368,7 +9366,38 @@ void main()
             _audio?.Play(SfxGuiPickup);
             Console.WriteLine($"  paperdoll: equipped {itemRef} on {esTag}");
         }
+        ApplyEquipmentChange(esTag);
+    }
+
+    /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT (post-test fold) —
+    /// notify the downstream systems that an equipment slot just
+    /// changed. User reported the dropped weapon icon went into the
+    /// slot but the player kept swinging the original dagger; root
+    /// cause was that <see cref="_playerEquipment"/> updates didn't
+    /// trigger the same weapon-reload/stance-refresh path that the
+    /// loot-pickup flow at line ~11829 already runs. Centralizes that
+    /// call so every equip/unequip site shares the same fan-out:
+    ///   - TryLoadPlayerWeapon: reloads the visible weapon mesh
+    ///     attachment + the combat damage_min/max + hit cue selection.
+    ///   - TryLoadPlayerEquipment: reloads non-weapon clothing layers
+    ///     (armor/boots/gloves) on the player template.
+    ///   - RefreshPlayerStance: updates the chore/stance based on the
+    ///     new weapon's class (fs1 melee / fs5 ranged / fs0 unarmed).
+    ///   - _paperdollEquipCache: cleared so AWP + paperdoll icon
+    ///     resolvers re-read the new equipped icon next frame.</summary>
+    private void ApplyEquipmentChange(string esTag)
+    {
         _paperdollEquipCache.Clear();
+        bool isWeapon = string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase);
+        if (isWeapon)
+        {
+            TryLoadPlayerWeapon();
+        }
+        else if (_player is not null)
+        {
+            TryLoadPlayerEquipment(_player.Actor.Template);
+        }
+        RefreshPlayerStance();
     }
 
     /// <summary>Maps a PaperdollPanel slot name to the DS1 es_* tag
