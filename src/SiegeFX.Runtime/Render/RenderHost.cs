@@ -8999,15 +8999,18 @@ void main()
         float hpFrac = stats.MaxLife > 0f ? combat.CurrentLife / stats.MaxLife : 0f;
         float mpFrac = stats.MaxMana > 0f ? combat.CurrentMana / stats.MaxMana : 0f;
 
-        // INFORAIL — populate all 4 AWP slot icons. Slot 1 / 2 read the
-        // equipped weapon's [gui]inventory_icon (today they share the
-        // same es_weapon_hand slot since DS1 only allows one weapon at
-        // a time; per-set swapping is SC-INFORAIL-WEAPON-SETS — both
-        // slots resolve to the same icon for now). Slots 3 / 4 mirror
-        // the spellbook's Primary / Secondary so the user can see what
-        // RMB will cast when that slot is active.
-        GlTexture? slot1 = ResolvePaperdollSlotIcon("melee");
-        GlTexture? slot2 = ResolvePaperdollSlotIcon("melee");
+        // INFORAIL — populate AWP slot icons by checking what's
+        // actually equipped/slotted for each slot type:
+        //   slot 1 (melee)  → icon only if equipped weapon's template
+        //     chain hits weapon_melee
+        //   slot 2 (ranged) → icon only if chain hits weapon_ranged
+        //   slot 3 (primary spell)   → spell.InventoryIcon or null
+        //   slot 4 (secondary spell) → spell.InventoryIcon or null
+        // When the slot's item isn't present (no melee weapon, no
+        // ranged weapon, no spell), null is passed and the frame
+        // renders empty — matching DS1's "no item = no icon" rule.
+        GlTexture? slot1 = ResolveAwpSlotByWeaponClass("weapon_melee");
+        GlTexture? slot2 = ResolveAwpSlotByWeaponClass("weapon_ranged");
         GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
         GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
 
@@ -9068,6 +9071,39 @@ void main()
                 .Trim().Trim('"');
             if (!string.IsNullOrEmpty(iconName)) tex = TryGetGuiTexture(iconName);
         }
+        _paperdollEquipCache[cacheKey] = tex;
+        return tex;
+    }
+
+    // INFORAIL AWP slot weapon-class resolver. Returns the equipped
+    // weapon's [gui]inventory_icon ONLY IF the weapon template's
+    // specializes chain hits the requested class
+    // ("weapon_melee" / "weapon_ranged"). Pattern lifted from
+    // ComputePreferredPlayerStance (line ~7766) which uses the same
+    // chain walk for stance selection. Returns null when the slot
+    // isn't populated for that class so the AWP renders an empty
+    // slot frame instead of the wrong icon.
+    private GlTexture? ResolveAwpSlotByWeaponClass(string requiredClass)
+    {
+        if (_templateStore is null) return null;
+        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef) ||
+            string.IsNullOrWhiteSpace(weaponRef)) return null;
+        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
+        bool classMatch = false;
+        for (var t = weaponTpl; t is not null; t = t.Specializes)
+        {
+            if (string.Equals(t.Name, requiredClass, System.StringComparison.OrdinalIgnoreCase))
+            {
+                classMatch = true;
+                break;
+            }
+        }
+        if (!classMatch) return null;
+        string cacheKey = $"awp:{requiredClass}:{weaponRef}";
+        if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
+        string iconName = (_templateStore.GetAttribute(weaponTpl, "gui", "inventory_icon") ?? "")
+            .Trim().Trim('"');
+        GlTexture? tex = string.IsNullOrEmpty(iconName) ? null : TryGetGuiTexture(iconName);
         _paperdollEquipCache[cacheKey] = tex;
         return tex;
     }
