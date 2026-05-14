@@ -78,8 +78,15 @@ public sealed class NavFollower
     private Vector3 _lastTickPos;
     private bool _hasLastTickPos;
     private int _stuckTicks;
+    private int _stuckRecoveryAttempts;
     private const float StuckEpsilon = 0.05f;
     private const int StuckMaxTicks = 8;
+    // SC-NAV-STUCK-RECOVERY — how far to teleport perpendicular when
+    // a plain replan didn't unstick. 0.4u is small enough to stay
+    // visually plausible but big enough to slip off a sliver triangle
+    // or out of a 1-unit-wide wedge against a wall/rail.
+    private const float EscapeStepDist = 0.4f;
+    private const int MaxRecoveryAttempts = 4;
 
     /// <summary>Per-actor traversal policy: which kinds (Floor / Water) the follower can
     /// enter and at what cost. Defaults to <see cref="NavTraversal.LandOnly"/>; assign
@@ -170,14 +177,20 @@ public sealed class NavFollower
         if (ReachedGoal || PathBlocked || _path.Count == 0 || _waypoints.Count == 0) return;
         if (dt <= 0f) return;
 
-        // Stuck detection — if the follower didn't move appreciably
-        // since the last Tick despite having an open path, replan.
-        // This is the backstop for the boundary-respect logic below:
-        // when the candidate XZ would leave the walkable mesh we
-        // clamp instead of penetrating, but a pathfinder edge case
-        // can still pin an actor in a corner. Replan resamples the
-        // waypoint sequence from the current position and usually
-        // recovers; if it can't, PathBlocked latches.
+        // Stuck detection (multi-stage recovery, SC-NAV-STUCK-RECOVERY
+        // fold). When the follower has an open path but isn't making
+        // forward progress, we now escalate through:
+        //   1. Plain Replan — same as before; covers the case where
+        //      the current waypoint sequence has drifted off-path.
+        //   2. Perpendicular escape — if Replan didn't help, nudge
+        //      the actor sideways (perpendicular to the current
+        //      waypoint vector) so they slip OUT of a wedge against
+        //      whatever's pinning them. The next tick's path is
+        //      computed from the escape position.
+        //   3. Diag log — emit a single line per stuck event with
+        //      position, current waypoint, and remaining path
+        //      length so we can identify wedge hot spots from
+        //      gameplay logs.
         var tickStartPos = Position;
         if (_hasLastTickPos)
         {
@@ -189,13 +202,62 @@ public sealed class NavFollower
                 if (_stuckTicks >= StuckMaxTicks)
                 {
                     _stuckTicks = 0;
-                    Replan();
+                    _stuckRecoveryAttempts++;
+                    if (_stuckRecoveryAttempts == 1)
+                    {
+                        // First try: plain replan.
+                        Replan();
+                    }
+                    else
+                    {
+                        // Second+ try: perpendicular escape. Compute
+                        // a unit vector toward the current waypoint
+                        // and rotate 90° to nudge sideways. Direction
+                        // (CCW vs CW) alternates each attempt so we
+                        // don't keep hitting the same wall.
+                        var wp = _waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx] : Target;
+                        float ndx = wp.X - Position.X;
+                        float ndz = wp.Z - Position.Z;
+                        float nlen = MathF.Sqrt(ndx * ndx + ndz * ndz);
+                        if (nlen > 0.01f)
+                        {
+                            ndx /= nlen; ndz /= nlen;
+                            // 90° rotation: (x,z) → (-z,x) CCW or (z,-x) CW.
+                            bool ccw = (_stuckRecoveryAttempts % 2) == 0;
+                            float ex = ccw ? -ndz : ndz;
+                            float ez = ccw ?  ndx : -ndx;
+                            var escape = new Vector3(
+                                Position.X + ex * EscapeStepDist,
+                                Position.Y,
+                                Position.Z + ez * EscapeStepDist);
+                            if (Mesh.TryFindTriangle(escape, out _))
+                            {
+                                Position = new Vector3(escape.X,
+                                    Mesh.SampleYOnTriangle(_path[_pathIdx], escape),
+                                    escape.Z);
+                            }
+                            Replan();
+                        }
+                        if (_stuckRecoveryAttempts >= MaxRecoveryAttempts)
+                        {
+                            System.Console.WriteLine(
+                                $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
+                                $"tri={CurrentTriangle} wp[{_waypointIdx}/{_waypoints.Count}]=" +
+                                $"({(_waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx].X : 0f):F1}," +
+                                $"{(_waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx].Z : 0f):F1}) " +
+                                $"target=({Target.X:F1},{Target.Z:F1}) — giving up");
+                            PathBlocked = true;
+                            _stuckRecoveryAttempts = 0;
+                            return;
+                        }
+                    }
                     if (_path.Count == 0 || _waypoints.Count == 0) return;
                 }
             }
             else
             {
                 _stuckTicks = 0;
+                _stuckRecoveryAttempts = 0;
             }
         }
         _hasLastTickPos = true;
