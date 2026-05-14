@@ -95,6 +95,39 @@ public sealed class NavMesh
 
     public bool IsBlocked(int tri) => Blocked is not null && tri >= 0 && tri < Blocked.Length && Blocked[tri];
 
+    /// <summary>SC-FADE-NODES-LNODE — per-triangle "currently hidden
+    /// by a fade_nodes trigger" flag. Independent of <see cref="Blocked"/>
+    /// (static prop footprints) so a fade can reveal/restore without
+    /// touching the obstacle map. Triangles whose (snode, lnode) pair
+    /// is currently faded out are excluded from pathfinder expansion
+    /// and from <see cref="TryFindTriangle"/>'s click-pick — so the
+    /// player can't walk onto a faded-out upper floor and clicks
+    /// naturally fall through to the revealed layer below.
+    /// Allocated lazily on first SetFadeHidden call.</summary>
+    public bool[]? FadeHidden { get; private set; }
+
+    public bool IsFadeHidden(int tri) => FadeHidden is not null && tri >= 0 && tri < FadeHidden.Length && FadeHidden[tri];
+
+    /// <summary>Mark/unmark every triangle whose source (snode_guid,
+    /// lnode_index) pair matches as fade-hidden. Returns the number
+    /// of triangles whose state actually changed (useful for diag
+    /// logs). O(triangles) — called when a fade_nodes trigger fires
+    /// or expires, which is rare and small.</summary>
+    public int SetFadeHidden(uint snodeGuid, byte lnodeIndex, bool hidden)
+    {
+        FadeHidden ??= new bool[TriangleCount];
+        int changed = 0;
+        for (int t = 0; t < TriangleCount; t++)
+        {
+            if (SourceSnodeGuid[t] != snodeGuid) continue;
+            if ((byte)SourceLnodeIndex[t] != lnodeIndex) continue;
+            if (FadeHidden[t] == hidden) continue;
+            FadeHidden[t] = hidden;
+            changed++;
+        }
+        return changed;
+    }
+
     /// <summary>SC-NAV-OBSTACLE-AVOID — mark every triangle whose
     /// centroid falls inside a circle of radius <paramref name="radius"/>
     /// around (<paramref name="worldX"/>, <paramref name="worldZ"/>)
@@ -175,6 +208,13 @@ public sealed class NavMesh
     /// floor↔water pair (counted once, not twice).</summary>
     public int SeamEdgeCount { get; }
 
+    /// <summary>SC-NAV-CROSS-SNO-STITCH — count of nav edges that were
+    /// wired across SNO seams by the door-anchored stitcher. Each
+    /// authored DS1 Door pair typically contributes a small number
+    /// (~1-4) of bidirectional edges; fh_r1 + neighbors should report
+    /// a nonzero count for the stair-bottom ↔ basement-floor seams.</summary>
+    public int DoorSeamCount { get; }
+
     public int TriangleCount => Indices.Length / 3;
 
     // XZ uniform-grid spatial index. Built once at construction and queried by
@@ -202,6 +242,7 @@ public sealed class NavMesh
         int degenerateFaceCount,
         int nonManifoldEdgeCount,
         int seamEdgeCount,
+        int doorSeamCount,
         float gridMinX,
         float gridMinZ,
         int gridCellsX,
@@ -220,6 +261,7 @@ public sealed class NavMesh
         DegenerateFaceCount = degenerateFaceCount;
         NonManifoldEdgeCount = nonManifoldEdgeCount;
         SeamEdgeCount = seamEdgeCount;
+        DoorSeamCount = doorSeamCount;
         _gridMinX = gridMinX;
         _gridMinZ = gridMinZ;
         _gridCellsX = gridCellsX;
@@ -388,6 +430,16 @@ public sealed class NavMesh
         var vertsArr = verts.ToArray();
         var kindsArr = kinds.ToArray();
 
+        // SC-NAV-CROSS-SNO-STITCH — wire nav adjacency across SNO seams
+        // using each snode's authored Door records. fh_r1's stair-bottom
+        // SNO and hc_r1's basement-floor SNO are placed touching in
+        // world space but their nav triangles don't share vertices at
+        // the seam, so the manifold pass left them on disconnected
+        // components — A* refused with "no corridor" when the player
+        // tried to walk from the stair bottom into the basement.
+        // Runs BEFORE land↔water stitching so this pass's newly-paired
+        // edges aren't counted as boundary candidates by the water pass.
+        int doorSeams = StitchSnoDoorSeams(graph, layout, resolveSno, sourceSnodeGuid.ToArray(), indices, neighbors, vertsArr);
         // Land↔water seam stitching: shoreline Floor and Water SNOs are authored in
         // separate meshes whose vertices don't fall inside the WeldToleranceUnits bucket,
         // so the manifold pass leaves them on disconnected components. Wire cross-kind
@@ -474,11 +526,113 @@ public sealed class NavMesh
             degenerate,
             nonManifoldEdges,
             seamEdges,
+            doorSeams,
             originX,
             originZ,
             cellsX,
             cellsZ,
             grid);
+    }
+
+    /// <summary>SC-NAV-CROSS-SNO-STITCH — door-anchored cross-SNO nav
+    /// stitching. DS1 authors each SNO with a list of Doors (see
+    /// <see cref="SnoModel.Doors"/>); placed snodes carry DoorLinks
+    /// (<see cref="RegionGraph.NodeInstance.Doors"/>) pairing each
+    /// door to a far snode + door id. The basement-reveal case (fh_r1
+    /// stair-bottom → hc_r1 basement-floor) fails the manifold weld
+    /// because the two SNOs author their seam-edge vertices in
+    /// slightly different positions; this pass walks every door pair
+    /// and links any pair of unwelded nav edges whose midpoints sit
+    /// within <see cref="DoorSeamAnchorRadius"/> of the door's world
+    /// position AND within <see cref="DoorSeamEdgePairDistance"/> of
+    /// each other. Returns the number of edges wired.</summary>
+    private const float DoorSeamAnchorRadius = 4.0f;
+    private const float DoorSeamEdgePairDistance = 1.5f;
+
+    private static int StitchSnoDoorSeams(
+        RegionGraph graph,
+        RegionLayout layout,
+        Func<uint, SnoModel?> resolveSno,
+        uint[] sourceSnodeGuid,
+        int[] indices,
+        int[] neighbors,
+        Vector3[] verts)
+    {
+        int triCount = indices.Length / 3;
+        // Index unwelded edges by snode guid. Each entry is (tri, slot,
+        // midpoint) — slot s is the edge OPPOSITE vertex s, between
+        // verts (s+1)%3 and (s+2)%3.
+        var unweldedBySnode = new Dictionary<uint, List<(int tri, int slot, Vector3 mid)>>();
+        for (int t = 0; t < triCount; t++)
+        {
+            uint sg = sourceSnodeGuid[t];
+            for (int s = 0; s < 3; s++)
+            {
+                if (neighbors[3 * t + s] != -1) continue;
+                var a = verts[indices[3 * t + (s + 1) % 3]];
+                var b = verts[indices[3 * t + (s + 2) % 3]];
+                var mid = 0.5f * (a + b);
+                if (!unweldedBySnode.TryGetValue(sg, out var list))
+                {
+                    list = new List<(int, int, Vector3)>();
+                    unweldedBySnode[sg] = list;
+                }
+                list.Add((t, s, mid));
+            }
+        }
+        if (unweldedBySnode.Count == 0) return 0;
+
+        int stitched = 0;
+        foreach (var node in graph.Nodes)
+        {
+            if (node.Doors.Count == 0) continue;
+            if (!layout.TryGetTransform(node.Guid, out var aWorld)) continue;
+            var sno = resolveSno(node.MeshGuid);
+            if (sno is null || sno.Doors.Length == 0) continue;
+            if (!unweldedBySnode.TryGetValue(node.Guid, out var aEdges)) continue;
+
+            foreach (var link in node.Doors)
+            {
+                // Find this snode's door entry whose Id matches the link's LocalId.
+                SnoModel.Door? localDoor = null;
+                for (int i = 0; i < sno.Doors.Length; i++)
+                {
+                    if (sno.Doors[i].Id == (uint)link.LocalId) { localDoor = sno.Doors[i]; break; }
+                }
+                if (localDoor is null) continue;
+                if (!graph.TryGetNode(link.FarGuid, out var farNode)) continue;
+                if (!unweldedBySnode.TryGetValue(farNode.Guid, out var bEdges)) continue;
+                var doorAnchor = Vector3.Transform(localDoor.Value.Transform.Translation, aWorld);
+
+                // Walk this snode's unwelded edges near the anchor; for each,
+                // find the closest still-unwelded edge on the far snode and
+                // pair them if within edge-pair distance. First-come-first-
+                // served — once a slot is wired, it's skipped on subsequent
+                // doors that might also be near.
+                for (int i = 0; i < aEdges.Count; i++)
+                {
+                    var (t1, s1, mid1) = aEdges[i];
+                    if (neighbors[3 * t1 + s1] != -1) continue;
+                    if (Vector3.DistanceSquared(mid1, doorAnchor) > DoorSeamAnchorRadius * DoorSeamAnchorRadius) continue;
+
+                    int bestT2 = -1, bestS2 = -1;
+                    float bestD2 = DoorSeamEdgePairDistance * DoorSeamEdgePairDistance;
+                    for (int j = 0; j < bEdges.Count; j++)
+                    {
+                        var (t2, s2, mid2) = bEdges[j];
+                        if (neighbors[3 * t2 + s2] != -1) continue;
+                        if (Vector3.DistanceSquared(mid2, doorAnchor) > DoorSeamAnchorRadius * DoorSeamAnchorRadius) continue;
+                        float d2 = Vector3.DistanceSquared(mid1, mid2);
+                        if (d2 < bestD2) { bestD2 = d2; bestT2 = t2; bestS2 = s2; }
+                    }
+                    if (bestT2 < 0) continue;
+                    neighbors[3 * t1 + s1] = bestT2;
+                    neighbors[3 * bestT2 + bestS2] = t1;
+                    stitched++;
+                }
+            }
+        }
+        return stitched;
     }
 
     /// <summary>Wires cross-kind adjacencies for Floor↔Water boundary edges that visually
@@ -651,6 +805,12 @@ public sealed class NavMesh
             var b = Vertices[Indices[3 * t + 1]];
             var c = Vertices[Indices[3 * t + 2]];
             if (!PointInTriangleXZ(worldPos, a, b, c)) continue;
+            // SC-FADE-NODES-LNODE — a faded-out (dungeon-reveal)
+            // triangle is invisible AND non-clickable; skip it
+            // entirely so clicks resolve to the un-hidden layer
+            // below (the basement floor) instead of the faded
+            // upper structure that's right at player Y.
+            if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
             float triY = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
             float dy = MathF.Abs(triY - worldPos.Y);
             if (Blocked is not null && t < Blocked.Length && Blocked[t])

@@ -49,6 +49,14 @@ public sealed class NavFollower
     /// within this much of the next triangle's centroid, it advances the path index.</summary>
     public float GoalRadius { get; set; } = 0.75f;
 
+    /// <summary>SC-NAV-STAIR-DIAG — when true, the follower emits a one-line
+    /// log on every stuck-recovery attempt + perpendicular escape + give-up.
+    /// Default false (the 347 NPC wanderers would drown the log). RenderHost
+    /// flips this true on the player's follower only so we can see what
+    /// the player path is doing during a problem reproduction without
+    /// flooding the log with NPC drift events.</summary>
+    public bool DiagnosticLogging { get; set; }
+
     /// <summary>The triangle the follower is currently standing on. -1 before the first
     /// tick or when the follower strays off the mesh.</summary>
     public int CurrentTriangle { get; private set; } = -1;
@@ -117,6 +125,15 @@ public sealed class NavFollower
         ReachedGoal = false;
         PathBlocked = false;
         Replan();
+        if (DiagnosticLogging)
+        {
+            string reason = PathBlocked ? $" reason=\"{NavPathfinder.LastFailure}\"" : "";
+            System.Console.WriteLine(
+                $"[nav-target] pos=({Position.X:F1},{Position.Y:F1},{Position.Z:F1}) " +
+                $"target=({target.X:F1},{target.Y:F1},{target.Z:F1}) " +
+                $"path={_path.Count}tri waypoints={_waypoints.Count} " +
+                $"blocked={PathBlocked}{reason}");
+        }
     }
 
     /// <summary>Phase 19b — drop the follower at <paramref name="pos"/> and clear
@@ -203,27 +220,20 @@ public sealed class NavFollower
                 {
                     _stuckTicks = 0;
                     _stuckRecoveryAttempts++;
-                    // First-event diag log so the user's gameplay log
-                    // records WHERE every wedge is happening, not just
-                    // the ones we fail to recover from. Position is
-                    // world-space, tri is the current navmesh triangle
-                    // ID, wp is the current funnel waypoint the actor
-                    // was trying to reach, target is the original
-                    // SetTarget call. Cross-reference with the
-                    // `click-move: target=...` lines logged in
-                    // RenderHost to identify which click-move triggered
-                    // this stuck event.
                     if (_stuckRecoveryAttempts == 1)
                     {
-                        var wpDbg = _waypointIdx < _waypoints.Count
-                            ? _waypoints[_waypointIdx]
-                            : Target;
-                        System.Console.WriteLine(
-                            $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
-                            $"Y={Position.Y:F1} tri={CurrentTriangle} " +
-                            $"wp[{_waypointIdx}/{_waypoints.Count}]=" +
-                            $"({wpDbg.X:F1},{wpDbg.Z:F1}) " +
-                            $"target=({Target.X:F1},{Target.Z:F1}) — replan");
+                        if (DiagnosticLogging)
+                        {
+                            var wpDbg = _waypointIdx < _waypoints.Count
+                                ? _waypoints[_waypointIdx]
+                                : Target;
+                            System.Console.WriteLine(
+                                $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
+                                $"Y={Position.Y:F1} tri={CurrentTriangle} " +
+                                $"wp[{_waypointIdx}/{_waypoints.Count}]=" +
+                                $"({wpDbg.X:F1},{wpDbg.Z:F1}) " +
+                                $"target=({Target.X:F1},{Target.Z:F1}) replan");
+                        }
                         // First try: plain replan.
                         Replan();
                     }
@@ -251,6 +261,12 @@ public sealed class NavFollower
                                 Position.Z + ez * EscapeStepDist);
                             if (Mesh.TryFindTriangle(escape, out _))
                             {
+                                if (DiagnosticLogging)
+                                {
+                                    System.Console.WriteLine(
+                                        $"[nav-stuck] perpendicular escape attempt {_stuckRecoveryAttempts} " +
+                                        $"({(ccw ? "CCW" : "CW")}) at pos=({Position.X:F1},{Position.Z:F1})");
+                                }
                                 Position = new Vector3(escape.X,
                                     Mesh.SampleYOnTriangle(_path[_pathIdx], escape),
                                     escape.Z);
@@ -259,12 +275,13 @@ public sealed class NavFollower
                         }
                         if (_stuckRecoveryAttempts >= MaxRecoveryAttempts)
                         {
-                            System.Console.WriteLine(
-                                $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
-                                $"tri={CurrentTriangle} wp[{_waypointIdx}/{_waypoints.Count}]=" +
-                                $"({(_waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx].X : 0f):F1}," +
-                                $"{(_waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx].Z : 0f):F1}) " +
-                                $"target=({Target.X:F1},{Target.Z:F1}) — giving up");
+                            if (DiagnosticLogging)
+                            {
+                                System.Console.WriteLine(
+                                    $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
+                                    $"tri={CurrentTriangle} wp[{_waypointIdx}/{_waypoints.Count}] " +
+                                    $"target=({Target.X:F1},{Target.Z:F1}) giving up");
+                            }
                             PathBlocked = true;
                             _stuckRecoveryAttempts = 0;
                             return;

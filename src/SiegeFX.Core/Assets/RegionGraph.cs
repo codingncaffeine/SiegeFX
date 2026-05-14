@@ -69,6 +69,108 @@ public sealed class RegionGraph
         return new RegionGraph(graphs[0].TargetNodeGuid, combined);
     }
 
+    /// <summary>SC-NAV-CROSS-SNO-STITCH — combine like <see cref="Combine"/>,
+    /// PLUS inject cross-region door links reconstructed from each region's
+    /// <c>editor/stitch_helper.gas</c>. DS1 stores intra-region door pairs
+    /// in <c>nodes.gas</c> (already on <see cref="NodeInstance.Doors"/>)
+    /// and cross-region door pairs in <c>stitch_helper.gas</c> (only used
+    /// for region placement until now). The nav-stitching pass in
+    /// <see cref="NavMesh"/> consumes <c>NodeInstance.Doors</c> uniformly,
+    /// so we append the cross-region pairs onto the relevant snodes here
+    /// and the same pass wires both seam types.
+    ///
+    /// Matching is by <c>stitchPairId</c>: each region's stitch file lists
+    /// "on my side, snode S door D corresponds to pair P toward neighbor R."
+    /// The neighbor's matching entry with the same P gives the far side
+    /// (snode S', door D'). We append <c>DoorLink(D, S', D')</c> onto S's
+    /// node and the reverse onto S'. The original <see cref="NodeInstance"/>
+    /// records are immutable so we recreate any node whose Doors list grows
+    /// — that cost is paid once at world-load time, never per-frame.</summary>
+    public static RegionGraph CombineWithCrossRegionDoors(
+        IReadOnlyList<(string Path, RegionGraph Graph, RegionStitchHelper? Stitches)> entries)
+    {
+        if (entries.Count == 0) throw new ArgumentException("Combine requires at least one entry", nameof(entries));
+        if (entries.Count == 1) return entries[0].Graph;
+
+        // Index by region name (the leaf of the path). Stitch entries use
+        // short names like "fh_r1", "hc_r1" to refer to each other.
+        var byName = new Dictionary<string, (RegionGraph Graph, RegionStitchHelper? Stitches)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (path, graph, stitches) in entries)
+        {
+            var name = path;
+            int slash = name.LastIndexOf('/');
+            if (slash >= 0) name = name[(slash + 1)..];
+            byName[name] = (graph, stitches);
+        }
+
+        // Build the per-snode extra-door list by walking every pair (regionA -> regionB).
+        // Each stitchAB with PairId P pairs with the stitchBA in regionB.ByDestination[regionA] that also has PairId P.
+        var extraDoorsBySnode = new Dictionary<uint, List<DoorLink>>();
+        foreach (var (nameA, (_, stitchesA)) in byName)
+        {
+            if (stitchesA is null) continue;
+            foreach (var (nameB, stitchesABforB) in stitchesA.ByDestination)
+            {
+                if (!byName.TryGetValue(nameB, out var entryB)) continue;
+                if (entryB.Stitches is null) continue;
+                if (!entryB.Stitches.ByDestination.TryGetValue(nameA, out var stitchesBAforA)) continue;
+                // Index B-side stitches by PairId for O(1) match lookup.
+                var byPair = new Dictionary<uint, RegionStitchHelper.Stitch>(stitchesBAforA.Count);
+                foreach (var s in stitchesBAforA) byPair[s.PairId] = s;
+                foreach (var sA in stitchesABforB)
+                {
+                    if (!byPair.TryGetValue(sA.PairId, out var sB)) continue;
+                    // Inject only the A-side here; the matching iteration when
+                    // the loop visits regionB will inject the B-side. Avoids
+                    // double-counting the same edge.
+                    var link = new DoorLink(sA.DoorId, sB.SnodeGuid, sB.DoorId);
+                    if (!extraDoorsBySnode.TryGetValue(sA.SnodeGuid, out var list))
+                    {
+                        list = new List<DoorLink>();
+                        extraDoorsBySnode[sA.SnodeGuid] = list;
+                    }
+                    list.Add(link);
+                }
+            }
+        }
+
+        // Assemble the combined node list, swapping in extended-door versions
+        // for snodes that picked up cross-region doors.
+        var total = 0;
+        foreach (var e in entries) total += e.Graph.Nodes.Count;
+        var combined = new List<NodeInstance>(total);
+        foreach (var (_, graph, _) in entries)
+        {
+            foreach (var node in graph.Nodes)
+            {
+                if (!extraDoorsBySnode.TryGetValue(node.Guid, out var extra))
+                {
+                    combined.Add(node);
+                    continue;
+                }
+                var mergedDoors = new List<DoorLink>(node.Doors.Count + extra.Count);
+                mergedDoors.AddRange(node.Doors);
+                mergedDoors.AddRange(extra);
+                combined.Add(new NodeInstance
+                {
+                    Guid = node.Guid,
+                    MeshGuid = node.MeshGuid,
+                    TexsetAbbr = node.TexsetAbbr,
+                    BoundsCamera = node.BoundsCamera,
+                    CameraFade = node.CameraFade,
+                    OccludesCamera = node.OccludesCamera,
+                    OccludesLight = node.OccludesLight,
+                    Doors = mergedDoors,
+                });
+            }
+        }
+        int totalExtraLinks = 0;
+        foreach (var kv in extraDoorsBySnode) totalExtraLinks += kv.Value.Count;
+        if (totalExtraLinks > 0)
+            System.Console.WriteLine($"  cross-region doors: {totalExtraLinks} link(s) injected across {extraDoorsBySnode.Count} snode(s)");
+        return new RegionGraph(entries[0].Graph.TargetNodeGuid, combined);
+    }
+
     public static RegionGraph FromDocument(GasDocument doc)
     {
         GasNode? root = null;
@@ -105,6 +207,7 @@ public sealed class RegionGraph
     {
         uint guid = 0, meshGuid = 0;
         var texsetAbbr = "";
+        bool boundsCamera = false, cameraFade = false, occludesCamera = false, occludesLight = false;
         foreach (var a in snode.Attributes)
         {
             if (a.Name.Equals("guid", StringComparison.OrdinalIgnoreCase))
@@ -113,6 +216,25 @@ public sealed class RegionGraph
                 meshGuid = ParseHexU32(a.Value, "mesh_guid");
             else if (a.Name.Equals("texsetabbr", StringComparison.OrdinalIgnoreCase))
                 texsetAbbr = a.Value;
+            // SC-CAMERA-FADE — per-snode camera-related bools. DS1's
+            // ReaderWriterSiegeNodeList.cpp:166 reads these directly off
+            // nodes.gas and stages them as user-values on each xform; the
+            // runtime then drives:
+            //   bounds_camera   = camera collision blocker (already implicit
+            //                     in our prop-footprint pass for now).
+            //   camera_fade     = fade-when-occluding-player — the basement
+            //                     reveal mechanic.
+            //   occludes_camera = blocks camera-raycast tests.
+            //   occludes_light  = blocks dynamic light raycast tests.
+            // We parse all four but currently only consume camera_fade.
+            else if (a.Name.Equals("bounds_camera", StringComparison.OrdinalIgnoreCase))
+                boundsCamera = ParseBool(a.Value);
+            else if (a.Name.Equals("camera_fade", StringComparison.OrdinalIgnoreCase))
+                cameraFade = ParseBool(a.Value);
+            else if (a.Name.Equals("occludes_camera", StringComparison.OrdinalIgnoreCase))
+                occludesCamera = ParseBool(a.Value);
+            else if (a.Name.Equals("occludes_light", StringComparison.OrdinalIgnoreCase))
+                occludesLight = ParseBool(a.Value);
         }
         if (guid == 0)
             throw new InvalidDataException($"snode '{snode.Header}' missing guid");
@@ -142,8 +264,20 @@ public sealed class RegionGraph
             Guid = guid,
             MeshGuid = meshGuid,
             TexsetAbbr = texsetAbbr,
+            BoundsCamera = boundsCamera,
+            CameraFade = cameraFade,
+            OccludesCamera = occludesCamera,
+            OccludesLight = occludesLight,
             Doors = doors,
         };
+    }
+
+    private static bool ParseBool(string v)
+    {
+        var s = v.Trim();
+        return s.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               s.Equals("1", StringComparison.Ordinal) ||
+               s.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
     private static uint ParseHexU32(string text, string field)
@@ -166,6 +300,12 @@ public sealed class RegionGraph
         /// <summary>Texture-set abbreviation that selects the tile's terrain texture pack
         /// (e.g. <c>sn02</c>). SNO surface texture names are typically prefixed with this.</summary>
         public required string TexsetAbbr { get; init; }
+        /// <summary>SC-CAMERA-FADE — camera-related per-snode flags from
+        /// nodes.gas. Default false (gas omits the line on most snodes).</summary>
+        public bool BoundsCamera { get; init; }
+        public bool CameraFade { get; init; }
+        public bool OccludesCamera { get; init; }
+        public bool OccludesLight { get; init; }
         public required IReadOnlyList<DoorLink> Doors { get; init; }
     }
 

@@ -17,6 +17,24 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     catch { }
 };
 
+// Console tee — when SIEGEFX_DEBUG_LOG_FILE is set, mirror all Console.Out to
+// that file so I can read the diag log directly instead of asking the user to
+// paste it. Auto-flush on every write so a forced quit still leaves a valid
+// log. test-all.bat sets this for the slices where I'm actively diagnosing.
+var teePath = System.Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_LOG_FILE");
+if (!string.IsNullOrWhiteSpace(teePath))
+{
+    try
+    {
+        var dir = System.IO.Path.GetDirectoryName(teePath);
+        if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
+        var fs = new System.IO.FileStream(teePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
+        var fileWriter = new System.IO.StreamWriter(fs) { AutoFlush = true };
+        Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter));
+    }
+    catch (Exception ex) { Console.WriteLine($"  tee log: failed to open '{teePath}': {ex.Message}"); }
+}
+
 // Invocation shapes:
 //   SiegeFX.Runtime                                          → boot to main menu (Phase 24)
 //   SiegeFX.Runtime [mesh.sno|mesh.asp] [texture.raw | tank.dsres]

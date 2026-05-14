@@ -171,6 +171,7 @@ echo   98. SC-QUEST-OBJ-C               - Pickup quest objective (SIEGEFX_DEBUG_
 echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG_QUEST=quest_merik_staff, hold staff + talk Merik)
 echo  100. SC-HUD-DATABAR               - Bottom-row HUD buttons (pause/HP-pot/MP-pot/labels/map/journal/menu) — click each in fh_r1
 echo  101. SC-HUD-OVERHEAD-BARS         - Floating HP/MP bars above every combatant (PC always on; enemies on hit/aggro)
+echo  102. SC-FADE-NODES-LNODE          - Spawn at fh_r1 farmhouse basement stairs (SIEGEFX_DEBUG_SPAWN=70,-4,-65); walk down + test dungeon reveal + click-pick
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -278,6 +279,7 @@ if /i "%CHOICE%"=="98" goto T98
 if /i "%CHOICE%"=="99" goto T99
 if /i "%CHOICE%"=="100" goto T100
 if /i "%CHOICE%"=="101" goto T101
+if /i "%CHOICE%"=="102" goto T102
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2318,6 +2320,30 @@ echo  Receipt: walk to a krug pack, watch each enemy's bar appear when
 echo  they engage you, and watch their HP drain on hit.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T102
+echo.
+echo --- SC-FADE-NODES-LNODE: dungeon-reveal nav test ---
+echo [Spawns the PC near the first farmhouse basement entry in fh_r1
+echo  (world ~70,-4,-65) so you don't have to walk from the authored
+echo  spawn. Walk a few steps down/in toward the basement stairs and
+echo  watch for [fade_nodes] lines in the log — those mark the moment
+echo  the trigger fires + which (snode,lnode) pairs get hidden. Then
+echo  click on the basement floor and verify the path actually
+echo  descends instead of routing across the upper floor.
+echo  Diag: [fade-trig-diag] lines at startup list each trigger's
+echo  resolved world position; if they cluster near origin (0,0,0)
+echo  the snode-parent transform isn't resolving for those triggers.]
+echo.
+set "SIEGEFX_DEBUG_SPAWN=70,-4,-65"
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test102.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_SPAWN="
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test102.log
 echo.
 pause
 goto MENU

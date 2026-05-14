@@ -142,8 +142,8 @@ public static class NavPathfinder
         traversal ??= NavTraversal.LandOnly;
         // Refuse impassable endpoints up front. Without this, A* would walk the whole
         // open set looking for a goal it can never enter.
-        if (!traversal.CanEnter(mesh.Kinds[startTri])) return false;
-        if (!traversal.CanEnter(mesh.Kinds[goalTri])) return false;
+        if (!traversal.CanEnter(mesh.Kinds[startTri])) { LastFailure = $"start tri {startTri} kind={mesh.Kinds[startTri]} impassable under {traversal.GetType().Name}"; return false; }
+        if (!traversal.CanEnter(mesh.Kinds[goalTri])) { LastFailure = $"goal tri {goalTri} kind={mesh.Kinds[goalTri]} impassable under {traversal.GetType().Name}"; return false; }
         // Phase 24-NAV-LOGICAL-FLAGS — per-triangle actor-class gate.
         // When the region's logical_flags.gas tags a triangle's lnode
         // as e.g. computer-only, a human player path-request rejects
@@ -156,14 +156,20 @@ public static class NavPathfinder
             mesh.Flags is null ||
             mesh.Flags.CanEnter(mesh.SourceSnodeGuid[tri],
                 (byte)mesh.SourceLnodeIndex[tri], traversal.Actor);
-        if (!TriPasses(startTri)) return false;
+        if (!TriPasses(startTri)) { LastFailure = $"start tri {startTri} fails logical-flags gate"; return false; }
         // SC-NAV-OBSTACLE-AVOID — refuse pathing INTO an obstacle.
         // Start triangle can be blocked (actor wedged against a wall
         // at spawn / after a knockback / etc) but the goal must not
         // be blocked, and we'll filter blocked triangles out of A*
         // expansion below.
-        if (mesh.IsBlocked(goalTri)) return false;
-        if (!TriPasses(goalTri)) return false;
+        if (mesh.IsBlocked(goalTri)) { LastFailure = $"goal tri {goalTri} obstacle-blocked"; return false; }
+        // SC-FADE-NODES-LNODE — refuse pathing into a faded-out
+        // dungeon layer. Start can be fade-hidden (e.g. a fade
+        // just fired while the actor stood on the now-hidden
+        // tile — they'll recover via stuck-replan), but the goal
+        // must be a visible/revealed surface.
+        if (mesh.IsFadeHidden(goalTri)) { LastFailure = $"goal tri {goalTri} fade-hidden"; return false; }
+        if (!TriPasses(goalTri)) { LastFailure = $"goal tri {goalTri} fails logical-flags gate (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]})"; return false; }
         if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
         ws ??= new Workspace();
@@ -198,6 +204,9 @@ public static class NavPathfinder
                 // SC-NAV-OBSTACLE-AVOID — A* never expands into an
                 // obstacle-blocked triangle.
                 if (mesh.IsBlocked(nb)) continue;
+                // SC-FADE-NODES-LNODE — A* never expands into a
+                // fade-hidden triangle.
+                if (mesh.IsFadeHidden(nb)) continue;
                 float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
                 if (float.IsPositiveInfinity(mul)) continue;
                 if (!TriPasses(nb)) continue;
@@ -210,8 +219,15 @@ public static class NavPathfinder
                 ws.HeapPush(fScore[nb], nb);
             }
         }
+        LastFailure = $"no corridor from start tri {startTri} (snode=0x{mesh.SourceSnodeGuid[startTri]:X8} lnode={mesh.SourceLnodeIndex[startTri]}) to goal tri {goalTri} (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]}) (disconnected components)";
         return false;
     }
+
+    /// <summary>Most recent failure reason from <see cref="TryFindPath"/>. Set
+    /// whenever the pathfinder returns false; left stale on success. Read by
+    /// callers that want to surface "why blocked" diagnostics; not threadsafe
+    /// (single-threaded by design — see NavFollower remarks).</summary>
+    public static string LastFailure { get; private set; } = "";
 
     private static void Reconstruct(int[] cameFrom, int end, List<int> dest)
     {

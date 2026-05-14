@@ -58,7 +58,7 @@ public sealed class RenderHost : IDisposable
     // the right scope. Empty when LoadRegion ran without a stitch helper
     // (standalone test regions); LoadPlayActors then falls back to single-region
     // behavior.
-    private readonly List<(string Path, RegionGraph Graph)> _worldRegionGraphs = new();
+    private readonly List<(string Path, RegionGraph Graph, SiegeFX.Core.Assets.RegionStitchHelper? Stitches)> _worldRegionGraphs = new();
     private WorldLayout? _worldLayout;
     // Phase 21a-3 — rolling preload state. _loadedRegions caches every
     // (graph, layout, stitches) entry the loader has parsed so far so the
@@ -189,14 +189,19 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     private SiegeFX.Core.Actors.TriggerRuntime? _triggerRuntime;
     private RenderHostTriggerContext? _triggerCtx;
-    // SC-DUNGEON-FADE-NODES — per-snode visibility for the dungeon-
-    // basement "reveal" mechanic. DS1's special.gas ships
-    // trigger_fade_nodes_box entries that fire `fade_nodes(<guid>,...)`
-    // when the player crosses into a dungeon AABB; the named snodes
-    // hide so the underlying interior becomes visible. Dict key =
-    // snode guid; value = target alpha (0 = fully hidden, 1 = fully
-    // visible). Missing key = default visible.
-    private readonly System.Collections.Generic.Dictionary<uint, float> _fadedSnodes = new();
+    // SC-FADE-NODES-LNODE — per-(snode, lnode) visibility for the
+    // dungeon-basement "reveal" mechanic. DS1's special.gas fires
+    // fade_nodes(snode_guid, lnode_a, lnode_b, lnode_c, mode) — up
+    // to three lnode indices per call, -1 as the unused-slot
+    // sentinel. Key = (snode_guid, lnode_index); value = target
+    // alpha (0 = hidden, 1 = visible). Missing key = visible.
+    private readonly System.Collections.Generic.Dictionary<(uint Snode, byte Lnode), float> _fadedLnodes = new();
+    // Snode-level ref count: how many lnodes of a given snode are
+    // currently faded. Used by the render gate to keep the existing
+    // whole-snode fade behavior (lnode-granular render would require
+    // splitting SnoMesh per logical_mesh; deferred). Nav gate is
+    // already lnode-granular via NavMesh.FadeHidden.
+    private readonly System.Collections.Generic.Dictionary<uint, int> _fadedSnodeCounts = new();
     // Phase 17-SC-D / SC-F — sfx_script catalogue + interpreter. Loaded once
     // at LoadPlayActors; the trigger runtime hits OnTriggerCallSfxScript which
     // forwards to _sfxRuntime.Spawn so emitter.gas placements + spell casts
@@ -854,6 +859,109 @@ public sealed class RenderHost : IDisposable
     /// splinter. Snap reads correctly when the player is fully
     /// inside the trigger AABB and discontinuous at the seam, which
     /// matches DS1's behavior closely enough for navigation.</summary>
+    /// <summary>SC-CAMERA-FADE — transform a local-space AABB through a world
+    /// matrix and return the AABB of the 8 transformed corners. Used at
+    /// region load to precompute each snode's world bounds so the per-frame
+    /// camera-fade test is a cheap segment-vs-AABB intersection.</summary>
+    private static (Vector3 Min, Vector3 Max) TransformAabb(Vector3 localMin, Vector3 localMax, Matrix4x4 world)
+    {
+        Span<Vector3> corners = stackalloc Vector3[8];
+        corners[0] = new Vector3(localMin.X, localMin.Y, localMin.Z);
+        corners[1] = new Vector3(localMax.X, localMin.Y, localMin.Z);
+        corners[2] = new Vector3(localMin.X, localMax.Y, localMin.Z);
+        corners[3] = new Vector3(localMax.X, localMax.Y, localMin.Z);
+        corners[4] = new Vector3(localMin.X, localMin.Y, localMax.Z);
+        corners[5] = new Vector3(localMax.X, localMin.Y, localMax.Z);
+        corners[6] = new Vector3(localMin.X, localMax.Y, localMax.Z);
+        corners[7] = new Vector3(localMax.X, localMax.Y, localMax.Z);
+        var wmin = new Vector3(float.PositiveInfinity);
+        var wmax = new Vector3(float.NegativeInfinity);
+        for (int i = 0; i < 8; i++)
+        {
+            var w = Vector3.Transform(corners[i], world);
+            wmin = Vector3.Min(wmin, w);
+            wmax = Vector3.Max(wmax, w);
+        }
+        return (wmin, wmax);
+    }
+
+    /// <summary>SC-CAMERA-FADE — slab-method segment vs AABB intersection.
+    /// Returns true if the segment from <paramref name="p0"/> to
+    /// <paramref name="p1"/> enters the AABB at any point. DS1's basement
+    /// reveal hides every snode marked camera_fade=true whose AABB sits
+    /// between the camera and the player; that's the geometry test.</summary>
+    private static bool SegmentIntersectsAabb(Vector3 p0, Vector3 p1, Vector3 min, Vector3 max)
+    {
+        var d = p1 - p0;
+        float tMin = 0f, tMax = 1f;
+        for (int axis = 0; axis < 3; axis++)
+        {
+            float p = axis == 0 ? p0.X : (axis == 1 ? p0.Y : p0.Z);
+            float dd = axis == 0 ? d.X : (axis == 1 ? d.Y : d.Z);
+            float lo = axis == 0 ? min.X : (axis == 1 ? min.Y : min.Z);
+            float hi = axis == 0 ? max.X : (axis == 1 ? max.Y : max.Z);
+            if (MathF.Abs(dd) < 1e-6f)
+            {
+                if (p < lo || p > hi) return false;
+                continue;
+            }
+            float t1 = (lo - p) / dd;
+            float t2 = (hi - p) / dd;
+            if (t1 > t2) (t1, t2) = (t2, t1);
+            if (t1 > tMin) tMin = t1;
+            if (t2 < tMax) tMax = t2;
+            if (tMin > tMax) return false;
+        }
+        return true;
+    }
+
+    /// <summary>SC-CAMERA-FADE — per-frame visibility eval. For every snode
+    /// authored with <c>camera_fade=true</c> in nodes.gas, test whether its
+    /// world AABB sits between the camera eye and the player; if yes, hide
+    /// it (both render-side via <see cref="_fadedSnodeCounts"/> and nav-side
+    /// via <see cref="NavMesh.SetFadeHidden"/>) so the upper structure of a
+    /// dungeon entrance auto-reveals as the camera angles down. No
+    /// animation in v1; binary in/out. Add easing later if it flickers at
+    /// AABB edges.</summary>
+    private void UpdateCameraFade()
+    {
+        if (_player is null || _playerFollower is null) return;
+        // Use the chase-cam eye position. _camera is the active camera; we
+        // sample its world translation via the inverse view matrix's row3.
+        var view = _camera.GetView();
+        if (!Matrix4x4.Invert(view, out var camWorld)) return;
+        var camPos = camWorld.Translation;
+        var playerPos = _playerFollower.Position + new Vector3(0f, 1.5f, 0f); // aim mid-body, not feet
+        for (int i = 0; i < _regionInstances.Count; i++)
+        {
+            var inst = _regionInstances[i];
+            if (!inst.CameraFade) continue;
+            bool occluding = SegmentIntersectsAabb(camPos, playerPos, inst.WorldAabbMin, inst.WorldAabbMax);
+            bool wasHidden = _fadedSnodeCounts.ContainsKey(inst.SnodeGuid);
+            if (occluding && !wasHidden)
+            {
+                _fadedSnodeCounts[inst.SnodeGuid] = 1;
+                SetNavFadeForSnode(inst.SnodeGuid, true);
+            }
+            else if (!occluding && wasHidden)
+            {
+                _fadedSnodeCounts.Remove(inst.SnodeGuid);
+                SetNavFadeForSnode(inst.SnodeGuid, false);
+            }
+        }
+    }
+
+    /// <summary>Helper: mark every lnode of <paramref name="snodeGuid"/> as
+    /// (un)faded on the nav mesh. camera_fade is whole-snode in DS1's
+    /// authoring, so we sweep 0..255 lnode indices — actual lnode count is
+    /// small (single-digit), the rest no-op cheaply.</summary>
+    private void SetNavFadeForSnode(uint snodeGuid, bool hidden)
+    {
+        if (_navMesh is null) return;
+        for (int li = 0; li < 256; li++)
+            _navMesh.SetFadeHidden(snodeGuid, (byte)li, hidden);
+    }
+
     internal void OnTriggerFadeNodes(IReadOnlyList<string> args)
     {
         if (args is null || args.Count == 0) return;
@@ -862,22 +970,66 @@ public sealed class RenderHost : IDisposable
             Console.WriteLine($"[fade_nodes] couldn't parse snode guid from '{args[0]}'");
             return;
         }
+        // Trailing string arg is the mode; everything between guid and
+        // mode is a list of lnode indices with -1 as unused-slot sentinel.
         string mode = "out";
+        int modeIdx = args.Count;
         for (int i = args.Count - 1; i >= 1; i--)
         {
             var a = args[i].Trim().Trim('"').ToLowerInvariant();
             if (a == "out" || a == "out:black" || a == "in" ||
-                a == "fade_out" || a == "fade_in") { mode = a; break; }
+                a == "fade_out" || a == "fade_in") { mode = a; modeIdx = i; break; }
         }
-        bool wasHidden = _fadedSnodes.ContainsKey(guid);
-        float target = (mode == "in" || mode == "fade_in") ? 1f : 0f;
-        if (target >= 0.999f) _fadedSnodes.Remove(guid);
-        else _fadedSnodes[guid] = target;
-        bool isHiddenNow = _fadedSnodes.ContainsKey(guid);
-        // Log every transition so we can see when (and IF) the
-        // basement trigger fires during the user's test.
-        if (wasHidden != isHiddenNow)
-            Console.WriteLine($"[fade_nodes] snode 0x{guid:X8} {mode} (hidden={isHiddenNow})");
+        bool hide = !(mode == "in" || mode == "fade_in");
+
+        // Collect lnode indices from args[1..modeIdx-1]. -1 sentinel
+        // marks an unused slot; skip it. Any non-integer arg is also
+        // skipped (defensive; gas should always supply ints here).
+        var lnodes = new System.Collections.Generic.List<byte>(3);
+        for (int i = 1; i < modeIdx; i++)
+        {
+            var t = args[i].Trim();
+            if (!int.TryParse(t, out int li)) continue;
+            if (li < 0) continue;
+            if (li > 255) continue;
+            lnodes.Add((byte)li);
+        }
+        // Defensive: if the gas authored no lnode list (just guid + mode),
+        // treat as "all lnodes" by passing lnode 0 — single-line gas
+        // doesn't appear in shipped DS1 special.gas, but stay tolerant.
+        if (lnodes.Count == 0) lnodes.Add(0);
+
+        foreach (var lnode in lnodes)
+        {
+            var key = (guid, lnode);
+            bool wasHidden = _fadedLnodes.ContainsKey(key);
+            if (hide)
+            {
+                _fadedLnodes[key] = 0f;
+            }
+            else
+            {
+                _fadedLnodes.Remove(key);
+            }
+            bool isHiddenNow = _fadedLnodes.ContainsKey(key);
+            if (wasHidden == isHiddenNow) continue;
+
+            // Maintain snode-level ref count for the render gate.
+            if (isHiddenNow)
+            {
+                _fadedSnodeCounts.TryGetValue(guid, out int c);
+                _fadedSnodeCounts[guid] = c + 1;
+            }
+            else if (_fadedSnodeCounts.TryGetValue(guid, out int c))
+            {
+                if (c <= 1) _fadedSnodeCounts.Remove(guid);
+                else _fadedSnodeCounts[guid] = c - 1;
+            }
+
+            // Nav gate: block/unblock all triangles whose (snode, lnode)
+            // matches. Pathfinder + click-pick consult NavMesh.FadeHidden.
+            _navMesh?.SetFadeHidden(guid, lnode, isHiddenNow);
+        }
     }
 
     private static bool TryParseSnodeGuid(string s, out uint guid)
@@ -1360,7 +1512,7 @@ public sealed class RenderHost : IDisposable
     private const float ChasePitchMin = 0.05f;          // ~3°
     private const float ChasePitchMax = (MathF.PI / 2f) - 0.05f; // ~87°
 
-    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid);
+    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid, bool CameraFade, Vector3 WorldAabbMin, Vector3 WorldAabbMax);
 
     /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
     /// <c>texset</c> from nodes.gas fills in at load time (e.g. <c>t_xxx_flr_04x04-a</c>
@@ -3696,7 +3848,8 @@ void main()
                     catch { /* skip */ }
                 }
 
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid));
+                var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, worldXf);
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
             }
         }
 
@@ -3801,7 +3954,8 @@ void main()
                 catch { /* skip unreadable textures; subset falls back to uHasTexture=0 */ }
             }
 
-            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr, node.Guid));
+            var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, world);
+            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
         }
 
         BuildTsdStoreAndPreload(terrainReader, rawIndex);
@@ -4005,10 +4159,10 @@ void main()
         // and the snode → region lookup table used by RegionLocator.
         _worldRegionGraphs.Clear();
         var lookup = new List<(Vector3, string)>(world.Transforms.Count);
-        void AppendRegion(string rp, RegionGraph g)
+        void AppendRegion(string rp, RegionGraph g, SiegeFX.Core.Assets.RegionStitchHelper? stitches)
         {
             if (!world.RegionOffsets.ContainsKey(rp)) return;
-            _worldRegionGraphs.Add((rp, g));
+            _worldRegionGraphs.Add((rp, g, stitches));
             foreach (var n in g.Nodes)
             {
                 if (world.Transforms.TryGetValue(n.Guid, out var xf))
@@ -4016,11 +4170,11 @@ void main()
             }
         }
         if (_worldRootRegion is not null && _loadedRegions.TryGetValue(_worldRootRegion, out var rootEntry))
-            AppendRegion(_worldRootRegion, rootEntry.Graph);
+            AppendRegion(_worldRootRegion, rootEntry.Graph, rootEntry.Stitches);
         foreach (var kv in _loadedRegions)
         {
             if (kv.Key == _worldRootRegion) continue;
-            AppendRegion(kv.Key, kv.Value.Graph);
+            AppendRegion(kv.Key, kv.Value.Graph, kv.Value.Stitches);
         }
         _snodeRegionLookup = lookup.ToArray();
 
@@ -4073,7 +4227,8 @@ void main()
                     catch { /* skip unreadable textures */ }
                 }
 
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid));
+                var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, worldXf);
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
                 instancesAdded++;
             }
         }
@@ -4181,13 +4336,13 @@ void main()
         if (_worldLayout is not null && _worldRegionGraphs.Count > 1)
         {
             var graphs = new List<SiegeFX.Core.Assets.RegionGraph>(_worldRegionGraphs.Count);
-            foreach (var (_, g) in _worldRegionGraphs) graphs.Add(g);
+            foreach (var (_, g, _) in _worldRegionGraphs) graphs.Add(g);
             var unifiedGraph  = SiegeFX.Core.Assets.RegionGraph.Combine(graphs);
             var unifiedLayout = SiegeFX.Core.Assets.RegionLayout.FromTransforms(
                 _regionLayout.AnchorGuid, _worldLayout.Transforms);
             _regionLayout = unifiedLayout;
 
-            foreach (var (path, _) in _worldRegionGraphs)
+            foreach (var (path, _, _) in _worldRegionGraphs)
             {
                 if (path == regionPath) continue;
                 try
@@ -4243,7 +4398,7 @@ void main()
         var triggerRegions = new List<string> { regionPath };
         if (_worldLayout is not null && _worldRegionGraphs.Count > 1)
         {
-            foreach (var (path, _) in _worldRegionGraphs)
+            foreach (var (path, _, _) in _worldRegionGraphs)
                 if (path != regionPath) triggerRegions.Add(path);
         }
         int fadeNodesBoxCount = 0;
@@ -4253,6 +4408,16 @@ void main()
             var (placements, diags) =
                 SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "special.gas");
             foreach (var d in diags) Console.WriteLine("  " + d);
+            // SC-FADE-NODES-LNODE region-scope diag: confirm which regions
+            // actually contributed special.gas triggers. If hc_r1 returns 0,
+            // either the file is absent OR the loader can't see it.
+            int fadeHere = 0;
+            foreach (var pp in placements)
+            {
+                var tnn = (pp.TemplateName ?? "").ToLowerInvariant();
+                if (tnn.Contains("fade_node")) fadeHere++;
+            }
+            Console.WriteLine($"  [region-scope-diag] {rp} -> {placements.Count} placement(s), {fadeHere} fade trigger(s)");
             triggerPlacementCount += placements.Count;
             foreach (var p in placements)
             {
@@ -4262,7 +4427,41 @@ void main()
                 else if (tn.Contains("mood_change") || tn.Contains("mood_box"))
                     moodChangeBoxCount++;
             }
-            spawner.SpawnTriggers(placements);
+            var spawned = spawner.SpawnTriggers(placements);
+            // SC-FADE-NODES-LNODE diagnostic — dump every fade-related
+            // trigger's resolved WORLD position so we can see whether
+            // it's near anywhere the player will walk. If positions
+            // all cluster near origin while the player is at (74,-8,
+            // -60), the snode-parent transform isn't resolving and the
+            // AABB tests never fire.
+            // Pair spawned triggers with their placements by SCID. Plain index-pairing
+            // breaks because SpawnTriggers skips placements with no template/matrix.
+            var placementsByScid = new System.Collections.Generic.Dictionary<uint, SiegeFX.Core.Assets.ActorInstance>();
+            foreach (var pl in placements)
+            {
+                if (!placementsByScid.ContainsKey(pl.Scid)) placementsByScid[pl.Scid] = pl;
+            }
+            foreach (var t in spawned)
+            {
+                if (!placementsByScid.TryGetValue(t.Scid, out var p)) continue;
+                var tn = (p.TemplateName ?? "").ToLowerInvariant();
+                if (!(tn.Contains("fade_node") || tn.Contains("fade_nodes"))) continue;
+                int rowCount = t.Matrix?.Rows?.Count ?? 0;
+                string condSummary = "";
+                string actionSummary = "";
+                if (rowCount > 0 && t.Matrix is not null)
+                {
+                    var r0 = t.Matrix.Rows[0];
+                    condSummary = string.Join(",", r0.Conditions.Select(c => c.Verb));
+                    actionSummary = string.Join(",", r0.Actions.Select(a => a.Verb));
+                }
+                // Distance from the test-102 spawn (70,-4,-65). Triggers within
+                // ~30m are candidates for "the trigger that should fire when
+                // you walk into the basement". Anything 100m+ is unrelated.
+                var spawnPt = new System.Numerics.Vector3(70f, -4f, -65f);
+                float distToSpawn = System.Numerics.Vector3.Distance(t.Position, spawnPt);
+                Console.WriteLine($"  [fade-trig-diag] {p.TemplateName} scid=0x{t.Scid:X8} world=({t.Position.X:F1},{t.Position.Y:F1},{t.Position.Z:F1}) distToTestSpawn={distToSpawn:F1}m snodeParent=0x{p.Placement.NodeGuid:X8} active={t.IsActive} rows={rowCount} cond=[{condSummary}] act=[{actionSummary}]");
+            }
         }
         if (fadeNodesBoxCount > 0 || moodChangeBoxCount > 0)
             Console.WriteLine($"  trigger types: fade_nodes_box={fadeNodesBoxCount}, mood_change_box={moodChangeBoxCount}");
@@ -4339,7 +4538,7 @@ void main()
             int neighborConvs = 0;
             if (_worldRegionGraphs.Count > 1)
             {
-                foreach (var (path, _) in _worldRegionGraphs)
+                foreach (var (path, _, _) in _worldRegionGraphs)
                 {
                     if (path == regionPath) continue;
                     try
@@ -4598,9 +4797,15 @@ void main()
                 RegionGraph navGraph;
                 if (_worldRegionGraphs.Count > 1)
                 {
-                    var graphList = new List<RegionGraph>(_worldRegionGraphs.Count);
-                    foreach (var (_, g) in _worldRegionGraphs) graphList.Add(g);
-                    navGraph = RegionGraph.Combine(graphList);
+                    // SC-NAV-CROSS-SNO-STITCH — inject cross-region door
+                    // pairs from each region's stitch_helper.gas into the
+                    // combined graph so the NavMesh door stitcher wires
+                    // basement / cave / building seams alongside the
+                    // intra-region ones. Without this the basement-floor
+                    // snode is unreachable from the stair-bottom snode and
+                    // the player gets a "no corridor" path-blocked error
+                    // when clicking inside a dungeon.
+                    navGraph = RegionGraph.CombineWithCrossRegionDoors(_worldRegionGraphs);
                 }
                 else
                 {
@@ -4627,7 +4832,7 @@ void main()
                     int regionsWithFlags = 0;
                     if (_worldRegionGraphs.Count > 1)
                     {
-                        foreach (var (rp, _) in _worldRegionGraphs)
+                        foreach (var (rp, _, _) in _worldRegionGraphs)
                         {
                             if (TryLoadLogicalFlags(mapReader, rp, lfStore))
                                 regionsWithFlags++;
@@ -4649,10 +4854,33 @@ void main()
                 Console.WriteLine($"  nav mesh: {navMesh.TriangleCount} tri(s), " +
                                   $"{navMesh.Vertices.Length} welded vert(s), " +
                                   $"{navMesh.SourceSnodeCount} snode(s), " +
-                                  $"{navMesh.NonManifoldEdgeCount} non-manifold edge(s)" +
+                                  $"{navMesh.NonManifoldEdgeCount} non-manifold edge(s), " +
+                                  $"{navMesh.DoorSeamCount} door-stitched seam(s)" +
                                   (_worldRegionGraphs.Count > 1
                                        ? $" — unified across {_worldRegionGraphs.Count} region(s)"
                                        : ""));
+                // SC-CAMERA-FADE sanity diag — confirm at least SOME snodes in
+                // the loaded region scope carry camera_fade=true, and show the
+                // closest few to the test-102 spawn. If this prints "0 total"
+                // then nodes.gas omits the flag in DS1's shipped data and the
+                // mechanism is somewhere else entirely.
+                int camFadeTotal = 0;
+                var camFadeRanked = new System.Collections.Generic.List<(float dist, RegionInstance inst)>();
+                var spawnPt = new Vector3(70f, -4f, -65f);
+                foreach (var inst in _regionInstances)
+                {
+                    if (!inst.CameraFade) continue;
+                    camFadeTotal++;
+                    camFadeRanked.Add((Vector3.Distance(inst.World.Translation, spawnPt), inst));
+                }
+                camFadeRanked.Sort((a, b) => a.dist.CompareTo(b.dist));
+                Console.WriteLine($"  [camera-fade-diag] {camFadeTotal} snodes with camera_fade=true across {_regionInstances.Count} region instances");
+                for (int i = 0; i < Math.Min(5, camFadeRanked.Count); i++)
+                {
+                    var (d, inst) = camFadeRanked[i];
+                    var p = inst.World.Translation;
+                    Console.WriteLine($"  [camera-fade-diag] snode 0x{inst.SnodeGuid:X8} world=({p.X:F1},{p.Y:F1},{p.Z:F1}) distToTestSpawn={d:F1}m");
+                }
             }
             catch (Exception ex)
             {
@@ -4803,7 +5031,7 @@ void main()
         var allLoaded = new List<string> { regionPath };
         if (_worldRegionGraphs.Count > 1)
         {
-            foreach (var (path, _) in _worldRegionGraphs)
+            foreach (var (path, _, _) in _worldRegionGraphs)
                 if (path != regionPath) allLoaded.Add(path);
         }
         LoadStaticProps(allLoaded);
@@ -4987,6 +5215,7 @@ void main()
                 // lf_human_player gate; computer-only zones are
                 // rejected as paths.
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                DiagnosticLogging = true,
             };
         }
 
@@ -6083,7 +6312,7 @@ void main()
             if (_worldRegionGraphs.Count > 1)
             {
                 var graphList = new List<RegionGraph>(_worldRegionGraphs.Count);
-                foreach (var (_, g) in _worldRegionGraphs) graphList.Add(g);
+                foreach (var (_, g, _) in _worldRegionGraphs) graphList.Add(g);
                 navGraph = RegionGraph.Combine(graphList);
             }
             else if (_worldRegionGraphs.Count == 1)
@@ -7893,6 +8122,23 @@ void main()
         // farmhouse next to Norick on fh_r1). Centroid is a fallback so
         // play-region of an info-less region still works.
         var spawnPos = _authoredSpawn ?? centroid;
+        // Test-only spawn override. SIEGEFX_DEBUG_SPAWN="x,y,z" places the
+        // PC at that world coord (clamped to nav mesh if available). Used
+        // by test-all.bat entries that want to drop you next to a specific
+        // feature instead of walking from the authored start node.
+        var spawnOverride = System.Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_SPAWN");
+        if (!string.IsNullOrWhiteSpace(spawnOverride))
+        {
+            var parts = spawnOverride.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 3 &&
+                float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sx) &&
+                float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sy) &&
+                float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sz))
+            {
+                spawnPos = new Vector3(sx, sy, sz);
+                Console.WriteLine($"  player: SIEGEFX_DEBUG_SPAWN override -> ({sx:F1},{sy:F1},{sz:F1})");
+            }
+        }
         if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
             spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
 
@@ -8191,6 +8437,10 @@ void main()
             _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed)
             {
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                // SC-NAV-STAIR-DIAG — player-only nav diag log. Lets us see
+                // [nav-target] / [nav-stuck] for the player's path without
+                // the 347 NPC wanderers drowning the output.
+                DiagnosticLogging = true,
             };
         }
         _playerFacing = Vector3.UnitZ;
@@ -13131,11 +13381,12 @@ void main()
                 }
                 foreach (var inst in _regionInstances)
                 {
-                    // SC-DUNGEON-FADE-NODES — skip snodes that
-                    // trigger_fade_nodes_box has faded to alpha=0
-                    // (basement/dungeon reveal). When alpha returns
-                    // to 1 (or the snode never faded), draw normally.
-                    if (_fadedSnodes.TryGetValue(inst.SnodeGuid, out var alpha) && alpha <= 0.01f)
+                    // SC-FADE-NODES-LNODE — skip snodes that have
+                    // any lnode currently fade-hidden by a
+                    // trigger_fade_nodes_box (basement/dungeon
+                    // reveal). Render is whole-snode-granular; nav
+                    // is lnode-granular via NavMesh.FadeHidden.
+                    if (_fadedSnodeCounts.ContainsKey(inst.SnodeGuid))
                         continue;
                     var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                     bool modelSet = false;
