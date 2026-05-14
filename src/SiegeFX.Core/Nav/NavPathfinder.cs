@@ -157,6 +157,12 @@ public static class NavPathfinder
             mesh.Flags.CanEnter(mesh.SourceSnodeGuid[tri],
                 (byte)mesh.SourceLnodeIndex[tri], traversal.Actor);
         if (!TriPasses(startTri)) return false;
+        // SC-NAV-OBSTACLE-AVOID — refuse pathing INTO an obstacle.
+        // Start triangle can be blocked (actor wedged against a wall
+        // at spawn / after a knockback / etc) but the goal must not
+        // be blocked, and we'll filter blocked triangles out of A*
+        // expansion below.
+        if (mesh.IsBlocked(goalTri)) return false;
         if (!TriPasses(goalTri)) return false;
         if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
@@ -189,6 +195,9 @@ public static class NavPathfinder
             {
                 int nb = mesh.Neighbors[3 * curTri + slot];
                 if (nb < 0 || closed[nb]) continue;
+                // SC-NAV-OBSTACLE-AVOID — A* never expands into an
+                // obstacle-blocked triangle.
+                if (mesh.IsBlocked(nb)) continue;
                 float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
                 if (float.IsPositiveInfinity(mul)) continue;
                 if (!TriPasses(nb)) continue;

@@ -83,6 +83,44 @@ public sealed class NavMesh
     /// overwrite (no expected use case, but no need to guard either).</summary>
     public void BindLogicalFlags(LogicalFlagsStore store) { Flags = store; }
 
+    /// <summary>SC-NAV-OBSTACLE-AVOID — per-triangle nav-blocking flag.
+    /// Set when a static prop's XZ footprint covers a triangle. The
+    /// pathfinder rejects blocked triangles as start/goal candidates
+    /// and skips them during A* expansion; <see cref="TryFindTriangle"/>
+    /// also refuses to return blocked triangles, so click-to-move
+    /// can't target a wall-adjacent sliver. Allocated lazily on first
+    /// MarkObstacle call so memory cost is zero for regions that
+    /// don't add obstacles.</summary>
+    public bool[]? Blocked { get; private set; }
+
+    public bool IsBlocked(int tri) => Blocked is not null && tri >= 0 && tri < Blocked.Length && Blocked[tri];
+
+    /// <summary>SC-NAV-OBSTACLE-AVOID — mark every triangle whose
+    /// centroid falls inside a circle of radius <paramref name="radius"/>
+    /// around (<paramref name="worldX"/>, <paramref name="worldZ"/>)
+    /// as nav-blocked. Use the prop's world XZ + an effective radius
+    /// derived from its model AABB. Pure data, no concurrency — call
+    /// at region-load time after BuildForRegion.</summary>
+    public int MarkObstacle(float worldX, float worldZ, float radius)
+    {
+        Blocked ??= new bool[TriangleCount];
+        if (radius <= 0f) return 0;
+        float r2 = radius * radius;
+        int marked = 0;
+        for (int t = 0; t < TriangleCount; t++)
+        {
+            if (Blocked[t]) continue;
+            var c = Centroids[t];
+            float dx = c.X - worldX, dz = c.Z - worldZ;
+            if (dx * dx + dz * dz <= r2)
+            {
+                Blocked[t] = true;
+                marked++;
+            }
+        }
+        return marked;
+    }
+
     /// <summary>How many SNO faces were dropped because their canonical vertex collapsed
     /// to a degenerate triangle (two vertices welded onto the same bucket). Zero on clean
     /// DS1 data; non-zero means the weld tolerance was too loose for this region.</summary>

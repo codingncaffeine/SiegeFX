@@ -5358,6 +5358,54 @@ void main()
             }
         }
 
+        // SC-NAV-OBSTACLE-AVOID — second pass: mark navmesh triangles
+        // covered by each obstacle prop. Heuristic gate: prop has
+        // [aspect]is_collidable=true AND isn't a door (doors are
+        // walkable when open via SC-DOORS-OPEN) AND has a bounding
+        // box wide enough to actually wedge against (≥0.5u radius).
+        // Smaller props (candles, jugs, mushrooms, foliage cards)
+        // are visually present but the player + mobs path around
+        // them naturally without needing nav-blocking.
+        int obstaclesMarked = 0;
+        int obstacleTrisMarked = 0;
+        if (_navMesh is not null && _templateStore is not null)
+        {
+            foreach (var prop in _staticProps)
+            {
+                if (prop.IsDoor || prop.IsDestroyed) continue;
+                if (!_templateStore.TryGet(prop.Template, out var tpl)) continue;
+                var icAttr = _templateStore.GetAttribute(tpl, "aspect", "is_collidable");
+                if (icAttr is null) continue;
+                var icTrim = icAttr.Trim().Trim('"').ToLowerInvariant();
+                if (icTrim != "true" && icTrim != "1") continue;
+                // Compute world-space XZ radius from the prop's
+                // local mesh bounds × placement scale (Matrix4x4
+                // decompose). For a non-uniform scale we take the
+                // larger XZ axis to be conservative — a slightly-
+                // larger no-go zone is preferable to a leak through
+                // a wall.
+                var localExtX = MathF.Abs(prop.Mesh.Max.X - prop.Mesh.Min.X);
+                var localExtZ = MathF.Abs(prop.Mesh.Max.Z - prop.Mesh.Min.Z);
+                float baseRadius = MathF.Max(localExtX, localExtZ) * 0.5f;
+                // Approximate the world-space radius via the model
+                // matrix's largest column-XZ length; that's the
+                // effective horizontal scale factor.
+                float sx = new Vector2(prop.World.M11, prop.World.M13).Length();
+                float sz = new Vector2(prop.World.M31, prop.World.M33).Length();
+                float scaleXZ = MathF.Max(sx, sz);
+                float radius = baseRadius * scaleXZ;
+                if (radius < 0.5f) continue;
+                var pos = prop.World.Translation;
+                int marked = _navMesh.MarkObstacle(pos.X, pos.Z, radius);
+                if (marked > 0)
+                {
+                    obstaclesMarked++;
+                    obstacleTrisMarked += marked;
+                }
+            }
+        }
+        if (obstaclesMarked > 0)
+            Console.WriteLine($"  nav obstacles: {obstaclesMarked} props blocked {obstacleTrisMarked} triangles");
         Console.WriteLine($"  static props: {spawned}/{considered} placed " +
                           $"({_propGlMeshCache.Count} unique mesh(es); " +
                           $"skipped {missingTemplate} no-template, {missingModel} no-model, " +
