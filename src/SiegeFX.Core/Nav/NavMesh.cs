@@ -110,15 +110,48 @@ public sealed class NavMesh
         for (int t = 0; t < TriangleCount; t++)
         {
             if (Blocked[t]) continue;
-            var c = Centroids[t];
-            float dx = c.X - worldX, dz = c.Z - worldZ;
-            if (dx * dx + dz * dz <= r2)
+            // SC-NAV-OBSTACLE-EDGE-TEST (audit fold #5) — was
+            // centroid-in-disk, which missed long-thin triangles
+            // whose edge crossed the prop but whose centroid was
+            // outside the radius. Now: hit if the centroid is in
+            // OR if any of the 3 edges' closest point in XZ is.
+            // Cheap: 3 segment-point distance tests.
+            var ct = Centroids[t];
+            float cdx = ct.X - worldX, cdz = ct.Z - worldZ;
+            if (cdx * cdx + cdz * cdz <= r2)
+            {
+                Blocked[t] = true;
+                marked++;
+                continue;
+            }
+            var a = Vertices[Indices[3 * t + 0]];
+            var b = Vertices[Indices[3 * t + 1]];
+            var c = Vertices[Indices[3 * t + 2]];
+            if (EdgeWithinDiskXZ(a, b, worldX, worldZ, r2) ||
+                EdgeWithinDiskXZ(b, c, worldX, worldZ, r2) ||
+                EdgeWithinDiskXZ(c, a, worldX, worldZ, r2))
             {
                 Blocked[t] = true;
                 marked++;
             }
         }
         return marked;
+    }
+
+    private static bool EdgeWithinDiskXZ(Vector3 e0, Vector3 e1, float cx, float cz, float r2)
+    {
+        float dx = e1.X - e0.X, dz = e1.Z - e0.Z;
+        float lenSq = dx * dx + dz * dz;
+        float t;
+        if (lenSq < 1e-8f) { t = 0f; }
+        else
+        {
+            t = ((cx - e0.X) * dx + (cz - e0.Z) * dz) / lenSq;
+            if (t < 0f) t = 0f; else if (t > 1f) t = 1f;
+        }
+        float px = e0.X + dx * t, pz = e0.Z + dz * t;
+        float ddx = px - cx, ddz = pz - cz;
+        return (ddx * ddx + ddz * ddz) <= r2;
     }
 
     /// <summary>How many SNO faces were dropped because their canonical vertex collapsed

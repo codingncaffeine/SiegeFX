@@ -792,8 +792,11 @@ public sealed class RenderHost : IDisposable
     }
 
     private string? _lastLoggedMoodChange;
-    private int _lastMoodChangeTickMs;
-    private const int MoodChangeDebounceMs = 500;
+    // SC-MOOD-TICKCOUNT64 (audit fold #6) — TickCount64 avoids the
+    // 24.9-day int rollover where the subtraction could briefly
+    // suppress a legit mood change at the wrap boundary.
+    private long _lastMoodChangeTickMs;
+    private const long MoodChangeDebounceMs = 500;
     internal void OnTriggerMoodChange(string moodName)
     {
         // SC-TRIGGER-MOOD-DEBOUNCE (post-test fold) — fh_r1 ships two
@@ -807,7 +810,7 @@ public sealed class RenderHost : IDisposable
         // Time-window debounce: ignore mood_change requests within
         // 500ms of the last one, regardless of name. Keeps the most
         // recent transition winning while killing the spam.
-        int now = Environment.TickCount;
+        long now = Environment.TickCount64;
         if (now - _lastMoodChangeTickMs < MoodChangeDebounceMs &&
             !string.Equals(_lastLoggedMoodChange, moodName, StringComparison.OrdinalIgnoreCase))
         {
