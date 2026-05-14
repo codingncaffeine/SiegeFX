@@ -203,8 +203,27 @@ public sealed class NavFollower
                 {
                     _stuckTicks = 0;
                     _stuckRecoveryAttempts++;
+                    // First-event diag log so the user's gameplay log
+                    // records WHERE every wedge is happening, not just
+                    // the ones we fail to recover from. Position is
+                    // world-space, tri is the current navmesh triangle
+                    // ID, wp is the current funnel waypoint the actor
+                    // was trying to reach, target is the original
+                    // SetTarget call. Cross-reference with the
+                    // `click-move: target=...` lines logged in
+                    // RenderHost to identify which click-move triggered
+                    // this stuck event.
                     if (_stuckRecoveryAttempts == 1)
                     {
+                        var wpDbg = _waypointIdx < _waypoints.Count
+                            ? _waypoints[_waypointIdx]
+                            : Target;
+                        System.Console.WriteLine(
+                            $"[nav-stuck] pos=({Position.X:F1},{Position.Z:F1}) " +
+                            $"Y={Position.Y:F1} tri={CurrentTriangle} " +
+                            $"wp[{_waypointIdx}/{_waypoints.Count}]=" +
+                            $"({wpDbg.X:F1},{wpDbg.Z:F1}) " +
+                            $"target=({Target.X:F1},{Target.Z:F1}) — replan");
                         // First try: plain replan.
                         Replan();
                     }
