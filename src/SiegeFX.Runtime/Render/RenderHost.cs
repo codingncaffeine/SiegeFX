@@ -4958,6 +4958,13 @@ void main()
         // PC can walk onto the new terrain.
         var newNav = RebuildNavMesh();
         if (newNav is not null) _navMesh = newNav;
+        // SC-NAV-OBSTACLE-AVOID audit fold — re-mark obstacles
+        // against the freshly-built navmesh BEFORE LoadStaticProps
+        // adds the new region's props. After LoadStaticProps runs
+        // below it also calls MarkAllObstacles, but doing both ends
+        // means a brief window where the player could click toward
+        // an old region's wall on the new mesh is closed.
+        MarkAllObstacles();
 
         // Spawn new actors and attach them to the render/tick lists with the
         // new nav mesh so their wander followers see the freshly-streamed floor.
@@ -5358,54 +5365,14 @@ void main()
             }
         }
 
-        // SC-NAV-OBSTACLE-AVOID — second pass: mark navmesh triangles
-        // covered by each obstacle prop. Heuristic gate: prop has
-        // [aspect]is_collidable=true AND isn't a door (doors are
-        // walkable when open via SC-DOORS-OPEN) AND has a bounding
-        // box wide enough to actually wedge against (≥0.5u radius).
-        // Smaller props (candles, jugs, mushrooms, foliage cards)
-        // are visually present but the player + mobs path around
-        // them naturally without needing nav-blocking.
-        int obstaclesMarked = 0;
-        int obstacleTrisMarked = 0;
-        if (_navMesh is not null && _templateStore is not null)
-        {
-            foreach (var prop in _staticProps)
-            {
-                if (prop.IsDoor || prop.IsDestroyed) continue;
-                if (!_templateStore.TryGet(prop.Template, out var tpl)) continue;
-                var icAttr = _templateStore.GetAttribute(tpl, "aspect", "is_collidable");
-                if (icAttr is null) continue;
-                var icTrim = icAttr.Trim().Trim('"').ToLowerInvariant();
-                if (icTrim != "true" && icTrim != "1") continue;
-                // Compute world-space XZ radius from the prop's
-                // local mesh bounds × placement scale (Matrix4x4
-                // decompose). For a non-uniform scale we take the
-                // larger XZ axis to be conservative — a slightly-
-                // larger no-go zone is preferable to a leak through
-                // a wall.
-                var localExtX = MathF.Abs(prop.Mesh.Max.X - prop.Mesh.Min.X);
-                var localExtZ = MathF.Abs(prop.Mesh.Max.Z - prop.Mesh.Min.Z);
-                float baseRadius = MathF.Max(localExtX, localExtZ) * 0.5f;
-                // Approximate the world-space radius via the model
-                // matrix's largest column-XZ length; that's the
-                // effective horizontal scale factor.
-                float sx = new Vector2(prop.World.M11, prop.World.M13).Length();
-                float sz = new Vector2(prop.World.M31, prop.World.M33).Length();
-                float scaleXZ = MathF.Max(sx, sz);
-                float radius = baseRadius * scaleXZ;
-                if (radius < 0.5f) continue;
-                var pos = prop.World.Translation;
-                int marked = _navMesh.MarkObstacle(pos.X, pos.Z, radius);
-                if (marked > 0)
-                {
-                    obstaclesMarked++;
-                    obstacleTrisMarked += marked;
-                }
-            }
-        }
-        if (obstaclesMarked > 0)
-            Console.WriteLine($"  nav obstacles: {obstaclesMarked} props blocked {obstacleTrisMarked} triangles");
+        // SC-NAV-OBSTACLE-AVOID — refresh navmesh obstacle marks
+        // against ALL static props in the world (not just the ones
+        // we just loaded). Audit fold (run a3b8709caef6f3494): the
+        // original in-LoadStaticProps loop only saw the newly-loaded
+        // region's props, so rolling-region rebuilds at
+        // OnPlayerRegionChanged dropped every previously-marked
+        // obstacle silently.
+        MarkAllObstacles();
         Console.WriteLine($"  static props: {spawned}/{considered} placed " +
                           $"({_propGlMeshCache.Count} unique mesh(es); " +
                           $"skipped {missingTemplate} no-template, {missingModel} no-model, " +
@@ -5771,6 +5738,74 @@ void main()
     /// door lerps DoorOpenFrac toward 1 over ~0.4s, when outside +
     /// hysteresis lerps back toward 0 over ~0.5s. The rendered
     /// rotation comes from DoorOpenFrac at draw time.</summary>
+    /// <summary>SC-NAV-OBSTACLE-AVOID — re-mark every navmesh
+    /// triangle covered by a static prop's collision footprint.
+    /// Safe to call repeatedly (the Blocked[] array is owned by the
+    /// current _navMesh and accumulates marks until the navmesh is
+    /// rebuilt). MUST be called after any path that replaces
+    /// _navMesh, otherwise the new mesh starts with zero obstacles
+    /// and the player can walk through walls.
+    ///
+    /// Audit fold (run a3b8709caef6f3494):
+    ///   - was inlined inside LoadStaticProps; only saw the
+    ///     newly-loaded region's props, missed previously-loaded.
+    ///   - World-radius math now uses true world-space corner
+    ///     positions of the local AABB rather than naive column
+    ///     length, so rotated placements + non-Y rotations get the
+    ///     correct effective radius.</summary>
+    private void MarkAllObstacles()
+    {
+        if (_navMesh is null || _templateStore is null) return;
+        int obstacles = 0;
+        int triangles = 0;
+        // CA2014 — hoist the 4-corner stackalloc above the loop so a
+        // huge prop count doesn't grow the stack frame linearly.
+        Span<Vector3> corners = stackalloc Vector3[4];
+        foreach (var prop in _staticProps)
+        {
+            if (prop.IsDoor || prop.IsDestroyed) continue;
+            if (!_templateStore.TryGet(prop.Template, out var tpl)) continue;
+            var icAttr = _templateStore.GetAttribute(tpl, "aspect", "is_collidable");
+            if (icAttr is null) continue;
+            var icTrim = icAttr.Trim().Trim('"').ToLowerInvariant();
+            if (icTrim != "true" && icTrim != "1") continue;
+            // World-space XZ radius: transform the local AABB's 4
+            // XZ corners (Y collapsed) by the placement matrix,
+            // then take the max distance from the translation
+            // origin. Handles arbitrary rotation + non-uniform
+            // scale correctly (the previous M11+M13 length shortcut
+            // dropped M12/M32 and silently under-blocked tilted
+            // placements).
+            var minL = prop.Mesh.Min;
+            var maxL = prop.Mesh.Max;
+            float midY = (minL.Y + maxL.Y) * 0.5f;
+            corners[0] = new(minL.X, midY, minL.Z);
+            corners[1] = new(maxL.X, midY, minL.Z);
+            corners[2] = new(maxL.X, midY, maxL.Z);
+            corners[3] = new(minL.X, midY, maxL.Z);
+            var origin = prop.World.Translation;
+            float maxR2 = 0f;
+            foreach (var corner in corners)
+            {
+                var wc = Vector3.Transform(corner, prop.World);
+                float dx = wc.X - origin.X;
+                float dz = wc.Z - origin.Z;
+                float r2 = dx * dx + dz * dz;
+                if (r2 > maxR2) maxR2 = r2;
+            }
+            float radius = MathF.Sqrt(maxR2);
+            if (radius < 0.5f) continue;
+            int marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius);
+            if (marked > 0)
+            {
+                obstacles++;
+                triangles += marked;
+            }
+        }
+        if (obstacles > 0)
+            Console.WriteLine($"  nav obstacles: {obstacles} props blocked {triangles} triangles");
+    }
+
     private void TickDoors(float dt)
     {
         if (dt <= 0f || _doorProps.Count == 0 || _player is null) return;

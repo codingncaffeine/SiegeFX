@@ -598,8 +598,19 @@ public sealed class NavMesh
         if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return false;
         var bucket = _grid[cz * _gridCellsX + cx];
         if (bucket is null) return false;
+        // SC-NAV-OBSTACLE-AVOID audit fold — prefer unblocked tris.
+        // Two passes: first the best unblocked Y match, then if none
+        // found, fall back to the best blocked match (so a query
+        // INSIDE a wall still returns SOMETHING — actors standing on
+        // a triangle that got marked blocked after spawn need a
+        // valid reference). Click-to-move path-rejection at the
+        // pathfinder still refuses a blocked GOAL, so the user can't
+        // accidentally walk into a wall just because the picker
+        // returned a blocked tri as the "best" fallback.
         int bestTri = -1;
         float bestDy = float.PositiveInfinity;
+        int bestBlocked = -1;
+        float bestBlockedDy = float.PositiveInfinity;
         for (int i = 0; i < bucket.Length; i++)
         {
             int t = bucket[i];
@@ -609,10 +620,17 @@ public sealed class NavMesh
             if (!PointInTriangleXZ(worldPos, a, b, c)) continue;
             float triY = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
             float dy = MathF.Abs(triY - worldPos.Y);
-            if (dy < bestDy) { bestDy = dy; bestTri = t; }
+            if (Blocked is not null && t < Blocked.Length && Blocked[t])
+            {
+                if (dy < bestBlockedDy) { bestBlockedDy = dy; bestBlocked = t; }
+            }
+            else
+            {
+                if (dy < bestDy) { bestDy = dy; bestTri = t; }
+            }
         }
-        triIndex = bestTri;
-        return bestTri >= 0;
+        triIndex = bestTri >= 0 ? bestTri : bestBlocked;
+        return triIndex >= 0;
     }
 
     /// <summary>Projects <paramref name="worldPos"/> onto triangle <paramref name="tri"/>'s
