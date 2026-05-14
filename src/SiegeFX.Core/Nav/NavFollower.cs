@@ -339,6 +339,35 @@ public sealed class NavFollower
                         standing = hit;
                         advanced = true;
                     }
+                    else
+                    {
+                        // SC-NAV-FOLLOWER-DRIFT — the hit is NOT on the path.
+                        // Check if it's an adjacency-neighbor of the current
+                        // path tri (a legal one-step deviation, e.g. the
+                        // funnel cut a corner past a tile boundary into an
+                        // adjacent walkable tile). If yes, treat THIS hit as
+                        // the new standing triangle so the actor stays glued
+                        // to the surface they're visibly on, instead of
+                        // pinning Y to the stale _path[_pathIdx] and
+                        // wedging visually. Doesn't reroute the path —
+                        // next tick the funnel pulls back toward the
+                        // current waypoint, and if the actor keeps
+                        // drifting off-path, stuck-detection escalates.
+                        // Pure-look fix; no A* change.
+                        int cur = _path[_pathIdx];
+                        if (cur >= 0)
+                        {
+                            for (int s = 0; s < 3; s++)
+                            {
+                                if (Mesh.Neighbors[3 * cur + s] == hit)
+                                {
+                                    standing = hit;
+                                    advanced = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (!advanced)
