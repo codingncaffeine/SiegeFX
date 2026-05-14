@@ -1337,6 +1337,25 @@ public sealed class RenderHost : IDisposable
     // Farmboy model instead of his feet. Rough guess; tune when the real PC
     // camera appears in Phase 14+.
     private const float ChaseLookTargetY = 1.5f;
+    // SC-CAM-DEV-TOPDOWN — toggle for the unclamped-pitch chase mode.
+    // Backtick (`) flips this; when true, RMB-drag-Y adjusts pitch and
+    // the slope-based height calc swaps to `distance * tan(pitch)` so
+    // the user can angle the camera all the way to straight-down. This
+    // is a diagnostic toggle today (helps see basements + dungeons
+    // before SC-CAM-AVOID lands the authentic bounds_camera auto-tilt)
+    // AND a QoL feature exposed for MMO-style camera-orbit muscle
+    // memory. Default OFF preserves DS1-faithful clamped chase.
+    private bool _devCamUnclampedPitch;
+    // Live chase pitch in radians. Default = atan(7/9) ≈ 0.661 rad,
+    // matching the historical ChasePitchSlope behavior so the OFF
+    // state is bit-identical to pre-dev-cam framing. Range when ON
+    // is clamped to (0.05, π/2 - 0.05) — slightly above horizontal up
+    // to nearly straight down. Past horizontal (≤ 0) would put the
+    // camera below the ground; near π/2 the look-down view is what
+    // the user wants for the dungeon-diagnostic case.
+    private float _chasePitch = 0.6610432f;
+    private const float ChasePitchMin = 0.05f;          // ~3°
+    private const float ChasePitchMax = (MathF.PI / 2f) - 0.05f; // ~87°
 
     private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid);
 
@@ -1978,6 +1997,30 @@ void main()
                 else if (key == Key.AltLeft || key == Key.AltRight)
                 {
                     _overheadLabelsVisible = !_overheadLabelsVisible;
+                    _audio?.Play(SfxGuiInventory);
+                }
+                // SC-CAM-DEV-TOPDOWN — backtick toggles unclamped chase
+                // pitch. OFF (default) = DS1-faithful fixed slope (zoom
+                // dollies along a fixed angle, RMB-drag yaws only). ON
+                // = MMO-style RMB-orbit + RMB-drag-Y to tilt all the
+                // way down to top-down. Useful as a dungeon-traversal
+                // workaround until SC-CAM-AVOID lands authentic
+                // bounds_camera behavior, and as a personal QoL choice.
+                // DS1's manual reserves backtick for MP-team-label
+                // toggle which SP-only SiegeFX doesn't use, so the key
+                // is free.
+                else if (key == Key.GraveAccent)
+                {
+                    _devCamUnclampedPitch = !_devCamUnclampedPitch;
+                    if (!_devCamUnclampedPitch)
+                    {
+                        // Reset pitch to the DS1-faithful default when
+                        // returning to authentic mode so a fresh toggle
+                        // starts from the canonical framing rather than
+                        // wherever the user left the tilt.
+                        _chasePitch = MathF.Atan(ChasePitchSlope);
+                    }
+                    Console.WriteLine($"[dev-cam] unclamped chase pitch = {_devCamUnclampedPitch}");
                     _audio?.Play(SfxGuiInventory);
                 }
                 // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
@@ -2992,13 +3035,27 @@ void main()
                     _rmbDrift += MathF.Abs(dx) + MathF.Abs(dy);
                     if (_cameraMode == CameraMode.Chase)
                     {
-                        // Orbit only (no pitch change) — chase pitch is derived from the
-                        // look-at target each frame so mouse-Y would fight that logic.
                         // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
-                        // so chase mode and first-person mode can never drift on the
-                        // sensitivity/invert formula (the duplicate-formula version was a
-                        // splinter waiting to happen the first time someone tweaked it).
+                        // so chase mode and first-person mode share the same
+                        // sensitivity/invert formula.
                         _chaseYaw += _camera.YawIncrement(dx);
+                        // SC-CAM-DEV-TOPDOWN — when the dev unclamped-pitch
+                        // toggle is ON, RMB-drag-Y adjusts chase pitch too.
+                        // Lets the user tilt the camera all the way down to
+                        // peek into dungeons / inspect from above. OFF keeps
+                        // the DS1-faithful behavior (yaw only, pitch derived
+                        // from the slope).
+                        if (_devCamUnclampedPitch)
+                        {
+                            // Reuse the camera's sensitivity-aware delta path;
+                            // PitchIncrement returns a signed radians value
+                            // already adjusted for invert + sensitivity. Mouse
+                            // dy is screen-down-positive, so a downward drag
+                            // INCREASES pitch (camera looks more steeply down).
+                            _chasePitch = System.Math.Clamp(
+                                _chasePitch + _camera.PitchIncrement(dy),
+                                ChasePitchMin, ChasePitchMax);
+                        }
                     }
                     else
                     {
@@ -6191,11 +6248,28 @@ void main()
         if (_cameraMode == CameraMode.Chase && _player is not null)
         {
             var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
-            var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * _chaseDistance;
-            // Phase 21-SC-ZOOM — height tracks distance so zoom slides along
-            // the view ray (dolly), not just horizontal radius. Without this
-            // the camera arcs to a flatter pitch as you zoom out.
-            float height = _chaseDistance * ChasePitchSlope;
+            float horiz, height;
+            if (_devCamUnclampedPitch)
+            {
+                // SC-CAM-DEV-TOPDOWN — orbit-around-player with the
+                // user-driven pitch. As pitch climbs toward straight-
+                // down, the horizontal radius shrinks and the height
+                // grows; total distance stays constant so the framing
+                // doesn't whip in/out as the user tilts.
+                horiz = _chaseDistance * MathF.Cos(_chasePitch);
+                height = _chaseDistance * MathF.Sin(_chasePitch);
+            }
+            else
+            {
+                // DS1-faithful default: bit-identical to pre-dev-cam
+                // framing. Phase 21-SC-ZOOM — height tracks distance so
+                // zoom slides along the view ray (dolly), not just
+                // horizontal radius. Without this the camera arcs to a
+                // flatter pitch as you zoom out.
+                horiz = _chaseDistance;
+                height = _chaseDistance * ChasePitchSlope;
+            }
+            var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * horiz;
             _camera.Position = target + offset + new Vector3(0, height, 0);
             var dir = Vector3.Normalize(target - _camera.Position);
             _camera.Yaw   = MathF.Atan2(dir.X, -dir.Z);
