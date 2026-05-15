@@ -372,22 +372,44 @@ public static class QuestCatalog
             // first-region receipt path doesn't break. The capital-Q Quest_for_Gyorn
             // is the DS1-authored key — Norick activates it from his pickup_speech
             // node — and the audit confirms it COVERED. ─────────────────────────
+            // SC-QUEST-CATALOG-POLISH (2026-05-15) — ScreenName +
+            // ObjectiveText for every entry below pulled verbatim from
+            // DS1's shipped `world/maps/map_world/quests/quests.gas`
+            // (extracted via `siegefx tank extract`). Gameplay fields
+            // (KillTargetTemplate / TalkTargetTemplate / etc.) are
+            // SiegeFX-authored interpretations — they're not in DS1's
+            // catalog, which is text+chapter only and relies on the
+            // dialogue / trigger graph for activation+credit. Where
+            // our gameplay doesn't match the canonical text's intent
+            // (e.g. our Quest_for_Gyorn fires a kill goal but DS1's
+            // stage-0 description is a TALK objective), the
+            // discrepancy is flagged inline.
+            //
+            // FIXME(Quest_for_Gyorn-gameplay): DS1's stage 0 is "Seek
+            // Norick's friend Gyorn in the town of Stonebridge." —
+            // a pure TALK objective. The 3-krug-kill beat at the
+            // Farmhouse is an unscripted opening fight with no quest
+            // entry of its own; we model it as the stage-0 credit
+            // here, which works gameplay-wise but diverges from
+            // DS1's text-only journal entry. When a future slice
+            // splits "implicit opening fight" from "first quest",
+            // drop the kill goal and credit on talking to Gyorn.
             ["Quest_for_Gyorn"] = new QuestDefinition
             {
                 Key                 = "Quest_for_Gyorn",
-                ScreenName          = "Aid the Farmhouse",
+                ScreenName          = "Seek Gyorn in Stonebridge",
                 KillTargetTemplate  = "krug",
                 KillCountGoal       = 3,
-                ObjectiveText       = "Kill 3 krug raiding the Farmhouse.",
+                ObjectiveText       = "Seek Norick's friend Gyorn in the town of Stonebridge.",
                 NextQuestKey        = "quest_for_gyorn,1",
             },
             ["quest_edgaar_basement"] = new QuestDefinition
             {
                 Key                 = "quest_edgaar_basement",
-                ScreenName          = "Edgaar's Basement",
+                ScreenName          = "Clear Edgaar's Basement",
                 KillTargetTemplate  = "krug",
                 KillCountGoal       = 5,
-                ObjectiveText       = "Clear 5 krug from Edgaar's basement.",
+                ObjectiveText       = "Clear the Krug from Edgaar's Basement, and gather supplies for the journey to Stonebridge.",
             },
 
             // ─── SC-QUEST-OBJ-F-RESYNC — real DS1 keys from `siegefx quests audit`.
@@ -396,33 +418,35 @@ public static class QuestCatalog
             // Castle Ehb → Chamber of Stars → Gom. NextQuestKey only set for
             // confirmed staged pairs (key → key,1).
 
-            // Ch.I follow-up (Skartis on path2crypts continues Quest_for_Gyorn)
+            // Ch.I follow-up (Skartis on path2crypts continues Quest_for_Gyorn).
+            // DS1 quests.gas models this as order=1 of `quest_for_gyorn` itself;
+            // SiegeFX splits stages into chained keys with `,N` suffix.
             ["quest_for_gyorn,1"] = new QuestDefinition
             {
                 Key                 = "quest_for_gyorn,1",
-                ScreenName          = "Aid the Farmhouse — Continued",
+                ScreenName          = "Seek Gyorn in Stonebridge",
                 TalkTargetTemplate  = "skartis",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Continue toward Stonebridge; speak with Skartis at the crypts path.",
+                ObjectiveText       = "Seek Norick's friend Gyorn in the town of Stonebridge by using the old path through the Crypts.",
             },
 
             // Ch.II Stonebridge North — Gyorn sends the player to find the Overseer
             ["quest_gyorn_seek_overseer"] = new QuestDefinition
             {
                 Key                 = "quest_gyorn_seek_overseer",
-                ScreenName          = "Seek the Overseer",
+                ScreenName          = "Deliver Gyorn's Report",
                 TalkTargetTemplate  = "overseer",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with the Overseer about the krug raids.",
+                ObjectiveText       = "Deliver Gyorn's report to the Overseer in Glacern.",
             },
-            // Ch.II Stonebridge — open the north gate
+            // Ch.II Stonebridge — Town Guard sends the player to clear Glitterdelve
             ["quest_open_gate"] = new QuestDefinition
             {
                 Key                 = "quest_open_gate",
-                ScreenName          = "Open the North Gate",
+                ScreenName          = "Clear Glitterdelve Pass",
                 TalkTargetTemplate  = "guard3",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Persuade the guard to open the North Gate.",
+                ObjectiveText       = "Clear the way to Glitterdelve for the Stonebridge militia.",
             },
             // Ch.II side — Ella's sister message
             ["quest_sister_message"] = new QuestDefinition
@@ -431,45 +455,61 @@ public static class QuestCatalog
                 ScreenName          = "A Sister's Message",
                 TalkTargetTemplate  = "ella",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Deliver Ella's sister's message.",
+                ObjectiveText       = "Deliver Ella's message to her sister Ada in Glacern.",
+            },
+            // Ch.II side — Ordus' Axe (DS1 key is the colorful internal name
+            // `quest_drunkard_tower`; ScreenName is the canonical journal title).
+            // Recover Ordus' axe from the basement of the Northern guard tower
+            // in path2sd; deliver back to Ordus.
+            ["quest_drunkard_tower"] = new QuestDefinition
+            {
+                Key                  = "quest_drunkard_tower",
+                ScreenName           = "Ordus' Axe",
+                PickupTargetTemplate = "ordus_axe",
+                PickupCountGoal      = 1,
+                TalkTargetTemplate   = "ordus",
+                TalkCountGoal        = 1,
+                DeliverItemTemplate  = "ordus_axe",
+                ObjectiveText        = "Secure Ordus' axe from the Northern guard tower.",
             },
             // Ch.II Glitterdelve aftermath — Torg's beat
             ["quest_torg_seek_overseer"] = new QuestDefinition
             {
                 Key                 = "quest_torg_seek_overseer",
-                ScreenName          = "Carry Torg's Findings",
+                ScreenName          = "Report Torg's Findings",
                 TalkTargetTemplate  = "torg",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with Torg in the depths of the Dwarven Mines.",
+                ObjectiveText       = "Report Torg's findings to the Overseer in Glacern.",
             },
             // Ch.II side — Free Torg from his captors
             ["quest_free_torg"] = new QuestDefinition
             {
                 Key                 = "quest_free_torg",
-                ScreenName          = "Free Torg",
+                ScreenName          = "Rescue Torg",
                 TalkTargetTemplate  = "gloern",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Gloern reports Torg's been captured — find and free him.",
+                ObjectiveText       = "Rescue Gloern's brother Torg from within the Dwarven mines.",
             },
 
             // Ch.III Wesrin Cross — Ibsen sends you after Merik
             ["quest_find_merik"] = new QuestDefinition
             {
                 Key                 = "quest_find_merik",
-                ScreenName          = "Find Merik",
+                ScreenName          = "Quest for Merik",
                 TalkTargetTemplate  = "ibsen",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Find the wizard Merik beyond Wesrin Cross.",
+                ObjectiveText       = "Find Merik the Grand Mage.",
                 NextQuestKey        = "quest_find_merik,1",
             },
-            // Staged follow-up — Jewlynna continues the search
+            // Staged follow-up — Jewlynna narrows the search to the Ice Caves
+            // (DS1 quests.gas models this as order=1 inside quest_find_merik).
             ["quest_find_merik,1"] = new QuestDefinition
             {
                 Key                 = "quest_find_merik,1",
-                ScreenName          = "Find Merik — Continued",
+                ScreenName          = "Quest for Merik",
                 TalkTargetTemplate  = "jewlynna",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with Jewlynna; she's seen Merik recently.",
+                ObjectiveText       = "Find Merik the Grand Mage in the Ice Caves north of Glacern.",
             },
             // Ch.III — Reinforce Fortress Kroth (Ibsen's second beat)
             ["quest_fort_kroth"] = new QuestDefinition
@@ -478,34 +518,42 @@ public static class QuestCatalog
                 ScreenName          = "Reinforce Fortress Kroth",
                 TalkTargetTemplate  = "ibsen",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Hold Fortress Kroth against the goblin assault.",
+                ObjectiveText       = "Travel through the Ice Caves to reinforce the Legionnaires at Fortress Kroth.",
             },
-            // Ch.V — Fortress Kroth recurs; legionnaire's beat
+            // Ch.V — Fortress Kroth recurs; legionnaire's beat. DS1 keys this as
+            // `quest_fort_kroth2` (no comma) chapter-5; SiegeFX uses the
+            // `,1`-suffix staged convention for the legionnaire follow-up.
             ["quest_fort_kroth2,1"] = new QuestDefinition
             {
                 Key                 = "quest_fort_kroth2,1",
-                ScreenName          = "Reinforce Fortress Kroth — Phase II",
+                ScreenName          = "Reinforce Fortress Kroth",
                 TalkTargetTemplate  = "legionnaire1",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with the legionnaire at Fortress Kroth.",
+                ObjectiveText       = "Defeat the necromancer besieging Fortress Kroth.",
             },
-            // Ch.III side — apprentice books
+            // Ch.III side — Book Return (Ardun, the apprentice, sends the
+            // player after two volumes of the Fedwyrr's Way trilogy in
+            // Glacern). DS1 key kept the dev's "apprentice_books" internal
+            // name; canonical ScreenName per quests.gas is "Book Return".
             ["quest_apprentice_books"] = new QuestDefinition
             {
                 Key                 = "quest_apprentice_books",
-                ScreenName          = "Apprentice's Books",
+                ScreenName          = "Book Return",
                 TalkTargetTemplate  = "apprentice",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Help the apprentice recover the missing books.",
+                ObjectiveText       = "Find the first two volumes in the Fedwyrr's Way trilogy.",
             },
-            // Ch.III side — Orlov's ice dungeon (Homeless Blacksmith parallel)
+            // Ch.III side — Homeless Blacksmith (DS1 key `quest_ice_dungeon`
+            // is the dev's internal name; canonical journal title per
+            // quests.gas is "Homeless Blacksmith" — Orlov's cabin/cellar
+            // is overrun, secure it for him).
             ["quest_ice_dungeon"] = new QuestDefinition
             {
                 Key                 = "quest_ice_dungeon",
-                ScreenName          = "Orlov's Ice Cellar",
+                ScreenName          = "Homeless Blacksmith",
                 TalkTargetTemplate  = "orlov",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Help Orlov clear the frost beasts from his cellar.",
+                ObjectiveText       = "Secure Orlov's cabin and cellar in the wilderness north of Glacern.",
             },
 
             // Ch.IV — Confront the bandit boss
@@ -519,26 +567,28 @@ public static class QuestCatalog
                 // boss's authored template name is verified.
                 KillTargetTemplate  = "bandit",
                 KillCountGoal       = 4,
-                ObjectiveText       = "Defeat the bandits holding the temple.",
+                ObjectiveText       = "Confront the Bandit Boss to protect the Traveler's camp.",
             },
-            // Ch.IV — Purify the Temple (this key was the only pre-RESYNC catalog
-            // row that already matched DS1's authored key, so kept as-is)
+            // Ch.IV — Purify the Temple (DS1 stage 0)
             ["quest_purify_temple"] = new QuestDefinition
             {
                 Key                 = "quest_purify_temple",
                 ScreenName          = "Purify the Temple",
                 KillTargetTemplate  = "bandit",
                 KillCountGoal       = 4,
-                ObjectiveText       = "Cleanse the temple of bandit defilement.",
+                ObjectiveText       = "Destroy the temple Guardian.",
             },
-            // Ch.IV — Purify the Temple cleanup leg (post-boss talk)
+            // Ch.IV — Purify the Temple stage 2 (post-boss; place the holy
+            // icon on the temple altar). DS1 quests.gas keys this as
+            // `quest_purify_temple_2` (a separate top-level entry, not a
+            // ,1 stage of the first) — kept as a distinct catalog row.
             ["quest_purify_temple_2"] = new QuestDefinition
             {
                 Key                 = "quest_purify_temple_2",
-                ScreenName          = "Purify the Temple — Aftermath",
+                ScreenName          = "Purify the Temple",
                 TalkTargetTemplate  = "azunite_scholar",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Speak with the Azunite scholar after clearing the temple.",
+                ObjectiveText       = "Place the holy icon on the Temple altar",
             },
             // Ch.IV — Recover Merik's Staff (Merik NIS sequence in Lost Cathedral)
             ["quest_merik_staff"] = new QuestDefinition
@@ -556,12 +606,16 @@ public static class QuestCatalog
                 // multi-stage gating lands when the catalog grows a stage
                 // model (SC-QUEST-OBJ-F-RESYNC's deferred decision). For
                 // now the entry exercises both Register* hooks.
+                //
+                // Canonical description in DS1 quests.gas is the
+                // (mis-spelled) "Retreive Merik's warding staff." —
+                // preserved verbatim for journal fidelity.
                 PickupTargetTemplate = "merik_staff",
                 PickupCountGoal      = 1,
                 TalkTargetTemplate   = "merik",
                 TalkCountGoal        = 1,
                 DeliverItemTemplate  = "merik_staff",
-                ObjectiveText        = "Recover Merik's Warding Staff and return it to him.",
+                ObjectiveText        = "Retreive Merik's warding staff.",
             },
             // SC-QUEST-OBJ-C smoke-test entry — single pickup gate against a
             // template that actually exists in fh_r1's inventory.gas, so the
@@ -577,24 +631,27 @@ public static class QuestCatalog
                 ObjectiveText        = "Pick up the Fireshot scroll in the basement.",
             },
 
-            // Ch.V side — Tower of Refuge / water dungeon (Gregor)
+            // Ch.V side — Missing Treasure Hunters (DS1 key
+            // `quest_water_dungeon` is the dev's internal name for the
+            // tr_r2 flooded-tower content; the canonical journal title is
+            // "Missing Treasure Hunters" per quests.gas).
             ["quest_water_dungeon"] = new QuestDefinition
             {
                 Key                 = "quest_water_dungeon",
-                ScreenName          = "The Flooded Dungeon",
+                ScreenName          = "Missing Treasure Hunters",
                 TalkTargetTemplate  = "gregor",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Help Gregor clear the flooded dungeon.",
+                ObjectiveText       = "Find out what became of Thayne's customers, and report your findings to Gregor.",
             },
 
-            // Ch.VI — Subdue the village (the Droog parley, Tarish)
+            // Ch.VI — Subdue the Droog (parley with Tarish)
             ["quest_subdue_village"] = new QuestDefinition
             {
                 Key                 = "quest_subdue_village",
-                ScreenName          = "Subdue the Village",
+                ScreenName          = "Subdue the Droog",
                 TalkTargetTemplate  = "tarish",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Negotiate passage with Tarish.",
+                ObjectiveText       = "Subdue the Droog Leadership in their village beyond the desert to the east.",
             },
 
             // Ch.VII — Journey to Castle Ehb (Nonataya gives this from the parley)
@@ -604,38 +661,59 @@ public static class QuestCatalog
                 ScreenName          = "Journey to Castle Ehb",
                 TalkTargetTemplate  = "nonataya",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Travel to Castle Ehb.",
+                ObjectiveText       = "Journey to Castle Ehb to prevent the Seck from capturing the secret chamber.",
             },
-            // Ch.VII — Slay the dragon (Goquua's quest)
+            // Ch.VII — Slay the Ancient Dragon of Rathe (Crusader Goquua's quest)
             ["quest_slay_dragon"] = new QuestDefinition
             {
                 Key                 = "quest_slay_dragon",
-                ScreenName          = "Slay the Ancient Dragon",
+                ScreenName          = "Slay the Ancient Dragon of Rathe",
                 TalkTargetTemplate  = "goquua",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Defeat the Ancient Dragon of Rathe.",
+                ObjectiveText       = "Slay the Ancient Dragon before the Seck can free him from Dragon's Rathe.",
             },
-            // Ch.VII — Find the King (Lord Bolingar)
+            // Ch.VII — Search for the King (Lord Bolingar's quest)
             ["quest_find_king"] = new QuestDefinition
             {
                 Key                 = "quest_find_king",
-                ScreenName          = "Find the King",
+                ScreenName          = "Search for the King",
                 TalkTargetTemplate  = "lord_bolingar",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Find King Konreid in the depths of Castle Ehb.",
+                ObjectiveText       = "Find the King and secure Castle Ehb from the Seck.",
             },
 
-            // Ch.VIII/IX — King Konreid sends you to destroy Gom
+            // Ch.VIII — The Chamber of Stars (King Konreid sends the
+            // party to retrieve the artifacts from the Chamber). DS1
+            // keys this as `quest_find_artifacts`. No dialogue in shipped
+            // World.dsmap fires this via activate_quest=, so audit reports
+            // it as catalog-only — DS1 likely activates it via the
+            // King's conversation skrit / a presence trigger we haven't
+            // surfaced yet. Catalogued for journal-display completeness.
+            ["quest_find_artifacts"] = new QuestDefinition
+            {
+                Key                 = "quest_find_artifacts",
+                ScreenName          = "The Chamber of Stars",
+                TalkTargetTemplate  = "king",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Retrieve artifacts from the Chamber of Stars.",
+            },
+
+            // Ch.VIII/IX — Vanquish the Seck (King Konreid sends you
+            // after Gom). DS1 stage 0 is "Find and destroy the remaining
+            // Seck before they can free Gom." Stage 1 is the Gom
+            // confrontation itself.
             ["quest_destroy_gom"] = new QuestDefinition
             {
                 Key                 = "quest_destroy_gom",
-                ScreenName          = "Destroy Gom",
+                ScreenName          = "Vanquish the Seck",
                 TalkTargetTemplate  = "king",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Confront Gom in the Chamber of Stars.",
+                ObjectiveText       = "Find and destroy the remaining Seck before they can free Gom.",
                 NextQuestKey        = "quest_destroy_gom2,1",
             },
-            // Ch.IX final — second-form Gom confrontation
+            // Ch.IX final — second-form Gom confrontation. DS1 keys this
+            // as `quest_destroy_gom2` (no comma) chapter-9; SiegeFX uses
+            // the `,1`-suffix staged-quest convention.
             ["quest_destroy_gom2,1"] = new QuestDefinition
             {
                 Key                 = "quest_destroy_gom2,1",
@@ -645,7 +723,52 @@ public static class QuestCatalog
                 // 11800). Until E + GOM-TWO-PHASE land, this is a TALK gate.
                 TalkTargetTemplate  = "gom",
                 TalkCountGoal       = 1,
-                ObjectiveText       = "Defeat Gom and end the Seck Resurgence.",
+                ObjectiveText       = "Destroy the Seck Leader Gom.",
+            },
+
+            // ─── SC-QUEST-OBJ-F-MP — multiplayer-variant keys surfaced by
+            // the 2026-05-15 quest audit against World.dsmap. Each `_mp`
+            // key is a multiplayer-only fork of an existing SP entry — DS1
+            // ships a parallel conversation tree for MP play. SiegeFX is
+            // single-player-first, so these mirror their SP counterparts;
+            // when MP mode lands we'll branch the dialogue resolver to
+            // pick the right key by session mode rather than fork the
+            // catalog runtime. Defined here so the audit no longer reports
+            // them as MISSING.
+            ["quest_gyorn_seek_overseer_mp"] = new QuestDefinition
+            {
+                Key                 = "quest_gyorn_seek_overseer_mp",
+                ScreenName          = "Deliver Gyorn's Report",
+                TalkTargetTemplate  = "overseer",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Deliver Gyorn's report to the Overseer in Glacern.",
+            },
+            ["quest_free_torg_mp"] = new QuestDefinition
+            {
+                Key                 = "quest_free_torg_mp",
+                ScreenName          = "Rescue Torg",
+                TalkTargetTemplate  = "gloern",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Rescue Gloern's brother Torg from within the Dwarven mines.",
+            },
+            ["quest_merik_staff_mp"] = new QuestDefinition
+            {
+                Key                  = "quest_merik_staff_mp",
+                ScreenName           = "Merik's Staff",
+                PickupTargetTemplate = "merik_staff",
+                PickupCountGoal      = 1,
+                TalkTargetTemplate   = "merik",
+                TalkCountGoal        = 1,
+                DeliverItemTemplate  = "merik_staff",
+                ObjectiveText        = "Retreive Merik's warding staff.",
+            },
+            ["quest_find_king_mp"] = new QuestDefinition
+            {
+                Key                 = "quest_find_king_mp",
+                ScreenName          = "Search for the King",
+                TalkTargetTemplate  = "lord_bolingar",
+                TalkCountGoal       = 1,
+                ObjectiveText       = "Find the King and secure Castle Ehb from the Seck.",
             },
         };
 
