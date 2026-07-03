@@ -1585,6 +1585,11 @@ public sealed class RenderHost : IDisposable
     // s_e_gui_put_down_steelsword) so this keeps the per-drop path one cache hit.
     private readonly HashSet<string> _registeredPutDownCues = new(StringComparer.OrdinalIgnoreCase);
     private bool _questLogOpen;  // 'L' (and SC-HUD-DATABAR-aliased 'J') toggles; sibling overlay to inventory
+    // SC-QUEST-UI-C — DS1-authentic journal screen (parchment + portrait +
+    // quest listbox + Show Dialogue/Close buttons). Owns selection + scroll
+    // state; RenderHost owns the toggle + textures (TryGetGuiTexture) and
+    // routes mouse events while _questLogOpen.
+    private readonly Hud.QuestLogPanel _questLogPanel = new();
     // Phase 22-A SC-HUD-DATABAR — bottom-row HUD button strip widget. Owns
     // hover/press state for the 7 button slots; RenderHost owns the
     // textures and the click dispatcher. Always rendered (no IsOpen
@@ -2814,6 +2819,32 @@ void main()
                         _dialogue.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
                     return;
                 }
+                // SC-QUEST-UI-C — journal screen captures LMB while open. It
+                // draws above the info-rail panels, so it gets first crack;
+                // a click inside the parchment is swallowed (modal chrome),
+                // Close / corner-X raise the close request, arrows scroll,
+                // and a listbox row selects the quest. RMB is swallowed too
+                // so a stray right-click can't retarget the camera behind
+                // the parchment.
+                if (_questLogOpen && _progression is not null
+                    && (btn == MouseButton.Left || btn == MouseButton.Right))
+                {
+                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    if (btn == MouseButton.Left
+                        && _questLogPanel.OnMouseDown(mx, my, _window.Size.X, _window.Size.Y, _progression.Journal))
+                    {
+                        if (_questLogPanel.ConsumeCloseRequest())
+                        {
+                            _questLogOpen = false;
+                            _audio?.Play(SfxGuiInventory);
+                        }
+                        return;
+                    }
+                    // RMB (or an LMB that missed the parchment) — swallow only
+                    // when the cursor is over the modal so the world below
+                    // still handles clicks outside the journal.
+                    if (btn == MouseButton.Right) return;
+                }
                 // Phase 21-SC-INV-A2 — mini-HUD ability bar + open-arrows.
                 // Phase 22-AUTH-CHAR-AWP click routing — the DS1 player AWP
                 // at top-left captures LMB on its 6 hit targets BEFORE any
@@ -3411,6 +3442,15 @@ void main()
                     }
                     return;
                 }
+                // SC-QUEST-UI-C — journal LMB-up releases the button-press
+                // latch (so the jbox faces return to their idle vertexcolor)
+                // and swallows the up-edge when it landed on the parchment.
+                if (_questLogOpen && btn == MouseButton.Left)
+                {
+                    if (_questLogPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
+                                                 _window.Size.X, _window.Size.Y))
+                        return;
+                }
                 // Phase 9-SC-9 — resolve a drag release. If the user moved the
                 // item to a different cell inside the panel, the panel updates
                 // its own placement state silently; if the release landed
@@ -3519,6 +3559,10 @@ void main()
                                         _playerInventory.Count, _window.Size.X, _window.Size.Y);
                 if (_inventoryOpen)
                     _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
+                // SC-QUEST-UI-C — journal button / arrow / corner-X hover so
+                // the jbox faces + arrows highlight under the cursor.
+                if (_questLogOpen)
+                    _questLogPanel.OnMouseMove((int)pos.X, (int)pos.Y, _window.Size.X, _window.Size.Y);
                 // Phase 23-SC-OPTIONS-A — hover state for tab + bottom
                 // buttons so the options dialog highlights under the cursor.
                 if (_optionsMenu.IsOpen)
@@ -15335,7 +15379,8 @@ void main()
             // visually overlap if so. The pause menu still draws on top.
             if (_questLogOpen && _barRenderer is not null && _progression is not null)
             {
-                QuestLogPanel.Draw(_barRenderer, _textRenderer, size.X, size.Y, _progression.Journal);
+                _questLogPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                                    size.X, size.Y, _progression.Journal, TryGetGuiTexture);
             }
             // Phase 20a: dialogue panel. Sits above the inventory but under the
             // pause menu, so pressing Esc while talking still surfaces the pause
