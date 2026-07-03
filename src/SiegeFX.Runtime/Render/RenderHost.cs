@@ -7923,10 +7923,36 @@ void main()
     private static Matrix4x4 ComputeRootBindPose(AspMesh asp)
     {
         if (asp.BindPose.Length == 0) return Matrix4x4.Identity;
-        if (MaxGeometryBone(asp) != 0) return Matrix4x4.Identity;
+        if (!IsRigidRootProp(asp)) return Matrix4x4.Identity;
         var bp = asp.BindPose[0];
         return Matrix4x4.CreateFromQuaternion(bp.Rotation) *
                Matrix4x4.CreateTranslation(bp.Translation);
+    }
+
+    /// <summary>A prop is "rigid-root" — safe to apply bone-0's bind
+    /// correction to — when ALL geometry binds bone 0 AND every additional
+    /// bone is an attach socket (AP_light for a torch/candlestand flame,
+    /// AP_* generally), not a real animation bone.
+    ///
+    /// SC-PROP-ATTACH-BONE — verified by a tank-wide asp sweep: of the
+    /// multi-bone props that bind all geometry to bone 0, two shapes exist —
+    /// light props (candlestands, torches) whose extra bones are AP_light
+    /// sockets and DO need the Z-up->Y-up correction, and hinged props
+    /// (grates) whose extra bone is a real pivot (Bone04) and currently
+    /// render right WITHOUT it. Gating on attach-socket names fixes the
+    /// former and leaves the latter (and every skinned mesh) untouched, so
+    /// this can't flip a prop that already sits correctly.</summary>
+    private static bool IsRigidRootProp(AspMesh asp)
+    {
+        if (MaxGeometryBone(asp) != 0) return false;
+        for (int i = 1; i < asp.BoneNames.Count; i++)
+        {
+            var n = asp.BoneNames[i];
+            if (string.IsNullOrEmpty(n) ||
+                !n.StartsWith("ap_", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        return true;
     }
 
     /// <summary>Highest bone index that any vertex is actually weighted to
