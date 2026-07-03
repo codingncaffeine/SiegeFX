@@ -687,7 +687,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         for (int i = 0; i < n; i++)
         {
             var jitter = new Vector3(Rand(-0.04f, 0.04f), Rand(0f, 0.03f), Rand(-0.04f, 0.04f)) * scale;
-            float life = Rand(0.32f, 0.55f);
+            float life = Rand(0.40f, 0.66f);
             // Hotter (whiter) near the core, cooler (redder) on the outer licks.
             float heat = Rand(0f, 1f);
             var hot = new Vector4(1.0f, 0.72f + 0.22f * heat, 0.30f + 0.30f * heat, 1f);
