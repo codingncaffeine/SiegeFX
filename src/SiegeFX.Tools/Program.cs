@@ -765,10 +765,12 @@ static int DispatchRegion(string[] a)
 
 static int DispatchWorld(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx world <layout> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx world <layout|path|follow> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "layout" => CmdWorldLayout(a[1..]),
+        "path"   => CmdWorldPath(a[1..]),
+        "follow" => CmdWorldFollow(a[1..]),
         _        => UnknownCommand("world " + a[0]),
     };
 }
@@ -1912,6 +1914,160 @@ static SiegeFX.Core.Nav.NavTraversal ExtractTraversalFlag(ref string[] a)
     a = kept.ToArray();
     if (mul is null || float.IsPositiveInfinity(mul.Value)) return SiegeFX.Core.Nav.NavTraversal.LandOnly;
     return new SiegeFX.Core.Nav.NavTraversal { WaterCostMultiplier = mul.Value };
+}
+
+/// <summary>Builds one unified NavMesh spanning several regions, mirroring the
+/// runtime's world build: per-region graphs + layouts composed into a shared
+/// world frame via stitch_helper.gas (WorldLayout), then combined with
+/// cross-region door links injected (CombineWithCrossRegionDoors) so the door
+/// stitcher wires boundary seams. Coordinates for path/follow queries are in
+/// the world frame rooted at the FIRST region listed. This is the offline
+/// repro for anything that crosses a region boundary (the fh_r1 -> hc_r1
+/// cellar descent), which single-region LoadRegionNavMesh cannot express.</summary>
+static NavMesh LoadWorldNavMesh(string mapTankPath, string terrainTankPath, string regionsCsv)
+{
+    using var mapTank = TankFile.Open(mapTankPath);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(terrainTankPath);
+    var terrainReader = new TankReader(terrainTank);
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var entries = new List<WorldLayout.RegionEntry>();
+    var graphTuples = new List<(string Path, RegionGraph Graph, RegionStitchHelper? Stitches)>();
+    foreach (var raw in regionsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var rp = raw.Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        if (rp.EndsWith('/')) rp = rp[..^1];
+        var graph = RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+        var layout = RegionLayout.Build(graph, Resolve);
+        RegionStitchHelper? stitches = null;
+        try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(rp + "/editor/stitch_helper.gas")); }
+        catch { /* regions without stitch files are legal (isolated demo regions) */ }
+        entries.Add(new WorldLayout.RegionEntry(rp, graph, layout, stitches));
+        graphTuples.Add((rp, graph, stitches));
+    }
+
+    var world = WorldLayout.Build(entries, Resolve, entries[0].Path);
+    var combined = graphTuples.Count > 1
+        ? RegionGraph.CombineWithCrossRegionDoors(graphTuples)
+        : graphTuples[0].Graph;
+    var unified = RegionLayout.FromTransforms(combined.TargetNodeGuid, world.Transforms);
+    return NavMesh.BuildForRegion(combined, unified, Resolve);
+}
+
+static int CmdWorldPath(string[] a)
+{
+    var traversal = ExtractTraversalFlag(ref a);
+    if (a.Length != 5)
+    {
+        Console.Error.WriteLine("usage: siegefx world path <map-tank> <terrain-tank> <region1,region2,...> <x1,y1,z1> <x2,y2,z2> [--water=<cost-mul>]");
+        Console.Error.WriteLine("       coordinates are in the world frame rooted at region1");
+        return 1;
+    }
+    if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
+    if (!TryParseVec3(a[4], out var goal))  { Console.Error.WriteLine($"bad goal vector: '{a[4]}'");  return 1; }
+
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.SourceSnodeCount} source snode(s), {mesh.DoorSeamCount} door seam(s)");
+
+    if (!mesh.TryFindTriangle(start, out var startTri)) { Console.Error.WriteLine("start point is not over any walkable triangle"); return 2; }
+    if (!mesh.TryFindTriangle(goal,  out var goalTri))  { Console.Error.WriteLine("goal point is not over any walkable triangle"); return 2; }
+    Console.WriteLine($"Start tri  : {startTri}  kind={mesh.Kinds[startTri]}  centroid={FormatVec(mesh.Centroids[startTri])}");
+    Console.WriteLine($"Goal  tri  : {goalTri}  kind={mesh.Kinds[goalTri]}  centroid={FormatVec(mesh.Centroids[goalTri])}");
+
+    var path = new List<int>();
+    if (!NavPathfinder.TryFindPath(mesh, startTri, goalTri, path, ws: null, traversal: traversal))
+    {
+        Console.Error.WriteLine("no path — disconnected components, or endpoint kind impassable under this traversal policy");
+        return 3;
+    }
+    float length = 0f;
+    for (int i = 1; i < path.Count; i++)
+        length += Vector3.Distance(mesh.Centroids[path[i - 1]], mesh.Centroids[path[i]]);
+    Console.WriteLine($"Path       : {path.Count} tris, centroid length {length:F2} units");
+    int show = Math.Min(8, path.Count);
+    for (int i = 0; i < show; i++)
+        Console.WriteLine($"  [{i,3}] tri={path[i]}  {FormatVec(mesh.Centroids[path[i]])}");
+    if (path.Count > show) Console.WriteLine($"  ... {path.Count - show} more");
+    return 0;
+}
+
+static int CmdWorldFollow(string[] a)
+{
+    var traversal = ExtractTraversalFlag(ref a);
+    bool dumpWaypoints = false;
+    if (a.Contains("--waypoints"))
+    {
+        dumpWaypoints = true;
+        a = a.Where(x => x != "--waypoints").ToArray();
+    }
+    if (a.Length < 5 || a.Length > 7)
+    {
+        Console.Error.WriteLine("usage: siegefx world follow <map-tank> <terrain-tank> <region1,region2,...> <x1,y1,z1> <x2,y2,z2> [speed] [ticks] [--water=<cost-mul>] [--waypoints]");
+        Console.Error.WriteLine("       coordinates are in the world frame rooted at region1");
+        return 1;
+    }
+    if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
+    if (!TryParseVec3(a[4], out var goal))  { Console.Error.WriteLine($"bad goal vector: '{a[4]}'");  return 1; }
+    float speed = 6f;
+    if (a.Length >= 6 && !float.TryParse(a[5], System.Globalization.CultureInfo.InvariantCulture, out speed))
+    { Console.Error.WriteLine($"bad speed: '{a[5]}'"); return 1; }
+    int maxTicks = 400;
+    if (a.Length >= 7 && !int.TryParse(a[6], out maxTicks))
+    { Console.Error.WriteLine($"bad tick count: '{a[6]}'"); return 1; }
+
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.Vertices.Length:N0} welded verts, {mesh.DoorSeamCount} door seam(s)");
+
+    var follower = new SiegeFX.Core.Nav.NavFollower(mesh, start, speed) { Traversal = traversal };
+    follower.SetTarget(goal);
+    if (follower.PathBlocked)
+    {
+        Console.Error.WriteLine("path blocked — start or goal off-mesh, or endpoints in disconnected components");
+        return 2;
+    }
+    Console.WriteLine($"Start      : {FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
+    Console.WriteLine($"Goal       : {FormatVec(follower.Target)}   path-tris={follower.RemainingPath.Count}  funnel-waypoints={follower.Waypoints.Count}");
+    if (dumpWaypoints)
+        for (int w = 0; w < follower.Waypoints.Count; w++)
+            Console.WriteLine($"  wp[{w,3}] {FormatVec(follower.Waypoints[w])}");
+
+    const float tickDt = 1f / 20f;
+    float totalDist = 0f;
+    var prev = follower.Position;
+    int lastLogTri = -999;
+    int ticks = 0;
+    for (; ticks < maxTicks; ticks++)
+    {
+        follower.Tick(tickDt);
+        totalDist += Vector3.Distance(prev, follower.Position);
+        prev = follower.Position;
+        if (follower.CurrentTriangle != lastLogTri)
+        {
+            Console.WriteLine($"  t={ticks,3}  pos={FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
+            lastLogTri = follower.CurrentTriangle;
+        }
+        if (follower.ReachedGoal) { ticks++; break; }
+        if (follower.PathBlocked) break;
+    }
+    Console.WriteLine($"Ticks      : {ticks} ({(follower.ReachedGoal ? "reached" : follower.PathBlocked ? "blocked" : "timed out")})");
+    Console.WriteLine($"Distance   : {totalDist:F2} units walked vs {Vector3.Distance(start, goal):F2} units straight-line");
+    return follower.ReachedGoal ? 0 : 3;
 }
 
 static NavMesh LoadRegionNavMesh(string mapTankPath, string terrainTankPath, string regionPathRaw)
