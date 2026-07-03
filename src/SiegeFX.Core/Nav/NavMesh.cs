@@ -548,6 +548,18 @@ public sealed class NavMesh
     /// each other. Returns the number of edges wired.</summary>
     private const float DoorSeamAnchorRadius = 4.0f;
     private const float DoorSeamEdgePairDistance = 1.5f;
+    // A legitimate door seam joins two FLOOR edges at nearly the same height —
+    // the walker steps across, it never falls. Without a vertical gate, a stair
+    // tread's side edge pairs with the floor edge running under the staircase
+    // (3D midpoint distance ≤ 1.5u even though the surfaces are ~1u apart
+    // vertically) and A* happily routes "through the floor", which the funnel
+    // then renders as a kink — the stair-descent zigzag. Same reasoning as the
+    // land↔water stitcher's split XZ/Y tolerances (StitchLandWaterSeams).
+    private const float DoorSeamEdgeYTolerance = 0.6f;
+    // Mating door edges run along the same seam line; reject perpendicular
+    // pairings (tread side edge vs. threshold edge). Matches the shoreline
+    // stitcher's |cos θ| gate.
+    private const float DoorSeamCollinearityCosMin = 0.85f;
 
     private static int StitchSnoDoorSeams(
         RegionGraph graph,
@@ -560,9 +572,11 @@ public sealed class NavMesh
     {
         int triCount = indices.Length / 3;
         // Index unwelded edges by snode guid. Each entry is (tri, slot,
-        // midpoint) — slot s is the edge OPPOSITE vertex s, between
-        // verts (s+1)%3 and (s+2)%3.
-        var unweldedBySnode = new Dictionary<uint, List<(int tri, int slot, Vector3 mid)>>();
+        // midpoint, unit XZ direction, XZ length) — slot s is the edge
+        // OPPOSITE vertex s, between verts (s+1)%3 and (s+2)%3. Edges with a
+        // degenerate XZ projection (near-vertical risers) are excluded up
+        // front: a walkable seam always has lateral extent.
+        var unweldedBySnode = new Dictionary<uint, List<(int tri, int slot, Vector3 mid, float dirX, float dirZ)>>();
         for (int t = 0; t < triCount; t++)
         {
             uint sg = sourceSnodeGuid[t];
@@ -571,18 +585,26 @@ public sealed class NavMesh
                 if (neighbors[3 * t + s] != -1) continue;
                 var a = verts[indices[3 * t + (s + 1) % 3]];
                 var b = verts[indices[3 * t + (s + 2) % 3]];
+                float dx = b.X - a.X, dz = b.Z - a.Z;
+                float len = MathF.Sqrt(dx * dx + dz * dz);
+                if (len < 0.05f) continue;
                 var mid = 0.5f * (a + b);
                 if (!unweldedBySnode.TryGetValue(sg, out var list))
                 {
-                    list = new List<(int, int, Vector3)>();
+                    list = new List<(int, int, Vector3, float, float)>();
                     unweldedBySnode[sg] = list;
                 }
-                list.Add((t, s, mid));
+                list.Add((t, s, mid, dx / len, dz / len));
             }
         }
         if (unweldedBySnode.Count == 0) return 0;
 
         int stitched = 0;
+        // Candidate pairs for one door link, scored by combined XZ+Y midpoint
+        // distance and claimed best-first (the water stitcher's pattern) so a
+        // clean mating edge wins over a marginal diagonal one regardless of
+        // list order.
+        var pairs = new List<(int t1, int s1, int t2, int s2, float score)>();
         foreach (var node in graph.Nodes)
         {
             if (node.Doors.Count == 0) continue;
@@ -604,30 +626,36 @@ public sealed class NavMesh
                 if (!unweldedBySnode.TryGetValue(farNode.Guid, out var bEdges)) continue;
                 var doorAnchor = Vector3.Transform(localDoor.Value.Transform.Translation, aWorld);
 
-                // Walk this snode's unwelded edges near the anchor; for each,
-                // find the closest still-unwelded edge on the far snode and
-                // pair them if within edge-pair distance. First-come-first-
-                // served — once a slot is wired, it's skipped on subsequent
-                // doors that might also be near.
+                pairs.Clear();
                 for (int i = 0; i < aEdges.Count; i++)
                 {
-                    var (t1, s1, mid1) = aEdges[i];
+                    var (t1, s1, mid1, ux1, uz1) = aEdges[i];
                     if (neighbors[3 * t1 + s1] != -1) continue;
                     if (Vector3.DistanceSquared(mid1, doorAnchor) > DoorSeamAnchorRadius * DoorSeamAnchorRadius) continue;
 
-                    int bestT2 = -1, bestS2 = -1;
-                    float bestD2 = DoorSeamEdgePairDistance * DoorSeamEdgePairDistance;
                     for (int j = 0; j < bEdges.Count; j++)
                     {
-                        var (t2, s2, mid2) = bEdges[j];
+                        var (t2, s2, mid2, ux2, uz2) = bEdges[j];
                         if (neighbors[3 * t2 + s2] != -1) continue;
                         if (Vector3.DistanceSquared(mid2, doorAnchor) > DoorSeamAnchorRadius * DoorSeamAnchorRadius) continue;
-                        float d2 = Vector3.DistanceSquared(mid1, mid2);
-                        if (d2 < bestD2) { bestD2 = d2; bestT2 = t2; bestS2 = s2; }
+                        float dy = MathF.Abs(mid1.Y - mid2.Y);
+                        if (dy > DoorSeamEdgeYTolerance) continue;
+                        float ddx = mid1.X - mid2.X, ddz = mid1.Z - mid2.Z;
+                        float dxz2 = ddx * ddx + ddz * ddz;
+                        if (dxz2 > DoorSeamEdgePairDistance * DoorSeamEdgePairDistance) continue;
+                        float cosAlign = MathF.Abs(ux1 * ux2 + uz1 * uz2);
+                        if (cosAlign < DoorSeamCollinearityCosMin) continue;
+                        pairs.Add((t1, s1, t2, s2, MathF.Sqrt(dxz2) + dy));
                     }
-                    if (bestT2 < 0) continue;
-                    neighbors[3 * t1 + s1] = bestT2;
-                    neighbors[3 * bestT2 + bestS2] = t1;
+                }
+                if (pairs.Count == 0) continue;
+                pairs.Sort((a, b) => a.score.CompareTo(b.score));
+                foreach (var p in pairs)
+                {
+                    if (neighbors[3 * p.t1 + p.s1] != -1) continue;
+                    if (neighbors[3 * p.t2 + p.s2] != -1) continue;
+                    neighbors[3 * p.t1 + p.s1] = p.t2;
+                    neighbors[3 * p.t2 + p.s2] = p.t1;
                     stitched++;
                 }
             }

@@ -1430,9 +1430,15 @@ static int CmdRegionPath(string[] a)
 static int CmdRegionFollow(string[] a)
 {
     var traversal = ExtractTraversalFlag(ref a);
+    bool dumpWaypoints = false;
+    if (a.Contains("--waypoints"))
+    {
+        dumpWaypoints = true;
+        a = a.Where(x => x != "--waypoints").ToArray();
+    }
     if (a.Length < 5 || a.Length > 7)
     {
-        Console.Error.WriteLine("usage: siegefx region follow <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks] [--water=<cost-mul>]");
+        Console.Error.WriteLine("usage: siegefx region follow <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks] [--water=<cost-mul>] [--waypoints]");
         return 1;
     }
     if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
@@ -1456,6 +1462,9 @@ static int CmdRegionFollow(string[] a)
     }
     Console.WriteLine($"Start      : {FormatVec(follower.Position)}  tri={follower.CurrentTriangle}");
     Console.WriteLine($"Goal       : {FormatVec(follower.Target)}   path-tris={follower.RemainingPath.Count}  funnel-waypoints={follower.Waypoints.Count}");
+    if (dumpWaypoints)
+        for (int w = 0; w < follower.Waypoints.Count; w++)
+            Console.WriteLine($"  wp[{w,3}] {FormatVec(follower.Waypoints[w])}");
 
     const float tickDt = 1f / 20f; // Match the 20 Hz simulation tick used by actors.
     float totalDist = 0f;

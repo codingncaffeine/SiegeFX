@@ -46,30 +46,50 @@ public static class NavFunnel
         {
             var triA = trianglePath[k - 1];
             var triB = trianglePath[k];
-            if (!TryGetSharedEdge(mesh, triA, triB, out var p, out var q))
+            if (!TryGetSharedEdge(mesh, triA, triB, out var p, out var q, out var r))
             {
                 // Adjacency guarantees this doesn't fire on real A*-produced paths,
                 // but a malformed input shouldn't crash the smoother — fall back to
                 // the centroid as a degenerate portal so the walker keeps moving.
                 p = q = mesh.Centroids[triB];
+                r = mesh.Centroids[triA];
             }
 
-            // Order p/q so p is on the LEFT of the centroid→centroid travel direction.
-            var ca = mesh.Centroids[triA];
-            var cb = mesh.Centroids[triB];
-            var dirX = cb.X - ca.X;
-            var dirZ = cb.Z - ca.Z;
-            // 2D cross of (dir) × (p - ca) — sign tells us which side of the dir line p lies on.
-            var cross = dirX * (p.Z - ca.Z) - dirZ * (p.X - ca.X);
-            if (cross > 0f)
+            // Order p/q so p is on the LEFT when crossing from triA into triB.
+            // Reference direction = portal midpoint minus triA's vertex opposite
+            // the shared edge. That direction points out of triA through the
+            // portal. (Centroid→centroid travel direction is NOT usable here:
+            // on steep stair treads consecutive centroids nearly coincide in
+            // XZ, the cross sign becomes noise, and every mis-ordered portal
+            // forces an apex emission — the "waypoint per tread" zigzag.)
+            var midX = 0.5f * (p.X + q.X);
+            var midZ = 0.5f * (p.Z + q.Z);
+            var dirX = midX - r.X;
+            var dirZ = midZ - r.Z;
+            // 2D cross of (dir) × (p - r) — sign tells us which side of the dir line p lies on.
+            var cross = dirX * (p.Z - r.Z) - dirZ * (p.X - r.X);
+            // Degeneracy guard: stair RISER faces are walkable in DS1 nav
+            // meshes but project to a line in XZ (all three verts share one
+            // plan-view line). There the opposite vertex sits ON the portal
+            // line, |cross| collapses to float noise, and a randomly-swapped
+            // portal makes the funnel believe the corridor crosses itself —
+            // it emits both wall corners alternately (the 56-waypoint stair
+            // descent). Fall back to continuity: keep the side assignment
+            // closest to the previous portal's.
+            var edgeLenXZ = MathF.Sqrt((q.X - p.X) * (q.X - p.X) + (q.Z - p.Z) * (q.Z - p.Z));
+            if (MathF.Abs(cross) > 0.01f * MathF.Max(edgeLenXZ, 0.01f))
             {
-                portalLeft[k] = p;
-                portalRight[k] = q;
+                if (cross > 0f) { portalLeft[k] = p; portalRight[k] = q; }
+                else            { portalLeft[k] = q; portalRight[k] = p; }
             }
             else
             {
-                portalLeft[k] = q;
-                portalRight[k] = p;
+                var prevL = portalLeft[k - 1];
+                var prevR = portalRight[k - 1];
+                float keep = DistXZ(p, prevL) + DistXZ(q, prevR);
+                float swap = DistXZ(q, prevL) + DistXZ(p, prevR);
+                if (keep <= swap) { portalLeft[k] = p; portalRight[k] = q; }
+                else              { portalLeft[k] = q; portalRight[k] = p; }
             }
         }
 
@@ -100,7 +120,7 @@ public static class NavFunnel
                 else
                 {
                     // Right would cross left — emit left as new apex and restart.
-                    output.Add(left);
+                    if (output.Count == 0 || !PointEqualsXZ(output[^1], left)) output.Add(left);
                     apex = left;
                     apexIdx = leftIdx;
                     left = apex;
@@ -122,7 +142,7 @@ public static class NavFunnel
                 }
                 else
                 {
-                    output.Add(right);
+                    if (output.Count == 0 || !PointEqualsXZ(output[^1], right)) output.Add(right);
                     apex = right;
                     apexIdx = rightIdx;
                     left = apex;
@@ -139,7 +159,7 @@ public static class NavFunnel
         if (output.Count == 0 || !PointEqualsXZ(output[^1], goal)) output.Add(goal);
     }
 
-    private static bool TryGetSharedEdge(NavMesh mesh, int triA, int triB, out Vector3 p, out Vector3 q)
+    private static bool TryGetSharedEdge(NavMesh mesh, int triA, int triB, out Vector3 p, out Vector3 q, out Vector3 opposite)
     {
         for (var slot = 0; slot < 3; slot++)
         {
@@ -149,10 +169,17 @@ public static class NavFunnel
             var v2 = mesh.Indices[triA * 3 + (slot + 2) % 3];
             p = mesh.Vertices[v1];
             q = mesh.Vertices[v2];
+            opposite = mesh.Vertices[mesh.Indices[triA * 3 + slot]];
             return true;
         }
-        p = q = default;
+        p = q = opposite = default;
         return false;
+    }
+
+    private static float DistXZ(Vector3 a, Vector3 b)
+    {
+        float dx = a.X - b.X, dz = a.Z - b.Z;
+        return MathF.Sqrt(dx * dx + dz * dz);
     }
 
     private static float TriArea2XZ(Vector3 a, Vector3 b, Vector3 c)
