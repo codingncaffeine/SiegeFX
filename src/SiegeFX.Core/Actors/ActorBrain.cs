@@ -91,6 +91,11 @@ public sealed class ActorBrain
     /// Hysteresis prevents flicker at the radius boundary.</summary>
     public float DisengageRadius { get; set; } = 14f;
 
+    /// <summary>SC-MOB-AGGRO-VERTICAL — max height difference for the initial
+    /// spot. ~One story; substitutes for the line-of-sight test DS1 runs
+    /// (we have no wall-occlusion raycast yet).</summary>
+    public const float AggroVerticalBand = 4f;
+
     /// <summary>Melee reach. Pulled from the actor's <see cref="ActorStats.AttackRange"/>
     /// when the template authors one (krug grunt = 1.8u); otherwise a 2u fallback.</summary>
     public float MeleeRange { get; }
@@ -181,7 +186,15 @@ public sealed class ActorBrain
         switch (State)
         {
             case BrainState.Wander:
-                if (targetAlive && distXZ <= AggroRadius) EnterChase(targetPos!.Value);
+                // SC-MOB-AGGRO-VERTICAL — the XZ-only distance let mobs spot
+                // the player through floors/ceilings (a surface krug aggroing
+                // at the player in the cellar directly below reads as
+                // "spotted me from really far"). Require the target within
+                // roughly one story vertically; engaged states keep chasing
+                // across height changes (stairs mid-fight don't drop aggro).
+                if (targetAlive && distXZ <= AggroRadius &&
+                    MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand)
+                    EnterChase(targetPos!.Value);
                 else { _attackFacing = null; Wander.Tick(dt); }
                 break;
 
@@ -301,6 +314,9 @@ public sealed class ActorBrain
     public void ForceAggro(Vector3 targetPos)
     {
         if (State != BrainState.Wander) return;
+        // Same vertical band as the direct spot — a packmate's shout doesn't
+        // carry through a floor.
+        if (MathF.Abs(Wander.Position.Y - targetPos.Y) > AggroVerticalBand) return;
         EnterChase(targetPos);
     }
 

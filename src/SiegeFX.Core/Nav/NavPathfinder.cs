@@ -163,12 +163,13 @@ public static class NavPathfinder
         // be blocked, and we'll filter blocked triangles out of A*
         // expansion below.
         if (mesh.IsBlocked(goalTri)) { LastFailure = $"goal tri {goalTri} obstacle-blocked"; return false; }
-        // SC-FADE-NODES-LNODE — refuse pathing into a faded-out
-        // dungeon layer. Start can be fade-hidden (e.g. a fade
-        // just fired while the actor stood on the now-hidden
-        // tile — they'll recover via stuck-replan), but the goal
-        // must be a visible/revealed surface.
-        if (mesh.IsFadeHidden(goalTri)) { LastFailure = $"goal tri {goalTri} fade-hidden"; return false; }
+        // SC-FADE-WALKABLE — fade-hidden triangles are deliberately NOT
+        // rejected here. DS1 fades are camera-side: faded ground stays
+        // physically walkable (the surface still exists while the party is
+        // in the cellar; never-revealed sections must remain reachable).
+        // Click-picking already steers the PLAYER's targets to the visible
+        // layer (TryRaycast / TryFindTriangle skip hidden), so refusing at
+        // the pathfinder only broke legitimate travel through faded areas.
         if (!TriPasses(goalTri)) { LastFailure = $"goal tri {goalTri} fails logical-flags gate (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]})"; return false; }
         if (startTri == goalTri) { pathDest.Add(startTri); return true; }
 
@@ -202,11 +203,9 @@ public static class NavPathfinder
                 int nb = mesh.Neighbors[3 * curTri + slot];
                 if (nb < 0 || closed[nb]) continue;
                 // SC-NAV-OBSTACLE-AVOID — A* never expands into an
-                // obstacle-blocked triangle.
+                // obstacle-blocked triangle. (Fade-hidden tris DO expand —
+                // see SC-FADE-WALKABLE above.)
                 if (mesh.IsBlocked(nb)) continue;
-                // SC-FADE-NODES-LNODE — A* never expands into a
-                // fade-hidden triangle.
-                if (mesh.IsFadeHidden(nb)) continue;
                 float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
                 if (float.IsPositiveInfinity(mul)) continue;
                 if (!TriPasses(nb)) continue;

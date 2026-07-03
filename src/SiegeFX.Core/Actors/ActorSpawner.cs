@@ -94,7 +94,7 @@ public sealed class ActorSpawner
             // unauthored.
             bool startActive = matrix.Rows.Count == 0 || matrix.Rows[0].StartActive;
 
-            var trigger = new TriggerInstance(p.Scid, p.Placement.NodeGuid, pos, matrix, startActive);
+            var trigger = new TriggerInstance(p.Scid, p.Placement.NodeGuid, pos, matrix, startActive, p.TemplateName);
             _triggerRuntime.Register(trigger);
             spawned.Add(trigger);
         }

@@ -1136,9 +1136,15 @@ static int CmdRegionFuzz(string[] a)
 
 static int CmdRegionLayout(string[] a)
 {
+    bool dumpAll = false;
+    if (a.Contains("--dump"))
+    {
+        dumpAll = true;
+        a = a.Where(x => x != "--dump").ToArray();
+    }
     if (a.Length != 3)
     {
-        Console.Error.WriteLine("usage: siegefx region layout <map-tank> <terrain-tank> <region-path>");
+        Console.Error.WriteLine("usage: siegefx region layout <map-tank> <terrain-tank> <region-path> [--dump]");
         return 1;
     }
 
@@ -1183,6 +1189,19 @@ static int CmdRegionLayout(string[] a)
     Console.WriteLine($"Unresolved doors  : {layout.UnresolvedDoorCount}");
     Console.WriteLine($"Missing meshes    : {missingMeshes}");
     Console.WriteLine($"MeshIndex         : {meshIndex.GuidCount} guid(s), {meshIndex.SnoCount} sno(s)");
+
+    if (dumpAll)
+    {
+        // SC-FADE-FRUSTUM diagnostics — every placed node with its fade-group
+        // keys, so distances from any reference point can be measured (e.g.
+        // "which hc_r1 section-4 nodes sit beyond DS1's 45u fade frustum").
+        foreach (var n in graph.Nodes)
+        {
+            if (!layout.TryGetTransform(n.Guid, out var w)) continue;
+            Console.WriteLine($"  0x{n.Guid:X8}  sec={n.NodeSection,3} lvl={n.NodeLevel,3}  t=({w.M41,8:F2}, {w.M42,8:F2}, {w.M43,8:F2})");
+        }
+        return 0;
+    }
 
     var show = 0;
     foreach (var n in graph.Nodes)

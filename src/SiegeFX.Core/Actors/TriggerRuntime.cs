@@ -204,8 +204,26 @@ public sealed class TriggerRuntime
                     for (int a = 0; a < row.Actions.Count; a++)
                     {
                         var act = row.Actions[a];
-                        if (!act.WhenFalse) continue;
-                        ScheduleAction(trig, row, act, ctx);
+                        if (act.WhenFalse)
+                        {
+                            ScheduleAction(trig, row, act, ctx);
+                            continue;
+                        }
+                        // SC-FADE-BOX-REVERSE — box-family fade templates
+                        // (trigger_fade_nodes_box / trigger_fade_node_box /
+                        // trigger_change_mood_box) hold their "out" fades only
+                        // while a party member is inside the volume; DS1 ships
+                        // a separate *_offonly_box variant for one-way fades,
+                        // which is the tell. fh_r1's hide-the-cellar boxes
+                        // restore hc_r1's sections on exit this way — nothing
+                        // else ever reveals sections 3/4. "in" actions stay
+                        // sticky (staged reveals never re-hide).
+                        if (trig.AutoReverseFades &&
+                            TryReverseFadeAction(act, out var reversedArgs))
+                        {
+                            Bump(_actionFireCounts, act.Verb);
+                            ctx.FadeNodes(act.Verb, reversedArgs);
+                        }
                     }
                 }
                 continue;
@@ -379,6 +397,30 @@ public sealed class TriggerRuntime
         return int.TryParse(call.Args[idx].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
     }
 
+    /// <summary>SC-FADE-BOX-REVERSE — build the exit-restore counterpart of a
+    /// held fade action: same verb/target keys with the "out"/"out:black"
+    /// mode token replaced by "in". Returns false for non-fade verbs and for
+    /// actions that were already reveals (those stay sticky).</summary>
+    static bool TryReverseFadeAction(TriggerCall act, out string[] reversedArgs)
+    {
+        reversedArgs = Array.Empty<string>();
+        var verb = act.Verb.ToLowerInvariant();
+        if (verb is not ("fade_node" or "fade_nodes" or "fade_nodes_global")) return false;
+        for (int i = act.Args.Count - 1; i >= 1; i--)
+        {
+            var mode = act.Args[i].Trim().Trim('"').ToLowerInvariant();
+            if (mode is "in" or "fade_in" or "instant") return false;
+            if (mode is "out" or "out:black" or "fade_out")
+            {
+                reversedArgs = new string[act.Args.Count];
+                for (int j = 0; j < act.Args.Count; j++) reversedArgs[j] = act.Args[j];
+                reversedArgs[i] = "in";
+                return true;
+            }
+        }
+        return false;
+    }
+
     static uint ParseScid(string raw)
     {
         var s = raw.Trim();
@@ -466,15 +508,26 @@ public sealed class TriggerInstance
     public TriggerMatrix Matrix { get; }
     public bool IsActive;
 
+    /// <summary>SC-FADE-BOX-REVERSE — the placement's template name; box-family
+    /// fade templates get their held "out" fades restored on row falling edge.</summary>
+    public string TemplateName { get; }
+    public bool AutoReverseFades { get; }
+
     readonly TriggerRowState[] _rowStates;
 
-    public TriggerInstance(uint scid, uint nodeGuid, Vector3 position, TriggerMatrix matrix, bool startActive)
+    public TriggerInstance(uint scid, uint nodeGuid, Vector3 position, TriggerMatrix matrix, bool startActive,
+                           string templateName = "")
     {
         Scid = scid;
         NodeGuid = nodeGuid;
         Position = position;
         Matrix = matrix;
         IsActive = startActive;
+        TemplateName = templateName;
+        var tn = templateName.ToLowerInvariant();
+        AutoReverseFades = tn.Contains("box") &&
+                           (tn.Contains("fade_node") || tn.Contains("change_mood")) &&
+                           !tn.Contains("offonly");
         _rowStates = new TriggerRowState[matrix.Rows.Count];
     }
 

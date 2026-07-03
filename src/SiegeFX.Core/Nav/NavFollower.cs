@@ -161,7 +161,10 @@ public sealed class NavFollower
         _pathIdx = 0;
         _waypointIdx = 0;
 
-        if (!Mesh.TryFindTriangle(Position, out var startTri))
+        // SC-FADE-WALKABLE — the tile we're STANDING on is physical ground
+        // even if a fade just hid it (a cutaway firing mid-walk must not
+        // strand the walker); include hidden tris in the start lookup.
+        if (!Mesh.TryFindTriangle(Position, out var startTri, includeFadeHidden: true))
         {
             PathBlocked = true;
             return;
@@ -334,7 +337,10 @@ public sealed class NavFollower
             // the funnel pulls a long line through a corridor).
             int standing = CurrentTriangle;
             bool advanced = false;
-            if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit))
+            // SC-FADE-WALKABLE — standing resolution includes fade-hidden
+            // ground (it's physical; skipping it re-glued the walker to the
+            // wrong layer whenever a path crossed a faded area).
+            if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit, includeFadeHidden: true))
             {
                 if (hit == _path[_pathIdx])
                 {
