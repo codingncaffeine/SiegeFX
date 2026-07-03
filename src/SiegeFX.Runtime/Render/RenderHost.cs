@@ -4684,6 +4684,13 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _triggerRuntime = spawner.TriggerRuntime;
+        // SC-ACTOR-TRIGGERS — actors can embed [common][instance_triggers]
+        // rows of their own (Gom's we_killed death choreography, talk-gated
+        // reveals). SpawnTriggers skips placements without a matrix, so this
+        // registers only the trigger-bearing minority.
+        var actorTriggers = spawner.SpawnTriggers(allInstances);
+        if (actorTriggers.Count > 0)
+            Console.WriteLine($"  actor-embedded triggers: {actorTriggers.Count} matrix(es) live");
         // Phase 10-SC-1 — load every region's special.gas (player region + neighbors)
         // through the same spawner so condition radii operate against the unified
         // world layout. trigger_generic placements never have aspect.model and were
@@ -5497,6 +5504,9 @@ void main()
         // Spawn new actors and attach them to the render/tick lists with the
         // new nav mesh so their wander followers see the freshly-streamed floor.
         var newActors = _actorSpawner.Spawn(newInstances);
+        // SC-ACTOR-TRIGGERS — streamed actors register their embedded
+        // trigger matrices too (matrix-less placements skip inside).
+        _actorSpawner.SpawnTriggers(newInstances);
         var (onMesh, offMesh) = AttachActorsToScene(newActors, newNav);
 
         // Re-create the player's NavFollower against the new unified mesh so
@@ -11140,7 +11150,7 @@ void main()
             // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
             PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
             LogLootDrop(best.Actor, best.CurrentTransform.Translation);
-            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
         }
     }
@@ -11165,8 +11175,13 @@ void main()
     /// each quest that just completed. Called from all three player-kill paths
     /// (melee click, spell zap, debug F-key) so the loop is consistent across
     /// input surfaces. Future trap / ally-kill credit can hit the same funnel.</summary>
-    private void OnActorKilled(string templateName, Vector3 worldPos)
+    private void OnActorKilled(string templateName, Vector3 worldPos, uint scid = 0)
     {
+        // SC-ACTOR-TRIGGERS — deliver we_killed to the dead actor's own SCID.
+        // Actor-embedded instance_triggers rows (Gom's death choreography,
+        // quest-gate listeners) key on exactly this message.
+        if (scid != 0 && _triggerRuntime is not null)
+            _triggerRuntime.PostInboundMessage(scid, "we_killed");
         if (_progression is null || string.IsNullOrEmpty(templateName)) return;
         var completed = _progression.Journal.RegisterKill(templateName);
         foreach (var key in completed)
@@ -12632,7 +12647,7 @@ void main()
                         // Phase 9-SC-2 — death scream from template's voice block.
                         PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
                         LogLootDrop(best.Actor, best.CurrentTransform.Translation);
-                        OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation);
+                        OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
                         CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
                     }
                 }
