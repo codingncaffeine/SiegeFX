@@ -195,6 +195,7 @@ public sealed class ActorBrain
                 if (targetAlive && distXZ <= AggroRadius &&
                     MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand)
                     EnterChase(targetPos!.Value);
+                else if (PatrolRoute is not null) { _attackFacing = null; TickPatrol(dt); }
                 else { _attackFacing = null; Wander.Tick(dt); }
                 break;
 
@@ -304,6 +305,42 @@ public sealed class ActorBrain
         // state (123 DS1 templates), not the melee 'attack' cue.
         _justCast = true;
         _lastFireTarget = targetPos;
+    }
+
+    /// <summary>SC-MOB-COMMANDS — authored patrol route from cmd_ai_c_patrol
+    /// chains (via the placement's [mind] initial_command). Replaces idle
+    /// random wander while assigned; aggro interrupts exactly like wander
+    /// (the target checks in Tick run first), and the route resumes when the
+    /// brain drops back to Wander. One-way command chains clear on arrival.</summary>
+    public IReadOnlyList<Vector3>? PatrolRoute { get; private set; }
+    bool _patrolLoops;
+    int _patrolIdx;
+
+    public void AssignPatrol(IReadOnlyList<Vector3> route, bool loops)
+    {
+        if (route.Count == 0) return;
+        PatrolRoute = route;
+        _patrolLoops = loops;
+        _patrolIdx = 0;
+    }
+
+    void TickPatrol(float dt)
+    {
+        var route = PatrolRoute!;
+        var wp = route[_patrolIdx];
+        if (DistXZ(Wander.Position, wp) <= 1.2f)
+        {
+            if (_patrolIdx + 1 < route.Count) _patrolIdx++;
+            else if (_patrolLoops) _patrolIdx = 0;
+            else { PatrolRoute = null; Wander.Tick(dt); return; }
+            wp = route[_patrolIdx];
+        }
+        // Re-pin only when the follower isn't already en route to this
+        // waypoint — SetTarget replans, and idle patrollers shouldn't A*
+        // at 20 Hz the way an active chase justifiably does.
+        if (Wander.Follower.ReachedGoal || DistXZ(Wander.Follower.Target, wp) > 0.1f)
+            Wander.Follower.SetTarget(wp);
+        Wander.Tick(dt);
     }
 
     /// <summary>SC-MOB-PARTY — alert-friends hook. A packmate that spotted the

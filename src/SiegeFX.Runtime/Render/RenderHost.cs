@@ -4644,6 +4644,8 @@ void main()
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();
         _pendingObjectSpawns.Clear();
+        _commands.Clear();
+        _commandGasLoaded?.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         // Fade state is per-run: a new game must not inherit the previous
         // session's cutaway (triggers respawn fresh and re-derive it).
@@ -5408,6 +5410,8 @@ void main()
         LoadStaticProps(allLoaded);
         LoadWorldInventory(allLoaded);
         LoadGenerators(allLoaded);
+        LoadCommands(allLoaded);
+        AssignPatrolRoutes();
 
         // Phase 20a (follow-up) — print every talkable NPC's name + world
         // position so the visual walkthrough doesn't require hunting the
@@ -5612,6 +5616,8 @@ void main()
         LoadStaticProps(newlyLoaded);
         LoadWorldInventory(newlyLoaded);
         LoadGenerators(newlyLoaded);
+        LoadCommands(newlyLoaded);
+        AssignPatrolRoutes();
     }
 
     /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
@@ -6274,6 +6280,98 @@ void main()
         }
     }
 
+    /// <summary>SC-MOB-COMMANDS — cmd_ai_c_* placements from command.gas,
+    /// keyed by SCID. Patrol chains link via [cmd_ai_dojob] next_scid; an
+    /// actor's placement authors [mind] initial_command pointing at its
+    /// route's first command (the fh_r1 krug scouts walk a 3-point loop).</summary>
+    private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos)> _commands = new();
+    private HashSet<string>? _commandGasLoaded;
+
+    private void LoadCommands(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null) return;
+        _commandGasLoaded ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mapReader = new TankReader(_playMapTank);
+        int loaded = 0;
+        foreach (var rp in regionPaths)
+        {
+            if (!_commandGasLoaded.Add(rp)) continue;
+            var (placements, diags) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(
+                mapReader, rp, "command.gas");
+            foreach (var d in diags) Console.WriteLine("  " + d);
+            foreach (var p in placements)
+            {
+                uint next = 0;
+                foreach (var child in p.Node.Children)
+                {
+                    if (!child.Header.Equals("cmd_ai_dojob", StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (var a in child.Attributes)
+                        if (a.Name.Equals("next_scid", StringComparison.OrdinalIgnoreCase))
+                            TryParseSnodeGuid(a.Value, out next);
+                    break;
+                }
+                var local = p.Placement.LocalPosition;
+                var world = local;
+                if (_regionLayout is not null &&
+                    _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                    world = Vector3.Transform(local, nodeWorld);
+                _commands[p.Scid] = (p.TemplateName, next, world);
+                loaded++;
+            }
+        }
+        if (loaded > 0)
+            Console.WriteLine($"  ai commands: {loaded} placement(s) indexed ({_commands.Count} total)");
+    }
+
+    /// <summary>Walk a command chain into a waypoint list. Loops when the
+    /// next_scid chain cycles back onto a visited command (the shipped
+    /// patrol shape); one-way move chains end at the last resolvable link.</summary>
+    private List<Vector3>? BuildCommandRoute(uint startScid, out bool loops)
+    {
+        loops = false;
+        if (startScid == 0 || !_commands.ContainsKey(startScid)) return null;
+        var route = new List<Vector3>();
+        var visited = new HashSet<uint>();
+        uint cur = startScid;
+        while (cur != 0 && _commands.TryGetValue(cur, out var cmd))
+        {
+            if (!visited.Add(cur)) { loops = true; break; }
+            route.Add(cmd.Pos);
+            cur = cmd.Next;
+            if (route.Count >= 32) break;
+        }
+        return route.Count > 0 ? route : null;
+    }
+
+    /// <summary>Assign patrol routes to brains whose placement authors
+    /// [mind] initial_command. Idempotent — brains with a live route are
+    /// skipped, so the post-load and streaming passes can both call it.</summary>
+    private void AssignPatrolRoutes()
+    {
+        if (_commands.Count == 0) return;
+        int assigned = 0;
+        foreach (var s in _actors)
+        {
+            if (s.Brain is null || s.Brain.PatrolRoute is not null || s.IsDead) continue;
+            uint cmdScid = 0;
+            foreach (var child in s.Actor.Instance.Node.Children)
+            {
+                if (!child.Header.Equals("mind", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var a in child.Attributes)
+                    if (a.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase))
+                        TryParseSnodeGuid(a.Value, out cmdScid);
+                break;
+            }
+            if (cmdScid == 0) continue;
+            var route = BuildCommandRoute(cmdScid, out bool loops);
+            if (route is null) continue;
+            s.Brain.AssignPatrol(route, loops);
+            assigned++;
+        }
+        if (assigned > 0)
+            Console.WriteLine($"  patrol routes: {assigned} actor(s) walking authored commands");
+    }
+
     /// <summary>SC-GEN-IN-OBJECT — DS1's [generator_in_object] component: a
     /// template-embedded generator that spawns child_template_name when its
     /// host fires spawn_event. This is the Gom two-phase mechanism verbatim
@@ -6401,6 +6499,19 @@ void main()
             return;
         }
         var (onMesh, offMesh) = AttachActorsToScene(spawned, _navMesh);
+        // SC-MOB-COMMANDS — generator children honor their authored
+        // initial_command (the ambush krug's run-in / the scouts' patrol).
+        if (g.InitialCommandScid != 0)
+        {
+            var route = BuildCommandRoute(g.InitialCommandScid, out bool loops);
+            if (route is not null)
+            {
+                foreach (var actor in spawned)
+                    foreach (var rs in _actors)
+                        if (ReferenceEquals(rs.Actor, actor) && rs.Brain is not null)
+                        { rs.Brain.AssignPatrol(route, loops); break; }
+            }
+        }
         Console.WriteLine($"[generator] 0x{g.Scid:X8} spawned {g.ChildTemplate} ({onMesh} on-mesh / {offMesh} pinned)");
     }
 
@@ -15493,6 +15604,8 @@ void main()
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();
         _pendingObjectSpawns.Clear();
+        _commands.Clear();
+        _commandGasLoaded?.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {
@@ -15519,6 +15632,8 @@ void main()
         {
             LoadWorldInventory(_worldRegionGraphs.Select(t => t.Path));
             LoadGenerators(_worldRegionGraphs.Select(t => t.Path));
+            LoadCommands(_worldRegionGraphs.Select(t => t.Path));
+            AssignPatrolRoutes();
         }
 
         if (save.Player is not null && _player is not null)
