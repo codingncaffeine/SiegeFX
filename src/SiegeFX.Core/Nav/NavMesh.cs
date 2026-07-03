@@ -854,6 +854,133 @@ public sealed class NavMesh
         return triIndex >= 0;
     }
 
+    /// <summary>SC-CLICK-RAY-PICK — nearest ray hit against the nav mesh.
+    /// Walks the XZ lookup grid along the ray (Amanatides–Woo DDA) and
+    /// intersects bucket triangles (Möller–Trumbore), skipping fade-hidden
+    /// tris so clicks resolve to the visible layer (the basement floor, not
+    /// the faded upper structure). Unlike <see cref="TryFindTriangle"/> this
+    /// picks the surface the user actually pointed at — on stairs and
+    /// multi-floor overlaps the plane-at-player-Y method resolved to the
+    /// wrong floor AND the wrong XZ. Blocked tris are valid hits (visible
+    /// ground; the pathfinder still refuses them as goals).</summary>
+    public bool TryRaycast(Vector3 origin, Vector3 direction, float maxDist, out int triIndex, out Vector3 hitPoint)
+    {
+        triIndex = -1;
+        hitPoint = default;
+        if (TriangleCount == 0) return false;
+        float dlen = direction.Length();
+        if (dlen < 1e-6f || maxDist <= 0f) return false;
+        var dir = direction / dlen;
+
+        float bestT = maxDist;
+
+        void TestCell(int cx, int cz, ref float best, ref int bestTri, ref Vector3 bestHit)
+        {
+            if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return;
+            var bucket = _grid[cz * _gridCellsX + cx];
+            if (bucket is null) return;
+            for (int i = 0; i < bucket.Length; i++)
+            {
+                int t = bucket[i];
+                if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+                var a = Vertices[Indices[3 * t + 0]];
+                var b = Vertices[Indices[3 * t + 1]];
+                var c = Vertices[Indices[3 * t + 2]];
+                // Möller–Trumbore, both facings (terrain is viewed from above,
+                // but steep ramp tris may present either side to the camera).
+                var e1 = b - a;
+                var e2 = c - a;
+                var p = Vector3.Cross(dir, e2);
+                float det = Vector3.Dot(e1, p);
+                if (MathF.Abs(det) < 1e-8f) continue;
+                float invDet = 1f / det;
+                var tv = origin - a;
+                float u = Vector3.Dot(tv, p) * invDet;
+                if (u < 0f || u > 1f) continue;
+                var q = Vector3.Cross(tv, e1);
+                float v = Vector3.Dot(dir, q) * invDet;
+                if (v < 0f || u + v > 1f) continue;
+                float thit = Vector3.Dot(e2, q) * invDet;
+                if (thit < 0f || thit >= best) continue;
+                best = thit;
+                bestTri = t;
+                bestHit = origin + dir * thit;
+            }
+        }
+
+        float dxz = MathF.Sqrt(dir.X * dir.X + dir.Z * dir.Z);
+        if (dxz < 1e-5f)
+        {
+            // Near-vertical ray (top-down dev camera): a single cell column.
+            int cx = (int)MathF.Floor((origin.X - _gridMinX) / GridCellSize);
+            int cz = (int)MathF.Floor((origin.Z - _gridMinZ) / GridCellSize);
+            TestCell(cx, cz, ref bestT, ref triIndex, ref hitPoint);
+            return triIndex >= 0;
+        }
+
+        // Clip the ray to the grid's XZ bounds so rays starting outside
+        // (camera far above the region edge) still walk the right cells.
+        float gridMaxX = _gridMinX + _gridCellsX * GridCellSize;
+        float gridMaxZ = _gridMinZ + _gridCellsZ * GridCellSize;
+        float tEnter = 0f, tExit = maxDist;
+        if (MathF.Abs(dir.X) > 1e-8f)
+        {
+            float t0 = (_gridMinX - origin.X) / dir.X;
+            float t1 = (gridMaxX - origin.X) / dir.X;
+            if (t0 > t1) (t0, t1) = (t1, t0);
+            tEnter = MathF.Max(tEnter, t0);
+            tExit = MathF.Min(tExit, t1);
+        }
+        else if (origin.X < _gridMinX || origin.X > gridMaxX) return false;
+        if (MathF.Abs(dir.Z) > 1e-8f)
+        {
+            float t0 = (_gridMinZ - origin.Z) / dir.Z;
+            float t1 = (gridMaxZ - origin.Z) / dir.Z;
+            if (t0 > t1) (t0, t1) = (t1, t0);
+            tEnter = MathF.Max(tEnter, t0);
+            tExit = MathF.Min(tExit, t1);
+        }
+        else if (origin.Z < _gridMinZ || origin.Z > gridMaxZ) return false;
+        if (tEnter > tExit) return false;
+
+        var entry = origin + dir * tEnter;
+        int cellX = Math.Clamp((int)MathF.Floor((entry.X - _gridMinX) / GridCellSize), 0, _gridCellsX - 1);
+        int cellZ = Math.Clamp((int)MathF.Floor((entry.Z - _gridMinZ) / GridCellSize), 0, _gridCellsZ - 1);
+        int stepX = dir.X > 0f ? 1 : -1;
+        int stepZ = dir.Z > 0f ? 1 : -1;
+        float tDeltaX = MathF.Abs(dir.X) > 1e-8f ? GridCellSize / MathF.Abs(dir.X) : float.PositiveInfinity;
+        float tDeltaZ = MathF.Abs(dir.Z) > 1e-8f ? GridCellSize / MathF.Abs(dir.Z) : float.PositiveInfinity;
+        float nextBoundX = _gridMinX + (cellX + (stepX > 0 ? 1 : 0)) * GridCellSize;
+        float nextBoundZ = _gridMinZ + (cellZ + (stepZ > 0 ? 1 : 0)) * GridCellSize;
+        float tMaxX = MathF.Abs(dir.X) > 1e-8f ? (nextBoundX - origin.X) / dir.X : float.PositiveInfinity;
+        float tMaxZ = MathF.Abs(dir.Z) > 1e-8f ? (nextBoundZ - origin.Z) / dir.Z : float.PositiveInfinity;
+
+        float tCell = tEnter;
+        while (tCell <= tExit)
+        {
+            // Once a hit is closer than this cell's entry distance, no later
+            // cell can beat it — triangles are indexed into every cell their
+            // XZ AABB touches, so the nearest hit is found by then.
+            if (triIndex >= 0 && bestT < tCell) break;
+            TestCell(cellX, cellZ, ref bestT, ref triIndex, ref hitPoint);
+            if (tMaxX < tMaxZ)
+            {
+                tCell = tMaxX;
+                tMaxX += tDeltaX;
+                cellX += stepX;
+                if (cellX < 0 || cellX >= _gridCellsX) break;
+            }
+            else
+            {
+                tCell = tMaxZ;
+                tMaxZ += tDeltaZ;
+                cellZ += stepZ;
+                if (cellZ < 0 || cellZ >= _gridCellsZ) break;
+            }
+        }
+        return triIndex >= 0;
+    }
+
     /// <summary>Projects <paramref name="worldPos"/> onto triangle <paramref name="tri"/>'s
     /// plane in XZ and returns its world Y. Falls back to the triangle centroid Y when the
     /// triangle is edge-on in XZ — <see cref="InterpolateYXZ"/> is already guarded against

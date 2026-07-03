@@ -1039,13 +1039,21 @@ public sealed class RenderHost : IDisposable
         // while descending — the snode containing the stairs has its
         // bottom AT player Y, not below, so we don't pop them away
         // mid-step.
-        const float CamFadeYMargin = 0.5f;
+        // Hysteresis: the hide threshold sits 0.5u below the show threshold so
+        // a player Y hovering at the boundary (each stair tick moves 0.2u)
+        // can't flap the snode's render+nav state every frame. Flapping the
+        // nav side is the dangerous half — TryFindTriangle re-glues the
+        // follower to whichever layer just reappeared.
+        const float CamFadeHideMargin = 0.5f;
+        const float CamFadeShowMargin = 1.0f;
         for (int i = 0; i < _regionInstances.Count; i++)
         {
             var inst = _regionInstances[i];
             if (!inst.CameraFade) continue;
-            bool occluding = playerPos.Y + CamFadeYMargin < inst.WorldAabbMin.Y;
             bool wasHidden = _fadedSnodeCounts.ContainsKey(inst.SnodeGuid);
+            bool occluding = wasHidden
+                ? playerPos.Y + CamFadeShowMargin < inst.WorldAabbMin.Y
+                : playerPos.Y + CamFadeHideMargin < inst.WorldAabbMin.Y;
             if (occluding && !wasHidden)
             {
                 _fadedSnodeCounts[inst.SnodeGuid] = 1;
@@ -5330,6 +5338,13 @@ void main()
         {
             var pos = _playerFollower.Position;
             var speed = _playerFollower.Speed;
+            // SC-NAV-REBUILD-STITCH — capture the in-flight destination before
+            // discarding the old follower. Crossing a region boundary mid-walk
+            // (exactly what happens halfway down the cellar stairs) used to
+            // silently drop the click target, leaving the player stalled or —
+            // after the next click resolved against a meshless gap — reversing.
+            var pendingTarget = !_playerFollower.ReachedGoal && !_playerFollower.PathBlocked
+                ? _playerFollower.Target : (Vector3?)null;
             _playerFollower = new SiegeFX.Core.Nav.NavFollower(newNav, pos, speed)
             {
                 // Phase 24-NAV-LOGICAL-FLAGS — player respects the
@@ -5338,6 +5353,7 @@ void main()
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
                 DiagnosticLogging = true,
             };
+            if (pendingTarget is { } tgt) _playerFollower.SetTarget(tgt);
         }
 
         Console.WriteLine($"  rolling spawn: {newActors.Count}/{newInstances.Count} actor(s) live " +
@@ -6434,9 +6450,14 @@ void main()
             RegionGraph navGraph;
             if (_worldRegionGraphs.Count > 1)
             {
-                var graphList = new List<RegionGraph>(_worldRegionGraphs.Count);
-                foreach (var (_, g, _) in _worldRegionGraphs) graphList.Add(g);
-                navGraph = RegionGraph.Combine(graphList);
+                // SC-NAV-REBUILD-STITCH — streaming rebuilds previously used
+                // plain Combine, silently dropping the cross-region door links
+                // stitch_helper.gas provides. First region change after load
+                // would disconnect every basement/cave/building boundary seam
+                // (the initial build at LoadPlayActors wires them), so a
+                // mid-descent replan could suddenly find "no corridor" or a
+                // long route back up the stairs.
+                navGraph = RegionGraph.CombineWithCrossRegionDoors(_worldRegionGraphs);
             }
             else if (_worldRegionGraphs.Count == 1)
             {
@@ -6448,9 +6469,22 @@ void main()
             }
 
             var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+            // A fresh mesh starts with every triangle visible; live fade state
+            // (dungeon-reveal triggers + camera_fade hides) must carry over or
+            // the pathfinder briefly routes across hidden upper floors and
+            // TryFindTriangle re-glues actors to them.
+            foreach (var key in _fadedLnodes.Keys)
+                nav.SetFadeHidden(key.Item1, key.Item2, true);
+            foreach (var inst in _regionInstances)
+            {
+                if (!inst.CameraFade || !_fadedSnodeCounts.ContainsKey(inst.SnodeGuid)) continue;
+                for (int li = 0; li < 256; li++)
+                    nav.SetFadeHidden(inst.SnodeGuid, (byte)li, true);
+            }
             Console.WriteLine($"  nav mesh rebuild: {nav.TriangleCount} tri(s), " +
                               $"{nav.Vertices.Length} welded vert(s), " +
-                              $"{nav.SourceSnodeCount} snode(s) across {_worldRegionGraphs.Count} region(s)");
+                              $"{nav.SourceSnodeCount} snode(s), " +
+                              $"{nav.DoorSeamCount} door-stitched seam(s) across {_worldRegionGraphs.Count} region(s)");
             return nav;
         }
         catch (Exception ex)
@@ -8996,23 +9030,35 @@ void main()
         var dir  = far_ - near;
         if (dir.LengthSquared() < 1e-8f) return;
 
-        // Intersect with the horizontal plane Y = player.Y. Ray: p = near + t*dir.
-        // Solve: near.Y + t*dir.Y = planeY. Reject near-parallel rays so a top-down
-        // view (dir.Y ~= 0) doesn't land us at effectively infinity.
-        float planeY = _playerFollower.Position.Y;
-        if (MathF.Abs(dir.Y) < 1e-4f) return;
-        float t = (planeY - near.Y) / dir.Y;
-        if (t < 0f) return;
-        var hit = near + dir * t;
-
-        // Phase 21-SC-SCROLL-CLICKLOOT — DS1 has no walk-over auto-pickup;
-        // items must be clicked to be looted. If the click landed near a
-        // settled loot pile (within 1.0u tolerance), pick it up and
-        // suppress click-to-move so the player doesn't ALSO walk past
-        // the now-empty pile spot.
-        if (TryClickPickupAt(hit)) return;
-
-        if (!_navMesh.TryFindTriangle(hit, out var tri)) return;
+        // SC-CLICK-RAY-PICK — resolve the click by intersecting the pick ray
+        // with the nav mesh itself (nearest hit; fade-hidden layers skipped
+        // inside TryRaycast). The old horizontal-plane-at-player-Y projection
+        // resolved mid-descent clicks to the WRONG floor and the wrong XZ on
+        // stairs / multi-floor overlaps, producing paths that walked the
+        // player back UP the staircase. The plane method survives only as a
+        // fallback for rays that miss every triangle (clicks past the mesh
+        // edge from a shallow camera angle).
+        Vector3 hit;
+        int tri;
+        if (!_navMesh.TryRaycast(near, dir, dir.Length(), out tri, out hit))
+        {
+            float planeY = _playerFollower.Position.Y;
+            if (MathF.Abs(dir.Y) < 1e-4f) return;
+            float t = (planeY - near.Y) / dir.Y;
+            if (t < 0f) return;
+            hit = near + dir * t;
+            if (TryClickPickupAt(hit)) return;
+            if (!_navMesh.TryFindTriangle(hit, out tri)) return;
+        }
+        else
+        {
+            // Phase 21-SC-SCROLL-CLICKLOOT — DS1 has no walk-over auto-pickup;
+            // items must be clicked to be looted. If the click landed near a
+            // settled loot pile (within 1.0u tolerance), pick it up and
+            // suppress click-to-move so the player doesn't ALSO walk past
+            // the now-empty pile spot.
+            if (TryClickPickupAt(hit)) return;
+        }
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
         _playerFollower.SetTarget(hit);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
