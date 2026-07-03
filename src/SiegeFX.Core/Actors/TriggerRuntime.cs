@@ -375,10 +375,19 @@ public sealed class TriggerRuntime
     /// next eval.</summary>
     public void PostInboundMessage(uint targetScid, string name)
     {
+        // SC-TRIGGER-ARM — we_trigger_activate/_deactivate are ACTIVATION
+        // messages, not inbox messages: they flip the instance's IsActive.
+        // DS1 stages whole sequences behind them — the intro's "start
+        // norick part" trigger ships start_active=false and is armed 85s
+        // in; without the flip it never evaluates at all.
+        bool arm = name.Equals("we_trigger_activate", StringComparison.OrdinalIgnoreCase);
+        bool disarm = name.Equals("we_trigger_deactivate", StringComparison.OrdinalIgnoreCase);
         for (int i = 0; i < _instances.Count; i++)
         {
             if (_instances[i].Scid != targetScid) continue;
-            _instances[i].DepositMessage(name);
+            if (arm) _instances[i].IsActive = true;
+            else if (disarm) _instances[i].IsActive = false;
+            else _instances[i].DepositMessage(name);
         }
     }
 

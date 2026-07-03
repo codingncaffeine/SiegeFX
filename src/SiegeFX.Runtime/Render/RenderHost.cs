@@ -846,6 +846,23 @@ public sealed class RenderHost : IDisposable
         // conversation (the intro storyteller).
         if (name.Equals("we_req_talk_begin", StringComparison.OrdinalIgnoreCase))
             OnTalkBeginMessage(toScid);
+        // SC-CMD-ACTIVATE - AI command gizmos fire on we_req_activate
+        // (the intro's "move hero" / "move norick" beats).
+        if (name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_commands.TryGetValue(toScid, out var aiCmd))
+                ActivateAiCommand(toScid, aiCmd);
+            // Message-activated generators (parked with trigger_range<=0);
+            // generator_dumb_guy is an event component, never a spawner.
+            foreach (var g in _generators)
+            {
+                if (g.Scid != toScid || g.Activated) continue;
+                if (g.Template.Contains("dumb_guy", StringComparison.OrdinalIgnoreCase)) continue;
+                g.Activated = true;
+                g.NextSpawnIn = 0f;
+                Console.WriteLine($"[generator] 0x{g.Scid:X8} message-activated");
+            }
+        }
     }
 
     private string? _lastLoggedMoodChange;
@@ -4677,6 +4694,8 @@ void main()
         _nisLetterbox = _nisLetterboxTarget = 0f;
         _subtitleNodes = null;
         _voicePlayer?.Stop();
+        _playerScriptedNext = 0;
+        _scriptedMoves.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         // Fade state is per-run: a new game must not inherit the previous
         // session's cutaway (triggers respawn fresh and re-derive it).
@@ -6635,6 +6654,14 @@ void main()
             return;
         }
         var node = _subtitleNodes[_subtitleIdx];
+        // Narration nodes can grant quests (Norick's speech activates the
+        // first quest without any dialogue interaction).
+        if (!string.IsNullOrEmpty(node.ActivateQuest) && _progression is not null &&
+            _progression.Journal.AddActive(node.ActivateQuest))
+        {
+            Console.WriteLine($"[subtitle] quest activated: {node.ActivateQuest}");
+            FlashQuestIndicator();
+        }
         // Screen text authors literal \n sequences.
         _subtitleLines = node.Text.Replace("\\n", "\n").Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         _subtitlePageCount = Math.Max(1, (_subtitleLines.Length + SubtitleLinesPerPage - 1) / SubtitleLinesPerPage);
@@ -6721,7 +6748,7 @@ void main()
     /// keyed by SCID. Patrol chains link via [cmd_ai_dojob] next_scid; an
     /// actor's placement authors [mind] initial_command pointing at its
     /// route's first command (the fh_r1 krug scouts walk a 3-point loop).</summary>
-    private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos)> _commands = new();
+    private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos, uint Target1)> _commands = new();
     private HashSet<string>? _commandGasLoaded;
 
     private void LoadCommands(IEnumerable<string> regionPaths)
@@ -6738,13 +6765,17 @@ void main()
             foreach (var d in diags) Console.WriteLine("  " + d);
             foreach (var p in placements)
             {
-                uint next = 0;
+                uint next = 0, target1 = 0;
                 foreach (var child in p.Node.Children)
                 {
                     if (!child.Header.Equals("cmd_ai_dojob", StringComparison.OrdinalIgnoreCase)) continue;
                     foreach (var a in child.Attributes)
+                    {
                         if (a.Name.Equals("next_scid", StringComparison.OrdinalIgnoreCase))
                             TryParseSnodeGuid(a.Value, out next);
+                        else if (a.Name.Equals("target1", StringComparison.OrdinalIgnoreCase))
+                            TryParseSnodeGuid(a.Value, out target1);
+                    }
                     break;
                 }
                 var local = p.Placement.LocalPosition;
@@ -6752,7 +6783,7 @@ void main()
                 if (_regionLayout is not null &&
                     _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
                     world = Vector3.Transform(local, nodeWorld);
-                _commands[p.Scid] = (p.TemplateName, next, world);
+                _commands[p.Scid] = (p.TemplateName, next, world, target1);
                 loaded++;
                 // SC-NIS - index NIS gizmos with world pose (placement
                 // quaternion composed with the anchor node's rotation).
@@ -6798,6 +6829,89 @@ void main()
         }
         if (loaded > 0)
             Console.WriteLine($"  ai commands: {loaded} placement(s) indexed ({_commands.Count} total, {_nisCommands.Count} NIS gizmo(s))");
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // SC-CMD-ACTIVATE — message-driven AI commands. DS1's intro drives the
+    // scripted opening entirely through we_req_activate at command gizmos:
+    // "move hero" walks the PLAYER (catalyst move) along a next_scid chain
+    // to the bridge; "move norick" slides the brainless talkable to
+    // mid-bridge via cmd_ai_t_move (target1 = his scid). Movers set
+    // IsMoving so the walk-clip swap reads naturally. Equip / drop /
+    // animate beats (the hoe, the dog looking up, Norick's kneel) log as
+    // recognized-but-stubbed for the follow-up slice.
+    // ────────────────────────────────────────────────────────────────────
+    private uint _playerScriptedNext;
+    private readonly List<(ActorRenderState S, Vector3 To, uint Next)> _scriptedMoves = new();
+
+    private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd)
+    {
+        var t = cmd.Type.ToLowerInvariant();
+        switch (t)
+        {
+            case "cmd_ai_c_move":
+            case "cmd_ai_c_move_orient":
+                if (_playerFollower is not null)
+                {
+                    _playerFollower.SetTarget(cmd.Pos);
+                    _playerScriptedNext = cmd.Next;
+                    Console.WriteLine($"[cmd] move hero -> ({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) next=0x{cmd.Next:X8}");
+                }
+                break;
+            case "cmd_ai_t_move":
+            case "cmd_ai_t_move_orient":
+                foreach (var s in _actors)
+                {
+                    if (s.Actor.Instance.Scid != cmd.Target1 || s.IsDead) continue;
+                    _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, s));
+                    _scriptedMoves.Add((s, cmd.Pos, cmd.Next));
+                    Console.WriteLine($"[cmd] move 0x{cmd.Target1:X8} -> ({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) next=0x{cmd.Next:X8}");
+                    break;
+                }
+                break;
+            default:
+                if (_fadeWarnedOnce.Add($"cmd:{t}"))
+                    Console.WriteLine($"[cmd] {t} 0x{scid:X8} recognized but not yet implemented");
+                // Keep authored chains alive even through stubbed links.
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var chained))
+                    ActivateAiCommand(cmd.Next, chained);
+                break;
+        }
+    }
+
+    private void TickScriptedMoves(float dt)
+    {
+        // Player chain: when the scripted walk arrives, fire the next link.
+        if (_playerScriptedNext != 0 && _playerFollower is not null && _playerFollower.ReachedGoal)
+        {
+            var next = _playerScriptedNext;
+            _playerScriptedNext = 0;
+            if (_commands.TryGetValue(next, out var chained))
+                ActivateAiCommand(next, chained);
+        }
+        for (int i = _scriptedMoves.Count - 1; i >= 0; i--)
+        {
+            var (s, to, next) = _scriptedMoves[i];
+            var pos = s.CurrentTransform.Translation;
+            float dx = to.X - pos.X, dz = to.Z - pos.Z;
+            float dist = MathF.Sqrt(dx * dx + dz * dz);
+            float speed = s.Actor.Stats.WalkSpeed > 0.5f ? s.Actor.Stats.WalkSpeed : 3f;
+            if (dist <= MathF.Max(0.15f, speed * dt))
+            {
+                s.IsMoving = false;
+                _scriptedMoves.RemoveAt(i);
+                if (next != 0 && _commands.TryGetValue(next, out var chained))
+                    ActivateAiCommand(next, chained);
+                continue;
+            }
+            float step = speed * dt / dist;
+            var np = new Vector3(pos.X + dx * step, pos.Y, pos.Z + dz * step);
+            if (_navMesh is not null && _navMesh.TryFindTriangle(np, out var tri, includeFadeHidden: true))
+                np.Y = _navMesh.SampleYOnTriangle(tri, np);
+            float yaw = MathF.Atan2(dx, dz);
+            s.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(np);
+            s.IsMoving = true;
+        }
     }
 
     /// <summary>Walk a command chain into a waypoint list. Loops when the
@@ -7961,6 +8075,7 @@ void main()
                 // triggers and brains.
                 UpdateGenerators((float)stepSec);
                 TickPendingObjectSpawns((float)stepSec);
+                TickScriptedMoves((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -16129,6 +16244,8 @@ void main()
         _nisLetterbox = _nisLetterboxTarget = 0f;
         _subtitleNodes = null;
         _voicePlayer?.Stop();
+        _playerScriptedNext = 0;
+        _scriptedMoves.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {
