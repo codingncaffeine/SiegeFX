@@ -6308,13 +6308,13 @@ void main()
         }
         if (line2.Length > 72) line2 = line2[..69] + "...";
 
-        float x = 12f;
-        float y = viewportH * 0.30f;
+        int x = 12;
+        int y = (int)(viewportH * 0.30f);
         var gold = new Vector4(1.00f, 0.85f, 0.40f, 0.95f);
         var ink  = new Vector4(0.92f, 0.92f, 0.88f, 0.85f);
         _textRenderer.DrawString(viewportW, viewportH, title, x, y, gold);
         if (line2.Length > 0)
-            _textRenderer.DrawString(viewportW, viewportH, line2, x, y + 16f, ink);
+            _textRenderer.DrawString(viewportW, viewportH, line2, x, y + 16, ink);
     }
 
     /// <summary>SC-MOB-COMMANDS — cmd_ai_c_* placements from command.gas,
