@@ -340,7 +340,8 @@ public sealed class NavFollower
             // SC-FADE-WALKABLE — standing resolution includes fade-hidden
             // ground (it's physical; skipping it re-glued the walker to the
             // wrong layer whenever a path crossed a faded area).
-            if (Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit, includeFadeHidden: true))
+            bool onMesh = Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit, includeFadeHidden: true);
+            if (onMesh)
             {
                 if (hit == _path[_pathIdx])
                 {
@@ -393,24 +394,39 @@ public sealed class NavFollower
                     }
                 }
             }
-            if (!advanced)
+            if (!onMesh)
             {
-                // Phase 24-NAV fold (post-test #2) — earlier boundary-
-                // clamp was too aggressive and froze NPCs whose funnel
-                // waypoint happened to sit right on a triangle edge.
-                // Reverted to "advance anyway"; stuck-detection above
-                // (8-tick replan) catches genuinely-pinned cases. The
-                // true fix needs BSP-accelerated point-in-triangle so
-                // edge-on funnel waypoints tie-break consistently —
-                // splinter SC-NAV-BSP-LOOKUP carries that.
-                if (standing < 0)
+                // SC-NAV-CONTAIN — the step would leave the walkable floor
+                // (a wall, a building side, the world edge). NEVER move off
+                // the mesh: binary-search back toward the last on-floor point
+                // for the farthest fraction of the step still on a triangle,
+                // so the actor hugs the wall instead of clipping through it
+                // (the old "advance anyway" put the player inside buildings)
+                // or freezing dead on an edge (the reverted hard-clamp froze
+                // NPCs). lo stays 0 only when we're already hard against the
+                // boundary — then we hold position and the funnel retries
+                // next tick / stuck-detection replans. This is the hard
+                // out-of-bounds barrier: nothing walks off the nav mesh.
+                float lo = 0f, hi = 1f;
+                for (int it = 0; it < 7; it++)
                 {
-                    // No current triangle: leave position frozen so the
-                    // next tick / replan can re-bind; advancing here
-                    // would Y-sample on garbage.
-                    nx = Position.X;
-                    nz = Position.Z;
+                    float mid = (lo + hi) * 0.5f;
+                    float tx = Position.X + (nx - Position.X) * mid;
+                    float tz = Position.Z + (nz - Position.Z) * mid;
+                    if (Mesh.TryFindTriangle(new Vector3(tx, Position.Y, tz), out var thit, includeFadeHidden: true))
+                    { lo = mid; standing = thit; }
+                    else hi = mid;
                 }
+                nx = Position.X + (nx - Position.X) * lo;
+                nz = Position.Z + (nz - Position.Z) * lo;
+            }
+            else if (!advanced && standing < 0)
+            {
+                // On the mesh somewhere but no bound triangle resolved —
+                // hold position so the next tick / replan re-binds instead
+                // of Y-sampling on garbage.
+                nx = Position.X;
+                nz = Position.Z;
             }
             float ny = standing >= 0 ? Mesh.SampleYOnTriangle(standing, new Vector3(nx, 0f, nz)) : Position.Y;
             Position = new Vector3(nx, ny, nz);
