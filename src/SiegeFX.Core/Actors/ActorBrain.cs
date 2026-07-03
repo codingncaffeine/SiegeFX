@@ -313,15 +313,22 @@ public sealed class ActorBrain
     /// (the target checks in Tick run first), and the route resumes when the
     /// brain drops back to Wander. One-way command chains clear on arrival.</summary>
     public IReadOnlyList<Vector3>? PatrolRoute { get; private set; }
+    /// <summary>True once any route has been assigned — distinguishes "never
+    /// had a route" from "one-way route completed" so streaming events and
+    /// idempotent re-assignment passes don't replay consumed run-ins.</summary>
+    public bool HasHadPatrol { get; private set; }
     bool _patrolLoops;
     int _patrolIdx;
+    int _patrolBlockedSkips;
 
     public void AssignPatrol(IReadOnlyList<Vector3> route, bool loops)
     {
         if (route.Count == 0) return;
         PatrolRoute = route;
+        HasHadPatrol = true;
         _patrolLoops = loops;
         _patrolIdx = 0;
+        _patrolBlockedSkips = 0;
     }
 
     void TickPatrol(float dt)
@@ -339,7 +346,30 @@ public sealed class ActorBrain
         // waypoint — SetTarget replans, and idle patrollers shouldn't A*
         // at 20 Hz the way an active chase justifiably does.
         if (Wander.Follower.ReachedGoal || DistXZ(Wander.Follower.Target, wp) > 0.1f)
+        {
             Wander.Follower.SetTarget(wp);
+            // Review fold — an unreachable waypoint (navmesh hole, obstacle
+            // on the goal tile) previously ping-ponged between this re-pin
+            // and the wander fallback at two full A* plans per tick, forever.
+            // Skip blocked waypoints; a fully-blocked route clears.
+            if (Wander.Follower.PathBlocked)
+            {
+                _patrolBlockedSkips++;
+                if (_patrolBlockedSkips >= route.Count)
+                {
+                    PatrolRoute = null;
+                    Wander.Tick(dt);
+                    return;
+                }
+                if (_patrolIdx + 1 < route.Count) _patrolIdx++;
+                else if (_patrolLoops) _patrolIdx = 0;
+                else { PatrolRoute = null; Wander.Tick(dt); return; }
+            }
+            else
+            {
+                _patrolBlockedSkips = 0;
+            }
+        }
         Wander.Tick(dt);
     }
 

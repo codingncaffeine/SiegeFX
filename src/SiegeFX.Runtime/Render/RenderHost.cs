@@ -6181,6 +6181,11 @@ void main()
                         foreach (var child in t.Node.Children)
                         {
                             if (!child.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                            // generator_in_object is an EVENT component (death
+                            // spawns), never a placement spawner - the mucosa
+                            // base template declares one (chance 0) before its
+                            // real [generator_auto_object_exploding] block.
+                            if (child.Header.Equals("generator_in_object", StringComparison.OrdinalIgnoreCase)) continue;
                             blockHeader = child.Header;
                             break;
                         }
@@ -6430,7 +6435,7 @@ void main()
         int assigned = 0;
         foreach (var s in _actors)
         {
-            if (s.Brain is null || s.Brain.PatrolRoute is not null || s.IsDead) continue;
+            if (s.Brain is null || s.Brain.PatrolRoute is not null || s.Brain.HasHadPatrol || s.IsDead) continue;
             uint cmdScid = 0;
             foreach (var child in s.Actor.Instance.Node.Children)
             {
@@ -6462,15 +6467,19 @@ void main()
         public string Template = "";
         public Vector3 Position;
         public float RemainingDelay;
+        // Chain depth from the original death event; caps runaway
+        // self-chaining templates (none shipped, fan-content guard).
+        public int Depth;
     }
     private readonly List<PendingObjectSpawn> _pendingObjectSpawns = new();
 
     /// <summary>Fire a template's [generator_in_object] for one event, and —
     /// for entered-world processing — any [template_triggers] rows that call
     /// an sfx script on WE_ENTERED_WORLD (the transformation flash).</summary>
-    private void ProcessGeneratorInObject(SiegeFX.Core.Assets.Template? template, Vector3 pos, string spawnEvent)
+    private void ProcessGeneratorInObject(SiegeFX.Core.Assets.Template? template, Vector3 pos, string spawnEvent, int depth = 0)
     {
         if (template is null || _templateStore is null) return;
+        if (depth > 8) { Console.WriteLine($"[gen-in-object] chain depth cap hit at {template.Name} - stopping"); return; }
         var gio = _templateStore.GetSection(template, "generator_in_object");
         if (gio is null) return;
         string? child = null, evt = null;
@@ -6494,6 +6503,7 @@ void main()
             Template = child!,
             Position = pos,
             RemainingDelay = MathF.Max(0f, delay),
+            Depth = depth + 1,
         });
         Console.WriteLine($"[gen-in-object] {template.Name} {spawnEvent} -> '{child}' in {delay:F1}s");
     }
@@ -6507,11 +6517,11 @@ void main()
             p.RemainingDelay -= dt;
             if (p.RemainingDelay > 0f) continue;
             _pendingObjectSpawns.RemoveAt(i);
-            SpawnObjectChild(p.Template, p.Position);
+            SpawnObjectChild(p.Template, p.Position, p.Depth);
         }
     }
 
-    private void SpawnObjectChild(string templateName, Vector3 pos)
+    private void SpawnObjectChild(string templateName, Vector3 pos, int depth = 0)
     {
         if (_templateStore is null || !_templateStore.TryGet(templateName, out var template) || template is null)
         {
@@ -6536,7 +6546,7 @@ void main()
         // Entered-world processing: chained generator_in_object blocks
         // (emitter_gom_die -> Gom_Super @ +20s) and template_triggers rows
         // that fire an sfx script on WE_ENTERED_WORLD (the gom_switch flash).
-        ProcessGeneratorInObject(template, pos, "WE_ENTERED_WORLD");
+        ProcessGeneratorInObject(template, pos, "WE_ENTERED_WORLD", depth);
         var triggers = _templateStore.GetSection(template, "common", "template_triggers");
         if (triggers is not null)
         {
@@ -6557,7 +6567,10 @@ void main()
                     int open = v.IndexOf('(', idx);
                     int close = open >= 0 ? v.IndexOf(')', open) : -1;
                     if (open < 0 || close < 0) continue;
-                    var script = v[(open + 1)..close].Trim().Trim('"');
+                    var inner = v[(open + 1)..close];
+                    int comma = inner.IndexOf(',');
+                    if (comma >= 0) inner = inner[..comma];
+                    var script = inner.Trim().Trim('"');
                     if (script.Length > 0)
                         OnTriggerCallSfxScript(script, null, pos);
                 }
