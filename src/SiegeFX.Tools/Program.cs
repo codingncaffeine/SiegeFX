@@ -1983,6 +1983,8 @@ static NavMesh LoadWorldNavMesh(string mapTankPath, string terrainTankPath, stri
         graphTuples.Add((rp, graph, stitches));
     }
 
+    if (entries.Count == 0)
+        throw new ArgumentException("no regions parsed from the comma-list", nameof(regionsCsv));
     var world = WorldLayout.Build(entries, Resolve, entries[0].Path);
     var combined = graphTuples.Count > 1
         ? RegionGraph.CombineWithCrossRegionDoors(graphTuples)

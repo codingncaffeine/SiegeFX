@@ -86,10 +86,26 @@ public static class NavFunnel
             {
                 var prevL = portalLeft[k - 1];
                 var prevR = portalRight[k - 1];
-                float keep = DistXZ(p, prevL) + DistXZ(q, prevR);
-                float swap = DistXZ(q, prevL) + DistXZ(p, prevR);
-                if (keep <= swap) { portalLeft[k] = p; portalRight[k] = q; }
-                else              { portalLeft[k] = q; portalRight[k] = p; }
+                if (PointEqualsXZ(prevL, prevR))
+                {
+                    // Previous portal is degenerate (the start portal, or a
+                    // pinch point) — the continuity distances tie exactly and
+                    // the tie-break would be slot-order noise. Order against
+                    // the crossing direction out of the degenerate point
+                    // instead.
+                    var ddx = midX - prevL.X;
+                    var ddz = midZ - prevL.Z;
+                    var c2 = ddx * (p.Z - prevL.Z) - ddz * (p.X - prevL.X);
+                    if (c2 > 0f) { portalLeft[k] = p; portalRight[k] = q; }
+                    else         { portalLeft[k] = q; portalRight[k] = p; }
+                }
+                else
+                {
+                    float keep = DistXZ(p, prevL) + DistXZ(q, prevR);
+                    float swap = DistXZ(q, prevL) + DistXZ(p, prevR);
+                    if (keep <= swap) { portalLeft[k] = p; portalRight[k] = q; }
+                    else              { portalLeft[k] = q; portalRight[k] = p; }
+                }
             }
         }
 

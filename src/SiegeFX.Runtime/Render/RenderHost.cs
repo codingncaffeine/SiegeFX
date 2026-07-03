@@ -1058,16 +1058,22 @@ public sealed class RenderHost : IDisposable
         // OWN reference in _camFadeHidden — the shared snode count may also be
         // held by fade groups (the trapdoor lid is in fh_r1 section 1 AND
         // camera_fade), and each writer must release exactly what it took.
-        const float CamFadeHideMargin = 0.5f;
-        const float CamFadeShowMargin = 1.0f;
+        // Enter-hidden needs the player CLEARLY below (0.5u margin); once
+        // hidden, stay hidden until the player climbs back to within 0.1u of
+        // the snode's bottom. The stable-hidden band between the two is what
+        // prevents per-tick strobing — the enter threshold must be the deeper
+        // one or the two conditions contradict inside the band (review
+        // finding on the first cut of this hysteresis).
+        const float CamFadeEnterMargin = 0.5f;
+        const float CamFadeStayMargin = 0.1f;
         for (int i = 0; i < _regionInstances.Count; i++)
         {
             var inst = _regionInstances[i];
             if (!inst.CameraFade) continue;
             bool wasHidden = _camFadeHidden.Contains(inst.SnodeGuid);
             bool occluding = wasHidden
-                ? playerPos.Y + CamFadeShowMargin < inst.WorldAabbMin.Y
-                : playerPos.Y + CamFadeHideMargin < inst.WorldAabbMin.Y;
+                ? playerPos.Y + CamFadeStayMargin < inst.WorldAabbMin.Y
+                : playerPos.Y + CamFadeEnterMargin < inst.WorldAabbMin.Y;
             if (occluding && !wasHidden)
             {
                 _camFadeHidden.Add(inst.SnodeGuid);
@@ -9172,6 +9178,14 @@ void main()
             // suppress click-to-move so the player doesn't ALSO walk past
             // the now-empty pile spot.
             if (TryClickPickupAt(hit)) return;
+            // Parity fallback: a pile at a walkable border can sit >1u in XZ
+            // from the nearest ray-mesh hit while the old plane projection
+            // landed right on it — keep those clicks lootable.
+            if (MathF.Abs(dir.Y) >= 1e-4f)
+            {
+                float tPlane = (_playerFollower.Position.Y - near.Y) / dir.Y;
+                if (tPlane >= 0f && TryClickPickupAt(near + dir * tPlane)) return;
+            }
         }
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
         _playerFollower.SetTarget(hit);
