@@ -3422,10 +3422,13 @@ void main()
                             bool added = _progression?.Journal.AddActive(quest) ?? false;
                             // SC-QUEST-UI-D — log the conversation the player
                             // just heard onto the quest for the journal's Show
-                            // Dialogue chronicle (idempotent; first take wins).
-                            if (added && _progression is not null)
+                            // Dialogue chronicle. Not gated on `added`:
+                            // RecordDialogue only writes when the log is still
+                            // empty, so a re-talk backfills a quest accepted
+                            // before capture worked (first non-empty take wins).
+                            if (_progression is not null)
                                 _progression.Journal.RecordDialogue(
-                                    quest, NarrativeLines(_dialogue.CurrentConversation));
+                                    quest, NarrativeLines(_dialogue.LastQuestConversation, quest));
                             Console.WriteLine(added
                                 ? $"[dialogue] quest activated: {quest}"
                                 : $"[dialogue] quest re-pitched (already in journal): {quest}");
@@ -6749,15 +6752,24 @@ void main()
         }
     }
 
-    // SC-QUEST-UI-D — the narrative lines of a conversation in the order the
-    // player heard them: the panel walks nodes in list order and skips the
-    // Accept/Decline quest buttons, so the chronicle mirrors that traversal.
-    private static IEnumerable<string> NarrativeLines(SiegeFX.Core.Assets.ConversationDef? conv)
+    // SC-QUEST-UI-D — the narrative lines the player read to accept a quest,
+    // in list order (the panel's own traversal). Crucially the pitch text
+    // often lives ON the quest-fork node itself (a node can carry both
+    // screen_text and quest_dialog=true), so we keep every node's text and
+    // simply STOP after the node that activates this quest — that trims the
+    // decline tail and any later quest's pitch out of this quest's log.
+    private static IEnumerable<string> NarrativeLines(
+        SiegeFX.Core.Assets.ConversationDef? conv, string questKey)
     {
         if (conv is null) yield break;
         foreach (var n in conv.Nodes)
-            if (!n.IsQuestDialog && !string.IsNullOrWhiteSpace(n.Text))
+        {
+            if (!string.IsNullOrWhiteSpace(n.Text))
                 yield return n.Text.Replace("\\n", " ");
+            if (!string.IsNullOrEmpty(n.ActivateQuest) &&
+                string.Equals(n.ActivateQuest, questKey, StringComparison.OrdinalIgnoreCase))
+                yield break;
+        }
     }
 
     private void UpdateSubtitles(float dt)

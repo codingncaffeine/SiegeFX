@@ -50,6 +50,13 @@ public sealed class DialoguePanel
     /// journal can log its spoken text onto a quest at the acceptance edge.</summary>
     public ConversationDef? CurrentConversation => _conv;
 
+    /// <summary>SC-QUEST-UI-D — the conversation that was on screen when the
+    /// player last hit Accept. Accepting closes the panel (nulling
+    /// <see cref="_conv"/>) in the same call the caller then reads, so the
+    /// live reference is already gone; this snapshot survives the Close() so
+    /// the journal can still log what the player heard.</summary>
+    public ConversationDef? LastQuestConversation { get; private set; }
+
     /// <summary>Present a fresh conversation. Resets the cursor and clears any
     /// stale press state on the buttons.</summary>
     public void Open(string speakerName, ConversationDef conv)
@@ -58,6 +65,7 @@ public sealed class DialoguePanel
         _conv = conv;
         _index = 0;
         PendingQuestActivation = null;
+        LastQuestConversation = null;
         IsOpen = conv.Nodes.Count > 0;
         CancelAllPresses();
     }
@@ -154,6 +162,7 @@ public sealed class DialoguePanel
             if (_accept.Release(px, py))
             {
                 PendingQuestActivation = node.ActivateQuest;
+                LastQuestConversation = _conv; // snapshot before Close() nulls it
                 Close();
                 return true;
             }
