@@ -14443,8 +14443,9 @@ void main()
             foreach (var f in _flameSources)
             {
                 if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
-                // Small, dense, tapering torch lick (not the smoky SpawnFire plume).
-                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.13f, (float)dt, 34f, f.Carry);
+                // Dense, tapering torch lick (not the smoky SpawnFire plume);
+                // back to the original size, keeping the flame-shape emitter.
+                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.22f, (float)dt, 30f, f.Carry);
             }
         }
         _particles?.Tick((float)dt);
