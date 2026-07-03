@@ -14439,14 +14439,16 @@ void main()
         // a region full of sconces doesn't flood the particle budget.
         if (_particles is not null && _flameSources.Count > 0)
         {
+            // Original torch flame (the size/shape before the look tuning).
+            // MaintainTorchFlame is kept in the particle system as the seed
+            // for the future opt-in enhanced-effects layer, but the shipped
+            // default is this plain plume.
+            var flameCol = new Vector4(1.00f, 0.60f, 0.22f, 1f);
             var camPos = _camera.Position;
             foreach (var f in _flameSources)
             {
                 if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
-                // Dense, tapering torch lick (not the smoky SpawnFire plume).
-                // Bigger scale + rate than a bare port so the shorter-lived
-                // licks still fill out a full flame.
-                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.34f, (float)dt, 26f, f.Carry);
+                f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, (float)dt, 18f, f.Carry);
             }
         }
         _particles?.Tick((float)dt);
