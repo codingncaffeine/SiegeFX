@@ -184,6 +184,17 @@ public sealed class TriggerRuntime
             // Phase 10-SC-1c — falling edge: row was satisfied last tick but isn't now.
             // Fire when_false actions; they're the only way DS1 author "fade in on leave".
             bool fallingEdge = state.ConditionHeld && !anySatisfied;
+            // Review fold (2026-07-03) — RISING-edge dispatch. DS1's boundary
+            // modes ("on_every_enter") fire once per entry, not continuously
+            // while the volume holds. The old every-tick re-dispatch forced
+            // downstream debounces (mood) and would strobe opposing fade rows
+            // whose volumes overlap (fh_r1's hide-cellar box vs the doorway
+            // reveal boxes). Level conditions now dispatch on the false→true
+            // transition only; leaving and re-entering re-fires, matching
+            // "on_every_enter". Caveat: a row mixing a held level condition
+            // with a receive_world_message condition would consume messages
+            // without dispatching while held — no shipped row does this.
+            bool risingEdge = !state.ConditionHeld && anySatisfied;
             state.ConditionHeld = anySatisfied;
 
             if (!anySatisfied)
@@ -199,6 +210,7 @@ public sealed class TriggerRuntime
                 }
                 continue;
             }
+            if (!risingEdge) continue;
 
             // Actions: untagged actions (group 0) fire whenever any condition
             // satisfied. Tagged actions only fire when their group matches a

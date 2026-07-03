@@ -219,9 +219,32 @@ public sealed class RenderHost : IDisposable
     // alongside _worldRegionGraphs whenever the loaded ring changes.
     private readonly System.Collections.Generic.Dictionary<uint, SiegeFX.Core.Assets.RegionGraph> _regionGraphsByGuid = new();
     private readonly System.Collections.Generic.Dictionary<uint, (uint RegionGuid, int S, int L, int O)> _snodeFadeKeys = new();
-    // Trigger rows re-dispatch while their condition holds (20 Hz), so
-    // unresolved-target warnings must print once per key, not per tick.
+    // Unresolved-target warnings print once per key, not per occurrence.
     private readonly System.Collections.Generic.HashSet<string> _fadeWarnedOnce = new();
+    // Fades addressed at regions that haven't streamed in yet; replayed by
+    // ReplayPendingRegionFades once the guid registers. Later calls for the
+    // same group supersede earlier ones at replay time (ApplyFadeGroup's
+    // idempotence + release bookkeeping make replay order-safe).
+    private readonly List<(uint RegionGuid, string Verb, string[] Args)> _pendingRegionFades = new();
+
+    private void ReplayPendingRegionFades()
+    {
+        if (_pendingRegionFades.Count == 0) return;
+        var ready = new List<(uint, string, string[])>();
+        for (int i = _pendingRegionFades.Count - 1; i >= 0; i--)
+        {
+            if (!_regionGraphsByGuid.ContainsKey(_pendingRegionFades[i].RegionGuid)) continue;
+            ready.Add(_pendingRegionFades[i]);
+            _pendingRegionFades.RemoveAt(i);
+        }
+        // Queue order preserved (collected in reverse, replayed in reverse).
+        for (int i = ready.Count - 1; i >= 0; i--)
+        {
+            var (guid, verb, fargs) = ready[i];
+            Console.WriteLine($"[{verb}] replaying deferred fade for region 0x{guid:X8}");
+            OnTriggerFadeNodes(verb, fargs);
+        }
+    }
     // Phase 17-SC-D / SC-F — sfx_script catalogue + interpreter. Loaded once
     // at LoadPlayActors; the trigger runtime hits OnTriggerCallSfxScript which
     // forwards to _sfxRuntime.Spawn so emitter.gas placements + spell casts
@@ -1121,23 +1144,29 @@ public sealed class RenderHost : IDisposable
         }
         bool hide = !(mode == "in" || mode == "fade_in");
 
-        // fade_node (singular) addresses ONE snode by guid. Also taken as a
-        // defensive fallback when a fade_nodes guid isn't a loaded region —
-        // some fan content authors snode guids in the plural verb.
-        if (verb.Equals("fade_node", StringComparison.OrdinalIgnoreCase) ||
-            !_regionGraphsByGuid.ContainsKey(guid))
+        // fade_node (singular) addresses ONE snode by guid. The plural verbs
+        // never take snode guids in shipped content (review fold: a snode
+        // fallback there could misroute a fade if a not-yet-streamed region
+        // guid collides numerically with a loaded snode guid).
+        if (verb.Equals("fade_node", StringComparison.OrdinalIgnoreCase))
         {
             if (_snodeFadeKeys.ContainsKey(guid))
-            {
                 ApplyFadeGroup((guid, -2, -2, -2), hide, new List<uint> { guid }, verb, mode);
-            }
             else if (_fadeWarnedOnce.Add($"{verb}:{guid:X8}"))
-            {
-                // Commonly a not-yet-streamed region (surface triggers hide the
-                // cellar before it loads); the row re-fires while held, so the
-                // fade lands as soon as the region streams in.
-                Console.WriteLine($"[{verb}] 0x{guid:X8} is neither a loaded region nor a known snode — deferred");
-            }
+                Console.WriteLine($"[{verb}] snode 0x{guid:X8} unknown — ignored");
+            return;
+        }
+        if (!_regionGraphsByGuid.ContainsKey(guid))
+        {
+            // A not-yet-streamed region (surface triggers hide the cellar
+            // before it loads). Dispatch is rising-edge now, so re-fire won't
+            // save us — queue the call for replay when the region's graph
+            // registers (ReplayPendingRegionFades).
+            var argsCopy = new string[args.Count];
+            for (int i = 0; i < args.Count; i++) argsCopy[i] = args[i];
+            _pendingRegionFades.Add((guid, verb, argsCopy));
+            if (_fadeWarnedOnce.Add($"{verb}:{guid:X8}"))
+                Console.WriteLine($"[{verb}] region 0x{guid:X8} not loaded — queued for replay on stream-in");
             return;
         }
 
@@ -4472,6 +4501,9 @@ void main()
             AppendRegion(kv.Key, kv.Value.Graph, kv.Value.Stitches);
         }
         _snodeRegionLookup = lookup.ToArray();
+        // SC-FADE-GROUPS — fades that targeted regions before they streamed
+        // in apply now that the guid-addressed views are rebuilt.
+        ReplayPendingRegionFades();
 
         // .raw texture index for new terrain. Already-decoded textures
         // short-circuit on _snoTextures.ContainsKey.
@@ -4583,6 +4615,18 @@ void main()
         // after this LoadPlayActors returns, so the clear is safe there too.
         _consumedInventoryScids?.Clear();
         _inventoryGasLoaded?.Clear();
+        // Review fold — generators mirror the world-inventory reset: fresh
+        // boot / new game re-arms them from region data.
+        _generators.Clear();
+        _generatorGasLoaded?.Clear();
+        _pendingRegionFades.Clear();
+        _nextGeneratorChildScid = 0xFE000001;
+        // Fade state is per-run: a new game must not inherit the previous
+        // session's cutaway (triggers respawn fresh and re-derive it).
+        _fadeGroupsApplied.Clear();
+        _fadedSnodeCounts.Clear();
+        _camFadeHidden.Clear();
+        _fadeWarnedOnce.Clear();
 
         // Pinned to RenderHost fields (not `using var`) so _playResolver can keep
         // reading from them during gameplay — loot-swap weapon loads fire hours after
@@ -6121,12 +6165,26 @@ void main()
                     Console.WriteLine($"  generator 0x{p.Scid:X8}: child template '{childTemplate}' not in store — skipped");
                     continue;
                 }
-                if (triggerRange < 0f && _templateStore.TryGet(p.TemplateName, out var genTemplate))
+                // Review fold — fill unauthored params from the generator
+                // TEMPLATE chain, not just the placement block (the base
+                // generator template authors trigger_range = 10.0; some
+                // variants author child counts there too).
+                bool numAuthored = numChildren != 1;
+                if (_templateStore.TryGet(p.TemplateName, out var genTemplate))
                 {
-                    var tr = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "trigger_range");
-                    if (tr is not null)
-                        float.TryParse(tr.Trim(), System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
+                    if (triggerRange < 0f)
+                    {
+                        var tr = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "trigger_range");
+                        if (tr is not null)
+                            float.TryParse(tr.Trim(), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
+                    }
+                    if (!numAuthored)
+                    {
+                        var nc = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "num_children_incubating");
+                        if (nc is not null && int.TryParse(nc.Trim(), out var ncv) && ncv > 0)
+                            numChildren = ncv;
+                    }
                 }
 
                 var local = p.Placement.LocalPosition;
@@ -6146,11 +6204,19 @@ void main()
                     Position = world,
                     InitialCommandScid = initialCommand,
                     SpawnPointScid = spawnPoint,
-                    // Basic generators (and anything with no usable trigger
-                    // range) incubate at load — their children simply exist,
-                    // like the DS1 krug scouts patrolling the farm road.
-                    Activated = isBasic || triggerRange <= 0f,
+                    // Basic generators incubate at load — their children
+                    // simply exist, like the krug scouts patrolling the farm
+                    // road. Advanced generators with no resolvable trigger
+                    // range are message-activated in DS1 (we_req_activate) —
+                    // stay armed-but-inert rather than dumping the ambush in
+                    // the open at boot; message activation is a follow-up.
+                    Activated = isBasic,
                 };
+                if (!isBasic && triggerRange <= 0f)
+                {
+                    gen.TriggerRange = 0f;
+                    Console.WriteLine($"  generator 0x{p.Scid:X8} ({p.TemplateName}): no trigger_range — message-activated, parked");
+                }
                 _generators.Add(gen);
                 loaded++;
                 if (gen.Activated) incubated++;
@@ -12201,7 +12267,12 @@ void main()
     /// per-template "is_boss" flag we don't extract yet.</summary>
     private void TickCombatMusic(float dt)
     {
-        if (_player is null || _activeMood is null) return;
+        // Review fold: only the music decisions need a mood — the per-actor
+        // edge consumption below (enemy_spotted, pack alerts, cast/ranged
+        // visuals, hit voices) must run even in mood-less regions and during
+        // the post-load window, or one-shot edges accumulate and fire late
+        // with stale target positions.
+        if (_player is null) return;
         bool nowInCombat = false;
         // SC-ENEMY-AUDIO-AUDIT runtime wire — track per-actor aggro state
         // each tick so the enemy_spotted cue fires only on the entering
@@ -12294,6 +12365,7 @@ void main()
                             _player.CurrentTransform.Translation,
                             playerDmg, _player.Actor.Stats.MaxLife);
         }
+        if (_activeMood is null) return;
         if (nowInCombat)
         {
             _combatExitTimer = 0f;
@@ -15264,6 +15336,16 @@ void main()
         // LoadWorldInventory for every currently-loaded region — otherwise
         // every loose scroll the player saw pre-save vanishes permanently.
         _inventoryGasLoaded?.Clear();
+        // Review fold — same reset for generators: despawn synthetic children
+        // (scids 0xFE000000+, not in any save snapshot) and re-arm from
+        // region data so a pre-ambush load gets the ambush back instead of
+        // duplicate mobs + a consumed generator. Per-generator Activated /
+        // PendingChildren persistence is a follow-up (pickup memory).
+        _actors.RemoveAll(a => a.Actor.Instance.Scid >= 0xFE000000);
+        _generators.Clear();
+        _generatorGasLoaded?.Clear();
+        _pendingRegionFades.Clear();
+        _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {
             var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);

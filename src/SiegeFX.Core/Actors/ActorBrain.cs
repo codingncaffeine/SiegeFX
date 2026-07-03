@@ -168,6 +168,13 @@ public sealed class ActorBrain
         ActorCombatState? targetCombat,
         ActorStats? targetStats)
     {
+        // Review fold — NPC mana trickle so casters don't permanently run
+        // dry (DS1 regenerates mana; shipped casters hold ~80-90 max). An
+        // apprentice-tier INT recovers a zap's cost in a few seconds of
+        // downtime; melee/ranged brains never spend mana so they skip it.
+        if (Mode == AttackMode.Magic)
+            _selfActor?.Combat.RestoreMana(dt * MathF.Max(0.5f, _selfStats.Intelligence * 0.06f));
+
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
 
