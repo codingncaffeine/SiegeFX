@@ -6741,7 +6741,7 @@ void main()
     // camera faces — a real compass read. North = world -Z (the yaw-zero
     // forward of our camera convention).
     // ────────────────────────────────────────────────────────────────────
-    private GlTexture? _compassCover, _compassN, _compassE, _compassS, _compassW;
+    private GlTexture? _compassCover, _compassFace, _compassN, _compassE, _compassS, _compassW;
     private bool _compassLoadTried;
 
     private void EnsureCompassTextures()
@@ -6749,6 +6749,10 @@ void main()
         if (_compassLoadTried) return;
         _compassLoadTried = true;
         _compassCover = LoadTexsetTexture("b_gui_ig_mnu_compass_cover");
+        // The dial FACE is the full-size "spinner" layer; the cover is the
+        // ring/glass with a transparent center - drawing it alone reads as
+        // a see-through compass.
+        _compassFace = LoadTexsetTexture("b_gui_ig_mnu_compass_spinner");
         _compassN = LoadTexsetTexture("b_gui_ig_mnu_compass_n");
         _compassE = LoadTexsetTexture("b_gui_ig_mnu_compass_e");
         _compassS = LoadTexsetTexture("b_gui_ig_mnu_compass_s");
@@ -6767,6 +6771,9 @@ void main()
         int cx = viewportW - size / 2 - (int)(6 * scale);
         int cy = size / 2 + (int)(6 * scale);
         var tint = new Vector4(1f, 1f, 1f, 1f);
+        if (_compassFace is not null)
+            _iconRenderer.DrawIcon(viewportW, viewportH, _compassFace,
+                cx - size / 2, cy - size / 2, size, size, tint);
         _iconRenderer.DrawIcon(viewportW, viewportH, _compassCover,
             cx - size / 2, cy - size / 2, size, size, tint);
         float camYaw = _camera.Yaw;
