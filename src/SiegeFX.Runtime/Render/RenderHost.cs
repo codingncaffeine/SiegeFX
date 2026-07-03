@@ -5288,6 +5288,7 @@ void main()
         }
         LoadStaticProps(allLoaded);
         LoadWorldInventory(allLoaded);
+        LoadGenerators(allLoaded);
 
         // Phase 20a (follow-up) — print every talkable NPC's name + world
         // position so the visual walkthrough doesn't require hunting the
@@ -5488,6 +5489,7 @@ void main()
         // _staticProps untouched (world coords are pinned).
         LoadStaticProps(newlyLoaded);
         LoadWorldInventory(newlyLoaded);
+        LoadGenerators(newlyLoaded);
     }
 
     /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
@@ -5980,6 +5982,168 @@ void main()
     }
 
     private HashSet<string>? _inventoryGasLoaded;
+
+    /// <summary>SC-MOB-SPAWNER — one live generator placement. DS1 drives these
+    /// via generator_basic / generator_advanced_a2 skrit components; we mirror
+    /// the data model: basic generators incubate their children at load (the
+    /// krug_scout patrol pair by the farmhouse), advanced ones hold until a
+    /// party member enters trigger_range (bush ambushes), then spawn
+    /// num_children_incubating children spawn_period apart.</summary>
+    private sealed class GeneratorState
+    {
+        public uint Scid;
+        public string Template = "";
+        public string ChildTemplate = "";
+        public int PendingChildren = 1;
+        public float SpawnPeriod = 2f;
+        public float TriggerRange = 10f;
+        public bool Activated;
+        public float NextSpawnIn;
+        public Vector3 Position;
+        // Retained for SC-MOB-SCRIPTED-COMMANDS (patrol / run-in commands).
+        public uint InitialCommandScid;
+        public uint SpawnPointScid;
+    }
+    private readonly List<GeneratorState> _generators = new();
+    private HashSet<string>? _generatorGasLoaded;
+    private uint _nextGeneratorChildScid = 0xFE000001;
+
+    private void LoadGenerators(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _templateStore is null) return;
+        _generatorGasLoaded ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var mapReader = new TankReader(_playMapTank);
+        int loaded = 0, incubated = 0;
+
+        foreach (var rp in regionPaths)
+        {
+            if (!_generatorGasLoaded.Add(rp)) continue;
+            var (placements, diags) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(
+                mapReader, rp, "generator.gas");
+            foreach (var d in diags) Console.WriteLine("  " + d);
+
+            foreach (var p in placements)
+            {
+                // The generator params live in a [generator_*] child block on
+                // the PLACEMENT node (child_template_name, spawnpoint,
+                // initial_command, counts); template-chain values fill gaps
+                // (trigger_range = 10.0 on the base generator template).
+                SiegeFX.Core.Assets.GasNode? genBlock = null;
+                bool isBasic = false;
+                foreach (var child in p.Node.Children)
+                {
+                    if (!child.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) continue;
+                    genBlock = child;
+                    isBasic = child.Header.Contains("basic", StringComparison.OrdinalIgnoreCase);
+                    break;
+                }
+                if (genBlock is null) continue;
+
+                string? childTemplate = null;
+                int numChildren = 1;
+                float spawnPeriod = isBasic ? 1f : 2f;
+                float triggerRange = -1f;
+                uint initialCommand = 0, spawnPoint = 0;
+                foreach (var a in genBlock.Attributes)
+                {
+                    if (a.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
+                        childTemplate = a.Value.Trim().Trim('"');
+                    else if (a.Name.Equals("num_children_incubating", StringComparison.OrdinalIgnoreCase))
+                        int.TryParse(a.Value.Trim(), out numChildren);
+                    else if (a.Name.Equals("spawn_period", StringComparison.OrdinalIgnoreCase))
+                        float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out spawnPeriod);
+                    else if (a.Name.Equals("trigger_range", StringComparison.OrdinalIgnoreCase))
+                        float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
+                    else if (a.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase))
+                        TryParseSnodeGuid(a.Value, out initialCommand);
+                    else if (a.Name.Equals("spawnpoint", StringComparison.OrdinalIgnoreCase))
+                        TryParseSnodeGuid(a.Value, out spawnPoint);
+                }
+                if (string.IsNullOrEmpty(childTemplate)) continue;
+                if (!_templateStore.TryGet(childTemplate, out _))
+                {
+                    Console.WriteLine($"  generator 0x{p.Scid:X8}: child template '{childTemplate}' not in store — skipped");
+                    continue;
+                }
+                if (triggerRange < 0f && _templateStore.TryGet(p.TemplateName, out var genTemplate))
+                {
+                    var tr = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "trigger_range");
+                    if (tr is not null)
+                        float.TryParse(tr.Trim(), System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
+                }
+
+                var local = p.Placement.LocalPosition;
+                var world = local;
+                if (_regionLayout is not null &&
+                    _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                    world = Vector3.Transform(local, nodeWorld);
+
+                var gen = new GeneratorState
+                {
+                    Scid = p.Scid,
+                    Template = p.TemplateName,
+                    ChildTemplate = childTemplate!,
+                    PendingChildren = Math.Max(1, numChildren),
+                    SpawnPeriod = MathF.Max(0.25f, spawnPeriod),
+                    TriggerRange = triggerRange,
+                    Position = world,
+                    InitialCommandScid = initialCommand,
+                    SpawnPointScid = spawnPoint,
+                    // Basic generators (and anything with no usable trigger
+                    // range) incubate at load — their children simply exist,
+                    // like the DS1 krug scouts patrolling the farm road.
+                    Activated = isBasic || triggerRange <= 0f,
+                };
+                _generators.Add(gen);
+                loaded++;
+                if (gen.Activated) incubated++;
+            }
+        }
+        if (loaded > 0)
+            Console.WriteLine($"  generators: {loaded} placement(s) live ({incubated} incubate at load, {loaded - incubated} proximity-armed)");
+    }
+
+    private void UpdateGenerators(float dt)
+    {
+        if (_generators.Count == 0 || _playerFollower is null) return;
+        var playerPos = _playerFollower.Position;
+        for (int i = 0; i < _generators.Count; i++)
+        {
+            var g = _generators[i];
+            if (g.PendingChildren <= 0) continue;
+            if (!g.Activated)
+            {
+                float dx = playerPos.X - g.Position.X, dz = playerPos.Z - g.Position.Z;
+                if (dx * dx + dz * dz > g.TriggerRange * g.TriggerRange) continue;
+                g.Activated = true;
+                g.NextSpawnIn = 0f;
+                Console.WriteLine($"[generator] 0x{g.Scid:X8} ({g.Template}) ambush triggered — spawning {g.PendingChildren}x {g.ChildTemplate}");
+            }
+            g.NextSpawnIn -= dt;
+            if (g.NextSpawnIn > 0f) continue;
+            g.NextSpawnIn = g.SpawnPeriod;
+            g.PendingChildren--;
+            SpawnGeneratorChild(g);
+        }
+    }
+
+    private void SpawnGeneratorChild(GeneratorState g)
+    {
+        if (_actorSpawner is null) return;
+        var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+            g.ChildTemplate, _nextGeneratorChildScid++, g.Position, Quaternion.Identity);
+        var spawned = _actorSpawner.Spawn(new[] { inst });
+        if (spawned.Count == 0)
+        {
+            Console.WriteLine($"[generator] 0x{g.Scid:X8}: spawn of '{g.ChildTemplate}' produced no actor");
+            return;
+        }
+        var (onMesh, offMesh) = AttachActorsToScene(spawned, _navMesh);
+        Console.WriteLine($"[generator] 0x{g.Scid:X8} spawned {g.ChildTemplate} ({onMesh} on-mesh / {offMesh} pinned)");
+    }
 
     /// <summary>SC-WORLD-INVENTORY-CONSUMED — SCIDs of world-inventory pickups
     /// the player has already taken. Persisted in SaveFile so the fireshot
@@ -6918,6 +7082,10 @@ void main()
                 _actorBus.Deliver();
                 if (_triggerRuntime is not null && _triggerCtx is not null)
                     _triggerRuntime.Tick(stepSec, _triggerCtx);
+                // SC-MOB-SPAWNER — generator proximity checks + staggered
+                // child spawning ride the same fixed 20 Hz cadence as
+                // triggers and brains.
+                UpdateGenerators((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -14999,7 +15167,10 @@ void main()
             _consumedInventoryScids?.Clear();
         }
         if (_worldRegionGraphs is not null && _worldRegionGraphs.Count > 0)
+        {
             LoadWorldInventory(_worldRegionGraphs.Select(t => t.Path));
+            LoadGenerators(_worldRegionGraphs.Select(t => t.Path));
+        }
 
         if (save.Player is not null && _player is not null)
         {

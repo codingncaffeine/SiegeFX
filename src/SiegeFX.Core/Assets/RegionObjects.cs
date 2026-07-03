@@ -53,8 +53,8 @@ public sealed class ActorInstance
 public static class RegionObjects
 {
     /// <summary>Filenames (under <c>objects/</c>) that carry visible static
-    /// props alongside the actor list. <c>command.gas</c>, <c>special.gas</c>,
-    /// and <c>generator.gas</c> are pure logic and are intentionally excluded.</summary>
+    /// props alongside the actor list. <c>command.gas</c> and
+    /// <c>special.gas</c> are pure logic and are intentionally excluded.</summary>
     public static readonly IReadOnlyList<string> StaticPropFiles = new[]
     {
         "non_interactive.gas",
@@ -69,6 +69,12 @@ public static class RegionObjects
         // no "pickable vs decorative" partition is needed inside it.
         "interactive.gas",
         "emitter.gas",
+        // SC-MOB-SPAWNER — generator placements carry a real [aspect] model
+        // on many templates (generator_bush_01 IS the ambush bush, with a
+        // shake chore). The spawn logic reads the same file separately
+        // (RenderHost.LoadGenerators); this entry only makes them visible.
+        // Gizmo-only generators have no aspect model and skip silently.
+        "generator.gas",
     };
 
     /// <summary>SC-WORLD-INVENTORY-PLACED — region's world-placed pickable
