@@ -76,6 +76,20 @@ public sealed class ActorBrain
         _selfActor = selfActor;
         _swingRng = new Random(rngSeed);
         MeleeRange = selfStats.AttackRange > 0.1f ? selfStats.AttackRange : 2f;
+        // SC-MOB-RANGES — authored perception wins over the tuned defaults.
+        // base_krug ships sight_range=14 (the old hardcoded 8u bubble made
+        // mobs oblivious until the player was almost on top of them).
+        // Disengage keeps the same sticky-chase ratio the defaults had.
+        if (selfStats.SightRange > 0.1f)
+        {
+            AggroRadius = selfStats.SightRange;
+            DisengageRadius = MathF.Max(selfStats.SightRange * 1.75f, selfStats.SightRange + 4f);
+        }
+        // [attack] reload_delay is the authored swing cadence (krug_throw = 1.0s).
+        // Values under half a second are "no extra delay" markers on melee
+        // templates whose cadence DS1 derives from the animation — keep the
+        // 1.5s animation-matched default there.
+        if (selfStats.ReloadDelay >= 0.5f) SwingPeriod = selfStats.ReloadDelay;
         // First swing fires immediately on entering Attack (no warmup), then the
         // cooldown gates subsequent ones. Initial value is irrelevant since
         // Attack-state entry resets it; explicit zero documents the intent.

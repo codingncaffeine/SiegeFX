@@ -43,6 +43,28 @@ public sealed record ActorStats(
     /// <c>DamageMax &gt; 0</c> which excludes PCs.</summary>
     public bool CanTakeDamage => MaxLife > 0f;
 
+    // SC-MOB-RANGES — authored [mind] perception/engagement distances and the
+    // [attack] swing cadence. 0 = unauthored (brain falls back to its tuned
+    // defaults). base_krug ships 14u sight/engage + 8u com_range; the old
+    // hardcoded 8u aggro under-read DS1 by 43%.
+    public float SightRange { get; init; }
+    public float MeleeEngageRange { get; init; }
+    public float RangedEngageRange { get; init; }
+    public float ComRange { get; init; }
+    public float ReloadDelay { get; init; }
+    public bool  AlertFriends { get; init; }
+
+    // SC-MOB-CASTER / SC-MOB-RANGED — attack-mode identity, parameter-driven
+    // exactly like DS1's single shared brain skrit: WP_MELEE / WP_RANGED /
+    // WP_MAGIC preference plus the active-slot template refs.
+    public string? WeaponPreference { get; init; }
+    public bool  AutoSwitchToMagic { get; init; }
+    public bool  AutoSwitchToRanged { get; init; }
+    public bool  IczSwitchToMelee { get; init; }
+    public string? ActiveLocation { get; init; }
+    public string? PrimarySpell { get; init; }
+    public string? SecondarySpell { get; init; }
+
     public static ActorStats FromTemplate(TemplateStore store, Template template)
     {
         // Skill block uses "value, level" pairs (e.g. "strength = 16, 0;") — strip
@@ -81,7 +103,32 @@ public sealed record ActorStats(
         int   xp      = ParseInt  (store.GetAttribute(template, "aspect", "experience_value")) ?? 0;
 
         return new ActorStats(maxLife, maxMana, dmgMin, dmgMax, defense, range, walk, xp,
-                              strength, dexterity, intelligence);
+                              strength, dexterity, intelligence)
+        {
+            SightRange        = ParseFloat(store.GetAttribute(template, "mind", "sight_range")) ?? 0f,
+            MeleeEngageRange  = ParseFloat(store.GetAttribute(template, "mind", "melee_engage_range")) ?? 0f,
+            RangedEngageRange = ParseFloat(store.GetAttribute(template, "mind", "ranged_engage_range")) ?? 0f,
+            ComRange          = ParseFloat(store.GetAttribute(template, "mind", "com_range")) ?? 0f,
+            ReloadDelay       = ParseFloat(store.GetAttribute(template, "attack", "reload_delay")) ?? 0f,
+            AlertFriends      = ParseBool(store.GetAttribute(template, "mind", "on_enemy_spotted_alert_friends")),
+            WeaponPreference  = Clean(store.GetAttribute(template, "mind", "actor_weapon_preference")),
+            AutoSwitchToMagic = ParseBool(store.GetAttribute(template, "mind", "actor_auto_switches_to_magic")),
+            AutoSwitchToRanged = ParseBool(store.GetAttribute(template, "mind", "actor_auto_switches_to_ranged")),
+            IczSwitchToMelee  = ParseBool(store.GetAttribute(template, "mind", "on_enemy_entered_icz_switch_to_melee")),
+            ActiveLocation    = Clean(store.GetAttribute(template, "inventory", "selected_active_location")),
+            PrimarySpell      = Clean(store.GetAttribute(template, "inventory", "other", "il_active_primary_spell")),
+            SecondarySpell    = Clean(store.GetAttribute(template, "inventory", "other", "il_active_secondary_spell")),
+        };
+    }
+
+    static bool ParseBool(string? s) =>
+        s is not null && s.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+
+    static string? Clean(string? s)
+    {
+        if (s is null) return null;
+        var t = s.Trim().Trim('"');
+        return t.Length == 0 ? null : t;
     }
 
     static float? ParseFloat(string? s) =>
