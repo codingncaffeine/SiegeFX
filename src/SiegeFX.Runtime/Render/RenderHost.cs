@@ -208,14 +208,7 @@ public sealed class RenderHost : IDisposable
     // trigger group.) Each applied group records exactly which
     // snodes it hid so the paired "in" call releases the same set
     // even if graphs stream in/out between the two.
-    // SC-FADE-GROUPS — value carries the matched snode list AND how many
-    // distinct appliers (overlapping fade boxes) currently hold this group
-    // hidden. DS1 places adjacent fade boxes that fade the SAME upper
-    // sections (fh_r1's basement is covered by 0x01c00231 + 0x01c0057f, both
-    // fading 0xACA70000 sec1-5): a section must stay hidden until the party
-    // leaves the LAST box covering it, or the upper floor re-appears over the
-    // basement the moment you cross from one box into the other.
-    private readonly System.Collections.Generic.Dictionary<(uint Region, int S, int L, int O), (List<uint> Matched, int Appliers)> _fadeGroupsApplied = new();
+    private readonly System.Collections.Generic.Dictionary<(uint Region, int S, int L, int O), List<uint>> _fadeGroupsApplied = new();
     // Snode-level ref count feeding the render + nav gates. Writers:
     // fade-group applications (above), single-snode fade_node calls,
     // and camera_fade auto-hides. A snode hidden by two overlapping
@@ -1239,26 +1232,14 @@ public sealed class RenderHost : IDisposable
     {
         if (hide)
         {
-            if (_fadeGroupsApplied.TryGetValue(key, out var existing))
-            {
-                // Overlapping box already hid this group — add a second
-                // applier so each snode's ref count reflects BOTH boxes; the
-                // section then survives exiting either one alone.
-                foreach (var snode in existing.Matched)
-                {
-                    _fadedSnodeCounts.TryGetValue(snode, out int c);
-                    _fadedSnodeCounts[snode] = c + 1; // already >=1, no nav flip
-                }
-                _fadeGroupsApplied[key] = (existing.Matched, existing.Appliers + 1);
-                return;
-            }
+            if (_fadeGroupsApplied.ContainsKey(key)) return; // already applied
             if (matched is null || matched.Count == 0)
             {
                 if (_fadeWarnedOnce.Add($"{verb}:{key.Region:X8}:{key.S}:{key.L}:{key.O}"))
                     Console.WriteLine($"[{verb}] group 0x{key.Region:X8} ({key.S},{key.L},{key.O}) matched 0 snodes");
                 return;
             }
-            _fadeGroupsApplied[key] = (matched, 1);
+            _fadeGroupsApplied[key] = matched;
             // Batch the nav flips: collect the snodes whose ref count crosses
             // 0->1 and hide them in one mesh pass instead of per-snode scans.
             var newlyHidden = new HashSet<uint>();
@@ -1273,11 +1254,10 @@ public sealed class RenderHost : IDisposable
         }
         else
         {
-            if (!_fadeGroupsApplied.TryGetValue(key, out var entry)) return;
-            // Drop one applier. The snodes only truly reveal when the last box
-            // covering them releases (ref count reaches 0).
+            if (!_fadeGroupsApplied.TryGetValue(key, out var applied)) return;
+            _fadeGroupsApplied.Remove(key);
             var newlyShown = new HashSet<uint>();
-            foreach (var snode in entry.Matched)
+            foreach (var snode in applied)
             {
                 if (!_fadedSnodeCounts.TryGetValue(snode, out int c)) continue;
                 if (c <= 1)
@@ -1290,10 +1270,8 @@ public sealed class RenderHost : IDisposable
                     _fadedSnodeCounts[snode] = c - 1;
                 }
             }
-            if (entry.Appliers <= 1) _fadeGroupsApplied.Remove(key);
-            else _fadeGroupsApplied[key] = (entry.Matched, entry.Appliers - 1);
-            if (newlyShown.Count > 0) _navMesh?.SetFadeHiddenForSnodes(newlyShown, false);
-            Console.WriteLine($"[{verb}] in: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {newlyShown.Count} snode(s) restored (appliers left: {System.Math.Max(0, entry.Appliers - 1)})");
+            _navMesh?.SetFadeHiddenForSnodes(newlyShown, false);
+            Console.WriteLine($"[{verb}] in: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {applied.Count} snode(s) restored");
         }
     }
 
