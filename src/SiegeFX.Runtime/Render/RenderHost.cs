@@ -6280,6 +6280,43 @@ void main()
         }
     }
 
+    /// <summary>SC-QUEST-UI-B — compact HUD quest tracker: the most recently
+    /// activated quest's screen name + objective text + progress fraction,
+    /// pinned to the left edge. Crediting used to be invisible without the
+    /// console or opening the journal; this is the always-on read. Prefers
+    /// catalog-defined entries (they carry objective text and goals).</summary>
+    private void DrawQuestTracker(int viewportW, int viewportH)
+    {
+        if (_progression is null || _textRenderer is null) return;
+        SiegeFX.Core.Actors.QuestEntry? pick = null;
+        foreach (var e in _progression.Journal.Active)
+            if (e.Definition is not null || pick is null) pick = e;
+        if (pick is null) return;
+
+        var d = pick.Definition;
+        string title = d?.ScreenName is { Length: > 0 } sn ? sn : pick.Key;
+        string line2 = "";
+        if (d is not null)
+        {
+            line2 = d.ObjectiveText;
+            if (d.KillCountGoal > 0)
+                line2 = $"{d.ObjectiveText} ({pick.KillProgress}/{d.KillCountGoal})";
+            else if (d.TalkCountGoal > 1)
+                line2 = $"{d.ObjectiveText} ({pick.TalkProgress}/{d.TalkCountGoal})";
+            else if (d.PickupCountGoal > 1)
+                line2 = $"{d.ObjectiveText} ({pick.PickupProgress}/{d.PickupCountGoal})";
+        }
+        if (line2.Length > 72) line2 = line2[..69] + "...";
+
+        float x = 12f;
+        float y = viewportH * 0.30f;
+        var gold = new Vector4(1.00f, 0.85f, 0.40f, 0.95f);
+        var ink  = new Vector4(0.92f, 0.92f, 0.88f, 0.85f);
+        _textRenderer.DrawString(viewportW, viewportH, title, x, y, gold);
+        if (line2.Length > 0)
+            _textRenderer.DrawString(viewportW, viewportH, line2, x, y + 16f, ink);
+    }
+
     /// <summary>SC-MOB-COMMANDS — cmd_ai_c_* placements from command.gas,
     /// keyed by SCID. Patrol chains link via [cmd_ai_dojob] next_scid; an
     /// actor's placement authors [mind] initial_command pointing at its
@@ -14631,6 +14668,9 @@ void main()
             // HP/MP bars above every visible combatant's head. Needs the
             // camera's view-projection matrix to project worldPos to NDC.
             DrawOverheadStatusBars(size.X, size.Y, vp);
+            // SC-QUEST-UI-B — always-visible tracker for the current
+            // objective; the full journal stays on 'L'.
+            DrawQuestTracker(size.X, size.Y);
 
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
