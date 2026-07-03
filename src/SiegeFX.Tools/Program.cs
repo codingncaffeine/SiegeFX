@@ -191,6 +191,7 @@ static int DispatchAsp(string[] a)
         "subsets"     => CmdAspSubsets(a[1..]),
         "trace-pose"  => CmdAspTracePose(a[1..]),
         "uv-by-bone"  => CmdAspSubsetUvBoneGroups(a[1..]),
+        "bonesweep"   => CmdAspBoneSweep(a[1..]),
         _             => UnknownCommand("asp " + a[0]),
     };
 }
@@ -3146,6 +3147,66 @@ static int CmdAspSkeleton(string[] a)
         foreach (var o in orphans)
             Console.WriteLine($"  [{o,3}] {mesh.BoneNames[o]}  parent={mesh.BoneParents[o]}");
     }
+    return 0;
+}
+
+// TEMP-VERIFY: tank-wide sweep of every ASP. For each, report bones, the
+// primary-max skin bone (highest-weight bone per corner, matching the proposed
+// fix's MaxSkinBone), the any-influence-max bone (matching asp-info), and
+// bone-0's bind rotation as an axis-angle. The regression set for the proposed
+// fix is exactly: bones>=2 AND primaryMax==0 (fix would newly apply bindRoot).
+// Flag any such file whose bone-0 bind rotation is materially non-identity.
+static int CmdAspBoneSweep(string[] a)
+{
+    if (a.Length != 1) { Console.Error.WriteLine("usage: siegefx asp bonesweep <tank>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    int total = 0, multiBone = 0, riskPrimary0 = 0, riskPrimary0NonId = 0;
+    foreach (var path in reader.ListFiles())
+    {
+        if (!path.EndsWith(".asp", StringComparison.OrdinalIgnoreCase)) continue;
+        total++;
+        AspMesh mesh;
+        try { mesh = AspMesh.Load(reader.ExtractToMemory(path)); }
+        catch { continue; }
+        if (mesh.BoneCount < 2) continue;
+        multiBone++;
+        // primary (highest-weight) max bone per corner, over all corners
+        int primaryMax = 0, anyMax = 0;
+        if (mesh.HasSkin)
+        {
+            for (int c = 0; c < mesh.SkinWeights.Length; c++)
+            {
+                var w = mesh.SkinWeights[c]; var b = mesh.SkinBones[c];
+                int primary = 0; float primaryW = -1f;
+                if (w.X > primaryW) { primary = (int)( b        & 0xFF); primaryW = w.X; }
+                if (w.Y > primaryW) { primary = (int)((b >>  8) & 0xFF); primaryW = w.Y; }
+                if (w.Z > primaryW) { primary = (int)((b >> 16) & 0xFF); primaryW = w.Z; }
+                if (w.W > primaryW) { primary = (int)((b >> 24) & 0xFF); primaryW = w.W; }
+                primaryMax = Math.Max(primaryMax, primary);
+                if (w.X > 0) anyMax = Math.Max(anyMax, (int)( b        & 0xFF));
+                if (w.Y > 0) anyMax = Math.Max(anyMax, (int)((b >>  8) & 0xFF));
+                if (w.Z > 0) anyMax = Math.Max(anyMax, (int)((b >> 16) & 0xFF));
+                if (w.W > 0) anyMax = Math.Max(anyMax, (int)((b >> 24) & 0xFF));
+            }
+        }
+        // bone-0 bind rotation as angle (deg)
+        float angDeg = 0f;
+        if (mesh.BindPose.Length > 0)
+        {
+            var q = mesh.BindPose[0].Rotation;
+            var wc = Math.Clamp(MathF.Abs(q.W), 0f, 1f);
+            angDeg = 2f * MathF.Acos(wc) * 180f / MathF.PI;
+        }
+        if (primaryMax == 0)
+        {
+            riskPrimary0++;
+            bool nonId = angDeg > 1.0f;
+            if (nonId) riskPrimary0NonId++;
+            Console.WriteLine($"RISK bones={mesh.BoneCount} primMax={primaryMax} anyMax={anyMax} bind0ang={angDeg,6:F1}deg v{mesh.AspVersionMajor}.{mesh.AspVersionMinor} skin={mesh.HasSkin} {path}");
+        }
+    }
+    Console.WriteLine($"--- swept {total} asp; multiBone(>=2)={multiBone}; primaryMax==0 (fix-newly-applies)={riskPrimary0}; of those non-identity-bind0={riskPrimary0NonId}");
     return 0;
 }
 

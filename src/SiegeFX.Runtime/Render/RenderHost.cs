@@ -7909,16 +7909,46 @@ void main()
 
     /// <summary>Phase 21c — bone-0's world bind pose for a static prop, used to
     /// rotate Z-up authoring space into the engine's Y-up convention. Returns
-    /// identity for unrigged meshes (no BindPose entries) AND for multi-bone
-    /// meshes (V2.5+ skinned props that ship vertices in world-bind space).
-    /// Detection by bone count is reliable: every shipped V2.3/V2.4 static prop
-    /// is rigid (1 bone), every shipped V2.5 animated prop is multi-bone.</summary>
+    /// identity for unrigged meshes (no BindPose entries) AND for genuinely
+    /// multi-bone skinned meshes (V2.5+ props whose geometry ships in
+    /// world-bind space across several bones).
+    ///
+    /// SC-PROP-ATTACH-BONE — the gate was originally "exactly 1 bone", but many
+    /// rigid props ship EXTRA attach bones (a wall torch carries an AP_light
+    /// socket for its flame) while all their geometry still binds bone 0. Those
+    /// tripped the old count gate, got no root correction, and rendered in raw
+    /// Z-up — the torch cantilevering off the wall. The correct test is whether
+    /// any GEOMETRY binds past bone 0: attach bones carry no verts, so a rigid
+    /// prop reads max-geometry-bone 0 regardless of how many sockets it has.</summary>
     private static Matrix4x4 ComputeRootBindPose(AspMesh asp)
     {
-        if (asp.BindPose.Length != 1) return Matrix4x4.Identity;
+        if (asp.BindPose.Length == 0) return Matrix4x4.Identity;
+        if (MaxGeometryBone(asp) != 0) return Matrix4x4.Identity;
         var bp = asp.BindPose[0];
         return Matrix4x4.CreateFromQuaternion(bp.Rotation) *
                Matrix4x4.CreateTranslation(bp.Translation);
+    }
+
+    /// <summary>Highest bone index that any vertex is actually weighted to
+    /// (its highest-weight/primary bone). Unrigged geometry is implicitly on
+    /// the root, so returns 0. Attach bones (AP_light, AP_*) carry no geometry
+    /// and never raise this, so a rigid prop with sockets still reads 0.</summary>
+    private static int MaxGeometryBone(AspMesh asp)
+    {
+        if (!asp.HasSkin) return 0;
+        int max = 0;
+        for (int c = 0; c < asp.SkinWeights.Length; c++)
+        {
+            var w = asp.SkinWeights[c];
+            uint b = asp.SkinBones[c];
+            int primary = 0; float pw = -1f;
+            if (w.X > pw) { primary = (int)( b        & 0xFF); pw = w.X; }
+            if (w.Y > pw) { primary = (int)((b >>  8) & 0xFF); pw = w.Y; }
+            if (w.Z > pw) { primary = (int)((b >> 16) & 0xFF); pw = w.Z; }
+            if (w.W > pw) { primary = (int)((b >> 24) & 0xFF); pw = w.W; }
+            if (primary > max) max = primary;
+        }
+        return max;
     }
 
     /// <summary>Phase 21a-3 — rebuild the nav mesh against the current unified
