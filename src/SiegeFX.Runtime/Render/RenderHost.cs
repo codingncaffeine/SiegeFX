@@ -137,6 +137,14 @@ public sealed class RenderHost : IDisposable
     // unload.
     private readonly List<StaticPropInstance> _doorProps = new();
 
+    // SC-TORCH-FLAME — one continuous fire plume per AP_light socket on placed
+    // light props (torch_activate, candlestands). Each socket's world position
+    // is captured at prop load; MaintainFire is pumped at it every frame so the
+    // torches actually burn. Carry is the per-source fractional spawn budget.
+    // Cleared alongside _staticProps on region teardown.
+    private readonly List<FlameSource> _flameSources = new();
+    private sealed class FlameSource { public Vector3 Pos; public float Carry; }
+
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
     // terrain RegionInstance AABB centers in that region). Computed once
     // after the world layout settles; used by the render gates to decide
@@ -6198,6 +6206,26 @@ void main()
                     };
                     _staticProps.Add(inst);
                     if (isDoor) _doorProps.Add(inst);
+
+                    // SC-TORCH-FLAME — light props socket their flame at each
+                    // AP_light attach bone. Capture each socket's world
+                    // position (composed like the mesh but rooted at the
+                    // socket's bind pose instead of bone 0) so we can burn a
+                    // continuous plume there. Only rigid-root props reach here
+                    // with a meaningful bind chain (the same set the Z-up
+                    // correction applies to), so the socket transform stays
+                    // consistent with the mesh.
+                    if (IsRigidRootProp(asp))
+                    {
+                        for (int bi = 1; bi < asp.BoneNames.Count; bi++)
+                        {
+                            if (!asp.BoneNames[bi].StartsWith("ap_light", StringComparison.OrdinalIgnoreCase))
+                                continue;
+                            var socket = ComposeSocketWorld(asp, bi, p.Placement);
+                            if (scale != 1f) socket = Matrix4x4.CreateScale(scale) * socket;
+                            _flameSources.Add(new FlameSource { Pos = socket.Translation });
+                        }
+                    }
                     spawned++;
                 }
             }
@@ -7900,6 +7928,23 @@ void main()
     {
         var bindRoot = ComputeRootBindPose(asp);
         var local = bindRoot *
+                    Matrix4x4.CreateFromQuaternion(p.Orientation) *
+                    Matrix4x4.CreateTranslation(p.LocalPosition);
+        if (_regionLayout is null) return local;
+        if (!_regionLayout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
+        return local * nodeWorld;
+    }
+
+    /// <summary>SC-TORCH-FLAME — world transform of one attach socket (e.g.
+    /// an AP_light flame mount), composed exactly like the mesh in
+    /// <see cref="ComposePlacementWorld"/> but rooted at that bone's bind
+    /// pose instead of bone 0. So the flame sits where the mesh's socket is,
+    /// through the same placement + node transform.</summary>
+    private Matrix4x4 ComposeSocketWorld(AspMesh asp, int boneIndex, SiegeFX.Core.Assets.NodePlacement p)
+    {
+        var bp = asp.BindPose[boneIndex];
+        var local = Matrix4x4.CreateFromQuaternion(bp.Rotation) *
+                    Matrix4x4.CreateTranslation(bp.Translation) *
                     Matrix4x4.CreateFromQuaternion(p.Orientation) *
                     Matrix4x4.CreateTranslation(p.LocalPosition);
         if (_regionLayout is null) return local;
@@ -14365,6 +14410,20 @@ void main()
         // (Phase 21-SC-SPELL-VFX) flying projectile heads. The screen-space
         // _spellBolts trail was retired here; primary cast visuals are now
         // the 3D world-space primitives spawned through SpawnSpellVisual.
+        // SC-TORCH-FLAME — burn every captured torch/candlestand socket. A
+        // warm plume before the particle integrate step so this frame's spawn
+        // advances with the rest. Emit only when reasonably near the camera so
+        // a region full of sconces doesn't flood the particle budget.
+        if (_particles is not null && _flameSources.Count > 0)
+        {
+            var flameCol = new Vector4(1.00f, 0.60f, 0.22f, 1f);
+            var camPos = _camera.Position;
+            foreach (var f in _flameSources)
+            {
+                if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
+                f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, (float)dt, 18f, f.Carry);
+            }
+        }
         _particles?.Tick((float)dt);
         // Phase 22-SC-MUSIC-A/B — refill the music streaming queue every
         // frame. Cheap when nothing's playing (one OpenAL state read);
@@ -16236,6 +16295,7 @@ void main()
         _propAspCache.Clear();
         _staticProps.Clear();
         _doorProps.Clear();
+        _flameSources.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
         // Phase 24-MAINMENU step 1+2-FOLD — splash texture cache. Six
