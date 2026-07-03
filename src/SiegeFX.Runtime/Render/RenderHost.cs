@@ -13153,6 +13153,27 @@ void main()
         }
         var rng = new Random((int)actor.Instance.Scid);
         var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
+        // SC-MOB-SPELLBOOK — casters authoring [actor] drops_spellbook=true
+        // always drop their spells regardless of how the pcontent roll went
+        // (DS1's dropped spellbook carries the caster's authored spell set —
+        // the early-game magic source: the krug apprentice by the farmhouse
+        // teaches you zap this way). Only catalog-resolvable spells drop;
+        // monster-only utilities like spell_resurrect_monster aren't
+        // player-castable and stay behind.
+        var dsb = _templateStore.GetAttribute(actor.Template, "actor", "drops_spellbook");
+        if (dsb is not null && dsb.Trim().Equals("true", StringComparison.OrdinalIgnoreCase)
+            && _spellCatalog is not null)
+        {
+            void AddSpellDrop(string? spellName)
+            {
+                if (spellName is null || !_spellCatalog.TryGet(spellName, out _)) return;
+                foreach (var it in drops)
+                    if (it.Reference.Equals(spellName, StringComparison.OrdinalIgnoreCase)) return;
+                drops.Add(new SiegeFX.Core.Actors.LootEntry("", spellName));
+            }
+            AddSpellDrop(actor.Stats.PrimarySpell);
+            AddSpellDrop(actor.Stats.SecondarySpell);
+        }
         if (drops.Count == 0)
         {
             Console.WriteLine($"  loot: {actor.Template.Name} dropped nothing this kill");

@@ -750,6 +750,7 @@ static int DispatchRegion(string[] a)
         "prop-textures" => CmdRegionPropTextures(a[1..]),
         "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
         "loot-distribution" => CmdRegionLootDistribution(a[1..]),
+        "mob-loot" => CmdRegionMobLoot(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -4931,6 +4932,119 @@ static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold
 // Per-template: empty %, gold %/total, item %/named breakdown. Per-region: total
 // expected gold yield, total potions by type, total gear by slot. Drift between
 // this readout and the guide is the receipt that pcontent rolling matches DS1.
+/// <summary>SC-MOB-LOOT-TRACE — the actor-death counterpart of
+/// loot-distribution: Monte-Carlo every actor template placed in a region
+/// (actor.gas + generator children) through LootTable/LootRoller and print
+/// per-template drop distributions, plus the SET-drop facts read straight
+/// off the template: the specific carried weapon, and drops_spellbook with
+/// the authored spells. This is the authoritative per-mob answer to "which
+/// drops are set and which are random".</summary>
+static int CmdRegionMobLoot(string[] a)
+{
+    if (a.Length < 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region mob-loot <map-tank> <logic-tank> <region-path> [--rolls=N] [--seed=K]");
+        return 1;
+    }
+    int rolls = 2000, seed = 1;
+    for (int i = 3; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--rolls=") && int.TryParse(a[i]["--rolls=".Length..], out var r)) rolls = r;
+        else if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var s)) seed = s;
+        else { Console.Error.WriteLine($"unknown option: {a[i]}"); return 1; }
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+
+    var counts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, a[2], "actor.gas");
+    foreach (var p in actors)
+    {
+        counts.TryGetValue(p.TemplateName, out var c);
+        counts[p.TemplateName] = c + 1;
+    }
+    // Generator children count as region mobs too — child template from the
+    // placement block or the template chain (same rule the runtime uses).
+    var (gens, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, a[2], "generator.gas");
+    foreach (var p in gens)
+    {
+        string? child = null;
+        string? blockHeader = null;
+        foreach (var c in p.Node.Children)
+        {
+            if (!c.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) continue;
+            blockHeader = c.Header;
+            foreach (var at in c.Attributes)
+                if (at.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
+                    child = at.Value.Trim().Trim('"');
+            break;
+        }
+        if (child is null && store.TryGet(p.TemplateName, out var gt) && gt is not null)
+        {
+            for (var t = gt; t is not null && blockHeader is null; t = t.Specializes)
+                foreach (var c in t.Node.Children)
+                {
+                    if (!c.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (c.Header.Equals("generator_in_object", StringComparison.OrdinalIgnoreCase)) continue;
+                    blockHeader = c.Header;
+                    break;
+                }
+            if (blockHeader is not null)
+                child = store.GetAttribute(gt, blockHeader, "child_template_name")?.Trim().Trim('"');
+        }
+        if (child is null) continue;
+        counts.TryGetValue(child, out var cc);
+        counts[child] = cc + 1;
+    }
+
+    Console.WriteLine($"mob-loot: {a[2]} — {counts.Count} unique template(s), {rolls} rolls each, seed={seed}");
+    foreach (var (name, placed) in counts)
+    {
+        if (!store.TryGet(name, out var template) || template is null)
+        {
+            Console.WriteLine($"\n  {name} (x{placed}) — template not in store");
+            continue;
+        }
+        Console.WriteLine($"\n  {name} (x{placed}):");
+        // SET facts straight off the template chain.
+        var spellbook = store.GetAttribute(template, "actor", "drops_spellbook")?.Trim();
+        if (spellbook is not null && spellbook.Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            var prim = store.GetAttribute(template, "inventory", "other", "il_active_primary_spell")?.Trim();
+            var sec  = store.GetAttribute(template, "inventory", "other", "il_active_secondary_spell")?.Trim();
+            Console.WriteLine($"    SET: drops_spellbook = true (spells: {prim ?? "-"}{(sec is null ? "" : ", " + sec)})");
+        }
+        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
+        if (table.IsEmpty)
+        {
+            Console.WriteLine("    (no inventory.pcontent — never drops)");
+            continue;
+        }
+        var rng = new Random(seed ^ name.GetHashCode(StringComparison.OrdinalIgnoreCase));
+        int empty = 0;
+        var itemCounts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < rolls; i++)
+        {
+            var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
+            if (drops.Count == 0) { empty++; continue; }
+            foreach (var d in drops)
+            {
+                var key = d.IsEquipped ? $"[worn] {d.Reference}" : d.Reference;
+                itemCounts.TryGetValue(key, out var ic);
+                itemCounts[key] = ic + 1;
+            }
+        }
+        Console.WriteLine($"    empty: {empty * 100.0 / rolls:F1}%");
+        foreach (var (item, n) in itemCounts.OrderByDescending(kv => kv.Value))
+            Console.WriteLine($"    {n * 100.0 / rolls,5:F1}%  {item}");
+    }
+    return 0;
+}
+
 static int CmdRegionLootDistribution(string[] a)
 {
     if (a.Length < 4)
