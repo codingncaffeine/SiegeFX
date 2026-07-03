@@ -1331,6 +1331,37 @@ public sealed class RenderHost : IDisposable
         }
         foreach (var kv in _fadeGroupsApplied)
             W($"  applied group 0x{kv.Key.Region:X8} (s={kv.Key.S},l={kv.Key.L},o={kv.Key.O}) -> {kv.Value.Count} snode(s)");
+
+        // SC-FADE-DIAG — the floating-mob probe. For every non-player actor
+        // standing ABOVE the player (i.e. on the faded surface while we're in
+        // the cellar), show where it is, what snode its live position resolves
+        // to, and whether the draw gate would hide it. A mob that is drawn but
+        // whose snode is faded (or that resolves to no snode) is a floater.
+        float py = _player?.CurrentTransform.Translation.Y ?? 0f;
+        int above = 0, gated = 0;
+        W($"-- actors above player (y > {py + 2f:F1}):");
+        foreach (var s in _actors)
+        {
+            if (s.IsPlayer || s.IsDead) continue;
+            var pos = s.CurrentTransform.Translation;
+            if (pos.Y <= py + 2f) continue;
+            above++;
+            string snodeInfo = "no-tri";
+            bool hidden = false;
+            if (_navMesh is not null && _navMesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)
+                && tri >= 0 && tri < _navMesh.SourceSnodeGuid.Length)
+            {
+                var sn = _navMesh.SourceSnodeGuid[tri];
+                hidden = _fadedSnodeCounts.ContainsKey(sn);
+                string sec = _snodeFadeKeys.TryGetValue(sn, out var kk)
+                    ? $"r=0x{kk.RegionGuid:X8} s={kk.S}" : "no-key";
+                snodeInfo = $"snode=0x{sn:X8} {sec}";
+            }
+            if (hidden) gated++;
+            if (above <= 20)
+                W($"     {s.Actor.Instance.TemplateName,-20} @({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) {snodeInfo} gated={hidden}");
+        }
+        W($"   => {above} above player, {gated} would be gated (rest float)");
         W("================================");
 
         try
