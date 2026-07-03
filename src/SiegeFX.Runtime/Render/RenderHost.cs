@@ -5197,7 +5197,7 @@ void main()
                 // their state machine stays parked in Wander.
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
-                    selfActor: actor);
+                    selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 actorsOnMesh++;
             }
             else
@@ -6819,7 +6819,7 @@ void main()
                     initialFacing: authoredFacing);
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
-                    selfActor: actor);
+                    selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 onMesh++;
             }
             else
@@ -6838,6 +6838,23 @@ void main()
             });
         }
         return (onMesh, offMesh);
+    }
+
+    /// <summary>SC-MOB-CASTER — resolve the spell a caster-identity template
+    /// should sling. Caster identity mirrors DS1's parameter-driven brain:
+    /// WP_MAGIC preference / auto-switch flag / active-slot pointing at the
+    /// primary spell, plus a catalog-resolvable il_active_primary_spell
+    /// (krug_apprentice = spell_apprentice_zap, krug_shaman = spell_fireshot).
+    /// Non-casters and unresolvable spells return null → melee/ranged brain.</summary>
+    private SiegeFX.Core.Assets.SpellTemplate? ResolveBrainSpell(SiegeFX.Core.Actors.ActorStats stats)
+    {
+        if (_spellCatalog is null || stats.PrimarySpell is null) return null;
+        bool caster =
+            string.Equals(stats.WeaponPreference, "WP_MAGIC", StringComparison.OrdinalIgnoreCase) ||
+            stats.AutoSwitchToMagic ||
+            string.Equals(stats.ActiveLocation, "il_active_primary_spell", StringComparison.OrdinalIgnoreCase);
+        if (!caster) return null;
+        return _spellCatalog.TryGet(stats.PrimarySpell, out var spell) ? spell : null;
     }
 
     /// <summary>Phase 21a-3 — find the nearest snode (in XZ) to <paramref name="worldPos"/>
@@ -11396,6 +11413,25 @@ void main()
     private void PlayAttackVoiceSfx(SiegeFX.Core.Assets.Template template, Vector3 worldPos)
         => PlayVoiceCue(template, worldPos, "attack");
 
+    /// <summary>SC-MOB-PARTY — force idle combatant brains within
+    /// <paramref name="comRange"/> of the spotter into Chase toward the
+    /// player. Non-combatants (chickens) are skipped; already-engaged brains
+    /// keep their own state via ForceAggro's Wander-only gate.</summary>
+    private void AlertNearbyBrains(ActorRenderState alerter, float comRange)
+    {
+        if (_playerFollower is null) return;
+        var origin = alerter.CurrentTransform.Translation;
+        float r2 = comRange * comRange;
+        foreach (var other in _actors)
+        {
+            if (ReferenceEquals(other, alerter) || other.Brain is null || other.IsDead) continue;
+            if (!other.Actor.Stats.IsCombatant) continue;
+            var d = other.CurrentTransform.Translation - origin;
+            if (d.X * d.X + d.Z * d.Z > r2) continue;
+            other.Brain.ForceAggro(_playerFollower.Position);
+        }
+    }
+
     /// <summary>Shared lookup-and-play for any single-cue voice state. Reads
     /// <c>[aspect][voice][&lt;state&gt;] *</c> off the template's specializes
     /// chain, lazy-registers the wav, and plays at the actor's position.
@@ -12141,7 +12177,14 @@ void main()
                 var scid = s.Actor.Instance.Scid;
                 aggroThisFrame.Add(scid);
                 if (!_aggroPrevFrame.Contains(scid))
+                {
                     PlayEnemySpottedSfx(s.Actor.Template, s.CurrentTransform.Translation);
+                    // SC-MOB-PARTY — the spotter drags idle packmates within
+                    // com_range into the fight (krug scavenger packs author
+                    // on_enemy_spotted_alert_friends + com_range 8).
+                    if (s.Actor.Stats.AlertFriends)
+                        AlertNearbyBrains(s, s.Actor.Stats.ComRange > 0.5f ? s.Actor.Stats.ComRange : 8f);
+                }
             }
             // SC-ENEMY-AUDIO-AUDIT — every brain swing edge fires the
             // attacker's "attack" voice cue (no-op for the common case where
@@ -12150,6 +12193,23 @@ void main()
             // the brain stays in Attack between swings.
             if (brain.ConsumeJustSwung())
                 PlayAttackVoiceSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            // SC-MOB-CASTER — spell visual + the authored 'cast' voice state
+            // (SC-ENEMY-AUDIO-CAST-WIRE: 123 DS1 templates author it).
+            if (brain.ConsumeJustCast(out var castDst) && brain.CastSpell is not null)
+            {
+                var castSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.6f, 0f);
+                SpawnSpellVisual(castSrc, castDst + new Vector3(0f, 1.0f, 0f),
+                    brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
+                PlayVoiceCue(s.Actor.Template, s.CurrentTransform.Translation, "cast");
+            }
+            // SC-MOB-RANGED — thrown-projectile visual (krug rock). Damage is
+            // already applied instant-hit by the brain; this is the read.
+            if (brain.ConsumeJustFiredRanged(out var throwDst) && _particles is not null)
+            {
+                var throwSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.4f, 0f);
+                _particles.SpawnProjectile(throwSrc, throwDst + new Vector3(0f, 1.0f, 0f),
+                    new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
+            }
             // SC-ENEMY-AUDIO-AUDIT — fire hit reaction for any NPC that
             // just took damage from a non-player source (brain-on-brain
             // or environmental). The player-swing path already fires the
