@@ -1282,24 +1282,35 @@ public sealed class RenderHost : IDisposable
     /// hidden vs the total, plus the applied fade groups. Reading it while
     /// the basement looks wrong tells us exactly which section didn't
     /// reveal (or which surface section didn't hide).</summary>
+    /// <summary>SC-FADE-DIAG — F7 snapshot of the live cutaway state, written
+    /// to <c>siegefx_fade_diag.log</c> next to the exe (appended, so multiple
+    /// descents accumulate). Reports the player's standing snode, loaded
+    /// regions, and — per fade section of the basement (hc_r1 0xACA70000) and
+    /// surface (fh_r1 0xAAA10100) — how many snodes are hidden vs total,
+    /// flagging any PARTIAL section. Reading it after a bad descent names the
+    /// exact section that failed to reveal (or shows the region never
+    /// loaded), instead of guessing.</summary>
     private void DumpFadeDiagnostics()
     {
-        Console.WriteLine("===== FADE DIAGNOSTIC (F7) =====");
+        var sb = new System.Text.StringBuilder();
+        void W(string s) { sb.AppendLine(s); Console.WriteLine(s); }
+
+        W("===== FADE DIAGNOSTIC (F7) =====");
         if (_player is not null)
         {
             var p = _player.CurrentTransform.Translation;
-            Console.WriteLine($"player world = ({p.X:F1},{p.Y:F1},{p.Z:F1})  underground={_isUnderground}");
+            W($"player world = ({p.X:F1},{p.Y:F1},{p.Z:F1})  underground={_isUnderground}");
             if (_navMesh is not null && _navMesh.TryFindTriangle(p, out var tri, includeFadeHidden: true))
             {
                 var sn = _navMesh.SourceSnodeGuid[tri];
                 bool hidden = _fadedSnodeCounts.ContainsKey(sn);
                 string sec = _snodeFadeKeys.TryGetValue(sn, out var k)
                     ? $"region=0x{k.RegionGuid:X8} sec={k.S} lvl={k.L} obj={k.O}" : "(no fade key)";
-                Console.WriteLine($"standing snode=0x{sn:X8} hidden={hidden}  {sec}");
+                W($"standing snode=0x{sn:X8} hidden={hidden}  {sec}");
             }
         }
-        Console.WriteLine($"loaded regions: {string.Join(", ", _regionGraphsByGuid.Keys.Select(g => $"0x{g:X8}"))}");
-        Console.WriteLine($"total fade-hidden snodes = {_fadedSnodeCounts.Count}; applied fade groups = {_fadeGroupsApplied.Count}");
+        W($"loaded regions: {string.Join(", ", _regionGraphsByGuid.Keys.Select(g => $"0x{g:X8}"))}");
+        W($"total fade-hidden snodes = {_fadedSnodeCounts.Count}; applied fade groups = {_fadeGroupsApplied.Count}");
         foreach (var region in new uint[] { 0xACA70000u, 0xAAA10100u })
         {
             var bySec = new Dictionary<int, (int total, int hidden)>();
@@ -1312,15 +1323,23 @@ public sealed class RenderHost : IDisposable
             }
             string label = region == 0xACA70000u ? "BASEMENT hc_r1"
                          : region == 0xAAA10100u ? "SURFACE  fh_r1" : "region";
-            if (bySec.Count == 0) { Console.WriteLine($"-- {label} 0x{region:X8}: not loaded"); continue; }
-            Console.WriteLine($"-- {label} 0x{region:X8} sections (hidden/total):");
+            if (bySec.Count == 0) { W($"-- {label} 0x{region:X8}: NOT LOADED"); continue; }
+            W($"-- {label} 0x{region:X8} sections (hidden/total):");
             foreach (var s in bySec.Keys.OrderBy(x => x))
-                Console.WriteLine($"     sec {s}: {bySec[s].hidden}/{bySec[s].total}"
+                W($"     sec {s}: {bySec[s].hidden}/{bySec[s].total}"
                     + (bySec[s].hidden > 0 && bySec[s].hidden < bySec[s].total ? "  <-- PARTIAL" : ""));
         }
         foreach (var kv in _fadeGroupsApplied)
-            Console.WriteLine($"  applied group 0x{kv.Key.Region:X8} (s={kv.Key.S},l={kv.Key.L},o={kv.Key.O}) -> {kv.Value.Count} snode(s)");
-        Console.WriteLine("================================");
+            W($"  applied group 0x{kv.Key.Region:X8} (s={kv.Key.S},l={kv.Key.L},o={kv.Key.O}) -> {kv.Value.Count} snode(s)");
+        W("================================");
+
+        try
+        {
+            var logPath = System.IO.Path.Combine(System.AppContext.BaseDirectory, "siegefx_fade_diag.log");
+            System.IO.File.AppendAllText(logPath, sb.ToString() + System.Environment.NewLine);
+            Console.WriteLine($"[fade-diag] appended to {logPath}");
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[fade-diag] log write failed: {ex.Message}"); }
     }
 
     /// <summary>Shared fade ref-count: a snode stays hidden while ANY writer
@@ -2735,12 +2754,10 @@ void main()
                 }
                 else if (key == Key.F7)
                 {
-                    // SC-FADE-DIAG — dump the live cutaway state. Press it
-                    // while standing where the basement looks wrong: it
-                    // reports, per fade section of the basement (hc_r1
-                    // 0xACA70000) and surface (fh_r1 0xAAA10100), how many
-                    // snodes are currently hidden vs total, so we can see
-                    // exactly which section failed to reveal.
+                    // SC-FADE-DIAG — snapshot the live cutaway state to a log
+                    // file (the windowed build has no visible console). Press
+                    // it while the basement looks wrong; the log names which
+                    // section stayed hidden and whether the region loaded.
                     DumpFadeDiagnostics();
                 }
             };
