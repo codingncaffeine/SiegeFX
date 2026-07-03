@@ -46,6 +46,10 @@ public sealed class DialoguePanel
     private ConversationDef? _conv;
     private int _index;
 
+    /// <summary>SC-QUEST-UI-D — the conversation currently on screen, so the
+    /// journal can log its spoken text onto a quest at the acceptance edge.</summary>
+    public ConversationDef? CurrentConversation => _conv;
+
     /// <summary>Present a fresh conversation. Resets the cursor and clears any
     /// stale press state on the buttons.</summary>
     public void Open(string speakerName, ConversationDef conv)

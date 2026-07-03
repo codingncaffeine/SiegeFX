@@ -3420,6 +3420,12 @@ void main()
                             // a completed entry; the bool tells us whether this
                             // is the first acceptance for the log line.
                             bool added = _progression?.Journal.AddActive(quest) ?? false;
+                            // SC-QUEST-UI-D — log the conversation the player
+                            // just heard onto the quest for the journal's Show
+                            // Dialogue chronicle (idempotent; first take wins).
+                            if (added && _progression is not null)
+                                _progression.Journal.RecordDialogue(
+                                    quest, NarrativeLines(_dialogue.CurrentConversation));
                             Console.WriteLine(added
                                 ? $"[dialogue] quest activated: {quest}"
                                 : $"[dialogue] quest re-pitched (already in journal): {quest}");
@@ -6703,6 +6709,12 @@ void main()
         if (!string.IsNullOrEmpty(node.ActivateQuest) && _progression is not null &&
             _progression.Journal.AddActive(node.ActivateQuest))
         {
+            // SC-QUEST-UI-D — the storyteller's words become the quest's
+            // recorded dialogue (the narrator grants without a talk panel).
+            if (_subtitleNodes is not null)
+                _progression.Journal.RecordDialogue(node.ActivateQuest,
+                    _subtitleNodes.Where(n => !string.IsNullOrWhiteSpace(n.Text))
+                                  .Select(n => n.Text.Replace("\\n", " ")));
             Console.WriteLine($"[subtitle] quest activated: {node.ActivateQuest}");
             FlashQuestIndicator();
         }
@@ -6735,6 +6747,17 @@ void main()
                 catch (Exception ex) { Console.WriteLine($"[subtitle] voice failed: {ex.Message}"); }
             }
         }
+    }
+
+    // SC-QUEST-UI-D — the narrative lines of a conversation in the order the
+    // player heard them: the panel walks nodes in list order and skips the
+    // Accept/Decline quest buttons, so the chronicle mirrors that traversal.
+    private static IEnumerable<string> NarrativeLines(SiegeFX.Core.Assets.ConversationDef? conv)
+    {
+        if (conv is null) yield break;
+        foreach (var n in conv.Nodes)
+            if (!n.IsQuestDialog && !string.IsNullOrWhiteSpace(n.Text))
+                yield return n.Text.Replace("\\n", " ");
     }
 
     private void UpdateSubtitles(float dt)

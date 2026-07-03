@@ -48,6 +48,14 @@ public sealed class QuestEntry
     /// objectives are PickupCountGoal=1 (recover one named artifact) but
     /// the field is a counter for future "collect N relics" patterns.</summary>
     public int PickupProgress { get; set; }
+
+    /// <summary>SC-QUEST-UI-D — the conversation the player actually heard
+    /// when this quest was accepted, one entry per spoken narrative line in
+    /// order. Populated once at acceptance (see
+    /// <see cref="QuestJournal.RecordDialogue"/>); drives the journal's
+    /// "Show Dialogue" chronicle view. Empty for quests activated without a
+    /// player-facing conversation (trigger/generator/narrator grants).</summary>
+    public List<string> DialogueLog { get; } = new();
 }
 
 /// <summary>
@@ -79,6 +87,19 @@ public sealed class QuestJournal
     {
         if (string.IsNullOrWhiteSpace(key)) { entry = null; return false; }
         return _entries.TryGetValue(key, out entry);
+    }
+
+    /// <summary>SC-QUEST-UI-D — record the story text the player heard when a
+    /// quest was accepted, for the journal's Show Dialogue view. First
+    /// non-empty recording wins (DS1 logs the conversation as it happened and
+    /// never overwrites it on a re-talk); a no-op when the key isn't in the
+    /// journal or already carries a log.</summary>
+    public void RecordDialogue(string key, IEnumerable<string> lines)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        if (!_entries.TryGetValue(key, out var entry) || entry.DialogueLog.Count > 0) return;
+        foreach (var line in lines)
+            if (!string.IsNullOrWhiteSpace(line)) entry.DialogueLog.Add(line.Trim());
     }
 
     /// <summary>Mark a quest active. Idempotent — re-accepting a completed or

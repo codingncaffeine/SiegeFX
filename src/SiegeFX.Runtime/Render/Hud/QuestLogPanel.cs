@@ -53,10 +53,11 @@ public sealed class QuestLogPanel
     static readonly Rect RectArrowDown   = new(449, 379, 470, 401); // button_quests_down
     static readonly Rect RectBtn1Bg      = new(181, 409, 326, 431); // dialog_box_button_1_bg (jbox, draw 14)
     static readonly Rect RectBtn1        = new(182, 410, 325, 430); // button_journal_1 (b_gui_cmn_jbox_fill)
-    static readonly Rect RectBtn1Text    = new(211, 414, 325, 430); // "Show Dialogue", 10p, centered
+    // NB: gas insets the caption sub-rects (211.., 387..) to the right of
+    // each face; DS1 renders the label centered on the face, so DrawButton
+    // centers on RectBtn1/RectBtn2 and these are kept only as provenance.
     static readonly Rect RectBtn2Bg      = new(330, 409, 475, 431); // dialog_box_button_2_bg (jbox, draw 15)
     static readonly Rect RectBtn2        = new(331, 410, 474, 430); // button_journal_2 (b_gui_cmn_jbox_fill)
-    static readonly Rect RectBtn2Text    = new(387, 414, 474, 430); // "Close", 10p, centered
 
     /// <summary>listbox_quests authors <c>oncreated = setelementheight(15)</c>.</summary>
     const int ElementH = 15;
@@ -117,7 +118,11 @@ public sealed class QuestLogPanel
     Hit  _hover   = Hit.None;
     Hit  _pressed = Hit.None;
     bool _closeRequested;
-    bool _showDialogueStubLogged;
+    // SC-QUEST-UI-D — the "Show Dialogue" button toggles the main box between
+    // the quest listbox and the selected quest's recorded conversation (DS1's
+    // quest_dialogues group, which reuses the same rect). The caption flips to
+    // "Show Quests" while the chronicle is up, matching the game.
+    bool _showDialogue;
 
     // Rebuilt by Layout() from the live viewport each Draw / input call so
     // a mid-frame resize can't desync hit rects (OptionsMenuPanel pattern).
@@ -176,15 +181,15 @@ public sealed class QuestLogPanel
             case Hit.CloseButton:
             case Hit.CloseX:
                 _closeRequested = true;
+                _showDialogue = false; // reopen to the quest list, as DS1 does
+                _scroll = 0;
                 return true;
             case Hit.ShowDialogue:
-                // Chronicles view (journal.gas textbox_dialogues) is a later
-                // slice — render the authored button, log the press once.
-                if (!_showDialogueStubLogged)
-                {
-                    Console.WriteLine("[journal] Show Dialogue pressed — dialogue chronicle view not implemented yet (stub)");
-                    _showDialogueStubLogged = true;
-                }
+                // Toggle the quest_dialogues group. Scroll resets so each
+                // view opens at its top (the two share one scroll offset,
+                // exactly as DS1's shared slider does).
+                _showDialogue = !_showDialogue;
+                _scroll = 0;
                 return true;
             case Hit.ArrowUp:
                 _scroll = System.Math.Max(0, _scroll - 1);
@@ -194,6 +199,9 @@ public sealed class QuestLogPanel
                 return true;
             case Hit.ListRow:
             {
+                // In dialogue view the same rect holds scrolling text, not
+                // selectable rows — swallow the click without reselecting.
+                if (_showDialogue) return true;
                 var entries = BuildEntries(journal);
                 var list = S(RectList);
                 int rowH = System.Math.Max(1, (int)MathF.Round(ElementH * _scale));
@@ -341,59 +349,73 @@ public sealed class QuestLogPanel
             }
         }
 
-        // listbox_quests — active entries first, then completed/failed.
+        // Main box (listbox_quests / textbox_dialogues share the rect). The
+        // Show Dialogue button toggles which one occupies it; both scroll
+        // through the shared slider, so each reports its own (total, visible).
         var (lx, ly, lw, lh) = S(RectList);
-        int rowH = System.Math.Max(1, (int)MathF.Round(ElementH * _scale));
-        int visible = System.Math.Max(1, lh / rowH);
-        _scroll = System.Math.Clamp(_scroll, 0, System.Math.Max(0, entries.Count - visible));
-        var selTex = art ? resolveTexture!("b_gui_cmn_selection") : null;
-        int pad = System.Math.Max(2, (int)MathF.Round(3 * _scale));
-        for (int i = 0; i < visible; i++)
+        int total, visible;
+        if (_showDialogue)
         {
-            int idx = _scroll + i;
-            if (idx >= entries.Count) break;
-            var e = entries[idx];
-            int rowY = ly + i * rowH;
-            if (string.Equals(e.Key, _selectedKey, StringComparison.OrdinalIgnoreCase))
-            {
-                // selection_box — b_gui_cmn_selection at alpha 0.5.
-                if (selTex is not null && icons is not null)
-                    icons.DrawIcon(viewportW, viewportH, selTex, lx, rowY, lw, rowH,
-                                   new Vector4(1f, 1f, 1f, 0.5f));
-                else
-                    bars.DrawRect(viewportW, viewportH, lx, rowY, lw, rowH,
-                                  new Vector4(0.35f, 0.28f, 0.18f, 0.5f));
-            }
-            var label = e.Definition?.ScreenName is { Length: > 0 } sn ? sn : Pretty(e.Key);
-            label = FitToWidth(label, text, lw - pad * 2, _fontScale);
-            bool closed = e.State == QuestState.Completed || e.State == QuestState.Failed;
-            text.DrawString(viewportW, viewportH, label,
-                            lx + pad, rowY + (rowH - fontH) / 2, closed ? dimInk : white, _fontScale);
+            (total, visible) = DrawDialogueView(bars, text, viewportW, viewportH,
+                                                sel, lx, ly, lw, lh, fontH, white, dimInk);
         }
-        if (entries.Count == 0)
+        else
         {
-            const string empty = "No quests yet - find an NPC and accept one.";
-            int ew = text.MeasureWidth(empty, _fontScale);
-            text.DrawString(viewportW, viewportH, empty,
-                            lx + (lw - ew) / 2, ly + (lh - fontH) / 2, dimInk, _fontScale);
+            int rowH = System.Math.Max(1, (int)MathF.Round(ElementH * _scale));
+            visible = System.Math.Max(1, lh / rowH);
+            total = entries.Count;
+            _scroll = System.Math.Clamp(_scroll, 0, System.Math.Max(0, total - visible));
+            var selTex = art ? resolveTexture!("b_gui_cmn_selection") : null;
+            int pad = System.Math.Max(2, (int)MathF.Round(3 * _scale));
+            for (int i = 0; i < visible; i++)
+            {
+                int idx = _scroll + i;
+                if (idx >= entries.Count) break;
+                var e = entries[idx];
+                int rowY = ly + i * rowH;
+                if (string.Equals(e.Key, _selectedKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    // selection_box — b_gui_cmn_selection at alpha 0.5.
+                    if (selTex is not null && icons is not null)
+                        icons.DrawIcon(viewportW, viewportH, selTex, lx, rowY, lw, rowH,
+                                       new Vector4(1f, 1f, 1f, 0.5f));
+                    else
+                        bars.DrawRect(viewportW, viewportH, lx, rowY, lw, rowH,
+                                      new Vector4(0.35f, 0.28f, 0.18f, 0.5f));
+                }
+                var label = e.Definition?.ScreenName is { Length: > 0 } sn ? sn : Pretty(e.Key);
+                label = FitToWidth(label, text, lw - pad * 2, _fontScale);
+                bool closed = e.State == QuestState.Completed || e.State == QuestState.Failed;
+                text.DrawString(viewportW, viewportH, label,
+                                lx + pad, rowY + (rowH - fontH) / 2, closed ? dimInk : white, _fontScale);
+            }
+            if (entries.Count == 0)
+            {
+                const string empty = "No quests yet - find an NPC and accept one.";
+                int ew = text.MeasureWidth(empty, _fontScale);
+                text.DrawString(viewportW, viewportH, empty,
+                                lx + (lw - ew) / 2, ly + (lh - fontH) / 2, dimInk, _fontScale);
+            }
         }
 
         // slider chrome — jbox track bg (draw 27), thumb, then arrows
         // (draw 61/88 puts them above the thumb).
         Jbox(bars, icons, resolveTexture, viewportW, viewportH, S(RectSliderBg));
         DrawSliderThumb(bars, icons, resolveTexture, viewportW, viewportH,
-                        entries.Count, visible);
+                        total, visible);
         DrawArrow(bars, icons, resolveTexture, viewportW, viewportH, S(RectArrowUp),
                   "b_gui_ig_mnu_jnl_arrow_up", Hit.ArrowUp);
         DrawArrow(bars, icons, resolveTexture, viewportW, viewportH, S(RectArrowDown),
                   "b_gui_ig_mnu_jnl_arrow_down", Hit.ArrowDown);
 
         // Bottom buttons — jbox_fill face + label. gas rollover vertexcolor
-        // is 0xff999999, pressed 0xff555555.
+        // is 0xff999999, pressed 0xff555555. Button 1's caption flips to
+        // "Show Quests" while the dialogue chronicle is up, as in DS1.
         DrawButton(bars, text, icons, resolveTexture, viewportW, viewportH,
-                   S(RectBtn1), S(RectBtn1Text), "Show Dialogue", Hit.ShowDialogue, fontH, white);
+                   S(RectBtn1), _showDialogue ? "Show Quests" : "Show Dialogue",
+                   Hit.ShowDialogue, fontH, white);
         DrawButton(bars, text, icons, resolveTexture, viewportW, viewportH,
-                   S(RectBtn2), S(RectBtn2Text), "Close", Hit.CloseButton, fontH, white);
+                   S(RectBtn2), "Close", Hit.CloseButton, fontH, white);
 
         // Corner X (button_x, draw 38) — -up/-hov/-down state textures.
         var xName = _pressed == Hit.CloseX ? "b_gui_cmn_jbox_x_down"
@@ -500,7 +522,7 @@ public sealed class QuestLogPanel
 
     void DrawButton(BarRenderer bars, TextRenderer text, IconRenderer? icons,
                     Func<string, GlTexture?>? resolve, int vw, int vh,
-                    (int X, int Y, int W, int H) face, (int X, int Y, int W, int H) label,
+                    (int X, int Y, int W, int H) face,
                     string caption, Hit id, int fontH, Vector4 ink)
     {
         // gas button messages: onrollover vertexcolor(0xff999999),
@@ -514,9 +536,54 @@ public sealed class QuestLogPanel
         else
             bars.DrawRect(vw, vh, face.X, face.Y, face.W, face.H,
                           new Vector4(0.20f * tint.X, 0.16f * tint.Y, 0.10f * tint.Z, 1f));
+        // Caption centered on the button FACE (the authored text sub-rect is
+        // inset to the right; centering there shoved the label off-center).
         int cw = text.MeasureWidth(caption, _fontScale);
         text.DrawString(vw, vh, caption,
-                        label.X + (label.W - cw) / 2, label.Y + (label.H - fontH) / 2, ink, _fontScale);
+                        face.X + (face.W - cw) / 2, face.Y + (face.H - fontH) / 2, ink, _fontScale);
+    }
+
+    /// <summary>SC-QUEST-UI-D — textbox_dialogues. The selected quest's
+    /// recorded conversation, word-wrapped and left-justified into the shared
+    /// list rect (font_type b_gui_fnt_12p_copperplate-light, justify=left),
+    /// scrolled by the shared slider. Returns (total lines, visible lines) so
+    /// the caller can size the slider thumb.</summary>
+    (int Total, int Visible) DrawDialogueView(BarRenderer bars, TextRenderer text,
+        int vw, int vh, QuestEntry? sel, int lx, int ly, int lw, int lh,
+        int fontH, Vector4 ink, Vector4 dimInk)
+    {
+        int pad   = System.Math.Max(2, (int)MathF.Round(3 * _scale));
+        int lineH = fontH + 2 * _fontScale;
+        int visible = System.Math.Max(1, lh / lineH);
+
+        var lines = new List<string>();
+        if (sel is not null && sel.DialogueLog.Count > 0)
+        {
+            for (int i = 0; i < sel.DialogueLog.Count; i++)
+            {
+                foreach (var wl in Wrap(sel.DialogueLog[i], text, lw - pad * 2, _fontScale))
+                    lines.Add(wl);
+                if (i < sel.DialogueLog.Count - 1) lines.Add(""); // blank between beats
+            }
+        }
+
+        if (lines.Count == 0)
+        {
+            const string none = "No recorded conversation for this quest.";
+            int nw = text.MeasureWidth(none, _fontScale);
+            text.DrawString(vw, vh, none, lx + (lw - nw) / 2, ly + (lh - fontH) / 2, dimInk, _fontScale);
+            return (0, visible);
+        }
+
+        _scroll = System.Math.Clamp(_scroll, 0, System.Math.Max(0, lines.Count - visible));
+        for (int i = 0; i < visible; i++)
+        {
+            int idx = _scroll + i;
+            if (idx >= lines.Count) break;
+            if (lines[idx].Length == 0) continue;
+            text.DrawString(vw, vh, lines[idx], lx + pad, ly + i * lineH, ink, _fontScale);
+        }
+        return (lines.Count, visible);
     }
 
     // ─── data helpers ─────────────────────────────────────────────────────
