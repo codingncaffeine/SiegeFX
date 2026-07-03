@@ -837,6 +837,11 @@ public sealed class RenderHost : IDisposable
         // `receive_world_message` condition on trigger B in the same region.
         _actorBus?.Post(name, fromScid, toScid, 0, 0);
         _triggerRuntime?.PostInboundMessage(toScid, name);
+        // SC-NIS - enter/leave gizmos activate on we_req_activate.
+        if (_nisCommands.Count > 0 &&
+            name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase) &&
+            _nisCommands.TryGetValue(toScid, out var nisCmd))
+            ActivateNisCommand(nisCmd);
     }
 
     private string? _lastLoggedMoodChange;
@@ -2385,6 +2390,15 @@ void main()
                     if (_cursorScroll is not null)
                     {
                         CancelScrollDrag();
+                        return;
+                    }
+                    // SC-NIS - Esc skips the cinematic (v1 of DS1's silent
+                    // fast-forward: jump to the leave pan; the trigger-side
+                    // delayed choreography keeps its own clocks).
+                    if (_nisPhase != NisPhase.Off && _nisPhase != NisPhase.Leaving)
+                    {
+                        Console.WriteLine("[nis] skipped by Esc");
+                        BeginNisLeave(0.8f);
                         return;
                     }
                     // Phase 24-MAINMENU step 1+2-FOLD — Esc during the splash
@@ -4649,6 +4663,9 @@ void main()
         _pendingObjectSpawns.Clear();
         _commands.Clear();
         _commandGasLoaded?.Clear();
+        _nisCommands.Clear();
+        _nisPhase = NisPhase.Off;
+        _nisLetterbox = _nisLetterboxTarget = 0f;
         _nextGeneratorChildScid = 0xFE000001;
         // Fade state is per-run: a new game must not inherit the previous
         // session's cutaway (triggers respawn fresh and re-derive it).
@@ -6363,6 +6380,193 @@ void main()
             _textRenderer.DrawString(viewportW, viewportH, line2, x, y + 16, ink);
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // SC-NIS — Non-Interactive Sequence engine (Siege University 207).
+    // DS1 cinematics are chains of command gizmos: cmd_enter_nis takes
+    // control (widescreen letterbox, input lockout) and activates its
+    // next_scid; each cmd_camera_command pans (cor_pan) or jump-cuts
+    // (cor_snap) the camera to its authored pose for `duration` seconds,
+    // posts we_camera_command_done, and activates the next link;
+    // cmd_leave_nis pans back to the player camera and restores the HUD.
+    // The fh_r1 intro (Norick on the bridge) is 32 camera commands whose
+    // chain starts at cmd_enter_nis 0x01C0078E, activated by the same
+    // trigger that runs the mood/speech choreography. Camera poses are
+    // node-anchored positions + quaternions composed with the anchor
+    // node's world rotation. Esc skips to the leave pan (v1 of DS1's
+    // silent fast-forward — the trigger-side delayed actions keep their
+    // own clocks either way).
+    // ────────────────────────────────────────────────────────────────────
+    private sealed class NisCommand
+    {
+        public uint Scid;
+        public string Type = "";
+        public uint Next;
+        public float Duration = 5f;
+        public bool Snap;
+        public Vector3 Pos;
+        public Quaternion Orient = Quaternion.Identity;
+    }
+    private readonly System.Collections.Generic.Dictionary<uint, NisCommand> _nisCommands = new();
+    private enum NisPhase { Off, Camera, Leaving }
+    private NisPhase _nisPhase = NisPhase.Off;
+    private float _nisLetterbox, _nisLetterboxTarget;
+    private float _nisTimer, _nisSegDuration;
+    private bool _nisSnap;
+    private Vector3 _nisFromPos, _nisToPos;
+    private Quaternion _nisFromQ = Quaternion.Identity, _nisToQ = Quaternion.Identity;
+    private NisCommand? _nisCurrent;
+    private Vector3 _nisReturnPos;
+    private float _nisReturnYaw, _nisReturnPitch;
+    private float _nisLeaveFromYaw, _nisLeaveFromPitch;
+    // DS1 camera quaternions come out of Siege Editor with an untestable
+    // facing convention; if the intro pans look 180° backwards, flip here.
+    private static readonly bool NisCamFlip =
+        Environment.GetEnvironmentVariable("SIEGEFX_NIS_CAM_FLIP") == "1";
+
+    private void ActivateNisCommand(NisCommand cmd)
+    {
+        switch (cmd.Type)
+        {
+            case "cmd_enter_nis":
+                if (_nisPhase != NisPhase.Off) return;
+                _nisReturnPos = _camera.Position;
+                _nisReturnYaw = _camera.Yaw;
+                _nisReturnPitch = _camera.Pitch;
+                _nisPhase = NisPhase.Camera;
+                _nisLetterboxTarget = 1f;
+                Console.WriteLine($"[nis] enter 0x{cmd.Scid:X8} -> chain 0x{cmd.Next:X8}");
+                StartNisSegment(cmd.Next);
+                break;
+            case "cmd_leave_nis":
+                if (_nisPhase == NisPhase.Off) return;
+                BeginNisLeave(cmd.Duration > 0f ? cmd.Duration : 2f);
+                break;
+        }
+    }
+
+    private void StartNisSegment(uint scid)
+    {
+        if (scid == 0 || !_nisCommands.TryGetValue(scid, out var cmd))
+        {
+            // DS1 hangs forever on a broken next_scid; we refuse to.
+            Console.WriteLine($"[nis] next scid 0x{scid:X8} unresolved — forcing leave");
+            BeginNisLeave(2f);
+            return;
+        }
+        if (cmd.Type == "cmd_leave_nis")
+        {
+            BeginNisLeave(cmd.Duration > 0f ? cmd.Duration : 2f);
+            return;
+        }
+        // camera_command and (rare) camera_waypoint both hold one pose.
+        _nisFromPos = _camera.Position;
+        _nisFromQ = _nisPhase == NisPhase.Camera && _nisCurrent is not null ? _nisToQ : NisQFromYawPitch(_camera.Yaw, _camera.Pitch);
+        _nisToPos = cmd.Pos;
+        _nisToQ = cmd.Orient;
+        _nisSnap = cmd.Snap;
+        _nisSegDuration = MathF.Max(0.05f, cmd.Duration);
+        _nisTimer = 0f;
+        _nisCurrent = cmd;
+        Console.WriteLine($"[nis] {(cmd.Snap ? "snap" : "pan")} 0x{cmd.Scid:X8} " +
+            $"pos=({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) dur={_nisSegDuration:F1}s next=0x{cmd.Next:X8}");
+    }
+
+    private void BeginNisLeave(float duration)
+    {
+        _nisPhase = NisPhase.Leaving;
+        _nisFromPos = _camera.Position;
+        _nisLeaveFromYaw = _camera.Yaw;
+        _nisLeaveFromPitch = _camera.Pitch;
+        _nisSegDuration = MathF.Max(0.05f, duration);
+        _nisTimer = 0f;
+        _nisCurrent = null;
+        _nisLetterboxTarget = 0f;
+    }
+
+    private static Quaternion NisQFromYawPitch(float yaw, float pitch)
+    {
+        // Inverse of ApplyNisCameraPose's forward extraction: build a
+        // quaternion whose (flip-adjusted) +Z transform is the camera
+        // forward the yaw/pitch pair describes.
+        var f = new Vector3(MathF.Sin(yaw) * MathF.Cos(pitch), MathF.Sin(pitch), -MathF.Cos(yaw) * MathF.Cos(pitch));
+        if (NisCamFlip) f = -f;
+        // Rotation taking UnitZ onto f around the axis perpendicular to both.
+        var from = Vector3.UnitZ;
+        var dot = Math.Clamp(Vector3.Dot(from, f), -1f, 1f);
+        if (dot > 0.9999f) return Quaternion.Identity;
+        if (dot < -0.9999f) return Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI);
+        var axis = Vector3.Normalize(Vector3.Cross(from, f));
+        return Quaternion.CreateFromAxisAngle(axis, MathF.Acos(dot));
+    }
+
+    private void ApplyNisCameraPose(Vector3 pos, Quaternion q)
+    {
+        var unit = NisCamFlip ? -Vector3.UnitZ : Vector3.UnitZ;
+        var f = Vector3.Transform(unit, q);
+        if (f.LengthSquared() < 1e-6f) return;
+        f = Vector3.Normalize(f);
+        _camera.Position = pos;
+        _camera.Yaw = MathF.Atan2(f.X, -f.Z);
+        _camera.Pitch = MathF.Asin(Math.Clamp(f.Y, -0.999f, 0.999f));
+    }
+
+    private void UpdateNis(float dt)
+    {
+        // Letterbox eases in/out regardless of phase.
+        float step = dt / 0.4f;
+        _nisLetterbox = _nisLetterboxTarget > _nisLetterbox
+            ? MathF.Min(_nisLetterboxTarget, _nisLetterbox + step)
+            : MathF.Max(_nisLetterboxTarget, _nisLetterbox - step);
+        if (_nisPhase == NisPhase.Off) return;
+
+        _nisTimer += dt;
+        float t = Math.Clamp(_nisTimer / _nisSegDuration, 0f, 1f);
+        float ts = t * t * (3f - 2f * t); // smoothstep read on pans
+
+        if (_nisPhase == NisPhase.Leaving)
+        {
+            // Interpolate in yaw/pitch space back to the pre-NIS chase pose;
+            // the chase camera takes over seamlessly at phase end.
+            float dyaw = _nisReturnYaw - _nisLeaveFromYaw;
+            while (dyaw > MathF.PI) dyaw -= MathF.PI * 2f;
+            while (dyaw < -MathF.PI) dyaw += MathF.PI * 2f;
+            _camera.Position = Vector3.Lerp(_nisFromPos, _nisReturnPos, ts);
+            _camera.Yaw = _nisLeaveFromYaw + dyaw * ts;
+            _camera.Pitch = _nisLeaveFromPitch + (_nisReturnPitch - _nisLeaveFromPitch) * ts;
+            if (_nisTimer >= _nisSegDuration)
+            {
+                _nisPhase = NisPhase.Off;
+                Console.WriteLine("[nis] complete — control restored");
+            }
+            return;
+        }
+
+        var pos = _nisSnap ? _nisToPos : Vector3.Lerp(_nisFromPos, _nisToPos, ts);
+        var q = _nisSnap ? _nisToQ : Quaternion.Slerp(_nisFromQ, _nisToQ, ts);
+        ApplyNisCameraPose(pos, q);
+        if (_nisTimer < _nisSegDuration) return;
+
+        var cur = _nisCurrent;
+        if (cur is not null)
+        {
+            // Cameras announce completion — the intro NIS hosts triggers on
+            // this event for tight timing (SU 207).
+            PostTriggerWorldMessage("we_camera_command_done", cur.Scid, cur.Scid);
+            StartNisSegment(cur.Next);
+        }
+    }
+
+    private void DrawNisLetterbox(int viewportW, int viewportH)
+    {
+        if (_nisLetterbox <= 0f || _barRenderer is null) return;
+        // widescreen_height default 0.75 → 12.5% black bars top and bottom.
+        int barH = (int)(viewportH * 0.125f * _nisLetterbox);
+        if (barH <= 0) return;
+        var black = new Vector4(0f, 0f, 0f, 1f);
+        _barRenderer.DrawRect(viewportW, viewportH, 0, 0, viewportW, barH, black);
+        _barRenderer.DrawRect(viewportW, viewportH, 0, viewportH - barH, viewportW, barH, black);
+    }
+
     /// <summary>SC-MOB-COMMANDS — cmd_ai_c_* placements from command.gas,
     /// keyed by SCID. Patrol chains link via [cmd_ai_dojob] next_scid; an
     /// actor's placement authors [mind] initial_command pointing at its
@@ -6400,10 +6604,50 @@ void main()
                     world = Vector3.Transform(local, nodeWorld);
                 _commands[p.Scid] = (p.TemplateName, next, world);
                 loaded++;
+                // SC-NIS - index NIS gizmos with world pose (placement
+                // quaternion composed with the anchor node's rotation).
+                var tnLower = p.TemplateName.ToLowerInvariant();
+                if (tnLower is "cmd_enter_nis" or "cmd_camera_command" or "cmd_camera_waypoint" or "cmd_leave_nis")
+                {
+                    var nis = new NisCommand { Scid = p.Scid, Type = tnLower, Pos = world, Orient = p.Placement.Orientation };
+                    if (tnLower == "cmd_leave_nis") nis.Duration = 2f;
+                    if (_regionLayout is not null &&
+                        _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nw2))
+                    {
+                        var rotOnly = new Matrix4x4(
+                            nw2.M11, nw2.M12, nw2.M13, 0f,
+                            nw2.M21, nw2.M22, nw2.M23, 0f,
+                            nw2.M31, nw2.M32, nw2.M33, 0f,
+                            0f, 0f, 0f, 1f);
+                        nis.Orient = Quaternion.Normalize(Quaternion.Concatenate(
+                            p.Placement.Orientation, Quaternion.CreateFromRotationMatrix(rotOnly)));
+                    }
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.StartsWith("cmd_", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var a2 in child.Attributes)
+                        {
+                            if (a2.Name.Equals("next_scid", StringComparison.OrdinalIgnoreCase))
+                            { TryParseSnodeGuid(a2.Value, out var nx); nis.Next = nx; }
+                            else if (a2.Name.Equals("duration", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (float.TryParse(a2.Value.Trim(), System.Globalization.NumberStyles.Float,
+                                        System.Globalization.CultureInfo.InvariantCulture, out var du))
+                                    nis.Duration = du;
+                            }
+                            else if (a2.Name.Equals("order", StringComparison.OrdinalIgnoreCase))
+                                nis.Snap = a2.Value.Contains("snap", StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+                    _nisCommands[p.Scid] = nis;
+                }
             }
+            // SC-NIS - command gizmos can embed [instance_triggers]
+            // (cameras listening for we_camera_command_done); register them.
+            _actorSpawner?.SpawnTriggers(placements);
         }
         if (loaded > 0)
-            Console.WriteLine($"  ai commands: {loaded} placement(s) indexed ({_commands.Count} total)");
+            Console.WriteLine($"  ai commands: {loaded} placement(s) indexed ({_commands.Count} total, {_nisCommands.Count} NIS gizmo(s))");
     }
 
     /// <summary>Walk a command chain into a waypoint list. Loops when the
@@ -7477,7 +7721,10 @@ void main()
         // at him. _chaseYaw is the orbit angle around the player's +Y axis;
         // yaw=0 puts the camera on +Z so the player is seen looking down -Z
         // (screen "forward"). Yaw/pitch of Camera are overwritten here.
-        if (_cameraMode == CameraMode.Chase && _player is not null)
+        // SC-NIS - the sequence owns the camera while active; the chase
+        // snap below would fight the authored pans.
+        UpdateNis((float)dt);
+        if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off)
         {
             var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
             float horiz, height;
@@ -7587,7 +7834,7 @@ void main()
                     // so non-combatants and brain-less actors still tick.
                     s.Actor.Host.TickOverride((float)stepSec);
                     if (s.Brain is null) continue;
-                    bool hostile = s.Actor.Stats.IsCombatant;
+                    bool hostile = s.Actor.Stats.IsCombatant && _nisPhase == NisPhase.Off;
                     s.Brain.Tick(
                         (float)stepSec,
                         hostile ? npcTargetPos    : null,
@@ -9769,6 +10016,7 @@ void main()
     // point lies outside any walkable triangle.
     private void TryClickToMove(Vector2 cursorPx)
     {
+        if (_nisPhase != NisPhase.Off) return; // SC-NIS input lockout
         if (_player is null || _playerFollower is null || _navMesh is null) return;
         if (_player.IsDead) return;
         if (_window is null) return;
@@ -9849,6 +10097,7 @@ void main()
     private const float ClickTalkRadius = 3f;
     private bool TryClickToTalk(Vector2 cursorPx)
     {
+        if (_nisPhase != NisPhase.Off) return false; // SC-NIS input lockout
         if (_player is null || _window is null || _actors.Count == 0) return false;
         if (_player.IsDead) return false;
         if (_conversations is null || _conversations.Count == 0) return false;
@@ -10068,6 +10317,7 @@ void main()
 
     private void TryClickToAttack(Vector2 cursorPx)
     {
+        if (_nisPhase != NisPhase.Off) return; // SC-NIS input lockout
         if (_player is null || _window is null || _actors.Count == 0) return;
         if (_player.IsDead) return;
         var size = _window.FramebufferSize;
@@ -14746,6 +14996,7 @@ void main()
             // SC-QUEST-UI-B — always-visible tracker for the current
             // objective; the full journal stays on 'L'.
             DrawQuestTracker(size.X, size.Y);
+            DrawNisLetterbox(size.X, size.Y);
 
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
@@ -15721,6 +15972,9 @@ void main()
         _pendingObjectSpawns.Clear();
         _commands.Clear();
         _commandGasLoaded?.Clear();
+        _nisCommands.Clear();
+        _nisPhase = NisPhase.Off;
+        _nisLetterbox = _nisLetterboxTarget = 0f;
         _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {
