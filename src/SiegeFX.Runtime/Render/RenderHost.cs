@@ -14439,12 +14439,12 @@ void main()
         // a region full of sconces doesn't flood the particle budget.
         if (_particles is not null && _flameSources.Count > 0)
         {
-            var flameCol = new Vector4(1.00f, 0.60f, 0.22f, 1f);
             var camPos = _camera.Position;
             foreach (var f in _flameSources)
             {
                 if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
-                f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, (float)dt, 18f, f.Carry);
+                // Small, dense, tapering torch lick (not the smoky SpawnFire plume).
+                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.13f, (float)dt, 34f, f.Carry);
             }
         }
         _particles?.Tick((float)dt);

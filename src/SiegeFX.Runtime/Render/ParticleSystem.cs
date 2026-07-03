@@ -675,6 +675,40 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         return budget - n;
     }
 
+    /// <summary>SC-TORCH-FLAME — a crisp, dense torch/sconce flame (not the
+    /// general SpawnFire plume, which grows + lives long and reads as smoke).
+    /// Licks start wide at the base with a hot yellow-white core and TAPER to
+    /// a point as they rise, short-lived and tight so the shape stays a flame
+    /// rather than a drifting cloud. Additive so it glows.</summary>
+    public float MaintainTorchFlame(Vector3 position, float scale, float dt, float rate, float carry)
+    {
+        float budget = carry + rate * dt;
+        int n = (int)budget;
+        for (int i = 0; i < n; i++)
+        {
+            var jitter = new Vector3(Rand(-0.04f, 0.04f), Rand(0f, 0.03f), Rand(-0.04f, 0.04f)) * scale;
+            float life = Rand(0.32f, 0.55f);
+            // Hotter (whiter) near the core, cooler (redder) on the outer licks.
+            float heat = Rand(0f, 1f);
+            var hot = new Vector4(1.0f, 0.72f + 0.22f * heat, 0.30f + 0.30f * heat, 1f);
+            _particles.Add(new Particle
+            {
+                Position  = position + jitter,
+                Velocity  = new Vector3(Rand(-0.03f, 0.03f), Rand(0.55f, 0.9f), Rand(-0.03f, 0.03f)) * scale,
+                Accel     = new Vector3(0f, 0.3f * scale, 0f),
+                Color0    = hot,                                     // bright hot base
+                Color1    = new Vector4(0.85f, 0.18f, 0.03f, 0f),    // fade to red, gone
+                Scale0    = scale * 0.85f,                           // wide at the wick
+                Scale1    = scale * 0.10f,                           // taper to a lick tip
+                Life      = life,
+                TotalLife = life,
+                TexSlot   = 0,
+                Additive  = 1,
+            });
+        }
+        return budget - n;
+    }
+
     public float MaintainSmoke(Vector3 position, Vector4 color, float scale, float dt, float rate, float carry)
     {
         float budget = carry + rate * dt;
