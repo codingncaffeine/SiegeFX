@@ -842,6 +842,10 @@ public sealed class RenderHost : IDisposable
             name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase) &&
             _nisCommands.TryGetValue(toScid, out var nisCmd))
             ActivateNisCommand(nisCmd);
+        // SC-SUBTITLES - narration beats target an actor with a nis=true
+        // conversation (the intro storyteller).
+        if (name.Equals("we_req_talk_begin", StringComparison.OrdinalIgnoreCase))
+            OnTalkBeginMessage(toScid);
     }
 
     private string? _lastLoggedMoodChange;
@@ -4009,6 +4013,8 @@ void main()
             if (File.Exists(soundPath))
             {
                 _playSoundTank = TankFile.Open(soundPath);
+                var voicesPath = Path.Combine(ds1Resources, "Voices.dsres");
+                if (File.Exists(voicesPath)) _playVoicesTank = TankFile.Open(voicesPath);
                 _audio = SiegeFX.Audio.AudioEngine.TryCreate();
                 _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
                 // Phase 24-POLISH-C — register the frontend button click
@@ -4025,6 +4031,9 @@ void main()
                     TryRegisterSfx(soundReader, SfxFrontendLogoFlyout,
                         "/sound/effects/s_e_frontend_logo_flyout.wav");
                 }
+                // SC-MENU-MUSIC — DS1's frontend theme loops under the menu;
+                // region moods take the channel over once a game starts.
+                PlayMusicTrackBasename("s_m_frontend");
             }
         }
         catch (Exception ex) { Console.Error.WriteLine($"  boot: audio init failed — {ex.Message}"); }
@@ -4666,6 +4675,8 @@ void main()
         _nisCommands.Clear();
         _nisPhase = NisPhase.Off;
         _nisLetterbox = _nisLetterboxTarget = 0f;
+        _subtitleNodes = null;
+        _voicePlayer?.Stop();
         _nextGeneratorChildScid = 0xFE000001;
         // Fade state is per-run: a new game must not inherit the previous
         // session's cutaway (triggers respawn fresh and re-derive it).
@@ -5034,6 +5045,9 @@ void main()
             if (File.Exists(soundTankPath))
             {
                 _playSoundTank = TankFile.Open(soundTankPath);
+                var voicesTankPath = Path.Combine(Path.GetDirectoryName(soundTankPath) ?? "", "Voices.dsres");
+                if (_playVoicesTank is null && File.Exists(voicesTankPath))
+                    _playVoicesTank = TankFile.Open(voicesTankPath);
                 var soundReader = new TankReader(_playSoundTank);
                 _audio = SiegeFX.Audio.AudioEngine.TryCreate();
                 // Phase 22-SC-MUSIC-B — share the OpenAL context with the
@@ -6556,6 +6570,142 @@ void main()
         }
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // SC-SUBTITLES — message-driven narration. DS1 plays "storyteller"
+    // beats by sending we_req_talk_begin at an actor whose conversation
+    // nodes carry nis=true screen text + a voice sample (the intro's
+    // narrator 0x01C00DAD reads s_v_king_intro over the opening pans).
+    // Text pages through bottom-center lines paced by length; the voice
+    // MP3 streams on a dedicated second MusicPlayer so the mood music
+    // keeps its own channel.
+    // ────────────────────────────────────────────────────────────────────
+    private SiegeFX.Audio.MusicPlayer? _voicePlayer;
+    private TankFile? _playVoicesTank;
+    private List<SiegeFX.Core.Assets.DialogueNode>? _subtitleNodes;
+    private int _subtitleIdx;
+    private float _subtitleRemaining;
+    private string[] _subtitleLines = Array.Empty<string>();
+    private int _subtitlePage, _subtitlePageCount;
+    private float _subtitlePageDuration;
+    private bool _subtitleVoiceActive;
+    private const int SubtitleLinesPerPage = 3;
+
+    private void OnTalkBeginMessage(uint targetScid)
+    {
+        if (_conversations is null || _conversations.Count == 0) return;
+        foreach (var s in _actors)
+        {
+            if (s.Actor.Instance.Scid != targetScid) continue;
+            var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
+            foreach (var key in keys)
+            {
+                if (!_conversations.TryGetValue(key, out var def))
+                {
+                    var alt = key.StartsWith("conversation_", StringComparison.OrdinalIgnoreCase)
+                        ? key["conversation_".Length..] : "conversation_" + key;
+                    _conversations.TryGetValue(alt, out def);
+                }
+                if (def is null || def.Nodes.Count == 0) continue;
+                StartSubtitleConversation(def);
+                return;
+            }
+            return;
+        }
+    }
+
+    private void StartSubtitleConversation(SiegeFX.Core.Assets.ConversationDef def)
+    {
+        var ordered = new List<SiegeFX.Core.Assets.DialogueNode>(def.Nodes);
+        ordered.Sort((a, b) => (a.Order < 0 ? int.MaxValue : a.Order)
+            .CompareTo(b.Order < 0 ? int.MaxValue : b.Order));
+        _subtitleNodes = ordered;
+        _subtitleIdx = -1;
+        AdvanceSubtitleNode();
+    }
+
+    private void AdvanceSubtitleNode()
+    {
+        _subtitleVoiceActive = false;
+        _voicePlayer?.Stop();
+        _subtitleIdx++;
+        if (_subtitleNodes is null || _subtitleIdx >= _subtitleNodes.Count)
+        {
+            _subtitleNodes = null;
+            _subtitleLines = Array.Empty<string>();
+            return;
+        }
+        var node = _subtitleNodes[_subtitleIdx];
+        // Screen text authors literal \n sequences.
+        _subtitleLines = node.Text.Replace("\\n", "\n").Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        _subtitlePageCount = Math.Max(1, (_subtitleLines.Length + SubtitleLinesPerPage - 1) / SubtitleLinesPerPage);
+        _subtitlePage = 0;
+        // Length-paced read time; the intro's 13-line monologue lands near
+        // its ~80s narration without needing the MP3's true duration.
+        float total = Math.Clamp(node.Text.Length * 0.085f + 3f, 5f, 120f);
+        _subtitlePageDuration = total / _subtitlePageCount;
+        _subtitleRemaining = _subtitlePageDuration;
+        if (!string.IsNullOrEmpty(node.VoiceSample) && _audio is not null)
+        {
+            _voicePlayer ??= SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
+            if (_voicePlayer is not null && _playVoicesTank is not null)
+            {
+                try
+                {
+                    var vr = new TankReader(_playVoicesTank);
+                    var vp = $"/sound/voices/{node.VoiceSample.Trim()}.mp3";
+                    if (vr.TryGetFile(vp, out _) &&
+                        _voicePlayer.Play(vr.ExtractToMemory(vp), loop: false))
+                    {
+                        _subtitleVoiceActive = true;
+                        Console.WriteLine($"[subtitle] voice {node.VoiceSample}");
+                    }
+                    else Console.WriteLine($"[subtitle] voice sample '{node.VoiceSample}' not found in Voices.dsres");
+                }
+                catch (Exception ex) { Console.WriteLine($"[subtitle] voice failed: {ex.Message}"); }
+            }
+        }
+    }
+
+    private void UpdateSubtitles(float dt)
+    {
+        _voicePlayer?.Tick();
+        if (_subtitleNodes is null) return;
+        _subtitleRemaining -= dt;
+        if (_subtitleRemaining > 0f) return;
+        if (_subtitlePage + 1 < _subtitlePageCount)
+        {
+            _subtitlePage++;
+            _subtitleRemaining = _subtitlePageDuration;
+            return;
+        }
+        // Last page done; if the voice is still reading, hold the final page
+        // until it finishes so audio and text end together.
+        if (_subtitleVoiceActive && _voicePlayer is not null && _voicePlayer.IsPlaying)
+        {
+            _subtitleRemaining = 0.5f;
+            return;
+        }
+        AdvanceSubtitleNode();
+    }
+
+    private void DrawSubtitles(int viewportW, int viewportH)
+    {
+        if (_subtitleNodes is null || _subtitleLines.Length == 0 || _textRenderer is null) return;
+        int start = _subtitlePage * SubtitleLinesPerPage;
+        int count = Math.Min(SubtitleLinesPerPage, _subtitleLines.Length - start);
+        if (count <= 0) return;
+        const int lineH = 18;
+        int barH = (int)(viewportH * 0.125f * _nisLetterbox);
+        int y0 = viewportH - Math.Max(barH, 24) - count * lineH - 8;
+        var ink = new Vector4(0.96f, 0.94f, 0.85f, 1f);
+        for (int i = 0; i < count; i++)
+        {
+            var line = _subtitleLines[start + i];
+            int x = Math.Max(8, viewportW / 2 - line.Length * 4);
+            _textRenderer.DrawString(viewportW, viewportH, line, x, y0 + i * lineH, ink);
+        }
+    }
+
     private void DrawNisLetterbox(int viewportW, int viewportH)
     {
         if (_nisLetterbox <= 0f || _barRenderer is null) return;
@@ -7724,6 +7874,7 @@ void main()
         // SC-NIS - the sequence owns the camera while active; the chase
         // snap below would fight the authored pans.
         UpdateNis((float)dt);
+        UpdateSubtitles((float)dt);
         if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off)
         {
             var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
@@ -14997,6 +15148,7 @@ void main()
             // objective; the full journal stays on 'L'.
             DrawQuestTracker(size.X, size.Y);
             DrawNisLetterbox(size.X, size.Y);
+            DrawSubtitles(size.X, size.Y);
 
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
@@ -15975,6 +16127,8 @@ void main()
         _nisCommands.Clear();
         _nisPhase = NisPhase.Off;
         _nisLetterbox = _nisLetterboxTarget = 0f;
+        _subtitleNodes = null;
+        _voicePlayer?.Stop();
         _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {

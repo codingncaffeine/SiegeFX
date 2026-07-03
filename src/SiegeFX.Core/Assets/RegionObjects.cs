@@ -129,6 +129,25 @@ public static class RegionObjects
                 diags.Add($"{actorPath}: bad SCID '{scidText}' on [{node.Header}]"); continue;
             }
 
+            // SC-SP-FILTER — DS1 authors mode-exclusive twins (fh_r1 ships an
+            // "SP Norick" with is_multi_player=false AND an "MP Norick" with
+            // is_single_player=false at the same bridge). SiegeFX is
+            // single-player: placements flagged is_single_player=false are
+            // the multiplayer variants and must not spawn, or both twins
+            // appear at once.
+            bool spExcluded = false;
+            foreach (var c in node.Children)
+            {
+                if (!string.Equals(c.Header, "common", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var attr in c.Attributes)
+                {
+                    if (!string.Equals(attr.Name, "is_single_player", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (attr.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)) spExcluded = true;
+                }
+                break;
+            }
+            if (spExcluded) continue;
+
             var placement = node.Children.FirstOrDefault(c =>
                 string.Equals(c.Header, "placement", StringComparison.OrdinalIgnoreCase));
             if (placement is null)
