@@ -7942,14 +7942,37 @@ void main()
     /// through the same placement + node transform.</summary>
     private Matrix4x4 ComposeSocketWorld(AspMesh asp, int boneIndex, SiegeFX.Core.Assets.NodePlacement p)
     {
-        var bp = asp.BindPose[boneIndex];
-        var local = Matrix4x4.CreateFromQuaternion(bp.Rotation) *
-                    Matrix4x4.CreateTranslation(bp.Translation) *
+        // Bind poses are stored PARENT-RELATIVE: the socket's own transform
+        // omits bone 0's Z-up->Y-up correction, so using it alone dropped the
+        // flame sideways-and-down (at the sconce base). Accumulate the full
+        // parent chain so the socket carries the same root rotation as the
+        // geometry.
+        var local = AbsoluteBindPose(asp, boneIndex) *
                     Matrix4x4.CreateFromQuaternion(p.Orientation) *
                     Matrix4x4.CreateTranslation(p.LocalPosition);
         if (_regionLayout is null) return local;
         if (!_regionLayout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
         return local * nodeWorld;
+    }
+
+    /// <summary>Absolute (root-relative) bind pose of a bone: its own bind
+    /// transform composed up the parent chain. Bone 0's parent is the root,
+    /// so AbsoluteBindPose(0) == bind pose 0 — matching how the geometry is
+    /// rooted in <see cref="ComputeRootBindPose"/>.</summary>
+    private static Matrix4x4 AbsoluteBindPose(AspMesh asp, int idx)
+    {
+        var m = Matrix4x4.Identity;
+        int i = idx, guard = 0;
+        while (i >= 0 && i < asp.BindPose.Length && guard++ < 64)
+        {
+            var bp = asp.BindPose[i];
+            m *= Matrix4x4.CreateFromQuaternion(bp.Rotation) *
+                 Matrix4x4.CreateTranslation(bp.Translation);
+            int parent = i < asp.BoneParents.Length ? asp.BoneParents[i] : (i == 0 ? -1 : 0);
+            if (parent == i) break; // self-parent guard
+            i = parent;
+        }
+        return m;
     }
 
     /// <summary>Phase 21c — bone-0's world bind pose for a static prop, used to
