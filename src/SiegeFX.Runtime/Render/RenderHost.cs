@@ -6733,6 +6733,59 @@ void main()
         }
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // SC-COMPASS — DS1's rotating compass, spec straight from
+    // config/compass.gas: a 108x108 dial anchored top-right (radius 54)
+    // with cardinal letters orbiting at distance 28. The letters spin
+    // with the view yaw so screen-up always names the direction the
+    // camera faces — a real compass read. North = world -Z (the yaw-zero
+    // forward of our camera convention).
+    // ────────────────────────────────────────────────────────────────────
+    private GlTexture? _compassCover, _compassN, _compassE, _compassS, _compassW;
+    private bool _compassLoadTried;
+
+    private void EnsureCompassTextures()
+    {
+        if (_compassLoadTried) return;
+        _compassLoadTried = true;
+        _compassCover = LoadTexsetTexture("b_gui_ig_mnu_compass_cover");
+        _compassN = LoadTexsetTexture("b_gui_ig_mnu_compass_n");
+        _compassE = LoadTexsetTexture("b_gui_ig_mnu_compass_e");
+        _compassS = LoadTexsetTexture("b_gui_ig_mnu_compass_s");
+        _compassW = LoadTexsetTexture("b_gui_ig_mnu_compass_w");
+        if (_compassCover is null)
+            Console.WriteLine("[compass] cover texture unresolved — compass hidden");
+    }
+
+    private void DrawCompass(int viewportW, int viewportH)
+    {
+        if (_iconRenderer is null) return;
+        EnsureCompassTextures();
+        if (_compassCover is null) return;
+        float scale = Math.Clamp(viewportH / 480f, 1f, 3f);
+        int size = (int)(108 * scale);
+        int cx = viewportW - size / 2 - (int)(6 * scale);
+        int cy = size / 2 + (int)(6 * scale);
+        var tint = new Vector4(1f, 1f, 1f, 1f);
+        _iconRenderer.DrawIcon(viewportW, viewportH, _compassCover,
+            cx - size / 2, cy - size / 2, size, size, tint);
+        float camYaw = _camera.Yaw;
+        void Letter(GlTexture? tex, float worldYaw)
+        {
+            if (tex is null) return;
+            float a = worldYaw - camYaw;
+            float dist = 28f * scale;
+            int lw = (int)(14 * scale), lh = (int)(14 * scale);
+            int lx = cx + (int)(MathF.Sin(a) * dist) - lw / 2;
+            int ly = cy - (int)(MathF.Cos(a) * dist) - lh / 2;
+            _iconRenderer.DrawIcon(viewportW, viewportH, tex, lx, ly, lw, lh, tint);
+        }
+        Letter(_compassN, 0f);             // world -Z
+        Letter(_compassE, MathF.PI / 2f);  // world +X
+        Letter(_compassS, MathF.PI);       // world +Z
+        Letter(_compassW, -MathF.PI / 2f); // world -X
+    }
+
     private void DrawNisLetterbox(int viewportW, int viewportH)
     {
         if (_nisLetterbox <= 0f || _barRenderer is null) return;
@@ -15262,6 +15315,8 @@ void main()
             // SC-QUEST-UI-B — always-visible tracker for the current
             // objective; the full journal stays on 'L'.
             DrawQuestTracker(size.X, size.Y);
+            // SC-COMPASS — hidden during cinematics like the rest of the HUD.
+            if (_nisPhase == NisPhase.Off) DrawCompass(size.X, size.Y);
             DrawNisLetterbox(size.X, size.Y);
             DrawSubtitles(size.X, size.Y);
 
