@@ -317,6 +317,12 @@ public sealed class TriggerRuntime
             case "fade_nodes_global":
                 ctx.FadeNodes(act.Verb, act.Args);
                 return;
+            case "change_quest_state":
+                // SC-QUEST-OBJ-B — DS1's REACH mechanism (Siege University
+                // 209): region triggers flip quest state when the party
+                // arrives (quest name + activate/deactivate/complete + step).
+                ctx.ChangeQuestState(act.Args);
+                return;
             case "call_sfx_script":
             {
                 // action* = call_sfx_script("smoke_emitter", "color0(1,1,1)…").
@@ -494,6 +500,9 @@ public class TriggerContext
     /// (regionGuid, nodesection, nodelevel, nodeobject group addressing);
     /// the trailing arg is the fade mode ("out:black", "out", "in").</summary>
     public virtual void FadeNodes(string verb, IReadOnlyList<string> args) { }
+    /// <summary>SC-QUEST-OBJ-B — change_quest_state trigger action
+    /// (quest key + activate/deactivate/complete + optional step).</summary>
+    public virtual void ChangeQuestState(IReadOnlyList<string> args) { }
     /// <summary>Phase 17-SC-G — emitter / spell trigger gateway. The default
     /// implementation is a no-op so the audit CLI's headless context can still
     /// drive trigger fan-out without dragging the Runtime project in. Live

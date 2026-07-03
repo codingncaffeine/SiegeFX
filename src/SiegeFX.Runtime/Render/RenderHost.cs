@@ -1221,6 +1221,50 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    /// <summary>SC-QUEST-OBJ-B — change_quest_state trigger action, DS1's
+    /// REACH mechanism: a spatial trigger at the destination flips quest
+    /// state when the party arrives. args = (questKey, state[, step]) where
+    /// state is activate / deactivate / complete. Trigger rows re-dispatch
+    /// while the condition holds; AddActive/MarkCompleted are edge-stable so
+    /// we log only on actual transitions.</summary>
+    internal void OnTriggerChangeQuestState(IReadOnlyList<string> args)
+    {
+        if (args is null || args.Count == 0 || _progression is null) return;
+        var key = args[0].Trim().Trim('"');
+        if (key.Length == 0) return;
+        // Shipped gom2 authors change_quest_state("quest_destroy_gom",
+        // "active", 1) and ("quest_destroy_gom", "completed", 0) — the state
+        // tokens are adjective forms; accept the verb forms too.
+        string state = "active";
+        for (int i = 1; i < args.Count; i++)
+        {
+            var a = args[i].Trim().Trim('"').ToLowerInvariant();
+            if (a is "active" or "activate" or "deactivate" or "inactive" or "complete" or "completed")
+            { state = a; break; }
+        }
+        switch (state)
+        {
+            case "active":
+            case "activate":
+                if (_progression.Journal.AddActive(key))
+                    Console.WriteLine($"[quest] trigger activated '{key}'");
+                break;
+            case "complete":
+            case "completed":
+                if (_progression.Journal.MarkCompleted(key))
+                    Console.WriteLine($"[quest] trigger completed '{key}'");
+                break;
+            case "deactivate":
+            case "inactive":
+                // DS1 quests cannot fail; deactivate simply parks the entry.
+                // The journal has no explicit park state — treat as no-op but
+                // log once so authored deactivates are visible in traces.
+                if (_fadeWarnedOnce.Add($"questdeact:{key}"))
+                    Console.WriteLine($"[quest] trigger deactivate '{key}' (no-op — journal keeps state)");
+                break;
+        }
+    }
+
     /// <summary>SC-FADE-GROUPS — true when the player's standing snode belongs
     /// to <paramref name="regionGuid"/> and its fade-group keys match the
     /// -1-wildcarded triple. Drives party_member_within_node conditions (the

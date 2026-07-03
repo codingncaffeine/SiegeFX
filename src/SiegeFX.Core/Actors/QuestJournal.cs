@@ -115,8 +115,15 @@ public sealed class QuestJournal
             var def = entry.Definition;
             if (def is null || string.IsNullOrEmpty(def.KillTargetTemplate)) continue;
             if (def.KillCountGoal <= 0) continue;
-            if (deadTemplateName.IndexOf(def.KillTargetTemplate,
-                                         StringComparison.OrdinalIgnoreCase) < 0) continue;
+            // SC-QUEST-OBJ-E — named-boss kills use the underscore-anchored
+            // exact match (same rule as talk targets) so "gom" can't credit
+            // off any goblin-shaped template; umbrella rows ("krug",
+            // "bandit") keep the intentional substring behavior.
+            bool killMatch = def.KillTargetExact
+                ? IsTalkTargetMatch(deadTemplateName, def.KillTargetTemplate)
+                : deadTemplateName.IndexOf(def.KillTargetTemplate,
+                                           StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!killMatch) continue;
 
             entry.KillProgress = Math.Min(def.KillCountGoal, entry.KillProgress + 1);
             if (entry.KillProgress >= def.KillCountGoal)
@@ -842,4 +849,10 @@ public sealed class QuestDefinition
     /// talk credits unconditionally (the plain TALK path). Substring
     /// match same as PickupTargetTemplate.</summary>
     public string DeliverItemTemplate  { get; init; } = "";
+
+    /// <summary>SC-QUEST-OBJ-E — when true, <see cref="KillTargetTemplate"/>
+    /// matches with the underscore-anchored exact rule instead of substring.
+    /// Set on named-boss rows ("gom") where substring would collide with
+    /// unrelated template families ("goblin_*").</summary>
+    public bool KillTargetExact { get; init; }
 }

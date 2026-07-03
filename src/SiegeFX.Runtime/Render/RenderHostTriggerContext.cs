@@ -71,4 +71,9 @@ internal sealed class RenderHostTriggerContext : TriggerContext
     {
         return _host.PlayerWithinNodeGroup(regionGuid, nodeSection, nodeLevel, nodeObject);
     }
+
+    public override void ChangeQuestState(IReadOnlyList<string> args)
+    {
+        _host.OnTriggerChangeQuestState(args);
+    }
 }
