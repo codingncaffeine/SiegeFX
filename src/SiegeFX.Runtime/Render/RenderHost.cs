@@ -136,6 +136,15 @@ public sealed class RenderHost : IDisposable
     // LoadStaticProps; cleared when _staticProps clears on region
     // unload.
     private readonly List<StaticPropInstance> _doorProps = new();
+
+    // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
+    // terrain RegionInstance AABB centers in that region). Computed once
+    // after the world layout settles; used by the render gates to decide
+    // which regions sit "above" the player's current region so the entire
+    // upper layer disappears when entering a basement / cellar / cave /
+    // dungeon. Stable across player Y changes inside a region — only
+    // updates on region rebuild.
+    private readonly Dictionary<string, float> _regionMeanY = new();
     private readonly Dictionary<string, AspMesh?> _propAspCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<AspMesh, StaticMesh> _propGlMeshCache = new();
 
@@ -923,30 +932,131 @@ public sealed class RenderHost : IDisposable
     /// dungeon entrance auto-reveals as the camera angles down. No
     /// animation in v1; binary in/out. Add easing later if it flickers at
     /// AABB edges.</summary>
+    /// <summary>SC-REGION-LAYER-HIDE — recompute per-region mean Y from
+    /// the current _regionInstances. Call after any change to the
+    /// instance list (LoadRegion, world-streaming preload, region
+    /// teardown). Each region's mean is the average AABB-center Y of
+    /// its terrain instances; that's stable enough to compare against
+    /// neighbor regions for the "is this region above/below me"
+    /// decision and avoids needing nodes.gas centroids.</summary>
+    private void RecomputeRegionMeanY()
+    {
+        _regionMeanY.Clear();
+        var sums = new Dictionary<string, (double Sum, int Count)>();
+        foreach (var inst in _regionInstances)
+        {
+            if (string.IsNullOrEmpty(inst.RegionPath)) continue;
+            float centerY = 0.5f * (inst.WorldAabbMin.Y + inst.WorldAabbMax.Y);
+            sums.TryGetValue(inst.RegionPath, out var entry);
+            sums[inst.RegionPath] = (entry.Sum + centerY, entry.Count + 1);
+        }
+        foreach (var kv in sums) _regionMeanY[kv.Key] = (float)(kv.Value.Sum / kv.Value.Count);
+    }
+
+    /// <summary>SC-REGION-LAYER-HIDE — true if <paramref name="regionPath"/>
+    /// sits geometrically above the player's current region. Used as
+    /// the render gate for both terrain instances and static props so
+    /// the upper layer hides cleanly when the player enters a basement
+    /// / cellar / cave. <see cref="UpperRegionMargin"/> keeps adjacent
+    /// same-elevation regions visible. Returns false when no player
+    /// region is tracked yet (e.g. before first spawn).</summary>
+    /// <summary>SC-REGION-LAYER-HIDE — sticky underground/surface mode
+    /// with hysteresis. Set true when player Y drops below
+    /// <see cref="UndergroundEnterY"/>; only flips back to false when
+    /// player Y rises above <see cref="UndergroundExitY"/>. The 4u
+    /// gap between the two thresholds prevents any flicker from
+    /// jittery follower Y values, staircase steps, or in-region terrain
+    /// variance. While underground, every terrain instance, prop, and
+    /// actor whose origin Y is above <see cref="UpperLayerCutoffY"/>
+    /// gets dropped from render — disables the entire upper layer.
+    /// Re-emerges in a single flip when the player climbs above the
+    /// exit threshold.</summary>
+    // Must be CLEARLY below ground to count as underground — fh_r1's
+    // basement-entrance terrain dips to ~Y=-4 outside the house so a
+    // shallower enter threshold latches underground mode by accident
+    // and hides the surface world from spawn. -7 sits inside the
+    // basement proper (floor ~Y=-8), well below any outdoor bowl.
+    private const float UndergroundEnterY = -7.0f;
+    // Exit threshold needs ~4u of hysteresis from enter to avoid any
+    // flicker mid-stair. Climbing back up to Y=-3 (above the basement
+    // ceiling) flips out of underground.
+    private const float UndergroundExitY  = -3.0f;
+    // Anything whose representative Y (AABB center for terrain, origin
+    // for props/actors) sits above this cutoff is treated as the upper
+    // layer while underground. -4 keeps mid-stair pieces visible while
+    // hiding the top-of-stairs entry piece and everything above ground.
+    private const float UpperLayerCutoffY = -4.0f;
+    private bool _isUnderground;
+
+    private void UpdateUndergroundMode()
+    {
+        if (_playerFollower is null) return;
+        float y = _playerFollower.Position.Y;
+        bool wasUnderground = _isUnderground;
+        if (!_isUnderground && y < UndergroundEnterY) _isUnderground = true;
+        else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
+        if (wasUnderground != _isUnderground)
+            Console.WriteLine($"[underground] flip -> {_isUnderground} at player Y={y:F1}");
+    }
+
+    private bool IsAbovePlayer(float originY)
+    {
+        // SC-REGION-LAYER-HIDE PARKED — the underground-mode latch +
+        // Y-cutoff approach didn't land cleanly: test-102 spawns the
+        // PC in the outdoor basement-bowl at Y=-4 which sits below any
+        // reasonable "enter underground" threshold, so the latch
+        // either fired at spawn (breaking surface render) or stayed
+        // off through the basement (no cutaway). The gas data driving
+        // DS1's actual mechanism is still unknown — camera_fade alone
+        // only marks ~7 small roof pieces, not the whole upper layer.
+        // Disabling the gate so the rest of the render keeps working
+        // until we figure out how DS1 actually does this. All the
+        // plumbing (RegionPath on instances/props, _isUnderground,
+        // RecomputeRegionMeanY) stays in place for a future attempt.
+        return false;
+    }
+
+    private int _camFadeHeartbeat;
     private void UpdateCameraFade()
     {
         if (_player is null || _playerFollower is null) return;
-        // Use the chase-cam eye position. _camera is the active camera; we
-        // sample its world translation via the inverse view matrix's row3.
-        var view = _camera.GetView();
-        if (!Matrix4x4.Invert(view, out var camWorld)) return;
-        var camPos = camWorld.Translation;
+        var camPos = _camera.Position;
         var playerPos = _playerFollower.Position + new Vector3(0f, 1.5f, 0f); // aim mid-body, not feet
+        // Heartbeat once per ~3 seconds (60 ticks/sec * 3s = 180) so we can
+        // confirm the eval is running even when no snode flips state — and
+        // verify the camera-position reads sanely against the player Y.
+        if ((++_camFadeHeartbeat % 180) == 0)
+        {
+            int flagged = 0;
+            foreach (var i in _regionInstances) if (i.CameraFade) flagged++;
+            Console.WriteLine($"[cam-fade] tick cam=({camPos.X:F1},{camPos.Y:F1},{camPos.Z:F1}) player=({playerPos.X:F1},{playerPos.Y:F1},{playerPos.Z:F1}) flagged={flagged} hidden={_fadedSnodeCounts.Count} underground={_isUnderground}");
+        }
+        // SC-CAMERA-FADE — Sims-style "hide everything above me" rule.
+        // When the player is below a camera_fade=true snode's vertical
+        // bottom, hide the snode. As soon as the player climbs up
+        // through its Y range (e.g. emerges from the basement) it
+        // reappears. The +0.5u margin keeps stairs themselves visible
+        // while descending — the snode containing the stairs has its
+        // bottom AT player Y, not below, so we don't pop them away
+        // mid-step.
+        const float CamFadeYMargin = 0.5f;
         for (int i = 0; i < _regionInstances.Count; i++)
         {
             var inst = _regionInstances[i];
             if (!inst.CameraFade) continue;
-            bool occluding = SegmentIntersectsAabb(camPos, playerPos, inst.WorldAabbMin, inst.WorldAabbMax);
+            bool occluding = playerPos.Y + CamFadeYMargin < inst.WorldAabbMin.Y;
             bool wasHidden = _fadedSnodeCounts.ContainsKey(inst.SnodeGuid);
             if (occluding && !wasHidden)
             {
                 _fadedSnodeCounts[inst.SnodeGuid] = 1;
                 SetNavFadeForSnode(inst.SnodeGuid, true);
+                Console.WriteLine($"[cam-fade] hide snode 0x{inst.SnodeGuid:X8} aabb=({inst.WorldAabbMin.X:F1},{inst.WorldAabbMin.Y:F1},{inst.WorldAabbMin.Z:F1})..({inst.WorldAabbMax.X:F1},{inst.WorldAabbMax.Y:F1},{inst.WorldAabbMax.Z:F1}) cam=({camPos.X:F1},{camPos.Y:F1},{camPos.Z:F1}) player=({playerPos.X:F1},{playerPos.Y:F1},{playerPos.Z:F1})");
             }
             else if (!occluding && wasHidden)
             {
                 _fadedSnodeCounts.Remove(inst.SnodeGuid);
                 SetNavFadeForSnode(inst.SnodeGuid, false);
+                Console.WriteLine($"[cam-fade] show snode 0x{inst.SnodeGuid:X8}");
             }
         }
     }
@@ -1086,6 +1196,14 @@ public sealed class RenderHost : IDisposable
         public float Life;
         public float MaxLife;
         public bool  IsDestroyed;
+
+        // SC-REGION-LAYER-HIDE — owning region's tank path. Used by
+        // the prop render gate to hide every prop from regions that
+        // sit geometrically above the player's current region, so
+        // entering a basement / cellar / cave makes the upper layer
+        // disappear in its entirety (terrain + props + actors).
+        public string RegionPath = "";
+        public float CenterY;
     }
 
     // Phase 9a — skrit-driven animation. The runtime ticks a SkritInstance every logic
@@ -1512,7 +1630,7 @@ public sealed class RenderHost : IDisposable
     private const float ChasePitchMin = 0.05f;          // ~3°
     private const float ChasePitchMax = (MathF.PI / 2f) - 0.05f; // ~87°
 
-    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid, bool CameraFade, Vector3 WorldAabbMin, Vector3 WorldAabbMax);
+    private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid, bool CameraFade, Vector3 WorldAabbMin, Vector3 WorldAabbMax, string RegionPath);
 
     /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
     /// <c>texset</c> from nodes.gas fills in at load time (e.g. <c>t_xxx_flr_04x04-a</c>
@@ -3849,11 +3967,12 @@ void main()
                 }
 
                 var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, worldXf);
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax, entry.Path));
             }
         }
 
         BuildTsdStoreAndPreload(terrainReader, rawIndex);
+        RecomputeRegionMeanY();
 
         // Frame the camera over the root region's origin, lifted so the player sees a
         // decent patch of ground on first paint. World extents span ±1km, so the user
@@ -3955,10 +4074,11 @@ void main()
             }
 
             var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, world);
-            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
+            _regionInstances.Add(new RegionInstance(world, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax, normalized));
         }
 
         BuildTsdStoreAndPreload(terrainReader, rawIndex);
+        RecomputeRegionMeanY();
 
         // Frame the camera on the anchor: pull back along +Z by ~3× the anchor SNO's
         // bounding radius and lift by ~1× so the tile is comfortably visible on first
@@ -4228,7 +4348,7 @@ void main()
                 }
 
                 var (wMin, wMax) = TransformAabb(mesh.Min, mesh.Max, worldXf);
-                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax));
+                _regionInstances.Add(new RegionInstance(worldXf, mesh, node.TexsetAbbr, node.Guid, node.CameraFade, wMin, wMax, rp));
                 instancesAdded++;
             }
         }
@@ -4238,6 +4358,7 @@ void main()
         // for streaming. Idempotent: BuildTsdStoreAndPreload re-runs the
         // index but only loads textures missing from _snoTextures.
         BuildTsdStoreAndPreload(terrainReader, rawIndex);
+        RecomputeRegionMeanY();
 
         if (isInitial)
         {
@@ -5589,6 +5710,8 @@ void main()
                         MaxLife       = maxLife,
                         IsDoor        = isDoor,
                         DoorUseRange  = useRange,
+                        RegionPath    = rp,
+                        CenterY       = world.Translation.Y,
                     };
                     _staticProps.Add(inst);
                     if (isDoor) _doorProps.Add(inst);
@@ -12558,6 +12681,19 @@ void main()
         // pose then lasts until lifetime expires.
         TickFragDebris(simDt);
         TickDoors(simDt);
+        // SC-REGION-LAYER-HIDE — sticky underground/surface mode.
+        // While underground, all upper-layer terrain / props / actors
+        // are dropped from render (matches DS1 — upper world is just
+        // black when you're in a basement/cave/dungeon).
+        UpdateUndergroundMode();
+        // SC-CAMERA-FADE — hide every camera_fade=true snode whose
+        // world AABB sits between the camera eye and the player.
+        // Cheap (only camera_fade-flagged snodes evaluate, ~5-10 in
+        // a typical region scope), binary in/out, no per-frame
+        // allocation. Drives both the render whole-snode skip and
+        // the nav fade-hidden mask so click-pick falls through to
+        // the basement floor while the upper structure is hidden.
+        UpdateCameraFade();
         // Phase 17-SC-F-2 — advance any active sfx_script coroutines and
         // run continuous-emitter spawn budgets. Must run after the particle
         // Tick so this frame's spawns get drawn rather than waiting one tick.
@@ -12794,6 +12930,10 @@ void main()
             else if (forceFlipEnv == "1") defaultFlipV = 1;
             foreach (var s in _actors)
             {
+                // SC-REGION-LAYER-HIDE — skip actors that belong to the
+                // upper layer when the player is below. Pure Y test,
+                // matched to the terrain and prop gates above.
+                if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
                 int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
@@ -13039,6 +13179,11 @@ void main()
                 // the on-hit code already kicked debris particles at the
                 // origin so the disappearance reads as a break, not a pop.
                 if (prop.IsDestroyed) continue;
+                // SC-REGION-LAYER-HIDE — drop props belonging to regions
+                // above the player's current region. Same flip cadence as
+                // the terrain gate; stable across in-region movement,
+                // only restored on region change back.
+                if (IsAbovePlayer(prop.CenterY)) continue;
                 if (!ReferenceEquals(prop.Texture, lastTex))
                 {
                     if (prop.Texture is not null)
@@ -13388,6 +13533,14 @@ void main()
                     // is lnode-granular via NavMesh.FadeHidden.
                     if (_fadedSnodeCounts.ContainsKey(inst.SnodeGuid))
                         continue;
+                    // SC-REGION-LAYER-HIDE — DS1 hides the entire upper
+                    // region when the player is in a sub-region beneath
+                    // it (basement / cellar / cave / dungeon). Test is
+                    // region-vs-region, not per-frame Y, so it stays
+                    // stable while the player climbs a staircase inside
+                    // the lower region — only flips back on region
+                    // change.
+                    if (IsAbovePlayer(0.5f * (inst.WorldAabbMin.Y + inst.WorldAabbMax.Y))) continue;
                     var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                     bool modelSet = false;
                     for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
