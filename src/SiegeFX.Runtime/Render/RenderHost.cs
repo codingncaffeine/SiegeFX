@@ -14446,7 +14446,7 @@ void main()
                 // Dense, tapering torch lick (not the smoky SpawnFire plume).
                 // Bigger scale + rate than a bare port so the shorter-lived
                 // licks still fill out a full flame.
-                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.34f, (float)dt, 42f, f.Carry);
+                f.Carry = _particles.MaintainTorchFlame(f.Pos, 0.34f, (float)dt, 26f, f.Carry);
             }
         }
         _particles?.Tick((float)dt);

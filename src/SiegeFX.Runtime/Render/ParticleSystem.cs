@@ -687,15 +687,17 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         for (int i = 0; i < n; i++)
         {
             var jitter = new Vector3(Rand(-0.04f, 0.04f), Rand(0f, 0.03f), Rand(-0.04f, 0.04f)) * scale;
-            float life = Rand(0.40f, 0.66f);
+            // Longer-lived, gentler-rising licks so the flame breathes slowly
+            // instead of strobing (the fast churn was short life + fast rise).
+            float life = Rand(0.75f, 1.15f);
             // Hotter (whiter) near the core, cooler (redder) on the outer licks.
             float heat = Rand(0f, 1f);
             var hot = new Vector4(1.0f, 0.72f + 0.22f * heat, 0.30f + 0.30f * heat, 1f);
             _particles.Add(new Particle
             {
                 Position  = position + jitter,
-                Velocity  = new Vector3(Rand(-0.03f, 0.03f), Rand(0.55f, 0.9f), Rand(-0.03f, 0.03f)) * scale,
-                Accel     = new Vector3(0f, 0.3f * scale, 0f),
+                Velocity  = new Vector3(Rand(-0.025f, 0.025f), Rand(0.38f, 0.62f), Rand(-0.025f, 0.025f)) * scale,
+                Accel     = new Vector3(0f, 0.2f * scale, 0f),
                 Color0    = hot,                                     // bright hot base
                 Color1    = new Vector4(0.85f, 0.18f, 0.03f, 0f),    // fade to red, gone
                 Scale0    = scale * 0.85f,                           // wide at the wick
