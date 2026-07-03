@@ -4643,6 +4643,7 @@ void main()
         _generators.Clear();
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();
+        _pendingObjectSpawns.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         // Fade state is per-run: a new game must not inherit the previous
         // session's cutaway (triggers respawn fresh and re-derive it).
@@ -6273,6 +6274,121 @@ void main()
         }
     }
 
+    /// <summary>SC-GEN-IN-OBJECT — DS1's [generator_in_object] component: a
+    /// template-embedded generator that spawns child_template_name when its
+    /// host fires spawn_event. This is the Gom two-phase mechanism verbatim
+    /// from shipped data: gom's block spawns emitter_gom_die on WE_KILLED;
+    /// the emitter fires the gom_switch VFX on WE_ENTERED_WORLD and its own
+    /// block spawns Gom_Super 20s later. Chains resolve recursively —
+    /// spawned children process their own entered-world blocks.</summary>
+    private sealed class PendingObjectSpawn
+    {
+        public string Template = "";
+        public Vector3 Position;
+        public float RemainingDelay;
+    }
+    private readonly List<PendingObjectSpawn> _pendingObjectSpawns = new();
+
+    /// <summary>Fire a template's [generator_in_object] for one event, and —
+    /// for entered-world processing — any [template_triggers] rows that call
+    /// an sfx script on WE_ENTERED_WORLD (the transformation flash).</summary>
+    private void ProcessGeneratorInObject(SiegeFX.Core.Assets.Template? template, Vector3 pos, string spawnEvent)
+    {
+        if (template is null || _templateStore is null) return;
+        var gio = _templateStore.GetSection(template, "generator_in_object");
+        if (gio is null) return;
+        string? child = null, evt = null;
+        float chance = 1f, delay = 0f;
+        foreach (var a in gio.Attributes)
+        {
+            if (a.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase)) child = a.Value.Trim().Trim('"');
+            else if (a.Name.Equals("spawn_event", StringComparison.OrdinalIgnoreCase)) evt = a.Value.Trim();
+            else if (a.Name.Equals("spawn_chance", StringComparison.OrdinalIgnoreCase))
+                float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out chance);
+            else if (a.Name.Equals("spawn_delay", StringComparison.OrdinalIgnoreCase))
+                float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out delay);
+        }
+        if (string.IsNullOrEmpty(child) || evt is null) return;
+        if (!evt.Equals(spawnEvent, StringComparison.OrdinalIgnoreCase)) return;
+        if (chance < 1f && _pcontentRng.NextDouble() > chance) return;
+        _pendingObjectSpawns.Add(new PendingObjectSpawn
+        {
+            Template = child!,
+            Position = pos,
+            RemainingDelay = MathF.Max(0f, delay),
+        });
+        Console.WriteLine($"[gen-in-object] {template.Name} {spawnEvent} -> '{child}' in {delay:F1}s");
+    }
+
+    private void TickPendingObjectSpawns(float dt)
+    {
+        if (_pendingObjectSpawns.Count == 0) return;
+        for (int i = _pendingObjectSpawns.Count - 1; i >= 0; i--)
+        {
+            var p = _pendingObjectSpawns[i];
+            p.RemainingDelay -= dt;
+            if (p.RemainingDelay > 0f) continue;
+            _pendingObjectSpawns.RemoveAt(i);
+            SpawnObjectChild(p.Template, p.Position);
+        }
+    }
+
+    private void SpawnObjectChild(string templateName, Vector3 pos)
+    {
+        if (_templateStore is null || !_templateStore.TryGet(templateName, out var template) || template is null)
+        {
+            Console.WriteLine($"[gen-in-object] child template '{templateName}' not in store — dropped");
+            return;
+        }
+        // Visible actors (Gom_Super) spawn through the normal path; pure
+        // logic templates (emitter_gom_die specializes point, no aspect
+        // model) produce no actor and that's fine — their value is the
+        // chained processing below.
+        if (_actorSpawner is not null)
+        {
+            var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+                templateName, _nextGeneratorChildScid++, pos, Quaternion.Identity);
+            var spawned = _actorSpawner.Spawn(new[] { inst });
+            if (spawned.Count > 0)
+            {
+                var (onMesh, offMesh) = AttachActorsToScene(spawned, _navMesh);
+                Console.WriteLine($"[gen-in-object] spawned {templateName} ({onMesh} on-mesh / {offMesh} pinned)");
+            }
+        }
+        // Entered-world processing: chained generator_in_object blocks
+        // (emitter_gom_die -> Gom_Super @ +20s) and template_triggers rows
+        // that fire an sfx script on WE_ENTERED_WORLD (the gom_switch flash).
+        ProcessGeneratorInObject(template, pos, "WE_ENTERED_WORLD");
+        var triggers = _templateStore.GetSection(template, "common", "template_triggers");
+        if (triggers is not null)
+        {
+            foreach (var row in triggers.Children)
+            {
+                bool enteredWorld = false;
+                foreach (var a in row.Attributes)
+                    if (a.Name.StartsWith("condition", StringComparison.OrdinalIgnoreCase) &&
+                        a.Value.Contains("WE_ENTERED_WORLD", StringComparison.OrdinalIgnoreCase))
+                    { enteredWorld = true; break; }
+                if (!enteredWorld) continue;
+                foreach (var a in row.Attributes)
+                {
+                    if (!a.Name.StartsWith("action", StringComparison.OrdinalIgnoreCase)) continue;
+                    var v = a.Value;
+                    int idx = v.IndexOf("call_sfx_script", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0) continue;
+                    int open = v.IndexOf('(', idx);
+                    int close = open >= 0 ? v.IndexOf(')', open) : -1;
+                    if (open < 0 || close < 0) continue;
+                    var script = v[(open + 1)..close].Trim().Trim('"');
+                    if (script.Length > 0)
+                        OnTriggerCallSfxScript(script, null, pos);
+                }
+            }
+        }
+    }
+
     private void SpawnGeneratorChild(GeneratorState g)
     {
         if (_actorSpawner is null) return;
@@ -7244,6 +7360,7 @@ void main()
                 // child spawning ride the same fixed 20 Hz cadence as
                 // triggers and brains.
                 UpdateGenerators((float)stepSec);
+                TickPendingObjectSpawns((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -11269,6 +11386,10 @@ void main()
         // quest-gate listeners) key on exactly this message.
         if (scid != 0 && _triggerRuntime is not null)
             _triggerRuntime.PostInboundMessage(scid, "we_killed");
+        // SC-GEN-IN-OBJECT — template-embedded death spawns (gom ->
+        // emitter_gom_die -> Gom_Super two-phase chain).
+        if (_templateStore is not null && _templateStore.TryGet(templateName, out var deadTemplate))
+            ProcessGeneratorInObject(deadTemplate, worldPos, "WE_KILLED");
         if (_progression is null || string.IsNullOrEmpty(templateName)) return;
         var completed = _progression.Journal.RegisterKill(templateName);
         foreach (var key in completed)
@@ -15371,6 +15492,7 @@ void main()
         _generators.Clear();
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();
+        _pendingObjectSpawns.Clear();
         _nextGeneratorChildScid = 0xFE000001;
         foreach (var pileSnap in save.LootPiles)
         {
