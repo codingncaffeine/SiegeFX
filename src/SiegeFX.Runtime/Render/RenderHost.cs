@@ -1401,6 +1401,9 @@ public sealed class RenderHost : IDisposable
         // node-relative position. When that snode fades out (cutaway,
         // dungeon reveal) the prop hides with its terrain.
         public uint  NodeGuid;
+        // SC-MOB-SPAWNER — placement SCID; exploding generators burst
+        // their own prop (matched by this) when they fire.
+        public uint  Scid;
 
         // Phase 17-SC-K — breakable container/prop state. DS1 wires
         // `[aspect][break_particulate]` on barrels/crates/jugs that the
@@ -5980,6 +5983,7 @@ void main()
                         IsDoor        = isDoor,
                         DoorUseRange  = useRange,
                         NodeGuid      = p.Placement.NodeGuid,
+                        Scid          = p.Scid,
                         RegionPath    = rp,
                         CenterY       = world.Translation.Y,
                     };
@@ -6131,6 +6135,9 @@ void main()
         // Retained for SC-MOB-SCRIPTED-COMMANDS (patrol / run-in commands).
         public uint InitialCommandScid;
         public uint SpawnPointScid;
+        // generator_*exploding* family: the visible prop (cocoon egg, ice
+        // mound, boobytrapped crate) bursts when the generator fires.
+        public bool ExplodesProp;
     }
     private readonly List<GeneratorState> _generators = new();
     private HashSet<string>? _generatorGasLoaded;
@@ -6152,43 +6159,63 @@ void main()
 
             foreach (var p in placements)
             {
-                // The generator params live in a [generator_*] child block on
-                // the PLACEMENT node (child_template_name, spawnpoint,
-                // initial_command, counts); template-chain values fill gaps
-                // (trigger_range = 10.0 on the base generator template).
+                // The generator block lives EITHER on the placement node
+                // (fh_r1's hand-tuned spawners author child_template_name /
+                // spawnpoint / initial_command per instance) OR entirely on
+                // the TEMPLATE chain — the campaign's menagerie ships bare
+                // placements of self-contained templates like
+                // gen_egg_mucosa-mucosa_small ([generator_auto_object_
+                // exploding] { Child_Template_Name = mucosa_small; }).
+                _templateStore.TryGet(p.TemplateName, out var genTemplate);
                 SiegeFX.Core.Assets.GasNode? genBlock = null;
-                bool isBasic = false;
                 foreach (var child in p.Node.Children)
                 {
                     if (!child.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) continue;
                     genBlock = child;
-                    isBasic = child.Header.Contains("basic", StringComparison.OrdinalIgnoreCase);
                     break;
                 }
-                if (genBlock is null) continue;
+                string? blockHeader = genBlock?.Header;
+                if (blockHeader is null && genTemplate is not null)
+                {
+                    for (var t = genTemplate; t is not null && blockHeader is null; t = t.Specializes)
+                        foreach (var child in t.Node.Children)
+                        {
+                            if (!child.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                            blockHeader = child.Header;
+                            break;
+                        }
+                }
+                if (blockHeader is null) continue;
+                bool isBasic = blockHeader.Contains("basic", StringComparison.OrdinalIgnoreCase);
+                // Exploding generators (cocoon eggs, ice mounds, boobytrapped
+                // crates) burst their own prop when they fire.
+                bool explodes = blockHeader.Contains("explod", StringComparison.OrdinalIgnoreCase);
 
                 string? childTemplate = null;
                 int numChildren = 1;
                 float spawnPeriod = isBasic ? 1f : 2f;
                 float triggerRange = -1f;
                 uint initialCommand = 0, spawnPoint = 0;
-                foreach (var a in genBlock.Attributes)
-                {
-                    if (a.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
-                        childTemplate = a.Value.Trim().Trim('"');
-                    else if (a.Name.Equals("num_children_incubating", StringComparison.OrdinalIgnoreCase))
-                        int.TryParse(a.Value.Trim(), out numChildren);
-                    else if (a.Name.Equals("spawn_period", StringComparison.OrdinalIgnoreCase))
-                        float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out spawnPeriod);
-                    else if (a.Name.Equals("trigger_range", StringComparison.OrdinalIgnoreCase))
-                        float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
-                            System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
-                    else if (a.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase))
-                        TryParseSnodeGuid(a.Value, out initialCommand);
-                    else if (a.Name.Equals("spawnpoint", StringComparison.OrdinalIgnoreCase))
-                        TryParseSnodeGuid(a.Value, out spawnPoint);
-                }
+                if (genBlock is not null)
+                    foreach (var a in genBlock.Attributes)
+                    {
+                        if (a.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
+                            childTemplate = a.Value.Trim().Trim('"');
+                        else if (a.Name.Equals("num_children_incubating", StringComparison.OrdinalIgnoreCase))
+                            int.TryParse(a.Value.Trim(), out numChildren);
+                        else if (a.Name.Equals("spawn_period", StringComparison.OrdinalIgnoreCase))
+                            float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out spawnPeriod);
+                        else if (a.Name.Equals("trigger_range", StringComparison.OrdinalIgnoreCase))
+                            float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
+                        else if (a.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase))
+                            TryParseSnodeGuid(a.Value, out initialCommand);
+                        else if (a.Name.Equals("spawnpoint", StringComparison.OrdinalIgnoreCase))
+                            TryParseSnodeGuid(a.Value, out spawnPoint);
+                    }
+                if (string.IsNullOrEmpty(childTemplate) && genTemplate is not null)
+                    childTemplate = _templateStore.GetAttribute(genTemplate, blockHeader, "child_template_name")?.Trim().Trim('"');
                 if (string.IsNullOrEmpty(childTemplate)) continue;
                 if (!_templateStore.TryGet(childTemplate, out _))
                 {
@@ -6200,18 +6227,18 @@ void main()
                 // generator template authors trigger_range = 10.0; some
                 // variants author child counts there too).
                 bool numAuthored = numChildren != 1;
-                if (_templateStore.TryGet(p.TemplateName, out var genTemplate))
+                if (genTemplate is not null)
                 {
                     if (triggerRange < 0f)
                     {
-                        var tr = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "trigger_range");
+                        var tr = _templateStore.GetAttribute(genTemplate, blockHeader, "trigger_range");
                         if (tr is not null)
                             float.TryParse(tr.Trim(), System.Globalization.NumberStyles.Float,
                                 System.Globalization.CultureInfo.InvariantCulture, out triggerRange);
                     }
                     if (!numAuthored)
                     {
-                        var nc = _templateStore.GetAttribute(genTemplate!, genBlock.Header, "num_children_incubating");
+                        var nc = _templateStore.GetAttribute(genTemplate, blockHeader, "num_children_incubating");
                         if (nc is not null && int.TryParse(nc.Trim(), out var ncv) && ncv > 0)
                             numChildren = ncv;
                     }
@@ -6234,6 +6261,7 @@ void main()
                     Position = world,
                     InitialCommandScid = initialCommand,
                     SpawnPointScid = spawnPoint,
+                    ExplodesProp = explodes,
                     // Basic generators incubate at load — their children
                     // simply exist, like the krug scouts patrolling the farm
                     // road. Advanced generators with no resolvable trigger
@@ -6271,6 +6299,19 @@ void main()
                 g.Activated = true;
                 g.NextSpawnIn = 0f;
                 Console.WriteLine($"[generator] 0x{g.Scid:X8} ({g.Template}) ambush triggered — spawning {g.PendingChildren}x {g.ChildTemplate}");
+                // Exploding family: burst the generator's own prop (cocoon
+                // egg / ice mound) as the child emerges.
+                if (g.ExplodesProp)
+                {
+                    foreach (var prop in _staticProps)
+                    {
+                        if (prop.Scid != g.Scid || prop.IsDestroyed) continue;
+                        prop.IsDestroyed = true;
+                        _particles?.SpawnSmoke(g.Position + new Vector3(0f, 0.6f, 0f),
+                            new Vector4(0.65f, 0.6f, 0.5f, 0.8f), 0.7f, 1.1f, 14);
+                        break;
+                    }
+                }
             }
             g.NextSpawnIn -= dt;
             if (g.NextSpawnIn > 0f) continue;
