@@ -130,10 +130,26 @@ public sealed class TriggerRuntime
                     && TryFloatArg(cond, 2, out var hz)
                     && ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
             case "party_member_within_node":
-                return ctx.PartyMemberWithinNode(trig.NodeGuid);
+                return EvaluateWithinNode(cond, ctx);
             default:
                 return false;
         }
+    }
+
+    /// <summary>DS1 signature: party_member_within_node(regionGuid, nodesection,
+    /// nodelevel, nodeobject, boundaryMode). -1 wildcards match any value; the
+    /// canonical all-wildcards form means "party member anywhere in the region"
+    /// (the farmhouse cellar's group-producer trigger 0x01c0026b). The trailing
+    /// boundary-mode string is ignored like the other volume verbs.</summary>
+    static bool EvaluateWithinNode(TriggerCall cond, TriggerContext ctx)
+    {
+        if (cond.Args.Count == 0) return false;
+        uint regionGuid = ParseScid(cond.Args[0]);
+        if (regionGuid == 0) return false;
+        int section = TryIntArg(cond, 1, out var s) ? s : -1;
+        int level   = TryIntArg(cond, 2, out var l) ? l : -1;
+        int obj     = TryIntArg(cond, 3, out var o) ? o : -1;
+        return ctx.PartyMemberWithinNode(regionGuid, section, level, obj);
     }
 
     void EvaluateInstance(TriggerInstance trig, TriggerContext ctx)
@@ -244,7 +260,7 @@ public sealed class TriggerRuntime
                 return ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
             }
             case "party_member_within_node":
-                return ctx.PartyMemberWithinNode(trig.NodeGuid);
+                return EvaluateWithinNode(cond, ctx);
             case "party_member_entered_trigger_group":
             {
                 if (cond.Args.Count == 0) return false;
@@ -299,7 +315,7 @@ public sealed class TriggerRuntime
             case "fade_node":
             case "fade_nodes":
             case "fade_nodes_global":
-                ctx.FadeNodes(act.Args);
+                ctx.FadeNodes(act.Verb, act.Args);
                 return;
             case "call_sfx_script":
             {
@@ -336,6 +352,13 @@ public sealed class TriggerRuntime
         if (idx >= call.Args.Count) return false;
         var s = call.Args[idx].TrimEnd('f', 'F');
         return float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    }
+
+    static bool TryIntArg(TriggerCall call, int idx, out int v)
+    {
+        v = 0;
+        if (idx >= call.Args.Count) return false;
+        return int.TryParse(call.Args[idx].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
     }
 
     static uint ParseScid(string raw)
@@ -459,11 +482,18 @@ public class TriggerContext
     public virtual bool AnyActorWithinSphere(Vector3 center, float radius, uint exceptScid) => false;
     public virtual bool PartyMemberWithinSphere(Vector3 center, float radius) => false;
     public virtual bool PartyMemberWithinAabb(Vector3 center, float halfX, float halfY, float halfZ) => false;
-    public virtual bool PartyMemberWithinNode(uint nodeGuid) => false;
+    /// <summary>DS1 semantics: is any party member currently standing in a
+    /// terrain node of the region identified by <paramref name="regionGuid"/>
+    /// whose fade-group keys match (with -1 wildcards)?</summary>
+    public virtual bool PartyMemberWithinNode(uint regionGuid, int nodeSection, int nodeLevel, int nodeObject) => false;
     public virtual void PostWorldMessage(string name, uint fromScid, uint toScid) { }
     public virtual void ChangeMood(string moodName) { }
     public virtual void SetInterestRadius(float radius) { }
-    public virtual void FadeNodes(IReadOnlyList<string> args) { }
+    /// <summary>Fade action dispatch. <paramref name="verb"/> is fade_node
+    /// (single snode guid) or fade_nodes / fade_nodes_global
+    /// (regionGuid, nodesection, nodelevel, nodeobject group addressing);
+    /// the trailing arg is the fade mode ("out:black", "out", "in").</summary>
+    public virtual void FadeNodes(string verb, IReadOnlyList<string> args) { }
     /// <summary>Phase 17-SC-G — emitter / spell trigger gateway. The default
     /// implementation is a no-op so the audit CLI's headless context can still
     /// drive trigger fan-out without dragging the Runtime project in. Live

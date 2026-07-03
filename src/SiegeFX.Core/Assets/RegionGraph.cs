@@ -160,6 +160,9 @@ public sealed class RegionGraph
                     CameraFade = node.CameraFade,
                     OccludesCamera = node.OccludesCamera,
                     OccludesLight = node.OccludesLight,
+                    NodeSection = node.NodeSection,
+                    NodeLevel = node.NodeLevel,
+                    NodeObject = node.NodeObject,
                     Doors = mergedDoors,
                 });
             }
@@ -208,6 +211,7 @@ public sealed class RegionGraph
         uint guid = 0, meshGuid = 0;
         var texsetAbbr = "";
         bool boundsCamera = false, cameraFade = false, occludesCamera = false, occludesLight = false;
+        int nodeSection = -1, nodeLevel = -1, nodeObject = -1;
         foreach (var a in snode.Attributes)
         {
             if (a.Name.Equals("guid", StringComparison.OrdinalIgnoreCase))
@@ -216,6 +220,17 @@ public sealed class RegionGraph
                 meshGuid = ParseHexU32(a.Value, "mesh_guid");
             else if (a.Name.Equals("texsetabbr", StringComparison.OrdinalIgnoreCase))
                 texsetAbbr = a.Value;
+            // SC-FADE-GROUPS — the three fade-group keys every shipped snode
+            // authors (0xFFFFFFFF = ungrouped = -1). These are what
+            // fade_nodes(regionGuid, section, level, object, mode) addresses;
+            // the farmhouse cutaway fades fh_r1 section 1 (1326 of 1707
+            // snodes = the whole surface) while the party is in the cellar.
+            else if (a.Name.Equals("nodesection", StringComparison.OrdinalIgnoreCase))
+                nodeSection = unchecked((int)ParseHexU32(a.Value, "nodesection"));
+            else if (a.Name.Equals("nodelevel", StringComparison.OrdinalIgnoreCase))
+                nodeLevel = unchecked((int)ParseHexU32(a.Value, "nodelevel"));
+            else if (a.Name.Equals("nodeobject", StringComparison.OrdinalIgnoreCase))
+                nodeObject = unchecked((int)ParseHexU32(a.Value, "nodeobject"));
             // SC-CAMERA-FADE — per-snode camera-related bools. DS1's
             // ReaderWriterSiegeNodeList.cpp:166 reads these directly off
             // nodes.gas and stages them as user-values on each xform; the
@@ -268,6 +283,9 @@ public sealed class RegionGraph
             CameraFade = cameraFade,
             OccludesCamera = occludesCamera,
             OccludesLight = occludesLight,
+            NodeSection = nodeSection,
+            NodeLevel = nodeLevel,
+            NodeObject = nodeObject,
             Doors = doors,
         };
     }
@@ -306,6 +324,12 @@ public sealed class RegionGraph
         public bool CameraFade { get; init; }
         public bool OccludesCamera { get; init; }
         public bool OccludesLight { get; init; }
+        /// <summary>SC-FADE-GROUPS — fade-group keys (nodesection / nodelevel /
+        /// nodeobject) addressed by fade_nodes trigger actions. -1 = ungrouped
+        /// (authored as 0xFFFFFFFF) and matches only the -1 wildcard.</summary>
+        public int NodeSection { get; init; } = -1;
+        public int NodeLevel { get; init; } = -1;
+        public int NodeObject { get; init; } = -1;
         public required IReadOnlyList<DoorLink> Doors { get; init; }
     }
 

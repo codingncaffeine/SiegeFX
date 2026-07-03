@@ -198,19 +198,30 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Actors.WorldMessageBus? _actorBus;
     private SiegeFX.Core.Actors.TriggerRuntime? _triggerRuntime;
     private RenderHostTriggerContext? _triggerCtx;
-    // SC-FADE-NODES-LNODE — per-(snode, lnode) visibility for the
-    // dungeon-basement "reveal" mechanic. DS1's special.gas fires
-    // fade_nodes(snode_guid, lnode_a, lnode_b, lnode_c, mode) — up
-    // to three lnode indices per call, -1 as the unused-slot
-    // sentinel. Key = (snode_guid, lnode_index); value = target
-    // alpha (0 = hidden, 1 = visible). Missing key = visible.
-    private readonly System.Collections.Generic.Dictionary<(uint Snode, byte Lnode), float> _fadedLnodes = new();
-    // Snode-level ref count: how many lnodes of a given snode are
-    // currently faded. Used by the render gate to keep the existing
-    // whole-snode fade behavior (lnode-granular render would require
-    // splitting SnoMesh per logical_mesh; deferred). Nav gate is
-    // already lnode-granular via NavMesh.FadeHidden.
+    // SC-FADE-GROUPS — DS1's fade_nodes signature is
+    // fade_nodes(regionGuid, nodesection, nodelevel, nodeobject, mode)
+    // with -1 wildcards: it addresses GROUPS of snodes by the three
+    // per-snode keys authored in nodes.gas, not individual snodes.
+    // (The farmhouse cutaway is fade_nodes(0xAAA10100,1,-1,-1,
+    // "out:black") — fh_r1 section 1 = 1326 snodes = the whole
+    // surface layer, fired while the party occupies the cellar
+    // trigger group.) Each applied group records exactly which
+    // snodes it hid so the paired "in" call releases the same set
+    // even if graphs stream in/out between the two.
+    private readonly System.Collections.Generic.Dictionary<(uint Region, int S, int L, int O), List<uint>> _fadeGroupsApplied = new();
+    // Snode-level ref count feeding the render + nav gates. Writers:
+    // fade-group applications (above), single-snode fade_node calls,
+    // and camera_fade auto-hides. A snode hidden by two overlapping
+    // groups stays hidden until both release.
     private readonly System.Collections.Generic.Dictionary<uint, int> _fadedSnodeCounts = new();
+    // SC-FADE-GROUPS — region guid -> loaded region graph, and
+    // snode guid -> (owning region guid, fade-group keys). Rebuilt
+    // alongside _worldRegionGraphs whenever the loaded ring changes.
+    private readonly System.Collections.Generic.Dictionary<uint, SiegeFX.Core.Assets.RegionGraph> _regionGraphsByGuid = new();
+    private readonly System.Collections.Generic.Dictionary<uint, (uint RegionGuid, int S, int L, int O)> _snodeFadeKeys = new();
+    // Trigger rows re-dispatch while their condition holds (20 Hz), so
+    // unresolved-target warnings must print once per key, not per tick.
+    private readonly System.Collections.Generic.HashSet<string> _fadeWarnedOnce = new();
     // Phase 17-SC-D / SC-F — sfx_script catalogue + interpreter. Loaded once
     // at LoadPlayActors; the trigger runtime hits OnTriggerCallSfxScript which
     // forwards to _sfxRuntime.Spawn so emitter.gas placements + spell casts
@@ -1043,31 +1054,35 @@ public sealed class RenderHost : IDisposable
         // a player Y hovering at the boundary (each stair tick moves 0.2u)
         // can't flap the snode's render+nav state every frame. Flapping the
         // nav side is the dangerous half — TryFindTriangle re-glues the
-        // follower to whichever layer just reappeared.
+        // follower to whichever layer just reappeared. camera_fade holds its
+        // OWN reference in _camFadeHidden — the shared snode count may also be
+        // held by fade groups (the trapdoor lid is in fh_r1 section 1 AND
+        // camera_fade), and each writer must release exactly what it took.
         const float CamFadeHideMargin = 0.5f;
         const float CamFadeShowMargin = 1.0f;
         for (int i = 0; i < _regionInstances.Count; i++)
         {
             var inst = _regionInstances[i];
             if (!inst.CameraFade) continue;
-            bool wasHidden = _fadedSnodeCounts.ContainsKey(inst.SnodeGuid);
+            bool wasHidden = _camFadeHidden.Contains(inst.SnodeGuid);
             bool occluding = wasHidden
                 ? playerPos.Y + CamFadeShowMargin < inst.WorldAabbMin.Y
                 : playerPos.Y + CamFadeHideMargin < inst.WorldAabbMin.Y;
             if (occluding && !wasHidden)
             {
-                _fadedSnodeCounts[inst.SnodeGuid] = 1;
-                SetNavFadeForSnode(inst.SnodeGuid, true);
+                _camFadeHidden.Add(inst.SnodeGuid);
+                AddSnodeFadeRef(inst.SnodeGuid);
                 Console.WriteLine($"[cam-fade] hide snode 0x{inst.SnodeGuid:X8} aabb=({inst.WorldAabbMin.X:F1},{inst.WorldAabbMin.Y:F1},{inst.WorldAabbMin.Z:F1})..({inst.WorldAabbMax.X:F1},{inst.WorldAabbMax.Y:F1},{inst.WorldAabbMax.Z:F1}) cam=({camPos.X:F1},{camPos.Y:F1},{camPos.Z:F1}) player=({playerPos.X:F1},{playerPos.Y:F1},{playerPos.Z:F1})");
             }
             else if (!occluding && wasHidden)
             {
-                _fadedSnodeCounts.Remove(inst.SnodeGuid);
-                SetNavFadeForSnode(inst.SnodeGuid, false);
+                _camFadeHidden.Remove(inst.SnodeGuid);
+                ReleaseSnodeFadeRef(inst.SnodeGuid);
                 Console.WriteLine($"[cam-fade] show snode 0x{inst.SnodeGuid:X8}");
             }
         }
     }
+    private readonly System.Collections.Generic.HashSet<uint> _camFadeHidden = new();
 
     /// <summary>Helper: mark every lnode of <paramref name="snodeGuid"/> as
     /// (un)faded on the nav mesh. camera_fade is whole-snode in DS1's
@@ -1080,74 +1095,162 @@ public sealed class RenderHost : IDisposable
             _navMesh.SetFadeHidden(snodeGuid, (byte)li, hidden);
     }
 
-    internal void OnTriggerFadeNodes(IReadOnlyList<string> args)
+    internal void OnTriggerFadeNodes(string verb, IReadOnlyList<string> args)
     {
         if (args is null || args.Count == 0) return;
         if (!TryParseSnodeGuid(args[0], out var guid))
         {
-            Console.WriteLine($"[fade_nodes] couldn't parse snode guid from '{args[0]}'");
+            Console.WriteLine($"[{verb}] couldn't parse guid from '{args[0]}'");
             return;
         }
-        // Trailing string arg is the mode; everything between guid and
-        // mode is a list of lnode indices with -1 as unused-slot sentinel.
+        // Trailing string arg is the mode; everything between the guid and
+        // the mode is the (nodesection, nodelevel, nodeobject) key triple.
         string mode = "out";
         int modeIdx = args.Count;
         for (int i = args.Count - 1; i >= 1; i--)
         {
             var a = args[i].Trim().Trim('"').ToLowerInvariant();
             if (a == "out" || a == "out:black" || a == "in" ||
-                a == "fade_out" || a == "fade_in") { mode = a; modeIdx = i; break; }
+                a == "fade_out" || a == "fade_in" || a == "instant") { mode = a; modeIdx = i; break; }
         }
         bool hide = !(mode == "in" || mode == "fade_in");
 
-        // Collect lnode indices from args[1..modeIdx-1]. -1 sentinel
-        // marks an unused slot; skip it. Any non-integer arg is also
-        // skipped (defensive; gas should always supply ints here).
-        var lnodes = new System.Collections.Generic.List<byte>(3);
-        for (int i = 1; i < modeIdx; i++)
+        // fade_node (singular) addresses ONE snode by guid. Also taken as a
+        // defensive fallback when a fade_nodes guid isn't a loaded region —
+        // some fan content authors snode guids in the plural verb.
+        if (verb.Equals("fade_node", StringComparison.OrdinalIgnoreCase) ||
+            !_regionGraphsByGuid.ContainsKey(guid))
         {
-            var t = args[i].Trim();
-            if (!int.TryParse(t, out int li)) continue;
-            if (li < 0) continue;
-            if (li > 255) continue;
-            lnodes.Add((byte)li);
+            if (_snodeFadeKeys.ContainsKey(guid))
+            {
+                ApplyFadeGroup((guid, -2, -2, -2), hide, new List<uint> { guid }, verb, mode);
+            }
+            else if (_fadeWarnedOnce.Add($"{verb}:{guid:X8}"))
+            {
+                // Commonly a not-yet-streamed region (surface triggers hide the
+                // cellar before it loads); the row re-fires while held, so the
+                // fade lands as soon as the region streams in.
+                Console.WriteLine($"[{verb}] 0x{guid:X8} is neither a loaded region nor a known snode — deferred");
+            }
+            return;
         }
-        // Defensive: if the gas authored no lnode list (just guid + mode),
-        // treat as "all lnodes" by passing lnode 0 — single-line gas
-        // doesn't appear in shipped DS1 special.gas, but stay tolerant.
-        if (lnodes.Count == 0) lnodes.Add(0);
 
-        foreach (var lnode in lnodes)
+        int section = ParseFadeKey(args, 1, modeIdx);
+        int level   = ParseFadeKey(args, 2, modeIdx);
+        int obj     = ParseFadeKey(args, 3, modeIdx);
+
+        var groupKey = (guid, section, level, obj);
+        List<uint>? matched = null;
+        if (hide)
         {
-            var key = (guid, lnode);
-            bool wasHidden = _fadedLnodes.ContainsKey(key);
-            if (hide)
+            var graph = _regionGraphsByGuid[guid];
+            matched = new List<uint>();
+            foreach (var node in graph.Nodes)
             {
-                _fadedLnodes[key] = 0f;
+                if (section != -1 && node.NodeSection != section) continue;
+                if (level   != -1 && node.NodeLevel   != level)   continue;
+                if (obj     != -1 && node.NodeObject  != obj)     continue;
+                matched.Add(node.Guid);
             }
-            else
-            {
-                _fadedLnodes.Remove(key);
-            }
-            bool isHiddenNow = _fadedLnodes.ContainsKey(key);
-            if (wasHidden == isHiddenNow) continue;
-
-            // Maintain snode-level ref count for the render gate.
-            if (isHiddenNow)
-            {
-                _fadedSnodeCounts.TryGetValue(guid, out int c);
-                _fadedSnodeCounts[guid] = c + 1;
-            }
-            else if (_fadedSnodeCounts.TryGetValue(guid, out int c))
-            {
-                if (c <= 1) _fadedSnodeCounts.Remove(guid);
-                else _fadedSnodeCounts[guid] = c - 1;
-            }
-
-            // Nav gate: block/unblock all triangles whose (snode, lnode)
-            // matches. Pathfinder + click-pick consult NavMesh.FadeHidden.
-            _navMesh?.SetFadeHidden(guid, lnode, isHiddenNow);
         }
+        ApplyFadeGroup(groupKey, hide, matched, verb, mode);
+    }
+
+    private static int ParseFadeKey(IReadOnlyList<string> args, int idx, int modeIdx)
+    {
+        if (idx >= modeIdx) return -1;
+        return int.TryParse(args[idx].Trim(), out int v) ? v : -1;
+    }
+
+    /// <summary>SC-FADE-GROUPS — apply or release one fade group. Hides are
+    /// idempotent per group key; releases decrement exactly the snodes the
+    /// original application hid. Ref counts on <see cref="_fadedSnodeCounts"/>
+    /// keep a snode hidden while ANY group (or camera_fade) covers it.</summary>
+    private void ApplyFadeGroup((uint Region, int S, int L, int O) key, bool hide,
+        List<uint>? matched, string verb, string mode)
+    {
+        if (hide)
+        {
+            if (_fadeGroupsApplied.ContainsKey(key)) return; // already applied
+            if (matched is null || matched.Count == 0)
+            {
+                if (_fadeWarnedOnce.Add($"{verb}:{key.Region:X8}:{key.S}:{key.L}:{key.O}"))
+                    Console.WriteLine($"[{verb}] group 0x{key.Region:X8} ({key.S},{key.L},{key.O}) matched 0 snodes");
+                return;
+            }
+            _fadeGroupsApplied[key] = matched;
+            foreach (var snode in matched) AddSnodeFadeRef(snode);
+            Console.WriteLine($"[{verb}] {mode}: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {matched.Count} snode(s) hidden");
+        }
+        else
+        {
+            if (!_fadeGroupsApplied.TryGetValue(key, out var applied)) return;
+            _fadeGroupsApplied.Remove(key);
+            foreach (var snode in applied) ReleaseSnodeFadeRef(snode);
+            Console.WriteLine($"[{verb}] in: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {applied.Count} snode(s) restored");
+        }
+    }
+
+    /// <summary>Shared fade ref-count: a snode stays hidden while ANY writer
+    /// (fade group, single-node fade, camera_fade) holds a reference. The nav
+    /// gate flips only on the 0↔1 edges.</summary>
+    private void AddSnodeFadeRef(uint snodeGuid)
+    {
+        _fadedSnodeCounts.TryGetValue(snodeGuid, out int c);
+        _fadedSnodeCounts[snodeGuid] = c + 1;
+        if (c == 0) SetNavFadeForSnode(snodeGuid, true);
+    }
+
+    private void ReleaseSnodeFadeRef(uint snodeGuid)
+    {
+        if (!_fadedSnodeCounts.TryGetValue(snodeGuid, out int c)) return;
+        if (c <= 1)
+        {
+            _fadedSnodeCounts.Remove(snodeGuid);
+            SetNavFadeForSnode(snodeGuid, false);
+        }
+        else
+        {
+            _fadedSnodeCounts[snodeGuid] = c - 1;
+        }
+    }
+
+    /// <summary>SC-FADE-GROUPS — true when the player's standing snode belongs
+    /// to <paramref name="regionGuid"/> and its fade-group keys match the
+    /// -1-wildcarded triple. Drives party_member_within_node conditions (the
+    /// cellar occupancy producer 0x01c0026b is the canonical caller).</summary>
+    internal bool PlayerWithinNodeGroup(uint regionGuid, int section, int level, int obj)
+    {
+        if (!TryGetPlayerSnodeGuid(out var snode)) return false;
+        if (!_snodeFadeKeys.TryGetValue(snode, out var keys)) return false;
+        if (keys.RegionGuid != regionGuid) return false;
+        if (section != -1 && keys.S != section) return false;
+        if (level   != -1 && keys.L != level)   return false;
+        if (obj     != -1 && keys.O != obj)     return false;
+        return true;
+    }
+
+    /// <summary>SC-FADE-GROUPS — true when <paramref name="worldPos"/> stands
+    /// on a triangle whose snode is currently faded out. Uses the
+    /// hidden-inclusive triangle lookup (the visible-layer lookup would skip
+    /// exactly the triangles we're asking about). Free when nothing is faded.</summary>
+    private bool IsPosInFadedSnode(Vector3 worldPos)
+    {
+        if (_fadedSnodeCounts.Count == 0 || _navMesh is null) return false;
+        if (!_navMesh.TryFindTriangle(worldPos, out var tri, includeFadeHidden: true)) return false;
+        if (tri < 0 || tri >= _navMesh.SourceSnodeGuid.Length) return false;
+        return _fadedSnodeCounts.ContainsKey(_navMesh.SourceSnodeGuid[tri]);
+    }
+
+    private bool TryGetPlayerSnodeGuid(out uint snodeGuid)
+    {
+        snodeGuid = 0;
+        if (_playerFollower is null || _navMesh is null) return false;
+        int tri = _playerFollower.CurrentTriangle;
+        if (tri < 0 && !_navMesh.TryFindTriangle(_playerFollower.Position, out tri)) return false;
+        if (tri < 0 || tri >= _navMesh.SourceSnodeGuid.Length) return false;
+        snodeGuid = _navMesh.SourceSnodeGuid[tri];
+        return snodeGuid != 0;
     }
 
     private static bool TryParseSnodeGuid(string s, out uint guid)
@@ -1191,6 +1294,11 @@ public sealed class RenderHost : IDisposable
         public bool  IsDoor;
         public float DoorOpenFrac;
         public float DoorUseRange = 1.5f;
+
+        // SC-FADE-GROUPS — authored anchor snode from the placement's
+        // node-relative position. When that snode fades out (cutaway,
+        // dungeon reveal) the prop hides with its terrain.
+        public uint  NodeGuid;
 
         // Phase 17-SC-K — breakable container/prop state. DS1 wires
         // `[aspect][break_particulate]` on barrels/crates/jugs that the
@@ -4286,15 +4394,24 @@ void main()
         // preserve LoadPlayActors's "graphs[0] is the player region" idiom)
         // and the snode → region lookup table used by RegionLocator.
         _worldRegionGraphs.Clear();
+        // SC-FADE-GROUPS — rebuild the guid-addressed views alongside. A
+        // region's guid comes from its stitch file's source_region_guid;
+        // stitchless regions stay unaddressable by fade_nodes (guid 0 in
+        // the snode keys never matches a parsed trigger arg).
+        _regionGraphsByGuid.Clear();
+        _snodeFadeKeys.Clear();
         var lookup = new List<(Vector3, string)>(world.Transforms.Count);
         void AppendRegion(string rp, RegionGraph g, SiegeFX.Core.Assets.RegionStitchHelper? stitches)
         {
             if (!world.RegionOffsets.ContainsKey(rp)) return;
             _worldRegionGraphs.Add((rp, g, stitches));
+            uint regionGuid = stitches?.SourceRegionGuid ?? 0;
+            if (regionGuid != 0) _regionGraphsByGuid[regionGuid] = g;
             foreach (var n in g.Nodes)
             {
                 if (world.Transforms.TryGetValue(n.Guid, out var xf))
                     lookup.Add((new Vector3(xf.M41, 0f, xf.M43), rp));
+                _snodeFadeKeys[n.Guid] = (regionGuid, n.NodeSection, n.NodeLevel, n.NodeObject);
             }
         }
         if (_worldRootRegion is not null && _loadedRegions.TryGetValue(_worldRootRegion, out var rootEntry))
@@ -5726,6 +5843,7 @@ void main()
                         MaxLife       = maxLife,
                         IsDoor        = isDoor,
                         DoorUseRange  = useRange,
+                        NodeGuid      = p.Placement.NodeGuid,
                         RegionPath    = rp,
                         CenterY       = world.Translation.Y,
                     };
@@ -6470,17 +6588,13 @@ void main()
 
             var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
             // A fresh mesh starts with every triangle visible; live fade state
-            // (dungeon-reveal triggers + camera_fade hides) must carry over or
-            // the pathfinder briefly routes across hidden upper floors and
-            // TryFindTriangle re-glues actors to them.
-            foreach (var key in _fadedLnodes.Keys)
-                nav.SetFadeHidden(key.Item1, key.Item2, true);
-            foreach (var inst in _regionInstances)
-            {
-                if (!inst.CameraFade || !_fadedSnodeCounts.ContainsKey(inst.SnodeGuid)) continue;
+            // (fade-group hides, single-node fades, camera_fade) must carry
+            // over or the pathfinder briefly routes across hidden upper floors
+            // and TryFindTriangle re-glues actors to them. All fade writers
+            // are whole-snode, so the snode ref-count map is the full truth.
+            foreach (var guid in _fadedSnodeCounts.Keys)
                 for (int li = 0; li < 256; li++)
-                    nav.SetFadeHidden(inst.SnodeGuid, (byte)li, true);
-            }
+                    nav.SetFadeHidden(guid, (byte)li, true);
             Console.WriteLine($"  nav mesh rebuild: {nav.TriangleCount} tri(s), " +
                               $"{nav.Vertices.Length} welded vert(s), " +
                               $"{nav.SourceSnodeCount} snode(s), " +
@@ -12980,6 +13094,10 @@ void main()
                 // upper layer when the player is below. Pure Y test,
                 // matched to the terrain and prop gates above.
                 if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
+                // SC-FADE-GROUPS — actors standing in a faded-out layer
+                // (the farmhouse surface while the party is in the cellar)
+                // hide with their terrain.
+                if (IsPosInFadedSnode(s.Actor.WorldTransform.Translation)) continue;
                 int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
@@ -13230,6 +13348,9 @@ void main()
                 // the terrain gate; stable across in-region movement,
                 // only restored on region change back.
                 if (IsAbovePlayer(prop.CenterY)) continue;
+                // SC-FADE-GROUPS — hide with the anchor snode's fade state.
+                if (prop.NodeGuid != 0 && _fadedSnodeCounts.Count > 0
+                    && _fadedSnodeCounts.ContainsKey(prop.NodeGuid)) continue;
                 if (!ReferenceEquals(prop.Texture, lastTex))
                 {
                     if (prop.Texture is not null)
@@ -13465,6 +13586,10 @@ void main()
                     float pdz = pile.Position.Z - playerPos.Z;
                     if (pdx * pdx + pdz * pdz > worldInvR2) continue;
                 }
+                // SC-FADE-GROUPS — piles sitting in a faded-out layer hide
+                // with their terrain (a glittering surface pile would
+                // otherwise float over the void during the cellar cutaway).
+                if (IsPosInFadedSnode(pile.Position)) continue;
                 var pos = pile.Position;
                 // Walk the pile rather than only trying Items[0] — DS1 mixes
                 // resolvable templates ("wpn_axe_001") with pcontent specs

@@ -802,7 +802,15 @@ public sealed class NavMesh
     /// projection (Y is up in DS1; terrain folds are shallow enough that a 2D point-in-
     /// triangle test picks the right tile). Returns the triangle with the smallest
     /// vertical distance when multiple tiles overlap in XZ (overpasses / stairs).</summary>
-    public bool TryFindTriangle(Vector3 worldPos, out int triIndex)
+    public bool TryFindTriangle(Vector3 worldPos, out int triIndex) =>
+        TryFindTriangle(worldPos, out triIndex, includeFadeHidden: false);
+
+    /// <summary>Overload with <paramref name="includeFadeHidden"/> — pass true
+    /// when the caller needs the triangle a position PHYSICALLY belongs to even
+    /// if its snode is currently faded out (e.g. "is this prop/actor standing
+    /// in a hidden layer?"). Pathfinding and click-picking keep the default,
+    /// which resolves to the visible layer.</summary>
+    public bool TryFindTriangle(Vector3 worldPos, out int triIndex, bool includeFadeHidden)
     {
         triIndex = -1;
         if (TriangleCount == 0) return false;
@@ -838,7 +846,7 @@ public sealed class NavMesh
             // entirely so clicks resolve to the un-hidden layer
             // below (the basement floor) instead of the faded
             // upper structure that's right at player Y.
-            if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+            if (!includeFadeHidden && FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
             float triY = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c);
             float dy = MathF.Abs(triY - worldPos.Y);
             if (Blocked is not null && t < Blocked.Length && Blocked[t])

@@ -1071,6 +1071,27 @@ static int CmdRegionInfo(string[] a)
     Console.WriteLine($"Unconnected   : {unconnected} door(s)");
     Console.WriteLine($"Target present: {(within.Contains(region.TargetNodeGuid) ? "yes" : "no (cross-region anchor)")}");
 
+    // SC-FADE-GROUPS — fade-group key histogram + camera flag tallies. These
+    // are what fade_nodes(regionGuid, section, level, object, mode) triggers
+    // address; a section histogram mismatch against shipped data means the
+    // cutaway will hide the wrong node set.
+    var sections = new Dictionary<int, int>();
+    var levels = new Dictionary<int, int>();
+    int camFade = 0, boundsCam = 0, occlCam = 0;
+    foreach (var n in region.Nodes)
+    {
+        sections.TryGetValue(n.NodeSection, out var sc); sections[n.NodeSection] = sc + 1;
+        levels.TryGetValue(n.NodeLevel, out var lc); levels[n.NodeLevel] = lc + 1;
+        if (n.CameraFade) camFade++;
+        if (n.BoundsCamera) boundsCam++;
+        if (n.OccludesCamera) occlCam++;
+    }
+    string Histo(Dictionary<int, int> h) =>
+        string.Join("  ", h.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}:{kv.Value}"));
+    Console.WriteLine($"Fade sections : {Histo(sections)}");
+    Console.WriteLine($"Fade levels   : {Histo(levels)}");
+    Console.WriteLine($"Camera flags  : camera_fade={camFade}  bounds_camera={boundsCam}  occludes_camera={occlCam}");
+
     var show = Math.Min(5, region.Nodes.Count);
     for (var i = 0; i < show; i++)
     {
