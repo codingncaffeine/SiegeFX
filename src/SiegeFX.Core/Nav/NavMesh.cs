@@ -128,6 +128,44 @@ public sealed class NavMesh
         return changed;
     }
 
+    /// <summary>Whole-snode fade flip in ONE triangle pass. DS1 fades are
+    /// whole-snode (fade groups address nodes, not lnodes), so this is the
+    /// right granularity for every runtime caller; the per-lnode variant
+    /// above stays for diagnostics. Without this, the cellar cutaway's
+    /// 1,326-snode fade through 256 per-lnode calls each scanning every
+    /// triangle was ~10 billion iterations — the mid-descent hard pause.</summary>
+    public int SetFadeHiddenForSnode(uint snodeGuid, bool hidden)
+    {
+        FadeHidden ??= new bool[TriangleCount];
+        int changed = 0;
+        for (int t = 0; t < TriangleCount; t++)
+        {
+            if (SourceSnodeGuid[t] != snodeGuid) continue;
+            if (FadeHidden[t] == hidden) continue;
+            FadeHidden[t] = hidden;
+            changed++;
+        }
+        return changed;
+    }
+
+    /// <summary>Bulk variant — flip every triangle whose snode is in
+    /// <paramref name="snodeGuids"/>, one pass over the mesh total.</summary>
+    public int SetFadeHiddenForSnodes(IReadOnlyCollection<uint> snodeGuids, bool hidden)
+    {
+        if (snodeGuids.Count == 0) return 0;
+        FadeHidden ??= new bool[TriangleCount];
+        var set = snodeGuids as HashSet<uint> ?? new HashSet<uint>(snodeGuids);
+        int changed = 0;
+        for (int t = 0; t < TriangleCount; t++)
+        {
+            if (!set.Contains(SourceSnodeGuid[t])) continue;
+            if (FadeHidden[t] == hidden) continue;
+            FadeHidden[t] = hidden;
+            changed++;
+        }
+        return changed;
+    }
+
     /// <summary>SC-NAV-OBSTACLE-AVOID — mark every triangle whose
     /// centroid falls inside a circle of radius <paramref name="radius"/>
     /// around (<paramref name="worldX"/>, <paramref name="worldZ"/>)

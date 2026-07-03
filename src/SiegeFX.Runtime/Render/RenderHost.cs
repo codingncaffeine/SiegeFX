@@ -1119,9 +1119,9 @@ public sealed class RenderHost : IDisposable
     /// small (single-digit), the rest no-op cheaply.</summary>
     private void SetNavFadeForSnode(uint snodeGuid, bool hidden)
     {
-        if (_navMesh is null) return;
-        for (int li = 0; li < 256; li++)
-            _navMesh.SetFadeHidden(snodeGuid, (byte)li, hidden);
+        // One triangle pass — the old 256-per-lnode sweep multiplied a full
+        // mesh scan per slot and stalled the frame for seconds on big fades.
+        _navMesh?.SetFadeHiddenForSnode(snodeGuid, hidden);
     }
 
     internal void OnTriggerFadeNodes(string verb, IReadOnlyList<string> args)
@@ -1214,14 +1214,37 @@ public sealed class RenderHost : IDisposable
                 return;
             }
             _fadeGroupsApplied[key] = matched;
-            foreach (var snode in matched) AddSnodeFadeRef(snode);
+            // Batch the nav flips: collect the snodes whose ref count crosses
+            // 0->1 and hide them in one mesh pass instead of per-snode scans.
+            var newlyHidden = new HashSet<uint>();
+            foreach (var snode in matched)
+            {
+                _fadedSnodeCounts.TryGetValue(snode, out int c);
+                _fadedSnodeCounts[snode] = c + 1;
+                if (c == 0) newlyHidden.Add(snode);
+            }
+            _navMesh?.SetFadeHiddenForSnodes(newlyHidden, true);
             Console.WriteLine($"[{verb}] {mode}: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {matched.Count} snode(s) hidden");
         }
         else
         {
             if (!_fadeGroupsApplied.TryGetValue(key, out var applied)) return;
             _fadeGroupsApplied.Remove(key);
-            foreach (var snode in applied) ReleaseSnodeFadeRef(snode);
+            var newlyShown = new HashSet<uint>();
+            foreach (var snode in applied)
+            {
+                if (!_fadedSnodeCounts.TryGetValue(snode, out int c)) continue;
+                if (c <= 1)
+                {
+                    _fadedSnodeCounts.Remove(snode);
+                    newlyShown.Add(snode);
+                }
+                else
+                {
+                    _fadedSnodeCounts[snode] = c - 1;
+                }
+            }
+            _navMesh?.SetFadeHiddenForSnodes(newlyShown, false);
             Console.WriteLine($"[{verb}] in: 0x{key.Region:X8} ({key.S},{key.L},{key.O}) -> {applied.Count} snode(s) restored");
         }
     }
@@ -6882,9 +6905,7 @@ void main()
             // over or the pathfinder briefly routes across hidden upper floors
             // and TryFindTriangle re-glues actors to them. All fade writers
             // are whole-snode, so the snode ref-count map is the full truth.
-            foreach (var guid in _fadedSnodeCounts.Keys)
-                for (int li = 0; li < 256; li++)
-                    nav.SetFadeHidden(guid, (byte)li, true);
+            nav.SetFadeHiddenForSnodes(new HashSet<uint>(_fadedSnodeCounts.Keys), true);
             Console.WriteLine($"  nav mesh rebuild: {nav.TriangleCount} tri(s), " +
                               $"{nav.Vertices.Length} welded vert(s), " +
                               $"{nav.SourceSnodeCount} snode(s), " +
@@ -13469,8 +13490,13 @@ void main()
                 if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
                 // SC-FADE-GROUPS — actors standing in a faded-out layer
                 // (the farmhouse surface while the party is in the cellar)
-                // hide with their terrain.
-                if (IsPosInFadedSnode(s.Actor.WorldTransform.Translation)) continue;
+                // hide with their terrain. NEVER the player (the cutaway
+                // exists to show them), and NPCs test their LIVE transform —
+                // Actor.WorldTransform is the authored spawn pose, which for
+                // a moving actor points at wherever it spawned (the player's
+                // spawn is on the surface → body culled with the surface
+                // while the separately-drawn boots + dagger kept walking).
+                if (!s.IsPlayer && IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
                 int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
