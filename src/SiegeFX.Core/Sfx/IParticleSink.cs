@@ -105,6 +105,56 @@ public struct FlurrySpec
     public byte    TexSlot;
 }
 
+/// <summary>Phase 23d-2d — SU-212 SPE (spatiotemporal pattern effect).
+/// Exact documented model, per axis and per particle i:
+/// pos = anchor + radius * (sin(index0 + speed0*t + space0*i)
+///                        + sin(index1 + speed1*t + space1*i)) / 2.</summary>
+public struct SpeSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;      // doc default 1.0
+    public float   Scale;       // per-particle size (doc default 0.12)
+    public System.Numerics.Vector3 Index0, Index1;   // doc default (0,0,1.57)
+    public System.Numerics.Vector3 Speed0, Speed1;   // doc default (0,1,0)
+    public System.Numerics.Vector3 Space0, Space1;   // doc default (.098,0,.098)
+    public int     Count;       // doc default 64
+    public float   FadeIn, FadeOut, Duration;
+    public byte    TexSlot;
+}
+
+/// <summary>Phase 23d-2d — SU-212 sparkles: particles alpha in and out
+/// while NEVER moving from their spawn point (yvel is the only motion).</summary>
+public struct SparklesSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;      // doc default 1.0
+    public int     Count;       // doc default 60
+    public float   PSize;       // particle size scalar (doc default 1.0)
+    public float   YVel;        // Y velocity (doc default 0)
+    public float   Duration;
+    public byte    TexSlot;
+}
+
+/// <summary>Phase 23d-2d — SU-212 charge: spherically spawned particles
+/// coalesce inward to a larger version of themselves (fireskull's
+/// build-up). ialpha is the per-second alpha ramp; centersize caps the
+/// central particle's growth.</summary>
+public struct ChargeSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;      // doc default 1.0
+    public int     Count;       // doc default 16
+    public float   Tout;        // doc default 1.0
+    public float   Speed0;      // random accel factor (doc default 1.0)
+    public float   CenterSize;  // doc default 0.75
+    public float   IAlpha;      // alpha increment (doc default 4.0)
+    public float   Duration;
+    public byte    TexSlot;
+}
+
 /// <summary>Phase 23d-2c — SU-212 fire/smoke/steam plume parameters.
 /// DS1's fire maintains a POPULATION of <see cref="Count"/> particles
 /// whose lifetime derives from <see cref="AlphaFade"/> ("how fast to
@@ -186,6 +236,15 @@ public interface IParticleSink
     /// <summary>Phase 23d-2c — instant() volume fill: burst n plume
     /// particles at once at spawn time.</summary>
     void BurstPlume(in PlumeSpec spec, Vector3 position, int n);
+
+    /// <summary>Phase 23d-2d — exact SU-212 spatiotemporal pattern effect.</summary>
+    void SpawnSpe(in SpeSpec spec);
+
+    /// <summary>Phase 23d-2d — static alpha-in/out sparkles.</summary>
+    void SpawnSparkles(in SparklesSpec spec);
+
+    /// <summary>Phase 23d-2d — inward-coalescing charge build-up.</summary>
+    void SpawnCharge(in ChargeSpec spec);
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and

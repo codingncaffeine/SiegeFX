@@ -8279,6 +8279,12 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n)
         => Add($"plume!      pos={V3(p)} kind={s.Kind} n={n} (instant fill)");
+    public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e)
+        => Add($"spe         pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} scale={F(e.Scale)} i0={V3(e.Index0)} i1={V3(e.Index1)} v0={V3(e.Speed0)} v1={V3(e.Speed1)} s0={V3(e.Space0)} s1={V3(e.Space1)} tin={F(e.FadeIn)} tout={F(e.FadeOut)} dur={F(e.Duration)}");
+    public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e)
+        => Add($"sparkles    pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} psize={F(e.PSize)} yvel={F(e.YVel)} dur={F(e.Duration)}");
+    public void SpawnCharge(in SiegeFX.Core.Sfx.ChargeSpec e)
+        => Add($"charge      pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} tout={F(e.Tout)} speed0={F(e.Speed0)} center={F(e.CenterSize)} ialpha={F(e.IAlpha)} dur={F(e.Duration)}");
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
         => Pump("fire~", p, c, scale, dt, rate, carry);
     public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
@@ -8318,6 +8324,9 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
         return b - k;
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n) => SpawnFireCount += n;
+    public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e) => SpawnSparkCount += e.Count;
+    public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e) => SpawnSparkCount += e.Count;
+    public void SpawnCharge(in SiegeFX.Core.Sfx.ChargeSpec e) => SpawnSparkCount += e.Count;
     public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }

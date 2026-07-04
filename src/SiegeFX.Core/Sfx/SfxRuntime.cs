@@ -337,15 +337,12 @@ public sealed class SfxRuntime
                 }
                 e.Position = motion.Position;
             }
-            // Self-duration expiry (DS1's `dur(N)` on a lightsource etc.).
-            if (e.Duration > 0f)
+            // Age always (flicker phase needs it); expire on dur(N).
+            e.AgeSec += dt;
+            if (e.Duration > 0f && e.AgeSec >= e.Duration)
             {
-                e.AgeSec += dt;
-                if (e.AgeSec >= e.Duration)
-                {
-                    _emitters.RemoveAt(i);
-                    continue;
-                }
+                _emitters.RemoveAt(i);
+                continue;
             }
             switch (e.Mode)
             {
@@ -365,11 +362,18 @@ public sealed class SfxRuntime
                         : _particles.MaintainSteam(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Glow:
+                {
                     // Scale is overloaded as the halo radius for Glow mode
                     // (the motion-handle dispatch arm sets it from h.Scale,
                     // bounded above 0.30 so a 0-scale script still glows).
-                    e.Carry = _particles.MaintainGlow(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
+                    // Phase 23d-2d — frequency(f) flicker modulates the
+                    // halo's alpha at the authored period.
+                    var gc = e.Color;
+                    if (e.Flicker > 0.001f)
+                        gc.W *= 0.70f + 0.30f * MathF.Sin(e.AgeSec / e.Flicker);
+                    e.Carry = _particles.MaintainGlow(e.Position, gc, e.Scale, dt, e.Rate, e.Carry);
                     break;
+                }
             }
             _emitters[i] = e;
         }
@@ -923,19 +927,67 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotSparkles:
             {
-                // DS1 sparkles: static particles that alpha in/out at their
-                // spawn point (radius/count/psize/yvel). SpawnSpark stays
-                // the stand-in for now — sparkles ships on 3 heal-family
-                // spells; bespoke stillness lands with the heal pass.
-                int count = h.BurstCount > 0 ? h.BurstCount : 16;
-                _particles.SpawnSpark(h.Anchor, h.Color,
-                    MathF.Max(0.20f, h.Scale * 1.2f),
-                    MathF.Max(0.30f, h.Duration),
-                    count);
+                // Phase 23d-2d — charge routes through MapMode as
+                // OneShotSparkles; give it its documented inward-coalesce.
+                if (string.Equals(h.Kind, "charge", StringComparison.OrdinalIgnoreCase))
+                {
+                    var chspec = new ChargeSpec
+                    {
+                        Anchor     = h.Anchor,
+                        Color      = h.Color,
+                        Radius     = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                        Count      = h.BurstCount > 0 ? h.BurstCount : 16,
+                        Tout       = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                        Speed0     = h.HasChargeSpeed ? h.ChargeSpeed : 1.0f,
+                        CenterSize = h.CenterSize > 0f ? h.CenterSize : 0.75f,
+                        IAlpha     = h.IAlpha > 0f ? h.IAlpha : 4.0f,
+                        Duration   = h.Duration > 0.05f ? h.Duration : 1.0f,
+                        TexSlot    = TextureNameToSlot(h.TextureName, 2),
+                    };
+                    _particles.SpawnCharge(in chspec);
+                    break;
+                }
+                // Phase 23d-2d — SU-212 sparkles: static alpha-in/out
+                // particles that never leave their spawn point.
+                var spkspec = new SparklesSpec
+                {
+                    Anchor   = h.Anchor,
+                    Color    = h.Color,
+                    Radius   = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                    Count    = h.BurstCount > 0 ? h.BurstCount : 60,
+                    PSize    = h.PSize > 0f ? h.PSize : 1.0f,
+                    YVel     = h.YVel,
+                    Duration = h.Duration > 0.05f ? h.Duration : 1.0f,
+                    TexSlot  = TextureNameToSlot(h.TextureName, 2),
+                };
+                _particles.SpawnSparkles(in spkspec);
                 break;
             }
             case EmitterMode.OneShotFlurry:
             {
+                // Phase 23d-2d — SPE routes through MapMode as
+                // OneShotFlurry; run the exact documented parametric model
+                // when its triples were authored.
+                if (string.Equals(h.Kind, "spe", StringComparison.OrdinalIgnoreCase) && h.HasSpe)
+                {
+                    var spespec = new SpeSpec
+                    {
+                        Anchor   = h.Anchor,
+                        Color    = h.Color,
+                        Radius   = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                        Scale    = h.Scale > 0.01f && h.Scale != 0.6f ? h.Scale : 0.12f,
+                        Index0   = h.SpeIndex0, Index1 = h.SpeIndex1,
+                        Speed0   = h.SpeSpeed0, Speed1 = h.SpeSpeed1,
+                        Space0   = h.SpeSpace0, Space1 = h.SpeSpace1,
+                        Count    = h.BurstCount > 0 ? h.BurstCount : 64,
+                        FadeIn   = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
+                        FadeOut  = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                        Duration = h.Duration > 0.05f ? h.Duration : 1.0f,
+                        TexSlot  = TextureNameToSlot(h.TextureName, 2),
+                    };
+                    _particles.SpawnSpe(in spespec);
+                    break;
+                }
                 // Phase 23d-2b — real SU-212 flurry: spherical polar swarm
                 // with sinusoidal radial interference, grow envelope and
                 // tin/tout alpha shaping. Doc defaults where unauthored.
@@ -1151,6 +1203,7 @@ public sealed class SfxRuntime
                     SelfMotionId   = h.MotionId,
                     Duration = h.Duration > 0.10f ? h.Duration : 0f,
                     SelfName = selfName,
+                    Flicker  = isLight && h.HasFlicker ? h.Flicker : 0f,
                 });
                 break;
             }
@@ -2442,6 +2495,18 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "end_rate", out var enr8)) { h.EndRate = enr8; h.HasEndRate = true; }
         if (TryReadFloat(raw, "velocity_s", out var vsc)) h.VelocityScalar = vsc;
 
+        // Phase 23d-2d — charge/sparkles scalar knobs. speed0 is shared
+        // with SPE's (x,y,z) form — arg count disambiguates.
+        {
+            var sp0Args = ExtractArgs(raw, "speed0");
+            if (sp0Args is { Length: 1 } && TryParseF(sp0Args[0], out var chSp))
+            { h.ChargeSpeed = chSp; h.HasChargeSpeed = true; }
+        }
+        if (TryReadFloat(raw, "centersize", out var ctr)) h.CenterSize = ctr;
+        if (TryReadFloat(raw, "ialpha", out var ial)) h.IAlpha = ial;
+        if (TryReadFloat(raw, "psize", out var psz)) h.PSize = psz;
+        if (TryReadFloat(raw, "yvel", out var yv)) h.YVel = yv;
+
         // Trackball scalar accel(f) — only when the vector form didn't parse.
         {
             var accelArgs = ExtractArgs(raw, "accel");
@@ -2958,6 +3023,13 @@ public sealed class SfxRuntime
         // fire/fireb/steam; trackball ships a single ramp rate.
         public float       AccelScalar;
         public bool        HasAccelScalar;
+        // Phase 23d-2d — charge / sparkles knobs.
+        public float       ChargeSpeed;     // charge speed0(f) — random accel factor
+        public bool        HasChargeSpeed;
+        public float       CenterSize;      // charge centersize(f) (doc default 0.75)
+        public float       IAlpha;          // charge ialpha(f) (doc default 4.0)
+        public float       PSize;           // sparkles psize(f) (doc default 1.0)
+        public float       YVel;            // sparkles yvel(f) (doc default 0)
         // Explosion scale_range(s,e,0) — per-particle random SIZE range
         // (start=min, end=max per SU 212), distinct from the legacy
         // arg-1→Scale shortcut kept above for goldens continuity.
@@ -2995,6 +3067,9 @@ public sealed class SfxRuntime
         // legacy Maintain* trio.
         public PlumeSpec Spec;
         public bool      HasSpec;
+        // Phase 23d-2d — lightsource frequency(f): flicker period in
+        // seconds (doc default 0.025). 0 = steady.
+        public float     Flicker;
     }
 
     /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion state for

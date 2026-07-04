@@ -211,6 +211,31 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         public byte  Tex;
     }
     private readonly List<FlurryP> _flurry = new(64);
+    // Phase 23d-2d — SPE / sparkles / charge procedural swarms.
+    private struct SpeP
+    {
+        public SpeSpec Spec;
+        public int Index;
+        public float Age;
+    }
+    private readonly List<SpeP> _spes = new(64);
+    private struct SparkleP
+    {
+        public Vector3 Position;
+        public Vector4 Color;
+        public float YVel, Age, Life, Size;
+        public byte Tex;
+    }
+    private readonly List<SparkleP> _sparkles = new(64);
+    private struct ChargeP
+    {
+        public Vector3 Anchor, Dir;   // Dir = spawn direction on the sphere
+        public Vector4 Color;
+        public float Radius, Speed, Age, Life, CenterSize, IAlpha;
+        public bool IsCenter;
+        public byte Tex;
+    }
+    private readonly List<ChargeP> _charges = new(32);
     private readonly List<SpellProjectile> _projectiles = new(32);
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
@@ -932,6 +957,73 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         return budget - n;
     }
 
+    /// <summary>Phase 23d-2d — exact SU-212 SPE. Particle positions are
+    /// computed procedurally in the Draw fill from the documented
+    /// two-sine average; nothing to integrate here beyond age.</summary>
+    public void SpawnSpe(in SpeSpec spec)
+    {
+        for (int i = 0; i < spec.Count; i++)
+            _spes.Add(new SpeP { Spec = spec, Index = i, Age = 0f });
+    }
+
+    /// <summary>Phase 23d-2d — SU-212 sparkles: static spawn points inside
+    /// the radius ball; alpha in over the first half of life, out over the
+    /// second; yvel is the only motion.</summary>
+    public void SpawnSparkles(in SparklesSpec spec)
+    {
+        for (int i = 0; i < spec.Count; i++)
+        {
+            float z  = Rand(-1f, 1f);
+            float th = Rand(0f, MathF.Tau);
+            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+            float rad = Rand(0f, MathF.Max(0.02f, spec.Radius));
+            _sparkles.Add(new SparkleP
+            {
+                Position = spec.Anchor + new Vector3(rr * MathF.Cos(th), z, rr * MathF.Sin(th)) * rad,
+                Color    = spec.Color,
+                YVel     = spec.YVel,
+                Age      = Rand(0f, spec.Duration * 0.4f), // staggered twinkle
+                Life     = MathF.Max(0.10f, spec.Duration),
+                Size     = 0.10f * MathF.Max(0.05f, spec.PSize),
+                Tex      = spec.TexSlot,
+            });
+        }
+    }
+
+    /// <summary>Phase 23d-2d — SU-212 charge: particles spawn on the
+    /// radius sphere and coalesce inward while alpha ramps in at ialpha;
+    /// a center particle grows toward centersize.</summary>
+    public void SpawnCharge(in ChargeSpec spec)
+    {
+        for (int i = 0; i < spec.Count; i++)
+        {
+            float z  = Rand(-1f, 1f);
+            float th = Rand(0f, MathF.Tau);
+            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+            _charges.Add(new ChargeP
+            {
+                Anchor     = spec.Anchor,
+                Dir        = new Vector3(rr * MathF.Cos(th), z, rr * MathF.Sin(th)),
+                Color      = spec.Color,
+                Radius     = MathF.Max(0.05f, spec.Radius),
+                Speed      = spec.Speed0 * Rand(0.6f, 1.4f),
+                Age        = Rand(0f, 0.25f * spec.Duration),
+                Life       = MathF.Max(0.15f, spec.Duration),
+                CenterSize = spec.CenterSize,
+                IAlpha     = spec.IAlpha,
+                Tex        = spec.TexSlot,
+            });
+        }
+        _charges.Add(new ChargeP
+        {
+            Anchor = spec.Anchor, Dir = Vector3.Zero,
+            Color = spec.Color, Radius = 0f, Speed = 0f,
+            Age = 0f, Life = MathF.Max(0.15f, spec.Duration),
+            CenterSize = spec.CenterSize, IAlpha = spec.IAlpha,
+            IsCenter = true, Tex = spec.TexSlot,
+        });
+    }
+
     /// <summary>Phase 23d-2c — authored plume pump (SU-212 fire/smoke/
     /// steam). Population model: DS1's count is a live-particle cap and
     /// alphafade sets the fade-out speed, so steady-state spawn rate =
@@ -1124,6 +1216,29 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (f.Age >= f.Life) { _flurry.RemoveAt(i); continue; }
             _flurry[i] = f;
         }
+        // Phase 23d-2d — SPE / sparkles / charge aging.
+        for (int i = _spes.Count - 1; i >= 0; i--)
+        {
+            var s = _spes[i];
+            s.Age += dt;
+            if (s.Age >= s.Spec.Duration) { _spes.RemoveAt(i); continue; }
+            _spes[i] = s;
+        }
+        for (int i = _sparkles.Count - 1; i >= 0; i--)
+        {
+            var s = _sparkles[i];
+            s.Age += dt;
+            if (s.Age >= s.Life) { _sparkles.RemoveAt(i); continue; }
+            s.Position.Y += s.YVel * dt;
+            _sparkles[i] = s;
+        }
+        for (int i = _charges.Count - 1; i >= 0; i--)
+        {
+            var s = _charges[i];
+            s.Age += dt;
+            if (s.Age >= s.Life) { _charges.RemoveAt(i); continue; }
+            _charges[i] = s;
+        }
         // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
         // stamp a fire/ember trail along the way, detonate on arrival.
         for (int i = _projectiles.Count - 1; i >= 0; i--)
@@ -1219,6 +1334,9 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _srayRays.Clear();
         _srayEmits.Clear();
         _flurry.Clear();
+        _spes.Clear();
+        _sparkles.Clear();
+        _charges.Clear();
         _burstQueue.Clear();
     }
 
@@ -1226,7 +1344,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     {
         if (_particles.Count == 0 && _bolts.Count == 0
             && _projectiles.Count == 0 && _cylinders.Count == 0
-            && _srayRays.Count == 0 && _flurry.Count == 0) return;
+            && _srayRays.Count == 0 && _flurry.Count == 0
+            && _spes.Count == 0 && _sparkles.Count == 0 && _charges.Count == 0) return;
 
         // Bolts + cylinders + srays all compile into the ribbon vertex
         // buffer. Each takes its own slice; DrawRibbons issues 3 draw
@@ -1246,7 +1365,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // additive particles still composite on top cleanly.
         if (_ribbonVertCount > 0) DrawRibbons(view, proj);
 
-        int totalInstances = _particles.Count + _flurry.Count;
+        int totalInstances = _particles.Count + _flurry.Count
+                           + _spes.Count + _sparkles.Count + _charges.Count;
         if (totalInstances == 0) return;
 
         // Rebuild instance buffer.
@@ -1321,6 +1441,56 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _instanceBuffer[o + 11] = 0f;
         }
 
+        // Phase 23d-2d — SPE / sparkles / charge procedural instances.
+        int cursor = _particles.Count + _flurry.Count;
+        for (int i = 0; i < _spes.Count; i++, cursor++)
+        {
+            var s = _spes[i];
+            var sp = s.Spec;
+            float t = s.Age;
+            int idx = s.Index;
+            // Exact doc model per axis: (sin(i0 + v0*t + s0*i) + sin(i1 + v1*t + s1*i)) / 2.
+            var pos = sp.Anchor + new Vector3(
+                (MathF.Sin(sp.Index0.X + sp.Speed0.X * t + sp.Space0.X * idx) + MathF.Sin(sp.Index1.X + sp.Speed1.X * t + sp.Space1.X * idx)) * 0.5f,
+                (MathF.Sin(sp.Index0.Y + sp.Speed0.Y * t + sp.Space0.Y * idx) + MathF.Sin(sp.Index1.Y + sp.Speed1.Y * t + sp.Space1.Y * idx)) * 0.5f,
+                (MathF.Sin(sp.Index0.Z + sp.Speed0.Z * t + sp.Space0.Z * idx) + MathF.Sin(sp.Index1.Z + sp.Speed1.Z * t + sp.Space1.Z * idx)) * 0.5f)
+                * sp.Radius;
+            float alpha = 1f;
+            if (sp.FadeIn > 0f && t < sp.FadeIn) alpha = t / sp.FadeIn;
+            float toutStart = sp.Duration - sp.FadeOut;
+            if (sp.FadeOut > 0f && t > toutStart)
+                alpha = MathF.Min(alpha, MathF.Max(0f, 1f - (t - toutStart) / sp.FadeOut));
+            FillInstance(cursor, pos, sp.Scale, new Vector4(sp.Color.X, sp.Color.Y, sp.Color.Z, sp.Color.W * alpha), sp.TexSlot);
+        }
+        for (int i = 0; i < _sparkles.Count; i++, cursor++)
+        {
+            var s = _sparkles[i];
+            float half = s.Life * 0.5f;
+            float alpha = s.Age < half ? s.Age / half : MathF.Max(0f, 1f - (s.Age - half) / half);
+            FillInstance(cursor, s.Position, s.Size, new Vector4(s.Color.X, s.Color.Y, s.Color.Z, s.Color.W * alpha), s.Tex);
+        }
+        for (int i = 0; i < _charges.Count; i++, cursor++)
+        {
+            var s = _charges[i];
+            float t01 = s.Age / s.Life;
+            float alpha = MathF.Min(1f, s.Age * s.IAlpha);
+            if (t01 > 0.85f) alpha *= MathF.Max(0f, 1f - (t01 - 0.85f) / 0.15f);
+            Vector3 pos;
+            float size;
+            if (s.IsCenter)
+            {
+                pos = s.Anchor;
+                size = MathF.Max(0.03f, s.CenterSize * t01);
+            }
+            else
+            {
+                float r = MathF.Max(0f, s.Radius * (1f - t01 * MathF.Max(0.3f, s.Speed)));
+                pos = s.Anchor + s.Dir * r;
+                size = 0.08f;
+            }
+            FillInstance(cursor, pos, size, new Vector4(s.Color.X, s.Color.Y, s.Color.Z, s.Color.W * alpha), s.Tex);
+        }
+
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vboInstance);
         unsafe
         {
@@ -1373,6 +1543,25 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _gl.BindVertexArray(0);
         _gl.DepthMask(true);
         if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
+    }
+
+    // Phase 23d-2d — shared instance-buffer writer for the procedural
+    // swarms (SPE / sparkles / charge). Additive, no fade window.
+    void FillInstance(int slot, Vector3 pos, float scale, Vector4 color, byte tex)
+    {
+        int o = slot * InstanceFloats;
+        _instanceBuffer[o + 0] = pos.X;
+        _instanceBuffer[o + 1] = pos.Y;
+        _instanceBuffer[o + 2] = pos.Z;
+        _instanceBuffer[o + 3] = scale;
+        _instanceBuffer[o + 4] = color.X;
+        _instanceBuffer[o + 5] = color.Y;
+        _instanceBuffer[o + 6] = color.Z;
+        _instanceBuffer[o + 7] = color.W;
+        _instanceBuffer[o + 8] = tex;
+        _instanceBuffer[o + 9] = 1f;
+        _instanceBuffer[o + 10] = 0f;
+        _instanceBuffer[o + 11] = 0f;
     }
 
     private readonly Vector3[] _boltPathScratch = new Vector3[64 + 1];
