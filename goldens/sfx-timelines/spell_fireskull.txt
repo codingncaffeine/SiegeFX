@@ -1,14 +1,8 @@
 # sfx timeline  script=fireskull  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.000  spark       pos=(4,0,0) color=(1,0.3,0,1) scale=2.4 dur=0.5 n=16
-  0.050  fire~       pos=(0.68,1.077,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
-  0.100  fire~       pos=(1.061,0.953,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
-  0.100  fire~       pos=(1.061,0.953,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
-  0.150  fire~       pos=(1.441,0.83,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
-  0.150  fire~       pos=(1.441,0.83,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
-  0.200  fire~       pos=(1.822,0.706,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
-  0.250  fire~       pos=(2.202,0.583,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
-  0.250  fire~       pos=(2.202,0.583,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
-  0.300  fire~       pos=(2.583,0.46,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
-  0.300  fire~       pos=(2.583,0.46,0) color=(1,0.3,0,1) scale=1.68 rate=60 n=3
+  0.100  fire~       pos=(0.776,1.046,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
+  0.150  fire~       pos=(1.013,0.969,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
+  0.250  fire~       pos=(1.489,0.814,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
+  0.300  fire~       pos=(1.727,0.737,0) color=(1,0.3,0.2,1) scale=1.2 rate=13.333 n=1
 # end: emitters=0 coroutines=1 unhandled=[]

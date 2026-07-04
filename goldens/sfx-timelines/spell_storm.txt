@@ -1,39 +1,35 @@
 # sfx timeline  script=storm  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  lightning   src=(4,15,0) tgt=(4,0,0) color=(0.7,0.7,1,1) dur=0.3 displace=0.2
-  0.000  lightning   src=(4,15,0) tgt=(4,0,0) color=(0.7,0.7,1,1) dur=0.3 displace=0.1
-  0.000  spark       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 dur=0.35 n=25
-  0.100  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  0.150  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  0.200  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  0.250  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
+  0.000  lightning   src=(4,15,0) tgt=(4,0,0) color=(0.7,0.7,1,1) dur=0.3 displace=-0.2..0.2 subd=0.3 minsubd=0.1
+  0.000  lightning   src=(4,15,0) tgt=(4,0,0) color=(0.7,0.7,1,1) dur=0.3 displace=-0.1..0.1 subd=0.3 minsubd=0.1
+  0.000  explosion   pos=(4,0,0) color=(0.7,0.7,1,1) r=0.4 n=25 scale=0..0.5 v=4..8 ivel=(0,1.5,0) rvel=(5,1.5,5) omni=0 fade=0..1 dur=0.35 srate=0.02 tex=2
   0.300  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.350  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.400  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.450  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.500  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
+  0.550  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.600  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.650  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.700  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  0.750  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.800  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.850  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.900  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   0.950  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.000  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
+  1.050  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.100  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.150  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.200  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  1.250  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.300  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.350  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.400  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.450  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.500  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
+  1.550  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.600  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.650  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.700  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
-  1.750  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.800  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.850  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1
   1.900  smoke~      pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.66 rate=18 n=1

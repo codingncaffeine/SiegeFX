@@ -23,6 +23,12 @@ public struct Particle
     public float   TotalLife;       // total seconds (for lerp)
     public byte    TexSlot;         // 0=fire, 1=smoke, 2=sparkle, 3=spark
     public byte    Additive;        // 1 = additive blend, 0 = alpha
+    /// <summary>Phase 23d-2a — DS1 explosion `fade_range(s,e,0)` window as
+    /// life fractions: alpha holds at Color0.W until <see cref="FadeStart"/>,
+    /// reaches 0 by <see cref="FadeEnd"/>. FadeEnd 0 = disabled (legacy
+    /// linear Color0→Color1 lerp).</summary>
+    public float   FadeStart;
+    public float   FadeEnd;
 }
 
 /// <summary>One world-space lightning bolt segment. Drawn as N small alpha
@@ -41,6 +47,12 @@ public struct LightningBolt
     /// <c>maxdisplace(N)</c> (units of jitter perpendicular to the
     /// line). 0 means "use renderer default" (length-relative).</summary>
     public float   Displace;
+    /// <summary>Phase 23d-2a — SU 212 lightning: displacement is a SIGNED
+    /// range [MinDisplace, Displace] (zap authors -0.15..0.15); Subd /
+    /// MinSubd control subdivision density. 0 = renderer defaults.</summary>
+    public float   MinDisplace;
+    public float   Subd;
+    public float   MinSubd;
 }
 
 /// <summary>Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive: a textured
@@ -632,17 +644,105 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// <summary>Phase 21-SC-SPELL-VFX-2 — DS1's <c>maxdisplace(N)</c> param.
     /// 0 falls back to length-relative jitter.</summary>
     public void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration, float displace)
+        => SpawnLightning(source, target, color, duration, -displace, displace, 0f, 0f);
+
+    /// <summary>Phase 23d-2a — full-fidelity bolt per SU 212: signed
+    /// [minDisplace, maxDisplace] stray range + subd/minsubd subdivision
+    /// density (0 = defaults).</summary>
+    public void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration,
+                               float minDisplace, float maxDisplace, float subd, float minSubd)
     {
         _bolts.Add(new LightningBolt
         {
-            Source    = source,
-            Target    = target,
-            Color     = color,
-            Life      = duration,
-            TotalLife = duration,
-            Seed      = (uint)Random.Shared.Next(),
-            Displace  = displace,
+            Source      = source,
+            Target      = target,
+            Color       = color,
+            Life        = duration,
+            TotalLife   = duration,
+            Seed        = (uint)Random.Shared.Next(),
+            Displace    = maxDisplace,
+            MinDisplace = minDisplace,
+            Subd        = subd,
+            MinSubd     = minSubd,
         });
+    }
+
+    /// <summary>Phase 23d-2a — authored-parameter explosion (SU 212). When
+    /// <see cref="ExplosionSpec.SpawnOver"/> (srate) is set the burst is
+    /// spread across that many seconds via the tick-drained queue instead
+    /// of popping in one frame.</summary>
+    public void SpawnExplosion(in ExplosionSpec spec)
+    {
+        if (spec.Count <= 0) return;
+        if (spec.SpawnOver > 0.02f)
+        {
+            _burstQueue.Add((spec, 0f, spec.Count));
+            return;
+        }
+        EmitExplosion(in spec, spec.Count);
+    }
+
+    // Deferred explosion bursts being spread over srate seconds:
+    // (spec, fractional carry, particles left to spawn).
+    private readonly List<(ExplosionSpec Spec, float Carry, int Remaining)> _burstQueue = new(8);
+
+    void EmitExplosion(in ExplosionSpec spec, int n)
+    {
+        for (int i = 0; i < n; i++)
+        {
+            // Direction: omni_dir = uniform sphere (the (z, theta) trick);
+            // directional default = up, per the doc's "explode in a set
+            // direction". Speed = rand[vmin, vmax] scalar along that
+            // direction, plus the ivel base vector, plus rvel random
+            // per-axis jitter.
+            Vector3 dir;
+            if (spec.OmniDir)
+            {
+                float z  = Rand(-1f, 1f);
+                float th = Rand(0f, MathF.Tau);
+                float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+                dir = new Vector3(rr * MathF.Cos(th), z, rr * MathF.Sin(th));
+            }
+            else dir = Vector3.UnitY;
+
+            var vel = dir * Rand(spec.VMin, spec.VMax)
+                    + spec.IVel
+                    + new Vector3(Rand(-spec.RVel.X, spec.RVel.X),
+                                  Rand(-spec.RVel.Y, spec.RVel.Y),
+                                  Rand(-spec.RVel.Z, spec.RVel.Z));
+
+            // Spawn point within the radius: disc for directional bursts,
+            // squashed ball for omni.
+            float ang = Rand(0f, MathF.Tau);
+            float rad = Rand(0f, MathF.Max(0.01f, spec.Radius));
+            var pos = spec.Anchor + new Vector3(
+                MathF.Cos(ang) * rad,
+                spec.OmniDir ? Rand(-spec.Radius, spec.Radius) * 0.5f : 0f,
+                MathF.Sin(ang) * rad);
+
+            float sc = Rand(MathF.Min(spec.ScaleMin, spec.ScaleMax),
+                            MathF.Max(spec.ScaleMin, spec.ScaleMax));
+            _particles.Add(new Particle
+            {
+                Position  = pos,
+                Velocity  = vel,
+                // Doc: particles "fade out and bounce off the ground" —
+                // gravity pulls them down; terrain bounce lands with the
+                // collide() pass once the particle system can see the nav
+                // mesh (in-game hook, not the harness).
+                Accel     = new Vector3(0f, -3.5f, 0f),
+                Color0    = spec.Color,
+                Color1    = new Vector4(spec.Color.X, spec.Color.Y, spec.Color.Z, 0f),
+                Scale0    = sc,
+                Scale1    = sc,
+                Life      = spec.Duration,
+                TotalLife = spec.Duration,
+                TexSlot   = spec.TexSlot,
+                Additive  = 1,
+                FadeStart = spec.FadeStart,
+                FadeEnd   = spec.FadeEnd,
+            });
+        }
     }
 
     public void SpawnProjectile(Vector3 source, Vector3 target, Vector4 color, float scale, float speed, int impactKind)
@@ -769,6 +869,23 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void Tick(float dt)
     {
+        // Phase 23d-2a — drain srate-spread explosion bursts.
+        for (int i = _burstQueue.Count - 1; i >= 0; i--)
+        {
+            var (spec, carry, remaining) = _burstQueue[i];
+            float rate = spec.Count / MathF.Max(0.02f, spec.SpawnOver);
+            carry += rate * dt;
+            int n = Math.Min(remaining, (int)carry);
+            if (n > 0)
+            {
+                EmitExplosion(in spec, n);
+                carry -= n;
+                remaining -= n;
+            }
+            if (remaining <= 0) { _burstQueue.RemoveAt(i); continue; }
+            _burstQueue[i] = (spec, carry, remaining);
+        }
+
         for (int i = _particles.Count - 1; i >= 0; i--)
         {
             var p = _particles[i];
@@ -895,6 +1012,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _projectiles.Clear();
         _cylinders.Clear();
         _srays.Clear();
+        _burstQueue.Clear();
     }
 
     public void Draw(Matrix4x4 view, Matrix4x4 proj, Vector3 cameraPos)
@@ -930,7 +1048,19 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             var p = _particles[i];
             float frac = 1f - (p.Life / MathF.Max(0.0001f, p.TotalLife));
             float scale = MathHelper.Lerp(p.Scale0, p.Scale1, frac);
-            var col = Vector4.Lerp(p.Color0, p.Color1, frac);
+            Vector4 col;
+            if (p.FadeEnd > 0f)
+            {
+                // Phase 23d-2a — fade_range window: hold full alpha until
+                // FadeStart of life, reach 0 by FadeEnd. RGB stays Color0
+                // (DS1's explosion color1 is per-particle VARIANCE, not an
+                // end-fade tint).
+                float a = frac <= p.FadeStart ? 1f
+                        : frac >= p.FadeEnd   ? 0f
+                        : 1f - (frac - p.FadeStart) / MathF.Max(0.0001f, p.FadeEnd - p.FadeStart);
+                col = new Vector4(p.Color0.X, p.Color0.Y, p.Color0.Z, p.Color0.W * a);
+            }
+            else col = Vector4.Lerp(p.Color0, p.Color1, frac);
             int o = i * InstanceFloats;
             _instanceBuffer[o + 0] = p.Position.X;
             _instanceBuffer[o + 1] = p.Position.Y;
@@ -1011,7 +1141,6 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // tinsel/X effect. Result is a true wire instead of a string of pills.
         _ribbonVertCount = 0;
         if (_bolts.Count == 0) return;
-        const int Segments = 24;
         for (int bi = 0; bi < _bolts.Count; bi++)
         {
             var b = _bolts[bi];
@@ -1024,12 +1153,25 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             var side = Vector3.Cross(fwd, up); if (side.LengthSquared() < 0.001f) side = Vector3.UnitX;
             side = Vector3.Normalize(side);
             uint rng = b.Seed + (uint)(frac * 16f);
-            float xAmp = b.Displace > 0.001f
-                ? MathF.Max(b.Displace, MathF.Min(len * 0.05f, 0.25f))
-                : MathF.Min(len * 0.08f, 0.35f);
-            float yAmp = b.Displace > 0.001f
-                ? MathF.Max(b.Displace * 0.6f, MathF.Min(len * 0.04f, 0.18f))
-                : MathF.Min(len * 0.06f, 0.25f);
+
+            // Phase 23d-2a — subdivision density from subd/minsubd
+            // (SU 212: subd = "level of bolt subdivision" default 0.4,
+            // minsubd = minimum level default 2.0). Exact GPG mapping is
+            // undocumented; inference: segments scale with length x
+            // subd-ratio, floored by 2^minsubd — 4u bolts land at the
+            // pre-23d 24 segments when unauthored. Revisit against DS1
+            // side-by-side capture.
+            float subd    = b.Subd    > 0f ? b.Subd    : 0.4f;
+            float minsubd = b.MinSubd > 0f ? b.MinSubd : 2.0f;
+            int segMin = 1 << (int)Math.Clamp(minsubd, 1f, 6f);
+            int segments = Math.Clamp((int)(len * 6f * (subd / 0.4f)), segMin, 64);
+
+            // Phase 23d-2a — displacement is a signed [min, max] stray
+            // range per SU 212 (zap ships -0.15..0.15). Legacy 0/0 keeps
+            // the length-relative default.
+            bool hasRange = b.Displace > 0.001f || b.MinDisplace < -0.001f;
+            float dMin = hasRange ? b.MinDisplace : -MathF.Min(len * 0.08f, 0.35f) * 0.5f;
+            float dMax = hasRange ? b.Displace    :  MathF.Min(len * 0.08f, 0.35f) * 0.5f;
             // Wire-thin world-space half-width. ~2 pixels at chase-cam range.
             float thickness = 0.022f;
             float lifeAlpha = MathF.Max(0.25f, 1f - frac);
@@ -1039,27 +1181,29 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             core.Z = MathF.Min(1f, core.Z * 0.4f + 0.6f);
             core.W = lifeAlpha;
 
-            // Pass 1: jittered polyline points along the bolt.
+            // Pass 1: jittered polyline points along the bolt. Displacement
+            // draws uniformly from the signed [dMin, dMax] range on both
+            // perpendicular axes (SU 212's mindisplace/maxdisplace).
             var pts = _boltPathScratch;
-            for (int s = 0; s <= Segments; s++)
+            for (int s = 0; s <= segments; s++)
             {
-                float t = (float)s / Segments;
+                float t = (float)s / segments;
                 rng = rng * 1664525u + 1013904223u;
-                float jx = ((rng & 0xFFFF) / 65535f - 0.5f) * xAmp;
+                float jx = dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin);
                 rng = rng * 1664525u + 1013904223u;
-                float jy = ((rng & 0xFFFF) / 65535f - 0.5f) * yAmp;
-                if (s == 0 || s == Segments) { jx = 0f; jy = 0f; }
+                float jy = dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin);
+                if (s == 0 || s == segments) { jx = 0f; jy = 0f; }
                 pts[s] = b.Source + dir * t + side * jx + up * jy;
             }
 
             // Pass 2: shared per-junction perpendicular = neighbor-averaged
             // tangent crossed with view-direction-to-camera at this point.
             var perp = _boltPerpScratch;
-            for (int s = 0; s <= Segments; s++)
+            for (int s = 0; s <= segments; s++)
             {
                 Vector3 tangent;
                 if      (s == 0)        tangent = pts[1] - pts[0];
-                else if (s == Segments) tangent = pts[Segments] - pts[Segments - 1];
+                else if (s == segments) tangent = pts[segments] - pts[segments - 1];
                 else                    tangent = pts[s + 1] - pts[s - 1];
                 var toCam = cameraPos - pts[s];
                 var sv = Vector3.Cross(tangent, toCam);
@@ -1070,11 +1214,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
             // Pass 3: emit 2 tris (6 verts) per segment; corners at s and s+1
             // share their perpendicular with the neighbor segment.
-            EnsureRibbonCapacity(_ribbonVertCount + Segments * 6);
-            for (int s = 0; s < Segments; s++)
+            EnsureRibbonCapacity(_ribbonVertCount + segments * 6);
+            for (int s = 0; s < segments; s++)
             {
-                float u0 = (float)s / Segments;
-                float u1 = (float)(s + 1) / Segments;
+                float u0 = (float)s / segments;
+                float u1 = (float)(s + 1) / segments;
                 var p0a = pts[s]     + perp[s];
                 var p0b = pts[s]     - perp[s];
                 var p1a = pts[s + 1] + perp[s + 1];

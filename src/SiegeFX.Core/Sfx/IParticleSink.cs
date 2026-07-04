@@ -8,6 +8,34 @@ namespace SiegeFX.Core.Sfx;
 /// outside Sfx don't have to re-derive it.</summary>
 public enum ParticleKind { Fire, Smoke, Steam }
 
+/// <summary>Phase 23d-2a — full authored parameter set for DS1's
+/// `explosion` effect, per SU 212 Appendix A. Particles spawn within
+/// <see cref="Radius"/>, fly along a set direction (or omni-directionally),
+/// with speed scalars <see cref="VMin"/>..<see cref="VMax"/> plus the
+/// <see cref="IVel"/> base vector and <see cref="RVel"/> random vector,
+/// staying opaque until <see cref="FadeStart"/> of their life and fading
+/// out by <see cref="FadeEnd"/>. <see cref="SpawnOver"/> spreads the burst
+/// across N seconds (srate) instead of one instant pop.</summary>
+public struct ExplosionSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;       // spawn radius factor (doc default 0.5)
+    public int     Count;        // doc default 32
+    public float   ScaleMin;     // scale_range start (doc default 0.2)
+    public float   ScaleMax;     // scale_range end   (doc default 0.7)
+    public float   VMin;         // min velocity scalar (doc default 3.0)
+    public float   VMax;         // max velocity scalar (doc default 6.5)
+    public System.Numerics.Vector3 IVel;  // initial velocity vector
+    public System.Numerics.Vector3 RVel;  // random velocity vector (doc default .25,.25,.25)
+    public bool    OmniDir;      // omni_dir()
+    public float   FadeStart;    // fade_range start fraction (doc default 0.5)
+    public float   FadeEnd;      // fade_range end fraction   (doc default 1.0)
+    public float   Duration;     // dur
+    public float   SpawnOver;    // srate — spawn spread in seconds (0 = instant)
+    public byte    TexSlot;
+}
+
 /// <summary>Phase 17-SC-F-2 — particle backend abstraction. The shipped
 /// implementation is the GL-backed billboard system in
 /// <c>SiegeFX.Runtime.Render.ParticleSystem</c>; tests and CLIs swap in a
@@ -26,6 +54,18 @@ public interface IParticleSink
     /// <c>maxdisplace(N)</c> param. <paramref name="displace"/> 0 means
     /// "use renderer default" (length-relative jitter).</summary>
     void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration, float displace);
+
+    /// <summary>Phase 23d-2a — full-fidelity lightning per SU 212:
+    /// displacement is the SIGNED [minDisplace, maxDisplace] stray range
+    /// (zap authors -0.15..0.15), subd/minSubd control fractal
+    /// subdivision density. Zero subd/minSubd = renderer defaults.</summary>
+    void SpawnLightning(Vector3 source, Vector3 target, Vector4 color, float duration,
+                        float minDisplace, float maxDisplace, float subd, float minSubd);
+
+    /// <summary>Phase 23d-2a — authored-parameter explosion (SU 212
+    /// Appendix A). Replaces the SpawnSpark approximation for
+    /// `sfx create explosion` sites.</summary>
+    void SpawnExplosion(in ExplosionSpec spec);
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and

@@ -268,8 +268,10 @@ public sealed class SfxRuntime
                 //   3. WaitTimeout expired with the motion still live —
                 //      no_collision; the trackball never reached its
                 //      target within the script's window.
-                if (found && watched.Done)
+                if (found && (watched.Done || watched.Arrived))
                 {
+                    // Phase 23d-2a — Arrived = collided but lingering through
+                    // afterlife(); waitfor resolves at the collision edge.
                     collisionTag = watched.DoneByCollision ? "object_collision" : "no_collision";
                     resolvedPos  = watched.Position;
                     resumed = true;
@@ -297,6 +299,18 @@ public sealed class SfxRuntime
 
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — advance live motion
         // handles before the emitter maintain pass so emitters that
+        // Phase 23d-2a — mature delay(n)-queued starts before motion
+        // advances so a start landing this tick behaves as if it fired at
+        // the top of the frame.
+        for (int i = _delayed.Count - 1; i >= 0; i--)
+        {
+            var d = _delayed[i];
+            d.Remaining -= dt;
+            if (d.Remaining > 0f) { _delayed[i] = d; continue; }
+            _delayed.RemoveAt(i);
+            DispatchStart(d.H, d.SelfName);
+        }
+
         // follow a motion read the just-updated Position.
         AdvanceMotionHandles(dt);
 
@@ -362,6 +376,7 @@ public sealed class SfxRuntime
         _emitters.Clear();
         _scripts.Clear();
         _motionHandles.Clear();
+        _delayed.Clear();
         _nextMotionId = 1;
     }
 
@@ -395,46 +410,73 @@ public sealed class SfxRuntime
             switch (m.Kind.ToLowerInvariant())
             {
                 case "orbiter":
-                    // Phi/Theta tick + radius growth. Position = anchor +
-                    // unit-circle * radius. Theta tilts the circle out of
-                    // the XZ plane (DS1's flame_blades has small theta);
-                    // when itheta is 0 we keep the circle horizontal.
+                    // Phase 23d-2a — true spherical polar orbit per SU 212:
+                    // phi is LATITUDE (iphi default 2.0 — the default
+                    // orbiter sweeps a vertical circle), theta is
+                    // LONGITUDE (itheta default 0), radiusi spirals, and
+                    // vdisplace drifts the whole orbit vertically per
+                    // second (pillar_fire's rising column).
                     m.Phi    += m.PhiRate * dt;
+                    m.Theta  += m.ThetaRate * dt;
                     m.Radius += m.RadiusInc * dt;
+                    m.VOffset += m.VDisplace * dt;
                     {
                         float r = m.Radius;
-                        float cx = MathF.Cos(m.Phi) * r;
-                        float cz = MathF.Sin(m.Phi) * r;
-                        // Tilt: rotate the (cx, 0, cz) vector around the X
-                        // axis by Theta so the orbit can be inclined.
-                        float cy = MathF.Sin(m.Theta) * r * 0.25f;
-                        m.Position = m.Anchor + new Vector3(cx, cy, cz);
+                        m.Position = m.Anchor + new Vector3(
+                            MathF.Sin(m.Phi) * MathF.Cos(m.Theta) * r,
+                            MathF.Cos(m.Phi) * r,
+                            MathF.Sin(m.Phi) * MathF.Sin(m.Theta) * r)
+                            + new Vector3(0f, m.VOffset, 0f);
                     }
                     break;
 
                 case "trackball":
-                    // Homing toward Target at fixed Speed. Done when within
-                    // 0.5u of Target. SC-SPELL-VISUAL-G wired the wait-on-
-                    // arrival path: scripts that `waitfor collision $h
-                    // #DEFAULT_TIMEOUT` resume on the same tick this Done
-                    // flag flips, with collision_type = object_collision.
-                    // Child emitters following the trackball still drop
-                    // when this flag flips, matching DS1's per-projectile
-                    // lifetime contract.
+                    // Phase 23d-2a — SU-212 trackball motion: velocity ramps
+                    // by accel(f)/sec toward max_velocity; homing() re-aims
+                    // at the (live) target while non-homing locks the launch
+                    // direction; radius/spin add a spiral interference
+                    // around the flight line; afterlife(f) keeps the handle
+                    // (and its child emitters) alive at the impact point
+                    // after collision while waitfor resumes immediately.
                     {
+                        if (m.Arrived)
+                        {
+                            m.AfterlifeSec -= dt;
+                            if (m.AfterlifeSec <= 0f) m.Done = true;
+                            break;
+                        }
                         var to = m.Target - m.Position;
                         float distSq = to.LengthSquared();
                         if (distSq <= 0.25f)
                         {
                             m.Position = m.Target;
-                            m.Done = true;
                             m.DoneByCollision = true;
+                            if (m.AfterlifeSec > 0f) m.Arrived = true;
+                            else m.Done = true;
                         }
                         else
                         {
-                            float step = m.Speed * dt;
                             float dist = MathF.Sqrt(distSq);
-                            m.Position += to * (MathF.Min(step, dist) / dist);
+                            var aim = to / dist;
+                            if (!m.Homing)
+                            {
+                                if (!m.DirLocked) { m.LockedDir = aim; m.DirLocked = true; }
+                                aim = m.LockedDir;
+                            }
+                            m.Speed = MathF.Min(m.MaxSpeed > 0f ? m.MaxSpeed : 80f,
+                                                m.Speed + m.AccelRate * dt);
+                            float step = MathF.Min(m.Speed * dt, dist);
+                            m.Position += aim * step;
+                            if (m.SpiralRadius > 0.001f)
+                            {
+                                float a1 = m.SpiralAngle;
+                                m.SpiralAngle += (m.SpiralRate != 0f ? m.SpiralRate : MathF.Tau) * dt;
+                                var side = Vector3.Cross(Vector3.UnitY, aim);
+                                side = side.LengthSquared() > 0.01f ? Vector3.Normalize(side) : Vector3.UnitX;
+                                var up = Vector3.Cross(aim, side);
+                                m.Position += side * (MathF.Cos(m.SpiralAngle) - MathF.Cos(a1)) * m.SpiralRadius
+                                            + up   * (MathF.Sin(m.SpiralAngle) - MathF.Sin(a1)) * m.SpiralRadius;
+                            }
                         }
                     }
                     break;
@@ -483,7 +525,7 @@ public sealed class SfxRuntime
             var rs = _scripts[s];
             if (rs.WaitMotionId == 0) continue;
             if (!_motionHandles.TryGetValue(rs.WaitMotionId, out var watched)) continue;
-            if (!watched.Done) continue;
+            if (!watched.Done && !watched.Arrived) continue;
             rs.PendingCollisionTag = watched.DoneByCollision ? "object_collision" : "no_collision";
             rs.PendingCollisionPos = watched.Position;
             rs.WaitMotionId = 0;
@@ -708,6 +750,14 @@ public sealed class SfxRuntime
             // anchor is the start point and the script's #TARGET (Ctx.TargetPos)
             // is where it homes to. Lightsource is static at anchor (until a
             // sfx target rebinds parent). Curve uses anchor as start, target as end.
+            // Phase 23d-2a — SU-212-faithful motion init. Orbiter: phi is
+            // latitude start (phi(f)), iphi its rate (doc default 2.0);
+            // theta longitude start, itheta rate (default 0). Trackball:
+            // velocity(f) default 5.0, accel(f) ramp default 2.5,
+            // max_velocity default 80, spiral from radius/spin, theta
+            // spiral-start "*random" per the doc when unauthored.
+            bool isOrbiter   = handle.Mode == EmitterMode.MotionOrbiter;
+            bool isTrackball = handle.Mode == EmitterMode.MotionTrackball;
             var motion = new MotionState
             {
                 Id           = id,
@@ -715,18 +765,36 @@ public sealed class SfxRuntime
                 Anchor       = anchor,
                 Target       = rs.Ctx.TargetPos,
                 Position     = anchor,
-                Phi          = handle.OrbitPhi,
-                Theta        = handle.OrbitTheta,
-                Radius       = handle.OrbitRadius,
+                Phi          = handle.HasPhi ? handle.PhiStart : 0f,
+                Theta        = handle.HasTheta ? handle.ThetaStart : 0f,
+                Radius       = handle.OrbitRadius > 0f ? handle.OrbitRadius
+                               : (isOrbiter ? 1.0f : 0f),
                 RadiusInc    = handle.OrbitRadiusInc,
-                // Default rotation rate for orbiter — DS1 doesn't author
-                // a per-spell phi-rate field; visual sweep covers tuning.
-                PhiRate      = handle.Mode == EmitterMode.MotionOrbiter ? 4.0f : 0f,
-                Speed        = handle.Velocity > 0f ? handle.Velocity : 8.0f,
+                PhiRate      = isOrbiter
+                               ? (handle.OrbitPhi != 0f ? handle.OrbitPhi : 2.0f)
+                               : 0f,
+                ThetaRate    = isOrbiter ? handle.OrbitTheta : 0f,
+                VDisplace    = handle.VDisplace,
+                Speed        = handle.Velocity > 0f ? handle.Velocity
+                               : (isTrackball ? 5.0f : 8.0f),
+                AccelRate    = isTrackball
+                               ? (handle.HasAccelScalar ? handle.AccelScalar : 2.5f)
+                               : 0f,
+                MaxSpeed     = handle.HasMaxVelocity ? handle.MaxVelocity : 80f,
+                SpiralRadius = isTrackball ? handle.OrbitRadius : 0f,
+                SpiralRate   = isTrackball ? handle.SpinRate : 0f,
+                SpiralAngle  = handle.HasTheta ? handle.ThetaStart
+                               : (float)_rng.NextDouble() * MathF.Tau,
+                Homing       = handle.Homing,
+                AfterlifeSec = handle.Afterlife,
                 Duration     = handle.Duration > 0.1f ? handle.Duration : 0f,
                 Elapsed      = 0f,
                 ParentMotionId = 0,
             };
+            // rvel_min/rvel_max — random launch-speed variance (trackball).
+            if (isTrackball && (handle.RvelMax > 0f || handle.RvelMin != 0f))
+                motion.Speed += handle.RvelMin
+                    + (float)_rng.NextDouble() * MathF.Max(0f, handle.RvelMax - handle.RvelMin);
             _motionHandles[id] = motion;
         }
         rs.Stack.Push(handle);
@@ -738,27 +806,110 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count == 0) return;
         if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: true, out var h))
             return;
+        string? selfName = stmt.Tokens[0].StartsWith("$") ? stmt.Tokens[0] : null;
 
+        // Phase 23d-2a — offset(x,y,z): positional offset relative to the
+        // model (SU 212 global params). Applied in the caster's facing
+        // frame (forward = source→target on the XZ plane) which matches
+        // the model's orientation mid-cast; x=right, y=up, z=forward.
+        if (h.HasOffset)
+        {
+            var world = CasterFrameOffset(rs.Ctx, h.OffsetVec);
+            h.Anchor   += world;
+            h.OtherEnd += world;
+            h.Position  = h.Anchor;
+            if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var mm))
+            {
+                mm.Anchor   += world;
+                mm.Position += world;
+                _motionHandles[h.MotionId] = mm;
+            }
+        }
+
+        // Phase 23d-2a — delay(n): pause before the effect starts. The
+        // start is queued and Tick dispatches it when it matures, so
+        // layered creates (nova_strike's staggered rings etc.) sequence
+        // exactly as authored.
+        if (h.DelaySec > 0.0001f)
+        {
+            _delayed.Add(new DelayedStart { Remaining = h.DelaySec, H = h, SelfName = selfName });
+            return;
+        }
+        DispatchStart(h, selfName);
+    }
+
+    struct DelayedStart
+    {
+        public float   Remaining;
+        public Handle  H;
+        public string? SelfName;
+    }
+    readonly List<DelayedStart> _delayed = new();
+
+    /// <summary>Phase 23d-2a — build the caster-frame world offset for
+    /// `offset(x,y,z)`: forward = source→target flattened to XZ (a caster
+    /// faces its target during a cast), up = world Y, right = their cross.</summary>
+    static Vector3 CasterFrameOffset(in SfxContext ctx, Vector3 off)
+    {
+        var fwd = ctx.TargetPos - ctx.SourcePos;
+        fwd.Y = 0f;
+        fwd = fwd.LengthSquared() > 0.0001f ? Vector3.Normalize(fwd) : Vector3.UnitZ;
+        var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, fwd));
+        return right * off.X + Vector3.UnitY * off.Y + fwd * off.Z;
+    }
+
+    void DispatchStart(Handle h, string? selfName)
+    {
         switch (h.Mode)
         {
             case EmitterMode.OneShotLightning:
             {
                 // Phase 21-SC-SPELL-VFX-2 — render the actual hand-to-target
-                // beam. OtherEnd was set by `sfx target $bolt source` /
-                // `sfx attach_point $bolt @weapon_bone source`; if neither
-                // ran (script never re-anchored) it stays equal to Anchor
-                // and SpawnLightning collapses to a zero-length flash.
-                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color, h.Duration, h.Displace);
+                // beam. Phase 23d-2a passes the full SU-212 bolt shape:
+                // signed [mindisplace, maxdisplace] stray range plus
+                // subd/minsubd subdivision density.
+                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color, h.Duration,
+                    h.HasMinDisplace ? h.MinDisplaceY : -h.Displace,
+                    h.Displace,
+                    h.HasSubd    ? h.SubdLevel : 0f,
+                    h.HasMinSubd ? h.MinSubd   : 0f);
                 break;
             }
             case EmitterMode.OneShotExplosion:
+            {
+                // Phase 23d-2a — authored-parameter explosion per SU 212:
+                // spawn radius, velocity model (vmin/vmax scalars + ivel
+                // base + rvel random), omni_dir vs directional, fade
+                // window, srate spawn spread. Defaults are the documented
+                // table defaults.
+                var spec = new ExplosionSpec
+                {
+                    Anchor    = h.Anchor,
+                    Color     = h.Color,
+                    Radius    = h.OrbitRadius > 0f ? h.OrbitRadius : 0.5f,
+                    Count     = h.BurstCount > 0 ? h.BurstCount : 32,
+                    ScaleMin  = h.HasScaleRange ? h.ScaleRangeMin : 0.2f,
+                    ScaleMax  = h.HasScaleRange ? h.ScaleRangeMax : 0.7f,
+                    VMin      = h.HasVMin ? h.VMin : 3.0f,
+                    VMax      = h.HasVMax ? h.VMax : 6.5f,
+                    IVel      = h.HasIVel ? h.IVelVec : Vector3.Zero,
+                    RVel      = h.HasRVel ? h.RVelVec : new Vector3(0.25f, 0.25f, 0.25f),
+                    OmniDir   = h.OmniDir,
+                    FadeStart = h.HasFadeRange ? h.FadeStart : 0.5f,
+                    FadeEnd   = h.HasFadeRange ? h.FadeEnd   : 1.0f,
+                    Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
+                    SpawnOver = h.SpawnOverSec,
+                    TexSlot   = TextureNameToSlot(h.TextureName, 2),
+                };
+                _particles.SpawnExplosion(in spec);
+                break;
+            }
             case EmitterMode.OneShotSparkles:
             {
-                // DS1's `sfx create explosion #TARGET_KB "..."` describes a
-                // burst of textured sparkles around the target. We approximate
-                // with a one-shot SpawnSpark (count + color from the param
-                // string) — no textured atlas yet, but the colored sparkle
-                // pop reads correctly at gameplay distance.
+                // DS1 sparkles: static particles that alpha in/out at their
+                // spawn point (radius/count/psize/yvel). SpawnSpark stays
+                // the stand-in for now — sparkles ships on 3 heal-family
+                // spells; bespoke stillness lands with the heal pass.
                 int count = h.BurstCount > 0 ? h.BurstCount : 16;
                 _particles.SpawnSpark(h.Anchor, h.Color,
                     MathF.Max(0.20f, h.Scale * 1.2f),
@@ -911,6 +1062,11 @@ public sealed class SfxRuntime
                 // streak); LightSource uses Glow (additive halo, color-
                 // preserving — Phase 21-SC-SPELL-VISUAL-D). Steam was the
                 // pre-D placeholder and read as a smoke wisp.
+                // Phase 23d-2a — invisible(): the motion handle exists (and
+                // children follow it) but draws nothing of its own. DS1's
+                // acid_cloud / blaster trackballs author this — the visible
+                // body is the child emitters, not a glow core.
+                if (h.Invisible) break;
                 bool isLight = h.Mode == EmitterMode.LightSource;
                 var glowMode = isLight ? EmitterMode.Glow : EmitterMode.Fire;
                 _emitters.Add(new PersistentEmitter
@@ -927,9 +1083,7 @@ public sealed class SfxRuntime
                     TargetMotionId = h.MotionId,
                     SelfMotionId   = h.MotionId,
                     Duration = h.Duration > 0.10f ? h.Duration : 0f,
-                    SelfName = stmt.Tokens.Count > 0 && stmt.Tokens[0].StartsWith("$")
-                        ? stmt.Tokens[0]
-                        : null,
+                    SelfName = selfName,
                 });
                 break;
             }
@@ -942,9 +1096,7 @@ public sealed class SfxRuntime
                     Scale    = h.Scale,
                     Rate     = h.Rate,
                     TargetMotionId = h.TargetMotionId,
-                    SelfName = stmt.Tokens.Count > 0 && stmt.Tokens[0].StartsWith("$")
-                        ? stmt.Tokens[0]
-                        : null,
+                    SelfName = selfName,
                 });
                 break;
         }
@@ -1154,10 +1306,14 @@ public sealed class SfxRuntime
         var rel = h.OtherEnd - h.Anchor;
         float c = MathF.Cos(angle), s = MathF.Sin(angle);
         h.OtherEnd = h.Anchor + new Vector3(rel.X * c - rel.Z * s, rel.Y, rel.X * s + rel.Z * c);
-        h.OrbitPhi = (h.OrbitPhi + angle) % MathF.Tau;
         if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var motion))
         {
-            motion.Phi = h.OrbitPhi;
+            // Phase 23d-2a — under the spherical-polar orbit model the
+            // azimuth is Theta (longitude), so the orientation kick
+            // rotates that; the spiral angle gets the same kick so
+            // stacked trackballs decorrelate.
+            motion.Theta = (motion.Theta + angle) % MathF.Tau;
+            motion.SpiralAngle = (motion.SpiralAngle + angle) % MathF.Tau;
             _motionHandles[h.MotionId] = motion;
         }
         StoreMutatedHandle(rs, stmt.Tokens[0], h);
@@ -2161,6 +2317,17 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "end_rate", out var enr8)) { h.EndRate = enr8; h.HasEndRate = true; }
         if (TryReadFloat(raw, "velocity_s", out var vsc)) h.VelocityScalar = vsc;
 
+        // Trackball scalar accel(f) — only when the vector form didn't parse.
+        {
+            var accelArgs = ExtractArgs(raw, "accel");
+            if (accelArgs is { Length: 1 } && TryParseF(accelArgs[0], out var accS))
+            { h.AccelScalar = accS; h.HasAccelScalar = true; }
+        }
+        // Explosion scale_range(min, max, 0) — full range capture.
+        if (TryReadFloat(raw, "scale_range", out var srMin, argIndex: 0)
+         && TryReadFloat(raw, "scale_range", out var srMax, argIndex: 1))
+        { h.ScaleRangeMin = srMin; h.ScaleRangeMax = srMax; h.HasScaleRange = true; }
+
         // Engine-level flags with no visual meaning for our runtime —
         // consumed deliberately so the param audit reads them as handled:
         // must_update() asks DS1 to keep re-evaluating a moving anchor,
@@ -2661,6 +2828,16 @@ public sealed class SfxRuntime
         public float       EndRate;         // end_rate(f) — burn ramp-down (doc default 16.5)
         public bool        HasStartRate, HasEndRate;
         public float       VelocityScalar;  // velocity_s(f)
+
+        // Trackball scalar accel(f) — the 3-arg vector form belongs to
+        // fire/fireb/steam; trackball ships a single ramp rate.
+        public float       AccelScalar;
+        public bool        HasAccelScalar;
+        // Explosion scale_range(s,e,0) — per-particle random SIZE range
+        // (start=min, end=max per SU 212), distinct from the legacy
+        // arg-1→Scale shortcut kept above for goldens continuity.
+        public float       ScaleRangeMin, ScaleRangeMax;
+        public bool        HasScaleRange;
     }
 
     struct PersistentEmitter
@@ -2719,6 +2896,27 @@ public sealed class SfxRuntime
         public float   Duration;          // dur(N) lifetime; 0 = never expire
         public float   Elapsed;           // time since spawn
         public bool    Done;              // true when expired or trackball arrived
+        // ---- Phase 23d-2a — SU-212-faithful motion fields ---------------
+        public float   ThetaRate;         // orbiter itheta — longitude rate
+        public float   VDisplace;         // orbiter vdisplace — Y drift per second
+        public float   VOffset;           // accumulated vdisplace
+        public float   AccelRate;         // trackball accel(f) — speed ramp/sec (doc default 2.5)
+        public float   MaxSpeed;          // trackball max_velocity (doc default 80)
+        public float   SpiralRadius;      // trackball radius(f) — spiral interference
+        public float   SpiralRate;        // trackball spin(f) — spiral speed
+        public float   SpiralAngle;       // current spiral angle (theta start; doc *random)
+        public bool    Homing;            // homing() — re-aims at moving target; without it
+                                          // the initial aim is locked (kdamp/damped shape the
+                                          // turn when a live target moves — wired in-game)
+        public bool    DirLocked;
+        public Vector3 LockedDir;
+        /// <summary>afterlife(f) — trackball lingers at the impact point
+        /// for N seconds after collision. <see cref="Arrived"/> is set at
+        /// collision (waitfor resumes then); <see cref="Done"/> flips when
+        /// the afterlife window closes so child emitters keep pumping at
+        /// the impact point exactly as DS1's fireball does.</summary>
+        public float   AfterlifeSec;
+        public bool    Arrived;
         // Phase 21-SC-SPELL-VISUAL-G — distinguish "trackball reached its
         // target" (collision) from "Duration expired without arrival"
         // (timeout). The Tick pass needs this to push the right

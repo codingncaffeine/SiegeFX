@@ -1,48 +1,70 @@
 # sfx timeline  script=fireshot  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.050  fire~       pos=(0.68,1.077,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.100  fire~       pos=(1.061,0.953,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.100  fire~       pos=(1.061,0.953,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
-  0.100  fire~       pos=(1.061,0.953,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
-  0.150  fire~       pos=(1.441,0.83,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.200  fire~       pos=(1.822,0.706,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.200  fire~       pos=(1.822,0.706,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
-  0.200  fire~       pos=(1.822,0.706,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
-  0.250  fire~       pos=(2.202,0.583,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.300  fire~       pos=(2.583,0.46,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.300  fire~       pos=(2.583,0.46,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
-  0.300  fire~       pos=(2.583,0.46,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
-  0.350  fire~       pos=(2.963,0.336,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.400  fire~       pos=(3.344,0.213,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.400  fire~       pos=(3.344,0.213,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
-  0.400  fire~       pos=(3.344,0.213,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
-  0.450  fire~       pos=(3.724,0.089,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
-  0.550  spark       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.36 dur=0.35 n=16
-  0.550  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-  0.600  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-  0.600  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
-  0.650  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-  0.650  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
-  0.700  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-  0.700  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
-  0.750  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-  0.750  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  0.050  fire~       pos=(0.538,1.123,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.100  fire~       pos=(0.776,1.046,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.100  fire~       pos=(0.776,1.046,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.100  fire~       pos=(0.776,1.046,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.150  fire~       pos=(1.013,0.969,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.200  fire~       pos=(1.251,0.891,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.200  fire~       pos=(1.251,0.891,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.200  fire~       pos=(1.251,0.891,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.250  fire~       pos=(1.489,0.814,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.300  fire~       pos=(1.727,0.737,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.300  fire~       pos=(1.727,0.737,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.300  fire~       pos=(1.727,0.737,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.350  fire~       pos=(1.965,0.66,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.400  fire~       pos=(2.202,0.583,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.400  fire~       pos=(2.202,0.583,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.400  fire~       pos=(2.202,0.583,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.450  fire~       pos=(2.44,0.506,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.500  fire~       pos=(2.678,0.429,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.500  fire~       pos=(2.678,0.429,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.500  fire~       pos=(2.678,0.429,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.550  fire~       pos=(2.916,0.352,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.600  fire~       pos=(3.154,0.274,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.600  fire~       pos=(3.154,0.274,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.600  fire~       pos=(3.154,0.274,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.650  fire~       pos=(3.391,0.197,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.700  fire~       pos=(3.629,0.12,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.700  fire~       pos=(3.629,0.12,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.700  fire~       pos=(3.629,0.12,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
+  0.750  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
   0.800  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
+  0.800  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.800  fire~       pos=(4,0,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.800  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
   0.850  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   0.850  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  0.850  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
   0.900  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   0.900  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  0.900  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  0.900  fire~       pos=(4,0,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  0.900  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
   0.950  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   0.950  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  0.950  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
   1.000  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.000  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.000  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  1.000  fire~       pos=(4,0,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  1.000  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
   1.050  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
+  1.050  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
   1.100  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.100  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.100  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  1.100  fire~       pos=(4,0,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  1.100  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
   1.150  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.150  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.150  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
   1.200  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.200  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.200  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
+  1.200  fire~       pos=(4,0,0) color=(1,0.4,0.2,1) scale=0.5 rate=10 n=1
+  1.200  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.1 rate=10 n=1
   1.250  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.250  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
   1.300  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
@@ -52,9 +74,14 @@
   1.400  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
   1.450  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.450  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.500  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.500  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.550  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
+  1.600  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.600  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.650  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.650  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
+  1.700  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.700  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
   1.750  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1
   1.850  fire~       pos=(4,0,0) color=(1,0.6,0.3,1) scale=0.75 rate=16 n=1

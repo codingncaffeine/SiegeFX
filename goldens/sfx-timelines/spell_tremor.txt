@@ -1,6 +1,6 @@
 # sfx timeline  script=earthquake  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.350  spark       pos=(4,0,0) color=(0.32,0.32,0.32,0.55) scale=0.72 dur=4 n=40
+  0.350  explosion   pos=(4,0.1,0) color=(0.32,0.32,0.32,0.55) r=0.5 n=40 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(10,2,10) omni=0 fade=0.5..1 dur=4 srate=0 tex=2
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) r=8 thick=0.7 spin=15 tin=0.2 tout=0.5 dur=0.65 tex=11 seg=22
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) r=8 thick=0.7 spin=15 tin=0.2 tout=0.5 dur=0.75 tex=11 seg=22
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) r=8 thick=0.7 spin=15 tin=0.2 tout=0.5 dur=0.85 tex=11 seg=22

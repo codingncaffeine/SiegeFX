@@ -8233,6 +8233,10 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
         => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)}");
     public void SpawnLightning(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float dur, float displace)
         => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)} displace={F(displace)}");
+    public void SpawnLightning(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float dur, float minDisplace, float maxDisplace, float subd, float minSubd)
+        => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)} displace={F(minDisplace)}..{F(maxDisplace)} subd={F(subd)} minsubd={F(minSubd)}");
+    public void SpawnExplosion(in SiegeFX.Core.Sfx.ExplosionSpec e)
+        => Add($"explosion   pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} scale={F(e.ScaleMin)}..{F(e.ScaleMax)} v={F(e.VMin)}..{F(e.VMax)} ivel={V3(e.IVel)} rvel={V3(e.RVel)} omni={(e.OmniDir ? 1 : 0)} fade={F(e.FadeStart)}..{F(e.FadeEnd)} dur={F(e.Duration)} srate={F(e.SpawnOver)} tex={e.TexSlot}");
     public void SpawnProjectile(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float scale, float speed, int impactKind)
         => Add($"projectile  src={V3(s)} tgt={V3(t)} color={V4(c)} scale={F(scale)} speed={F(speed)} impact={impactKind}");
     public void SpawnCylinder(System.Numerics.Vector3 a, System.Numerics.Vector4 c, float rOut, float thick, float spin, float tin, float tout, float dur, byte tex, byte seg)
@@ -8276,6 +8280,9 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     public void SpawnSpark(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float d, int n = 16) => SpawnSparkCount += n;
     public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d) => SpawnLightningCount++;
     public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d, float disp) => SpawnLightningCount++;
+    public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d, float minD, float maxD, float subd, float minSubd) => SpawnLightningCount++;
+    public int SpawnExplosionCount;
+    public void SpawnExplosion(in SiegeFX.Core.Sfx.ExplosionSpec e) => SpawnExplosionCount += e.Count;
     public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }

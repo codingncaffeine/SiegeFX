@@ -1,15 +1,15 @@
 # sfx timeline  script=flash  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  cylinder    pos=(4,0,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.5 tex=11 seg=14
-  0.000  cylinder    pos=(4,0,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.38 tex=11 seg=14
-  0.000  cylinder    pos=(4,0,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.26 tex=11 seg=14
-  0.000  spark       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.9 dur=0.35 n=16
-  0.000  spark       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.96 dur=0.35 n=16
+  0.000  cylinder    pos=(4,0.05,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.5 tex=11 seg=14
+  0.000  explosion   pos=(4,0,0) color=(0.7,0.7,1,1) r=0.5 n=32 scale=0.2..0.7 v=6..8 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=1
+  0.000  explosion   pos=(4,0,0) color=(0.7,0.7,1,1) r=0.5 n=16 scale=0.2..0.7 v=6..8 ivel=(0,0,0) rvel=(3,1,3) omni=0 fade=0.5..1 dur=0.35 srate=0 tex=1
   0.050  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
   0.100  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
+  0.150  cylinder    pos=(4,0.05,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.38 tex=11 seg=14
   0.150  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
   0.200  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
   0.250  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
+  0.300  cylinder    pos=(4,0.05,0) color=(0.7,0.7,1,1) r=4 thick=0.7 spin=15 tin=0.1 tout=0.3 dur=0.26 tex=11 seg=14
   0.300  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
   0.350  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
   0.400  glow~       pos=(4,0,0) color=(0.7,0.7,1,1) scale=0.6 rate=80 n=4
