@@ -79,4 +79,4 @@
   1.600  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.650  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   1.700  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -6146,6 +6146,10 @@ static void WalkAuditScript(string scriptName, string body, SfxScriptStore store
                     v = v.Substring(4);
                 else if (v.StartsWith("sound ", StringComparison.OrdinalIgnoreCase))
                     v = v.Substring(6);
+                // Phase 23d-2e — the VM now executes some raw verbs
+                // (randrange/frandrange/camerashake/worldmsg); keep the
+                // audit's unhandled table truthful.
+                if (SiegeFX.Core.Sfx.SfxRuntime.HandledRawVerbs.Contains(v)) break;
                 row.UnhandledVerbs.Add(v.ToLowerInvariant());
                 break;
         }

@@ -8,4 +8,4 @@
   0.350  cylinder    pos=(4,-0.5,0) color=(1,1,1,1) rp0=(-0.3,-0.1,0.5) rp1=(0,3,3) hp0=(0.25,0.25,0) hp1=(0.75,0.75,0) alpha=0.3 spin=16 tin=0.5 tout=0.5 dur=1 rot=(0,0,0) irot=(0,0,0) tex=0 seg=16
   0.450  cylinder    pos=(4,-0.5,0) color=(1,1,1,1) rp0=(-0.3,-0.1,0.5) rp1=(0,3,3) hp0=(1,1,0) hp1=(0,0,0) alpha=0.3 spin=-17 tin=0.5 tout=0.5 dur=1 rot=(0,0,0) irot=(0,0,0) tex=0 seg=16
   0.450  cylinder    pos=(4,-0.5,0) color=(1,1,1,1) rp0=(-0.3,-0.1,0.5) rp1=(0,3,3) hp0=(0.75,0.75,0) hp1=(0.25,0.25,0) alpha=0.3 spin=-10 tin=0.5 tout=0.5 dur=1 rot=(0,0,0) irot=(0,0,0) tex=0 seg=16
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

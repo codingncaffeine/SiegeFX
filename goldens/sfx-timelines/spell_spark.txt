@@ -12,4 +12,4 @@
   0.250  fire~       pos=(1.578,0.785,0) color=(0.5,0.5,1,1) scale=1.32 rate=60 n=3
   0.300  fire~       pos=(1.852,0.697,0) color=(0.5,0.5,1,1) scale=1.32 rate=60 n=3
   0.300  fire~       pos=(1.852,0.697,0) color=(0.5,0.5,1,1) scale=1.32 rate=60 n=3
-# end: emitters=0 coroutines=1 unhandled=[frandrange,worldmsg]
+# end: emitters=0 coroutines=1 unhandled=[]

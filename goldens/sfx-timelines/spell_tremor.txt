@@ -4,4 +4,4 @@
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) rp0=(1,8,12) rp1=(2,9,12) hp0=(0.2,0.6,0.7) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.65 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) rp0=(1,8,8) rp1=(2,9,8) hp0=(0.2,0.6,0.7) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.75 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
   0.350  cylinder    pos=(4,0,0) color=(0.3,0.3,0.25,1) rp0=(1,8,4) rp1=(2,9,4) hp0=(0.2,0.6,0.7) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.85 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
-# end: emitters=0 coroutines=1 unhandled=[camerashake]
+# end: emitters=0 coroutines=1 unhandled=[]

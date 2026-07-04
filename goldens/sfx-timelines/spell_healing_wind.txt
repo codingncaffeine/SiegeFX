@@ -32,4 +32,4 @@
   1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
   1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
   1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
-# end: emitters=16 coroutines=0 unhandled=[frandrange]
+# end: emitters=16 coroutines=0 unhandled=[]

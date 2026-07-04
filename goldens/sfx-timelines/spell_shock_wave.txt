@@ -6,4 +6,4 @@
   0.250  flurry      pos=(4,0,0) color=(1,1,0.7,1) r=1 n=50 iphi=1 itheta=1 iamp=1 amp=1 grow=1/4/1 tin=1 tout=0.5 dur=0.5 tex=2
   0.350  cylinder    pos=(4,0,0) color=(1,1,0.7,1) rp0=(0,3,6) rp1=(0,4,8) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=16 tin=0.1 tout=0.4 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=24
   0.400  cylinder    pos=(4,0,0) color=(1,1,0.7,1) rp0=(0,3,6) rp1=(0,4,8) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=16 tin=0.1 tout=0.4 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=24
-# end: emitters=0 coroutines=0 unhandled=[camerashake,worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

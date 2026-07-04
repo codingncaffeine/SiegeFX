@@ -24,4 +24,4 @@
   0.250  fire~       pos=(0,0.33,0) color=(0.75,0.3,0.15,1) vel=(0,10,0) accel=(0,12,0) flame=5 ring=0..2.5 ydisp=0..1 line=1 n=1
   0.250  fire~       pos=(0,0,0) color=(0.75,0.3,0.15,1) vel=(0,-20,0) accel=(0,50,0) flame=1 ring=0..0.5 ydisp=-5..5 line=1 n=1
   0.300  fire~       pos=(0,0,0) color=(0.75,0.3,0.15,1) vel=(0,-20,0) accel=(0,50,0) flame=1 ring=0..0.5 ydisp=-5..5 line=1 n=1
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -6,4 +6,4 @@
   0.200  fire~       pos=(1.311,0.872,0) color=(0,0,1,1) scale=0.56 rate=60 n=3
   0.250  fire~       pos=(1.578,0.785,0) color=(0,0,1,1) scale=0.56 rate=60 n=3
   0.300  fire~       pos=(1.852,0.697,0) color=(0,0,1,1) scale=0.56 rate=60 n=3
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

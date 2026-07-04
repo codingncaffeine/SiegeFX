@@ -5,4 +5,4 @@
   0.000  lightning   src=(0.3,1.2,0) tgt=(4,0,0) color=(0.6,1,1,1) dur=1 displace=-0.1..0.1 subd=0 minsubd=0
   0.000  lightning   src=(0.3,1.2,0) tgt=(4,0,0) color=(1,1,1,1) dur=1 displace=-0.1..0.1 subd=0 minsubd=0
   0.000  explosion   pos=(4,0,0) color=(0.4,0.7,0.7,1) r=0.4 n=25 scale=0.5..1 v=3..6.5 ivel=(0,0,0) rvel=(3,0,3) omni=1 fade=0..1 dur=2 srate=0 tex=2
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

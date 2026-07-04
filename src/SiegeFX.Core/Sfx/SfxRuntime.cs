@@ -691,12 +691,68 @@ public sealed class SfxRuntime
                     ExecDirection(rs, stmt);
                     break;
                 case StatementKind.Raw:
+                    if (TryExecRawVerb(rs, stmt)) break;
                     LogUnhandledOnce(stmt.Verb);
                     ConsumeStackOperand(rs, stmt.Tokens);
                     break;
             }
         }
         rs.Done = true;
+    }
+
+    /// <summary>Phase 23d-2e — camerashake hook: (amplitude, duration).
+    /// The host (RenderHost chase cam) wires this; headless runs leave it
+    /// null.</summary>
+    public Action<float, float>? CameraShakeHook;
+
+    /// <summary>Phase 23d-2e — worldmsg hook: (WE_* event name, cast
+    /// context). Gameplay-side consumers (spell damage sync) live on the
+    /// host; the visual VM just forwards.</summary>
+    public Action<string, SfxContext>? WorldMsgHook;
+
+    /// <summary>Phase 23d-2e — raw verbs the VM now executes (the audit
+    /// consults this so its unhandled-verb table stays truthful).</summary>
+    public static readonly IReadOnlySet<string> HandledRawVerbs =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "randrange", "frandrange", "camerashake", "worldmsg" };
+
+    // Phase 23d-2e — real dispatch for the formerly-soft raw verbs.
+    bool TryExecRawVerb(RunningScript rs, SfxStatement stmt)
+    {
+        var v = stmt.Verb;
+        if (v.Equals("randrange", StringComparison.OrdinalIgnoreCase)
+         || v.Equals("frandrange", StringComparison.OrdinalIgnoreCase))
+        {
+            // `randrange a b` pushes a uniform roll in [a, b) — fireshot's
+            // 1-in-10 skull gate is `randrange 0 10` + `$temp == 1`.
+            // Deterministic under SetDeterministicSeed.
+            float a = 0f, b = 1f;
+            if (stmt.Tokens.Count >= 1) TryParseF(stmt.Tokens[0], out a);
+            if (stmt.Tokens.Count >= 2) TryParseF(stmt.Tokens[1], out b);
+            float roll = a + (float)_rng.NextDouble() * (b - a);
+            string val = char.ToLowerInvariant(v[0]) == 'f'
+                ? roll.ToString("0.###", CultureInfo.InvariantCulture)
+                : ((int)MathF.Floor(roll)).ToString(CultureInfo.InvariantCulture);
+            // The value rides the stack as a tagged handle; `set $x #POP`
+            // bridges Kind into rs.Vars so if-conditions compare it.
+            rs.Stack.Push(new Handle { Kind = val, Anchor = rs.Origin, OtherEnd = rs.Origin });
+            return true;
+        }
+        if (v.Equals("camerashake", StringComparison.OrdinalIgnoreCase))
+        {
+            float amp = 0.5f, dur = 0.5f;
+            if (stmt.Tokens.Count >= 1) TryParseF(stmt.Tokens[0], out amp);
+            if (stmt.Tokens.Count >= 2) TryParseF(stmt.Tokens[1], out dur);
+            CameraShakeHook?.Invoke(amp, dur);
+            return true;
+        }
+        if (v.Equals("worldmsg", StringComparison.OrdinalIgnoreCase))
+        {
+            WorldMsgHook?.Invoke(stmt.Tokens.Count > 0 ? stmt.Tokens[0] : "", rs.Ctx);
+            ConsumeStackOperand(rs, stmt.Tokens);
+            return true;
+        }
+        return false;
     }
 
     // sfx freeze_targets #PEEK — the #PEEK case must NOT pop, so we only

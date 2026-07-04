@@ -420,4 +420,4 @@
   2.000  fire~       pos=(4,0,0) color=(1,0.2,0.1,1) scale=0.36 rate=60 n=3
   2.000  fire~       pos=(4,0,0) color=(1,0.2,0.1,1) scale=0.36 rate=60 n=3
   2.000  fire~       pos=(4,0,0) color=(1,0.2,0.1,1) scale=0.36 rate=60 n=3
-# end: emitters=10 coroutines=5 unhandled=[frandrange,worldmsg]
+# end: emitters=10 coroutines=5 unhandled=[]

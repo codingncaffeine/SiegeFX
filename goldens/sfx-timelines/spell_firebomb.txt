@@ -21,4 +21,4 @@
   0.300  fire~       pos=(1.537,0.799,0) color=(1,0.5,0.3,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..10 ydisp=-1..1 line=0 n=1
   0.300  glow~       pos=(1.537,0.799,0) color=(1,0.4,0.2,1) scale=0.6 rate=80 n=4
   0.300  fire~       pos=(1.537,0.799,0) color=(1,0.4,0.2,1) scale=0.36 rate=60 n=3
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

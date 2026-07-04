@@ -6,4 +6,4 @@
   0.200  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
   0.250  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
   0.300  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
-# end: emitters=0 coroutines=0 unhandled=[worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

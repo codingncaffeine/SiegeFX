@@ -1,4 +1,4 @@
 # sfx timeline  script=dancing_zap  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.000  explosion   pos=(0,0,0) color=(0.7,0.7,1,1) r=0.5 n=32 scale=0.2..0.7 v=3..4 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=1
-# end: emitters=0 coroutines=0 unhandled=[frandrange,worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]

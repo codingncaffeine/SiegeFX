@@ -4,4 +4,4 @@
   0.000  explosion   pos=(4,0,0) color=(1,0.5,0.3,1) r=0.5 n=96 scale=0.2..0.7 v=10..12 ivel=(0,0,0) rvel=(0,2,0) omni=1 fade=0.5..1 dur=3 srate=0 tex=2
   0.000  cylinder    pos=(4,0,0) color=(1,0.5,0.3,1) rp0=(0,3,3) rp1=(0.4,3.4,3.4) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=16 tin=0.1 tout=0.4 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=24
   0.150  cylinder    pos=(4,0,0) color=(1,0.5,0.3,1) rp0=(0,3,3) rp1=(0.4,3.4,3.4) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=16 tin=0.1 tout=0.4 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=24
-# end: emitters=0 coroutines=0 unhandled=[camerashake,worldmsg]
+# end: emitters=0 coroutines=0 unhandled=[]
