@@ -1811,6 +1811,47 @@ public sealed class SfxRuntime
         _                    => new Vector4(1f, 1f, 1f, 1f),
     };
 
+    // ---- Phase 23a — param-coverage probe ------------------------------
+    //
+    // Every authored param key the runtime consumes funnels through
+    // ExtractArgs / ContainsKeyword. While s_paramProbe is non-null those
+    // helpers record the keyword they were asked for, so one pass of
+    // ApplyParamString + MapMode against a dummy string yields the
+    // complete consumed-key set straight from the live parse path — the
+    // audit CLI can never drift from the parser the way a hand-maintained
+    // list would.
+    [ThreadStatic] static HashSet<string>? s_paramProbe;
+
+    /// <summary>Phase 23a — enumerate every param keyword the runtime's
+    /// param-string parser actually consumes, by probing the live parse
+    /// path. Ground truth for <c>siegefx sfx param-audit</c>.</summary>
+    public static IReadOnlyCollection<string> CollectConsumedParamKeys()
+    {
+        var probe = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        s_paramProbe = probe;
+        try
+        {
+            var h = new Handle();
+            // Non-empty so ApplyParamString doesn't early-return; nothing
+            // matches a single space, so every TryRead*/ContainsKeyword
+            // call — including the else-branches of first-match chains —
+            // executes and registers its keyword.
+            ApplyParamString(ref h, " ");
+            MapMode("fire", " "); // texture/color0/dark routing probes
+        }
+        finally { s_paramProbe = null; }
+        return probe;
+    }
+
+    /// <summary>Phase 23a — param keys that are gameplay/damage payloads,
+    /// not visuals (Siege University SiegeFX reference: trackball/lightning
+    /// <c>damage(min,max,fit)</c>, fire <c>fdamage(...)</c> +
+    /// <c>ignite(...)</c>). The param audit reports these separately
+    /// instead of counting them as rendering gaps.</summary>
+    public static readonly IReadOnlySet<string> GameplayParamKeys =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "damage", "fdamage", "ignite" };
+
     static void ApplyParamString(ref Handle h, string raw)
     {
         if (string.IsNullOrEmpty(raw)) return;
@@ -2005,6 +2046,7 @@ public sealed class SfxRuntime
 
     static bool ContainsKeyword(string raw, string keyword)
     {
+        s_paramProbe?.Add(keyword);
         int idx = 0;
         while ((idx = raw.IndexOf(keyword, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
         {
@@ -2115,6 +2157,7 @@ public sealed class SfxRuntime
 
     static string[]? ExtractArgs(string raw, string keyword)
     {
+        s_paramProbe?.Add(keyword);
         int idx = 0;
         while ((idx = raw.IndexOf(keyword, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
         {

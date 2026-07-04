@@ -125,6 +125,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells visual-audit <Logic.dsres> [--verbose] [--filter=NAME] [--only-uncovered]");
     Console.WriteLine("  siegefx sfx list           <Logic.dsres> [--prefix=NAME]");
     Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
+    Console.WriteLine("  siegefx sfx param-audit    <Logic.dsres> [--verbose] [--filter=NAME]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
@@ -6200,15 +6201,191 @@ static IEnumerable<string> ExtractAuditTextures(string paramString)
 // the interpreter we build in SC-F has a verifiable source of truth.
 static int DispatchSfx(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show|parse> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show|parse|run|param-audit> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list"  => CmdSfxList(a[1..]),
-        "show"  => CmdSfxShow(a[1..]),
-        "parse" => CmdSfxParse(a[1..]),
-        "run"   => CmdSfxRun(a[1..]),
-        _       => UnknownCommand("sfx " + a[0]),
+        "list"        => CmdSfxList(a[1..]),
+        "show"        => CmdSfxShow(a[1..]),
+        "parse"       => CmdSfxParse(a[1..]),
+        "run"         => CmdSfxRun(a[1..]),
+        "param-audit" => CmdSfxParamAudit(a[1..]),
+        _             => UnknownCommand("sfx " + a[0]),
     };
+}
+
+// Phase 23a — authored-param coverage audit. `spells visual-audit` answers
+// "is every `sfx create` KIND handled"; this answers the next level down:
+// "is every authored param KEY inside those param strings actually consumed
+// by the runtime's parser". A key that ships in DS1 data but is never read
+// is authored intent the renderer silently drops — exactly where per-spell
+// visual drift hides. The consumed set is live-probed from the parser via
+// SfxRuntime.CollectConsumedParamKeys() so audit and runtime cannot drift.
+static int CmdSfxParamAudit(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx sfx param-audit <Logic.dsres> [--verbose] [--filter=NAME]");
+        return 1;
+    }
+    bool verbose = false;
+    string? filter = null;
+    for (int i = 1; i < a.Length; i++)
+    {
+        if (a[i] == "--verbose") verbose = true;
+        else if (a[i].StartsWith("--filter=", StringComparison.OrdinalIgnoreCase))
+            filter = a[i]["--filter=".Length..];
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (templates, _) = TemplateStore.LoadFromTank(reader);
+    var spells = SpellCatalog.Build(templates);
+    var sfx    = SfxScriptStore.LoadFromTank(reader);
+
+    var consumed = SiegeFX.Core.Sfx.SfxRuntime.CollectConsumedParamKeys();
+    var gameplay = SiegeFX.Core.Sfx.SfxRuntime.GameplayParamKeys;
+
+    var keySpells       = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    var keyKinds        = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+    var perSpellIgnored = new SortedDictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+    int scanned = 0, paramStrings = 0;
+
+    foreach (var spell in spells.All.OrderBy(s => s.Name, StringComparer.Ordinal))
+    {
+        if (filter != null && spell.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0)
+            continue;
+        if (string.IsNullOrEmpty(spell.CastSfxScript)) continue;
+        if (!sfx.TryGet(spell.CastSfxScript, out var script)) continue;
+        scanned++;
+
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keys = new List<(string Key, string Kind)>();
+        WalkParamStrings(script.Name, script.Body, sfx, visited, keys, ref paramStrings);
+
+        foreach (var (key, kind) in keys)
+        {
+            AppendTo(keySpells, key, spell.Name);
+            if (!keyKinds.TryGetValue(key, out var ks))
+                keyKinds[key] = ks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            ks.Add(kind);
+            if (!consumed.Contains(key) && !gameplay.Contains(key))
+            {
+                if (!perSpellIgnored.TryGetValue(spell.Name, out var set))
+                    perSpellIgnored[spell.Name] = set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                set.Add(key);
+            }
+        }
+    }
+
+    string Classify(string k) =>
+        consumed.Contains(k) ? "CONSUMED" : gameplay.Contains(k) ? "GAMEPLAY" : "IGNORED";
+
+    var allKeys = keySpells.Keys
+        .OrderBy(k => Classify(k) switch { "IGNORED" => 0, "GAMEPLAY" => 1, _ => 2 })
+        .ThenByDescending(k => keySpells[k].Count)
+        .ThenBy(k => k, StringComparer.Ordinal)
+        .ToList();
+    int nConsumed = allKeys.Count(k => Classify(k) == "CONSUMED");
+    int nGameplay = allKeys.Count(k => Classify(k) == "GAMEPLAY");
+    int nIgnored  = allKeys.Count(k => Classify(k) == "IGNORED");
+    int fullSpells = scanned - perSpellIgnored.Count;
+
+    Console.WriteLine($"siegefx sfx param-audit  —  {scanned} spells scanned, {paramStrings} param strings, {allKeys.Count} distinct authored keys");
+    Console.WriteLine();
+    Console.WriteLine($"  runtime consumes {consumed.Count} keys (live-probed from the parser)");
+    Console.WriteLine($"  authored-key classes : IGNORED {nIgnored}   GAMEPLAY {nGameplay}   CONSUMED {nConsumed}");
+    Console.WriteLine($"  spells fully consumed : {fullSpells}/{scanned}   with ignored-key gaps : {perSpellIgnored.Count}");
+    Console.WriteLine();
+    Console.WriteLine("Per-key roster (IGNORED first — these are the fidelity gaps):");
+    foreach (var k in allKeys)
+    {
+        var cls    = Classify(k);
+        var kinds  = string.Join(",", keyKinds[k].OrderBy(x => x, StringComparer.Ordinal).Take(4));
+        var sample = string.Join(", ", keySpells[k].Take(2));
+        var more   = keySpells[k].Count > 2 ? ", ..." : "";
+        Console.WriteLine($"  {cls,-8}  {k,-16} : {keySpells[k].Count,3} spells  on {kinds,-30} (e.g. {sample}{more})");
+    }
+    if (verbose || perSpellIgnored.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"Spells with IGNORED authored keys ({perSpellIgnored.Count}):");
+        foreach (var kv in perSpellIgnored)
+            Console.WriteLine($"  {kv.Key,-30} : {string.Join(", ", kv.Value)}");
+    }
+    return 0;
+}
+
+// Walks a compiled sfx script (recursing one level into `call <sub>` like
+// WalkAuditScript) collecting every param key from every statement that
+// carries a quoted param string, tagged with the create-kind (or verb)
+// it was authored on.
+static void WalkParamStrings(string scriptName, string body, SfxScriptStore store,
+    HashSet<string> visited, List<(string Key, string Kind)> keys, ref int paramStrings)
+{
+    if (!visited.Add(scriptName)) return; // cycle / mutual-call guard
+    SiegeFX.Core.Sfx.SfxProgram prog;
+    try { prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(scriptName, body); }
+    catch { return; }
+
+    foreach (var stmt in prog.Statements)
+    {
+        if (!string.IsNullOrEmpty(stmt.ParamString))
+        {
+            paramStrings++;
+            var kind = stmt.Kind == SiegeFX.Core.Sfx.StatementKind.SfxCreate && stmt.Tokens.Count > 0
+                ? stmt.Tokens[0].ToLowerInvariant()
+                : "(" + stmt.Verb + ")";
+            foreach (var key in ExtractParamKeys(stmt.ParamString!))
+                keys.Add((key, kind));
+        }
+        if (stmt.Kind == SiegeFX.Core.Sfx.StatementKind.Call && stmt.Tokens.Count > 0)
+        {
+            var callName = stmt.Tokens[0].Trim('"').Trim();
+            int sp = callName.IndexOf(' ');
+            if (sp >= 0) callName = callName.Substring(0, sp);
+            if (!string.IsNullOrEmpty(callName) && store.TryGet(callName, out var sub))
+                WalkParamStrings(sub.Name, sub.Body, store, visited, keys, ref paramStrings);
+        }
+    }
+}
+
+// Tokenizes a DS1 param string (`key(args)key2(args)...[0][1]`) into its
+// key names. A key is an identifier followed by `(`; paren contents are
+// skipped flat (no shipped DS1 value nests parens — same limitation as
+// ExtractAuditTextures, documented there). Bare identifiers outside parens
+// are also yielded — shipped strings author flag-style keys both ways.
+// `[N]` caller-arg slots and `$var` leftovers are not keys.
+static IEnumerable<string> ExtractParamKeys(string raw)
+{
+    int i = 0;
+    while (i < raw.Length)
+    {
+        char c = raw[i];
+        if (c == '$')
+        {
+            i++;
+            while (i < raw.Length && (char.IsLetterOrDigit(raw[i]) || raw[i] == '_')) i++;
+        }
+        else if (char.IsLetter(c) || c == '_')
+        {
+            int start = i;
+            while (i < raw.Length && (char.IsLetterOrDigit(raw[i]) || raw[i] == '_')) i++;
+            var name = raw.Substring(start, i - start);
+            int j = i;
+            while (j < raw.Length && char.IsWhiteSpace(raw[j])) j++;
+            if (j < raw.Length && raw[j] == '(')
+            {
+                yield return name;
+                int close = raw.IndexOf(')', j + 1);
+                i = close < 0 ? raw.Length : close + 1;
+            }
+            else
+            {
+                yield return name; // bare flag-style key
+            }
+        }
+        else i++;
+    }
 }
 
 static int CmdSfxList(string[] a)
