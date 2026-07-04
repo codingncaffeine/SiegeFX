@@ -6423,6 +6423,7 @@ static int DispatchStore(string[] a)
     {
         "dump" => CmdStoreDump(a[1..]),
         "list" => CmdStoreList(a[1..]),
+        "audit" => CmdStoreAudit(a[1..]),
         _      => UnknownCommand("store " + a[0]),
     };
 }
@@ -6459,6 +6460,114 @@ static int CmdStoreList(string[] a)
     }
     Console.WriteLine($"\n{shops} shop template(s), {hire} hireable template(s)");
     return 0;
+}
+
+// Phase 25d — stock-completeness + pricing audit over every shopkeeper
+// PLACED in the world (user requirement: merchants carry everything a
+// user can buy, and pay correctly). Gates:
+//  (1) every authored tab on every placed shop rolls NON-EMPTY stock
+//      across all probe seeds (no unfillable tabs, no dead bag specs);
+//  (2) every stocked item prices definitively - authored gold_value or
+//      counted as provisional (the computed-value fit is the flagged
+//      remainder, reported not failed);
+//  (3) anchors: spell_fireshot gold_value 8 (buy 16 at markup 2),
+//      pack mule template gold_value present.
+// Exit 0 only when (1) and (3) hold.
+static int CmdStoreAudit(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx store audit <map-tank> <Logic.dsres> [--seeds=N]");
+        return 1;
+    }
+    int seeds = 5;
+    for (int i = 2; i < a.Length; i++)
+        if (a[i].StartsWith("--seeds=") && int.TryParse(a[i]["--seeds=".Length..], out var s)) seeds = s;
+
+    using var mapTank = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = TemplateStore.LoadFromTank(logicReader);
+    var resolver = new SiegeFX.Core.Actors.PcontentResolver(store);
+
+    // Placed actor templates, map-wide.
+    var placed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // template -> first region
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var regionPaths = new List<string>();
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        foreach (var rp in regionPaths)
+        {
+            var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+            foreach (var p in actors)
+                if (!placed.ContainsKey(p.TemplateName)) placed[p.TemplateName] = rp;
+        }
+    }
+
+    int shops = 0, tabChecks = 0, priced = 0, provisional = 0;
+    var failures = new List<string>();
+    var purchasableSpells = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var (name, region) in placed.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+    {
+        if (!store.TryGet(name, out var tpl) || tpl is null) continue;
+        var table = SiegeFX.Core.Actors.StoreTable.FromTemplate(store, tpl);
+        if (table is null || !table.IsShop) continue;
+        shops++;
+        var regionShort = region[(region.LastIndexOf('/') + 1)..];
+
+        foreach (var tab in table.Tabs) tabChecks++;
+        for (int s = 1; s <= seeds; s++)
+        {
+            var stock = table.GenerateStock(resolver, new Random(s * 7919 + name.GetHashCode(StringComparison.OrdinalIgnoreCase)));
+            foreach (var tab in table.Tabs)
+                if (!stock.Any(it => it.Tab.Equals(tab.Name, StringComparison.OrdinalIgnoreCase)))
+                    failures.Add($"{name} ({regionShort}): tab [{tab.Name}] rolled EMPTY at seed {s}");
+            foreach (var it in stock)
+            {
+                if (it.Tab.Equals("magic", StringComparison.OrdinalIgnoreCase)
+                    && it.TemplateName.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+                    purchasableSpells.Add(it.TemplateName);
+                if (s == 1)
+                {
+                    var gv = store.TryGet(it.TemplateName, out var itpl) && itpl is not null
+                        ? store.GetAttribute(itpl, "aspect", "gold_value") : null;
+                    if (string.IsNullOrEmpty(gv)) provisional++; else priced++;
+                }
+            }
+        }
+    }
+
+    // Anchors.
+    {
+        if (!store.TryGet("spell_fireshot", out var fs) || fs is null
+            || store.GetAttribute(fs, "aspect", "gold_value")?.Trim() != "8")
+            failures.Add("anchor: spell_fireshot gold_value != 8");
+        // Template name is pack_mule (npc_pack_mule is the FILE name);
+        // data authors gold_value 600 — the walkthrough's "320" doesn't
+        // match shipped data, so the tank is the anchor.
+        if (!store.TryGet("pack_mule", out var mule) || mule is null
+            || store.GetAttribute(mule, "aspect", "gold_value")?.Trim() != "600")
+            failures.Add("anchor: pack_mule gold_value != 600");
+    }
+
+    Console.WriteLine($"store audit  —  {shops} placed shop(s), {tabChecks} authored tab(s), {seeds} seed(s) each");
+    Console.WriteLine($"  stock rows priced from authored gold_value : {priced}");
+    Console.WriteLine($"  rows on the PROVISIONAL power curve        : {provisional}  (25d fit scope)");
+    Console.WriteLine($"  distinct spells purchasable somewhere      : {purchasableSpells.Count}");
+    Console.WriteLine($"  failures                                   : {failures.Count}");
+    foreach (var f in failures.Distinct().Take(30)) Console.WriteLine("  FAIL  " + f);
+    return failures.Count == 0 ? 0 : 4;
 }
 
 // Roll a shop's stock and print it per tab with buy prices
