@@ -36,6 +36,75 @@ public struct ExplosionSpec
     public byte    TexSlot;
 }
 
+/// <summary>Phase 23d-2b — SU-212 cylinder: a tube between two animated
+/// rings. Ring 0 sits at height <see cref="Hp0"/> with radius profile
+/// <see cref="Rp0"/>; ring 1 at <see cref="Hp1"/>/<see cref="Rp1"/>. Each
+/// profile is the documented (start, end, increment) triple: increment
+/// steps the value per second toward end (clamped); increment 0 with
+/// start != end lerps across the duration; otherwise static. DS1's
+/// defaults (rp 0.5/0.5/0, hp0 2.5, hp1 0) describe a 2.5u-tall tube;
+/// impact shockwaves author expanding rp with near-flat hp.</summary>
+public struct CylinderSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public System.Numerics.Vector3 Rp0, Rp1, Hp0, Hp1; // (start,end,increment)
+    public float   Alpha;      // alpha(f) starting alpha (doc default 0.5)
+    public float   Spin;       // spin(f)
+    public float   FadeIn;     // tin (doc default 0.5)
+    public float   FadeOut;    // tout (doc default 0.5)
+    public float   Duration;   // dur
+    public System.Numerics.Vector3 Rotate;   // rotate(x,y,z) degrees
+    public System.Numerics.Vector3 IRotate;  // irotate(x,y,z) degrees/sec
+    public bool    Dark;       // dark() — opaque blend variant
+    public byte    TexSlot;
+    public byte    Segments;   // doc default 16
+}
+
+/// <summary>Phase 23d-2b — SU-212 sray: spinning rays spawn one per
+/// <see cref="SpawnPeriod"/> seconds (srate, doc default 0.015) up to
+/// <see cref="Count"/>, each with per-ray random length/width in the
+/// authored ranges, polar angles advancing at per-ray random rates from
+/// the theta/phi (start, min-inc, max-inc) triples, and alpha fading at
+/// a per-ray random rate from the alpha (start, fade-min, fade-max)
+/// triple.</summary>
+public struct SraySpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color0;   // start color
+    public System.Numerics.Vector4 Color1;   // end color
+    public float   Radius;      // origin sphere (doc default 0.0005)
+    public int     Count;       // doc default 16
+    public float   LMin, LMax;  // ray length range (doc default 10/10)
+    public float   WsMin, WsMax, WeMin, WeMax; // widths (doc default 0.15)
+    public System.Numerics.Vector3 Theta;    // (start, min inc, max inc) (doc 0,1,3)
+    public System.Numerics.Vector3 Phi;      // (start, min inc, max inc) (doc 0,1,-3)
+    public System.Numerics.Vector3 Alpha;    // (start, fade min, fade max) (doc 1,.5,.5)
+    public float   SpawnPeriod; // srate (doc default 0.015)
+    public float   Duration;    // dur — emitter lifetime cap
+}
+
+/// <summary>Phase 23d-2b — SU-212 flurry: <see cref="Count"/> particles
+/// moving in spherical polar coordinates around the anchor with
+/// sinusoidal radial interference (amplitude/iamp), alpha shaped by
+/// tin/tout and scale by the grow_params (start, mid, end) envelope.</summary>
+public struct FlurrySpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;      // doc default 1.0
+    public int     Count;       // doc default 50
+    public float   IPhi;        // latitude rate (doc default 1.0)
+    public float   ITheta;      // longitude rate (doc default 1.0)
+    public float   IAmp;        // interference speed (doc default 1.0)
+    public float   Amplitude;   // interference factor (doc default 1.0)
+    public float   GrowStart, GrowMid, GrowEnd; // grow_params (doc 1,1,1)
+    public float   FadeIn;      // tin (doc default 1.0)
+    public float   FadeOut;     // tout (doc default 1.0)
+    public float   Duration;
+    public byte    TexSlot;
+}
+
 /// <summary>Phase 17-SC-F-2 — particle backend abstraction. The shipped
 /// implementation is the GL-backed billboard system in
 /// <c>SiegeFX.Runtime.Render.ParticleSystem</c>; tests and CLIs swap in a
@@ -66,6 +135,18 @@ public interface IParticleSink
     /// Appendix A). Replaces the SpawnSpark approximation for
     /// `sfx create explosion` sites.</summary>
     void SpawnExplosion(in ExplosionSpec spec);
+
+    /// <summary>Phase 23d-2b — authored-parameter cylinder tube (two
+    /// animated rings). Replaces the flat-ring approximation.</summary>
+    void SpawnCylinderTube(in CylinderSpec spec);
+
+    /// <summary>Phase 23d-2b — authored-parameter spinning-ray emitter
+    /// (timed spawn + polar spin + per-ray fade).</summary>
+    void SpawnSrayTimed(in SraySpec spec);
+
+    /// <summary>Phase 23d-2b — authored-parameter flurry (spherical polar
+    /// swarm with sinusoidal interference).</summary>
+    void SpawnFlurry(in FlurrySpec spec);
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and

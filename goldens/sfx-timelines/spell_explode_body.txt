@@ -18,13 +18,13 @@
   0.900  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) scale=0.7 rate=18 n=1
   0.950  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) scale=0.7 rate=18 n=1
   1.000  explosion   pos=(4,0,0) color=(1,0.5,0.2,1) r=0.725 n=75 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
-  1.000  cylinder    pos=(4,0,0) color=(1,0.3,0.05,1) r=48 thick=0.7 spin=15 tin=0.2 tout=0.5 dur=0.2 tex=11 seg=26
+  1.000  cylinder    pos=(4,0,0) color=(1,0.3,0.05,1) rp0=(0,48,40) rp1=(0.25,48.25,47) hp0=(0.1,0.1,0.1) hp1=(0.1,0.1,0.1) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.2 rot=(0,0,0) irot=(0,0,0) tex=11 seg=26
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
-  1.000  sray        pos=(4,0.1,0) c0=(1,0.5,0.2,1) c1=(0,0,0,1) len=4..5 w=0.125..0.125 dur=0.1 rays=12
+  1.000  sray        pos=(4,0.1,0) c0=(1,0.5,0.2,1) c1=(0,0,0,1) r=0.5 n=12 len=4..5 ws=0.125..0.125 we=0.125..0.125 theta=(0,0,0) phi=(0,0,0) alpha=(1,0.4,0.4) srate=0.015 dur=0.1
   1.000  glow~       pos=(4,1,0) color=(1,0.3,0.05,1) scale=15 rate=80 n=4
   1.000  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) scale=0.7 rate=18 n=1
-  1.050  spark       pos=(4,0,0) color=(1,0.3,0.05,1) scale=2.625 dur=0.3 n=30
+  1.050  flurry      pos=(4,0,0) color=(1,0.3,0.05,1) r=1 n=30 iphi=1 itheta=1 iamp=1 amp=1 grow=1/1.1/1 tin=1 tout=0.5 dur=0.27 tex=2
   1.050  glow~       pos=(4,1,0) color=(1,0.3,0.05,1) scale=15 rate=80 n=4
   1.100  glow~       pos=(4,1,0) color=(1,0.3,0.05,1) scale=15 rate=80 n=4
   1.100  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) scale=0.7 rate=18 n=1

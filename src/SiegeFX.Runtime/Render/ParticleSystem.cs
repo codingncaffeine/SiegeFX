@@ -80,20 +80,23 @@ public struct SpellCylinder
 {
     public Vector3 Anchor;
     public Vector4 Color;
-    public float   RadiusOuter;     // rp0/rp1 mid value
-    public float   ThicknessRatio;  // 0..1; 0=solid disc, 0.7=donut ring
-    /// <summary>Axis spin rate. Interpretation: radians/sec — divided by
-    /// MathF.Tau in the emit pass to give per-second U-tile revolutions
-    /// (so DS1's `spin(15)` reads as ~2.39 revs/sec). Renaming would
-    /// touch IParticleSink + 2 callsites; the unit comment is the cheaper
-    /// disambiguation per the review.</summary>
+    /// <summary>Phase 23d-2b — SU-212 ring profiles, each the documented
+    /// (start, end, increment) triple. Ring 0 = radius Rp0 at height Hp0,
+    /// ring 1 = Rp1 at Hp1; the tube wall connects them. Increment steps
+    /// the value per second toward end (clamped); increment 0 with
+    /// start != end lerps across TotalLife; otherwise static.</summary>
+    public Vector3 Rp0, Rp1, Hp0, Hp1;
+    public float   Alpha;           // alpha(f) starting alpha
+    /// <summary>Axis spin rate, radians/sec (spin(15) ≈ 2.39 rev/s).</summary>
     public float   Spin;
     public float   FadeIn;          // tin — seconds to ramp alpha 0→1
     public float   FadeOut;         // tout — seconds to ramp alpha 1→0 at end
     public float   TotalLife;       // dur
     public float   Elapsed;
+    public Vector3 Rotate;          // rotate(x,y,z) — degrees
+    public Vector3 IRotate;         // irotate(x,y,z) — degrees/sec
     public byte    TexSlot;         // ParticleSystem texture slot index
-    public byte    Segments;        // segments(N), default 24
+    public byte    Segments;        // segments(N), doc default 16
 }
 
 /// <summary>Phase 21-SC-SPELL-VISUAL-B — DS1 sray primitive: a tapered
@@ -106,19 +109,18 @@ public struct SpellCylinder
 /// azimuth around the Y axis. Single-ray scripts (implosion's pillar)
 /// shoot straight up; multi-ray scripts (explode_body's count(50)) form
 /// a radial fan.</summary>
-public struct SpellSray
+public struct SrayRay
 {
     public Vector3 Anchor;
-    public Vector4 ColorStart;      // color0 (typically dark/black)
-    public Vector4 ColorEnd;        // color1 (typically gold/orange)
-    public float   LengthMin;       // lmin
-    public float   LengthMax;       // lmax
-    public float   WidthStart;      // wsmin..wsmax average
-    public float   WidthEnd;        // wemin..wemax average
-    public float   TotalLife;       // dur
-    public float   Elapsed;
-    public ushort  RayCount;        // count(N) — fan spokes around Y axis
-    public uint    Seed;            // per-ray jitter (length/width within their ranges)
+    public Vector4 Color0;          // color0 (base end)
+    public Vector4 Color1;          // color1 (tip end)
+    public float   Theta, Phi;      // current polar angles (radians)
+    public float   ThetaRate, PhiRate; // per-ray spin rates (SU theta/phi triples)
+    public float   Radius;          // origin-sphere offset
+    public float   Length;          // per-ray length (lmin..lmax roll)
+    public float   WidthStart, WidthEnd;
+    public float   Alpha;           // current alpha
+    public float   FadeRate;        // per-ray fade per second (alpha triple roll)
 }
 
 /// <summary>Phase 21-SC-SPELL-VFX — flying spell projectile (DS1 trackball
@@ -193,10 +195,22 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive, drawn via the
     // ribbon path with a different texture slot.
     private readonly List<SpellCylinder>   _cylinders   = new(16);
-    // Phase 21-SC-SPELL-VISUAL-B — sray streaks; emit into the same ribbon
-    // pipeline as bolts/cylinders, third pass with a separate slot.
-    private readonly List<SpellSray>       _srays       = new(16);
+    // Phase 23d-2b — sray: live rays plus their timed-spawn emitters
+    // (SU 212: srate spawns one ray per period up to count).
+    private readonly List<SrayRay>         _srayRays    = new(32);
+    private List<(SraySpec Spec, float Carry, int Spawned, float Age)> _srayEmits = new(8);
     private int _srayVertStart = 0;
+    // Phase 23d-2b — flurry: procedural spherical-polar swarm particles.
+    private struct FlurryP
+    {
+        public Vector3 Anchor;
+        public Vector4 Color;
+        public float Radius, Phi, Theta, PhiRate, ThetaRate, AmpSpeed, Amp;
+        public float Age, Life, FadeIn, FadeOut;
+        public float GrowStart, GrowMid, GrowEnd;
+        public byte  Tex;
+    }
+    private readonly List<FlurryP> _flurry = new(64);
     private readonly List<SpellProjectile> _projectiles = new(32);
 
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
@@ -222,7 +236,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     public int LiveParticleCount   => _particles.Count;
     public int LiveBoltCount       => _bolts.Count;
     public int LiveCylinderCount   => _cylinders.Count;
-    public int LiveSrayCount       => _srays.Count;
+    public int LiveSrayCount       => _srayRays.Count;
     public int LiveProjectileCount => _projectiles.Count;
 
     public ParticleSystem(GL gl)
@@ -467,24 +481,56 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// appears to rotate around the axis. Outliers (laser_major's 20m
     /// beam, energy_ball's X-pattern, the armor bone-attached cylinders)
     /// are deferred to follow-up tweaks.</summary>
+    /// <summary>Legacy flat-ring entry point — adapts onto the SU-212 tube
+    /// as a near-flat annulus (outer wall at y=0, inner at y=0.05).</summary>
     public void SpawnCylinder(Vector3 anchor, Vector4 color,
                               float radiusOuter,    float thicknessRatio,
                               float spinPerSec,     float fadeIn, float fadeOut,
                               float duration,       byte texSlot, byte segments)
     {
+        float outer = MathF.Max(0.05f, radiusOuter);
+        float inner = outer * Math.Clamp(thicknessRatio, 0f, 0.95f);
+        var spec = new CylinderSpec
+        {
+            Anchor   = anchor,
+            Color    = color,
+            Rp0      = new Vector3(outer, outer, 0f),
+            Rp1      = new Vector3(inner, inner, 0f),
+            Hp0      = Vector3.Zero,
+            Hp1      = new Vector3(0.05f, 0.05f, 0f),
+            Alpha    = 1f,
+            Spin     = spinPerSec,
+            FadeIn   = MathF.Max(0f, fadeIn),
+            FadeOut  = MathF.Max(0f, fadeOut),
+            Duration = MathF.Max(0.10f, duration),
+            TexSlot  = texSlot,
+            Segments = segments < 4 ? (byte)4 : segments,
+        };
+        SpawnCylinderTube(in spec);
+    }
+
+    /// <summary>Phase 23d-2b — SU-212 cylinder tube between two animated
+    /// (start, end, increment) ring profiles.</summary>
+    public void SpawnCylinderTube(in CylinderSpec spec)
+    {
         _cylinders.Add(new SpellCylinder
         {
-            Anchor          = anchor,
-            Color           = color,
-            RadiusOuter     = MathF.Max(0.05f, radiusOuter),
-            ThicknessRatio  = Math.Clamp(thicknessRatio, 0f, 0.95f),
-            Spin            = spinPerSec,
-            FadeIn          = MathF.Max(0f, fadeIn),
-            FadeOut         = MathF.Max(0f, fadeOut),
-            TotalLife       = MathF.Max(0.10f, duration),
-            Elapsed         = 0f,
-            TexSlot         = texSlot,
-            Segments        = segments < 4 ? (byte)4 : segments,
+            Anchor    = spec.Anchor,
+            Color     = spec.Color,
+            Rp0       = spec.Rp0,
+            Rp1       = spec.Rp1,
+            Hp0       = spec.Hp0,
+            Hp1       = spec.Hp1,
+            Alpha     = Math.Clamp(spec.Alpha <= 0f ? 0.5f : spec.Alpha, 0.02f, 1f),
+            Spin      = spec.Spin,
+            FadeIn    = MathF.Max(0f, spec.FadeIn),
+            FadeOut   = MathF.Max(0f, spec.FadeOut),
+            TotalLife = MathF.Max(0.10f, spec.Duration),
+            Elapsed   = 0f,
+            Rotate    = spec.Rotate,
+            IRotate   = spec.IRotate,
+            TexSlot   = spec.TexSlot,
+            Segments  = spec.Segments < 4 ? (byte)4 : spec.Segments,
         });
     }
 
@@ -545,29 +591,88 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
     }
 
-    /// <summary>Phase 21-SC-SPELL-VISUAL-B — register a DS1 sray streak.
-    /// Lengths/widths randomized per-ray within the supplied ranges using
-    /// the auto-incrementing Seed; <paramref name="rayCount"/> rays
-    /// distribute evenly in azimuth around the anchor's Y axis.</summary>
+    /// <summary>Legacy sray entry point — adapts onto the SU-212 timed
+    /// emitter with doc-default spin/fade triples.</summary>
     public void SpawnSray(Vector3 anchor, Vector4 colorStart, Vector4 colorEnd,
                           float lengthMin, float lengthMax,
                           float widthStart, float widthEnd,
                           float duration, int rayCount)
     {
-        _srays.Add(new SpellSray
+        var spec = new SraySpec
         {
-            Anchor      = anchor,
-            ColorStart  = colorStart,
-            ColorEnd    = colorEnd,
-            LengthMin   = MathF.Max(0.05f, lengthMin),
-            LengthMax   = MathF.Max(lengthMin, lengthMax),
-            WidthStart  = MathF.Max(0.01f, widthStart),
-            WidthEnd    = MathF.Max(0.01f, widthEnd),
-            TotalLife   = MathF.Max(0.05f, duration),
-            Elapsed     = 0f,
-            RayCount    = (ushort)Math.Clamp(rayCount, 1, 96),
-            Seed        = (uint)((int)(anchor.X * 73856093f) ^ (int)(anchor.Z * 19349663f) ^ rayCount),
+            Anchor = anchor, Color0 = colorStart, Color1 = colorEnd,
+            Radius = 0.0005f,
+            Count  = Math.Clamp(rayCount, 1, 96),
+            LMin   = MathF.Max(0.05f, lengthMin),
+            LMax   = MathF.Max(lengthMin, lengthMax),
+            WsMin  = widthStart, WsMax = widthStart,
+            WeMin  = widthEnd,   WeMax = widthEnd,
+            Theta  = new Vector3(0f, 1f, 3f),
+            Phi    = new Vector3(0f, 1f, -3f),
+            Alpha  = new Vector3(1f, 0.5f, 0.5f),
+            SpawnPeriod = 0.015f,
+            Duration    = MathF.Max(0.05f, duration),
+        };
+        SpawnSrayTimed(in spec);
+    }
+
+    /// <summary>Phase 23d-2b — SU-212 sray emitter: one ray per
+    /// SpawnPeriod up to Count; each ray gets its own length/width rolls,
+    /// polar spin rates from the theta/phi (start, min-inc, max-inc)
+    /// triples, and a fade rate from the alpha triple.</summary>
+    public void SpawnSrayTimed(in SraySpec spec)
+    {
+        if (spec.Count <= 0) return;
+        _srayEmits.Add((spec, 1f /* spawn the first ray immediately */, 0, 0f));
+    }
+
+    void EmitOneRay(in SraySpec spec)
+    {
+        _srayRays.Add(new SrayRay
+        {
+            Anchor     = spec.Anchor,
+            Color0     = spec.Color0,
+            Color1     = spec.Color1,
+            Theta      = spec.Theta.X + Rand(0f, MathF.Tau),
+            Phi        = spec.Phi.X + Rand(0f, MathF.PI),
+            ThetaRate  = Rand(MathF.Min(spec.Theta.Y, spec.Theta.Z), MathF.Max(spec.Theta.Y, spec.Theta.Z)),
+            PhiRate    = Rand(MathF.Min(spec.Phi.Y, spec.Phi.Z), MathF.Max(spec.Phi.Y, spec.Phi.Z)),
+            Radius     = spec.Radius,
+            Length     = Rand(MathF.Min(spec.LMin, spec.LMax), MathF.Max(spec.LMin, spec.LMax)),
+            WidthStart = Rand(MathF.Min(spec.WsMin, spec.WsMax), MathF.Max(spec.WsMin, spec.WsMax)),
+            WidthEnd   = Rand(MathF.Min(spec.WeMin, spec.WeMax), MathF.Max(spec.WeMin, spec.WeMax)),
+            Alpha      = spec.Alpha.X,
+            FadeRate   = Rand(MathF.Min(spec.Alpha.Y, spec.Alpha.Z), MathF.Max(spec.Alpha.Y, spec.Alpha.Z)),
         });
+    }
+
+    /// <summary>Phase 23d-2b — SU-212 flurry swarm. Random initial polar
+    /// angles + amp phase per particle; common authored rates.</summary>
+    public void SpawnFlurry(in FlurrySpec spec)
+    {
+        for (int i = 0; i < spec.Count; i++)
+        {
+            _flurry.Add(new FlurryP
+            {
+                Anchor    = spec.Anchor,
+                Color     = spec.Color,
+                Radius    = MathF.Max(0.05f, spec.Radius),
+                Phi       = Rand(0f, MathF.Tau),
+                Theta     = Rand(0f, MathF.Tau),
+                PhiRate   = spec.IPhi,
+                ThetaRate = spec.ITheta,
+                AmpSpeed  = spec.IAmp,
+                Amp       = spec.Amplitude * 0.25f * spec.Radius, // interference relative to orbit size
+                Age       = 0f,
+                Life      = MathF.Max(0.10f, spec.Duration),
+                FadeIn    = spec.FadeIn,
+                FadeOut   = spec.FadeOut,
+                GrowStart = spec.GrowStart,
+                GrowMid   = spec.GrowMid,
+                GrowEnd   = spec.GrowEnd,
+                Tex       = spec.TexSlot,
+            });
+        }
     }
 
     public void SpawnSpark(Vector3 position, Vector4 color, float scale, float duration, int count = 16)
@@ -911,13 +1016,40 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (c.Elapsed >= c.TotalLife) { _cylinders.RemoveAt(i); continue; }
             _cylinders[i] = c;
         }
-        // Phase 21-SC-SPELL-VISUAL-B — advance sray lifetimes.
-        for (int i = _srays.Count - 1; i >= 0; i--)
+        // Phase 23d-2b — sray emitters spawn one ray per SpawnPeriod up to
+        // Count (emitter also expires at its Duration); live rays spin
+        // their polar angles and fade at their per-ray rate.
+        for (int i = _srayEmits.Count - 1; i >= 0; i--)
         {
-            var s = _srays[i];
-            s.Elapsed += dt;
-            if (s.Elapsed >= s.TotalLife) { _srays.RemoveAt(i); continue; }
-            _srays[i] = s;
+            var (spec, carry, spawned, age) = _srayEmits[i];
+            age += dt;
+            carry += dt / MathF.Max(0.002f, spec.SpawnPeriod);
+            while (carry >= 1f && spawned < spec.Count)
+            {
+                EmitOneRay(in spec);
+                carry -= 1f;
+                spawned++;
+            }
+            if (spawned >= spec.Count || (spec.Duration > 0.01f && age >= spec.Duration))
+            { _srayEmits.RemoveAt(i); continue; }
+            _srayEmits[i] = (spec, carry, spawned, age);
+        }
+        for (int i = _srayRays.Count - 1; i >= 0; i--)
+        {
+            var r = _srayRays[i];
+            r.Theta += r.ThetaRate * dt;
+            r.Phi   += r.PhiRate * dt;
+            r.Alpha -= r.FadeRate * dt;
+            if (r.Alpha <= 0.002f) { _srayRays.RemoveAt(i); continue; }
+            _srayRays[i] = r;
+        }
+        // Phase 23d-2b — flurry swarm aging.
+        for (int i = _flurry.Count - 1; i >= 0; i--)
+        {
+            var f = _flurry[i];
+            f.Age += dt;
+            if (f.Age >= f.Life) { _flurry.RemoveAt(i); continue; }
+            _flurry[i] = f;
         }
         // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
         // stamp a fire/ember trail along the way, detonate on arrival.
@@ -1011,7 +1143,9 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _bolts.Clear();
         _projectiles.Clear();
         _cylinders.Clear();
-        _srays.Clear();
+        _srayRays.Clear();
+        _srayEmits.Clear();
+        _flurry.Clear();
         _burstQueue.Clear();
     }
 
@@ -1019,7 +1153,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     {
         if (_particles.Count == 0 && _bolts.Count == 0
             && _projectiles.Count == 0 && _cylinders.Count == 0
-            && _srays.Count == 0) return;
+            && _srayRays.Count == 0 && _flurry.Count == 0) return;
 
         // Bolts + cylinders + srays all compile into the ribbon vertex
         // buffer. Each takes its own slice; DrawRibbons issues 3 draw
@@ -1039,10 +1173,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // additive particles still composite on top cleanly.
         if (_ribbonVertCount > 0) DrawRibbons(view, proj);
 
-        if (_particles.Count == 0) return;
+        int totalInstances = _particles.Count + _flurry.Count;
+        if (totalInstances == 0) return;
 
         // Rebuild instance buffer.
-        EnsureInstanceCapacity(_particles.Count);
+        EnsureInstanceCapacity(totalInstances);
         for (int i = 0; i < _particles.Count; i++)
         {
             var p = _particles[i];
@@ -1076,12 +1211,49 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _instanceBuffer[o + 11] = 0f;
         }
 
+        // Phase 23d-2b — append flurry swarm instances: procedural
+        // spherical-polar position with sinusoidal radial interference,
+        // tin/tout alpha envelope, grow_params (start→mid→end) scale.
+        for (int i = 0; i < _flurry.Count; i++)
+        {
+            var f = _flurry[i];
+            float r = f.Radius + f.Amp * MathF.Sin(f.AmpSpeed * f.Age * MathF.Tau);
+            float phi = f.Phi + f.PhiRate * f.Age;
+            float th  = f.Theta + f.ThetaRate * f.Age;
+            var pos = f.Anchor + new Vector3(
+                MathF.Sin(phi) * MathF.Cos(th) * r,
+                MathF.Cos(phi) * r,
+                MathF.Sin(phi) * MathF.Sin(th) * r);
+            float alpha = 1f;
+            if (f.FadeIn > 0f && f.Age < f.FadeIn) alpha = f.Age / f.FadeIn;
+            float toutStart = f.Life - f.FadeOut;
+            if (f.FadeOut > 0f && f.Age > toutStart)
+                alpha = MathF.Min(alpha, MathF.Max(0f, 1f - (f.Age - toutStart) / f.FadeOut));
+            float t01 = f.Age / f.Life;
+            float grow = t01 < 0.5f
+                ? MathHelper.Lerp(f.GrowStart, f.GrowMid, t01 * 2f)
+                : MathHelper.Lerp(f.GrowMid, f.GrowEnd, (t01 - 0.5f) * 2f);
+            int o = (_particles.Count + i) * InstanceFloats;
+            _instanceBuffer[o + 0] = pos.X;
+            _instanceBuffer[o + 1] = pos.Y;
+            _instanceBuffer[o + 2] = pos.Z;
+            _instanceBuffer[o + 3] = 0.12f * MathF.Max(0.05f, grow) * MathF.Max(0.5f, f.Radius);
+            _instanceBuffer[o + 4] = f.Color.X;
+            _instanceBuffer[o + 5] = f.Color.Y;
+            _instanceBuffer[o + 6] = f.Color.Z;
+            _instanceBuffer[o + 7] = f.Color.W * alpha;
+            _instanceBuffer[o + 8] = f.Tex;
+            _instanceBuffer[o + 9] = 1f; // additive
+            _instanceBuffer[o + 10] = 0f;
+            _instanceBuffer[o + 11] = 0f;
+        }
+
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vboInstance);
         unsafe
         {
             fixed (float* p = _instanceBuffer)
                 _gl.BufferData(GLEnum.ArrayBuffer,
-                    (nuint)(_particles.Count * InstanceFloats * sizeof(float)),
+                    (nuint)(totalInstances * InstanceFloats * sizeof(float)),
                     p, GLEnum.DynamicDraw);
         }
 
@@ -1123,7 +1295,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // need pre-sorting; for SC-E we use one combined SrcAlpha/One blend
         // that approximates both modes acceptably for a first pass.
         _gl.BlendFunc(GLEnum.SrcAlpha, GLEnum.OneMinusSrcAlpha);
-        _gl.DrawArraysInstanced(GLEnum.Triangles, 0, 6, (uint)_particles.Count);
+        _gl.DrawArraysInstanced(GLEnum.Triangles, 0, 6, (uint)totalInstances);
 
         _gl.BindVertexArray(0);
         _gl.DepthMask(true);
@@ -1264,69 +1436,74 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// in for the first 20% then out for the last 30%.</summary>
     void EmitSrayQuads(Vector3 cameraPos)
     {
-        if (_srays.Count == 0) return;
-        for (int si = 0; si < _srays.Count; si++)
+        // Phase 23d-2b — every live ray is an individually-spinning
+        // tapered streak: direction from its current polar angles,
+        // base offset by the origin-sphere radius, alpha per-ray.
+        if (_srayRays.Count == 0) return;
+        EnsureRibbonCapacity(_ribbonVertCount + _srayRays.Count * 6);
+        for (int si = 0; si < _srayRays.Count; si++)
         {
-            var s = _srays[si];
-            float t01 = s.Elapsed / s.TotalLife;
-            float alpha = 1f;
-            if (t01 < 0.20f) alpha = t01 / 0.20f;
-            else if (t01 > 0.70f) alpha = MathF.Max(0f, 1f - (t01 - 0.70f) / 0.30f);
+            var r = _srayRays[si];
+            float a = Math.Clamp(r.Alpha, 0f, 1f);
+            var c0 = r.Color0; c0.W *= a;
+            var c1 = r.Color1; c1.W *= a;
 
-            int n = s.RayCount;
-            uint rng = s.Seed;
-            EnsureRibbonCapacity(_ribbonVertCount + n * 6);
-            var c0 = s.ColorStart; c0.W *= alpha;
-            var c1 = s.ColorEnd;   c1.W *= alpha;
+            var dir = new Vector3(
+                MathF.Sin(r.Phi) * MathF.Cos(r.Theta),
+                MathF.Cos(r.Phi),
+                MathF.Sin(r.Phi) * MathF.Sin(r.Theta));
+            var basePos = r.Anchor + dir * r.Radius;
+            var tipPos  = basePos + dir * r.Length;
+            var toCam   = cameraPos - (basePos + tipPos) * 0.5f;
+            var perp    = Vector3.Cross(dir, toCam);
+            if (perp.LengthSquared() < 0.0001f) perp = Vector3.UnitX;
+            perp = Vector3.Normalize(perp);
 
-            for (int k = 0; k < n; k++)
-            {
-                rng = rng * 1664525u + 1013904223u;
-                float lenT = (rng & 0xFFFF) / 65535f;
-                rng = rng * 1664525u + 1013904223u;
-                float widT = (rng & 0xFFFF) / 65535f;
-                float length = s.LengthMin + (s.LengthMax - s.LengthMin) * lenT;
-                float ws     = s.WidthStart * (0.7f + 0.6f * widT);
-                float we     = s.WidthEnd   * (0.7f + 0.6f * widT);
-
-                Vector3 dir;
-                if (n == 1) dir = Vector3.UnitY;
-                else
-                {
-                    float ang = (float)k / n * MathF.Tau;
-                    dir = new Vector3(MathF.Cos(ang), 0.05f, MathF.Sin(ang));
-                    dir = Vector3.Normalize(dir);
-                }
-                var basePos = s.Anchor;
-                var tipPos  = s.Anchor + dir * length;
-                var toCam   = cameraPos - (basePos + tipPos) * 0.5f;
-                var perp    = Vector3.Cross(dir, toCam);
-                if (perp.LengthSquared() < 0.0001f) perp = Vector3.UnitX;
-                perp = Vector3.Normalize(perp);
-
-                var bL = basePos + perp * ws;
-                var bR = basePos - perp * ws;
-                var tL = tipPos  + perp * we;
-                var tR = tipPos  - perp * we;
-                EmitRibbonVert(bL, 0f, 0f, c0);
-                EmitRibbonVert(bR, 1f, 0f, c0);
-                EmitRibbonVert(tL, 0f, 1f, c1);
-                EmitRibbonVert(bR, 1f, 0f, c0);
-                EmitRibbonVert(tR, 1f, 1f, c1);
-                EmitRibbonVert(tL, 0f, 1f, c1);
-            }
+            var bL = basePos + perp * r.WidthStart;
+            var bR = basePos - perp * r.WidthStart;
+            var tL = tipPos  + perp * r.WidthEnd;
+            var tR = tipPos  - perp * r.WidthEnd;
+            EmitRibbonVert(bL, 0f, 0f, c0);
+            EmitRibbonVert(bR, 1f, 0f, c0);
+            EmitRibbonVert(tL, 0f, 1f, c1);
+            EmitRibbonVert(bR, 1f, 0f, c0);
+            EmitRibbonVert(tR, 1f, 1f, c1);
+            EmitRibbonVert(tL, 0f, 1f, c1);
         }
     }
 
-    /// <summary>Phase 21-SC-SPELL-VISUAL-A — build a flat textured ring at
-    /// each cylinder's anchor.</summary>
+    /// <summary>Phase 23d-2b — SU-212 profile animation: (start, end,
+    /// increment). increment != 0 steps toward end (clamped, or unbounded
+    /// when start == end — pure increment); increment 0 with distinct
+    /// start/end lerps across the duration; otherwise static.</summary>
+    static float ProfileValue(Vector3 p, float t, float dur)
+    {
+        float start = p.X, end = p.Y, inc = p.Z;
+        if (MathF.Abs(inc) > 0.0001f)
+        {
+            float v = start + inc * t;
+            if (MathF.Abs(end - start) > 0.0001f)
+                v = inc > 0f ? MathF.Min(v, MathF.Max(start, end))
+                             : MathF.Max(v, MathF.Min(start, end));
+            return v;
+        }
+        if (MathF.Abs(end - start) > 0.0001f)
+            return start + (end - start) * Math.Clamp(t / MathF.Max(0.01f, dur), 0f, 1f);
+        return start;
+    }
+
+    /// <summary>Phase 23d-2b — build each cylinder as a tube wall between
+    /// its two animated rings (ring 0 = Rp0 radius at Hp0 height, ring 1 =
+    /// Rp1 at Hp1), with spin rolling the texture and rotate/irotate
+    /// orienting the whole tube.</summary>
     void EmitCylinderQuads(Vector3 cameraPos)
     {
         if (_cylinders.Count == 0) return;
         for (int ci = 0; ci < _cylinders.Count; ci++)
         {
             var c = _cylinders[ci];
-            // Lifetime alpha — tin ramp at start, tout ramp at end.
+            // Lifetime alpha — tin ramp at start, tout ramp at end, scaled
+            // by the authored starting alpha.
             float life = c.TotalLife;
             float t = c.Elapsed;
             float alpha = 1f;
@@ -1335,18 +1512,25 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             float toutStart = life - c.FadeOut;
             if (c.FadeOut > 0f && t > toutStart)
                 alpha = MathF.Max(0f, 1f - (t - toutStart) / c.FadeOut);
+            alpha *= c.Alpha;
             if (alpha <= 0.001f) continue;
 
             int seg = c.Segments;
-            float rOuter = c.RadiusOuter;
-            float rInner = rOuter * c.ThicknessRatio;
-            float spinOff = c.Spin * t / MathF.Tau; // U-coordinate shift per spin
+            float r0 = MathF.Max(0.01f, ProfileValue(c.Rp0, t, life));
+            float r1 = MathF.Max(0.01f, ProfileValue(c.Rp1, t, life));
+            float h0 = ProfileValue(c.Hp0, t, life);
+            float h1 = ProfileValue(c.Hp1, t, life);
+            float spinOff = c.Spin * t / MathF.Tau; // U shift, revs
+
+            // rotate + irotate — XYZ euler in degrees (+ degrees/sec).
+            var rotDeg = c.Rotate + c.IRotate * t;
+            Matrix4x4 rot = Matrix4x4.Identity;
+            if (rotDeg.LengthSquared() > 0.0001f)
+                rot = Matrix4x4.CreateRotationX(rotDeg.X * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationY(rotDeg.Y * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationZ(rotDeg.Z * MathF.PI / 180f);
 
             EnsureRibbonCapacity(_ribbonVertCount + seg * 6);
-
-            // Build ring on the Y plane at Anchor.Y. Each segment k spans
-            // angles [angK, angK+1]. Two triangles per segment connecting
-            // the inner ring to the outer ring.
             var color = c.Color;
             color.W *= alpha;
             for (int k = 0; k < seg; k++)
@@ -1355,19 +1539,28 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 float a1 = (float)(k + 1) / seg * MathF.Tau;
                 float u0 = (float)k       / seg + spinOff;
                 float u1 = (float)(k + 1) / seg + spinOff;
-                var ax = c.Anchor;
-                var p0Out = ax + new Vector3(MathF.Cos(a0) * rOuter, 0f, MathF.Sin(a0) * rOuter);
-                var p1Out = ax + new Vector3(MathF.Cos(a1) * rOuter, 0f, MathF.Sin(a1) * rOuter);
-                var p0In  = ax + new Vector3(MathF.Cos(a0) * rInner, 0f, MathF.Sin(a0) * rInner);
-                var p1In  = ax + new Vector3(MathF.Cos(a1) * rInner, 0f, MathF.Sin(a1) * rInner);
-                // Triangle 1: outer0, outer1, inner0
-                EmitRibbonVert(p0Out, u0, 1f, color);
-                EmitRibbonVert(p1Out, u1, 1f, color);
-                EmitRibbonVert(p0In,  u0, 0f, color);
-                // Triangle 2: outer1, inner1, inner0
-                EmitRibbonVert(p1Out, u1, 1f, color);
-                EmitRibbonVert(p1In,  u1, 0f, color);
-                EmitRibbonVert(p0In,  u0, 0f, color);
+                var p0Ring0 = new Vector3(MathF.Cos(a0) * r0, h0, MathF.Sin(a0) * r0);
+                var p1Ring0 = new Vector3(MathF.Cos(a1) * r0, h0, MathF.Sin(a1) * r0);
+                var p0Ring1 = new Vector3(MathF.Cos(a0) * r1, h1, MathF.Sin(a0) * r1);
+                var p1Ring1 = new Vector3(MathF.Cos(a1) * r1, h1, MathF.Sin(a1) * r1);
+                if (rotDeg.LengthSquared() > 0.0001f)
+                {
+                    p0Ring0 = Vector3.Transform(p0Ring0, rot);
+                    p1Ring0 = Vector3.Transform(p1Ring0, rot);
+                    p0Ring1 = Vector3.Transform(p0Ring1, rot);
+                    p1Ring1 = Vector3.Transform(p1Ring1, rot);
+                }
+                var q00 = c.Anchor + p0Ring0;
+                var q10 = c.Anchor + p1Ring0;
+                var q01 = c.Anchor + p0Ring1;
+                var q11 = c.Anchor + p1Ring1;
+                // Wall quad between the rings (v: ring0 = 1, ring1 = 0).
+                EmitRibbonVert(q00, u0, 1f, color);
+                EmitRibbonVert(q10, u1, 1f, color);
+                EmitRibbonVert(q01, u0, 0f, color);
+                EmitRibbonVert(q10, u1, 1f, color);
+                EmitRibbonVert(q11, u1, 0f, color);
+                EmitRibbonVert(q01, u0, 0f, color);
             }
         }
     }

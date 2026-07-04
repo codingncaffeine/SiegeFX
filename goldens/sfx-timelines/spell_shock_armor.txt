@@ -1,17 +1,17 @@
 # sfx timeline  script=shock_armor  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.09 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.09 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.13 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.13 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.25 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.18 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
-  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) r=0.1 thick=0.7 spin=10 tin=0.5 tout=0.3 dur=0.35 tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.09,0.09,0) rp1=(0.12,0.12,0) hp0=(0.3,0.3,0) hp1=(-0.1,-0.1,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.09,0.09,0) rp1=(0.12,0.12,0) hp0=(0.3,0.3,0) hp1=(-0.1,-0.1,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.13,0.13,0) rp1=(0.13,0.13,0) hp0=(-0.4,-0.4,0) hp1=(0.1,0.1,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.13,0.13,0) rp1=(0.13,0.13,0) hp0=(-0.4,-0.4,0) hp1=(0.1,0.1,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.15,0.15,0) hp0=(-0.5,-0.5,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.15,0.15,0) hp0=(-0.5,-0.5,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.25,0.25,0) rp1=(0.18,0.18,0) hp0=(0.35,0.35,0) hp1=(-0.1,-0.1,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.18,0.18,0) rp1=(0.22,0.22,0) hp0=(0.2,0.2,0) hp1=(-0.2,-0.2,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.3,-0.3,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.3,-0.3,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.2,-0.2,0) hp1=(0.05,0.05,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.2,-0.2,0) hp1=(0.05,0.05,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.4,-0.4,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0.4,0.4,1) rp0=(0.1,0.1,0) rp1=(0.1,0.1,0) hp0=(-0.4,-0.4,0) hp1=(0,0,0) alpha=0.5 spin=10 tin=0.5 tout=0.3 dur=0.35 rot=(0,0,90) irot=(0,0,0) tex=0 seg=5
 # end: emitters=0 coroutines=0 unhandled=[worldmsg]

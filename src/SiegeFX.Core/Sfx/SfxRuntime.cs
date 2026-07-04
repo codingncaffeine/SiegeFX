@@ -489,16 +489,23 @@ public sealed class SfxRuntime
                     break;
 
                 case "curve":
-                    // Quadratic Bezier from Anchor → Target with a control
-                    // point above the midpoint (default arc). t advances
-                    // along Duration. When t >= 1, Done.
+                    // Phase 23d-2b — quadratic Bezier from Anchor → Target,
+                    // drawn at velocity(f) world-units/sec (doc default 30)
+                    // with the control point lifted by curvature(f)
+                    // (doc: "the higher the less straight", default 1).
                     {
-                        if (m.Duration <= 0.001f) m.Duration = 1.0f;
-                        float t = MathF.Min(1f, m.Elapsed / m.Duration);
-                        var mid = (m.Anchor + m.Target) * 0.5f + new Vector3(0f, 1.0f, 0f);
+                        float len = MathF.Max(0.05f, (m.Target - m.Anchor).Length());
+                        float speed = m.Speed > 0.01f ? m.Speed : 30f;
+                        float t = MathF.Min(1f, m.Elapsed * speed / len);
+                        float lift = m.Curvature > 0f ? m.Curvature : 1f;
+                        var mid = (m.Anchor + m.Target) * 0.5f + new Vector3(0f, lift, 0f);
                         float u = 1f - t;
                         m.Position = (u * u) * m.Anchor + (2f * u * t) * mid + (t * t) * m.Target;
-                        if (t >= 1f) m.Done = true;
+                        // The curve stays alive to the end of dur (trail
+                        // afterglow); Done at whichever is later — path
+                        // completion or authored duration.
+                        if (t >= 1f && (m.Duration <= 0.001f || m.Elapsed >= m.Duration))
+                            m.Done = true;
                     }
                     break;
             }
@@ -787,10 +794,14 @@ public sealed class SfxRuntime
                                : (float)_rng.NextDouble() * MathF.Tau,
                 Homing       = handle.Homing,
                 AfterlifeSec = handle.Afterlife,
+                Curvature    = handle.HasCurvature ? handle.Curvature : 1f,
                 Duration     = handle.Duration > 0.1f ? handle.Duration : 0f,
                 Elapsed      = 0f,
                 ParentMotionId = 0,
             };
+            // Curve draws at velocity(f) — doc default 30 u/s.
+            if (handle.Mode == EmitterMode.MotionCurve && handle.Velocity <= 0f)
+                motion.Speed = 30f;
             // rvel_min/rvel_max — random launch-speed variance (trackball).
             if (isTrackball && (handle.RvelMax > 0f || handle.RvelMin != 0f))
                 motion.Speed += handle.RvelMin
@@ -919,16 +930,28 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotFlurry:
             {
-                // Phase 21-SC-SPELL-VFX-3f — `flurry` is a popcorn-style
-                // particle burst with `count`/`dur`/`color0`/`grow_params`/
-                // `tin`/`tout` params. First-pass: SpawnSpark sized by the
-                // grow_params middle (peak scale). Doesn't yet animate the
-                // grow curve — visible test list will flag if it's needed.
-                int count = h.BurstCount > 0 ? h.BurstCount : 30;
-                _particles.SpawnSpark(h.Anchor, h.Color,
-                    MathF.Max(0.30f, h.Scale * 1.5f),
-                    MathF.Max(0.30f, h.Duration),
-                    count);
+                // Phase 23d-2b — real SU-212 flurry: spherical polar swarm
+                // with sinusoidal radial interference, grow envelope and
+                // tin/tout alpha shaping. Doc defaults where unauthored.
+                var fspec = new FlurrySpec
+                {
+                    Anchor    = h.Anchor,
+                    Color     = h.Color,
+                    Radius    = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                    Count     = h.BurstCount > 0 ? h.BurstCount : 50,
+                    IPhi      = h.OrbitPhi   != 0f ? h.OrbitPhi   : 1.0f,
+                    ITheta    = h.OrbitTheta != 0f ? h.OrbitTheta : 1.0f,
+                    IAmp      = h.HasIAmp ? h.IAmp : 1.0f,
+                    Amplitude = h.HasAmplitude ? h.Amplitude : 1.0f,
+                    GrowStart = 1f,
+                    GrowMid   = h.GrowMid > 0.05f ? h.GrowMid : 1f,
+                    GrowEnd   = 1f,
+                    FadeIn    = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
+                    FadeOut   = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                    Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
+                    TexSlot   = TextureNameToSlot(h.TextureName, 2),
+                };
+                _particles.SpawnFlurry(in fspec);
                 break;
             }
             case EmitterMode.Fireb:
@@ -969,25 +992,32 @@ public sealed class SfxRuntime
                 // profile authored by every shipped script); donut
                 // thickness via the renderer's default. Spin animates the
                 // texture circumferentially.
-                float outer = h.RpMid > 0.05f ? h.RpMid : MathF.Max(0.5f, h.Scale);
-                int segments = h.Segments >= 4 ? h.Segments : 24;
-                _particles.SpawnCylinder(
-                    anchor:          h.Anchor,
-                    color:           h.Color,
-                    radiusOuter:     outer,
-                    thicknessRatio:  0.7f,                           // ring shape; tweak per spell later
-                    spinPerSec:      h.SpinRate,
-                    fadeIn:          h.FadeIn  > 0f ? h.FadeIn  : 0.10f,
-                    fadeOut:         h.FadeOut > 0f ? h.FadeOut : 0.30f,
-                    duration:        h.Duration > 0.10f ? h.Duration : 1.0f,
-                    // Phase 21-SC-SPELL-VISUAL-H — honor the script's
-                    // authored `texture(b_sfx_cyl_NN)` instead of
-                    // hardcoding slot 11. Falls back to b_sfx_cyl_03
-                    // when nothing was authored, matching the pre-H
-                    // default. ~5 cylinder spells ship cyl_01 / cyl_02
-                    // explicitly.
-                    texSlot:         TextureNameToSlot(h.TextureName, 11),
-                    segments:        (byte)Math.Min(96, segments));
+                // Phase 23d-2b — SU-212 tube between two animated rings.
+                // rp0/rp1/hp0/hp1 are (start, end, increment) triples; doc
+                // defaults rp 0.5/0.5/0, hp0 2.5/2.5/0, hp1 0/0/0. Scripts
+                // that only authored the legacy mid-value keep working via
+                // the RpMid fallback on both radius profiles.
+                float fallbackR = h.RpMid > 0.05f ? h.RpMid : MathF.Max(0.5f, h.Scale);
+                var cspec = new CylinderSpec
+                {
+                    Anchor   = h.Anchor,
+                    Color    = h.Color,
+                    Rp0      = h.HasRp0 ? h.Rp0Triple : new Vector3(fallbackR, fallbackR, 0f),
+                    Rp1      = h.HasRp1 ? h.Rp1Triple
+                               : (h.HasRp0 ? h.Rp0Triple : new Vector3(fallbackR, fallbackR, 0f)),
+                    Hp0      = h.HasHp0 ? h.Hp0Triple : new Vector3(2.5f, 2.5f, 0f),
+                    Hp1      = h.HasHp1 ? h.Hp1Triple : Vector3.Zero,
+                    Alpha    = h.HasAlpha ? h.AlphaStart : 0.5f,
+                    Spin     = h.SpinRate,
+                    FadeIn   = h.FadeIn  > 0f ? h.FadeIn  : 0.5f,
+                    FadeOut  = h.FadeOut > 0f ? h.FadeOut : 0.5f,
+                    Duration = h.Duration > 0.10f ? h.Duration : 1.0f,
+                    Rotate   = h.HasRotate  ? h.RotateVec  : Vector3.Zero,
+                    IRotate  = h.HasIRotate ? h.IRotateVec : Vector3.Zero,
+                    TexSlot  = TextureNameToSlot(h.TextureName, 11),
+                    Segments = (byte)Math.Min(96, h.Segments >= 4 ? h.Segments : 16),
+                };
+                _particles.SpawnCylinderTube(in cspec);
                 break;
             }
             case EmitterMode.OneShotSray:
@@ -999,24 +1029,34 @@ public sealed class SfxRuntime
                 // for fan size. Color gradient color0→color1 (typically
                 // black→gold). theta/phi always 0 — direction is purely
                 // radial-azimuth or straight up for count=1.
-                int rayCount = h.BurstCount > 0 ? h.BurstCount : 1;
+                // Phase 23d-2b — SU-212 spinning rays: timed spawn (srate
+                // period), per-ray polar spin rates from the theta/phi
+                // triples, per-ray alpha fade from the alpha triple.
                 float lmin = h.LengthMin > 0.05f ? h.LengthMin
                             : MathF.Max(0.5f, h.Scale);
-                float lmax = h.LengthMax > lmin ? h.LengthMax : lmin * 1.4f;
-                float ws = h.WidthStart > 0.01f ? h.WidthStart : 0.10f;
-                float we = h.WidthEnd   > 0.01f ? h.WidthEnd   : 0.05f;
+                float lmax = h.LengthMax > lmin ? h.LengthMax : lmin;
                 var c1 = h.ColorTail.W > 0.001f ? h.ColorTail
                         : new Vector4(h.Color.X, h.Color.Y * 0.5f, h.Color.Z * 0.2f, h.Color.W);
-                _particles.SpawnSray(
-                    anchor:      h.Anchor,
-                    colorStart:  h.Color,
-                    colorEnd:    c1,
-                    lengthMin:   lmin,
-                    lengthMax:   lmax,
-                    widthStart:  ws,
-                    widthEnd:    we,
-                    duration:    h.Duration > 0.05f ? h.Duration : 0.40f,
-                    rayCount:    rayCount);
+                var sspec = new SraySpec
+                {
+                    Anchor      = h.Anchor,
+                    Color0      = h.Color,
+                    Color1      = c1,
+                    Radius      = h.OrbitRadius > 0f ? h.OrbitRadius : 0.0005f,
+                    Count       = h.BurstCount > 0 ? h.BurstCount : 16,
+                    LMin        = lmin,
+                    LMax        = lmax,
+                    WsMin       = h.WidthStart > 0.01f ? h.WidthStart : 0.15f,
+                    WsMax       = h.WidthStart > 0.01f ? h.WidthStart : 0.15f,
+                    WeMin       = h.WidthEnd   > 0.01f ? h.WidthEnd   : 0.15f,
+                    WeMax       = h.WidthEnd   > 0.01f ? h.WidthEnd   : 0.15f,
+                    Theta       = h.HasSrayTheta ? h.ThetaTriple : new Vector3(0f, 1f, 3f),
+                    Phi         = h.HasSrayPhi   ? h.PhiTriple   : new Vector3(0f, 1f, -3f),
+                    Alpha       = h.HasSrayAlpha ? h.AlphaTriple : new Vector3(1f, 0.5f, 0.5f),
+                    SpawnPeriod = h.SpawnOverSec > 0.001f ? h.SpawnOverSec : 0.015f,
+                    Duration    = h.Duration > 0.05f ? h.Duration : 0.40f,
+                };
+                _particles.SpawnSrayTimed(in sspec);
                 break;
             }
             case EmitterMode.OneShotSphere:
@@ -1045,13 +1085,34 @@ public sealed class SfxRuntime
             case EmitterMode.Unsupported:
                 return;
             case EmitterMode.MotionOrbiter:
-            case EmitterMode.MotionCurve:
-                // Pure motion handles — no visible emitter of their own.
-                // Their MotionState lives in _motionHandles (allocated at
-                // ExecCreate) and child emitters that targeted them via
-                // `sfx target $emitter $orbiter` follow Position each tick.
-                // Nothing to register here; Tick advances the motion.
+                // Pure motion handle — no visible emitter of its own.
+                // (model(<template>) mesh orbits land with the 23d-2d
+                // renderer hook.) Child emitters follow via sfx target.
                 break;
+            case EmitterMode.MotionCurve:
+            {
+                // Phase 23d-2b — the curve itself is VISIBLE in DS1: a
+                // trail of particles of size(f) spaced spacing(f) apart,
+                // drawn as the head advances (healing_wind's swirl).
+                // invisible() keeps it a pure motion handle.
+                if (h.Invisible) break;
+                float spacing = h.HasSpacing ? MathF.Max(0.2f, h.Spacing) : 3.0f;
+                float speed   = h.Velocity > 0f ? h.Velocity : 30f;
+                float size    = h.CurveSize > 0.01f ? h.CurveSize : 0.125f;
+                _emitters.Add(new PersistentEmitter
+                {
+                    Mode     = EmitterMode.Glow,
+                    Position = h.Anchor,
+                    Color    = h.Color,
+                    Scale    = size * 2.5f,          // glow halo ≈ particle footprint
+                    Rate     = speed / spacing,      // particles per second along the path
+                    TargetMotionId = h.MotionId,
+                    SelfMotionId   = h.MotionId,
+                    Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                    SelfName = selfName,
+                });
+                break;
+            }
             case EmitterMode.MotionTrackball:
             case EmitterMode.LightSource:
             {
@@ -2917,6 +2978,7 @@ public sealed class SfxRuntime
         /// the impact point exactly as DS1's fireball does.</summary>
         public float   AfterlifeSec;
         public bool    Arrived;
+        public float   Curvature;         // curve curvature(f) — control-point lift (doc default 1)
         // Phase 21-SC-SPELL-VISUAL-G — distinguish "trackball reached its
         // target" (collision) from "Duration expired without arrival"
         // (timeout). The Tick pass needs this to push the right

@@ -1,3 +1,35 @@
 # sfx timeline  script=healing_wind  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-# end: emitters=0 coroutines=0 unhandled=[frandrange]
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  0.900  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+  1.800  glow~       pos=(0.3,1.2,0) color=(0.2,0.5,1,1) scale=0.313 rate=1.111 n=1
+# end: emitters=16 coroutines=0 unhandled=[frandrange]

@@ -1,7 +1,7 @@
 # sfx timeline  script=flame_blades  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  cylinder    pos=(4,0,0) color=(1,0.2,0.1,1) r=1 thick=0.7 spin=9 tin=0.2 tout=0.8 dur=2.5 tex=8 seg=15
-  0.000  cylinder    pos=(4,0,0) color=(1,0.2,0.1,1) r=1 thick=0.7 spin=9 tin=0.2 tout=0.8 dur=2.5 tex=8 seg=15
+  0.000  cylinder    pos=(4,0,0) color=(1,0.2,0.1,1) rp0=(1,1,8) rp1=(-0.4,-0.4,8) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=9 tin=0.2 tout=0.8 dur=2.5 rot=(0,0,0) irot=(0,0,0) tex=8 seg=15
+  0.000  cylinder    pos=(4,0,0) color=(1,0.2,0.1,1) rp0=(1,1,8) rp1=(-0.4,-0.4,8) hp0=(0,0,0) hp1=(0,0,0) alpha=1 spin=9 tin=0.2 tout=0.8 dur=2.5 rot=(0,0,0) irot=(0,0,0) tex=8 seg=15
   0.150  fire~       pos=(0.95,1.034,-0.803) color=(1,0.2,0.1,1) scale=1.5 rate=9.091 n=1
   0.250  fire~       pos=(1.875,-0.058,-0.634) color=(1,0.2,0.1,1) scale=1.5 rate=9.091 n=1
 # end: emitters=0 coroutines=0 unhandled=[worldmsg]

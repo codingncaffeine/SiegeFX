@@ -8237,6 +8237,12 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
         => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)} displace={F(minDisplace)}..{F(maxDisplace)} subd={F(subd)} minsubd={F(minSubd)}");
     public void SpawnExplosion(in SiegeFX.Core.Sfx.ExplosionSpec e)
         => Add($"explosion   pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} scale={F(e.ScaleMin)}..{F(e.ScaleMax)} v={F(e.VMin)}..{F(e.VMax)} ivel={V3(e.IVel)} rvel={V3(e.RVel)} omni={(e.OmniDir ? 1 : 0)} fade={F(e.FadeStart)}..{F(e.FadeEnd)} dur={F(e.Duration)} srate={F(e.SpawnOver)} tex={e.TexSlot}");
+    public void SpawnCylinderTube(in SiegeFX.Core.Sfx.CylinderSpec e)
+        => Add($"cylinder    pos={V3(e.Anchor)} color={V4(e.Color)} rp0={V3(e.Rp0)} rp1={V3(e.Rp1)} hp0={V3(e.Hp0)} hp1={V3(e.Hp1)} alpha={F(e.Alpha)} spin={F(e.Spin)} tin={F(e.FadeIn)} tout={F(e.FadeOut)} dur={F(e.Duration)} rot={V3(e.Rotate)} irot={V3(e.IRotate)} tex={e.TexSlot} seg={e.Segments}");
+    public void SpawnSrayTimed(in SiegeFX.Core.Sfx.SraySpec e)
+        => Add($"sray        pos={V3(e.Anchor)} c0={V4(e.Color0)} c1={V4(e.Color1)} r={F(e.Radius)} n={e.Count} len={F(e.LMin)}..{F(e.LMax)} ws={F(e.WsMin)}..{F(e.WsMax)} we={F(e.WeMin)}..{F(e.WeMax)} theta={V3(e.Theta)} phi={V3(e.Phi)} alpha={V3(e.Alpha)} srate={F(e.SpawnPeriod)} dur={F(e.Duration)}");
+    public void SpawnFlurry(in SiegeFX.Core.Sfx.FlurrySpec e)
+        => Add($"flurry      pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} iphi={F(e.IPhi)} itheta={F(e.ITheta)} iamp={F(e.IAmp)} amp={F(e.Amplitude)} grow={F(e.GrowStart)}/{F(e.GrowMid)}/{F(e.GrowEnd)} tin={F(e.FadeIn)} tout={F(e.FadeOut)} dur={F(e.Duration)} tex={e.TexSlot}");
     public void SpawnProjectile(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float scale, float speed, int impactKind)
         => Add($"projectile  src={V3(s)} tgt={V3(t)} color={V4(c)} scale={F(scale)} speed={F(speed)} impact={impactKind}");
     public void SpawnCylinder(System.Numerics.Vector3 a, System.Numerics.Vector4 c, float rOut, float thick, float spin, float tin, float tout, float dur, byte tex, byte seg)
@@ -8283,6 +8289,10 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     public void SpawnLightning(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float d, float minD, float maxD, float subd, float minSubd) => SpawnLightningCount++;
     public int SpawnExplosionCount;
     public void SpawnExplosion(in SiegeFX.Core.Sfx.ExplosionSpec e) => SpawnExplosionCount += e.Count;
+    public void SpawnCylinderTube(in SiegeFX.Core.Sfx.CylinderSpec e) => SpawnCylinderCount++;
+    public void SpawnSrayTimed(in SiegeFX.Core.Sfx.SraySpec e) => SpawnSrayCount++;
+    public int SpawnFlurryCount;
+    public void SpawnFlurry(in SiegeFX.Core.Sfx.FlurrySpec e) => SpawnFlurryCount += e.Count;
     public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }

@@ -1,5 +1,5 @@
 # sfx timeline  script=implosion  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  sray        pos=(4,0,0) c0=(0.1,0.1,0.5,1) c1=(0,0,0,1) len=3.4..3.8 w=0.3..0.3 dur=3 rays=1
-  0.000  spark       pos=(4,0,0) color=(0.2,0.2,1,1) scale=0.9 dur=3.1 n=50
+  0.000  sray        pos=(4,0,0) c0=(0.1,0.1,0.5,1) c1=(0,0,0,1) r=1 n=16 len=3.4..3.8 ws=0.3..0.3 we=0.3..0.3 theta=(0,1,3) phi=(0,1,-3) alpha=(1,0.5,0.5) srate=0.015 dur=3
+  0.000  flurry      pos=(4,0,0) color=(0.2,0.2,1,1) r=1 n=50 iphi=1 itheta=1 iamp=1 amp=1 grow=1/2/1 tin=0.2 tout=0.2 dur=3.1 tex=2
 # end: emitters=0 coroutines=1 unhandled=[camerashake]

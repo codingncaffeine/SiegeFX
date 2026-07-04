@@ -1,6 +1,6 @@
 # sfx timeline  script=incinerate  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  spark       pos=(4,0.5,0) color=(0.8,0.5,0.2,1) scale=0.3 dur=0.35 n=96
+  0.000  flurry      pos=(4,0.5,0) color=(0.8,0.5,0.2,1) r=0.6 n=96 iphi=1 itheta=1 iamp=1 amp=1 grow=1/1/1 tin=1 tout=1 dur=0.35 tex=0
   0.100  fire~       pos=(4,0,0) color=(0.8,0.5,0.2,1) scale=6 rate=18 n=1
   0.150  fire~       pos=(4,0,0) color=(0.8,0.5,0.2,1) scale=6 rate=18 n=1
   0.200  fire~       pos=(4,0,0) color=(0.8,0.5,0.2,1) scale=6 rate=18 n=1

@@ -1,5 +1,5 @@
 # sfx timeline  script=laser_major  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  cylinder    pos=(0,0,0) color=(1,1,0.8,1) r=0.6 thick=0.7 spin=2 tin=0.1 tout=0.3 dur=1 tex=4 seg=24
-  0.000  cylinder    pos=(0,0,0) color=(1,1,0.8,1) r=0.6 thick=0.7 spin=-1 tin=0.1 tout=0.3 dur=1 tex=5 seg=24
+  0.000  cylinder    pos=(0,0,0) color=(1,1,0.8,1) rp0=(1,0,-1) rp1=(0,0,0) hp0=(0,-3,-1) hp1=(20,8,-1) alpha=0.4 spin=2 tin=0.5 tout=0.5 dur=1 rot=(0,0,0) irot=(0,0,0) tex=4 seg=16
+  0.000  cylinder    pos=(0,0,0) color=(1,1,0.8,1) rp0=(1,0,-1) rp1=(0,0,0) hp0=(0,-3,-1) hp1=(20,8,-1) alpha=0.4 spin=-1 tin=0.5 tout=0.5 dur=1 rot=(0,0,0) irot=(0,0,0) tex=5 seg=16
 # end: emitters=0 coroutines=0 unhandled=[worldmsg]
