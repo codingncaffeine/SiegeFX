@@ -105,6 +105,38 @@ public struct FlurrySpec
     public byte    TexSlot;
 }
 
+/// <summary>Phase 23d-2e — SU-212 polygonal explosion: textureless
+/// n-sided polygons explode from a flat plane while rotating, then
+/// stick into the ground (explode_body).</summary>
+public struct PolyExplosionSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public int     PolySides;   // max random sides (doc default 9)
+    public int     Count;       // doc default 200
+    public float   Radius;      // spawn area (doc default 0.75)
+    public float   Mag;         // explosion magnitude (doc default 1.0)
+    public System.Numerics.Vector3 RotRange;   // rotation range deg (doc 200,200,200)
+    public System.Numerics.Vector3 Displace;   // origin displacement range
+    public float   FadeStart, FadeEnd;         // fade_range fractions
+    public float   Duration;
+}
+
+/// <summary>Phase 23d-2e — SU-212 sphere: textureless tessellated
+/// translucent sphere with grow_params envelope, rotate/irotate
+/// orientation and tin/tout fades (firebomb / bombard shells).</summary>
+public struct SphereMeshSpec
+{
+    public System.Numerics.Vector3 Anchor;
+    public System.Numerics.Vector4 Color;
+    public float   Radius;
+    public int     Sides;       // segment count (doc default 20)
+    public int     Subd;        // tessellation level (doc default 1)
+    public float   GrowStart, GrowMid, GrowEnd; // grow_params
+    public System.Numerics.Vector3 Rotate, IRotate; // degrees, degrees/sec
+    public float   FadeIn, FadeOut, Duration;
+}
+
 /// <summary>Phase 23d-2d — SU-212 SPE (spatiotemporal pattern effect).
 /// Exact documented model, per axis and per particle i:
 /// pos = anchor + radius * (sin(index0 + speed0*t + space0*i)
@@ -245,6 +277,12 @@ public interface IParticleSink
 
     /// <summary>Phase 23d-2d — inward-coalescing charge build-up.</summary>
     void SpawnCharge(in ChargeSpec spec);
+
+    /// <summary>Phase 23d-2e — textureless polygonal-shard explosion.</summary>
+    void SpawnPolyExplosion(in PolyExplosionSpec spec);
+
+    /// <summary>Phase 23d-2e — textureless tessellated translucent sphere.</summary>
+    void SpawnSphereMesh(in SphereMeshSpec spec);
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and

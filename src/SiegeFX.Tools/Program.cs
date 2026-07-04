@@ -8289,6 +8289,10 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
         => Add($"sparkles    pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} psize={F(e.PSize)} yvel={F(e.YVel)} dur={F(e.Duration)}");
     public void SpawnCharge(in SiegeFX.Core.Sfx.ChargeSpec e)
         => Add($"charge      pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} tout={F(e.Tout)} speed0={F(e.Speed0)} center={F(e.CenterSize)} ialpha={F(e.IAlpha)} dur={F(e.Duration)}");
+    public void SpawnPolyExplosion(in SiegeFX.Core.Sfx.PolyExplosionSpec e)
+        => Add($"polyexpl    pos={V3(e.Anchor)} color={V4(e.Color)} sides<={e.PolySides} n={e.Count} r={F(e.Radius)} mag={F(e.Mag)} rotrange={V3(e.RotRange)} disp={V3(e.Displace)} fade={F(e.FadeStart)}..{F(e.FadeEnd)} dur={F(e.Duration)}");
+    public void SpawnSphereMesh(in SiegeFX.Core.Sfx.SphereMeshSpec e)
+        => Add($"spheremesh  pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} sides={e.Sides} subd={e.Subd} grow={F(e.GrowStart)}/{F(e.GrowMid)}/{F(e.GrowEnd)} rot={V3(e.Rotate)} irot={V3(e.IRotate)} tin={F(e.FadeIn)} tout={F(e.FadeOut)} dur={F(e.Duration)}");
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
         => Pump("fire~", p, c, scale, dt, rate, carry);
     public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
@@ -8331,6 +8335,8 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e) => SpawnSparkCount += e.Count;
     public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e) => SpawnSparkCount += e.Count;
     public void SpawnCharge(in SiegeFX.Core.Sfx.ChargeSpec e) => SpawnSparkCount += e.Count;
+    public void SpawnPolyExplosion(in SiegeFX.Core.Sfx.PolyExplosionSpec e) => SpawnSparkCount += e.Count;
+    public void SpawnSphereMesh(in SiegeFX.Core.Sfx.SphereMeshSpec e) => SpawnSphereCount++;
     public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }

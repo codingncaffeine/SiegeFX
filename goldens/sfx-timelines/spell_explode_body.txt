@@ -15,7 +15,7 @@
   0.850  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   0.900  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   0.950  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
-  1.000  explosion   pos=(4,0,0) color=(1,0.5,0.2,1) r=0.725 n=75 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
+  1.000  polyexpl    pos=(4,0,0) color=(1,0.5,0.2,1) sides<=4 n=75 r=0.725 mag=25.5 rotrange=(1000,1000,1000) disp=(0,0.475,0) fade=0.5..1 dur=0.35
   1.000  cylinder    pos=(4,0,0) color=(1,0.3,0.05,1) rp0=(0,48,40) rp1=(0.25,48.25,47) hp0=(0.1,0.1,0.1) hp1=(0.1,0.1,0.1) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.2 rot=(0,0,0) irot=(0,0,0) tex=11 seg=26
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2

@@ -3,9 +3,15 @@
   0.000  charge      pos=(4,0,0) color=(1,0.3,0,1) r=0.5 n=16 tout=1 speed0=1 center=0.75 ialpha=4 dur=0.5
   0.000  plume!      pos=(0,0,0) kind=0 n=50 (instant fill)
   0.050  fire~       pos=(0.538,1.123,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=2
+  0.050  glow~       pos=(0.614,2.118,0.064) color=(1,1,1,1) scale=1 rate=50 n=2
   0.100  fire~       pos=(0.776,1.046,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=3
+  0.100  glow~       pos=(0.928,2.026,0.127) color=(1,1,1,1) scale=1 rate=50 n=3
   0.150  fire~       pos=(1.013,0.969,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=2
+  0.150  glow~       pos=(1.24,1.924,0.189) color=(1,1,1,1) scale=1 rate=50 n=2
   0.200  fire~       pos=(1.251,0.891,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=3
+  0.200  glow~       pos=(1.55,1.813,0.25) color=(1,1,1,1) scale=1 rate=50 n=3
   0.250  fire~       pos=(1.489,0.814,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=2
+  0.250  glow~       pos=(1.857,1.692,0.307) color=(1,1,1,1) scale=1 rate=50 n=2
   0.300  fire~       pos=(1.727,0.737,0) color=(1,0.3,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..0.6 ydisp=-0.675..0.675 line=0 n=3
+  0.300  glow~       pos=(2.16,1.563,0.362) color=(1,1,1,1) scale=1 rate=50 n=3
 # end: emitters=0 coroutines=1 unhandled=[]

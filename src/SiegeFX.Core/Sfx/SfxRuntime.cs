@@ -387,6 +387,7 @@ public sealed class SfxRuntime
         _scripts.Clear();
         _motionHandles.Clear();
         _delayed.Clear();
+        _modelOrbits.Clear();
         _nextMotionId = 1;
     }
 
@@ -700,6 +701,54 @@ public sealed class SfxRuntime
         rs.Done = true;
     }
 
+    // ---- Phase 23d-2e — model() orbits ---------------------------------
+    struct ModelOrbitSpec
+    {
+        public string  Template;
+        public float   ScaleIn, ScaleOut, ScaleMax; // model_sin/sout/smax
+        public Vector3 RotInc;                       // rot_inc deg/sec
+        public Vector3 RotBase;                      // rotate(x,y,z) deg
+    }
+    readonly Dictionary<int, ModelOrbitSpec> _modelOrbits = new();
+
+    /// <summary>Phase 23d-2e — a live model(<template>) orbit for the host
+    /// to render at the motion's position with the authored scale
+    /// animation (model_sin ramp in, model_smax peak, model_sout ramp
+    /// out) and rotate + rot_inc orientation.</summary>
+    public readonly record struct ModelOrbitView(
+        string Template, Vector3 Position, float Scale, Vector3 RotationDeg);
+
+    /// <summary>Phase 23d-2e — enumerate live model orbits each frame.
+    /// The RenderHost mesh hook consumes this; headless sinks ignore it.</summary>
+    public void CollectModelOrbits(List<ModelOrbitView> into)
+    {
+        into.Clear();
+        if (_modelOrbits.Count == 0) return;
+        List<int>? dead = null;
+        foreach (var (id, spec) in _modelOrbits)
+        {
+            if (!_motionHandles.TryGetValue(id, out var m) || m.Done)
+            {
+                (dead ??= new List<int>()).Add(id);
+                continue;
+            }
+            float scale = spec.ScaleMax;
+            if (spec.ScaleIn > 0.001f && m.Elapsed < spec.ScaleIn)
+                scale *= m.Elapsed / spec.ScaleIn;
+            if (m.Duration > 0f && spec.ScaleOut > 0.001f)
+            {
+                float outStart = m.Duration - spec.ScaleOut;
+                if (m.Elapsed > outStart)
+                    scale *= MathF.Max(0f, 1f - (m.Elapsed - outStart) / spec.ScaleOut);
+            }
+            into.Add(new ModelOrbitView(
+                spec.Template, m.Position, scale,
+                spec.RotBase + spec.RotInc * m.Elapsed));
+        }
+        if (dead is not null)
+            foreach (var id in dead) _modelOrbits.Remove(id);
+    }
+
     /// <summary>Phase 23d-2e — camerashake hook: (amplitude, duration).
     /// The host (RenderHost chase cam) wires this; headless runs leave it
     /// null.</summary>
@@ -954,6 +1003,28 @@ public sealed class SfxRuntime
             }
             case EmitterMode.OneShotExplosion:
             {
+                // Phase 23d-2e — polygonalexplosion routes through MapMode
+                // as OneShotExplosion; give it its documented shard burst.
+                if (string.Equals(h.Kind, "polygonalexplosion", StringComparison.OrdinalIgnoreCase))
+                {
+                    var pxspec = new PolyExplosionSpec
+                    {
+                        Anchor    = h.Anchor,
+                        Color     = h.Color,
+                        PolySides = h.HasPolySides ? h.PolySides : 9,
+                        Count     = h.BurstCount > 0 ? h.BurstCount : 200,
+                        Radius    = h.OrbitRadius > 0f ? h.OrbitRadius : 0.75f,
+                        Mag       = h.HasMag ? h.Mag : 1.0f,
+                        RotRange  = h.RotRangeVec.LengthSquared() > 0.001f
+                                    ? h.RotRangeVec : new Vector3(200f, 200f, 200f),
+                        Displace  = h.DisplaceVec,
+                        FadeStart = h.HasFadeRange ? h.FadeStart : 0.5f,
+                        FadeEnd   = h.HasFadeRange ? h.FadeEnd   : 1.0f,
+                        Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
+                    };
+                    _particles.SpawnPolyExplosion(in pxspec);
+                    break;
+                }
                 // Phase 23d-2a — authored-parameter explosion per SU 212:
                 // spawn radius, velocity model (vmin/vmax scalars + ivel
                 // base + rvel random), omni_dir vs directional, fade
@@ -1188,20 +1259,65 @@ public sealed class SfxRuntime
                 // birth/death taper, which the renderer's own Scale0/
                 // Scale1 fall-off already approximates). When grow is
                 // absent, h.Scale alone defines the radius.
-                float baseRadius = h.Scale > 0.05f ? h.Scale : 1.0f;
-                float growMid    = h.GrowMid > 0.05f ? h.GrowMid : 1.0f;
-                float radius     = baseRadius * growMid;
-                float life       = h.Duration > 0.05f ? h.Duration : 0.50f;
-                int   count      = h.BurstCount > 0 ? h.BurstCount : 32;
-                _particles.SpawnSphere(h.Anchor, h.Color, radius, life, count);
+                // Phase 23d-2e — DS1's sphere is a textureless TESSELLATED
+                // translucent mesh, not a particle shell. grow_params
+                // supplies the birth→peak→death radius envelope;
+                // subd/sides set tessellation; rotate/irotate orient it.
+                var smspec = new SphereMeshSpec
+                {
+                    Anchor    = h.Anchor,
+                    Color     = h.Color,
+                    Radius    = h.Scale > 0.05f ? h.Scale : 1.0f,
+                    Sides     = h.SphereSides > 3 ? h.SphereSides : 20,
+                    Subd      = h.SphereSubd > 0 ? h.SphereSubd : 1,
+                    GrowStart = 1f,
+                    GrowMid   = h.GrowMid > 0.05f ? h.GrowMid : 1f,
+                    GrowEnd   = 1f,
+                    Rotate    = h.HasRotate  ? h.RotateVec  : Vector3.Zero,
+                    IRotate   = h.HasIRotate ? h.IRotateVec : Vector3.Zero,
+                    FadeIn    = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
+                    FadeOut   = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                    Duration  = h.Duration > 0.05f ? h.Duration : 0.50f,
+                };
+                _particles.SpawnSphereMesh(in smspec);
                 break;
             }
             case EmitterMode.Unsupported:
                 return;
             case EmitterMode.MotionOrbiter:
-                // Pure motion handle — no visible emitter of its own.
-                // (model(<template>) mesh orbits land with the 23d-2d
-                // renderer hook.) Child emitters follow via sfx target.
+                // Pure motion handle — no visible emitter of its own,
+                // unless the script authored model(<template>): the
+                // orbiter then carries a mesh (fireshot's 1-in-10 skull,
+                // tremor's rocks). The host renders the mesh via
+                // CollectModelOrbits; until that hook lands in RenderHost
+                // a compact glow core marks the orbit position so the
+                // authored visual is never silently absent (FLAGGED
+                // DEVIATION for the DS1 side-by-side pass).
+                if (h.ModelName is not null && h.MotionId > 0)
+                {
+                    _modelOrbits[h.MotionId] = new ModelOrbitSpec
+                    {
+                        Template = h.ModelName,
+                        ScaleIn  = h.ModelSin  > 0f ? h.ModelSin  : 1.0f,
+                        ScaleOut = h.ModelSout > 0f ? h.ModelSout : 1.0f,
+                        ScaleMax = h.ModelSmax > 0f ? h.ModelSmax : 1.0f,
+                        RotInc   = h.RotIncVec,
+                        RotBase  = h.HasRotate ? h.RotateVec : Vector3.Zero,
+                    };
+                    if (!h.Invisible)
+                        _emitters.Add(new PersistentEmitter
+                        {
+                            Mode     = EmitterMode.Glow,
+                            Position = h.Anchor,
+                            Color    = h.Color,
+                            Scale    = MathF.Max(0.25f, h.Scale * 0.5f),
+                            Rate     = 50f,
+                            TargetMotionId = h.MotionId,
+                            SelfMotionId   = h.MotionId,
+                            Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                            SelfName = selfName,
+                        });
+                }
                 break;
             case EmitterMode.MotionCurve:
             {

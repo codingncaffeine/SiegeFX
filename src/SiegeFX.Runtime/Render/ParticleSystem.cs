@@ -199,7 +199,32 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     // (SU 212: srate spawns one ray per period up to count).
     private readonly List<SrayRay>         _srayRays    = new(32);
     private List<(SraySpec Spec, float Carry, int Spawned, float Age)> _srayEmits = new(8);
-    private int _srayVertStart = 0;
+    // Phase 23d-2e — ribbon draw ranges: (vertStart, vertCount, texSlot).
+    private readonly List<(int Start, int Count, int Slot)> _ribbonRanges = new(8);
+    void AddRibbonRange(ref int start, int slot)
+    {
+        if (_ribbonVertCount > start)
+        {
+            _ribbonRanges.Add((start, _ribbonVertCount - start, slot));
+            start = _ribbonVertCount;
+        }
+    }
+    // Phase 23d-2e — polygonal-explosion shards + tessellated spheres.
+    private struct PolyShard
+    {
+        public Vector3 Pos, Vel, Rot, RotRate; // Rot in degrees
+        public Vector4 Color;
+        public float Age, Life, FadeStart, FadeEnd, Size, GroundY;
+        public byte Sides;
+        public bool Stuck;
+    }
+    private readonly List<PolyShard> _polyShards = new(64);
+    private struct SphereMeshP
+    {
+        public SphereMeshSpec Spec;
+        public float Age;
+    }
+    private readonly List<SphereMeshP> _sphereMeshes = new(4);
     // Phase 23d-2b — flurry: procedural spherical-polar swarm particles.
     private struct FlurryP
     {
@@ -249,11 +274,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private const int RibbonVertFloats = 9; // pos(3) + uv(2) + color(4)
     private float[] _ribbonVerts = new float[2048 * RibbonVertFloats];
     private int _ribbonVertCount = 0;
-    // Phase 21-SC-SPELL-VISUAL-A — split point in the ribbon vertex
-    // buffer between bolts and cylinders. Bolts emit first (slot
-    // BoltTexSlot), cylinders second (slot CylinderTexSlot). DrawRibbons
-    // does two glDrawArrays calls with different uSlot values.
-    private int _cylinderVertStart = 0;
+    // (Phase 23d-2e — the bolt/cylinder/sray split points were replaced
+    // by the _ribbonRanges slot list.)
     private readonly Shader _ribbonShader;
     private readonly uint _ribbonVao;
     private readonly uint _ribbonVbo;
@@ -1239,6 +1261,33 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (s.Age >= s.Life) { _charges.RemoveAt(i); continue; }
             _charges[i] = s;
         }
+        // Phase 23d-2e — poly shards fly, rotate, and stick where they
+        // land on the spawn plane; sphere meshes just age.
+        for (int i = _polyShards.Count - 1; i >= 0; i--)
+        {
+            var s = _polyShards[i];
+            s.Age += dt;
+            if (s.Age >= s.Life) { _polyShards.RemoveAt(i); continue; }
+            if (!s.Stuck)
+            {
+                s.Vel += new Vector3(0f, -6f, 0f) * dt;
+                s.Pos += s.Vel * dt;
+                s.Rot += s.RotRate * dt;
+                if (s.Pos.Y <= s.GroundY && s.Vel.Y < 0f)
+                {
+                    s.Pos.Y = s.GroundY;
+                    s.Stuck = true;
+                }
+            }
+            _polyShards[i] = s;
+        }
+        for (int i = _sphereMeshes.Count - 1; i >= 0; i--)
+        {
+            var m = _sphereMeshes[i];
+            m.Age += dt;
+            if (m.Age >= m.Spec.Duration) { _sphereMeshes.RemoveAt(i); continue; }
+            _sphereMeshes[i] = m;
+        }
         // Phase 21-SC-SPELL-VFX — advance projectiles toward their targets,
         // stamp a fire/ember trail along the way, detonate on arrival.
         for (int i = _projectiles.Count - 1; i >= 0; i--)
@@ -1337,6 +1386,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _spes.Clear();
         _sparkles.Clear();
         _charges.Clear();
+        _polyShards.Clear();
+        _sphereMeshes.Clear();
         _burstQueue.Clear();
     }
 
@@ -1345,20 +1396,28 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         if (_particles.Count == 0 && _bolts.Count == 0
             && _projectiles.Count == 0 && _cylinders.Count == 0
             && _srayRays.Count == 0 && _flurry.Count == 0
-            && _spes.Count == 0 && _sparkles.Count == 0 && _charges.Count == 0) return;
+            && _spes.Count == 0 && _sparkles.Count == 0 && _charges.Count == 0
+            && _polyShards.Count == 0 && _sphereMeshes.Count == 0) return;
 
-        // Bolts + cylinders + srays all compile into the ribbon vertex
-        // buffer. Each takes its own slice; DrawRibbons issues 3 draw
-        // calls with different uSlot values for the texture choice.
-        // Order: bolts at [0, _cylinderVertStart), cylinders at
-        // [_cylinderVertStart, _srayVertStart), srays at [_srayVertStart,
-        // _ribbonVertCount).
+        // Phase 23d-2e — every ribbon-drawn primitive appends its slice to
+        // _ribbonRanges with the texture slot it draws with (250+ = pure
+        // vertex color). Cylinders group by their authored texture so
+        // cyl_01/cyl_02 spells stop collapsing onto cyl_03.
         _ribbonVertCount = 0;
+        _ribbonRanges.Clear();
+        int rangeStart = 0;
         EmitBoltQuads(cameraPos);
-        _cylinderVertStart = _ribbonVertCount;
-        EmitCylinderQuads(cameraPos);
-        _srayVertStart = _ribbonVertCount;
+        AddRibbonRange(ref rangeStart, BoltTexSlot);
+        for (int slot = 0; slot < _textures.Length; slot++)
+        {
+            EmitCylinderQuads((byte)slot);
+            AddRibbonRange(ref rangeStart, slot);
+        }
         EmitSrayQuads(cameraPos);
+        AddRibbonRange(ref rangeStart, 2); // sparkle01 — soft additive streak read
+        EmitPolyShards();
+        EmitSphereMeshes();
+        AddRibbonRange(ref rangeStart, 250);
         EmitProjectileHeads();
 
         // Ribbon (lightning bolts + cylinders) draw before particles so
@@ -1573,7 +1632,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // adjacent segments meet at the same corner pair instead of each
         // computing its own perpendicular and producing the cross-hatched
         // tinsel/X effect. Result is a true wire instead of a string of pills.
-        _ribbonVertCount = 0;
+        // (Draw resets _ribbonVertCount before the emit sequence.)
         if (_bolts.Count == 0) return;
         for (int bi = 0; bi < _bolts.Count; bi++)
         {
@@ -1758,12 +1817,13 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// its two animated rings (ring 0 = Rp0 radius at Hp0 height, ring 1 =
     /// Rp1 at Hp1), with spin rolling the texture and rotate/irotate
     /// orienting the whole tube.</summary>
-    void EmitCylinderQuads(Vector3 cameraPos)
+    void EmitCylinderQuads(byte slotFilter)
     {
         if (_cylinders.Count == 0) return;
         for (int ci = 0; ci < _cylinders.Count; ci++)
         {
             var c = _cylinders[ci];
+            if (c.TexSlot != slotFilter) continue;
             // Lifetime alpha — tin ramp at start, tout ramp at end, scaled
             // by the authored starting alpha.
             float life = c.TotalLife;
@@ -1858,36 +1918,163 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
 
         _gl.BindVertexArray(_ribbonVao);
-        // Phase 21-SC-SPELL-VISUAL-A/B — 3-pass ribbon draw, single VBO:
-        //   bolts     [0, _cylinderVertStart)        — BoltTexSlot
-        //   cylinders [_cylinderVertStart, _srayVertStart) — CylinderTexSlot
-        //   srays     [_srayVertStart, _ribbonVertCount)   — slot 2 (sparkle01,
-        //                                                     soft glow read)
-        if (_cylinderVertStart > 0)
+        // Phase 23d-2e — draw each recorded range with its slot (250+ =
+        // pure vertex color for textureless poly shards / sphere meshes).
+        for (int i = 0; i < _ribbonRanges.Count; i++)
         {
-            _ribbonShader.SetInt("uSlot", BoltTexSlot);
-            _gl.DrawArrays(GLEnum.Triangles, 0, (uint)_cylinderVertStart);
-        }
-        if (_srayVertStart > _cylinderVertStart)
-        {
-            _ribbonShader.SetInt("uSlot", CylinderTexSlot);
-            _gl.DrawArrays(GLEnum.Triangles, _cylinderVertStart,
-                (uint)(_srayVertStart - _cylinderVertStart));
-        }
-        if (_ribbonVertCount > _srayVertStart)
-        {
-            // sray uses slot 2 (b_sfx_sparkle01) — DS1 ships srays with NO
-            // texture param, but a soft sparkle billboard reads as the
-            // additive black-to-gold streak the color0/color1 gradient
-            // implies, far better than a hard solid quad would.
-            _ribbonShader.SetInt("uSlot", 2);
-            _gl.DrawArrays(GLEnum.Triangles, _srayVertStart,
-                (uint)(_ribbonVertCount - _srayVertStart));
+            var (rStart, rCount, rSlot) = _ribbonRanges[i];
+            _ribbonShader.SetInt("uSlot", rSlot);
+            _gl.DrawArrays(GLEnum.Triangles, rStart, (uint)rCount);
         }
         _gl.BindVertexArray(0);
         _gl.DepthMask(true);
         if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
         if (cullWasOn)   _gl.Enable(GLEnum.CullFace);
+    }
+
+    /// <summary>Phase 23d-2e — SU-212 polygonal explosion. Each shard is
+    /// an n-gon fan oriented by its live euler rotation; shards fly out at
+    /// mag-scaled velocity, rotate at their rotrange roll, and stick where
+    /// they land on the spawn plane.</summary>
+    public void SpawnPolyExplosion(in SiegeFX.Core.Sfx.PolyExplosionSpec spec)
+    {
+        int count = Math.Clamp(spec.Count, 1, 400);
+        for (int i = 0; i < count; i++)
+        {
+            float ang = Rand(0f, MathF.Tau);
+            float rad = Rand(0f, MathF.Max(0.02f, spec.Radius));
+            var pos = spec.Anchor + new Vector3(
+                MathF.Cos(ang) * rad + Rand(-spec.Displace.X, spec.Displace.X),
+                Rand(-spec.Displace.Y, spec.Displace.Y),
+                MathF.Sin(ang) * rad + Rand(-spec.Displace.Z, spec.Displace.Z));
+            // Up-biased hemisphere burst scaled by mag.
+            float z  = Rand(0.15f, 1f);
+            float th = Rand(0f, MathF.Tau);
+            float rr = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+            var dir  = new Vector3(rr * MathF.Cos(th), z, rr * MathF.Sin(th));
+            _polyShards.Add(new PolyShard
+            {
+                Pos       = pos,
+                Vel       = dir * (2.5f * MathF.Max(0.1f, spec.Mag) * Rand(0.6f, 1.4f)),
+                Rot       = new Vector3(Rand(0f, 360f), Rand(0f, 360f), Rand(0f, 360f)),
+                RotRate   = new Vector3(Rand(-spec.RotRange.X, spec.RotRange.X),
+                                        Rand(-spec.RotRange.Y, spec.RotRange.Y),
+                                        Rand(-spec.RotRange.Z, spec.RotRange.Z)),
+                Color     = spec.Color,
+                Age       = 0f,
+                Life      = MathF.Max(0.15f, spec.Duration),
+                FadeStart = spec.FadeStart,
+                FadeEnd   = spec.FadeEnd,
+                // Shard size is a documented-inference constant (the doc
+                // gives no per-shard size knob) — small chips read right.
+                Size      = 0.07f * MathF.Max(0.5f, spec.Mag),
+                GroundY   = spec.Anchor.Y,
+                Sides     = (byte)Math.Clamp(
+                    (int)Rand(3f, MathF.Max(3f, spec.PolySides + 1)), 3, 12),
+            });
+        }
+    }
+
+    /// <summary>Phase 23d-2e — SU-212 tessellated translucent sphere.</summary>
+    public void SpawnSphereMesh(in SiegeFX.Core.Sfx.SphereMeshSpec spec)
+    {
+        _sphereMeshes.Add(new SphereMeshP { Spec = spec, Age = 0f });
+    }
+
+    void EmitPolyShards()
+    {
+        if (_polyShards.Count == 0) return;
+        for (int i = 0; i < _polyShards.Count; i++)
+        {
+            var s = _polyShards[i];
+            float t01 = s.Age / s.Life;
+            float alpha = t01 <= s.FadeStart ? 1f
+                        : t01 >= s.FadeEnd   ? 0f
+                        : 1f - (t01 - s.FadeStart) / MathF.Max(0.0001f, s.FadeEnd - s.FadeStart);
+            if (alpha <= 0.002f) continue;
+            var col = s.Color;
+            col.W *= alpha * 0.85f;
+
+            var rot = Matrix4x4.CreateRotationX(s.Rot.X * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationY(s.Rot.Y * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationZ(s.Rot.Z * MathF.PI / 180f);
+            int sides = s.Sides;
+            EnsureRibbonCapacity(_ribbonVertCount + sides * 3);
+            var center = s.Pos;
+            Vector3 First(int k)
+            {
+                float a = (float)k / sides * MathF.Tau;
+                var local = new Vector3(MathF.Cos(a), 0f, MathF.Sin(a)) * s.Size;
+                return center + Vector3.Transform(local, rot);
+            }
+            var prev = First(0);
+            for (int k = 1; k <= sides; k++)
+            {
+                var next = First(k);
+                EmitRibbonVert(center, 0.5f, 0.5f, col);
+                EmitRibbonVert(prev,   0f,   0f,   col);
+                EmitRibbonVert(next,   1f,   1f,   col);
+                prev = next;
+            }
+        }
+    }
+
+    void EmitSphereMeshes()
+    {
+        if (_sphereMeshes.Count == 0) return;
+        for (int i = 0; i < _sphereMeshes.Count; i++)
+        {
+            var m = _sphereMeshes[i];
+            var sp = m.Spec;
+            float t = m.Age;
+            float alpha = 1f;
+            if (sp.FadeIn > 0f && t < sp.FadeIn) alpha = t / sp.FadeIn;
+            float toutStart = sp.Duration - sp.FadeOut;
+            if (sp.FadeOut > 0f && t > toutStart)
+                alpha = MathF.Min(alpha, MathF.Max(0f, 1f - (t - toutStart) / sp.FadeOut));
+            if (alpha <= 0.002f) continue;
+            // grow_params start→mid→end radius envelope over the life.
+            float t01 = t / MathF.Max(0.01f, sp.Duration);
+            float grow = t01 < 0.5f
+                ? MathHelper.Lerp(sp.GrowStart, sp.GrowMid, t01 * 2f)
+                : MathHelper.Lerp(sp.GrowMid, sp.GrowEnd, (t01 - 0.5f) * 2f);
+            float radius = MathF.Max(0.02f, sp.Radius * grow);
+            var col = sp.Color;
+            col.W *= alpha * 0.45f; // translucent shell read
+
+            var rotDeg = sp.Rotate + sp.IRotate * t;
+            var rot = Matrix4x4.CreateRotationX(rotDeg.X * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationY(rotDeg.Y * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationZ(rotDeg.Z * MathF.PI / 180f);
+
+            int segs  = Math.Clamp(sp.Sides, 4, 32);
+            int rings = Math.Clamp(2 + 2 * sp.Subd, 2, 16);
+            EnsureRibbonCapacity(_ribbonVertCount + rings * segs * 6);
+            Vector3 P(int ring, int seg)
+            {
+                float phi = MathF.PI * ring / rings;          // 0..π
+                float th  = MathF.Tau * seg / segs;           // 0..2π
+                var local = new Vector3(
+                    MathF.Sin(phi) * MathF.Cos(th),
+                    MathF.Cos(phi),
+                    MathF.Sin(phi) * MathF.Sin(th)) * radius;
+                return sp.Anchor + Vector3.Transform(local, rot);
+            }
+            for (int r = 0; r < rings; r++)
+            for (int sgi = 0; sgi < segs; sgi++)
+            {
+                var p00 = P(r, sgi);
+                var p01 = P(r, sgi + 1);
+                var p10 = P(r + 1, sgi);
+                var p11 = P(r + 1, sgi + 1);
+                EmitRibbonVert(p00, 0f, 0f, col);
+                EmitRibbonVert(p01, 1f, 0f, col);
+                EmitRibbonVert(p10, 0f, 1f, col);
+                EmitRibbonVert(p01, 1f, 0f, col);
+                EmitRibbonVert(p11, 1f, 1f, col);
+                EmitRibbonVert(p10, 0f, 1f, col);
+            }
+        }
     }
 
     void EmitProjectileHeads()
@@ -2043,7 +2230,8 @@ uniform sampler2D uTex11;
 out vec4 frag;
 void main(){
   vec4 tex;
-  if      (uSlot == 0) tex = texture(uTex0, vUv);
+  if      (uSlot >= 250) tex = vec4(1.0); // Phase 23d-2e — textureless (pure vertex color)
+  else if (uSlot == 0) tex = texture(uTex0, vUv);
   else if (uSlot == 1) tex = texture(uTex1, vUv);
   else if (uSlot == 2) tex = texture(uTex2, vUv);
   else if (uSlot == 3) tex = texture(uTex3, vUv);
