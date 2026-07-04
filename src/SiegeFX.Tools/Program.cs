@@ -33,6 +33,7 @@ try
         "spells"    => DispatchSpells(args[1..]),
         "sfx"       => DispatchSfx(args[1..]),
         "capture-kit" => CmdCaptureKitBuild(args[1..]),
+        "store"     => DispatchStore(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
@@ -6371,6 +6372,107 @@ static IEnumerable<string> ExtractAuditTextures(string paramString)
 // inventory the shipped /world/global/effects/*.gas pile and dump any
 // single script body (fireball, smoke_emitter, waterfall_froth, ...) so
 // the interpreter we build in SC-F has a verifiable source of truth.
+// Phase 25a — shop authoring runtime receipts.
+static int DispatchStore(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx store <dump|list> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "dump" => CmdStoreDump(a[1..]),
+        "list" => CmdStoreList(a[1..]),
+        _      => UnknownCommand("store " + a[0]),
+    };
+}
+
+// Every template carrying a [store]/[store_pcontent] chain — the
+// merchant + hireable roster straight from the data.
+static int CmdStoreList(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx store list <Logic.dsres>"); return 1; }
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    int shops = 0, hire = 0;
+    foreach (var tpl in store.All.OrderBy(t => t.Name, StringComparer.Ordinal))
+    {
+        var st = SiegeFX.Core.Actors.StoreTable.FromTemplate(store, tpl);
+        if (st is null) continue;
+        // Only leaves matter for the roster; bases show as duplicates of
+        // their children otherwise. Cheap heuristic: skip base_* names.
+        if (tpl.Name.StartsWith("base_", StringComparison.OrdinalIgnoreCase)) continue;
+        var screen = store.GetAttribute(tpl, "common", "screen_name")?.Trim().Trim('"') ?? "";
+        if (st.CanSellSelf)
+        {
+            hire++;
+            var cost = store.GetAttribute(tpl, "aspect", "gold_value")?.Trim() ?? "?";
+            Console.WriteLine($"  HIRE  {tpl.Name,-34} \"{screen}\"  cost={cost}");
+        }
+        else if (st.Tabs.Count > 0)
+        {
+            shops++;
+            var tabs = string.Join(",", st.Tabs.Select(t => $"{t.Name}({t.Bags.Count})"));
+            Console.WriteLine($"  SHOP  {tpl.Name,-34} \"{screen}\"  markup={st.ItemMarkup}  tabs: {tabs}");
+        }
+    }
+    Console.WriteLine($"\n{shops} shop template(s), {hire} hireable template(s)");
+    return 0;
+}
+
+// Roll a shop's stock and print it per tab with buy prices
+// (gold_value x item_markup; items without an authored gold_value show
+// value=? until the 25d computed-value fit lands).
+static int CmdStoreDump(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx store dump <Logic.dsres> <npc-template> [--seed=N]"); return 1; }
+    int seed = 1;
+    for (int i = 2; i < a.Length; i++)
+        if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var s)) seed = s;
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var (store, _) = TemplateStore.LoadFromTank(reader);
+    if (!store.TryGet(a[1], out var tpl) || tpl is null)
+    {
+        Console.Error.WriteLine($"template '{a[1]}' not found");
+        return 2;
+    }
+    var table = SiegeFX.Core.Actors.StoreTable.FromTemplate(store, tpl);
+    if (table is null)
+    {
+        Console.Error.WriteLine($"'{a[1]}' has no [store]/[store_pcontent] chain");
+        return 3;
+    }
+    var resolver = new SiegeFX.Core.Actors.PcontentResolver(store);
+    var rng = new Random(seed);
+    var stock = table.GenerateStock(resolver, rng);
+
+    Console.WriteLine($"store dump: {a[1]}  markup={table.ItemMarkup}  full_ratio={table.FullRatio}  can_sell_self={table.CanSellSelf}  seed={seed}");
+    foreach (var grp in stock.GroupBy(s => s.Tab))
+    {
+        Console.WriteLine($"\n  [{grp.Key}]  ({grp.Count()} items)");
+        foreach (var it in grp.OrderBy(x => x.Power))
+        {
+            var goldStr = store.TryGet(it.TemplateName, out var itpl) && itpl is not null
+                ? store.GetAttribute(itpl, "aspect", "gold_value")?.Trim()
+                : null;
+            var buy = goldStr is not null
+                && float.TryParse(goldStr, System.Globalization.NumberStyles.Float,
+                                  System.Globalization.CultureInfo.InvariantCulture, out var gv)
+                ? ((int)MathF.Round(gv * table.ItemMarkup)).ToString()
+                : "?";
+            Console.WriteLine($"    pow={it.Power,4}  buy={buy,6}  {it.TemplateName,-34} <- {it.Spec}");
+        }
+    }
+    // Empty-tab gate for the 25d completeness audit.
+    var emptyTabs = table.Tabs.Where(t => stock.All(s => !s.Tab.Equals(t.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+    if (emptyTabs.Count > 0)
+    {
+        Console.WriteLine($"\n  EMPTY TABS: {string.Join(", ", emptyTabs.Select(t => t.Name))}");
+        return 4;
+    }
+    return 0;
+}
+
 // Phase 23e — DS1-side ground-truth capture kit. Builds a mod tank for
 // the ORIGINAL game that starts a fresh farmboy with every spell in
 // inventory and casting skills high enough to use them all, so DS1

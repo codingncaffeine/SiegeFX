@@ -80,6 +80,14 @@ public sealed class PcontentResolver
             _        => _byClass.TryGetValue(parsed.Class, out var b) ? b : Enumerable.Empty<Entry>(),
         };
 
+        // Phase 25a — sub-class filter: "#body,ro" narrows body armor to
+        // robes (chain rooted at base_body_armor_cloth). Unknown subs
+        // keep the pre-25a no-op behavior.
+        if (parsed.Sub.Equals("ro", StringComparison.OrdinalIgnoreCase))
+            candidates = candidates.Where(e =>
+                _store.TryGet(e.Name, out var t) && t is not null
+                && IsDescendantOf(t, "base_body_armor_cloth"));
+
         // Rarity filter. Without a modifier, only normal-tier items
         // that aren't is_pcontent_allowed=false can roll. With
         // -rare(N) or -unique(N), narrow to that tier — gameplay
@@ -255,6 +263,21 @@ public sealed class PcontentResolver
                 var power = (int)Math.Round(defense);
                 var entry = new Entry(tpl.Name, power, rarity, Group.Armor, allowed);
                 _all.Add(entry);
+                // Phase 25a — armor sub-class buckets from the chain's
+                // [gui]equip_slot (shop specs address #body/#helm/#boots/
+                // #gloves/#shield directly — blacksmith_moik_stourn).
+                var slot = _store.GetAttribute(tpl, "gui", "equip_slot")?.Trim();
+                string? key = slot switch
+                {
+                    "es_chest"       => "body",
+                    "es_head"        => "helm",
+                    "es_feet"        => "boots",
+                    "es_hands"       => "gloves",
+                    "es_forearms"    => "gloves",
+                    "es_shield_hand" => "shield",
+                    _                => null,
+                };
+                if (key is not null) Bucket(key).Add(entry);
             }
         }
         foreach (var list in _byClass.Values)
