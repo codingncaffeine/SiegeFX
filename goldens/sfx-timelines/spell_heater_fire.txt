@@ -1,0 +1,8 @@
+# sfx timeline  script=heater_fire  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  fireb       pos=(0,0,0) color=(0.85,0.6,0.6,1) vel=(0,-45,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..10 n=80 flame=1
+  0.000  fireb       pos=(0,0,0) color=(0.85,0.6,0.6,1) vel=(0,-45,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..10 n=30 flame=2
+  0.000  fireb       pos=(0,0,0) color=(1,0.3,0,1) vel=(0,-45,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..35 n=80 flame=2
+  0.000  fireb       pos=(0,0,0) color=(1,0.9,0.8,1) vel=(0,-45,0) accel=(0,0,0) life=0.45 disp=0.5 r=0..20 n=80 flame=0.1
+  0.000  fireb       pos=(0,0,0) color=(0.3,0.3,0.3,0.55) vel=(0,-45,0) accel=(0,0,0) life=0.45 disp=0.5 r=3..20 n=80 flame=0.2
+# end: emitters=0 coroutines=1 unhandled=[]

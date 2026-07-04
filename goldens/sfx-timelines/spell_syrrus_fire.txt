@@ -1,0 +1,6 @@
+# sfx timeline  script=syrrus_fire  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  fireb       pos=(0.25,0,-1) color=(0.32,0.32,0.32,0.55) vel=(70,-8,15) accel=(-30,0,-15) life=0.5 disp=0.5 r=0..40 n=96 flame=4
+  0.000  fireb       pos=(0.125,0,-0.5) color=(0.2,0.4,1,1) vel=(70,-8,15) accel=(-30,0,-15) life=0.5 disp=0.5 r=0..40 n=96 flame=2
+  0.000  fireb       pos=(0.25,0,-1) color=(0,0.5,0.3,1) vel=(70,-8,15) accel=(-30,0,-15) life=0.5 disp=0.5 r=0..40 n=96 flame=1
+# end: emitters=0 coroutines=0 unhandled=[]

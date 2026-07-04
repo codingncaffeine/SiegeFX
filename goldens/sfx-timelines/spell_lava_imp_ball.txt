@@ -1,0 +1,42 @@
+# sfx timeline  script=lava_imp_ball  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  sparkles    pos=(4,0,0) color=(1,0.3,0.1,1) r=0.3 n=15 psize=0.7 yvel=0.3 dur=6
+  0.000  sparkles    pos=(4,0,0) color=(1,0.3,0.1,1) r=0.3 n=15 psize=0.7 yvel=-0.3 dur=6
+  0.400  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.450  flurry      pos=(4,0,0) color=(1,0.3,0.1,1) r=0.5 n=12 iphi=1 itheta=1 iamp=1 amp=1 grow=1/2.4/1 tin=1 tout=1 dur=0.75 tex=2
+  0.450  explosion   pos=(4,0,0) color=(1,0.3,0.1,1) r=0.5 n=15 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=1..1 dur=1.2 srate=0 tex=2
+  0.450  sparkles    pos=(4,0,0) color=(1,0.3,0.1,1) r=1 n=10 psize=0.5 yvel=0.5 dur=0.66
+  0.450  sparkles    pos=(4,0,0) color=(1,0.3,0.1,1) r=1 n=10 psize=0.5 yvel=-0.5 dur=0.66
+  0.450  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.500  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.550  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.600  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.650  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.700  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.750  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.800  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.850  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.900  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  0.950  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.000  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.050  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.100  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.150  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.200  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.250  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.300  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.350  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.400  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.450  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.500  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.550  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.600  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.650  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.700  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.750  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.800  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.850  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.900  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  1.950  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+  2.000  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) scale=0.48 rate=60 n=3
+# end: emitters=1 coroutines=0 unhandled=[]

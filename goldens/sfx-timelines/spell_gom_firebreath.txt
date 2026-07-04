@@ -1,0 +1,6 @@
+# sfx timeline  script=gom_firebreath  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.250  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,-70,70) accel=(0,0,0) life=0.5 disp=0.5 r=0..55 n=96 flame=0.5
+  0.250  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,-70,70) accel=(0,0,0) life=0.5 disp=0.5 r=0..150 n=96 flame=1
+  0.250  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,-70,70) accel=(0,0,0) life=0.5 disp=0.5 r=1.5..55 n=96 flame=2
+# end: emitters=0 coroutines=0 unhandled=[]

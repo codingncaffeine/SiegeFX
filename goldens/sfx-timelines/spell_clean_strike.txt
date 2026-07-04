@@ -1,0 +1,4 @@
+# sfx timeline  script=clean_strike  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  spe         pos=(4,0,0) color=(1,0.33,0.16,1) r=1 n=20 scale=0.1 i0=(0,-1.57,1.57) i1=(0,-1.57,1.57) v0=(5,1,5) v1=(5,1,5) s0=(0.063,0.013,0.063) s1=(0.063,0.013,0.063) tin=1 tout=1 dur=5
+# end: emitters=0 coroutines=0 unhandled=[]

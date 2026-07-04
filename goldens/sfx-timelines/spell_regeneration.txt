@@ -1,0 +1,7 @@
+# sfx timeline  script=regeneration  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  sparkles    pos=(4,0.5,0) color=(0.3,1,0.2,1) r=0.8 n=10 psize=0.5 yvel=-1 dur=6
+  0.000  sparkles    pos=(4,-0.5,0) color=(0.3,1,0.2,1) r=0.8 n=10 psize=0.5 yvel=1 dur=9
+  0.000  sparkles    pos=(4,0.5,0) color=(0.3,1,0.2,1) r=0.8 n=10 psize=0.5 yvel=-1 dur=0.35
+  0.000  sparkles    pos=(4,-0.5,0) color=(0.3,1,0.2,1) r=0.8 n=10 psize=0.5 yvel=1 dur=0.35
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -1,0 +1,5 @@
+# sfx timeline  script=robo_suit_minigun  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  fireb       pos=(0,0,0) color=(1,0.6,0.3,1) vel=(0,0,-100) accel=(0,0,0) life=10 disp=0.5 r=0..1 n=20 flame=1.2
+  0.000  explosion   pos=(4,0,0) color=(1,0.4,0,1) r=0.1 n=15 scale=0.2..0.7 v=10..3 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=1 srate=0.02 tex=2
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -1,0 +1,16 @@
+# sfx timeline  script=mana_shield  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  cylinder    pos=(4,0,0) color=(1,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,100,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(1,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=6 rot=(0,115,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.9,0,0.1,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,130,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.8,0,0.2,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=8 rot=(0,145,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.7,0,0.3,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,160,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.6,0,0.4,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=10 rot=(0,175,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.5,0,0.5,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,190,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.4,0,0.6,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=12 rot=(0,205,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.7,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,220,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.2,0,0.8,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=14 rot=(0,235,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0.1,0,0.9,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,250,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0,0,1,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=16 rot=(0,265,0) irot=(0,0,180) tex=11 seg=8
+  0.000  cylinder    pos=(4,0,0) color=(0,0,1,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-0.8,-0.8,0) hp1=(0.8,0.8,1) alpha=0.3 spin=-2 tin=0.2 tout=1.5 dur=0.35 rot=(0,280,0) irot=(0,0,180) tex=11 seg=8
+# end: emitters=0 coroutines=0 unhandled=[]

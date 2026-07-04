@@ -1,0 +1,15 @@
+# sfx timeline  script=pupod_gas  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  fireb       pos=(-0.66,0,0) color=(0.34,0.34,0.34,0.55) vel=(0,6,0) accel=(0,-1,0) life=0.15 disp=0.5 r=0..-3 n=40 flame=2
+  0.850  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.000  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.200  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.350  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.500  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.600  smoke~      pos=(-0.66,0,0) color=(0.5,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.1 ring=22..24 ydisp=0..0 line=0 n=1
+  1.700  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.750  smoke~      pos=(-0.66,0,0) color=(0.5,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.1 ring=22..24 ydisp=0..0 line=0 n=1
+  1.850  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+  1.950  smoke~      pos=(-0.66,0,0) color=(0.5,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.1 ring=22..24 ydisp=0..0 line=0 n=1
+  2.000  fire~       pos=(-0.66,0,0) color=(0.6,0.6,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.3 ring=0..16 ydisp=0..0 line=0 n=1
+# end: emitters=2 coroutines=0 unhandled=[]

@@ -1,0 +1,7 @@
+# sfx timeline  script=gargoyle_summon  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.100  glow~       pos=(1.5,0.469,0) color=(0.3,0.4,0.5,1) scale=0.313 rate=10 n=1
+  0.200  glow~       pos=(4,0,0) color=(0.3,0.4,0.5,1) scale=0.313 rate=10 n=1
+  0.300  glow~       pos=(4,0,0) color=(0.3,0.4,0.5,1) scale=0.313 rate=10 n=1
+  0.700  explosion   pos=(4,1.3,0) color=(0,0,0.5,1) r=0.66 n=96 scale=0.4..0.4 v=10..10 ivel=(0,2,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -1,0 +1,5 @@
+# sfx timeline  script=arch_angel_zap  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  flurry      pos=(4,0,0) color=(0.8,0.8,0.5,1) r=0.5 n=12 iphi=1 itheta=1 iamp=1 amp=1 grow=1/2.4/1 tin=1 tout=1 dur=0.75 tex=2
+  0.000  explosion   pos=(4,0,0) color=(0.8,0.8,0.5,1) r=0.5 n=15 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=1..1 dur=1.2 srate=0 tex=2
+# end: emitters=0 coroutines=0 unhandled=[]

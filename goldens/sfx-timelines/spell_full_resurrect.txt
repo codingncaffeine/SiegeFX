@@ -1,0 +1,60 @@
+# sfx timeline  script=full_resurrect  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  cylinder    pos=(4,0,0) color=(1,1,1,1) rp0=(0,3.3,0.2) rp1=(0,0.5,0.1) hp0=(18,-3,-35) hp1=(20,8,-1) alpha=0.4 spin=2 tin=0.5 tout=0.5 dur=4.5 rot=(0,0,0) irot=(0,0,0) tex=4 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(1,1,0.7,1) rp0=(0,2.7,0.17) rp1=(0,0,0) hp0=(18,-3,-35) hp1=(20,8,-1) alpha=0.4 spin=-1 tin=0.5 tout=0.5 dur=4.5 rot=(0,0,0) irot=(0,0,0) tex=5 seg=16
+  0.000  spe         pos=(4,0,0) color=(0.3,0.3,0.2,1) r=0.6 n=40 scale=0.2 i0=(0,-1.57,1.57) i1=(0,-1.57,1.57) v0=(5,1,5) v1=(5,1,5) s0=(0.063,0.013,0.063) s1=(0.063,0.013,0.063) tin=1 tout=1 dur=5
+  0.050  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.100  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.150  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.200  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.250  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.300  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.350  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.400  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.450  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.500  explosion   pos=(4,0,0) color=(0.75,0.6,0.3,1) r=0.5 n=16 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(2,0.66,2) omni=0 fade=0.5..1 dur=3 srate=0.03 tex=2
+  0.500  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.550  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.600  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.600  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.650  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.700  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.700  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.750  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.800  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.800  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.850  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.900  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.950  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.950  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.000  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.050  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.050  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.100  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.150  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.150  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.200  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.250  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.300  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.300  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.350  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.400  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.400  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.450  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.500  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.500  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.550  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.600  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.650  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.650  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.700  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.750  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.750  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.800  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.850  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.850  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.900  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.950  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  2.000  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  2.000  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+# end: emitters=2 coroutines=1 unhandled=[]

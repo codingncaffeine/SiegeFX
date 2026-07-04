@@ -1,0 +1,11 @@
+# sfx timeline  script=curse  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-3,-1.25,0.5) hp1=(0,0,0) alpha=0.5 spin=1 tin=1 tout=1 dur=4.66 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(3,1.25,-0.5) hp1=(0,0,0) alpha=0.5 spin=1 tin=1 tout=1 dur=4.66 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.08,1) rp0=(1.25,1.25,0) rp1=(1.25,1.25,0) hp0=(-2.5,-0.75,0.5) hp1=(0,0,0) alpha=0.5 spin=-2 tin=1 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.08,1) rp0=(1.25,1.25,0) rp1=(1.25,1.25,0) hp0=(2.5,0.75,-0.5) hp1=(0,0,0) alpha=0.5 spin=-2 tin=1 tout=1 dur=3.66 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.16,1) rp0=(1.5,1.5,0) rp1=(1.5,1.5,0) hp0=(-2,-0.25,0.5) hp1=(0,0,0) alpha=0.5 spin=3 tin=1 tout=1 dur=3.33 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.16,1) rp0=(1.5,1.5,0) rp1=(1.5,1.5,0) hp0=(2,0.25,-0.5) hp1=(0,0,0) alpha=0.5 spin=3 tin=1 tout=1 dur=3 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
+  0.500  cylinder    pos=(4,0,0) color=(0.6,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-3,-1.25,0.5) hp1=(0,0,0) alpha=0.5 spin=4 tin=1 tout=1 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=8 seg=6
+  0.500  cylinder    pos=(4,0,0) color=(0.6,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(3,1.25,-0.5) hp1=(0,0,0) alpha=0.5 spin=4 tin=1 tout=1 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=8 seg=6
+# end: emitters=0 coroutines=0 unhandled=[]

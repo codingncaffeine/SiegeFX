@@ -1,0 +1,21 @@
+# sfx timeline  script=lava_spirit_fire  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.050  fire~       pos=(1.073,0.949,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.050  fire~       pos=(1.073,0.949,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.100  fire~       pos=(1.858,0.695,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.100  fire~       pos=(1.858,0.695,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.150  fire~       pos=(2.654,0.436,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.150  fire~       pos=(2.654,0.436,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.200  fire~       pos=(3.463,0.174,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.200  fire~       pos=(3.463,0.174,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=1
+  0.250  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=2
+  0.250  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,2,0) accel=(0,0,0) flame=6 ring=0..11 ydisp=0..0 line=0 n=2
+  0.350  explosion   pos=(4,-0.2,0) color=(1,0.3,0.1,1) r=0.5 n=16 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.350  explosion   pos=(4,-0.2,0) color=(1,0.3,0.1,1) r=1 n=16 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.350  explosion   pos=(4,-0.2,0) color=(1,0.3,0.1,1) r=0.5 n=16 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.350  explosion   pos=(4,-0.2,0) color=(1,0.3,0.1,1) r=1 n=16 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.450  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1
+  0.450  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1
+  0.550  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1
+  0.550  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1
+# end: emitters=0 coroutines=0 unhandled=[]

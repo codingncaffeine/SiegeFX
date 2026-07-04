@@ -1,0 +1,7 @@
+# sfx timeline  script=earth_stomp  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  explosion   pos=(0,0.1,0) color=(0.3,0.3,0.3,0.55) r=0.5 n=60 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(14,4,14) omni=0 fade=0.5..1 dur=4 srate=0 tex=2
+  0.000  cylinder    pos=(0,0,0) color=(0.3,0.3,0.25,1) rp0=(1,12,21) rp1=(3,16,21) hp0=(2,6,8) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
+  0.000  cylinder    pos=(0,0,0) color=(0.3,0.3,0.25,1) rp0=(1,12,14) rp1=(3,16,14) hp0=(2,6,8) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
+  0.000  cylinder    pos=(0,0,0) color=(0.3,0.3,0.25,1) rp0=(1,12,7) rp1=(3,16,7) hp0=(2,6,8) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.2 tout=0.5 dur=0.5 rot=(0,0,0) irot=(0,0,0) tex=11 seg=22
+# end: emitters=0 coroutines=1 unhandled=[]
