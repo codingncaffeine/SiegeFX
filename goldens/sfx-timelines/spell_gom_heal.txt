@@ -3,12 +3,12 @@
   0.000  charge      pos=(0,2,0) color=(1,0.5,0.25,1) r=1 n=32 tout=1 speed0=1 center=0.75 ialpha=4 dur=2.1
   0.000  cylinder    pos=(0,0,0) color=(1,0.5,0.25,1) rp0=(0.4,0.4,0) rp1=(0.4,0.4,0) hp0=(20,-6,-50) hp1=(30,-3,-50) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
   0.000  cylinder    pos=(0,0,0) color=(1,0.5,0.25,1) rp0=(0.4,0.4,0) rp1=(0.4,0.4,0) hp0=(40,0,-50) hp1=(30,-3,-50) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
-  0.100  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.100  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.150  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.100  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.100  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.150  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.150  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.150  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.200  glow~       pos=(4.191,1.684,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.200  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.200  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.200  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.200  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
@@ -22,14 +22,14 @@
   0.400  cylinder    pos=(0,0,0) color=(1,0.6,0.3,1) rp0=(0.5,0.5,0) rp1=(0.5,0.5,0) hp0=(20,-6,-60) hp1=(30,-3,-60) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
   0.400  cylinder    pos=(4,0.05,0) color=(1,0.5,0.25,1) rp0=(0.75,6.75,8) rp1=(0.75,6.75,8) hp0=(0.1,0.1,0) hp1=(-0.1,-0.1,0) alpha=0.5 spin=15 tin=0.1 tout=2 dur=0.66 rot=(0,0,0) irot=(0,0,0) tex=11 seg=14
   0.400  cylinder    pos=(4,0.05,0) color=(1,0.5,0.25,1) rp0=(0,5,7) rp1=(0.75,6.75,8) hp0=(0,0,0) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.1 tout=2 dur=0.66 rot=(0,0,0) irot=(0,0,0) tex=11 seg=14
-  0.400  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.400  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.400  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.450  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.450  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.450  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.500  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.500  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.500  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.500  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.550  glow~       pos=(4.191,1.684,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.550  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.550  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.550  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.600  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
@@ -38,18 +38,18 @@
   0.650  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.650  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.700  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.750  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.750  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.750  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.800  cylinder    pos=(0,0,0) color=(1,0.65,0.35,1) rp0=(0.6,0.6,0) rp1=(0.6,0.6,0) hp0=(40,0,-70) hp1=(30,-3,-70) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
   0.800  cylinder    pos=(0,0,0) color=(1,0.65,0.35,1) rp0=(0.6,0.6,0) rp1=(0.6,0.6,0) hp0=(20,-6,-70) hp1=(30,-3,-70) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
   0.800  cylinder    pos=(4,0.05,0) color=(1,0.6,0.3,1) rp0=(0.75,6.75,8) rp1=(0.75,6.75,8) hp0=(0.1,0.1,0) hp1=(-0.1,-0.1,0) alpha=0.5 spin=15 tin=0.1 tout=2 dur=0.66 rot=(0,0,0) irot=(0,0,0) tex=11 seg=14
   0.800  cylinder    pos=(4,0.05,0) color=(1,0.6,0.3,1) rp0=(0,5,7) rp1=(0.75,6.75,8) hp0=(0,0,0) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.1 tout=2 dur=0.66 rot=(0,0,0) irot=(0,0,0) tex=11 seg=14
-  0.800  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.800  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.800  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.850  glow~       pos=(4.191,1.684,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.850  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.850  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.850  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  0.900  glow~       pos=(4.233,1.648,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  0.900  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.900  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.900  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   0.950  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
@@ -57,15 +57,15 @@
   0.950  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.000  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.000  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.050  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.050  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.050  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.100  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.100  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.100  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.100  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.150  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.150  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.150  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.150  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.200  glow~       pos=(4.191,1.684,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.200  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.200  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.200  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.250  cylinder    pos=(0,0,0) color=(1,0.7,0.4,1) rp0=(0.7,0.7,0) rp1=(0.7,0.7,0) hp0=(40,0,-80) hp1=(30,-3,-80) alpha=0.35 spin=5 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=4 seg=10
@@ -75,17 +75,17 @@
   1.250  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.250  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.250  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.300  glow~       pos=(4.099,1.733,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.300  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.300  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.300  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.350  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.350  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.350  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.350  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.400  glow~       pos=(4.146,1.713,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.400  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.400  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.400  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.400  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
-  1.450  glow~       pos=(4.191,1.684,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
+  1.450  glow~       pos=(4,0.688,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.450  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.450  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1
   1.500  glow~       pos=(4,0,0) color=(1,0.5,0.25,1) scale=1 rate=15 n=1

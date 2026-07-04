@@ -1,35 +1,35 @@
 # sfx timeline  script=hold_creature  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.500  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  0.500  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   0.500  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  0.600  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  0.600  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   0.600  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  0.700  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  0.700  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   0.700  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  0.800  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  0.800  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   0.800  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  0.900  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  0.900  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   0.900  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.000  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.000  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.000  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.100  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.100  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.100  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.200  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.200  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.200  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.300  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.300  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.300  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.400  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.400  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.400  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.500  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.500  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.500  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.600  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.600  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.600  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.700  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.700  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.700  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.800  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.800  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.800  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  1.900  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  1.900  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   1.900  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
-  2.000  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0.5 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
+  2.000  cylinder    pos=(4,0,0) color=(0.34,0.34,0.34,0.55) rp0=(0.1,0.1,3) rp1=(0.1,0.1,3) hp0=(0,4,10) hp1=(0,0,0) alpha=1 spin=0 tin=0 tout=1 dur=4 rot=(0,0,0) irot=(0,0,0) tex=11 seg=8
   2.000  explosion   pos=(4,0,0) color=(0.315,0.315,0.315,0.55) r=0.5 n=5 scale=0.2..0.4 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0..1 dur=0.35 srate=0 tex=2
 # end: emitters=0 coroutines=1 unhandled=[]

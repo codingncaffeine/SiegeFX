@@ -1,8 +1,10 @@
 # sfx timeline  script=gom_turret_fire  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.150  explosion   pos=(4,-0.2,0) color=(0.95,0.3,0.1,1) r=0.5 n=12 scale=0.2..0.7 v=6..12 ivel=(0,0,0) rvel=(3,1,3) omni=0 fade=1..1.5 dur=1.2 srate=0 tex=2
-  0.150  explosion   pos=(4,-0.2,0) color=(0.95,0.3,0.1,1) r=0.5 n=12 scale=0.2..0.7 v=6..12 ivel=(0,0,0) rvel=(3,1,3) omni=0 fade=1..1.5 dur=1.2 srate=0 tex=2
-  0.200  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
-  0.300  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
-  0.350  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
+  0.400  fire~       pos=(0,1.6,0) color=(1,0.2,0.1,1) scale=0.3 rate=60 n=3
+  0.450  fire~       pos=(0.3,2.2,0) color=(1,0.2,0.1,1) scale=0.3 rate=60 n=3
+  0.550  explosion   pos=(4,-0.2,0) color=(0.95,0.3,0.1,1) r=0.005 n=12 scale=0.2..0.7 v=6..12 ivel=(0,0,0) rvel=(3,1,3) omni=0 fade=1..1.5 dur=1.2 srate=0 tex=2
+  0.550  explosion   pos=(4,-0.2,0) color=(0.95,0.3,0.1,1) r=0.005 n=12 scale=0.2..0.7 v=6..12 ivel=(0,0,0) rvel=(3,1,3) omni=0 fade=1..1.5 dur=1.2 srate=0 tex=2
+  0.600  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
+  0.700  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
+  0.750  fire~       pos=(4,0,0) color=(1,0.3,0.1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..2.5 ydisp=0..1 line=0 n=1
 # end: emitters=0 coroutines=0 unhandled=[]

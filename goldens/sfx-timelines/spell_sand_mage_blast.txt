@@ -1,37 +1,37 @@
 # sfx timeline  script=sand_mage_blast  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.400  lightning   src=(4.1,0.995,0) tgt=(0,0,0) color=(1,0.5,0.2,1) dur=0.4 displace=0..0 subd=1 minsubd=1
-  0.400  explosion   pos=(4,0,0) color=(1,0.5,0.2,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=2..2 dur=0.35 srate=0 tex=1
-  0.400  fire~       pos=(4.199,0.98,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.400  fire~       pos=(4.199,0.98,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.450  fire~       pos=(4.296,0.955,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.450  fire~       pos=(4.296,0.955,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.500  fire~       pos=(4.389,0.921,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.500  fire~       pos=(4.389,0.921,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.550  fire~       pos=(4.479,0.878,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.550  fire~       pos=(4.479,0.878,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.600  fire~       pos=(4.565,0.825,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.600  fire~       pos=(4.565,0.825,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.650  fire~       pos=(4.644,0.765,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.650  fire~       pos=(4.644,0.765,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.700  fire~       pos=(4.717,0.697,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.700  fire~       pos=(4.717,0.697,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
-  0.750  fire~       pos=(4.783,0.622,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=3
-  0.800  fire~       pos=(4.841,0.54,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.850  fire~       pos=(4.891,0.454,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.900  fire~       pos=(4.932,0.362,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  0.950  fire~       pos=(4.964,0.267,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  1.000  fire~       pos=(4.985,0.17,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
-  1.050  fire~       pos=(4.997,0.071,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.400  lightning   src=(4,0,0) tgt=(0,0,0) color=(1,0.5,0.2,1) dur=0.4 displace=0..0 subd=1 minsubd=1
+  0.400  explosion   pos=(4,0,0) color=(1,0.5,0.2,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=2..2 dur=0.35 srate=0 tex=1
+  0.400  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.400  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.450  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.450  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.500  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.500  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.550  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.550  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.600  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.600  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.650  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.650  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.700  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.700  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,-20,0) flame=2 ring=0..0.1 ydisp=0..0 line=1 n=2
+  0.750  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=3
+  0.800  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.850  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.900  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  0.950  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  1.000  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  1.050  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
   1.100  plume!      pos=(4,0,0) kind=0 n=96 (instant fill)
   1.100  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
-  1.100  fire~       pos=(5,-0.029,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  1.100  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
   1.150  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
-  1.150  fire~       pos=(4.992,-0.129,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=3
+  1.150  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=3
   1.200  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
-  1.200  fire~       pos=(4.974,-0.227,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  1.200  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
   1.250  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
-  1.250  fire~       pos=(4.946,-0.323,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
+  1.250  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=2 ring=0..1.75 ydisp=0..0 line=1 n=2
   1.300  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
   1.350  fire~       pos=(4,0,0) color=(1,0.5,0.2,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..7 ydisp=0..0 line=0 n=3
 # end: emitters=0 coroutines=0 unhandled=[]

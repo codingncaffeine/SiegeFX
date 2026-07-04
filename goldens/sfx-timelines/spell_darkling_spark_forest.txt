@@ -13,8 +13,8 @@
   0.550  fire~       pos=(3.298,0.184,0.05) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3
   0.600  fire~       pos=(3.608,0.089,0.034) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3
   0.650  fire~       pos=(4,0,0) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3
-  0.700  flurry      pos=(4,0,0) color=(0.6,1,0.6,1) r=1 n=20 iphi=1 itheta=1 iamp=1 amp=1 grow=1/1/1 tin=1 tout=1 dur=0.5 tex=2
-  0.700  explosion   pos=(4,0,0) color=(0.6,1,0.6,1) r=0.5 n=32 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=2 srate=0 tex=2
+  0.700  flurry      pos=(4,0,0) color=(0.6,1,0.6,1) r=1 n=20 iphi=1 itheta=1 iamp=1 amp=1 grow=0/1/0 tin=0 tout=0 dur=0.5 tex=2
+  0.700  explosion   pos=(4,0,0) color=(0.6,1,0.6,1) r=0.005 n=32 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=2 srate=0 tex=2
   0.700  fire~       pos=(4,0,0) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3
   0.750  fire~       pos=(4,0,0) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3
   0.800  fire~       pos=(4,0,0) color=(0.6,1,0.6,1) scale=1.28 rate=60 n=3

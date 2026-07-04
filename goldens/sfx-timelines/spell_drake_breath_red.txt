@@ -3,4 +3,7 @@
   0.000  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,-45,-70) accel=(0,0,50) life=0.5 disp=0.5 r=0..30 n=96 flame=1
   0.000  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,-45,-70) accel=(0,0,50) life=0.5 disp=0.5 r=0..30 n=96 flame=2
   0.000  fireb       pos=(0,0,0) color=(1,0.65,0.4,1) vel=(0,-45,-70) accel=(0,0,50) life=0.5 disp=0.5 r=0..30 n=96 flame=1
+  0.000  sphere      pos=(0,-0.433,-0.673) color=(1,0.75,0.35,0.9) r=8 dur=0.3 n=6
+  0.000  sphere      pos=(0,-0.865,-1.346) color=(1,0.75,0.35,0.9) r=8 dur=0.3 n=6
+  0.000  sphere      pos=(0,-1.298,-2.019) color=(1,0.75,0.35,0.9) r=8 dur=0.3 n=6
 # end: emitters=0 coroutines=0 unhandled=[]

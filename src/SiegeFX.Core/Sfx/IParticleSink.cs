@@ -26,6 +26,12 @@ public struct ExplosionSpec
     public float   ScaleMax;     // scale_range end   (doc default 0.7)
     public float   VMin;         // min velocity scalar (doc default 3.0)
     public float   VMax;         // max velocity scalar (doc default 6.5)
+    public System.Numerics.Vector4 ColorVar;   // color1 - per-particle variance (doc)
+    public bool    HasColorVar;
+    public float   Rebound;      // bounce elasticity (doc default 0.85)
+    public bool    Bounce;       // collide()/splat-adjacent ground interaction
+    public bool    Splat;        // particles stick where they land
+    public float   GroundY;      // spawn-plane height for bounce/splat
     public System.Numerics.Vector3 IVel;  // initial velocity vector
     public System.Numerics.Vector3 RVel;  // random velocity vector (doc default .25,.25,.25)
     public bool    OmniDir;      // omni_dir()
@@ -214,6 +220,14 @@ public struct PlumeSpec
     public bool    Line;         // spawn along Anchor→LineEnd
     public System.Numerics.Vector3 LineEnd;
     public byte    TexSlot;
+    // Phase 23-fold — line-position animation (gom_icesnake: the fire
+    // spawns at a point that walks the line at linespeed from linepos)
+    // and the burn_body sine radius wobble.
+    public float   LinePos;      // 0..1 start point on the line
+    public float   LineSpeed;    // per-second advance
+    public bool    HasLineAnim;
+    public float   SinPos, SinSpeed, RadiusRMax;
+    public bool    HasSinAnim;
 }
 
 /// <summary>Phase 17-SC-F-2 — particle backend abstraction. The shipped
@@ -263,7 +277,7 @@ public interface IParticleSink
     /// model: spawn rate = Count / life where life derives from
     /// AlphaFade. Returns the leftover budget like the legacy
     /// Maintain* trio.</summary>
-    float MaintainPlume(in PlumeSpec spec, Vector3 position, float dt, float carry);
+    float MaintainPlume(in PlumeSpec spec, Vector3 position, float age, float dt, float carry);
 
     /// <summary>Phase 23d-2c — instant() volume fill: burst n plume
     /// particles at once at spawn time.</summary>
@@ -283,6 +297,13 @@ public interface IParticleSink
 
     /// <summary>Phase 23d-2e — textureless tessellated translucent sphere.</summary>
     void SpawnSphereMesh(in SphereMeshSpec spec);
+
+    /// <summary>Phase 23-fold — SU-212 LineTracer: a textureless tracer
+    /// ribbon between two points that fades at fade_rate.</summary>
+    void SpawnLineTracer(Vector3 source, Vector3 target,
+                         Vector4 color0, Vector4 color1,
+                         float fadeRate, float tin, float tout);
+
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and

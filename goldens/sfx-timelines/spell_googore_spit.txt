@@ -1,25 +1,25 @@
 # sfx timeline  script=googore_spit  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.100  smoke~      pos=(0.544,1.121,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=3
-  0.100  smoke~      pos=(0.241,1.7,-0.091) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
-  0.100  smoke~      pos=(0.567,0.594,0.286) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
+  0.100  smoke~      pos=(4,0,0) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
+  0.100  smoke~      pos=(4,0,0) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
   0.150  smoke~      pos=(0.793,1.04,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=4
-  0.150  smoke~      pos=(0.404,1.397,-0.396) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
-  0.150  smoke~      pos=(0.588,0.715,0.461) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.150  smoke~      pos=(0.49,1.619,-0.091) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.150  smoke~      pos=(0.817,0.513,0.286) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
   0.200  smoke~      pos=(1.049,0.957,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=3
-  0.200  smoke~      pos=(0.868,1.004,-0.633) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
-  0.200  smoke~      pos=(0.573,0.914,0.363) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.200  smoke~      pos=(0.659,1.314,-0.396) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.200  smoke~      pos=(0.844,0.632,0.461) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
   0.250  smoke~      pos=(1.311,0.872,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=4
-  0.250  smoke~      pos=(1.443,0.598,-0.585) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
-  0.250  smoke~      pos=(0.771,1.121,0.083) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.250  smoke~      pos=(1.13,0.919,-0.633) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.250  smoke~      pos=(0.835,0.829,0.363) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
   0.300  smoke~      pos=(1.578,0.785,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=4
-  0.300  smoke~      pos=(1.839,0.257,-0.296) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
-  0.300  smoke~      pos=(1.24,1.266,-0.123) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.300  smoke~      pos=(1.71,0.511,-0.585) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
+  0.300  smoke~      pos=(1.039,1.034,0.083) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=2
   0.350  smoke~      pos=(1.852,0.697,0) color=(0.33,0.33,0.33,0.55) vel=(0,2,0) accel=(0,0,0) flame=0.66 ring=0..6 ydisp=0..0 line=0 n=3
-  0.350  smoke~      pos=(1.939,0.043,-0.032) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
-  0.350  smoke~      pos=(1.795,1.291,-0.064) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
-  0.750  explosion   pos=(4,-0.2,0) color=(0.66,1,0.2,1) r=0.5 n=20 scale=0.2..0.7 v=5..5 ivel=(0,-0.5,0) rvel=(1,0,1) omni=1 fade=0.5..1 dur=1.2 srate=0 tex=2
-  0.750  explosion   pos=(4,-0.2,0) color=(0.3,1,0.1,1) r=0.5 n=20 scale=0.2..0.7 v=5..5 ivel=(0,-0.5,0) rvel=(1,0,1) omni=1 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.350  smoke~      pos=(2.113,0.168,-0.296) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
+  0.350  smoke~      pos=(1.513,1.177,-0.123) color=(0.66,1,0.2,1) vel=(0,2,0) accel=(0,0,0) flame=0.2 ring=0..1.5 ydisp=0..0 line=0 n=1
+  0.750  explosion   pos=(4,-0.2,0) color=(0.66,1,0.2,1) r=0.005 n=20 scale=0.2..0.7 v=5..5 ivel=(0,-0.5,0) rvel=(1,0,1) omni=1 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.750  explosion   pos=(4,-0.2,0) color=(0.3,1,0.1,1) r=0.005 n=20 scale=0.2..0.7 v=5..5 ivel=(0,-0.5,0) rvel=(1,0,1) omni=1 fade=0.5..1 dur=1.2 srate=0 tex=2
   0.750  explosion   pos=(4,0,0) color=(0.3,0.3,0.3,0.55) r=0.5 n=20 scale=0.8..0.9 v=1..3 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..0 dur=0.33 srate=0 tex=2
   0.750  smoke~      pos=(4,-0.33,0) color=(0.35,0.8,0.1,1) vel=(0,5,0) accel=(0,5,0) flame=2 ring=0..6 ydisp=-1..1 line=0 n=1
   0.800  smoke~      pos=(4,-0.33,0) color=(0.35,0.8,0.1,1) vel=(0,5,0) accel=(0,5,0) flame=2 ring=0..6 ydisp=-1..1 line=0 n=2

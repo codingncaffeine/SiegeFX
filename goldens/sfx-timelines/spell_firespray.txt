@@ -180,11 +180,11 @@
   0.750  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..2 ydisp=-1..1 line=0 n=1
   0.750  fire~       pos=(4,0,0) color=(0.33,0.22,0.11,1) scale=0.3 rate=60 n=3
   0.750  fire~       pos=(4,0,0) color=(1,0.8,0.6,1) vel=(0,2,0) accel=(0,0,0) flame=0.438 ring=0..2 ydisp=-1..1 line=0 n=1
-  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
-  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
-  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
-  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
-  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.5 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
+  0.800  explosion   pos=(4,0,0) color=(1,0.6,0.3,1) r=0.005 n=32 scale=0.2..0.7 v=3..5 ivel=(0,0.25,0) rvel=(0.25,0.25,0.25) omni=1 fade=0..1 dur=0.35 srate=0 tex=2
   0.800  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   0.800  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4
   0.800  glow~       pos=(4,0,0) color=(0.75,0.6,0,1) scale=1.5 rate=80 n=4

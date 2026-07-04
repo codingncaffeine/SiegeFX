@@ -29,6 +29,12 @@ public struct Particle
     /// linear Color0→Color1 lerp).</summary>
     public float   FadeStart;
     public float   FadeEnd;
+    /// <summary>Phase 23-fold — explosion ground interaction: particles
+    /// bounce off the spawn plane with <see cref="Rebound"/> elasticity
+    /// (doc default 0.85); splat() sticks them where they land instead.</summary>
+    public byte    Bounce;     // 0=off, 1=bounce, 2=splat-stick
+    public float   Rebound;
+    public float   GroundY;
 }
 
 /// <summary>One world-space lightning bolt segment. Drawn as N small alpha
@@ -673,6 +679,35 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _srayEmits.Add((spec, 1f /* spawn the first ray immediately */, 0, 0f));
     }
 
+    /// <summary>Phase 23-fold — SU-212 LineTracer as a pinned, fading
+    /// tracer ribbon from source to target (reuses the ray pipeline with
+    /// zero spin and the authored fade_rate).</summary>
+    public void SpawnLineTracer(Vector3 source, Vector3 target,
+                                Vector4 color0, Vector4 color1,
+                                float fadeRate, float tin, float tout)
+    {
+        var dir = target - source;
+        float len = dir.Length();
+        if (len < 0.01f) return;
+        dir /= len;
+        _srayRays.Add(new SrayRay
+        {
+            Anchor     = source,
+            Color0     = color0,
+            Color1     = color1,
+            Theta      = MathF.Atan2(dir.Z, dir.X),
+            Phi        = MathF.Acos(Math.Clamp(dir.Y, -1f, 1f)),
+            ThetaRate  = 0f,
+            PhiRate    = 0f,
+            Radius     = 0f,
+            Length     = len,
+            WidthStart = 0.035f,
+            WidthEnd   = 0.02f,
+            Alpha      = 1f,
+            FadeRate   = MathF.Max(0.05f, fadeRate),
+        });
+    }
+
     void EmitOneRay(in SraySpec spec)
     {
         _srayRays.Add(new SrayRay
@@ -874,17 +909,28 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
             float sc = Rand(MathF.Min(spec.ScaleMin, spec.ScaleMax),
                             MathF.Max(spec.ScaleMin, spec.ScaleMax));
+            // Phase 23-fold — doc color1 is per-particle VARIANCE: each
+            // particle tints color0 + variance*rand.
+            var pc = spec.Color;
+            if (spec.HasColorVar)
+            {
+                float vr = Rand(0f, 1f);
+                pc = new Vector4(
+                    Math.Clamp(pc.X + spec.ColorVar.X * vr, 0f, 1f),
+                    Math.Clamp(pc.Y + spec.ColorVar.Y * vr, 0f, 1f),
+                    Math.Clamp(pc.Z + spec.ColorVar.Z * vr, 0f, 1f),
+                    pc.W);
+            }
             _particles.Add(new Particle
             {
                 Position  = pos,
                 Velocity  = vel,
-                // Doc: particles "fade out and bounce off the ground" —
-                // gravity pulls them down; terrain bounce lands with the
-                // collide() pass once the particle system can see the nav
-                // mesh (in-game hook, not the harness).
                 Accel     = new Vector3(0f, -3.5f, 0f),
-                Color0    = spec.Color,
-                Color1    = new Vector4(spec.Color.X, spec.Color.Y, spec.Color.Z, 0f),
+                Bounce    = (byte)(spec.Splat ? 2 : spec.Bounce ? 1 : 0),
+                Rebound   = spec.Rebound,
+                GroundY   = spec.GroundY,
+                Color0    = pc,
+                Color1    = new Vector4(pc.X, pc.Y, pc.Z, 0f),
                 Scale0    = sc,
                 Scale1    = sc,
                 Life      = spec.Duration,
@@ -1050,13 +1096,13 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// steam). Population model: DS1's count is a live-particle cap and
     /// alphafade sets the fade-out speed, so steady-state spawn rate =
     /// count / life with life ≈ 1/alphafade.</summary>
-    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, float dt, float carry)
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, float age, float dt, float carry)
     {
         float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
         float rate = MathF.Max(1f, s.Count / life);
         float budget = carry + rate * dt;
         int n = (int)budget;
-        if (n > 0) BurstPlume(in s, position, n);
+        if (n > 0) BurstPlume(in s, position, n, age);
         return budget - n;
     }
 
@@ -1066,17 +1112,38 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// anchor→LineEnd segment for line() fires), plus the random Y
     /// displacement range; velocity/accel/flamesize/fctrl as authored.</summary>
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, int n)
+        => BurstPlume(in s, position, n, age: 0f);
+
+    public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, int n, float age)
     {
         float lifeBase = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
+        // Phase 23-fold - burn_body sine wobble: max_radius grows by
+        // sin(sinpos + sinspeed*age) toward radius_rmax.
+        float maxR = s.MaxRadius;
+        if (s.HasSinAnim)
+        {
+            float cap = s.RadiusRMax > 0f ? s.RadiusRMax : s.MaxRadius + 1f;
+            maxR = Math.Clamp(s.MaxRadius
+                + MathF.Sin(s.SinPos + s.SinSpeed * age) * MathF.Max(0f, cap - s.MaxRadius),
+                s.MinRadius, cap);
+        }
         for (int i = 0; i < n; i++)
         {
             Vector3 pos;
             if (s.Line)
-                pos = Vector3.Lerp(position, s.LineEnd, Rand(0f, 1f));
+            {
+                // Phase 23-fold - gom_icesnake: the spawn point WALKS the
+                // line at linespeed from linepos instead of scattering.
+                float t01 = s.HasLineAnim
+                    ? (s.LinePos + s.LineSpeed * age) % 1f
+                    : Rand(0f, 1f);
+                if (t01 < 0f) t01 += 1f;
+                pos = Vector3.Lerp(position, s.LineEnd, t01);
+            }
             else
             {
                 float ang = Rand(0f, MathF.Tau);
-                float r = Rand(MathF.Min(s.MinRadius, s.MaxRadius), MathF.Max(s.MinRadius, s.MaxRadius));
+                float r = Rand(MathF.Min(s.MinRadius, maxR), MathF.Max(s.MinRadius, maxR));
                 pos = position + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
             }
             pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
@@ -1185,6 +1252,14 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (p.Life <= 0f) { _particles.RemoveAt(i); continue; }
             p.Velocity += p.Accel * dt;
             p.Position += p.Velocity * dt;
+            // Phase 23-fold — ground plane interaction for explosion
+            // particles: bounce with rebound elasticity, or splat-stick.
+            if (p.Bounce != 0 && p.Position.Y < p.GroundY && p.Velocity.Y < 0f)
+            {
+                p.Position.Y = p.GroundY;
+                if (p.Bounce == 2) { p.Velocity = Vector3.Zero; p.Accel = Vector3.Zero; }
+                else p.Velocity = new Vector3(p.Velocity.X * 0.8f, -p.Velocity.Y * p.Rebound, p.Velocity.Z * 0.8f);
+            }
             _particles[i] = p;
         }
         for (int i = _bolts.Count - 1; i >= 0; i--)

@@ -30,7 +30,9 @@ public sealed class TankWriter
     {
         if (string.IsNullOrEmpty(path) || path[0] != '/')
             throw new ArgumentException($"Tank paths must start with '/': '{path}'");
-        _files[path.Replace('\\', '/')] = bytes;
+        // Phase 23-fold F5 — GPG requires lowercase resource paths
+        // (retail asserts on mixed case).
+        _files[path.Replace('\\', '/').ToLowerInvariant()] = bytes;
     }
 
     public int FileCount => _files.Count;
@@ -119,9 +121,14 @@ public sealed class TankWriter
         // wide chars), then the description WNSTRING.
         int wnDescSize; { int raw = 2 + Description.Length * 2; wnDescSize = raw + (4 - (raw % 4)); }
         uint headerSize    = (uint)(784 + wnDescSize);
-        uint dirSetOffset  = headerSize;
+        // Phase 23-fold F5 — retail tank layout is header → DATA → index
+        // at EOF (verified byte-level on retail Logic.dsres: DataOffset
+        // sits immediately after the header and IndexSize == fileSize −
+        // DirSetOffset). A front-index tank risks rejection by mappers
+        // that locate the index from EOF.
+        uint dataOffset    = headerSize;
+        uint dirSetOffset  = dataOffset + dataCursor;
         uint fileSetOffset = dirSetOffset + dirSetSize;
-        uint dataOffset    = fileSetOffset + fileSetSize;
 
         // Child offsets for files are DirSet-relative: FileSet follows the
         // DirSet, so a file entry's dirset-relative address is
@@ -185,6 +192,17 @@ public sealed class TankWriter
         if (fs.Position != headerSize)
             throw new TankException($"Header layout drift: wrote {fs.Position}, expected {headerSize}");
 
+        // Data (retail order: data precedes the index).
+        for (int i = 0; i < fileList.Count; i++)
+        {
+            var bytes = fileList[i].Bytes;
+            w.Write(bytes);
+            int pad = (int)(((bytes.Length + 3) & ~3) - bytes.Length);
+            for (int p = 0; p < pad; p++) w.Write((byte)0);
+        }
+        if (fs.Position != dirSetOffset)
+            throw new TankException("Data layout drift");
+
         // DirSet.
         w.Write((uint)dirs.Count);
         foreach (var d in dirs) w.Write(d.EntryOffset);
@@ -194,9 +212,11 @@ public sealed class TankWriter
             var children = new List<(string Name, uint Offset)>();
             foreach (var sub in d.Dirs.Values) children.Add((sub.Name, sub.EntryOffset));
             foreach (var f in d.Files.Keys) children.Add((f, FileChildOffset(fileIndexByRef[(d, f)])));
-            children.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            children.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name)); // byte order per retail
             w.Write((uint)children.Count);
-            w.Write(ftLow); w.Write(ftHigh);
+            // Root dir carries FILETIME 0 in retail tanks.
+            if (d.Parent is null) { w.Write(0u); w.Write(0u); }
+            else { w.Write(ftLow); w.Write(ftHigh); }
             WriteNString(d.Parent is null ? "" : d.Name);
             foreach (var (_, off) in children) w.Write(off);
         }
@@ -218,17 +238,8 @@ public sealed class TankWriter
             w.Write((ushort)TankFileFlags.None);
             WriteNString(name);
         }
-        if (fs.Position != dataOffset)
+        if (fs.Position != fileSetOffset + fileSetSize)
             throw new TankException("FileSet layout drift");
-
-        // Data.
-        for (int i = 0; i < fileList.Count; i++)
-        {
-            var bytes = fileList[i].Bytes;
-            w.Write(bytes);
-            int pad = (int)(((bytes.Length + 3) & ~3) - bytes.Length);
-            for (int p = 0; p < pad; p++) w.Write((byte)0);
-        }
     }
 
 }

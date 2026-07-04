@@ -1,6 +1,5 @@
 # sfx timeline  script=mana_chant  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  explosion   pos=(4,0,0) color=(1,0.9,0.5,1) r=0.5 n=32 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=0 fade=0.5..1 dur=0.35 srate=0 tex=2
   0.000  charge      pos=(4,0,0) color=(0.2,0.2,1,1) r=2 n=30 tout=0.5 speed0=1 center=0.5 ialpha=4 dur=3
   0.000  charge      pos=(4,0,0) color=(0.2,0.2,1,1) r=2 n=10 tout=1 speed0=1 center=0.75 ialpha=4 dur=0.35
-# end: emitters=0 coroutines=0 unhandled=[exit]
+# end: emitters=0 coroutines=0 unhandled=[]

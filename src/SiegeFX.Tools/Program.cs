@@ -6422,9 +6422,11 @@ static int CmdCaptureKitBuild(string[] a)
     int fbEnd = heroesText.IndexOf("[t:template,", fbStart + 10, StringComparison.OrdinalIgnoreCase);
     if (fbEnd < 0) fbEnd = heroesText.Length;
 
-    // Phase 24a — the kit injects the PLAYER-acquirable roster (combat +
-    // nature schools incl. summons/scrolls); the monster arsenal stays
-    // out — retail DS1 won't slot it into a player spellbook.
+    // Phase 24a / 23-fold F8 — the kit injects the player-acquirable
+    // roster; the cast order maps onto the SiegeFX side by NAME (see
+    // goldens/sfx-filmstrips/_contact_sheet_index.txt), since the full
+    // contact sheet also carries monster-arsenal rows the player can't
+    // cast.
     var roster = spells.All
         .Where(s => s.PlayerAcquirable)
         .OrderBy(s => s.Name, StringComparer.Ordinal)
@@ -6497,8 +6499,8 @@ static int CmdCaptureKitBuild(string[] a)
         "2. Start a NEW single-player game with the farmboy hero.",
         "3. Your inventory contains every spell; casting skills are pre-raised.",
         "4. Start recording. Cast each spell 2-3 times at a nearby target or",
-        "   open ground, IN THE ORDER BELOW (matches SiegeFX's filmstrips),",
-        "   pausing ~2s between spells.",
+        "   open ground, IN THE ORDER BELOW, pausing ~2s between spells.",
+        "   (Match to SiegeFX strips by NAME via _contact_sheet_index.txt.)",
         "5. Stop recording, delete zz_spelltest.dsres, and share the video.",
         "",
         "Cast order:",
@@ -6509,7 +6511,7 @@ static int CmdCaptureKitBuild(string[] a)
 
     Console.WriteLine($"capture kit written to {outDir}:");
     Console.WriteLine($"  zz_spelltest.dsres       ({new FileInfo(tankOut).Length} bytes, {roster.Count} spells injected)");
-    Console.WriteLine("  capture_call_sheet.txt   (cast order = SiegeFX filmstrip order)");
+    Console.WriteLine("  capture_call_sheet.txt   (match rows by name via _contact_sheet_index.txt)");
     return 0;
 }
 
@@ -8660,7 +8662,7 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
         if (n > 0) Add($"{kind,-11} pos={V3(p)} color={V4(c)} scale={F(scale)} rate={F(rate)} n={n}");
         return budget - n;
     }
-    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float dt, float carry)
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float age, float dt, float carry)
     {
         float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
         float rate = MathF.Max(1f, s.Count / life);
@@ -8675,6 +8677,8 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n)
         => Add($"plume!      pos={V3(p)} kind={s.Kind} n={n} (instant fill)");
+    public void SpawnLineTracer(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c0, System.Numerics.Vector4 c1, float fadeRate, float tin, float tout)
+        => Add($"linetracer  src={V3(s)} tgt={V3(t)} c0={V4(c0)} c1={V4(c1)} fade={F(fadeRate)} tin={F(tin)} tout={F(tout)}");
     public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e)
         => Add($"spe         pos={V3(e.Anchor)} color={V4(e.Color)} r={F(e.Radius)} n={e.Count} scale={F(e.Scale)} i0={V3(e.Index0)} i1={V3(e.Index1)} v0={V3(e.Speed0)} v1={V3(e.Speed1)} s0={V3(e.Space0)} s1={V3(e.Space1)} tin={F(e.FadeIn)} tout={F(e.FadeOut)} dur={F(e.Duration)}");
     public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e)
@@ -8714,7 +8718,7 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     public void SpawnSrayTimed(in SiegeFX.Core.Sfx.SraySpec e) => SpawnSrayCount++;
     public int SpawnFlurryCount;
     public void SpawnFlurry(in SiegeFX.Core.Sfx.FlurrySpec e) => SpawnFlurryCount += e.Count;
-    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float dt, float carry)
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float age, float dt, float carry)
     {
         MaintainFireCount++;
         float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
@@ -8724,6 +8728,7 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
         return b - k;
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n) => SpawnFireCount += n;
+    public void SpawnLineTracer(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c0, System.Numerics.Vector4 c1, float fadeRate, float tin, float tout) => SpawnLightningCount++;
     public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e) => SpawnSparkCount += e.Count;
     public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e) => SpawnSparkCount += e.Count;
     public void SpawnCharge(in SiegeFX.Core.Sfx.ChargeSpec e) => SpawnSparkCount += e.Count;

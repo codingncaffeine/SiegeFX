@@ -91,6 +91,12 @@ public sealed class SfxRuntime
             // First-pass renders as omni-directional SpawnSpark scaled by
             // the authored radius.
             "sphere",
+            // Phase 23-fold — monster-corpus kinds surfaced by the widened
+            // catalog: linetracer renders as a fading tracer ribbon;
+            // spawn (model-frag bursts: lava/rock beast blasts) renders as
+            // poly shards until the frag-mesh hook lands (FLAGGED
+            // DEVIATION alongside model() orbits).
+            "linetracer", "spawn",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -348,17 +354,17 @@ public sealed class SfxRuntime
             {
                 case EmitterMode.Fire:
                     e.Carry = e.HasSpec
-                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, e.AgeSec, dt, e.Carry)
                         : _particles.MaintainFire(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Smoke:
                     e.Carry = e.HasSpec
-                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, e.AgeSec, dt, e.Carry)
                         : _particles.MaintainSmoke(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Steam:
                     e.Carry = e.HasSpec
-                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, e.AgeSec, dt, e.Carry)
                         : _particles.MaintainSteam(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Glow:
@@ -406,6 +412,14 @@ public sealed class SfxRuntime
         foreach (var id in ids)
         {
             var m = _motionHandles[id];
+            // Phase 23-fold F6 — delay(n) hold: frozen until the queued
+            // start matures.
+            if (m.HoldSec > 0f)
+            {
+                m.HoldSec -= dt;
+                _motionHandles[id] = m;
+                continue;
+            }
             // Refresh Anchor from parent if this motion follows another.
             if (m.ParentMotionId > 0 && _motionHandles.TryGetValue(m.ParentMotionId, out var parent))
             {
@@ -629,12 +643,35 @@ public sealed class SfxRuntime
                     ExecSet(rs, stmt);
                     break;
                 case StatementKind.Pause:
-                    if (TryParseFloat(stmt.Tokens, 0, out var sec) && sec > 0f)
+                {
+                    // Phase 23-fold F2 — `pause #POP` pops a rolled value
+                    // (frandrange residue) and uses it as the duration.
+                    // exp_test's `frandrange .2 1; pause #POP; call
+                    // exp_test;` loop relies on this yield — without it the
+                    // synchronous self-call recursed to StackOverflow.
+                    float sec;
+                    bool have = TryParseFloat(stmt.Tokens, 0, out sec);
+                    if (!have && stmt.Tokens.Count > 0
+                        && stmt.Tokens[0].StartsWith("#", StringComparison.Ordinal)
+                        && rs.Stack.Count > 0)
+                    {
+                        var top = stmt.Tokens[0].Equals("#PEEK", StringComparison.OrdinalIgnoreCase)
+                            ? rs.Stack.Peek()
+                            : rs.Stack.Pop();
+                        have = float.TryParse(top.Kind, NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out sec);
+                        // Non-numeric pops (a real sfx handle) still yield a
+                        // frame — DS1 treats an unresolvable pause as the
+                        // minimum wait, and yielding preserves loop safety.
+                        if (!have) { sec = 0.05f; have = true; }
+                    }
+                    if (have && sec > 0f)
                     {
                         rs.PauseRemaining = sec;
                         return; // yield
                     }
                     break;
+                }
                 case StatementKind.Call:
                     ExecCall(rs, stmt);
                     break;
@@ -763,7 +800,7 @@ public sealed class SfxRuntime
     /// consults this so its unhandled-verb table stays truthful).</summary>
     public static readonly IReadOnlySet<string> HandledRawVerbs =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "randrange", "frandrange", "camerashake", "worldmsg" };
+        { "randrange", "frandrange", "camerashake", "worldmsg", "exit" };
 
     // Phase 23d-2e — real dispatch for the formerly-soft raw verbs.
     bool TryExecRawVerb(RunningScript rs, SfxStatement stmt)
@@ -772,16 +809,26 @@ public sealed class SfxRuntime
         if (v.Equals("randrange", StringComparison.OrdinalIgnoreCase)
          || v.Equals("frandrange", StringComparison.OrdinalIgnoreCase))
         {
-            // `randrange a b` pushes a uniform roll in [a, b) — fireshot's
-            // 1-in-10 skull gate is `randrange 0 10` + `$temp == 1`.
+            // Phase 23-fold F3 — the int form is INCLUSIVE of both bounds:
+            // giant_spider_chunks branches `randrange 1 8` across eight
+            // frag templates ($frag == 1 .. == 8), so branch 8 must be
+            // reachable. frandrange stays continuous over [a, b).
             // Deterministic under SetDeterministicSeed.
             float a = 0f, b = 1f;
             if (stmt.Tokens.Count >= 1) TryParseF(stmt.Tokens[0], out a);
             if (stmt.Tokens.Count >= 2) TryParseF(stmt.Tokens[1], out b);
-            float roll = a + (float)_rng.NextDouble() * (b - a);
-            string val = char.ToLowerInvariant(v[0]) == 'f'
-                ? roll.ToString("0.###", CultureInfo.InvariantCulture)
-                : ((int)MathF.Floor(roll)).ToString(CultureInfo.InvariantCulture);
+            string val;
+            if (char.ToLowerInvariant(v[0]) == 'f')
+            {
+                float roll = a + (float)_rng.NextDouble() * (b - a);
+                val = roll.ToString("0.###", CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                int lo = (int)MathF.Floor(MathF.Min(a, b));
+                int hi = (int)MathF.Floor(MathF.Max(a, b));
+                val = _rng.Next(lo, hi + 1).ToString(CultureInfo.InvariantCulture);
+            }
             // The value rides the stack as a tagged handle; `set $x #POP`
             // bridges Kind into rs.Vars so if-conditions compare it.
             rs.Stack.Push(new Handle { Kind = val, Anchor = rs.Origin, OtherEnd = rs.Origin });
@@ -789,9 +836,39 @@ public sealed class SfxRuntime
         }
         if (v.Equals("camerashake", StringComparison.OrdinalIgnoreCase))
         {
+            // Phase 23-fold F4 — shipped calls are `camerashake
+            // camera_stomp s<frequency=…&magnitude_y=…&duration=…&…>`
+            // (a name + property list), not two bare floats. Amplitude =
+            // the largest magnitude_* (or `magnitude`); duration from the
+            // list. Bare-float form kept as a fallback.
             float amp = 0.5f, dur = 0.5f;
-            if (stmt.Tokens.Count >= 1) TryParseF(stmt.Tokens[0], out amp);
-            if (stmt.Tokens.Count >= 2) TryParseF(stmt.Tokens[1], out dur);
+            bool parsed = false;
+            foreach (var tok in stmt.Tokens)
+            {
+                int lt = tok.IndexOf("s<", StringComparison.OrdinalIgnoreCase);
+                if (lt < 0 || !tok.EndsWith(">", StringComparison.Ordinal)) continue;
+                var body = tok[(lt + 2)..^1];
+                float mag = 0f;
+                foreach (var pair in body.Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    int eq = pair.IndexOf('=');
+                    if (eq <= 0) continue;
+                    var key = pair[..eq].Trim();
+                    if (!TryParseF(pair[(eq + 1)..].Trim(), out var val)) continue;
+                    if (key.StartsWith("magnitude", StringComparison.OrdinalIgnoreCase))
+                        mag = MathF.Max(mag, MathF.Abs(val));
+                    else if (key.Equals("duration", StringComparison.OrdinalIgnoreCase))
+                        dur = val;
+                }
+                if (mag > 0f) amp = mag;
+                parsed = true;
+                break;
+            }
+            if (!parsed)
+            {
+                if (stmt.Tokens.Count >= 1) TryParseF(stmt.Tokens[0], out amp);
+                if (stmt.Tokens.Count >= 2) TryParseF(stmt.Tokens[1], out dur);
+            }
             CameraShakeHook?.Invoke(amp, dur);
             return true;
         }
@@ -799,6 +876,13 @@ public sealed class SfxRuntime
         {
             WorldMsgHook?.Invoke(stmt.Tokens.Count > 0 ? stmt.Tokens[0] : "", rs.Ctx);
             ConsumeStackOperand(rs, stmt.Tokens);
+            return true;
+        }
+        if (v.Equals("exit", StringComparison.OrdinalIgnoreCase))
+        {
+            // Phase 23-fold — `exit` terminates the script immediately
+            // (mana_chant's early-out branch).
+            rs.Ip = rs.Program.Statements.Count;
             return true;
         }
         return false;
@@ -835,6 +919,7 @@ public sealed class SfxRuntime
         // instead of falling back to Handle.Scale = 0.6.
         var raw = SubstituteCallerArgs(stmt.ParamString, rs.CallerArgs);
         raw     = SubstituteVars(raw, rs.Vars);
+        raw     = SubstitutePops(raw, rs);
 
         // Resolve the target-token (where the effect anchors).
         var anchor = rs.Origin;
@@ -889,21 +974,21 @@ public sealed class SfxRuntime
                 Position     = anchor,
                 Phi          = handle.HasPhi ? handle.PhiStart : 0f,
                 Theta        = handle.HasTheta ? handle.ThetaStart : 0f,
-                Radius       = handle.OrbitRadius > 0f ? handle.OrbitRadius
+                Radius       = handle.HasRadius ? handle.OrbitRadius
                                : (isOrbiter ? 1.0f : 0f),
                 RadiusInc    = handle.OrbitRadiusInc,
                 PhiRate      = isOrbiter
-                               ? (handle.OrbitPhi != 0f ? handle.OrbitPhi : 2.0f)
+                               ? (handle.HasIPhi ? handle.OrbitPhi : 2.0f)
                                : 0f,
                 ThetaRate    = isOrbiter ? handle.OrbitTheta : 0f,
                 VDisplace    = handle.VDisplace,
-                Speed        = handle.Velocity > 0f ? handle.Velocity
+                Speed        = handle.HasVel ? handle.Velocity
                                : (isTrackball ? 5.0f : 8.0f),
                 AccelRate    = isTrackball
                                ? (handle.HasAccelScalar ? handle.AccelScalar : 2.5f)
                                : 0f,
                 MaxSpeed     = handle.HasMaxVelocity ? handle.MaxVelocity : 80f,
-                SpiralRadius = isTrackball ? handle.OrbitRadius : 0f,
+                SpiralRadius = isTrackball && handle.HasRadius ? handle.OrbitRadius : 0f,
                 SpiralRate   = isTrackball ? handle.SpinRate : 0f,
                 SpiralAngle  = handle.HasTheta ? handle.ThetaStart
                                : (float)_rng.NextDouble() * MathF.Tau,
@@ -915,7 +1000,7 @@ public sealed class SfxRuntime
                 ParentMotionId = 0,
             };
             // Curve draws at velocity(f) — doc default 30 u/s.
-            if (handle.Mode == EmitterMode.MotionCurve && handle.Velocity <= 0f)
+            if (handle.Mode == EmitterMode.MotionCurve && !handle.HasVel)
                 motion.Speed = 30f;
             // rvel_min/rvel_max — random launch-speed variance (trackball).
             if (isTrackball && (handle.RvelMax > 0f || handle.RvelMin != 0f))
@@ -955,9 +1040,17 @@ public sealed class SfxRuntime
         // Phase 23d-2a — delay(n): pause before the effect starts. The
         // start is queued and Tick dispatches it when it matures, so
         // layered creates (nova_strike's staggered rings etc.) sequence
-        // exactly as authored.
+        // exactly as authored. Phase 23-fold F6: the handle's motion
+        // state must hold too — otherwise a delayed trackball flies (and
+        // can arrive, burn afterlife, and be pruned) before its visual
+        // ever dispatches.
         if (h.DelaySec > 0.0001f)
         {
+            if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var held))
+            {
+                held.HoldSec = h.DelaySec;
+                _motionHandles[h.MotionId] = held;
+            }
             _delayed.Add(new DelayedStart { Remaining = h.DelaySec, H = h, SelfName = selfName });
             return;
         }
@@ -1001,8 +1094,43 @@ public sealed class SfxRuntime
                     h.HasMinSubd ? h.MinSubd   : 0f);
                 break;
             }
+            case EmitterMode.OneShotLineTracer:
+            {
+                // Phase 23-fold — SU-212 LineTracer: textureless tracer
+                // between the handle's two ends fading at fade_rate.
+                var c1t = h.ColorTail.W > 0.001f ? h.ColorTail : h.Color;
+                _particles.SpawnLineTracer(h.OtherEnd, h.Anchor, h.Color, c1t,
+                    h.HasFadeRate ? h.FadeRate : 0.10f,
+                    h.HasTin  ? h.FadeIn  : 0.5f,
+                    h.HasTout ? h.FadeOut : 0.5f);
+                break;
+            }
             case EmitterMode.OneShotExplosion:
             {
+                // Phase 23-fold — the `spawn` kind (model-frag bursts:
+                // lava/rock beast blasts) approximates as poly shards
+                // flying at the authored lvel magnitude until the
+                // frag-mesh hook lands (FLAGGED DEVIATION).
+                if (string.Equals(h.Kind, "spawn", StringComparison.OrdinalIgnoreCase))
+                {
+                    float mag = h.HasLVel ? MathF.Max(0.4f, h.LVel.Length() / 4f) : 1.0f;
+                    var frag = new PolyExplosionSpec
+                    {
+                        Anchor    = h.Anchor,
+                        Color     = h.HasColor2 ? h.Color2 : new Vector4(0.85f, 0.80f, 0.70f, 1f), // bone-frag tint
+                        PolySides = 6,
+                        Count     = h.BurstCount > 0 ? h.BurstCount : 16,
+                        Radius    = h.HasRadius ? MathF.Max(0.05f, h.OrbitRadius) : 0.5f,
+                        Mag       = mag,
+                        RotRange  = new Vector3(200f, 200f, 200f),
+                        Displace  = Vector3.Zero,
+                        FadeStart = 0.6f,
+                        FadeEnd   = 1.0f,
+                        Duration  = h.Duration > 0.05f ? h.Duration : 1.5f,
+                    };
+                    _particles.SpawnPolyExplosion(in frag);
+                    break;
+                }
                 // Phase 23d-2e — polygonalexplosion routes through MapMode
                 // as OneShotExplosion; give it its documented shard burst.
                 if (string.Equals(h.Kind, "polygonalexplosion", StringComparison.OrdinalIgnoreCase))
@@ -1034,7 +1162,7 @@ public sealed class SfxRuntime
                 {
                     Anchor    = h.Anchor,
                     Color     = h.Color,
-                    Radius    = h.OrbitRadius > 0f ? h.OrbitRadius : 0.5f,
+                    Radius    = h.HasRadius ? MathF.Max(0.005f, h.OrbitRadius) : 0.5f,
                     Count     = h.BurstCount > 0 ? h.BurstCount : 32,
                     ScaleMin  = h.HasScaleRange ? h.ScaleRangeMin : 0.2f,
                     ScaleMax  = h.HasScaleRange ? h.ScaleRangeMax : 0.7f,
@@ -1048,6 +1176,15 @@ public sealed class SfxRuntime
                     Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
                     SpawnOver = h.SpawnOverSec,
                     TexSlot   = TextureNameToSlot(h.TextureName, 2),
+                    // Phase 23-fold — per-particle variance color (doc
+                    // color1), ground bounce with the authored rebound
+                    // elasticity, and splat() stick-where-landed.
+                    ColorVar    = h.ColorTail,
+                    HasColorVar = h.ColorTail.W > 0.001f,
+                    Rebound     = h.HasRebound ? h.Rebound : 0.85f,
+                    Bounce      = h.CollideFlag || h.Splat,
+                    Splat       = h.Splat,
+                    GroundY     = h.Anchor.Y,
                 };
                 _particles.SpawnExplosion(in spec);
                 break;
@@ -1062,9 +1199,9 @@ public sealed class SfxRuntime
                     {
                         Anchor     = h.Anchor,
                         Color      = h.Color,
-                        Radius     = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                        Radius     = h.HasRadius ? MathF.Max(0.01f, h.OrbitRadius) : 1.0f,
                         Count      = h.BurstCount > 0 ? h.BurstCount : 16,
-                        Tout       = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                        Tout       = h.HasTout ? h.FadeOut : 1.0f,
                         Speed0     = h.HasChargeSpeed ? h.ChargeSpeed : 1.0f,
                         CenterSize = h.CenterSize > 0f ? h.CenterSize : 0.75f,
                         IAlpha     = h.IAlpha > 0f ? h.IAlpha : 4.0f,
@@ -1080,7 +1217,7 @@ public sealed class SfxRuntime
                 {
                     Anchor   = h.Anchor,
                     Color    = h.Color,
-                    Radius   = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                    Radius   = h.HasRadius ? MathF.Max(0.01f, h.OrbitRadius) : 1.0f,
                     Count    = h.BurstCount > 0 ? h.BurstCount : 60,
                     PSize    = h.PSize > 0f ? h.PSize : 1.0f,
                     YVel     = h.YVel,
@@ -1107,8 +1244,8 @@ public sealed class SfxRuntime
                         Speed0   = h.SpeSpeed0, Speed1 = h.SpeSpeed1,
                         Space0   = h.SpeSpace0, Space1 = h.SpeSpace1,
                         Count    = h.BurstCount > 0 ? h.BurstCount : 64,
-                        FadeIn   = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
-                        FadeOut  = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                        FadeIn   = h.HasTin  ? h.FadeIn  : 1.0f,
+                        FadeOut  = h.HasTout ? h.FadeOut : 1.0f,
                         Duration = h.Duration > 0.05f ? h.Duration : 1.0f,
                         TexSlot  = TextureNameToSlot(h.TextureName, 2),
                     };
@@ -1122,17 +1259,17 @@ public sealed class SfxRuntime
                 {
                     Anchor    = h.Anchor,
                     Color     = h.Color,
-                    Radius    = h.OrbitRadius > 0f ? h.OrbitRadius : 1.0f,
+                    Radius    = h.HasRadius ? MathF.Max(0.01f, h.OrbitRadius) : 1.0f,
                     Count     = h.BurstCount > 0 ? h.BurstCount : 50,
-                    IPhi      = h.OrbitPhi   != 0f ? h.OrbitPhi   : 1.0f,
-                    ITheta    = h.OrbitTheta != 0f ? h.OrbitTheta : 1.0f,
+                    IPhi      = h.HasIPhi   ? h.OrbitPhi   : 1.0f,
+                    ITheta    = h.HasITheta ? h.OrbitTheta : 1.0f,
                     IAmp      = h.HasIAmp ? h.IAmp : 1.0f,
                     Amplitude = h.HasAmplitude ? h.Amplitude : 1.0f,
-                    GrowStart = 1f,
+                    GrowStart = h.HasGrow ? h.GrowStart : 1f,
                     GrowMid   = h.GrowMid > 0.05f ? h.GrowMid : 1f,
-                    GrowEnd   = 1f,
-                    FadeIn    = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
-                    FadeOut   = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                    GrowEnd   = h.HasGrow ? h.GrowEnd : 1f,
+                    FadeIn    = h.HasTin  ? h.FadeIn  : 1.0f,
+                    FadeOut   = h.HasTout ? h.FadeOut : 1.0f,
                     Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
                     TexSlot   = TextureNameToSlot(h.TextureName, 2),
                 };
@@ -1165,6 +1302,20 @@ public sealed class SfxRuntime
                     upperRadius:  h.UpperRadius != 0f ? h.UpperRadius : 1.0f,
                     count:        count,
                     flameSize:    h.FlameSize > 0.05f ? h.FlameSize : 1.0f);
+                // Phase 23-fold — light_spawn(): mix lightsources into the
+                // breath cone (dragon breath). One glow per light_freq
+                // particles at light_radius, seeded along the cone axis.
+                if (h.LightSpawn)
+                {
+                    int glows = Math.Max(1, count / (int)MathF.Max(1f, h.LightFreq > 0f ? h.LightFreq : 50f));
+                    var dirN = Vector3.Normalize(vel.LengthSquared() > 0.001f ? vel : Vector3.UnitZ);
+                    for (int g = 0; g < glows; g++)
+                        _particles.SpawnSphere(
+                            h.Anchor + dirN * (0.8f + 0.8f * g),
+                            new Vector4(1f, 0.75f, 0.35f, 0.9f),
+                            h.LightRadius > 0f ? h.LightRadius : 1f,
+                            MathF.Max(0.3f, life * 0.6f), 6);
+                }
                 break;
             }
             case EmitterMode.OneShotCylinder:
@@ -1194,8 +1345,8 @@ public sealed class SfxRuntime
                     Hp1      = h.HasHp1 ? h.Hp1Triple : Vector3.Zero,
                     Alpha    = h.HasAlpha ? h.AlphaStart : 0.5f,
                     Spin     = h.SpinRate,
-                    FadeIn   = h.FadeIn  > 0f ? h.FadeIn  : 0.5f,
-                    FadeOut  = h.FadeOut > 0f ? h.FadeOut : 0.5f,
+                    FadeIn   = h.HasTin  ? h.FadeIn  : 0.5f,
+                    FadeOut  = h.HasTout ? h.FadeOut : 0.5f,
                     Duration = h.Duration > 0.10f ? h.Duration : 1.0f,
                     Rotate   = h.HasRotate  ? h.RotateVec  : Vector3.Zero,
                     IRotate  = h.HasIRotate ? h.IRotateVec : Vector3.Zero,
@@ -1227,7 +1378,7 @@ public sealed class SfxRuntime
                     Anchor      = h.Anchor,
                     Color0      = h.Color,
                     Color1      = c1,
-                    Radius      = h.OrbitRadius > 0f ? h.OrbitRadius : 0.0005f,
+                    Radius      = h.HasRadius ? MathF.Max(0f, h.OrbitRadius) : 0.0005f,
                     Count       = h.BurstCount > 0 ? h.BurstCount : 16,
                     LMin        = lmin,
                     LMax        = lmax,
@@ -1270,13 +1421,13 @@ public sealed class SfxRuntime
                     Radius    = h.Scale > 0.05f ? h.Scale : 1.0f,
                     Sides     = h.SphereSides > 3 ? h.SphereSides : 20,
                     Subd      = h.SphereSubd > 0 ? h.SphereSubd : 1,
-                    GrowStart = 1f,
+                    GrowStart = h.HasGrow ? h.GrowStart : 1f,
                     GrowMid   = h.GrowMid > 0.05f ? h.GrowMid : 1f,
-                    GrowEnd   = 1f,
+                    GrowEnd   = h.HasGrow ? h.GrowEnd : 1f,
                     Rotate    = h.HasRotate  ? h.RotateVec  : Vector3.Zero,
                     IRotate   = h.HasIRotate ? h.IRotateVec : Vector3.Zero,
-                    FadeIn    = h.FadeIn  > 0f ? h.FadeIn  : 1.0f,
-                    FadeOut   = h.FadeOut > 0f ? h.FadeOut : 1.0f,
+                    FadeIn    = h.HasTin  ? h.FadeIn  : 1.0f,
+                    FadeOut   = h.HasTout ? h.FadeOut : 1.0f,
                     Duration  = h.Duration > 0.05f ? h.Duration : 0.50f,
                 };
                 _particles.SpawnSphereMesh(in smspec);
@@ -1449,6 +1600,15 @@ public sealed class SfxRuntime
             Line        = h.LineMode,
             LineEnd     = h.OtherEnd,
             TexSlot     = TextureNameToSlot(h.TextureName, h.Mode == EmitterMode.Fire ? (byte)0 : (byte)1),
+            // Phase 23-fold — line-position animation (gom_icesnake's fire
+            // walks the line at linespeed) and the burn_body sine wobble.
+            LinePos     = h.LinePos,
+            LineSpeed   = h.LineSpeed,
+            HasLineAnim = h.HasLineAnim,
+            SinPos      = h.SinPos,
+            SinSpeed    = h.SinSpeed,
+            RadiusRMax  = h.RadiusRMax,
+            HasSinAnim  = h.HasSinAnim,
         };
     }
 
@@ -1632,6 +1792,18 @@ public sealed class SfxRuntime
                 var e = _emitters[i];
                 e.TargetMotionId = parent.MotionId;
                 _emitters[i] = e;
+            }
+        }
+        // Phase 23-fold F6 — delay(n)-queued starts are struct copies in
+        // _delayed; an attach issued after `sfx start` must reach them too
+        // or the child strands at its spawn anchor when it matures.
+        for (int i = 0; i < _delayed.Count; i++)
+        {
+            if (_delayed[i].SelfName == childTok)
+            {
+                var d = _delayed[i];
+                d.H.TargetMotionId = parent.MotionId;
+                _delayed[i] = d;
             }
         }
     }
@@ -2100,6 +2272,13 @@ public sealed class SfxRuntime
         // $name → string Vars lookup (collision_type tag)
         if (token.StartsWith("$"))
             return rs.Vars.TryGetValue(token, out var v) ? v : "";
+        // Phase 23-fold F1 — `#POP`/`#PEEK` as a condition operand consume
+        // the rolled value (gib_blood's `if (#POP > #LODFI)`); leaving it
+        // stacked desynchronized every later `sfx start #POP`.
+        if (token.Equals("#POP", StringComparison.OrdinalIgnoreCase))
+            return rs.Stack.Count > 0 ? rs.Stack.Pop().Kind.ToLowerInvariant() : "";
+        if (token.Equals("#PEEK", StringComparison.OrdinalIgnoreCase))
+            return rs.Stack.Count > 0 ? rs.Stack.Peek().Kind.ToLowerInvariant() : "";
         // #MACRO → strip leading # and lowercase, matching the tags
         // pushed by waitfor and stored by ExecSet.
         if (token.StartsWith("#"))
@@ -2292,6 +2471,9 @@ public sealed class SfxRuntime
             // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — motion-driven kinds.
             // Each gets a slot in _motionHandles whose Position advances
             // every tick; child emitters following them via TargetMotionId.
+            // Phase 23-fold — monster-corpus kinds.
+            case "linetracer":  return EmitterMode.OneShotLineTracer;
+            case "spawn":       return EmitterMode.OneShotExplosion; // poly-shard approx in dispatch
             case "orbiter":     return EmitterMode.MotionOrbiter;
             case "trackball":   return EmitterMode.MotionTrackball;
             case "lightsource": return EmitterMode.LightSource;
@@ -2690,6 +2872,50 @@ public sealed class SfxRuntime
          && TryReadFloat(raw, "scale_range", out var srMax, argIndex: 1))
         { h.ScaleRangeMin = srMin; h.ScaleRangeMax = srMax; h.HasScaleRange = true; }
 
+        // Phase 23-fold — monster-corpus params surfaced by the widened
+        // catalog (dragon breath lights, gom_icesnake line animation,
+        // burn_body sine wobble, spit physics, tracer fades, frag spawns).
+        if (ContainsKeyword(raw, "light_spawn")) h.LightSpawn = true;
+        if (TryReadFloat(raw, "light_freq", out var lfq)) h.LightFreq = lfq;
+        if (TryReadFloat(raw, "light_radius", out var lrd)) h.LightRadius = lrd;
+        if (TryReadFloat(raw, "linepos", out var lps)) { h.LinePos = lps; h.HasLineAnim = true; }
+        if (TryReadFloat(raw, "linespeed", out var lsp)) { h.LineSpeed = lsp; h.HasLineAnim = true; }
+        if (TryReadFloat(raw, "sinpos", out var snp)) { h.SinPos = snp; h.HasSinAnim = true; }
+        if (TryReadFloat(raw, "sinspeed", out var sns)) { h.SinSpeed = sns; h.HasSinAnim = true; }
+        if (TryReadFloat(raw, "radius_rmax", out var rrm)) h.RadiusRMax = rrm;
+        if (TryReadFloat(raw, "rebound", out var rbn)) { h.Rebound = rbn; h.HasRebound = true; }
+        if (ContainsKeyword(raw, "splat")) h.Splat = true;
+        if (TryReadVec4(raw, "color2", out var c2)) { h.Color2 = c2; h.HasColor2 = true; }
+        if (TryReadFloat(raw, "fade_rate", out var fdr)) { h.FadeRate = fdr; h.HasFadeRate = true; }
+        if (TryReadVec3(raw, "lvel", out var lv)) { h.LVel = lv; h.HasLVel = true; }
+        if (TryReadVec3(raw, "lvel_var", out var lvv)) h.LVelVar = lvv;
+        if (TryReadFloat(raw, "spawn_int", out var spi)) h.SpawnInterval = spi;
+        // Engine-level (consumed deliberately): fps = animated-[tsd]
+        // texture frame rate (our slots are static stills for now),
+        // use_fog = fog-blend hint, lock = linetracer third-target ref,
+        // splat_* / stexture / alphastart tune the splat decal we render
+        // as stick-in-place particles.
+        _ = ContainsKeyword(raw, "fps");
+        _ = ContainsKeyword(raw, "use_fog");
+        _ = ContainsKeyword(raw, "lock");
+        _ = ContainsKeyword(raw, "splat_life");
+        _ = ContainsKeyword(raw, "splat_fade");
+        _ = ContainsKeyword(raw, "splatscaleup");
+        _ = ContainsKeyword(raw, "splatskip");
+        _ = ContainsKeyword(raw, "stexture");
+        _ = ContainsKeyword(raw, "alphastart");
+        _ = ContainsKeyword(raw, "spawn_count");
+
+        // Phase 23-fold F7 — authored-presence flags + grow triple.
+        h.HasTin    = ContainsKeyword(raw, "tin");
+        h.HasTout   = ContainsKeyword(raw, "tout");
+        h.HasIPhi   = ContainsKeyword(raw, "iphi");
+        h.HasITheta = ContainsKeyword(raw, "itheta");
+        h.HasVel    = ContainsKeyword(raw, "velocity");
+        h.HasRadius = ContainsKeyword(raw, "radius");
+        if (TryReadFloat(raw, "grow_params", out var gp0, argIndex: 0)) { h.GrowStart = gp0; h.HasGrow = true; }
+        if (TryReadFloat(raw, "grow_params", out var gp2, argIndex: 2)) h.GrowEnd = gp2;
+
         // Engine-level flags with no visual meaning for our runtime —
         // consumed deliberately so the param audit reads them as handled:
         // must_update() asks DS1 to keep re-evaluating a moving anchor,
@@ -2775,6 +3001,44 @@ public sealed class SfxRuntime
                 sb.Append(c);
                 i++;
             }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Phase 23-fold F1 — substitute <c>#POP</c>/<c>#PEEK</c>
+    /// occurrences inside a create's param string with values consumed
+    /// from the script stack (exp_test's <c>color0(#POP,#POP,#POP)</c>
+    /// eats three frandrange rolls). Leaving them stacked desynchronized
+    /// every later <c>sfx start #POP</c> — explosion #1 never started and
+    /// the numeric residue became an immortal invisible plume emitter.</summary>
+    static string SubstitutePops(string raw, RunningScript rs)
+    {
+        if (string.IsNullOrEmpty(raw) || raw.IndexOf('#') < 0) return raw;
+        static bool At(string s, int i, string kw) =>
+            i + kw.Length <= s.Length
+            && string.Compare(s, i, kw, 0, kw.Length, StringComparison.OrdinalIgnoreCase) == 0
+            && (i + kw.Length == s.Length || !char.IsLetter(s[i + kw.Length]));
+        var sb = new System.Text.StringBuilder(raw.Length);
+        int i = 0;
+        while (i < raw.Length)
+        {
+            if (raw[i] == '#')
+            {
+                if (At(raw, i, "#POP"))
+                {
+                    sb.Append(rs.Stack.Count > 0 ? rs.Stack.Pop().Kind : "0");
+                    i += 4;
+                    continue;
+                }
+                if (At(raw, i, "#PEEK"))
+                {
+                    sb.Append(rs.Stack.Count > 0 ? rs.Stack.Peek().Kind : "0");
+                    i += 5;
+                    continue;
+                }
+            }
+            sb.Append(raw[i]);
+            i++;
         }
         return sb.ToString();
     }
@@ -2962,6 +3226,7 @@ public sealed class SfxRuntime
         // a slot in _motionHandles whose Position advances every tick;
         // PersistentEmitters with TargetMotionId>0 follow that position
         // each maintain pass.
+        OneShotLineTracer, // Phase 23-fold — fading tracer ribbon between two points
         MotionOrbiter,    // orbital motion anchor — invisible, drives child emitters
         MotionTrackball,  // homing projectile — visible glow trail + drives child emitters
         LightSource,      // persistent glow billboard at position
@@ -3195,6 +3460,31 @@ public sealed class SfxRuntime
         // fire/fireb/steam; trackball ships a single ramp rate.
         public float       AccelScalar;
         public bool        HasAccelScalar;
+        // Phase 23-fold F7 — presence flags: an authored ZERO must not
+        // collapse into a dispatch default (tin(0) = instant-on, iphi(0)
+        // = frozen latitude, radius(0) = point spawn). Plus the full
+        // grow_params (start, mid, end) envelope.
+        public bool        HasTin, HasTout, HasIPhi, HasITheta, HasVel, HasRadius;
+        public float       GrowStart, GrowEnd;
+        public bool        HasGrow;
+        // Phase 23-fold — monster-corpus knobs.
+        public bool        LightSpawn;      // fireb light_spawn()
+        public float       LightFreq;       // particles per lightsource (doc 50)
+        public float       LightRadius;     // doc 1
+        public float       LinePos, LineSpeed;      // fire line() animation
+        public bool        HasLineAnim;
+        public float       SinPos, SinSpeed, RadiusRMax; // fire sine wobble
+        public bool        HasSinAnim;
+        public float       Rebound;         // explosion bounce elasticity (doc 0.85)
+        public bool        HasRebound;
+        public bool        Splat;           // splat() — stick where landing
+        public Vector4     Color2;          // splat color
+        public bool        HasColor2;
+        public float       FadeRate;        // linetracer fade (doc 0.10)
+        public bool        HasFadeRate;
+        public Vector3     LVel, LVelVar;   // spawn kind linear velocity
+        public bool        HasLVel;
+        public float       SpawnInterval;   // spawn kind interval (doc 0.5)
         // Phase 23d-2d — charge / sparkles knobs.
         public float       ChargeSpeed;     // charge speed0(f) — random accel factor
         public bool        HasChargeSpeed;
@@ -3295,6 +3585,10 @@ public sealed class SfxRuntime
         public float   AfterlifeSec;
         public bool    Arrived;
         public float   Curvature;         // curve curvature(f) — control-point lift (doc default 1)
+        /// <summary>Phase 23-fold F6 — delay(n) hold: motion doesn't
+        /// advance or age until this drains, keeping the handle in step
+        /// with its queued visual dispatch.</summary>
+        public float   HoldSec;
         // Phase 21-SC-SPELL-VISUAL-G — distinguish "trackball reached its
         // target" (collision) from "Duration expired without arrival"
         // (timeout). The Tick pass needs this to push the right

@@ -5,7 +5,7 @@
   0.150  fire~       pos=(2.476,0.494,0) color=(0.75,0.4,0.2,1) scale=0.64 rate=60 n=3
   0.200  fire~       pos=(3.213,0.255,0) color=(0.75,0.4,0.2,1) scale=0.64 rate=60 n=3
   0.250  fire~       pos=(3.956,0.014,0) color=(0.75,0.4,0.2,1) scale=0.64 rate=60 n=3
-  0.350  explosion   pos=(4,-0.2,0) color=(0.75,0.4,0.2,1) r=0.5 n=32 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
+  0.350  explosion   pos=(4,-0.2,0) color=(0.75,0.4,0.2,1) r=0.005 n=32 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
   0.350  explosion   pos=(4,-0.2,0) color=(0.75,0.4,0.2,1) r=1 n=32 scale=0.2..0.7 v=3..4 ivel=(0,0,0) rvel=(6,3,6) omni=0 fade=0.5..1 dur=1.2 srate=0 tex=2
   0.350  fire~       pos=(4,0,0) color=(0.75,0.4,0.2,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1
   0.400  fire~       pos=(4,0,0) color=(0.75,0.4,0.2,1) vel=(0,10,0) accel=(0,10,0) flame=3 ring=0..6 ydisp=0..0 line=0 n=1

@@ -3,6 +3,9 @@
   0.050  fire~       pos=(0.348,1.178,-0.009) color=(0.2,0.3,0.5,1) scale=0.8 rate=60 n=3
   0.050  fire~       pos=(0.353,1.194,-0.004) color=(0.2,0.3,0.5,1) scale=0.8 rate=60 n=3
   0.050  fire~       pos=(0.347,1.174,-0.005) color=(0.2,0.3,0.5,1) scale=0.8 rate=60 n=3
+  0.100  linetracer  src=(0.32,1.2,0.02) tgt=(4,0,0) c0=(0.3,0.4,0.7,1) c1=(0,0,0.8,1) fade=4 tin=0.5 tout=0.5
+  0.100  linetracer  src=(0.32,1.2,0.02) tgt=(4,0,0) c0=(0.3,0.4,0.7,1) c1=(0,0,0.8,1) fade=4 tin=0.5 tout=0.5
+  0.100  linetracer  src=(0.32,1.2,0.02) tgt=(4,0,0) c0=(0.3,0.4,0.7,1) c1=(0,0,0.8,1) fade=4 tin=0.5 tout=0.5
   0.100  smoke~      pos=(0.399,1.156,-0.019) color=(0.3,0.4,0.7,1) vel=(0,-3,0) accel=(0,-3,0) flame=0.5 ring=0..1.5 ydisp=0..0 line=0 n=1
   0.100  smoke~      pos=(0.399,1.156,-0.019) color=(0.2,0.2,0.4,1) vel=(0,-3,0) accel=(0,-3,0) flame=0.438 ring=0..1.5 ydisp=0..0 line=0 n=1
   0.100  smoke~      pos=(0.399,1.156,-0.019) color=(0.4,0.5,1,1) vel=(0,2,0) accel=(0,0,0) flame=3 ring=0..1.5 ydisp=0..0 line=0 n=2

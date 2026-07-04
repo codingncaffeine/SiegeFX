@@ -28,7 +28,7 @@
   0.300  smoke~      pos=(2.708,0.419,0) color=(0.31,0.31,0.31,0.55) vel=(0,2,0) accel=(0,0,0) flame=1.33 ring=0..3 ydisp=-1..1 line=0 n=1
   0.500  plume!      pos=(4,0.2,0) kind=1 n=15 (instant fill)
   0.500  plume!      pos=(4,0.2,0) kind=1 n=15 (instant fill)
-  0.500  explosion   pos=(4,0,0) color=(0.2,1,0,1) r=0.5 n=18 scale=0.2..0.7 v=2..3 ivel=(0,0,0) rvel=(4,2,4) omni=0 fade=1..1 dur=1.2 srate=0 tex=2
+  0.500  explosion   pos=(4,0,0) color=(0.2,1,0,1) r=0.005 n=18 scale=0.2..0.7 v=2..3 ivel=(0,0,0) rvel=(4,2,4) omni=0 fade=1..1 dur=1.2 srate=0 tex=2
   0.700  smoke~      pos=(4,0.2,0) color=(0.2,1,0,1) vel=(0,5,0) accel=(0,-4,0) flame=0.33 ring=0..8 ydisp=-4..0 line=0 n=1
   0.700  smoke~      pos=(4,0.2,0) color=(0.32,0.32,0.32,0.55) vel=(0,5,0) accel=(0,-4,0) flame=0.33 ring=0..8 ydisp=-4..0 line=0 n=1
   0.950  smoke~      pos=(4,0.2,0) color=(0.2,1,0,1) vel=(0,5,0) accel=(0,-4,0) flame=0.33 ring=0..8 ydisp=-4..0 line=0 n=1

@@ -1,6 +1,7 @@
 # sfx timeline  script=dragon_fire_breath  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.000  fireb       pos=(0,0,0) color=(1,0.6,0.3,1) vel=(0,0,100) accel=(0,0,-10) life=0.42 disp=0.5 r=1.5..26 n=80 flame=3
+  0.000  sphere      pos=(0,0,0.8) color=(1,0.75,0.35,0.9) r=8 dur=0.3 n=6
   0.000  fireb       pos=(0,0,0) color=(1,1,1,1) vel=(0,0,100) accel=(0,0,-10) life=0.42 disp=0.5 r=0..13 n=80 flame=1
   0.000  fireb       pos=(0,0,0) color=(1,0.3,0.1,1) vel=(0,0,100) accel=(0,0,-10) life=0.42 disp=0.5 r=2.5..10.5 n=80 flame=4
 # end: emitters=0 coroutines=0 unhandled=[]

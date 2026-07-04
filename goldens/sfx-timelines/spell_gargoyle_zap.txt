@@ -2,12 +2,13 @@
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.100  explosion   pos=(4,0,0) color=(1,0.25,0.15,1) r=0.2 n=16 scale=0.33..0.66 v=32..32 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=16..16 dur=0.4 srate=0.001 tex=2
   0.100  explosion   pos=(4,0,0) color=(1,0,0,1) r=0.2 n=16 scale=0.33..0.66 v=32..32 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=16..16 dur=0.4 srate=0.001 tex=2
-  0.100  glow~       pos=(4.199,2.98,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.150  glow~       pos=(4.296,2.955,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.200  glow~       pos=(4.389,2.921,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.250  glow~       pos=(4.479,2.878,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.300  glow~       pos=(4.565,2.825,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.350  glow~       pos=(4.644,2.765,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.400  glow~       pos=(4.717,2.697,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
-  0.450  glow~       pos=(4.783,2.622,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.100  glow~       pos=(0,0,0) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.150  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.200  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.250  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.300  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.350  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.400  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.450  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
+  0.500  glow~       pos=(4,2,-0.24) color=(1,0,0,1) scale=5 rate=80 n=4
 # end: emitters=0 coroutines=0 unhandled=[]
