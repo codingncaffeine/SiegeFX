@@ -9,6 +9,22 @@ public enum SpellKind
 {
     OffensiveInstantHit,
     SelfHeal,
+    /// <summary>Phase 24a — everything else the catalog now carries
+    /// (buffs, curses, summons, monster arsenal). Castable for its
+    /// authored sfx visual; the gameplay payload lands per-kind later.</summary>
+    Other,
+}
+
+/// <summary>Phase 24a — magic school, derived from the template's
+/// specializes chain (base_spell_dark/base_summon_dark = combat magic,
+/// base_spell_good/base_summon_good/base_scroll_good = nature magic,
+/// base_spell_monster = monster-only arsenal).</summary>
+public enum SpellClass
+{
+    Unknown,
+    CombatMagic,
+    NatureMagic,
+    Monster,
 }
 
 /// <summary>Element bucket used by the render layer to pick projectile + impact
@@ -156,6 +172,31 @@ public sealed class SpellTemplate
     /// SpellBookPanel falls back to an element-tinted placeholder.</summary>
     public string InventoryIcon { get; }
 
+    /// <summary>Phase 24a — the SECOND icon set: [gui]active_icon, the
+    /// small active-slot icon (b_gui_ig_i_ic_sp_NNN without the _inv
+    /// suffix). Player spells author both; monster spells author neither.</summary>
+    public string ActiveIcon { get; private set; } = "";
+
+    /// <summary>Phase 24a — [aspect]gold_value: the spell's base worth
+    /// (merchant buy-price anchor; fireshot ships 8).</summary>
+    public float GoldValue { get; private set; }
+
+    /// <summary>Phase 24a — [magic]max_level: the top of the spell's
+    /// skill window (mana/damage clamp past it) and its pcontent power
+    /// band. 0 when unauthored.</summary>
+    public int MaxLevel { get; private set; }
+
+    /// <summary>Phase 24a — magic school from the specializes chain.</summary>
+    public SpellClass Class { get; private set; } = SpellClass.Unknown;
+
+    /// <summary>Phase 24a — chain descends from a base_summon_* template.</summary>
+    public bool IsSummon { get; private set; }
+
+    /// <summary>Phase 24a — player-acquirable = a combat/nature-school
+    /// spell (monster arsenal and unknown-chain templates excluded).</summary>
+    public bool PlayerAcquirable =>
+        Class is SpellClass.CombatMagic or SpellClass.NatureMagic;
+
     SpellTemplate(string name, string screenName, SpellKind kind,
         float castRange, float castReloadDelay,
         float baseManaCost, string manaCostModifierExpr,
@@ -177,6 +218,35 @@ public sealed class SpellTemplate
         HealAmountExpr = healAmountExpr;
         CastSfxScript = castSfxScript;
         InventoryIcon = inventoryIcon;
+    }
+
+    /// <summary>Phase 24a — fill the acquisition-side fields shared by
+    /// every factory path.</summary>
+    void ApplyAcquisitionFields(Template template, TemplateStore store)
+    {
+        ActiveIcon = (store.GetAttribute(template, "gui", "active_icon") ?? "")
+                     .Trim().Trim('"');
+        var goldStr = store.GetAttribute(template, "aspect", "gold_value");
+        if (!string.IsNullOrEmpty(goldStr)
+            && float.TryParse(goldStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var gv))
+            GoldValue = gv;
+        var maxStr = store.GetAttribute(template, "magic", "max_level");
+        if (!string.IsNullOrEmpty(maxStr)
+            && float.TryParse(maxStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var ml))
+            MaxLevel = (int)ml;
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            switch (t.Name.ToLowerInvariant())
+            {
+                case "base_spell_dark":    Class = SpellClass.CombatMagic; return;
+                case "base_scroll_dark":   Class = SpellClass.CombatMagic; return;
+                case "base_summon_dark":   Class = SpellClass.CombatMagic; IsSummon = true; return;
+                case "base_spell_good":    Class = SpellClass.NatureMagic; return;
+                case "base_scroll_good":   Class = SpellClass.NatureMagic; return;
+                case "base_summon_good":   Class = SpellClass.NatureMagic; IsSummon = true; return;
+                case "base_spell_monster": Class = SpellClass.Monster; return;
+            }
+        }
     }
 
     /// <summary>Mana to charge for a cast against <paramref name="ctx"/>.
@@ -251,12 +321,14 @@ public sealed class SpellTemplate
         string invIcon = (store.GetAttribute(template, "gui", "inventory_icon") ?? "")
                          .Trim().Trim('"');
 
-        return new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
+        var dbg = new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
             castRange: 30f, castReloadDelay: 1f,
             baseManaCost: 0f, manaCostModifierExpr: "",
             attackDamageMinExpr: "0", attackDamageMaxExpr: "0",
             healAmountExpr: "",
             castSfx, invIcon);
+        dbg.ApplyAcquisitionFields(template, store);
+        return dbg;
     }
 
     /// <summary>Build a <see cref="SpellTemplate"/> from a parsed <see cref="Template"/>
@@ -291,10 +363,12 @@ public sealed class SpellTemplate
         string? dmgMinStr = store.GetAttribute(template, "magic", "attack_damage_modifier_min");
         if (!string.IsNullOrEmpty(dmgMaxStr))
         {
-            return new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
+            var off = new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
                 range, reload, cost, (costModStr ?? "").Trim(),
                 (dmgMinStr ?? "").Trim(), dmgMaxStr.Trim(), "",
                 castSfx, invIcon);
+            off.ApplyAcquisitionFields(template, store);
+            return off;
         }
 
         // Self-heal path: spells DS1 marks with state_name = "heal". The heal
@@ -313,15 +387,28 @@ public sealed class SpellTemplate
                                        StringComparison.OrdinalIgnoreCase)) continue;
                     string? valueExpr = TemplateStore.FindAttr(ench, "value");
                     if (string.IsNullOrWhiteSpace(valueExpr)) continue;
-                    return new SpellTemplate(template.Name, sn, SpellKind.SelfHeal,
+                    var heal = new SpellTemplate(template.Name, sn, SpellKind.SelfHeal,
                         range, reload, cost, (costModStr ?? "").Trim(),
                         "", "", valueExpr.Trim(),
                         castSfx, invIcon);
+                    heal.ApplyAcquisitionFields(template, store);
+                    return heal;
                 }
             }
         }
 
-        return null;
+        // Phase 24a — everything else with a usable [magic] block (buffs,
+        // curses, summons, the monster arsenal) joins the catalog as
+        // SpellKind.Other so acquisition systems (icons, pcontent rolls,
+        // merchants, drops, the capture kit) see the FULL 293-template
+        // universe instead of the 69 offensive spells. Cast sites keep
+        // switching on Kind; Other fires its authored sfx visual only.
+        var other = new SpellTemplate(template.Name, sn, SpellKind.Other,
+            range, reload, cost, (costModStr ?? "").Trim(),
+            "", "", "",
+            castSfx, invIcon);
+        other.ApplyAcquisitionFields(template, store);
+        return other;
     }
 
     /// <summary>Phase 17-SC-H — pull the sfx_script name out of the template

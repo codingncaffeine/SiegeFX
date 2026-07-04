@@ -25,6 +25,10 @@ public sealed class PcontentResolver
         Melee = 1 << 0,
         Ranged = 1 << 1,
         Armor = 1 << 2,
+        // Phase 24a — spells (combat + nature schools). Bucketed under
+        // the DS1 spec class names "cmagic" / "nmagic"; "#spell" folds
+        // both.
+        Spell = 1 << 3,
     }
 
     public readonly record struct Entry(string Name, int Power, Rarity Rarity, Group Group, bool PcontentAllowed);
@@ -69,6 +73,9 @@ public sealed class PcontentResolver
             "weapon" => _all.Where(e => (e.Group & (Group.Melee | Group.Ranged)) != 0),
             "melee"  => _all.Where(e => (e.Group & Group.Melee) != 0),
             "armor"  => _all.Where(e => (e.Group & Group.Armor) != 0),
+            // Phase 24a — "#spell" folds both schools; "#cmagic"/"#nmagic"
+            // hit their literal buckets below.
+            "spell"  => _all.Where(e => (e.Group & Group.Spell) != 0),
             "*"      => _all,
             _        => _byClass.TryGetValue(parsed.Class, out var b) ? b : Enumerable.Empty<Entry>(),
         };
@@ -195,6 +202,25 @@ public sealed class PcontentResolver
 
             var rarity = ClassifyRarity(tpl.Name);
 
+            // Phase 24a — spell path (checked first: cheap name gate).
+            // Player-school spells index with power = [magic]max_level —
+            // the spell's skill window doubles as its pcontent band, so
+            // a spellbook with pcontent_level = N rolls spells whose
+            // window sits at or below N. Monster-arsenal spells (chain
+            // rooted at base_spell_monster) never index.
+            if (tpl.Name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+            {
+                char school = ClassifySpellSchool(tpl);
+                if (school != '\0')
+                {
+                    var maxLevel = (int)ParseFloat(_store.GetAttribute(tpl, "magic", "max_level"));
+                    var entry = new Entry(tpl.Name, maxLevel, rarity, Group.Spell, allowed);
+                    Bucket(school == 'c' ? "cmagic" : "nmagic").Add(entry);
+                    _all.Add(entry);
+                }
+                continue;
+            }
+
             // Weapon path: [attack][attack_class] is set, power = avg
             // of damage_min/damage_max. Weapons must have a hand-grip
             // mesh — without [aspect][model] there's no item to draw.
@@ -244,6 +270,30 @@ public sealed class PcontentResolver
             _byClass[key] = list;
         }
         return list;
+    }
+
+    /// <summary>Phase 24a — 'c' for combat-school, 'n' for nature-school,
+    /// '\0' for monster/unknown chains (matches SpellTemplate's
+    /// chain-derived SpellClass).</summary>
+    private static char ClassifySpellSchool(Template template)
+    {
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            switch (t.Name.ToLowerInvariant())
+            {
+                case "base_spell_dark":
+                case "base_scroll_dark":
+                case "base_summon_dark":
+                    return 'c';
+                case "base_spell_good":
+                case "base_scroll_good":
+                case "base_summon_good":
+                    return 'n';
+                case "base_spell_monster":
+                    return '\0';
+            }
+        }
+        return '\0';
     }
 
     private bool IsDescendantOf(Template template, string ancestorName)
