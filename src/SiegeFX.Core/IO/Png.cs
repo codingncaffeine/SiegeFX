@@ -95,7 +95,8 @@ public static class Png
     }
 }
 
-internal static class Crc32
+// Phase 23e — public: TankWriter stamps per-resource CRC-32s with this.
+public static class Crc32
 {
     private static readonly uint[] Table = BuildTable();
 

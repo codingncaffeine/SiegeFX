@@ -32,6 +32,7 @@ try
         "formulas"  => DispatchFormulas(args[1..]),
         "spells"    => DispatchSpells(args[1..]),
         "sfx"       => DispatchSfx(args[1..]),
+        "capture-kit" => CmdCaptureKitBuild(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
@@ -127,6 +128,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
     Console.WriteLine("  siegefx sfx param-audit    <Logic.dsres> [--verbose] [--filter=NAME]");
     Console.WriteLine("  siegefx sfx timeline       <Logic.dsres> <script-name|--all> [--ticks=N] [--seed=N] [--out=DIR]");
+    Console.WriteLine("  siegefx capture-kit build  <DS1-Resources-dir> [--out=DIR]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
@@ -6204,6 +6206,142 @@ static IEnumerable<string> ExtractAuditTextures(string paramString)
 // inventory the shipped /world/global/effects/*.gas pile and dump any
 // single script body (fireball, smoke_emitter, waterfall_froth, ...) so
 // the interpreter we build in SC-F has a verifiable source of truth.
+// Phase 23e — DS1-side ground-truth capture kit. Builds a mod tank for
+// the ORIGINAL game that starts a fresh farmboy with every spell in
+// inventory and casting skills high enough to use them all, so DS1
+// reference footage can be recorded without campaign progress. Retail
+// DS1 loads extra .dsres from its Resources folder and higher-priority
+// tanks override same-path files (SU 213), so dropping the built
+// zz_spelltest.dsres next to Logic.dsres overrides heroes.gas for a NEW
+// game; deleting the file restores stock behavior. Output also includes
+// a call sheet in the SAME ordinal spell order as the SiegeFX
+// filmstrips/goldens, so a single recorded casting session maps 1:1
+// onto our strips for side-by-side comparison.
+static int CmdCaptureKitBuild(string[] a)
+{
+    if (a.Length < 2 || !string.Equals(a[0], "build", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine("usage: siegefx capture-kit build <DS1-Resources-dir> [--out=DIR]");
+        return 1;
+    }
+    string resDir = a[1];
+    string outDir = "capture-kit";
+    for (int i = 2; i < a.Length; i++)
+        if (a[i].StartsWith("--out=", StringComparison.Ordinal)) outDir = a[i]["--out=".Length..];
+
+    var logicPath = System.IO.Path.Combine(resDir, "Logic.dsres");
+    if (!File.Exists(logicPath))
+    {
+        Console.Error.WriteLine($"Logic.dsres not found under '{resDir}'");
+        return 2;
+    }
+
+    using var tank = TankFile.Open(logicPath);
+    var reader = new TankReader(tank);
+    var (templates, _) = TemplateStore.LoadFromTank(reader);
+    var spells = SpellCatalog.Build(templates);
+
+    // Locate heroes.gas inside the tank (path varies by contentdb layout).
+    var heroesPath = reader.ListFiles()
+        .FirstOrDefault(p => p.EndsWith("/heroes.gas", StringComparison.OrdinalIgnoreCase));
+    if (heroesPath is null)
+    {
+        Console.Error.WriteLine("heroes.gas not found in Logic.dsres");
+        return 3;
+    }
+    var heroesText = System.Text.Encoding.UTF8.GetString(reader.ExtractToMemory(heroesPath));
+
+    // ---- modify farmboy ------------------------------------------------
+    int fbStart = heroesText.IndexOf("[t:template,n:farmboy]", StringComparison.OrdinalIgnoreCase);
+    if (fbStart < 0) { Console.Error.WriteLine("farmboy template not found in heroes.gas"); return 3; }
+    int fbEnd = heroesText.IndexOf("[t:template,", fbStart + 10, StringComparison.OrdinalIgnoreCase);
+    if (fbEnd < 0) fbEnd = heroesText.Length;
+
+    var roster = spells.All.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+    var invItems = new System.Text.StringBuilder();
+    invItems.AppendLine("\t\t// --- SiegeFX capture kit: every spell, for DS1 reference capture ---");
+    invItems.AppendLine("\t\t[other]");
+    invItems.AppendLine("\t\t{");
+    foreach (var s in roster)
+        invItems.AppendLine($"\t\t\til_main = {s.Name};");
+    invItems.AppendLine("\t\t}");
+
+    const string skillsOverride =
+        "\n\t// --- SiegeFX capture kit: cast-anything skills ---\n" +
+        "\t[actor]\n\t{\n\t\t[skills]\n\t\t{\n" +
+        "\t\t\tintelligence = 0, 0, 60;\n" +
+        "\t\t\tnature_magic = 0, 50, 0;\n" +
+        "\t\t\tcombat_magic = 0, 50, 0;\n" +
+        "\t\t}\n\t}\n";
+
+    var block = heroesText[fbStart..fbEnd];
+    int specIdx = block.IndexOf("specializes", StringComparison.OrdinalIgnoreCase);
+    int specEol = specIdx >= 0 ? block.IndexOf('\n', specIdx) : -1;
+    if (specEol < 0) { Console.Error.WriteLine("farmboy specializes line not found"); return 3; }
+    block = block.Insert(specEol + 1, skillsOverride);
+
+    int invIdx = block.IndexOf("[inventory]", StringComparison.OrdinalIgnoreCase);
+    int invBrace = invIdx >= 0 ? block.IndexOf('{', invIdx) : -1;
+    if (invBrace < 0) { Console.Error.WriteLine("farmboy [inventory] block not found"); return 3; }
+    block = block.Insert(invBrace + 1, "\n" + invItems);
+
+    var modifiedHeroes = heroesText[..fbStart] + block + heroesText[fbEnd..];
+
+    // ---- write the mod tank ---------------------------------------------
+    Directory.CreateDirectory(outDir);
+    var tankOut = System.IO.Path.Combine(outDir, "zz_spelltest.dsres");
+    var writer = new TankWriter
+    {
+        Priority      = TankPriority.User,
+        Title         = "SiegeFX spell capture kit",
+        Author        = "SiegeFX",
+        Description  = "Temporary test override: farmboy starts with every spell. Delete after capturing.",
+        BuildText     = "siegefx capture-kit build",
+        CopyrightText = "",
+    };
+    writer.Add(heroesPath, System.Text.Encoding.UTF8.GetBytes(modifiedHeroes));
+    writer.Write(tankOut, DateTime.UtcNow);
+
+    // Round-trip receipt: our own reader must open the tank and give the
+    // exact bytes back.
+    using (var check = TankFile.Open(tankOut))
+    {
+        var checkReader = new TankReader(check);
+        var back = checkReader.ExtractToMemory(heroesPath);
+        if (!back.AsSpan().SequenceEqual(System.Text.Encoding.UTF8.GetBytes(modifiedHeroes)))
+        {
+            Console.Error.WriteLine("round-trip FAILED: extracted bytes differ");
+            return 4;
+        }
+        Console.WriteLine($"round-trip OK: {checkReader.FileCount} file(s), {checkReader.DirCount} dir(s), header valid");
+    }
+
+    // ---- call sheet + install notes --------------------------------------
+    var sheet = new List<string>
+    {
+        "SiegeFX spell capture call sheet",
+        "================================",
+        "1. Copy zz_spelltest.dsres into your Dungeon Siege Resources folder",
+        $"   (next to Logic.dsres, e.g. {resDir}).",
+        "2. Start a NEW single-player game with the farmboy hero.",
+        "3. Your inventory contains every spell; casting skills are pre-raised.",
+        "4. Start recording. Cast each spell 2-3 times at a nearby target or",
+        "   open ground, IN THE ORDER BELOW (matches SiegeFX's filmstrips),",
+        "   pausing ~2s between spells.",
+        "5. Stop recording, delete zz_spelltest.dsres, and share the video.",
+        "",
+        "Cast order:",
+    };
+    for (int i = 0; i < roster.Count; i++)
+        sheet.Add($"  {i + 1,3}. {roster[i].Name}   ({roster[i].ScreenName})");
+    File.WriteAllLines(System.IO.Path.Combine(outDir, "capture_call_sheet.txt"), sheet);
+
+    Console.WriteLine($"capture kit written to {outDir}:");
+    Console.WriteLine($"  zz_spelltest.dsres       ({new FileInfo(tankOut).Length} bytes, {roster.Count} spells injected)");
+    Console.WriteLine("  capture_call_sheet.txt   (cast order = SiegeFX filmstrip order)");
+    return 0;
+}
+
 static int DispatchSfx(string[] a)
 {
     if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx sfx <list|show|parse|run|param-audit> ..."); return 1; }
