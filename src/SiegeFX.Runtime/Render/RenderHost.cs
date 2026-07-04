@@ -6013,6 +6013,16 @@ void main()
             ? null
             : TryGetGuiTexture(spell.InventoryIcon);
 
+    /// <summary>Phase 24c — the SECOND authored icon set: [gui]active_icon
+    /// (b_gui_ig_i_ic_sp_NNN, no _inv suffix) — DS1 draws these in the
+    /// weapons-panel active-spell slots. Falls back to the inventory icon
+    /// so a consumer never renders blank. The weapons-panel itself lands
+    /// with the party HUD phase; spellbook active rows adopt this then.</summary>
+    private GlTexture? ResolveSpellActiveIcon(SiegeFX.Core.Assets.SpellTemplate spell)
+        => !string.IsNullOrEmpty(spell.ActiveIcon)
+            ? TryGetGuiTexture(spell.ActiveIcon)
+            : ResolveSpellInventoryIcon(spell);
+
     /// <summary>Phase 21c — spawn the static-prop layer for the player region and
     /// every preloaded neighbor. Walks each region's <see cref="RegionObjects.StaticPropFiles"/>,
     /// looks up <c>aspect.model</c> off the template, loads the .asp +
@@ -14051,7 +14061,21 @@ void main()
         {
             void AddSpellDrop(string? spellName)
             {
-                if (spellName is null || !_spellCatalog.TryGet(spellName, out _)) return;
+                // Phase 24a — the catalog now carries the FULL spell
+                // universe (incl. the monster arsenal), so mere catalog
+                // presence no longer implies "droppable". The pre-widening
+                // TryGet gate admitted offensive + heal spells only —
+                // which is DS1's observable rule: the farmhouse krug
+                // apprentice drops spell_apprentice_zap (monster-chained
+                // but castable), while utilities like
+                // spell_resurrect_monster (Kind.Other, monster school)
+                // stay behind. Preserve exactly that, plus anything
+                // player-school.
+                if (spellName is null
+                    || !_spellCatalog.TryGet(spellName, out var sp)) return;
+                if (!sp.PlayerAcquirable
+                    && sp.Kind is not (SiegeFX.Core.Assets.SpellKind.OffensiveInstantHit
+                                       or SiegeFX.Core.Assets.SpellKind.SelfHeal)) return;
                 foreach (var it in drops)
                     if (it.Reference.Equals(spellName, StringComparison.OrdinalIgnoreCase)) return;
                 drops.Add(new SiegeFX.Core.Actors.LootEntry("", spellName));

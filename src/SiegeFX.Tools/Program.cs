@@ -124,6 +124,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx spells show        <Logic.dsres> <spell_name> [magic_level]");
     Console.WriteLine("  siegefx spells elements    <Logic.dsres>");
     Console.WriteLine("  siegefx spells visual-audit <Logic.dsres> [--verbose] [--filter=NAME] [--only-uncovered]");
+    Console.WriteLine("  siegefx spells icon-audit  <Logic.dsres> <Objects.dsres> [--verbose]");
     Console.WriteLine("  siegefx sfx list           <Logic.dsres> [--prefix=NAME]");
     Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
     Console.WriteLine("  siegefx sfx param-audit    <Logic.dsres> [--verbose] [--filter=NAME]");
@@ -756,6 +757,7 @@ static int DispatchRegion(string[] a)
         "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
         "loot-distribution" => CmdRegionLootDistribution(a[1..]),
         "mob-loot" => CmdRegionMobLoot(a[1..]),
+        "drop-sweep" => CmdRegionDropSweep(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -5004,6 +5006,168 @@ static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold
 /// off the template: the specific carried weapon, and drops_spellbook with
 /// the authored spells. This is the authoritative per-mob answer to "which
 /// drops are set and which are random".</summary>
+// Phase 24b — map-wide drop-completeness gate. Sweeps EVERY region's
+// actor.gas + generator children and asserts:
+//  (1) every caster with drops_spellbook=true authors a primary spell
+//      that resolves in the SpellCatalog AND appears in 100% of its
+//      loot rolls (authored spell drops are SET, not random);
+//  (2) every #spell/#cmagic/#nmagic pcontent reference in any mob loot
+//      table resolves to at least one indexed spell.
+// Exit 0 only when both hold across the whole map.
+static int CmdRegionDropSweep(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region drop-sweep <map-tank> <logic-tank> [--rolls=N] [--seed=K]");
+        return 1;
+    }
+    int rolls = 25, seed = 1;
+    for (int i = 2; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--rolls=") && int.TryParse(a[i]["--rolls=".Length..], out var r)) rolls = r;
+        else if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var s)) seed = s;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    var catalog = SiegeFX.Core.Assets.SpellCatalog.Build(store);
+    var resolver = new SiegeFX.Core.Actors.PcontentResolver(store);
+
+    // Discover regions.
+    var regionPaths = new List<string>();
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Gather every distinct mob template map-wide (actors + generator children).
+    var mobTemplates = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    foreach (var rp in regionPaths)
+    {
+        var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+        foreach (var p in actors)
+        {
+            mobTemplates.TryGetValue(p.TemplateName, out var c);
+            mobTemplates[p.TemplateName] = c + 1;
+        }
+        var (gens, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "generator.gas");
+        foreach (var p in gens)
+        {
+            string? child = null;
+            foreach (var c in p.Node.Children)
+            {
+                if (!c.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var at in c.Attributes)
+                    if (at.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
+                        child = at.Value.Trim().Trim('"');
+                break;
+            }
+            if (child is null && store.TryGet(p.TemplateName, out var gt) && gt is not null)
+            {
+                string? blockHeader = null;
+                for (var t = gt; t is not null && blockHeader is null; t = t.Specializes)
+                    foreach (var c in t.Node.Children)
+                    {
+                        if (!c.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (c.Header.Equals("generator_in_object", StringComparison.OrdinalIgnoreCase)) continue;
+                        blockHeader = c.Header;
+                        break;
+                    }
+                if (blockHeader is not null)
+                    child = store.GetAttribute(gt, blockHeader, "child_template_name")?.Trim().Trim('"');
+            }
+            if (child is null) continue;
+            mobTemplates.TryGetValue(child, out var cc);
+            mobTemplates[child] = cc + 1;
+        }
+    }
+
+    int casters = 0, castersOk = 0, specRefs = 0, specOk = 0;
+    var failures = new List<string>();
+    var specRng = new Random(seed);
+    foreach (var (name, placed) in mobTemplates)
+    {
+        if (!store.TryGet(name, out var template) || template is null) continue;
+
+        // (1) authored-spell drop assertion.
+        var sb = store.GetAttribute(template, "actor", "drops_spellbook")?.Trim();
+        if (sb is not null && sb.Equals("true", StringComparison.OrdinalIgnoreCase))
+        {
+            casters++;
+            var prim = store.GetAttribute(template, "inventory", "other", "il_active_primary_spell")?.Trim().Trim('"');
+            if (string.IsNullOrEmpty(prim))
+            {
+                failures.Add($"{name}: drops_spellbook=true but no il_active_primary_spell authored");
+                continue;
+            }
+            // The guaranteed drop is applied on the RUNTIME kill path
+            // (RenderHost SC-MOB-SPELLBOOK augments the roll), not inside
+            // LootRoller — so the sweep asserts the same gate the runtime
+            // uses: the authored primary must resolve in the catalog as a
+            // player-acquirable spell. Monster-utility secondaries
+            // intentionally stay behind.
+            if (!catalog.TryGet(prim, out var primSpell))
+            {
+                failures.Add($"{name}: primary spell '{prim}' not in SpellCatalog");
+                continue;
+            }
+            // Mirror the runtime kill-path gate: player-school spells OR
+            // castable monster attacks (offensive/heal Kind) drop;
+            // monster utilities (Kind.Other) stay behind by design.
+            if (!primSpell.PlayerAcquirable
+                && primSpell.Kind is not (SiegeFX.Core.Assets.SpellKind.OffensiveInstantHit
+                                          or SiegeFX.Core.Assets.SpellKind.SelfHeal))
+            {
+                failures.Add($"{name}: primary spell '{prim}' would never drop (class {primSpell.Class}, kind {primSpell.Kind})");
+                continue;
+            }
+            castersOk++;
+        }
+
+        // (2) spell pcontent spec resolution across the loot table.
+        var lt = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
+        void ScanBuckets(IReadOnlyList<SiegeFX.Core.Actors.LootBucket> buckets)
+        {
+            foreach (var b in buckets)
+            {
+                foreach (var e in b.Entries)
+                {
+                    if (!SiegeFX.Core.Actors.PcontentResolver.IsSpec(e.Reference)) continue;
+                    var cls = SiegeFX.Core.Actors.PcontentResolver.ParseSpec(e.Reference).Class.ToLowerInvariant();
+                    if (cls is not ("spell" or "cmagic" or "nmagic")) continue;
+                    specRefs++;
+                    if (resolver.TryResolve(e.Reference, specRng, out _)) specOk++;
+                    else failures.Add($"{name}: spell spec '{e.Reference}' resolves to NOTHING");
+                }
+                ScanBuckets(b.Children);
+            }
+        }
+        ScanBuckets(lt.Drops);
+        ScanBuckets(lt.Equipped);
+    }
+
+    Console.WriteLine($"siegefx region drop-sweep  —  {regionPaths.Count} regions, {mobTemplates.Count} distinct mob templates");
+    Console.WriteLine();
+    Console.WriteLine($"  casters (drops_spellbook)      : {castersOk}/{casters} drop their authored spell in {rolls}/{rolls} rolls");
+    Console.WriteLine($"  spell pcontent specs           : {specOk}/{specRefs} resolve");
+    Console.WriteLine($"  failures                       : {failures.Count}");
+    foreach (var f in failures) Console.WriteLine("  FAIL  " + f);
+    return failures.Count == 0 ? 0 : 4;
+}
+
 static int CmdRegionMobLoot(string[] a)
 {
     if (a.Length < 3)
@@ -5786,6 +5950,7 @@ static int DispatchSpells(string[] a)
         "eval"         => CmdSpellsEval(a[1..]),
         "elements"     => CmdSpellsElements(a[1..]),
         "visual-audit" => CmdSpellsVisualAudit(a[1..]),
+        "icon-audit"   => CmdSpellsIconAudit(a[1..]),
         _              => UnknownCommand("spells " + a[0]),
     };
 }
@@ -6257,7 +6422,13 @@ static int CmdCaptureKitBuild(string[] a)
     int fbEnd = heroesText.IndexOf("[t:template,", fbStart + 10, StringComparison.OrdinalIgnoreCase);
     if (fbEnd < 0) fbEnd = heroesText.Length;
 
-    var roster = spells.All.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+    // Phase 24a — the kit injects the PLAYER-acquirable roster (combat +
+    // nature schools incl. summons/scrolls); the monster arsenal stays
+    // out — retail DS1 won't slot it into a player spellbook.
+    var roster = spells.All
+        .Where(s => s.PlayerAcquirable)
+        .OrderBy(s => s.Name, StringComparer.Ordinal)
+        .ToList();
     var invItems = new System.Text.StringBuilder();
     invItems.AppendLine("\t\t// --- SiegeFX capture kit: every spell, for DS1 reference capture ---");
     invItems.AppendLine("\t\t[other]");
@@ -6749,6 +6920,89 @@ static int CmdSfxRun(string[] a)
         Console.WriteLine($"  unhandled verbs     : {string.Join(", ", rt.UnhandledVerbs)}");
 
     return 0;
+}
+
+// Phase 24c — both authored icon sets, audited against the shipped raws.
+// Every player-acquirable spell must author active_icon (the small
+// active-slot set, b_gui_ig_i_ic_sp_NNN) AND inventory_icon (the 32x32
+// _inv set), and both raws must exist in Objects.dsres. Ship gate:
+// 0 missing on the player roster.
+static int CmdSpellsIconAudit(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx spells icon-audit <Logic.dsres> <Objects.dsres> [--verbose]");
+        return 1;
+    }
+    bool verbose = a.Skip(2).Any(x => x == "--verbose");
+
+    using var logic = TankFile.Open(a[0]);
+    var logicReader = new TankReader(logic);
+    var (templates, _) = TemplateStore.LoadFromTank(logicReader);
+    var spells = SpellCatalog.Build(templates);
+
+    using var objects = TankFile.Open(a[1]);
+    var objectsReader = new TankReader(objects);
+    // Basename (no extension) index of every raw in the tank.
+    var raws = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var p in objectsReader.ListFiles())
+    {
+        if (!p.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)) continue;
+        int slash = p.LastIndexOf('/');
+        raws.Add(p[(slash + 1)..^4]);
+    }
+
+    int playerTotal = 0, bothOk = 0;
+    var missing = new List<string>();
+    var monsterWithIcons = new List<string>();
+    var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var s in spells.All.OrderBy(x => x.Name, StringComparer.Ordinal))
+    {
+        if (!string.IsNullOrEmpty(s.ActiveIcon)) referenced.Add(s.ActiveIcon);
+        if (!string.IsNullOrEmpty(s.InventoryIcon)) referenced.Add(s.InventoryIcon);
+        if (!s.PlayerAcquirable)
+        {
+            if (!string.IsNullOrEmpty(s.ActiveIcon) || !string.IsNullOrEmpty(s.InventoryIcon))
+                monsterWithIcons.Add(s.Name);
+            continue;
+        }
+        playerTotal++;
+        var problems = new List<string>();
+        if (string.IsNullOrEmpty(s.ActiveIcon)) problems.Add("no active_icon authored");
+        else if (!raws.Contains(s.ActiveIcon)) problems.Add($"active raw '{s.ActiveIcon}' absent");
+        if (string.IsNullOrEmpty(s.InventoryIcon)) problems.Add("no inventory_icon authored");
+        else if (!raws.Contains(s.InventoryIcon)) problems.Add($"inv raw '{s.InventoryIcon}' absent");
+        if (problems.Count == 0) bothOk++;
+        else missing.Add($"{s.Name,-30} : {string.Join("; ", problems)}");
+    }
+
+    // Orphan icon raws — numbered sp_ pairs no spell references.
+    var orphans = raws
+        .Where(r => r.StartsWith("b_gui_ig_i_ic_sp_", StringComparison.OrdinalIgnoreCase)
+                    && !referenced.Contains(r))
+        .OrderBy(r => r, StringComparer.Ordinal)
+        .ToList();
+
+    Console.WriteLine($"siegefx spells icon-audit  —  {spells.Count} spells ({playerTotal} player-acquirable)");
+    Console.WriteLine();
+    Console.WriteLine($"  player spells with BOTH icon sets resolved : {bothOk}/{playerTotal}");
+    Console.WriteLine($"  missing/unresolved                        : {missing.Count}");
+    Console.WriteLine($"  monster-arsenal spells authoring icons    : {monsterWithIcons.Count}");
+    Console.WriteLine($"  orphan sp_* icon raws (no spell refs them): {orphans.Count}");
+    if (missing.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Missing:");
+        foreach (var m in missing) Console.WriteLine("  " + m);
+    }
+    if (verbose && orphans.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Orphans:");
+        foreach (var o in orphans) Console.WriteLine("  " + o);
+    }
+    return missing.Count == 0 ? 0 : 4;
 }
 
 static int CmdSpellsDump(string[] a)
