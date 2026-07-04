@@ -10788,12 +10788,11 @@ void main()
                 { conv = hit; break; }
             }
 
-            // Phase 20d follow-up — vendors in DS1 ship with an EMPTY
-            // [conversation] block (Norick is the canonical example). They
-            // don't chat; clicking opens trade. Treat a vendor-catalog match
-            // as talkable too, so RMB on an empty-conversation vendor still
-            // resolves; the open-time branch picks dialogue vs trade.
-            var vdef = SiegeFX.Core.Actors.VendorCatalog.Find(s.Actor.Template.Name);
+            // Phase 25b — vendors resolve from their template chain
+            // ([store] + store_pcontent). Shops with an empty
+            // [conversation] open trade directly; ones with dialogue get
+            // the trade panel after the conversation closes.
+            var vdef = ResolveVendor(s.Actor.Template);
             if (conv is null && vdef is null) continue;
 
             var pos = s.CurrentTransform.Translation;
@@ -10831,20 +10830,89 @@ void main()
     }
 
     /// <summary>Phase 20d — call after every interaction that might have
-    /// closed the dialogue panel. If the last talked actor matches a vendor
-    /// catalog entry, open the trade overlay; otherwise no-op. Idempotent —
-    /// runs unconditionally each tick the panel is open is fine because the
-    /// guard checks are O(catalog).</summary>
+    /// closed the dialogue panel. If the last talked actor is a shop, open
+    /// the trade overlay; otherwise no-op.</summary>
     private void TryOpenVendorAfterTalk()
     {
         if (_dialogue.IsOpen) return;
         if (_vendor.IsOpen) return;
         if (string.IsNullOrEmpty(_lastTalkedTemplate)) return;
-        var def = SiegeFX.Core.Actors.VendorCatalog.Find(_lastTalkedTemplate);
+        var def = _templateStore is not null
+                  && _templateStore.TryGet(_lastTalkedTemplate, out var tpl) && tpl is not null
+            ? ResolveVendor(tpl)
+            : null;
         if (def is null) return;
         _vendor.Open(def);
         Console.WriteLine($"trade: opened vendor panel for {def.ScreenName}");
         _lastTalkedTemplate = null; // one-shot per talk
+    }
+
+    // ---- Phase 25b — data-driven shops ---------------------------------
+    // Shops come straight from the template chain ([store] +
+    // [inventory][store_pcontent], see StoreTable) instead of the old
+    // hand-authored VendorCatalog. Each shop's shelf rolls ONCE per
+    // session (seeded by template name) and is cached — full_ratio=0
+    // shipped data doesn't re-fill mid-visit; restock semantics land
+    // with the 25d audit.
+    private readonly Dictionary<string, SiegeFX.Core.Actors.VendorDefinition?> _storeDefs =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private SiegeFX.Core.Actors.VendorDefinition? ResolveVendor(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_templateStore is null) return null;
+        if (_storeDefs.TryGetValue(tpl.Name, out var cached)) return cached;
+
+        SiegeFX.Core.Actors.VendorDefinition? def = null;
+        var table = SiegeFX.Core.Actors.StoreTable.FromTemplate(_templateStore, tpl);
+        if (table is not null && table.IsShop)
+        {
+            _playResolverPcontent ??= new SiegeFX.Core.Actors.PcontentResolver(_templateStore);
+            var rng = new Random(tpl.Name.GetHashCode(StringComparison.OrdinalIgnoreCase));
+            var stock = table.GenerateStock(_playResolverPcontent, rng);
+            var items = new List<SiegeFX.Core.Actors.VendorStockItem>(stock.Count);
+            foreach (var it in stock)
+            {
+                var screen = _templateStore.TryGet(it.TemplateName, out var itpl) && itpl is not null
+                    ? (_templateStore.GetAttribute(itpl, "common", "screen_name")?.Trim().Trim('"') ?? it.TemplateName)
+                    : it.TemplateName;
+                items.Add(new SiegeFX.Core.Actors.VendorStockItem
+                {
+                    ItemReference = it.TemplateName,
+                    ScreenName    = screen,
+                    Price         = (long)MathF.Round(ItemBaseValue(it.TemplateName, it.Power) * table.ItemMarkup),
+                    Slot          = "",
+                });
+            }
+            var vendorScreen = _templateStore.GetAttribute(tpl, "common", "screen_name")?.Trim().Trim('"') ?? tpl.Name;
+            def = new SiegeFX.Core.Actors.VendorDefinition
+            {
+                NameMatch  = tpl.Name,
+                ScreenName = vendorScreen,
+                Stock      = items,
+            };
+        }
+        _storeDefs[tpl.Name] = def;
+        return def;
+    }
+
+    private SiegeFX.Core.Actors.PcontentResolver? _playResolverPcontent;
+
+    /// <summary>Phase 25b — an item's base gold value: the authored
+    /// [aspect]gold_value where present; otherwise a PROVISIONAL
+    /// power-derived curve (flagged for the 25d pricing fit against DS1
+    /// captures — retail computes unauthored values from stats).</summary>
+    private long ItemBaseValue(string templateName, int power)
+    {
+        if (_templateStore is not null
+            && _templateStore.TryGet(templateName, out var tpl) && tpl is not null)
+        {
+            var gv = _templateStore.GetAttribute(tpl, "aspect", "gold_value");
+            if (!string.IsNullOrEmpty(gv)
+                && float.TryParse(gv, System.Globalization.NumberStyles.Float,
+                                  System.Globalization.CultureInfo.InvariantCulture, out var v))
+                return (long)MathF.Round(v);
+        }
+        return Math.Max(1, (long)MathF.Round(10f + power * power * 0.35f));
     }
 
     /// <summary>SC-QUEST-OBJ-A — credit "talk to NPC X" objectives against the
@@ -12275,7 +12343,7 @@ void main()
                 bool talkable = false;
                 foreach (var k in keys)
                     if (_conversations.TryGetValue(k, out var c) && c.Nodes.Count > 0) { talkable = true; break; }
-                if (!talkable && SiegeFX.Core.Actors.VendorCatalog.Find(s.Actor.Template.Name) is not null) talkable = true;
+                if (!talkable && ResolveVendor(s.Actor.Template) is not null) talkable = true;
                 if (talkable) { _cursorState = CursorState.Talk; return; }
             }
         }

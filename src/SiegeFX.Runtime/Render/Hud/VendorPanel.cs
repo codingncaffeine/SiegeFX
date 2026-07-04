@@ -217,10 +217,16 @@ public sealed class VendorPanel
     /// at half the list price; otherwise default to a flat 5g placeholder.
     /// 20d-incomplete: items without a catalog entry get the flat price; full
     /// per-template economy lands when treasure_set.gas is parsed.</summary>
+    /// <summary>Phase 25b — host-provided item valuation (authored
+    /// gold_value chain, or the provisional power curve). Sell price =
+    /// half the base value until the 25d pricing fit says otherwise.</summary>
+    public static Func<string, long>? PriceResolver;
+
     public static long ResolveSellPrice(string itemRef)
     {
-        // Cheap walk — vendor catalog is tiny in 20d. Move to a reverse-index
-        // dictionary if the catalog grows past a dozen entries.
+        if (PriceResolver is not null)
+            return Math.Max(1, PriceResolver(itemRef) / 2);
+        // Legacy fallback: any open catalog row, else a flat 5g.
         foreach (var v in EnumerateAllStock())
         {
             if (string.Equals(v.ItemReference, itemRef, StringComparison.OrdinalIgnoreCase))
