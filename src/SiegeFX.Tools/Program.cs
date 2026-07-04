@@ -126,6 +126,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx sfx list           <Logic.dsres> [--prefix=NAME]");
     Console.WriteLine("  siegefx sfx show           <Logic.dsres> <script-name>");
     Console.WriteLine("  siegefx sfx param-audit    <Logic.dsres> [--verbose] [--filter=NAME]");
+    Console.WriteLine("  siegefx sfx timeline       <Logic.dsres> <script-name|--all> [--ticks=N] [--seed=N] [--out=DIR]");
     Console.WriteLine("  siegefx balance curve      <Logic.dsres> [--max-level=N] [--skill=melee|ranged|nature|combat|all] [--start=str,dex,int]");
     Console.WriteLine("  siegefx audio coverage     <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
@@ -6209,6 +6210,7 @@ static int DispatchSfx(string[] a)
         "parse"       => CmdSfxParse(a[1..]),
         "run"         => CmdSfxRun(a[1..]),
         "param-audit" => CmdSfxParamAudit(a[1..]),
+        "timeline"    => CmdSfxTimeline(a[1..]),
         _             => UnknownCommand("sfx " + a[0]),
     };
 }
@@ -6386,6 +6388,91 @@ static IEnumerable<string> ExtractParamKeys(string raw)
         }
         else i++;
     }
+}
+
+// Phase 23b — deterministic cast-timeline dump. One spell prints to
+// stdout; --all writes one file per spell into --out (default
+// goldens/sfx-timelines under the current directory) for committing as
+// golden regression baselines. Fixed seed + fixed context anchors +
+// fixed 20 Hz dt make identical code/data emit identical traces.
+static int CmdSfxTimeline(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx sfx timeline <Logic.dsres> <script-name|--all> [--ticks=N] [--seed=N] [--out=DIR]");
+        return 1;
+    }
+    int ticks = 40, seed = 1;
+    string? outDir = null;
+    bool all = string.Equals(a[1], "--all", StringComparison.OrdinalIgnoreCase);
+    for (int i = 2; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--ticks=", StringComparison.Ordinal) && int.TryParse(a[i]["--ticks=".Length..], out var t)) ticks = t;
+        else if (a[i].StartsWith("--seed=", StringComparison.Ordinal) && int.TryParse(a[i]["--seed=".Length..], out var s)) seed = s;
+        else if (a[i].StartsWith("--out=", StringComparison.Ordinal)) outDir = a[i]["--out=".Length..];
+    }
+
+    using var tank = TankFile.Open(a[0]);
+    var reader = new TankReader(tank);
+    var store  = SfxScriptStore.LoadFromTank(reader);
+
+    if (!all)
+    {
+        if (!store.TryGet(a[1], out _))
+        {
+            Console.Error.WriteLine($"no sfx_script named '{a[1]}'");
+            return 4;
+        }
+        foreach (var line in RunTimelineLines(store, a[1], ticks, seed))
+            Console.WriteLine(line);
+        return 0;
+    }
+
+    var (templates, _) = TemplateStore.LoadFromTank(reader);
+    var spells = SpellCatalog.Build(templates);
+    outDir ??= System.IO.Path.Combine("goldens", "sfx-timelines");
+    System.IO.Directory.CreateDirectory(outDir);
+    int written = 0, skipped = 0;
+    foreach (var spell in spells.All.OrderBy(s => s.Name, StringComparer.Ordinal))
+    {
+        if (string.IsNullOrEmpty(spell.CastSfxScript) || !store.TryGet(spell.CastSfxScript, out _))
+        {
+            skipped++;
+            continue;
+        }
+        var lines = RunTimelineLines(store, spell.CastSfxScript, ticks, seed);
+        System.IO.File.WriteAllLines(System.IO.Path.Combine(outDir, spell.Name + ".txt"), lines);
+        written++;
+    }
+    Console.WriteLine($"sfx timeline --all: {written} golden traces written to {outDir} ({skipped} spells without runnable cast script)");
+    return 0;
+}
+
+static List<string> RunTimelineLines(SfxScriptStore store, string scriptName, int ticks, int seed)
+{
+    var sink = new TimelineSink();
+    var rt = new SiegeFX.Core.Sfx.SfxRuntime(store, sink);
+    rt.SetDeterministicSeed(seed);
+    // Fixed anchors: caster feet at origin, target 4u east (typical cast
+    // range mid-band), weapon bone at hand height. Chosen once; every
+    // golden depends on them, so never change without regenerating all.
+    var ctx = new SiegeFX.Core.Sfx.SfxContext(
+        new System.Numerics.Vector3(0f, 0f, 0f),
+        new System.Numerics.Vector3(4f, 0f, 0f),
+        new System.Numerics.Vector3(0.3f, 1.2f, 0f));
+    sink.Now = 0f;
+    rt.Spawn(scriptName, ctx, null);
+    const float dt = 1f / 20f;
+    for (int i = 1; i <= ticks; i++) { sink.Now = i * dt; rt.Tick(dt); }
+
+    var lines = new List<string>
+    {
+        $"# sfx timeline  script={scriptName}  ticks={ticks}  dt=0.050  seed={seed}",
+        "# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)",
+    };
+    lines.AddRange(sink.Events);
+    lines.Add($"# end: emitters={rt.LivePersistentCount} coroutines={rt.LiveCoroutineCount} unhandled=[{string.Join(",", rt.UnhandledVerbs.OrderBy(v => v, StringComparer.Ordinal))}]");
+    return lines;
 }
 
 static int CmdSfxList(string[] a)
@@ -8118,6 +8205,65 @@ sealed class SpellAuditRow
 /// <summary>Headless <see cref="SiegeFX.Core.Sfx.IParticleSink"/> for `siegefx sfx run`.
 /// Counts spawn/maintain calls and accumulates per-kind particle budgets so the audit
 /// CLI can verify the VM produces the expected receipt without standing up GL.</summary>
+// Phase 23b — deterministic sink for `siegefx sfx timeline`. Records every
+// IParticleSink call in order with a caller-stamped timestamp and every
+// argument at fixed precision, so a full cast run serializes to a stable
+// text trace. Combined with SfxRuntime.SetDeterministicSeed, identical
+// code + data produce identical traces — the committed goldens under
+// goldens/sfx-timelines/ are a regression net for VM/param changes.
+sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
+{
+    public float Now;
+    public readonly List<string> Events = new();
+
+    static string F(float v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    static string V3(System.Numerics.Vector3 v) => $"({F(v.X)},{F(v.Y)},{F(v.Z)})";
+    static string V4(System.Numerics.Vector4 v) => $"({F(v.X)},{F(v.Y)},{F(v.Z)},{F(v.W)})";
+    void Add(string s) => Events.Add($"{Now.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture),7}  {s}");
+
+    public void SpawnFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dur, int count = 12)
+        => Add($"fire        pos={V3(p)} color={V4(c)} scale={F(scale)} dur={F(dur)} n={count}");
+    public void SpawnSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dur, int count = 8)
+        => Add($"smoke       pos={V3(p)} color={V4(c)} scale={F(scale)} dur={F(dur)} n={count}");
+    public void SpawnSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dur, int count = 8)
+        => Add($"steam       pos={V3(p)} color={V4(c)} scale={F(scale)} dur={F(dur)} n={count}");
+    public void SpawnSpark(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dur, int count = 16)
+        => Add($"spark       pos={V3(p)} color={V4(c)} scale={F(scale)} dur={F(dur)} n={count}");
+    public void SpawnLightning(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float dur)
+        => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)}");
+    public void SpawnLightning(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float dur, float displace)
+        => Add($"lightning   src={V3(s)} tgt={V3(t)} color={V4(c)} dur={F(dur)} displace={F(displace)}");
+    public void SpawnProjectile(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c, float scale, float speed, int impactKind)
+        => Add($"projectile  src={V3(s)} tgt={V3(t)} color={V4(c)} scale={F(scale)} speed={F(speed)} impact={impactKind}");
+    public void SpawnCylinder(System.Numerics.Vector3 a, System.Numerics.Vector4 c, float rOut, float thick, float spin, float tin, float tout, float dur, byte tex, byte seg)
+        => Add($"cylinder    pos={V3(a)} color={V4(c)} r={F(rOut)} thick={F(thick)} spin={F(spin)} tin={F(tin)} tout={F(tout)} dur={F(dur)} tex={tex} seg={seg}");
+    public void SpawnSray(System.Numerics.Vector3 a, System.Numerics.Vector4 c0, System.Numerics.Vector4 c1, float lmin, float lmax, float ws, float we, float dur, int rays)
+        => Add($"sray        pos={V3(a)} c0={V4(c0)} c1={V4(c1)} len={F(lmin)}..{F(lmax)} w={F(ws)}..{F(we)} dur={F(dur)} rays={rays}");
+    public void SpawnFireb(System.Numerics.Vector3 a, System.Numerics.Vector4 c, System.Numerics.Vector3 vel, System.Numerics.Vector3 acc, float life, float maxDisp, float lr, float ur, int count, float flame)
+        => Add($"fireb       pos={V3(a)} color={V4(c)} vel={V3(vel)} accel={V3(acc)} life={F(life)} disp={F(maxDisp)} r={F(lr)}..{F(ur)} n={count} flame={F(flame)}");
+    public void SpawnSphere(System.Numerics.Vector3 a, System.Numerics.Vector4 c, float radius, float dur, int count)
+        => Add($"sphere      pos={V3(a)} color={V4(c)} r={F(radius)} dur={F(dur)} n={count}");
+
+    // Maintain* pumps fire every tick; emulate the renderer's carry math so
+    // spawn cadence matches the live system, and only log ticks that
+    // actually emit (keeps traces dense with signal, still deterministic).
+    float Pump(string kind, System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
+    {
+        float budget = carry + rate * dt;
+        int n = (int)budget;
+        if (n > 0) Add($"{kind,-11} pos={V3(p)} color={V4(c)} scale={F(scale)} rate={F(rate)} n={n}");
+        return budget - n;
+    }
+    public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
+        => Pump("fire~", p, c, scale, dt, rate, carry);
+    public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
+        => Pump("smoke~", p, c, scale, dt, rate, carry);
+    public float MaintainSteam(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
+        => Pump("steam~", p, c, scale, dt, rate, carry);
+    public float MaintainGlow(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float radius, float dt, float rate, float carry)
+        => Pump("glow~", p, c, radius, dt, rate, carry);
+}
+
 sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
 {
     public int SpawnFireCount, SpawnSmokeCount, SpawnSteamCount, SpawnSparkCount, SpawnLightningCount, SpawnProjectileCount;

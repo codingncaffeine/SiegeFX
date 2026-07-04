@@ -1,0 +1,6 @@
+# sfx timeline  script=chain_lightning_caster  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  spark       pos=(0,0,0) color=(0.7,0.7,1,1) scale=0.6 dur=2 n=25
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=1 displace=0.1
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0.8,0.6,1,1) dur=1 displace=0.1
+# end: emitters=0 coroutines=0 unhandled=[]

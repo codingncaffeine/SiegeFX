@@ -1,0 +1,13 @@
+# sfx timeline  script=fire_cyclone  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.100  fire~       pos=(5.079,0,2.627) color=(1,0.4,0.1,1) scale=5 rate=18 n=1
+  0.100  fire~       pos=(5.079,0,2.627) color=(1,0.6,0.3,1) scale=5 rate=18 n=1
+  0.150  fire~       pos=(4.535,0,2.789) color=(1,0.4,0.1,1) scale=5 rate=18 n=1
+  0.150  fire~       pos=(4.535,0,2.789) color=(1,0.6,0.3,1) scale=5 rate=18 n=1
+  0.200  fire~       pos=(3.97,0,2.84) color=(1,0.4,0.1,1) scale=5 rate=18 n=1
+  0.200  fire~       pos=(3.97,0,2.84) color=(1,0.6,0.3,1) scale=5 rate=18 n=1
+  0.250  fire~       pos=(3.407,0,2.778) color=(1,0.4,0.1,1) scale=5 rate=18 n=1
+  0.250  fire~       pos=(3.407,0,2.778) color=(1,0.6,0.3,1) scale=5 rate=18 n=1
+  0.300  fire~       pos=(2.867,0,2.604) color=(1,0.4,0.1,1) scale=5 rate=18 n=1
+  0.300  fire~       pos=(2.867,0,2.604) color=(1,0.6,0.3,1) scale=5 rate=18 n=1
+# end: emitters=0 coroutines=1 unhandled=[]

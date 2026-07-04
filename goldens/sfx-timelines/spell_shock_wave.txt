@@ -1,0 +1,9 @@
+# sfx timeline  script=shock_wave  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  spark       pos=(4,0,0) color=(1,1,0.7,1) scale=0.9 dur=0.3 n=50
+  0.000  spark       pos=(4,0,0) color=(1,1,0.7,1) scale=0.9 dur=0.5 n=50
+  0.000  spark       pos=(4,0,0) color=(1,1,0.7,1) scale=0.9 dur=3 n=96
+  0.000  cylinder    pos=(4,0,0) color=(1,1,0.7,1) r=3 thick=0.7 spin=16 tin=0.1 tout=0.4 dur=0.5 tex=11 seg=24
+  0.000  cylinder    pos=(4,0,0) color=(1,1,0.7,1) r=3 thick=0.7 spin=16 tin=0.1 tout=0.4 dur=0.5 tex=11 seg=24
+  0.000  cylinder    pos=(4,0,0) color=(1,1,0.7,1) r=3 thick=0.7 spin=16 tin=0.1 tout=0.4 dur=0.5 tex=11 seg=24
+# end: emitters=0 coroutines=0 unhandled=[camerashake,worldmsg]

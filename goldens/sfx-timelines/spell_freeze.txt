@@ -1,0 +1,29 @@
+# sfx timeline  script=freeze  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.050  fire~       pos=(0.68,1.077,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+  0.100  smoke~      pos=(1.227,1.067,-0.472) color=(0.75,0.75,1,1) scale=0.3 rate=18 n=1
+  0.100  smoke~      pos=(0.588,1.067,0.162) color=(0.9,0.6,1,1) scale=0.3 rate=18 n=1
+  0.100  smoke~      pos=(0.632,1.067,-0.256) color=(0.6,0.9,1,1) scale=0.3 rate=18 n=1
+  0.100  smoke~      pos=(1.061,0.953,0) color=(0.5,0.5,1,1) scale=2 rate=18 n=1
+  0.100  fire~       pos=(1.061,0.953,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+  0.150  smoke~      pos=(1.698,0.943,-0.429) color=(0.75,0.75,1,1) scale=0.3 rate=18 n=1
+  0.150  smoke~      pos=(0.946,0.943,0.064) color=(0.9,0.6,1,1) scale=0.3 rate=18 n=1
+  0.150  smoke~      pos=(1.071,0.943,-0.336) color=(0.6,0.9,1,1) scale=0.3 rate=18 n=1
+  0.150  smoke~      pos=(1.441,0.83,0) color=(0.5,0.5,1,1) scale=2 rate=18 n=1
+  0.150  fire~       pos=(1.441,0.83,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+  0.200  smoke~      pos=(2.159,0.82,-0.37) color=(0.75,0.75,1,1) scale=0.3 rate=18 n=1
+  0.200  smoke~      pos=(1.323,0.82,-0.035) color=(0.9,0.6,1,1) scale=0.3 rate=18 n=1
+  0.200  smoke~      pos=(1.526,0.82,-0.403) color=(0.6,0.9,1,1) scale=0.3 rate=18 n=1
+  0.200  smoke~      pos=(1.822,0.706,0) color=(0.5,0.5,1,1) scale=2 rate=18 n=1
+  0.200  fire~       pos=(1.822,0.706,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+  0.250  smoke~      pos=(2.606,0.697,-0.295) color=(0.75,0.75,1,1) scale=0.3 rate=18 n=1
+  0.250  smoke~      pos=(1.721,0.697,-0.134) color=(0.9,0.6,1,1) scale=0.3 rate=18 n=1
+  0.250  smoke~      pos=(1.993,0.697,-0.454) color=(0.6,0.9,1,1) scale=0.3 rate=18 n=1
+  0.250  smoke~      pos=(2.202,0.583,0) color=(0.5,0.5,1,1) scale=2 rate=18 n=1
+  0.250  fire~       pos=(2.202,0.583,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+  0.300  smoke~      pos=(3.037,0.573,-0.209) color=(0.75,0.75,1,1) scale=0.3 rate=18 n=1
+  0.300  smoke~      pos=(2.137,0.573,-0.227) color=(0.9,0.6,1,1) scale=0.3 rate=18 n=1
+  0.300  smoke~      pos=(2.467,0.573,-0.486) color=(0.6,0.9,1,1) scale=0.3 rate=18 n=1
+  0.300  smoke~      pos=(2.583,0.46,0) color=(0.5,0.5,1,1) scale=2 rate=18 n=1
+  0.300  fire~       pos=(2.583,0.46,0) color=(0.5,0.5,1,1) scale=1.6 rate=60 n=3
+# end: emitters=0 coroutines=1 unhandled=[]

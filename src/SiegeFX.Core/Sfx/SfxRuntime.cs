@@ -178,6 +178,16 @@ public sealed class SfxRuntime
         _particles = particles;
     }
 
+    // Phase 23b — the VM's only RNG use (`sfx rat` orientation kick).
+    // Random.Shared by default; the timeline-golden CLI injects a fixed
+    // seed so headless runs are byte-for-byte reproducible.
+    Random _rng = Random.Shared;
+
+    /// <summary>Phase 23b — make every subsequent VM roll deterministic.
+    /// Used by <c>siegefx sfx timeline</c> golden generation; the live
+    /// renderer never calls this.</summary>
+    public void SetDeterministicSeed(int seed) => _rng = new Random(seed);
+
     /// <summary>Legacy entry-point for region emitters / non-targeted scripts.
     /// Source = target = origin (no #SOURCE vs #TARGET distinction needed).</summary>
     public bool Spawn(string scriptName, Vector3 origin, IReadOnlyList<string>? callerArgs = null)
@@ -1140,7 +1150,7 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count == 0) return;
         if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: false, out var h)) return;
 
-        float angle = (float)Random.Shared.NextDouble() * MathF.Tau;
+        float angle = (float)_rng.NextDouble() * MathF.Tau;
         var rel = h.OtherEnd - h.Anchor;
         float c = MathF.Cos(angle), s = MathF.Sin(angle);
         h.OtherEnd = h.Anchor + new Vector3(rel.X * c - rel.Z * s, rel.Y, rel.X * s + rel.Z * c);
