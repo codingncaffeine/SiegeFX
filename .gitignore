@@ -490,3 +490,5 @@ anim-diag.log
 
 # Claude Code project-local permissions (per-user, not shared)
 .claude/
+
+goldens/sfx-filmstrips/

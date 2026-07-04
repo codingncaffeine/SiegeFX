@@ -140,6 +140,29 @@ else if (args.Length >= 1 && args[0] == "--play-region")
     playObjects   = args[4];
     regionPath    = args[5];
 }
+else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
+{
+    // Phase 23c — offscreen spell filmstrip renders. Hidden window, real
+    // ParticleSystem, FBO readback to PNG strips + one contact sheet.
+    // usage: --sfx-filmstrip <Logic.dsres> <Objects.dsres> <spell|--all>
+    //        [--out=DIR] [--frames=N] [--strip=N] [--seed=N] [--size=N]
+    if (args.Length < 4)
+    {
+        Console.Error.WriteLine("usage: SiegeFX.Runtime --sfx-filmstrip <Logic.dsres> <Objects.dsres> <spell|--all> [--out=DIR] [--frames=N] [--strip=N] [--seed=N] [--size=N]");
+        return 1;
+    }
+    string fsOut = System.IO.Path.Combine("goldens", "sfx-filmstrips");
+    int fsFrames = 40, fsStrip = 8, fsSeed = 1, fsSize = 256;
+    for (int i = 4; i < args.Length; i++)
+    {
+        if (args[i].StartsWith("--out=", StringComparison.Ordinal)) fsOut = args[i]["--out=".Length..];
+        else if (args[i].StartsWith("--frames=", StringComparison.Ordinal) && int.TryParse(args[i]["--frames=".Length..], out var v1)) fsFrames = v1;
+        else if (args[i].StartsWith("--strip=", StringComparison.Ordinal) && int.TryParse(args[i]["--strip=".Length..], out var v2)) fsStrip = v2;
+        else if (args[i].StartsWith("--seed=", StringComparison.Ordinal) && int.TryParse(args[i]["--seed=".Length..], out var v3)) fsSeed = v3;
+        else if (args[i].StartsWith("--size=", StringComparison.Ordinal) && int.TryParse(args[i]["--size=".Length..], out var v4)) fsSize = v4;
+    }
+    return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize);
+}
 else if (args.Length >= 1 && args[0] == "--selftest-save")
 {
     // Phase 19a self-test. Builds a synthetic SaveFile, writes it through
