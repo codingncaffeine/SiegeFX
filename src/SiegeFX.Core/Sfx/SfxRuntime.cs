@@ -1995,7 +1995,203 @@ public sealed class SfxRuntime
         else if (hasUr1)      h.UpperRadius = ur1;
         if (TryReadFloat(raw, "flamesize", out var flsz))
             h.FlameSize = MathF.Max(0.05f, flsz);
+
+        // ---- Phase 23d-1 — full Appendix-A capture ----------------------
+        // Everything below is parsed 1:1 from GPG's documented parameter
+        // tables (SU 212 Appendix A). Legacy mappings above are untouched;
+        // renderer honoring switches over kind-by-kind in 23d-2 so each
+        // visual change lands as a reviewable golden-trace diff.
+
+        // Global.
+        if (TryReadVec3(raw, "offset", out var off)) { h.OffsetVec = off; h.HasOffset = true; }
+        if (TryReadVec3(raw, "dir",    out var dirv)) { h.DirVec = dirv; h.HasDir = true; }
+        if (TryReadFloat(raw, "delay", out var dly)) h.DelaySec = MathF.Max(0f, dly);
+        if (ContainsKeyword(raw, "abs"))          h.AbsCoords = true;
+        if (ContainsKeyword(raw, "sup"))          h.StaticUpdate = true;
+        if (ContainsKeyword(raw, "use_wind"))     h.UseWind = true;
+        if (ContainsKeyword(raw, "world_orient")) h.WorldOrient = true;
+        if (ContainsKeyword(raw, "bone_orient"))  h.BoneOrientFlag = true;
+
+        // Explosion family.
+        if (TryReadFloat(raw, "fade_range", out var fs0, argIndex: 0)
+         && TryReadFloat(raw, "fade_range", out var fs1, argIndex: 1))
+        { h.FadeStart = fs0; h.FadeEnd = fs1; h.HasFadeRange = true; }
+        if (TryReadFloat(raw, "vmin", out var vmn)) { h.VMin = vmn; h.HasVMin = true; }
+        if (TryReadFloat(raw, "vmax", out var vmx)) { h.VMax = vmx; h.HasVMax = true; }
+        if (TryReadVec3(raw, "ivel", out var ivl)) { h.IVelVec = ivl; h.HasIVel = true; }
+        if (TryReadVec3(raw, "rvel", out var rvl)) { h.RVelVec = rvl; h.HasRVel = true; }
+        if (ContainsKeyword(raw, "omni_dir") || ContainsKeyword(raw, "omnidir")) h.OmniDir = true;
+        if (ContainsKeyword(raw, "collide"))    h.CollideFlag = true;
+        if (ContainsKeyword(raw, "grey_tex"))   h.GreyTex = true;
+        if (ContainsKeyword(raw, "line"))       h.LineMode = true;
+        if (ContainsKeyword(raw, "rand_scale")) h.RandScale = true;
+        if (TryReadFloat(raw, "srate", out var sr8)) h.SpawnOverSec = MathF.Max(0f, sr8);
+        if (TryReadFloat(raw, "min_theta", out var mnt)) { h.MinTheta = mnt; h.HasThetaRange = true; }
+        if (TryReadFloat(raw, "max_theta", out var mxt)) { h.MaxTheta = mxt; h.HasThetaRange = true; }
+        if (TryReadFloat(raw, "min_phi", out var mnp)) { h.MinPhi = mnp; h.HasPhiRange = true; }
+        if (TryReadFloat(raw, "max_phi", out var mxp)) { h.MaxPhi = mxp; h.HasPhiRange = true; }
+
+        // Fire / Steam.
+        if (TryReadFloat(raw, "min_radius", out var mnr)) h.MinRadius = MathF.Max(0f, mnr);
+        if (TryReadFloat(raw, "max_radius", out var mxr2)) { h.MaxRadius = mxr2; h.HasMaxRadius = true; }
+        if (TryReadFloat(raw, "min_displace", out var mnd)) { h.MinDisplaceY = mnd; h.HasMinDisplace = true; }
+        else if (TryReadFloat(raw, "mindisplace", out var mnd2)) { h.MinDisplaceY = mnd2; h.HasMinDisplace = true; }
+        if (ContainsKeyword(raw, "instant")) h.Instant = true;
+        if (TryReadFloat(raw, "fctrl", out var fc0, argIndex: 0)
+         && TryReadFloat(raw, "fctrl", out var fc1, argIndex: 1))
+        {
+            TryReadFloat(raw, "fctrl", out var fc2, argIndex: 2);
+            h.FctrlVec = new Vector3(fc0, fc1, fc2); h.HasFctrl = true;
+        }
+        if (TryReadFloat(raw, "min_count", out var mnc)) h.MinCount = (int)mnc;
+
+        // Lightning.
+        if (TryReadFloat(raw, "subd", out var sbd)) { h.SubdLevel = sbd; h.HasSubd = true; }
+        if (TryReadFloat(raw, "minsubd", out var msbd)) { h.MinSubd = msbd; h.HasMinSubd = true; }
+
+        // Cylinder ring triples (start, end, increment).
+        if (TryReadVec3(raw, "rp0", out var rp0t)) { h.Rp0Triple = rp0t; h.HasRp0 = true; }
+        if (TryReadVec3(raw, "rp1", out var rp1t)) { h.Rp1Triple = rp1t; h.HasRp1 = true; }
+        if (TryReadVec3(raw, "hp0", out var hp0t)) { h.Hp0Triple = hp0t; h.HasHp0 = true; }
+        if (TryReadVec3(raw, "hp1", out var hp1t)) { h.Hp1Triple = hp1t; h.HasHp1 = true; }
+        if (TryReadVec3(raw, "rotate",  out var rotv)) { h.RotateVec = rotv; h.HasRotate = true; }
+        else if (TryReadFloat(raw, "rotate", out var rots)) { h.RotateVec = new Vector3(0f, rots, 0f); h.HasRotate = true; }
+        if (TryReadVec3(raw, "irotate", out var irot)) { h.IRotateVec = irot; h.HasIRotate = true; }
+
+        // alpha — sray ships a (start, fade-min, fade-max) triple; cylinder
+        // and decal ship a scalar. Disambiguate by arg count.
+        {
+            var alphaArgs = ExtractArgs(raw, "alpha");
+            if (alphaArgs is { Length: >= 3 }
+                && TryParseF(alphaArgs[0], out var a0) && TryParseF(alphaArgs[1], out var a1) && TryParseF(alphaArgs[2], out var a2))
+            { h.AlphaTriple = new Vector3(a0, a1, a2); h.HasSrayAlpha = true; }
+            else if (alphaArgs is { Length: >= 1 } && TryParseF(alphaArgs[0], out var aS))
+            { h.AlphaStart = aS; h.HasAlpha = true; }
+        }
+        // theta — sray triple (start, min-inc, max-inc) vs trackball/orbiter scalar.
+        {
+            var thetaArgs = ExtractArgs(raw, "theta");
+            if (thetaArgs is { Length: >= 3 }
+                && TryParseF(thetaArgs[0], out var t0) && TryParseF(thetaArgs[1], out var t1) && TryParseF(thetaArgs[2], out var t2))
+            { h.ThetaTriple = new Vector3(t0, t1, t2); h.HasSrayTheta = true; }
+            else if (thetaArgs is { Length: >= 1 } && TryParseF(thetaArgs[0], out var tS))
+            { h.ThetaStart = tS; h.HasTheta = true; }
+        }
+        // phi — sray triple vs orbiter scalar.
+        {
+            var phiArgs = ExtractArgs(raw, "phi");
+            if (phiArgs is { Length: >= 3 }
+                && TryParseF(phiArgs[0], out var p0) && TryParseF(phiArgs[1], out var p1) && TryParseF(phiArgs[2], out var p2))
+            { h.PhiTriple = new Vector3(p0, p1, p2); h.HasSrayPhi = true; }
+            else if (phiArgs is { Length: >= 1 } && TryParseF(phiArgs[0], out var pS))
+            { h.PhiStart = pS; h.HasPhi = true; }
+        }
+
+        // Trackball.
+        if (TryReadFloat(raw, "afterlife", out var aft)) h.Afterlife = MathF.Max(0f, aft);
+        if (TryReadFloat(raw, "kdamp", out var kd)) { h.Kdamp = kd; h.HasKdamp = true; }
+        if (TryReadFloat(raw, "rvel_min", out var rvmn)) h.RvelMin = rvmn;
+        if (TryReadFloat(raw, "rvel_max", out var rvmx)) h.RvelMax = rvmx;
+        if (TryReadFloat(raw, "max_velocity", out var mxv)) { h.MaxVelocity = mxv; h.HasMaxVelocity = true; }
+        if (ContainsKeyword(raw, "homing"))     h.Homing = true;
+        if (ContainsKeyword(raw, "damped"))     h.DampedFlag = true;
+        if (ContainsKeyword(raw, "invisible"))  h.Invisible = true;
+        if (ContainsKeyword(raw, "no_collide")) h.NoCollide = true;
+        if (ContainsKeyword(raw, "hit_target_only"))    h.HitTargetOnly = true;
+        if (ContainsKeyword(raw, "no_collide_objects")) h.NoCollideObjects = true;
+
+        // Orbiter.
+        if (TryReadFloat(raw, "vdisplace", out var vd)) h.VDisplace = vd;
+        if (ContainsKeyword(raw, "free"))   h.FreeOrient = true;
+        if (ContainsKeyword(raw, "smooth")) h.Smooth = true;
+        if (TryReadIdentifier(raw, "model", out var mdl))
+        {
+            // Orbiter/spawn author a template name; curve authors a numeric
+            // behavior selector 0/1/2. Disambiguate by parseability.
+            if (int.TryParse(mdl, out var cm)) h.CurveModel = cm;
+            else h.ModelName = mdl;
+        }
+        if (TryReadFloat(raw, "model_sin",  out var msin)) h.ModelSin = msin;
+        if (TryReadFloat(raw, "model_sout", out var msout)) h.ModelSout = msout;
+        if (TryReadFloat(raw, "model_smax", out var msmax)) h.ModelSmax = msmax;
+        if (TryReadVec3(raw, "rot_inc", out var rinc)) h.RotIncVec = rinc;
+
+        // Curve.
+        if (TryReadFloat(raw, "curvature", out var cur)) { h.Curvature = cur; h.HasCurvature = true; }
+        if (TryReadFloat(raw, "spacing", out var spc)) { h.Spacing = spc; h.HasSpacing = true; }
+        if (TryReadFloat(raw, "tlength", out var tl)) { h.TrailLength = tl; h.HasTrailLength = true; }
+        if (TryReadFloat(raw, "size", out var csz)) h.CurveSize = csz;
+        if (TryReadFloat(raw, "step", out var cst)) h.CurveStep = cst;
+
+        // Flurry.
+        if (TryReadFloat(raw, "amplitude", out var amp)) { h.Amplitude = amp; h.HasAmplitude = true; }
+        if (TryReadFloat(raw, "iamp", out var iam)) { h.IAmp = iam; h.HasIAmp = true; }
+
+        // SPE — per-axis (x,y,z) triples.
+        {
+            bool spe = false;
+            if (TryReadVec3(raw, "index0", out var i0)) { h.SpeIndex0 = i0; spe = true; }
+            if (TryReadVec3(raw, "index1", out var i1)) { h.SpeIndex1 = i1; spe = true; }
+            if (TryReadVec3(raw, "speed0", out var s0)) { h.SpeSpeed0 = s0; spe = true; }
+            if (TryReadVec3(raw, "speed1", out var s1)) { h.SpeSpeed1 = s1; spe = true; }
+            if (TryReadVec3(raw, "space0", out var sp0)) { h.SpeSpace0 = sp0; spe = true; }
+            if (TryReadVec3(raw, "space1", out var sp1)) { h.SpeSpace1 = sp1; spe = true; }
+            if (spe) h.HasSpe = true;
+        }
+
+        // Sphere.
+        if (TryReadFloat(raw, "sides", out var sds)) h.SphereSides = (int)sds;
+        if (h.HasSubd) h.SphereSubd = (int)h.SubdLevel; // sphere reuses subd(n)
+        if (ContainsKeyword(raw, "lines")) h.SphereLines = true;
+        if (ContainsKeyword(raw, "cull"))  h.BackfaceCull = true;
+
+        // PolygonalExplosion.
+        if (TryReadFloat(raw, "poly_sides", out var ps)) { h.PolySides = (int)ps; h.HasPolySides = true; }
+        if (TryReadFloat(raw, "mag", out var mg)) { h.Mag = mg; h.HasMag = true; }
+        if (TryReadVec3(raw, "rotrange", out var rr)) h.RotRangeVec = rr;
+        if (TryReadVec3(raw, "displace", out var dsp)) h.DisplaceVec = dsp;
+
+        // Lightsource.
+        if (TryReadFloat(raw, "iradius", out var ird)) h.InnerRadius = ird;
+        if (TryReadFloat(raw, "frequency", out var frq)) { h.Flicker = frq; h.HasFlicker = true; }
+
+        // FireB.
+        if (ContainsKeyword(raw, "cvel")) h.CVelOff = true;
+        if (TryReadFloat(raw, "start_rate", out var str8)) { h.StartRate = str8; h.HasStartRate = true; }
+        if (TryReadFloat(raw, "end_rate", out var enr8)) { h.EndRate = enr8; h.HasEndRate = true; }
+        if (TryReadFloat(raw, "velocity_s", out var vsc)) h.VelocityScalar = vsc;
+
+        // Engine-level flags with no visual meaning for our runtime —
+        // consumed deliberately so the param audit reads them as handled:
+        // must_update() asks DS1 to keep re-evaluating a moving anchor,
+        // which our persistent-emitter/motion-handle path already does
+        // unconditionally; cheap() selects a cheaper motion integrator;
+        // check_ground()/yorient() are engine hints. Probed via
+        // ContainsKeyword so they register in CollectConsumedParamKeys.
+        _ = ContainsKeyword(raw, "must_update");
+        _ = ContainsKeyword(raw, "cheap");
+        _ = ContainsKeyword(raw, "check_ground");
+        _ = ContainsKeyword(raw, "yorient");
+        _ = ContainsKeyword(raw, "no_noise");
     }
+
+    /// <summary>Phase 23d-1 — read a 3-component <c>key(x,y,z)</c> vector.
+    /// Requires at least 3 parseable args (2-arg and scalar forms are the
+    /// caller's business — e.g. rotate() ships both scalar and triple in
+    /// DS1 data).</summary>
+    static bool TryReadVec3(string raw, string keyword, out Vector3 value)
+    {
+        value = default;
+        var args = ExtractArgs(raw, keyword);
+        if (args is null || args.Length < 3) return false;
+        if (!TryParseF(args[0], out var x) || !TryParseF(args[1], out var y) || !TryParseF(args[2], out var z))
+            return false;
+        value = new Vector3(x, y, z);
+        return true;
+    }
+
+    static bool TryParseF(string s, out float v) =>
+        float.TryParse(s.TrimEnd('f', 'F'), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
 
     static string SubstituteCallerArgs(string? param, IReadOnlyList<string>? callerArgs)
     {
@@ -2325,6 +2521,146 @@ public sealed class SfxRuntime
         public float       OrbitRadius;     // radius(N) for orbiter (overloaded; Scale path stays for non-orbit)
         public float       OrbitRadiusInc;  // radiusi(N) — per-second radius delta
         public float       Velocity;        // velocity(N) — trackball speed
+
+        // ---- Phase 23d-1 — full Appendix-A param capture ---------------
+        // Parsed 1:1 from GPG's SiegeFX doc (SU 212 Appendix A, local copy
+        // at _ds1refs/su212_siegefx_wikitext.txt). Fields below are the
+        // authored values; renderer honoring lands kind-by-kind in 23d-2
+        // so each visual change is a controlled golden-trace diff.
+
+        // Global effect parameters.
+        public Vector3     OffsetVec;       // offset(x,y,z) — positional offset relative to the model
+        public bool        HasOffset;
+        public Vector3     DirVec;          // dir(x,y,z) — initial direction relative to the object
+        public bool        HasDir;
+        public float       DelaySec;        // delay(n) — pause before the effect starts
+        public bool        AbsCoords;       // abs() — don't scale effect to target size
+        public bool        StaticUpdate;    // sup() — effect never moves
+        public bool        UseWind;         // use_wind()
+        public bool        WorldOrient;     // world_orient()
+        public bool        BoneOrientFlag;  // bone_orient()
+
+        // Explosion.
+        public float       FadeStart;       // fade_range(s,e,0) start
+        public float       FadeEnd;         //                    end
+        public bool        HasFadeRange;
+        public float       VMin;            // vmin(f) — min initial particle velocity scalar (doc default 3.0)
+        public float       VMax;            // vmax(f) — max initial particle velocity scalar (doc default 6.5)
+        public bool        HasVMin, HasVMax;
+        public Vector3     IVelVec;         // ivel(x,y,z) — initial velocity vector
+        public bool        HasIVel;
+        public Vector3     RVelVec;         // rvel(x,y,z) — initial random velocity vector
+        public bool        HasRVel;
+        public bool        OmniDir;         // omni_dir() / omnidir()
+        public bool        CollideFlag;     // collide() — particles bounce off terrain
+        public bool        GreyTex;         // grey_tex() — greyscale default texture (default is RED)
+        public bool        LineMode;        // line() — spawn along source→target line
+        public bool        RandScale;       // rand_scale()
+        public float       SpawnOverSec;    // srate — explosion: spawn spread duration; sray: period per ray
+        public float       MinTheta, MaxTheta, MinPhi, MaxPhi; // spawn-arc ranges
+        public bool        HasThetaRange, HasPhiRange;
+
+        // Fire / Steam.
+        public float       MinRadius;       // min_radius — inner spawn radius
+        public float       MaxRadius;       // max_radius — outer spawn radius (doc default 4.0)
+        public bool        HasMaxRadius;
+        public float       MinDisplaceY;    // min_displace / (lightning) mindisplace
+        public bool        HasMinDisplace;
+        public bool        Instant;         // instant() — full volume immediately
+        public Vector3     FctrlVec;        // fctrl(min,max,i) — flame expansion control
+        public bool        HasFctrl;
+        public int         MinCount;        // min_count(n)
+
+        // Lightning.
+        public float       SubdLevel;       // subd(f) — bolt subdivision level (doc default 0.4)
+        public float       MinSubd;         // minsubd(f) — minimum subdivision (doc default 2.0)
+        public bool        HasSubd, HasMinSubd;
+
+        // Cylinder — rp0/rp1/hp0/hp1 are (start, end, increment) triples:
+        // two rings (0 and 1), each with radius profile rpN and height hpN.
+        public Vector3     Rp0Triple, Rp1Triple, Hp0Triple, Hp1Triple;
+        public bool        HasRp0, HasRp1, HasHp0, HasHp1;
+        public float       AlphaStart;      // alpha(f) — starting alpha (cylinder/decal)
+        public bool        HasAlpha;
+        public Vector3     RotateVec;       // rotate(x,y,z) degrees
+        public Vector3     IRotateVec;      // irotate(x,y,z) degrees/increment
+        public bool        HasRotate, HasIRotate;
+
+        // SRay — theta/phi/alpha are (start, min-inc, max-inc) /
+        // (start, fade-min, fade-max) triples.
+        public Vector3     ThetaTriple, PhiTriple, AlphaTriple;
+        public bool        HasSrayTheta, HasSrayPhi, HasSrayAlpha;
+
+        // Trackball.
+        public float       Afterlife;       // afterlife(f) — seconds to exist after collision
+        public float       Kdamp;           // kdamp(f) — damping coefficient 0..1 (doc default 0.45)
+        public bool        HasKdamp;
+        public float       RvelMin, RvelMax;// rvel_min / rvel_max — random velocity range
+        public float       MaxVelocity;     // max_velocity(f) (doc default 80)
+        public bool        HasMaxVelocity;
+        public float       ThetaStart;      // theta(f) — spiral start angle (trackball/orbiter)
+        public bool        HasTheta;
+        public bool        Homing;          // homing() — adjusts to hit target
+        public bool        DampedFlag;      // damped() — limits turn sharpness
+        public bool        Invisible;       // invisible() — motion handle draws nothing
+        public bool        NoCollide;       // no_collide()
+        public bool        HitTargetOnly;   // hit_target_only()
+        public bool        NoCollideObjects;// no_collide_objects()
+
+        // Orbiter.
+        public float       PhiStart;        // phi(f) — latitude start
+        public bool        HasPhi;
+        public float       VDisplace;       // vdisplace(f) — additive vertical displacer
+        public bool        FreeOrient;      // free() — own orientation, not target's
+        public bool        Smooth;          // smooth() — average recorded positions
+        public string?     ModelName;       // model(text) — template of mesh to orbit
+        public float       ModelSin, ModelSout, ModelSmax; // model scale in/out/scalar
+        public Vector3     RotIncVec;       // rot_inc(x,y,z) — model rotation increments
+
+        // Curve.
+        public float       Curvature;       // curvature(f) — higher = less straight
+        public float       Spacing;         // spacing(f) — space between particles
+        public float       TrailLength;     // tlength(f)
+        public float       CurveSize;       // size(f) — single-particle size
+        public float       CurveStep;       // step(f) — detail level
+        public int         CurveModel;      // model(n) — curve behavior 0/1/2 (numeric form)
+        public bool        HasCurvature, HasSpacing, HasTrailLength;
+
+        // Flurry.
+        public float       Amplitude;       // amplitude(f) — sinusoidal interference factor
+        public float       IAmp;            // iamp(f) — interference amplitude speed
+        public bool        HasAmplitude, HasIAmp;
+
+        // SPE — exact parametric model per the doc: per-axis
+        // pos = (sin(index0) + sin(index1)) / 2, indices advanced by
+        // speed0/speed1, particles offset by space0/space1.
+        public Vector3     SpeIndex0, SpeIndex1, SpeSpeed0, SpeSpeed1, SpeSpace0, SpeSpace1;
+        public bool        HasSpe;
+
+        // Sphere.
+        public int         SphereSides;     // sides(n) (doc default 20)
+        public int         SphereSubd;      // subd(n) — tessellation level (doc default 1)
+        public bool        SphereLines;     // lines() — draw polygonal lines
+        public bool        BackfaceCull;    // cull()
+
+        // PolygonalExplosion.
+        public int         PolySides;       // poly_sides(n) (doc default 9)
+        public float       Mag;             // mag(f) — explosion magnitude
+        public Vector3     RotRangeVec;     // rotrange(x,y,z)
+        public Vector3     DisplaceVec;     // displace(x,y,z) — origin displacement range
+        public bool        HasMag, HasPolySides;
+
+        // Lightsource.
+        public float       InnerRadius;     // iradius(f) — inner falloff radius
+        public float       Flicker;         // frequency(f) — flicker frequency
+        public bool        HasFlicker;
+
+        // FireB.
+        public bool        CVelOff;         // cvel() — turns OFF initial random velocity
+        public float       StartRate;       // start_rate(f) — burn ramp-up (doc default 27.5)
+        public float       EndRate;         // end_rate(f) — burn ramp-down (doc default 16.5)
+        public bool        HasStartRate, HasEndRate;
+        public float       VelocityScalar;  // velocity_s(f)
     }
 
     struct PersistentEmitter
