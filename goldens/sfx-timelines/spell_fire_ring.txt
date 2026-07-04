@@ -1,39 +1,9 @@
 # sfx timeline  script=ring_fire  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.100  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.150  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.200  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.250  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.300  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.350  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.400  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.450  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.500  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.600  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.650  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.700  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.750  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.800  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.850  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.900  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  0.950  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.000  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.100  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.150  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.200  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.250  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.300  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.350  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.400  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.450  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.500  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.600  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.650  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.700  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.750  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.800  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.850  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.900  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  1.950  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-  2.000  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) scale=1 rate=18 n=1
-# end: emitters=1 coroutines=0 unhandled=[worldmsg]
+  0.050  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+  0.100  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+  0.150  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+  0.200  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+  0.250  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+  0.300  fire~       pos=(0,0,0) color=(1,0.5,0.2,1) vel=(0,-10,0) accel=(0,16,0) flame=1 ring=0.5..3 ydisp=0..0 line=0 n=3
+# end: emitters=0 coroutines=0 unhandled=[worldmsg]

@@ -1,29 +1,19 @@
 # sfx timeline  script=pestilence_roam  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.000  fireb       pos=(4,0,0) color=(0.2,1,0.2,1) vel=(0,10,0) accel=(0,0,0) life=0.2 disp=0.5 r=0..-3 n=20 flame=2
-  0.100  smoke~      pos=(3.783,7.841,0.114) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.100  fire~       pos=(3.783,7.841,0.114) color=(0.6,0.6,0.2,1) scale=1.2 rate=18 n=1
-  0.100  smoke~      pos=(4.262,10.781,0.468) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.100  smoke~      pos=(4.262,10.781,0.468) color=(0.37,0.37,0.37,0.55) scale=1.2 rate=18 n=1
-  0.100  smoke~      pos=(3.783,7.841,0.114) color=(0.35,0.35,0.35,0.55) scale=1.2 rate=18 n=1
-  0.150  smoke~      pos=(3.677,7.643,0.17) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.150  fire~       pos=(3.677,7.643,0.17) color=(0.6,0.6,0.2,1) scale=1.2 rate=18 n=1
-  0.150  smoke~      pos=(4.39,10.509,0.697) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.150  smoke~      pos=(4.39,10.509,0.697) color=(0.37,0.37,0.37,0.55) scale=1.2 rate=18 n=1
-  0.150  smoke~      pos=(3.677,7.643,0.17) color=(0.35,0.35,0.35,0.55) scale=1.2 rate=18 n=1
-  0.200  smoke~      pos=(3.574,7.368,0.224) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.200  fire~       pos=(3.574,7.368,0.224) color=(0.6,0.6,0.2,1) scale=1.2 rate=18 n=1
-  0.200  smoke~      pos=(4.514,10.132,0.918) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.200  smoke~      pos=(4.514,10.132,0.918) color=(0.37,0.37,0.37,0.55) scale=1.2 rate=18 n=1
-  0.200  smoke~      pos=(3.574,7.368,0.224) color=(0.35,0.35,0.35,0.55) scale=1.2 rate=18 n=1
-  0.250  smoke~      pos=(3.476,7.021,0.276) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.250  fire~       pos=(3.476,7.021,0.276) color=(0.6,0.6,0.2,1) scale=1.2 rate=18 n=1
-  0.250  smoke~      pos=(4.633,9.653,1.13) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.250  smoke~      pos=(4.633,9.653,1.13) color=(0.37,0.37,0.37,0.55) scale=1.2 rate=18 n=1
-  0.250  smoke~      pos=(3.476,7.021,0.276) color=(0.35,0.35,0.35,0.55) scale=1.2 rate=18 n=1
-  0.300  smoke~      pos=(3.383,6.603,0.325) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.300  fire~       pos=(3.383,6.603,0.325) color=(0.6,0.6,0.2,1) scale=1.2 rate=18 n=1
-  0.300  smoke~      pos=(4.745,9.079,1.331) color=(0.5,1,0.2,1) scale=1.2 rate=18 n=1
-  0.300  smoke~      pos=(4.745,9.079,1.331) color=(0.37,0.37,0.37,0.55) scale=1.2 rate=18 n=1
-  0.300  smoke~      pos=(3.383,6.603,0.325) color=(0.35,0.35,0.35,0.55) scale=1.2 rate=18 n=1
+  0.050  smoke~      pos=(4.132,10.945,0.235) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=1
+  0.050  smoke~      pos=(3.891,7.96,0.057) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=3
+  0.100  smoke~      pos=(4.262,10.781,0.468) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=2
+  0.100  smoke~      pos=(4.262,10.781,0.468) color=(0.37,0.37,0.37,0.55) vel=(0,8,0) accel=(0,0,0) flame=6 ring=0..3 ydisp=0.1..0.2 line=0 n=1
+  0.100  smoke~      pos=(3.783,7.841,0.114) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=4
+  0.150  smoke~      pos=(4.39,10.509,0.697) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=1
+  0.150  smoke~      pos=(3.677,7.643,0.17) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=4
+  0.200  smoke~      pos=(4.514,10.132,0.918) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=2
+  0.200  smoke~      pos=(4.514,10.132,0.918) color=(0.37,0.37,0.37,0.55) vel=(0,8,0) accel=(0,0,0) flame=6 ring=0..3 ydisp=0.1..0.2 line=0 n=1
+  0.200  smoke~      pos=(3.574,7.368,0.224) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=4
+  0.250  smoke~      pos=(4.633,9.653,1.13) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=2
+  0.250  smoke~      pos=(4.633,9.653,1.13) color=(0.37,0.37,0.37,0.55) vel=(0,8,0) accel=(0,0,0) flame=6 ring=0..3 ydisp=0.1..0.2 line=0 n=1
+  0.250  smoke~      pos=(3.476,7.021,0.276) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=4
+  0.300  smoke~      pos=(4.745,9.079,1.331) color=(0.5,1,0.2,1) vel=(0,8,0) accel=(0,8,0) flame=4 ring=0..6 ydisp=-0.1..1 line=1 n=1
+  0.300  smoke~      pos=(3.383,6.603,0.325) color=(0.35,0.35,0.35,0.55) vel=(0,0.5,0) accel=(0,0,0) flame=8 ring=0..30 ydisp=0.4..0.5 line=0 n=3
 # end: emitters=0 coroutines=0 unhandled=[]

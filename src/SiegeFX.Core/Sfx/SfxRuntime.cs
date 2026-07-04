@@ -350,13 +350,19 @@ public sealed class SfxRuntime
             switch (e.Mode)
             {
                 case EmitterMode.Fire:
-                    e.Carry = _particles.MaintainFire(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
+                    e.Carry = e.HasSpec
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        : _particles.MaintainFire(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Smoke:
-                    e.Carry = _particles.MaintainSmoke(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
+                    e.Carry = e.HasSpec
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        : _particles.MaintainSmoke(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Steam:
-                    e.Carry = _particles.MaintainSteam(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
+                    e.Carry = e.HasSpec
+                        ? _particles.MaintainPlume(in e.Spec, e.Position, dt, e.Carry)
+                        : _particles.MaintainSteam(e.Position, e.Color, e.Scale, dt, e.Rate, e.Carry);
                     break;
                 case EmitterMode.Glow:
                     // Scale is overloaded as the halo radius for Glow mode
@@ -1149,7 +1155,11 @@ public sealed class SfxRuntime
                 break;
             }
             default:
-                _emitters.Add(new PersistentEmitter
+            {
+                // Phase 23d-2c — fire/smoke/steam pumps carry the full
+                // authored plume spec; instant() pre-fills the volume.
+                bool isPlume = h.Mode is EmitterMode.Fire or EmitterMode.Smoke or EmitterMode.Steam;
+                var emitter = new PersistentEmitter
                 {
                     Mode     = h.Mode,
                     Position = h.Anchor,
@@ -1157,10 +1167,64 @@ public sealed class SfxRuntime
                     Scale    = h.Scale,
                     Rate     = h.Rate,
                     TargetMotionId = h.TargetMotionId,
+                    Duration = h.Duration > 0.10f ? h.Duration : 0f,
                     SelfName = selfName,
-                });
+                };
+                if (isPlume)
+                {
+                    emitter.Spec = BuildPlumeSpec(h);
+                    emitter.HasSpec = true;
+                    if (emitter.Spec.Instant)
+                        _particles.BurstPlume(in emitter.Spec, h.Anchor, emitter.Spec.Count);
+                }
+                _emitters.Add(emitter);
                 break;
+            }
         }
+    }
+
+    /// <summary>Phase 23d-2c — Handle → authored plume spec with SU-212
+    /// table defaults. The doc's raw max_radius default (4.0) is NOT
+    /// applied when unauthored — spells author their own radius knobs and
+    /// the raw default describes bonfire-scale ambient emitters; the
+    /// legacy Scale-derived footprint is kept for that case (flagged for
+    /// the DS1 side-by-side pass).</summary>
+    static PlumeSpec BuildPlumeSpec(in Handle h)
+    {
+        bool steam = h.Mode == EmitterMode.Steam;
+        var vel = h.VelocityVec.LengthSquared() > 0.0001f
+            ? h.VelocityVec
+            : (steam ? new Vector3(0f, 5.75f, 0f) : new Vector3(0f, 8f, 0f)) * 0.25f;
+            // 0.25x: DS1's doc velocities are authored against its raw
+            // effect scale; unauthored spell plumes at full 8 u/s read as
+            // geysers at our world scale. Authored velocities pass as-is.
+        if (h.VelocityVec.LengthSquared() > 0.0001f) vel = h.VelocityVec;
+        var acc = h.AccelVec.LengthSquared() > 0.0001f
+            ? h.AccelVec
+            : Vector3.Zero;
+        return new PlumeSpec
+        {
+            Kind        = h.Mode == EmitterMode.Fire ? (byte)0 : steam ? (byte)2 : (byte)1,
+            Color       = h.Color,
+            Velocity    = vel,
+            Accel       = acc,
+            FlameSize   = h.FlameSize > 0.05f ? h.FlameSize : (steam ? 2.25f : 1.75f) * 0.25f,
+            Fctrl       = h.FctrlVec,
+            HasFctrl    = h.HasFctrl,
+            AlphaFade   = h.AlphaFade > 0.10f ? h.AlphaFade : (steam ? 0.55f : 0.85f),
+            Count       = h.BurstCount > 0 ? h.BurstCount
+                          : h.MinCount > 0 ? h.MinCount
+                          : (steam ? 96 : 30),
+            MinRadius   = h.MinRadius,
+            MaxRadius   = h.HasMaxRadius ? h.MaxRadius
+                          : MathF.Max(0.10f, h.Scale * 0.5f),
+            MinDisplace = h.HasMinDisplace ? h.MinDisplaceY : 0f,
+            MaxDisplace = h.MaxDisplace > 0f ? h.MaxDisplace : 0f,
+            Instant     = h.Instant,
+            Line        = h.LineMode,
+            LineEnd     = h.OtherEnd,
+            TexSlot     = TextureNameToSlot(h.TextureName, h.Mode == EmitterMode.Fire ? (byte)0 : (byte)1),
+        };
     }
 
     void ExecFinish(RunningScript rs, SfxStatement stmt)
@@ -2926,6 +2990,11 @@ public sealed class SfxRuntime
         // $child` re-target an already-started child by matching this string.
         // null when the operand was anonymous (#POP without a `set $name`).
         public string? SelfName;
+        // Phase 23d-2c — authored plume parameters (fire/smoke/steam). When
+        // HasSpec the Tick pump routes through MaintainPlume instead of the
+        // legacy Maintain* trio.
+        public PlumeSpec Spec;
+        public bool      HasSpec;
     }
 
     /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion state for

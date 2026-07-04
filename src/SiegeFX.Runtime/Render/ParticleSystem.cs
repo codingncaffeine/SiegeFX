@@ -932,6 +932,79 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         return budget - n;
     }
 
+    /// <summary>Phase 23d-2c — authored plume pump (SU-212 fire/smoke/
+    /// steam). Population model: DS1's count is a live-particle cap and
+    /// alphafade sets the fade-out speed, so steady-state spawn rate =
+    /// count / life with life ≈ 1/alphafade.</summary>
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, float dt, float carry)
+    {
+        float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
+        float rate = MathF.Max(1f, s.Count / life);
+        float budget = carry + rate * dt;
+        int n = (int)budget;
+        if (n > 0) BurstPlume(in s, position, n);
+        return budget - n;
+    }
+
+    /// <summary>Phase 23d-2c — spawn <paramref name="n"/> plume particles
+    /// at once (the instant() volume fill, and MaintainPlume's per-tick
+    /// batch). Spawn point: the [min_radius, max_radius] annulus (or the
+    /// anchor→LineEnd segment for line() fires), plus the random Y
+    /// displacement range; velocity/accel/flamesize/fctrl as authored.</summary>
+    public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, int n)
+    {
+        float lifeBase = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
+        for (int i = 0; i < n; i++)
+        {
+            Vector3 pos;
+            if (s.Line)
+                pos = Vector3.Lerp(position, s.LineEnd, Rand(0f, 1f));
+            else
+            {
+                float ang = Rand(0f, MathF.Tau);
+                float r = Rand(MathF.Min(s.MinRadius, s.MaxRadius), MathF.Max(s.MinRadius, s.MaxRadius));
+                pos = position + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
+            }
+            pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
+
+            var vel = s.Velocity * Rand(0.8f, 1.2f);
+            float fs = MathF.Max(0.04f, s.FlameSize * 0.4f);
+            float s0, s1;
+            if (s.HasFctrl)
+            {
+                // fctrl(min, max, i) — flame expansion over its life:
+                // birth scaled by |min|, death by |max| (doc: "controls
+                // for how a flame expands over time").
+                s0 = fs * Math.Clamp(MathF.Abs(s.Fctrl.X) * 0.5f, 0.10f, 2.0f);
+                s1 = fs * Math.Clamp(MathF.Abs(s.Fctrl.Y) * 0.7f, 0.10f, 3.0f);
+            }
+            else
+            {
+                s0 = fs * (s.Kind == 2 ? 0.5f : 0.6f);
+                s1 = fs * (s.Kind == 2 ? 1.5f : 1.1f);
+            }
+            // Fire fades warm; smoke/steam preserve their authored color.
+            var c1 = s.Kind == 0
+                ? new Vector4(s.Color.X * 0.5f, s.Color.Y * 0.25f, s.Color.Z * 0.08f, 0f)
+                : new Vector4(s.Color.X, s.Color.Y, s.Color.Z, 0f);
+            float life = lifeBase * Rand(0.8f, 1.2f);
+            _particles.Add(new Particle
+            {
+                Position  = pos,
+                Velocity  = vel,
+                Accel     = s.Accel,
+                Color0    = s.Color,
+                Color1    = c1,
+                Scale0    = s0,
+                Scale1    = s1,
+                Life      = life,
+                TotalLife = life,
+                TexSlot   = s.TexSlot,
+                Additive  = (byte)(s.Kind == 1 ? 0 : 1),
+            });
+        }
+    }
+
     /// <summary>Phase 21-SC-SPELL-VISUAL-D — bright additive glow halo around
     /// <paramref name="position"/>. Spawns short-lived sparkles in a tight
     /// <paramref name="radius"/> ball with near-zero drift, so the cluster

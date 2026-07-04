@@ -8264,6 +8264,21 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
         if (n > 0) Add($"{kind,-11} pos={V3(p)} color={V4(c)} scale={F(scale)} rate={F(rate)} n={n}");
         return budget - n;
     }
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float dt, float carry)
+    {
+        float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
+        float rate = MathF.Max(1f, s.Count / life);
+        float budget = carry + rate * dt;
+        int n = (int)budget;
+        if (n > 0)
+        {
+            string kind = s.Kind == 0 ? "fire~" : s.Kind == 2 ? "steam~" : "smoke~";
+            Add($"{kind,-11} pos={V3(p)} color={V4(s.Color)} vel={V3(s.Velocity)} accel={V3(s.Accel)} flame={F(s.FlameSize)} ring={F(s.MinRadius)}..{F(s.MaxRadius)} ydisp={F(s.MinDisplace)}..{F(s.MaxDisplace)} line={(s.Line ? 1 : 0)} n={n}");
+        }
+        return budget - n;
+    }
+    public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n)
+        => Add($"plume!      pos={V3(p)} kind={s.Kind} n={n} (instant fill)");
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
         => Pump("fire~", p, c, scale, dt, rate, carry);
     public float MaintainSmoke(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float scale, float dt, float rate, float carry)
@@ -8293,6 +8308,16 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
     public void SpawnSrayTimed(in SiegeFX.Core.Sfx.SraySpec e) => SpawnSrayCount++;
     public int SpawnFlurryCount;
     public void SpawnFlurry(in SiegeFX.Core.Sfx.FlurrySpec e) => SpawnFlurryCount += e.Count;
+    public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, float dt, float carry)
+    {
+        MaintainFireCount++;
+        float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
+        float b = carry + MathF.Max(1f, s.Count / life) * dt;
+        int k = (int)b;
+        SpawnFireCount += Math.Max(0, k);
+        return b - k;
+    }
+    public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n) => SpawnFireCount += n;
     public void SpawnProjectile(System.Numerics.Vector3 a, System.Numerics.Vector3 b, System.Numerics.Vector4 c, float s, float sp, int k) => SpawnProjectileCount++;
     public float MaintainFire(System.Numerics.Vector3 p, System.Numerics.Vector4 c, float s, float dt, float r, float carry)
     { MaintainFireCount++; float b = carry + r * dt; int k = (int)b; SpawnFireCount += Math.Max(0, k); return b - k; }

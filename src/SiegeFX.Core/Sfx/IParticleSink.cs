@@ -105,6 +105,35 @@ public struct FlurrySpec
     public byte    TexSlot;
 }
 
+/// <summary>Phase 23d-2c — SU-212 fire/smoke/steam plume parameters.
+/// DS1's fire maintains a POPULATION of <see cref="Count"/> particles
+/// whose lifetime derives from <see cref="AlphaFade"/> ("how fast to
+/// fade the flame out", doc default 0.85 → ~1.2s), spawning within the
+/// [<see cref="MinRadius"/>, <see cref="MaxRadius"/>] annulus with
+/// random Y displacement in [<see cref="MinDisplace"/>,
+/// <see cref="MaxDisplace"/>], flying at the authored velocity/accel
+/// vectors, sized by flamesize with the fctrl expansion curve.
+/// instant() fills the volume immediately; line() spawns along the
+/// source→target segment.</summary>
+public struct PlumeSpec
+{
+    public byte    Kind;         // 0=fire, 1=smoke, 2=steam
+    public System.Numerics.Vector4 Color;
+    public System.Numerics.Vector3 Velocity;  // doc default fire (0,8,0), steam (0,5.75,0)
+    public System.Numerics.Vector3 Accel;     // doc default fire (0,14,0), steam (0,4,0)
+    public float   FlameSize;    // flamesize / wispsize (doc default 1.75 / 2.25)
+    public System.Numerics.Vector3 Fctrl;     // fire expansion (min, max, inc)
+    public bool    HasFctrl;
+    public float   AlphaFade;    // fade factor — particle life ≈ 1/AlphaFade
+    public int     Count;        // population cap (doc default fire 30, steam 96)
+    public float   MinRadius, MaxRadius;      // spawn annulus
+    public float   MinDisplace, MaxDisplace;  // random Y displacement range
+    public bool    Instant;      // full volume immediately
+    public bool    Line;         // spawn along Anchor→LineEnd
+    public System.Numerics.Vector3 LineEnd;
+    public byte    TexSlot;
+}
+
 /// <summary>Phase 17-SC-F-2 — particle backend abstraction. The shipped
 /// implementation is the GL-backed billboard system in
 /// <c>SiegeFX.Runtime.Render.ParticleSystem</c>; tests and CLIs swap in a
@@ -147,6 +176,16 @@ public interface IParticleSink
     /// <summary>Phase 23d-2b — authored-parameter flurry (spherical polar
     /// swarm with sinusoidal interference).</summary>
     void SpawnFlurry(in FlurrySpec spec);
+
+    /// <summary>Phase 23d-2c — authored-parameter plume pump. Population
+    /// model: spawn rate = Count / life where life derives from
+    /// AlphaFade. Returns the leftover budget like the legacy
+    /// Maintain* trio.</summary>
+    float MaintainPlume(in PlumeSpec spec, Vector3 position, float dt, float carry);
+
+    /// <summary>Phase 23d-2c — instant() volume fill: burst n plume
+    /// particles at once at spawn time.</summary>
+    void BurstPlume(in PlumeSpec spec, Vector3 position, int n);
     /// <summary>Phase 21-SC-SPELL-VFX — flying fireball-style projectile from
     /// <paramref name="source"/> toward <paramref name="target"/>. The
     /// implementation stamps a fire+ember trail along the flight path and
