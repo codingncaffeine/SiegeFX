@@ -759,6 +759,7 @@ static int DispatchRegion(string[] a)
         "loot-distribution" => CmdRegionLootDistribution(a[1..]),
         "mob-loot" => CmdRegionMobLoot(a[1..]),
         "drop-sweep" => CmdRegionDropSweep(a[1..]),
+        "find-template" => CmdRegionFindTemplate(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -5007,6 +5008,48 @@ static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold
 /// off the template: the specific carried weapon, and drops_spellbook with
 /// the authored spells. This is the authoritative per-mob answer to "which
 /// drops are set and which are random".</summary>
+// Phase 25c — where is a template placed? Sweeps every region's
+// actor.gas placements for names containing the given substring
+// (locating shopkeepers/hireables: `region find-template World.dsmap adwana`).
+static int CmdRegionFindTemplate(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region find-template <map-tank> <name-substring>");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    var regionPaths = new List<string>();
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    int hits = 0;
+    foreach (var rp in regionPaths)
+    {
+        var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+        foreach (var p in actors)
+        {
+            if (p.TemplateName.IndexOf(a[1], StringComparison.OrdinalIgnoreCase) < 0) continue;
+            Console.WriteLine($"  {p.TemplateName,-36} {rp}");
+            hits++;
+        }
+    }
+    Console.WriteLine($"{hits} placement(s)");
+    return hits > 0 ? 0 : 4;
+}
+
 // Phase 24b — map-wide drop-completeness gate. Sweeps EVERY region's
 // actor.gas + generator children and asserts:
 //  (1) every caster with drops_spellbook=true authors a primary spell

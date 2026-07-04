@@ -2919,8 +2919,22 @@ void main()
                 if (_vendor.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
-                        _vendor.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
+                    {
+                        bool inFrame = _vendor.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
                                             _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                        // Phase 25c — DS1 opens your inventory beside the
+                        // store; clicking one of your items while trading
+                        // sells it at the panel's sell price.
+                        if (!inFrame && _inventoryOpen
+                            && _inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
+                                                              _window.Size.X, _window.Size.Y))
+                        {
+                            int sellIdx = _inventoryPanel.TryHitTestItem((int)m.Position.X, (int)m.Position.Y,
+                                _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                            if (sellIdx >= 0)
+                                ApplyVendorAction(new Hud.VendorAction(Hud.VendorActionKind.Sell, sellIdx));
+                        }
+                    }
                     return;
                 }
                 // Phase 20a — dialogue panel ranks above everything except pause.
@@ -10862,6 +10876,27 @@ void main()
         if (_templateStore is null) return null;
         if (_storeDefs.TryGetValue(tpl.Name, out var cached)) return cached;
 
+        // Phase 25b/25c — panel hooks (idempotent): sell-side valuation
+        // rides the same base-value model as buying; the POTIONS tab
+        // splits misc items on the potion chain; grid packing uses the
+        // authored inventory footprints.
+        Hud.VendorPanel.PriceResolver ??= itemRef => ItemBaseValue(itemRef, 0);
+        Hud.VendorPanel.IsPotion ??= itemRef =>
+            _templateStore is not null
+            && _templateStore.TryGet(itemRef, out var pt) && pt is not null
+            && ChainHasBase(pt, "base_potion");
+        Hud.VendorPanel.Footprint ??= itemRef =>
+        {
+            if (_templateStore is null
+                || !_templateStore.TryGet(itemRef, out var ft) || ft is null) return (1, 1);
+            int w = 1, h = 1;
+            var ws = _templateStore.GetAttribute(ft, "gui", "inventory_width");
+            var hs = _templateStore.GetAttribute(ft, "gui", "inventory_height");
+            if (!string.IsNullOrEmpty(ws)) int.TryParse(ws.Trim(), out w);
+            if (!string.IsNullOrEmpty(hs)) int.TryParse(hs.Trim(), out h);
+            return (Math.Max(1, w), Math.Max(1, h));
+        };
+
         SiegeFX.Core.Actors.VendorDefinition? def = null;
         var table = SiegeFX.Core.Actors.StoreTable.FromTemplate(_templateStore, tpl);
         if (table is not null && table.IsShop)
@@ -10880,7 +10915,9 @@ void main()
                     ItemReference = it.TemplateName,
                     ScreenName    = screen,
                     Price         = (long)MathF.Round(ItemBaseValue(it.TemplateName, it.Power) * table.ItemMarkup),
-                    Slot          = "",
+                    // Slot carries the authored store tab so the panel can
+                    // shelve per tab (armor/weapons/shields/magic/misc).
+                    Slot          = it.Tab,
                 });
             }
             var vendorScreen = _templateStore.GetAttribute(tpl, "common", "screen_name")?.Trim().Trim('"') ?? tpl.Name;
@@ -10896,6 +10933,15 @@ void main()
     }
 
     private SiegeFX.Core.Actors.PcontentResolver? _playResolverPcontent;
+
+    /// <summary>Phase 25c — does the template's specializes chain pass
+    /// through <paramref name="baseName"/>?</summary>
+    private static bool ChainHasBase(SiegeFX.Core.Assets.Template tpl, string baseName)
+    {
+        for (var t = tpl; t is not null; t = t.Specializes)
+            if (t.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     /// <summary>Phase 25b — an item's base gold value: the authored
     /// [aspect]gold_value where present; otherwise a PROVISIONAL
@@ -10962,7 +11008,9 @@ void main()
                 Console.WriteLine($"trade: cannot afford {row.ScreenName} ({row.Price}g, have {_progression.Gold}g)");
                 return;
             }
-            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(row.Slot, row.ItemReference));
+            // Slot on stock rows is the store TAB name (25c) — a bought
+            // item always lands unequipped, so the loot slot stays empty.
+            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry("", row.ItemReference));
             _inventoryPanel.NotifyItemAdded();
             Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g (gold now {_progression.Gold})");
         }
@@ -15769,8 +15817,9 @@ void main()
             // dialogue closes) but the explicit draw keeps both branches local.
             if (_vendor.IsOpen && _barRenderer is not null)
             {
-                _vendor.Draw(_barRenderer, _textRenderer, size.X, size.Y,
-                             _playerInventory, _progression?.Gold ?? 0);
+                _vendor.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                             TryGetGuiTexture, TryGetItemIcon,
+                             size.X, size.Y, _progression?.Gold ?? 0);
             }
             // Phase 15d: pause menu (Esc). Drawn after the inventory so its
             // backdrop dims the inventory grid too — pause is the topmost UI.

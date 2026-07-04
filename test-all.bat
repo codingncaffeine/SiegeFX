@@ -113,7 +113,7 @@ echo   40. Phase 19c   - Save/Load: F5 quicksave + F9 quickload (kill stuff, F5,
 echo   41. Phase 20a   - Dialogue parser self-test + RMB-talk to Edgaar in fh_r1
 echo   42. Phase 20b   - Quest log overlay (Accept Edgaar quest, press L, fh_r1)
 echo   43. Phase 20c   - Kill objectives + goal markers (kill 5 krug for Edgaar, fh_r1)
-echo   44. Phase 20d   - Vendor trade + gold purse (talk to Norick, buy/sell, fh_r1)
+echo   44. Phase 25c   - Authored store screen (Stonebridge shopkeepers, buy/sell, bt_r1)
 echo   45. Phase 21a-1 - Neighbor terrain preload (fh_r1 + first-ring neighbors visible)
 echo   46. Phase 21a-2 - Cross-boundary nav + actors + dialogue (walk into neighbor regions)
 echo   47. Phase 21a-3 - Rolling preload (no more invisible wall, walk arbitrarily far)
@@ -909,17 +909,17 @@ goto MENU
 
 :T44
 echo.
-echo --- Phase 20d: Vendor trade + gold purse (fh_r1) ---
-echo [Persistent "Gold: N" line under the Lv/XP readout, gold-tinted]
-echo [RMB Norick (the trader NPC) — dialogue panel opens]
-echo [Walk through dialogue to close it; vendor panel auto-opens (FOR SALE / YOUR ITEMS)]
-echo [Click Buy on Iron Two-Handed Sword (50g) — gold debits, item lands in inventory]
-echo [Buying a weapon_hand item also auto-equips it via the existing pickup path]
-echo [Click Sell on any inventory row — gold credits half list price (5g for unknowns)]
-echo [Insufficient gold: console logs "trade: cannot afford ..." and the trade is rejected]
-echo [Esc closes the vendor panel without firing the pause menu]
+echo --- Phase 25c: Authored store screen (Stonebridge, bt_r1) ---
+echo [RMB a shopkeeper: Adwana (spells), Jonn (smith), or Gyorn - store screen opens]
+echo [Right-docked authored chrome: cpbox frame, portrait box, name plate, 8x10 shelf grid]
+echo [Six tabs ARMOR/WEAPONS/SHIELDS + SPELLS/POTIONS/MISC - active tab shifts down 5px]
+echo [Adwana SPELLS tab: starter-band scrolls (zap/flash/fireshot tier, 20-150g range)]
+echo [Hover a shelf item - name + price readout; unaffordable reads red]
+echo [LMB a shelf item = buy (gold debits); your inventory co-opens - LMB your item = sell]
+echo [Previous/Next page when a tab overflows the 8x10 grid; Close button exits]
+echo [Insufficient gold: console logs "trade: cannot afford ..." and rejects]
 echo.
-dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
 echo === SiegeFX.Runtime exited with code %EXITCODE% ===

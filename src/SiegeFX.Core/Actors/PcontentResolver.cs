@@ -210,19 +210,22 @@ public sealed class PcontentResolver
 
             var rarity = ClassifyRarity(tpl.Name);
 
-            // Phase 24a — spell path (checked first: cheap name gate).
-            // Player-school spells index with power = [magic]max_level —
-            // the spell's skill window doubles as its pcontent band, so
-            // a spellbook with pcontent_level = N rolls spells whose
-            // window sits at or below N. Monster-arsenal spells (chain
-            // rooted at base_spell_monster) never index.
+            // Phase 24a/25c — spell path (checked first: cheap name gate).
+            // Player-school spells index with power = [magic]
+            // required_level (default 0) — that's the scale shop specs
+            // author: Adwana's regular-tier `#spell/1-7` stocks flash
+            // (required_level 3) and zap (unauthored → 0), and correctly
+            // excludes death_blast (24). max_level is the SKILL window,
+            // a different axis (zap authors max_level 21 yet is the
+            // starter spell). Monster-arsenal spells (chain rooted at
+            // base_spell_monster) never index.
             if (tpl.Name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
             {
                 char school = ClassifySpellSchool(tpl);
                 if (school != '\0')
                 {
-                    var maxLevel = (int)ParseFloat(_store.GetAttribute(tpl, "magic", "max_level"));
-                    var entry = new Entry(tpl.Name, maxLevel, rarity, Group.Spell, allowed);
+                    var reqLevel = (int)ParseFloat(_store.GetAttribute(tpl, "magic", "required_level"));
+                    var entry = new Entry(tpl.Name, reqLevel, rarity, Group.Spell, allowed);
                     Bucket(school == 'c' ? "cmagic" : "nmagic").Add(entry);
                     _all.Add(entry);
                 }
