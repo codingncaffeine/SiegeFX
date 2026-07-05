@@ -3088,7 +3088,13 @@ void main()
                 // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
                 // chase↔fly camera flip moved to F8 so the muscle-memory C key
                 // matches the original game.
-                else if (key == Key.C) { _charPanelOpen = !_charPanelOpen; _audio?.Play(SfxGuiInventory); }
+                else if (key == Key.C)
+                {
+                    // Player's own sheet: switch back from a companion sheet, else toggle.
+                    if (_paperdollTargetIndex != 0) { _paperdollTargetIndex = 0; _charPanelOpen = true; }
+                    else _charPanelOpen = !_charPanelOpen;
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // Phase 21-SC-SPELL-A: 'B' toggles the spell book pane.
                 else if (key == Key.B) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
                 // Phase 27 dev hook: 'F' cycles the party formation until the
@@ -3122,6 +3128,7 @@ void main()
                     }
                     else
                     {
+                        _paperdollTargetIndex = 0; // I opens the player's own rail
                         _charPanelOpen = true;
                         _inventoryOpen = true;
                         if (_spellbookWithI)
@@ -3385,7 +3392,7 @@ void main()
                     if (btn == MouseButton.Left)
                     {
                         bool inFrame = _vendor.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
-                                            _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                                            ActiveInventory.Count, _window.Size.X, _window.Size.Y);
                         // Phase 25c — DS1 opens your inventory beside the
                         // store; clicking one of your items while trading
                         // sells it at the panel's sell price.
@@ -3394,7 +3401,7 @@ void main()
                                                               _window.Size.X, _window.Size.Y))
                         {
                             int sellIdx = _inventoryPanel.TryHitTestItem((int)m.Position.X, (int)m.Position.Y,
-                                _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                                _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                             if (sellIdx >= 0)
                                 ApplyVendorAction(new Hud.VendorAction(Hud.VendorActionKind.Sell, sellIdx));
                         }
@@ -3469,8 +3476,18 @@ void main()
                             switch (th.Kind)
                             {
                                 case Hud.TeamPortraits.HitKind.Portrait:
-                                    // Toggle selection on the portrait.
-                                    _selectedPartyIndex = _selectedPartyIndex == pidx ? -1 : pidx;
+                                    // Open this companion's full character sheet —
+                                    // paperdoll + their own inventory + stats, all
+                                    // retargeted to them. Skipped mid-drag so a
+                                    // cursor-held item stays bound to its source list.
+                                    if (_cursorItem is null)
+                                    {
+                                        _selectedPartyIndex = pidx;
+                                        _paperdollTargetIndex = pidx;
+                                        _charPanelOpen = true;
+                                        _inventoryOpen = true;
+                                        _openInventoryMembers.Clear(); // single sheet, no tiled dupes
+                                    }
                                     break;
                                 case Hud.TeamPortraits.HitKind.Chevron:
                                     // >>> toggles this companion's inventory panel
@@ -3497,16 +3514,23 @@ void main()
                     switch (awpHit)
                     {
                         case Hud.CharacterAwp.HitTarget.Portrait:
-                            // Portrait click toggles paperdoll alone (DS1's
-                            // notify(character)). Does NOT touch inventory
-                            // or spellbook — only I-key drives the rail.
-                            _charPanelOpen = !_charPanelOpen;
+                            // Portrait click shows the player's OWN sheet (DS1's
+                            // notify(character)). If a companion sheet was up, this
+                            // switches back to the player; otherwise it toggles.
+                            // Does NOT touch inventory/spellbook — only I drives the rail.
+                            if (_cursorItem is null)
+                            {
+                                if (_paperdollTargetIndex != 0)
+                                { _paperdollTargetIndex = 0; _charPanelOpen = true; }
+                                else _charPanelOpen = !_charPanelOpen;
+                            }
                             _audio?.Play(SfxGuiInventory);
                             return;
                         case Hud.CharacterAwp.HitTarget.CloseArrow:
                             // INFORAIL-C: rail-open close arrow closes ALL
                             // rail panels (mirrors I-key close behavior).
                             _awpPressed = Hud.CharacterAwp.HitTarget.CloseArrow;
+                            _paperdollTargetIndex = 0;
                             _charPanelOpen = false;
                             _inventoryOpen = false;
                             _openInventoryMembers.Clear();
@@ -3518,6 +3542,7 @@ void main()
                             // Wide max-mode button — opens the info rail.
                             // Same effect as pressing I (DS1 notify(inventory)).
                             _awpPressed = Hud.CharacterAwp.HitTarget.InventoryButton;
+                            _paperdollTargetIndex = 0;
                             _charPanelOpen = true;
                             _inventoryOpen = true;
                             if (_spellbookWithI)
@@ -3722,7 +3747,7 @@ void main()
                         && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
                     {
                         var spell = _cursorScroll;
-                        _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                        ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry(
                             Slot: "", Reference: spell.Name));
                         // Phase 21-SC-SCROLL-D fold — keep the panel's _placements
                         // in sync with the inventory list. Without this, the new
@@ -3746,10 +3771,10 @@ void main()
                         && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
                     {
                         int idx = _inventoryPanel.TryHitTestItem(imx, imy,
-                            _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                            _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                         if (idx >= 0)
                         {
-                            var clicked = _playerInventory[idx];
+                            var clicked = ActiveInventory[idx];
                             // A scroll item is identifiable by its Reference
                             // resolving via ResolveSlottableSpell — same
                             // path as SIEGEFX_DEBUG_SPELLS, so it works for
@@ -3758,7 +3783,7 @@ void main()
                             if (spell is not null && string.IsNullOrEmpty(clicked.Slot))
                             {
                                 BeginScrollDrag(spell, CursorScrollSource.Inventory, idx);
-                                _playerInventory.RemoveAt(idx);
+                                ActiveInventory.RemoveAt(idx);
                                 _inventoryPanel.NotifyItemRemoved(idx);
                                 _audio?.Play(SfxGuiPickup);
                                 Console.WriteLine($"  scroll drag: pickup {spell.Name} from inventory[{idx}]");
@@ -3771,7 +3796,7 @@ void main()
                             _cursorItem = clicked;
                             _cursorItemFromInventoryIdx = idx;
                             _cursorItemIcon = TryGetItemIcon(clicked.Reference);
-                            _playerInventory.RemoveAt(idx);
+                            ActiveInventory.RemoveAt(idx);
                             _inventoryPanel.NotifyItemRemoved(idx);
                             _audio?.Play(SfxGuiPickup);
                             Console.WriteLine($"  cursor item: pickup {clicked.Reference} from inventory[{idx}]");
@@ -3802,7 +3827,7 @@ void main()
                                 _window.Size.X, _window.Size.Y))
                     {
                         int existingIdx = _inventoryPanel.TryHitTestItem(imx, imy,
-                            _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                            _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                         if (existingIdx < 0)
                         {
                             // Empty cell — drop item into inventory.
@@ -3810,7 +3835,7 @@ void main()
                             // site pairs with NotifyItemAdded; this
                             // branch was missing it, leaving the grid
                             // placement-state out of sync.
-                            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(
+                            ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry(
                                 Slot: "", Reference: _cursorItem.Value.Reference));
                             _inventoryPanel.NotifyItemAdded();
                             _audio?.Play(SfxGuiInventory);
@@ -3824,7 +3849,7 @@ void main()
                         // splinter).
                     }
                     _inventoryPanel.OnMouseDown(imx, imy,
-                        _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                        _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                     if (_inventoryPanel.IsPointInPanel(imx, imy,
                             _window.Size.X, _window.Size.Y))
                         return;
@@ -4038,7 +4063,7 @@ void main()
                     if (btn == MouseButton.Left)
                     {
                         var act = _vendor.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
-                                                    _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                                                    ActiveInventory.Count, _window.Size.X, _window.Size.Y);
                         if (!act.IsNone) ApplyVendorAction(act);
                     }
                     return;
@@ -4114,7 +4139,7 @@ void main()
                 if (_inventoryOpen && btn == MouseButton.Left)
                 {
                     var drag = _inventoryPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
-                        _window.Size.X, _window.Size.Y, _playerInventory, TryGetItemGridSize);
+                        _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                     if (drag.Kind == InventoryPanel.ActionKind.DropToWorld)
                         DropInventoryItem(drag.ItemIndex);
                     if (_inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
@@ -4211,7 +4236,7 @@ void main()
                     _dialogue.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (_vendor.IsOpen)
                     _vendor.OnMouseMove((int)pos.X, (int)pos.Y,
-                                        _playerInventory.Count, _window.Size.X, _window.Size.Y);
+                                        ActiveInventory.Count, _window.Size.X, _window.Size.Y);
                 if (_inventoryOpen)
                     _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
                 // SC-QUEST-UI-C — journal button / arrow / corner-X hover so
@@ -11740,17 +11765,18 @@ void main()
             }
             // Slot on stock rows is the store TAB name (25c) — a bought
             // item always lands unequipped, so the loot slot stays empty.
-            _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry("", row.ItemReference));
+            ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry("", row.ItemReference));
             _inventoryPanel.NotifyItemAdded();
-            Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g (gold now {_progression.Gold})");
+            Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g → member {_paperdollTargetIndex} (gold now {_progression.Gold})");
         }
         else if (act.Kind == SiegeFX.Runtime.Render.Hud.VendorActionKind.Sell)
         {
-            if (act.Index < 0 || act.Index >= _playerInventory.Count) return;
-            var entry = _playerInventory[act.Index];
+            var sellInv = ActiveInventory;
+            if (act.Index < 0 || act.Index >= sellInv.Count) return;
+            var entry = sellInv[act.Index];
             long price = SiegeFX.Runtime.Render.Hud.VendorPanel.ResolveSellPrice(entry.Reference);
             _inventoryPanel.NotifyItemRemoved(act.Index);
-            _playerInventory.RemoveAt(act.Index);
+            sellInv.RemoveAt(act.Index);
             _progression.CreditGold(price);
             Console.WriteLine($"trade: sold {entry.Reference} for {price}g (gold now {_progression.Gold})");
         }
@@ -12588,8 +12614,11 @@ void main()
                 // Slot 1 = equipped melee, slot 2 = equipped ranged (from the
                 // member's own template equipment); spells are slots 3/4 once
                 // follower spellbooks are wired. Active = whichever they carry.
-                var mSlot1 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_melee");
-                var mSlot2 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_ranged");
+                // Read the member's LIVE equipment so gear equipped on their
+                // paperdoll updates the strip (seeds from their template first).
+                var mEquip = GetEquipmentDict(m.PartyIndex);
+                var mSlot1 = ResolveWeaponSlotIcon(mEquip, "weapon_melee");
+                var mSlot2 = ResolveWeaponSlotIcon(mEquip, "weapon_ranged");
                 // Clicked slot wins; otherwise default to whichever weapon they carry.
                 int mActive = _memberActiveSlot.TryGetValue(m.PartyIndex, out var ov)
                     ? ov : (mSlot1 is not null ? 0 : (mSlot2 is not null ? 1 : -1));
@@ -12639,6 +12668,81 @@ void main()
             _companionInventories[partyIndex] = list = new();
         return list;
     }
+
+    // Which party member's character sheet (paperdoll + inventory + stats) is on
+    // screen. 0 = player/leader; N = a companion's PartyIndex. Clicking a
+    // companion portrait retargets the single sheet to them; the ActiveEquipment/
+    // ActiveInventory accessors below make the whole equip/inventory UI operate on
+    // the target transparently. At target 0 they return the very same objects the
+    // player path has always used, so the player experience is unchanged.
+    private int _paperdollTargetIndex;
+
+    // Per-companion LIVE equipment (es_* tag → item template ref), seeded from the
+    // member's template [inventory][equipment] the first time their sheet opens so
+    // equip/unequip mutate a copy without touching the shared template.
+    private readonly Dictionary<int, Dictionary<string, string>> _memberEquipment = new();
+
+    private Dictionary<string, string> GetEquipmentDict(int partyIndex)
+    {
+        if (partyIndex <= 0) return _playerEquipment;
+        if (_memberEquipment.TryGetValue(partyIndex, out var dict)) return dict;
+        dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+        if (member is not null && _templateStore is not null)
+        {
+            // Same seed the player uses at spawn (RenderHost ~10879): any [inventory]
+            // [equipment] attribute whose name starts es_ is an equip-slot → item ref.
+            var eq = _templateStore.GetSection(member.Actor.Template, "inventory", "equipment");
+            if (eq is not null)
+                foreach (var a in eq.Attributes)
+                {
+                    if (!a.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.IsNullOrWhiteSpace(a.Value)) continue;
+                    dict[a.Name] = a.Value.Trim();
+                }
+        }
+        _memberEquipment[partyIndex] = dict;
+        return dict;
+    }
+
+    // The equipment/inventory the on-screen character sheet reads and mutates —
+    // identical to _playerEquipment/_playerInventory when the player's own sheet
+    // is up (target 0), or the targeted companion's when a companion sheet is up.
+    private Dictionary<string, string> ActiveEquipment => GetEquipmentDict(_paperdollTargetIndex);
+    private List<SiegeFX.Core.Actors.LootEntry> ActiveInventory => GetMemberInventory(_paperdollTargetIndex);
+
+    // Screen name for a party member (companion sheet header / stats title).
+    private string ResolveMemberName(ActorRenderState member)
+    {
+        if (_templateStore is null) return member.Actor.Template.Name;
+        return _templateStore.GetAttribute(member.Actor.Template, "common", "screen_name")?.Trim().Trim('"')
+               ?? member.Actor.Template.Name;
+    }
+
+    // Live-equipment weapon-slot icon: the equipped es_weapon_hand item's
+    // [gui]inventory_icon, shown only when its class chain matches requiredClass
+    // (weapon_melee / weapon_ranged) so a bow never renders on the melee slot.
+    // Reads a supplied dict so it serves both the player and any companion.
+    private GlTexture? ResolveWeaponSlotIcon(Dictionary<string, string> equip, string requiredClass)
+    {
+        if (_templateStore is null) return null;
+        if (!equip.TryGetValue("es_weapon_hand", out var weaponRef) ||
+            string.IsNullOrWhiteSpace(weaponRef)) return null;
+        if (!_templateStore.TryGet(weaponRef, out var weaponTpl) || weaponTpl is null) return null;
+        bool classMatch = false;
+        for (var t = weaponTpl; t is not null; t = t.Specializes)
+            if (string.Equals(t.Name, requiredClass, StringComparison.OrdinalIgnoreCase))
+            { classMatch = true; break; }
+        if (!classMatch) return null;
+        string cacheKey = $"wslot:{requiredClass}:{weaponRef}";
+        if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
+        string iconName = (_templateStore.GetAttribute(weaponTpl, "gui", "inventory_icon") ?? "")
+            .Trim().Trim('"');
+        GlTexture? tex = string.IsNullOrEmpty(iconName) ? null : TryGetGuiTexture(iconName);
+        _paperdollEquipCache[cacheKey] = tex;
+        return tex;
+    }
+
     private GlTexture? _awpDeathTex;
 
     // Phase 27 — field_commands panel (bottom-right party orders). Order
@@ -12787,12 +12891,12 @@ void main()
         {
             return slotName switch
             {
-                "melee"  => ResolveAwpSlotByWeaponClass("weapon_melee"),
-                "ranged" => ResolveAwpSlotByWeaponClass("weapon_ranged"),
+                "melee"  => ResolveWeaponSlotIcon(ActiveEquipment, "weapon_melee"),
+                "ranged" => ResolveWeaponSlotIcon(ActiveEquipment, "weapon_ranged"),
                 _ => null,
             };
         }
-        if (!_playerEquipment.TryGetValue(esTag, out var templateName) ||
+        if (!ActiveEquipment.TryGetValue(esTag, out var templateName) ||
             string.IsNullOrWhiteSpace(templateName)) return null;
         string cacheKey = $"{esTag}:{templateName}";
         if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
@@ -12832,7 +12936,10 @@ void main()
         string? esTag = PaperdollSlotToEsTag(slotName);
         if (esTag is null) return;
 
-        _playerEquipment.TryGetValue(esTag, out var currentRef);
+        // Operate on whichever character's sheet is open (player or companion).
+        var equip = ActiveEquipment;
+        int target = _paperdollTargetIndex;
+        equip.TryGetValue(esTag, out var currentRef);
         bool slotHasItem = !string.IsNullOrWhiteSpace(currentRef);
 
         if (_cursorItem is null)
@@ -12842,10 +12949,10 @@ void main()
             _cursorItem = new SiegeFX.Core.Actors.LootEntry(esTag, currentRef!);
             _cursorItemIcon = TryGetItemIcon(currentRef!);
             _cursorItemFromInventoryIdx = -1; // came from equipment
-            _playerEquipment.Remove(esTag);
+            equip.Remove(esTag);
             _audio?.Play(SfxGuiPickup);
-            Console.WriteLine($"  paperdoll: unequipped {currentRef} from {esTag}");
-            ApplyEquipmentChange(esTag);
+            Console.WriteLine($"  paperdoll[{target}]: unequipped {currentRef} from {esTag}");
+            ApplyEquipmentChange(esTag, target);
             return;
         }
 
@@ -12856,23 +12963,23 @@ void main()
         if (slotHasItem)
         {
             // (c) Swap.
-            _playerEquipment[esTag] = itemRef;
+            equip[esTag] = itemRef;
             _cursorItem = new SiegeFX.Core.Actors.LootEntry(esTag, currentRef!);
             _cursorItemIcon = TryGetItemIcon(currentRef!);
             _audio?.Play(SfxGuiPickup);
-            Console.WriteLine($"  paperdoll: swapped {currentRef} ↔ {itemRef} on {esTag}");
+            Console.WriteLine($"  paperdoll[{target}]: swapped {currentRef} ↔ {itemRef} on {esTag}");
         }
         else
         {
             // (b) Place.
-            _playerEquipment[esTag] = itemRef;
+            equip[esTag] = itemRef;
             _cursorItem = null;
             _cursorItemIcon = null;
             _cursorItemFromInventoryIdx = -1;
             _audio?.Play(SfxGuiPickup);
-            Console.WriteLine($"  paperdoll: equipped {itemRef} on {esTag}");
+            Console.WriteLine($"  paperdoll[{target}]: equipped {itemRef} on {esTag}");
         }
-        ApplyEquipmentChange(esTag);
+        ApplyEquipmentChange(esTag, target);
     }
 
     /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT (post-test fold) —
@@ -12891,9 +12998,19 @@ void main()
     ///     new weapon's class (fs1 melee / fs5 ranged / fs0 unarmed).
     ///   - _paperdollEquipCache: cleared so AWP + paperdoll icon
     ///     resolvers re-read the new equipped icon next frame.</summary>
-    private void ApplyEquipmentChange(string esTag)
+    private void ApplyEquipmentChange(string esTag, int partyIndex = 0)
     {
+        // Clear the shared icon cache so the paperdoll + AWP + team-strip weapon
+        // slots re-resolve from the live dict next frame (both player and companion).
         _paperdollEquipCache.Clear();
+        if (partyIndex > 0)
+        {
+            // Companion: the equip is accepted and its icon now shows on the
+            // sheet + team-strip. Live combat-stat / weapon-mesh refresh for a
+            // follower is a follow-up (their brain bakes weapon damage at recruit
+            // time in RecruitActor); it takes effect on the next recruit/reload.
+            return;
+        }
         bool isWeapon = string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase);
         if (isWeapon)
         {
@@ -12966,29 +13083,6 @@ void main()
             if (string.Equals(t.Name, marker, System.StringComparison.OrdinalIgnoreCase))
                 return true;
         return false;
-    }
-
-    // Team-portrait strip counterpart to ResolveAwpSlotByWeaponClass: resolves a
-    // companion's weapon-slot icon from ITS OWN template's equipped es_weapon_hand
-    // (the same slot InjectFollowerWeapon reads), classified melee vs ranged.
-    private GlTexture? ResolveMemberWeaponSlot(SiegeFX.Core.Assets.Template tpl, string requiredClass)
-    {
-        if (_templateStore is null || tpl is null) return null;
-        var weaponRef = _templateStore.GetAttribute(tpl, "inventory", "equipment", "es_weapon_hand");
-        if (string.IsNullOrWhiteSpace(weaponRef)) return null;
-        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
-        bool classMatch = false;
-        for (var t = weaponTpl; t is not null; t = t.Specializes)
-            if (string.Equals(t.Name, requiredClass, System.StringComparison.OrdinalIgnoreCase))
-            { classMatch = true; break; }
-        if (!classMatch) return null;
-        string cacheKey = $"awpmember:{requiredClass}:{weaponRef}";
-        if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
-        string iconName = (_templateStore.GetAttribute(weaponTpl, "gui", "inventory_icon") ?? "")
-            .Trim().Trim('"');
-        GlTexture? tex = string.IsNullOrEmpty(iconName) ? null : TryGetGuiTexture(iconName);
-        _paperdollEquipCache[cacheKey] = tex;
-        return tex;
     }
 
     private GlTexture? ResolveAwpSlotByWeaponClass(string requiredClass)
@@ -14003,8 +14097,10 @@ void main()
     /// indexed against the live list. Triggers the per-template put_down cue.</summary>
     private void DropInventoryItem(int index)
     {
-        if (index < 0 || index >= _playerInventory.Count) return;
-        var entry = _playerInventory[index];
+        // The active sheet's inventory (player, or an open companion's).
+        var inv = ActiveInventory;
+        if (index < 0 || index >= inv.Count) return;
+        var entry = inv[index];
         var feet = _player?.CurrentTransform.Translation ?? _camera.Position;
 
         // Toss outward in the PC's current facing. Falls back to a fixed +Z
@@ -14017,7 +14113,7 @@ void main()
         var dropPos = feet + facing * 3.5f;
 
         _inventoryPanel.NotifyItemRemoved(index);
-        _playerInventory.RemoveAt(index);
+        inv.RemoveAt(index);
 
         // Phase 9-SC-10 — if the dropped item was currently equipped (e.g. the
         // PC throws their own shield), unbind the equipment slot and refresh
@@ -14026,24 +14122,31 @@ void main()
         bool weaponDropped = false;
         bool nonWeaponDropped = false;
         string? droppedSlotKey = null;
-        foreach (var kv in _playerEquipment)
+        var equip = ActiveEquipment;
+        foreach (var kv in equip)
         {
             if (string.Equals(kv.Value, entry.Reference, StringComparison.OrdinalIgnoreCase))
             { droppedSlotKey = kv.Key; break; }
         }
         if (droppedSlotKey is not null)
         {
-            _playerEquipment.Remove(droppedSlotKey);
+            equip.Remove(droppedSlotKey);
             if (string.Equals(droppedSlotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
                 weaponDropped = true;
             else
                 nonWeaponDropped = true;
             Console.WriteLine($"  unequipped: [{droppedSlotKey}] (dropped to world)");
         }
-        if (weaponDropped) TryLoadPlayerWeapon();
-        if (nonWeaponDropped && _player is not null)
-            TryLoadPlayerEquipment(_player.Actor.Template);
-        if (weaponDropped || nonWeaponDropped) RefreshPlayerStance();
+        // Live weapon-mesh/stance refresh is player-only (companion follower
+        // meshes don't render equipped gear yet); the companion's dict + icons
+        // still update via the equip removal above.
+        if (_paperdollTargetIndex == 0)
+        {
+            if (weaponDropped) TryLoadPlayerWeapon();
+            if (nonWeaponDropped && _player is not null)
+                TryLoadPlayerEquipment(_player.Actor.Template);
+            if (weaponDropped || nonWeaponDropped) RefreshPlayerStance();
+        }
 
         var pile = new LootPile(feet, new List<SiegeFX.Core.Actors.LootEntry>
         {
@@ -15382,11 +15485,13 @@ void main()
     // for the character pane's ARMOR RATING readout. Slots that don't carry an
     // armor block (weapons, spell books) are skipped so the running total
     // stays an honest sum even when the equipment dict mixes types.
-    private int ComputePlayerArmorRating()
+    private int ComputePlayerArmorRating() => ComputeArmorRating(_playerEquipment);
+
+    private int ComputeArmorRating(Dictionary<string, string> equip)
     {
-        if (_templateStore is null || _playerEquipment.Count == 0) return 0;
+        if (_templateStore is null || equip.Count == 0) return 0;
         float total = 0f;
-        foreach (var kv in _playerEquipment)
+        foreach (var kv in equip)
         {
             if (!_templateStore.TryGet(kv.Value, out var tpl) || tpl is null) continue;
             var defStr = _templateStore.GetAttribute(tpl, "armor", "defense");
@@ -16617,28 +16722,41 @@ void main()
 
             if (_charPanelOpen && _player is not null)
             {
+                // The sheet shows either the player (target 0) or a clicked
+                // companion. If the targeted companion has left/died, fall back
+                // to the player so the sheet never renders a stale member.
+                var sheetMember = _paperdollTargetIndex <= 0
+                    ? _player
+                    : _party.FirstOrDefault(m => m.PartyIndex == _paperdollTargetIndex);
+                if (sheetMember is null) { _paperdollTargetIndex = 0; sheetMember = _player; }
+                bool isPlayerSheet = _paperdollTargetIndex <= 0;
+
                 _characterPanel.OriginX = paperdollX;
                 _characterPanel.OriginY = panelTopY;
                 _characterPanel.IsOpen  = true;
-                int armor = ComputePlayerArmorRating();
-                // Phase 21-SC-INV-B — skill XP fraction. Until per-skill XP
-                // pools land all four skill rows + STR/DEX/INT bars share
-                // the combined progression's into-level fraction.
+                // Armor + weapon stats come from the active character's live equipment.
+                int armor = ComputeArmorRating(ActiveEquipment);
+                // Phase 21-SC-INV-B — skill XP fraction (player only; companions
+                // have no progression pool yet, so their skill bars read flat).
                 float xpFrac = 0f;
-                if (_progression is not null)
+                if (isPlayerSheet && _progression is not null)
                 {
                     long span = _progression.XpForNextLevel - _progression.XpForCurrentLevel;
                     if (span > 0) xpFrac = (float)_progression.XpIntoCurrentLevel / span;
                 }
-                var portrait = string.IsNullOrEmpty(_playerPortraitIconName)
-                    ? null
-                    : TryGetGuiTexture(_playerPortraitIconName);
+                string sheetName = isPlayerSheet ? _heroName : ResolveMemberName(sheetMember);
+                var sheetProgression = isPlayerSheet ? _progression : null;
+                var sheetAttack = isPlayerSheet ? GetPlayerAttackStats() : sheetMember.Actor.Stats;
+                string sheetClassTitle = isPlayerSheet ? _playerStartingClass : "";
+                var portrait = isPlayerSheet
+                    ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
+                    : ResolveMemberPortrait(sheetMember.Actor.Template);
                 _characterPanel.Draw(_barRenderer!, _textRenderer,
-                    size.X, size.Y, _heroName, _player.Actor, _progression,
-                    GetPlayerAttackStats(), armor, xpFrac,
+                    size.X, size.Y, sheetName, sheetMember.Actor, sheetProgression,
+                    sheetAttack, armor, xpFrac,
                     _iconRenderer, portrait,
                     chromeLookup: TryGetGuiTexture,
-                    startingClassTitle: _playerStartingClass);
+                    startingClassTitle: sheetClassTitle);
 
                 // INFORAIL-PAPERDOLL — equipment paperdoll under the
                 // upper stats panes. Reads gas-cited rects from
@@ -16719,16 +16837,21 @@ void main()
                 var arrangeUp  = TryGetGuiTexture("b_gui_ig_mnu_ip_arrange_up");
                 var goldBg     = TryGetGuiTexture("b_gui_ig_mnu_ip_gold_box");
                 var gridTile   = TryGetGuiTexture("b_gui_ig_mnu_ip_grid");
-                var playerPortrait = string.IsNullOrEmpty(_playerPortraitIconName)
-                    ? null : TryGetGuiTexture(_playerPortraitIconName);
+                // The main panel shows the ACTIVE character's backpack + face
+                // (player, or a companion whose sheet was opened by clicking their
+                // portrait). Gold is party-wide, so it always shows the shared purse.
+                var activePortrait = _paperdollTargetIndex <= 0
+                    ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
+                    : (_party.FirstOrDefault(m => m.PartyIndex == _paperdollTargetIndex) is { } mem
+                        ? ResolveMemberPortrait(mem.Actor.Template) : null);
                 _inventoryPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
-                    size.X, size.Y, _playerInventory, TryGetItemIcon, TryGetItemGridSize,
+                    size.X, size.Y, ActiveInventory, TryGetItemIcon, TryGetItemGridSize,
                     invClose, goldCoin,
                     resolveCommonChrome: GetCommonTexture,
                     arrangeUp: arrangeUp,
                     goldBg: goldBg,
                     gridTile: gridTile,
-                    headerPortrait: playerPortrait);
+                    headerPortrait: activePortrait);
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
@@ -17266,16 +17389,18 @@ void main()
         var entry = _cursorItem.Value;
         if (!string.IsNullOrEmpty(entry.Slot) && entry.Slot.StartsWith("es_", System.StringComparison.OrdinalIgnoreCase))
         {
-            _playerEquipment[entry.Slot] = entry.Reference;
+            ActiveEquipment[entry.Slot] = entry.Reference;
             Console.WriteLine($"  cursor item: cancel → re-equip {entry.Reference} on {entry.Slot}");
+            int reTarget = _paperdollTargetIndex;
             ClearCursorItem();
-            ApplyEquipmentChange(entry.Slot);
+            ApplyEquipmentChange(entry.Slot, reTarget);
             return;
         }
         if (_cursorItemFromInventoryIdx >= 0)
         {
-            int idx = System.Math.Clamp(_cursorItemFromInventoryIdx, 0, _playerInventory.Count);
-            _playerInventory.Insert(idx, new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: entry.Reference));
+            var restoreInv = ActiveInventory;
+            int idx = System.Math.Clamp(_cursorItemFromInventoryIdx, 0, restoreInv.Count);
+            restoreInv.Insert(idx, new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: entry.Reference));
             _inventoryPanel.NotifyItemAdded();
             Console.WriteLine($"  cursor item: cancel → restored {entry.Reference} to inventory[{idx}]");
             ClearCursorItem();
@@ -17486,9 +17611,11 @@ void main()
         _actors.Clear();
         _party.Clear();          // Phase 26a — party roster is per-region-load
         _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
+        _paperdollTargetIndex = 0; // sheet returns to the player on region reload
         _memberActiveSlot.Clear();
         _openInventoryMembers.Clear();
         _companionInventories.Clear();
+        _memberEquipment.Clear();
         _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.
