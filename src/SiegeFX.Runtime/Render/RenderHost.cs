@@ -1209,7 +1209,20 @@ public sealed class RenderHost : IDisposable
                         // leader isn't lost, ease back to a walk as the gap closes.
                         float gap = MathF.Sqrt(gap2);
                         follower.Speed = baseGait * (gap > 6f ? 2.4f : gap > 3f ? 1.7f : 1.1f);
-                        follower.SetTarget(slot);
+                        // Commit to a path and follow it; re-plan only when the slot
+                        // drifts past a threshold from the goal already committed to,
+                        // or the current path finished / got blocked. Re-issuing
+                        // SetTarget every tick re-funnels the route each frame, which
+                        // on stairs flips between overlapping treads → the stair
+                        // zigzag the player showed before the funnel fix. The player
+                        // follower sets its target once per click and descends clean;
+                        // this gives followers the same commit-and-follow cadence
+                        // (and cuts the per-follower A* churn).
+                        float tdx = follower.Target.X - slot.X, tdz = follower.Target.Z - slot.Z;
+                        const float replanDist = 1.0f;
+                        if (follower.ReachedGoal || follower.PathBlocked ||
+                            (tdx * tdx + tdz * tdz) > replanDist * replanDist)
+                            follower.SetTarget(slot);
                         follower.Tick(dt);
                         moving = true;
                     }
