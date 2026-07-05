@@ -1122,8 +1122,16 @@ public sealed class RenderHost : IDisposable
             var follower = m.Brain.Wander.Follower;
             var before = follower.Position;
 
-            // Engage the nearest live enemy within aggro range, else follow.
-            ActorRenderState? foe = m.CanFight ? NearestEnemyTo(before, m.Brain.AggroRadius) : null;
+            // Engage an enemy per the field_commands orders, else follow.
+            // HoldFire never attacks; HoldGround only engages foes already
+            // near the slot (won't leave formation to chase).
+            ActorRenderState? foe = null;
+            if (m.CanFight && _fcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
+            {
+                float radius = _fcMovement == Hud.FieldCommandsPanel.Action.MoveHoldGround
+                    ? 3.5f : m.Brain.AggroRadius;
+                foe = SelectEnemyFor(before, radius);
+            }
             Vector3 face;
             if (foe is not null)
             {
@@ -1134,13 +1142,17 @@ public sealed class RenderHost : IDisposable
             else
             {
                 // Move to the formation slot (bypass the wander patrol by
-                // driving the nav follower straight at the slot).
+                // driving the nav follower straight at the slot). Follow off →
+                // hold position where they stand.
                 m.Brain.ForceIdle();
-                var slot = PartyFormationSlot(_partyFormation, m.PartyIndex,
-                                              _party.Count - 1, leaderPos, leaderFace);
-                float gapX = before.X - slot.X, gapZ = before.Z - slot.Z;
-                const float slack = 1.5f;   // hold ring so an idle leader doesn't jitter the line
-                if (gapX * gapX + gapZ * gapZ > slack * slack) follower.SetTarget(slot);
+                if (_fcFollow)
+                {
+                    var slot = PartyFormationSlot(_partyFormation, m.PartyIndex,
+                                                  _party.Count - 1, leaderPos, leaderFace);
+                    float gapX = before.X - slot.X, gapZ = before.Z - slot.Z;
+                    const float slack = 1.5f;   // hold ring so an idle leader doesn't jitter the line
+                    if (gapX * gapX + gapZ * gapZ > slack * slack) follower.SetTarget(slot);
+                }
                 follower.Tick(dt);
                 var moved = follower.Position - before;
                 face = (moved.X * moved.X + moved.Z * moved.Z) > 1e-6f
@@ -1172,13 +1184,18 @@ public sealed class RenderHost : IDisposable
         }
     }
 
-    /// <summary>Phase 26 — nearest living hostile combatant to a point within
-    /// <paramref name="radius"/> (XZ). Skips the player and party members so a
-    /// follower only ever swings at real enemies.</summary>
-    private ActorRenderState? NearestEnemyTo(Vector3 pos, float radius)
+    /// <summary>Phase 27 — pick a follower's target within <paramref name="radius"/>
+    /// (XZ) per the field_commands orders. Targeting = closest / strongest /
+    /// weakest (by MaxLife); attack=fightback restricts to enemies already
+    /// aggroed (their brain is chasing/attacking). Skips the player and party
+    /// members so a follower only ever swings at real enemies.</summary>
+    private ActorRenderState? SelectEnemyFor(Vector3 pos, float radius)
     {
+        bool fightback = _fcAttack == Hud.FieldCommandsPanel.Action.AtkFightback;
+        var mode = _fcTargeting;
         ActorRenderState? best = null;
-        float bestD2 = radius * radius;
+        float bestScore = 0f; bool have = false;
+        float r2 = radius * radius;
         for (int i = 0; i < _actors.Count; i++)
         {
             var s = _actors[i];
@@ -1187,7 +1204,18 @@ public sealed class RenderHost : IDisposable
             var p = s.CurrentTransform.Translation;
             float dx = p.X - pos.X, dz = p.Z - pos.Z;
             float d2 = dx * dx + dz * dz;
-            if (d2 < bestD2) { bestD2 = d2; best = s; }
+            if (d2 > r2) continue;
+            if (fightback && !(s.Brain is not null &&
+                (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+              || s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)))
+                continue;
+            float score = mode switch
+            {
+                Hud.FieldCommandsPanel.Action.TgtStrongest =>  s.Actor.Stats.MaxLife,
+                Hud.FieldCommandsPanel.Action.TgtWeakest   => -s.Actor.Stats.MaxLife,
+                _                                          => -d2,   // closest
+            };
+            if (!have || score > bestScore) { bestScore = score; best = s; have = true; }
         }
         return best;
     }
@@ -3389,10 +3417,14 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    // Phase 27 — clicking a team-portrait cell selects that
-                    // party member (toggles off if already selected).
+                    // Phase 27 — party HUD clicks (only with a party): the
+                    // field_commands panel (formation/orders/select/disband)
+                    // and the team-portrait cells (member selection).
                     if (_party.Count > 1)
                     {
+                        var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y);
+                        if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
+
                         int fslot = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
                         if (fslot >= 0)
                         {
@@ -12397,6 +12429,12 @@ void main()
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                                 _awpAtlas, cells, _awpDeathTex);
+
+            // Phase 27 — field_commands panel (bottom-right party orders).
+            var fcState = new Hud.FieldCommandsPanel.State(
+                FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow);
+            _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                             TryGetGuiTexture, viewportW, viewportH, fcState);
         }
     }
 
@@ -12406,6 +12444,74 @@ void main()
     private readonly Hud.TeamPortraits _teamPortraits = new();
     private int _selectedPartyIndex = -1;
     private GlTexture? _awpDeathTex;
+
+    // Phase 27 — field_commands panel (bottom-right party orders). Order
+    // selections drive follower AI in the behavior slice; defaults match DS1
+    // (movement engage, attack free, target closest, follow on).
+    private readonly Hud.FieldCommandsPanel _fieldPanel = new();
+    private Hud.FieldCommandsPanel.Action _fcMovement  = Hud.FieldCommandsPanel.Action.MoveEngage;
+    private Hud.FieldCommandsPanel.Action _fcAttack    = Hud.FieldCommandsPanel.Action.AtkFree;
+    private Hud.FieldCommandsPanel.Action _fcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
+    private bool _fcFollow = true;
+
+    private Hud.FieldCommandsPanel.Action FormationAction() => _partyFormation switch
+    {
+        PartyFormation.Row          => Hud.FieldCommandsPanel.Action.FormRow,
+        PartyFormation.DoubleRow    => Hud.FieldCommandsPanel.Action.FormDoubleRow,
+        PartyFormation.Column       => Hud.FieldCommandsPanel.Action.FormColumn,
+        PartyFormation.Pyramid      => Hud.FieldCommandsPanel.Action.FormPyramid,
+        PartyFormation.Circle       => Hud.FieldCommandsPanel.Action.FormCircle,
+        _                           => Hud.FieldCommandsPanel.Action.FormDoubleColumn,
+    };
+
+    /// <summary>Phase 27 — apply a field_commands click.</summary>
+    private void OnFieldCommand(Hud.FieldCommandsPanel.Action a)
+    {
+        switch (a)
+        {
+            case Hud.FieldCommandsPanel.Action.FormRow:          _partyFormation = PartyFormation.Row; break;
+            case Hud.FieldCommandsPanel.Action.FormDoubleRow:    _partyFormation = PartyFormation.DoubleRow; break;
+            case Hud.FieldCommandsPanel.Action.FormColumn:       _partyFormation = PartyFormation.Column; break;
+            case Hud.FieldCommandsPanel.Action.FormDoubleColumn: _partyFormation = PartyFormation.DoubleColumn; break;
+            case Hud.FieldCommandsPanel.Action.FormPyramid:      _partyFormation = PartyFormation.Pyramid; break;
+            case Hud.FieldCommandsPanel.Action.FormCircle:       _partyFormation = PartyFormation.Circle; break;
+
+            case Hud.FieldCommandsPanel.Action.MoveFree:
+            case Hud.FieldCommandsPanel.Action.MoveEngage:
+            case Hud.FieldCommandsPanel.Action.MoveHoldGround:   _fcMovement = a; break;
+            case Hud.FieldCommandsPanel.Action.AtkFree:
+            case Hud.FieldCommandsPanel.Action.AtkFightback:
+            case Hud.FieldCommandsPanel.Action.AtkHoldFire:      _fcAttack = a; break;
+            case Hud.FieldCommandsPanel.Action.TgtClosest:
+            case Hud.FieldCommandsPanel.Action.TgtStrongest:
+            case Hud.FieldCommandsPanel.Action.TgtWeakest:       _fcTargeting = a; break;
+
+            case Hud.FieldCommandsPanel.Action.ToggleFollow:     _fcFollow = !_fcFollow; break;
+            case Hud.FieldCommandsPanel.Action.SelectAll:        _selectedPartyIndex = -1; break; // -1 = whole party
+            case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollower(); break;
+        }
+        _audio?.Play(SfxGuiInventory);
+    }
+
+    /// <summary>Phase 27 — dismiss a recruited follower back to the world (the
+    /// selected member, or the last-recruited if none selected). The NPC keeps
+    /// its brain but reverts to a wandering world actor.</summary>
+    private void DisbandSelectedFollower()
+    {
+        ActorRenderState? target = null;
+        foreach (var m in _party)
+            if (m.PartyIndex != 0 && (_selectedPartyIndex < 0 || m.PartyIndex == _selectedPartyIndex))
+                target = m; // last match wins → highest index when "all"
+        if (target is null) return;
+        target.IsPartyMember = false;
+        target.CanFight = false;
+        _party.Remove(target);
+        // Re-index the remaining followers so formation slots stay contiguous.
+        int idx = 1;
+        foreach (var m in _party) if (m.PartyIndex != 0) m.PartyIndex = idx++;
+        _selectedPartyIndex = -1;
+        Console.WriteLine($"party: disbanded {target.Actor.Template.Name} (now {_party.Count}/{MaxPartySize})");
+    }
     private readonly System.Collections.Generic.Dictionary<string, GlTexture?> _memberPortraitCache =
         new(System.StringComparer.OrdinalIgnoreCase);
     private GlTexture? ResolveMemberPortrait(SiegeFX.Core.Assets.Template tpl)
