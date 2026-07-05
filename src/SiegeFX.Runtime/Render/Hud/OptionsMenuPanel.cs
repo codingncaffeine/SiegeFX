@@ -472,18 +472,23 @@ internal sealed class OptionsMenuPanel
 
     public void Draw(BarRenderer bars, TextRenderer text,
         IconRenderer? icons, FrontendScene? scene,
-        int viewportW, int viewportH)
+        int viewportW, int viewportH,
+        Func<string, GlTexture?>? commonChrome = null)
     {
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
 
-        // Stash the chrome resolver for this frame's widget helpers. The
-        // FrontendScene loads b_gui_cmn_* from Objects.dsres; strip the prefix
-        // ButtonChrome/Tex re-add so the shared resolver key form lines up.
+        // Stash the chrome resolver for this frame's widget helpers. In-game the
+        // FrontendScene is null (it's disposed on entering play), so the host
+        // passes its own GetCommonTexture; only the frontend context supplies a
+        // scene. Both load b_gui_cmn_* from Objects.dsres via the bare key; strip
+        // the prefix ButtonChrome/Tex re-add so the resolver key form lines up.
+        Func<string, GlTexture?>? chrome = commonChrome;
+        if (chrome is null && scene is not null) chrome = scene.GetCommonTexture;
         _icons = icons;
         _vw = viewportW; _vh = viewportH;
-        _chrome = scene is null ? null
-            : n => scene.GetCommonTexture(n.StartsWith("b_gui_cmn_") ? n["b_gui_cmn_".Length..] : n);
+        _chrome = chrome is null ? null
+            : n => chrome(n.StartsWith("b_gui_cmn_") ? n["b_gui_cmn_".Length..] : n);
 
         // Modal dim: a screen-wide darkening so the underlying scene
         // stops competing for attention. 60% black is the same shade
@@ -496,9 +501,9 @@ internal sealed class OptionsMenuPanel
         // Falls back to the prior solid-fill placeholder if the icon
         // renderer or chrome scene isn't available.
         bool drewChrome = false;
-        if (icons is not null && scene is not null)
+        if (icons is not null && chrome is not null)
         {
-            NinePatch.DrawCpboxWide(icons, scene.GetCommonTexture, viewportW, viewportH,
+            NinePatch.DrawCpboxWide(icons, chrome, viewportW, viewportH,
                 _outer.X, _outer.Y, _outer.W, _outer.H,
                 new Vector4(1f, 1f, 1f, 1f));
             drewChrome = true;

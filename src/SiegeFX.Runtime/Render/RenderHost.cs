@@ -10165,7 +10165,8 @@ void main()
         // never renders → "nothing happens when I click it."
         if (_optionsMenu.IsOpen && _barRenderer is not null)
         {
-            _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH);
+            _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH,
+                commonChrome: GetCommonTexture);
         }
         _textRenderer.EndPass();
     }
