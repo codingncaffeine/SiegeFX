@@ -524,6 +524,7 @@ public sealed class RenderHost : IDisposable
     const string SfxMeleeHitGroupPrefix = "melee_hit_";
     const string SfxMeleeMiss       = "melee_miss";
     const string SfxLevelUp         = "level_up";
+    const string SfxDoorOpen        = "door_open";
     // Phase 21d-2a-ix — GUI feedback. Surgical wires for the three call sites
     // where DS1 plays a UI cue today: inventory open/close, loot pickup, and
     // a failed cast for lack of mana. Picked from `audio coverage` audit's
@@ -5930,6 +5931,8 @@ void main()
 
                     TryRegisterSfx(soundReader, SfxZapCast,
                         "/sound/effects/s_e_spell_zap_cast.wav");
+                    TryRegisterSfx(soundReader, SfxDoorOpen,
+                        "/sound/effects/s_e_door_standard_open.wav");
                     TryRegisterSfx(soundReader, SfxHealingWindCast,
                         "/sound/effects/s_e_spell_healing_wind_cast.wav");
 
@@ -8483,6 +8486,7 @@ void main()
         if (best is null) return;
         best.DoorTargetOpen = true;
         best.DoorSwingSign = ComputeDoorSwingSign(best);
+        _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
     }
 
     // Swing the leaf AWAY from the player: transform the player into the
