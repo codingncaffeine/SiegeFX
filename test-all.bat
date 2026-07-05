@@ -2369,6 +2369,9 @@ echo  select-all / disband / follow) sits BOTTOM-RIGHT and is on screen from gam
 echo  start, solo or not. Once Gyorn joins, his portrait cell appears below yours]
 echo  (top-left); click it to select, click a formation button to re-shape the wedge.]
 echo [Stats read from the gas per companion (Gyorn lvl-2 fighter, Sikra lvl-38 mage).]
+echo [ESC MENU: press Esc for DS1's in_game_menu - 5 centred copperplate buttons]
+echo  RESUME GAME / OPTIONS / SAVE GAME / LOAD GAME / EXIT GAME. Resume closes it,]
+echo  Options opens the tabbed Options dialog, Save/Load use the quicksave slot.]
 echo [Not yet: pure casters (lore-book il_main) follow but don't cast; full equipment]
 echo  slots + the View/stats popover + pack mule = Phase 27.]
 echo.

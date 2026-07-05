@@ -2202,7 +2202,64 @@ public sealed class RenderHost : IDisposable
     // when a quest activates or an objective completes. Counter ticks
     // down in DrawDataBar; nonzero = render the red book overlay.
     private float _questIndicatorFlashRemaining;
-    private readonly PauseMenu _pauseMenu = new(); // Esc toggles; click "Resume" or "Quit"
+    private readonly PauseMenu _pauseMenu = new(); // Esc toggles DS1's in_game_menu
+
+    /// <summary>Phase 27 — route a click on the DS1 in-game (Escape) menu.
+    /// RESUME closes it; OPTIONS opens the Options dialog; SAVE/LOAD reuse the
+    /// F5/F9 quicksave path (a slot-picker screen lands with multi_inventory);
+    /// EXIT quits the window (DS1's show_exit_game_dialog confirm is a later
+    /// refinement).</summary>
+    private void HandleInGameMenuAction(PauseMenu.Action action)
+    {
+        switch (action)
+        {
+            case PauseMenu.Action.Resume:   _pauseMenu.Close(); break;
+            case PauseMenu.Action.Options:  _pauseMenu.Close(); _optionsMenu.Open(); break;
+            case PauseMenu.Action.SaveGame: _pauseMenu.Close(); DoQuickSave(); break;
+            case PauseMenu.Action.LoadGame: _pauseMenu.Close(); DoQuickLoad(); break;
+            case PauseMenu.Action.ExitGame: _window.Close(); break;
+        }
+    }
+
+    /// <summary>Phase 19c — quicksave to the single profile slot. Shared by the
+    /// F5 key and the in-game menu's SAVE GAME button. Silent on a viewer-mode
+    /// boot (CaptureSave still writes, but ApplySave refuses it without a region).</summary>
+    private void DoQuickSave()
+    {
+        var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
+        try
+        {
+            var save = CaptureSave();
+            SiegeFX.Core.Save.SaveStore.Save(path, save);
+            Console.WriteLine($"  save: wrote {save.Actors.Count} actor(s) + " +
+                              $"{save.LootPiles.Count} pile(s) -> {path}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  save: failed -- {ex.Message}");
+        }
+    }
+
+    /// <summary>Phase 19c — reload the quicksave slot. Shared by the F9 key and
+    /// the in-game menu's LOAD GAME button. Drops a half-finished scroll drag
+    /// first (post-load slot contents differ, so a stale source index would
+    /// misplace the spell).</summary>
+    private void DoQuickLoad()
+    {
+        if (_cursorScroll is not null) ClearScrollDrag();
+        var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
+        try
+        {
+            if (!File.Exists(path))
+                Console.WriteLine($"  load: no quicksave at {path}");
+            else
+                ApplySave(SiegeFX.Core.Save.SaveStore.Load(path));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  load: failed -- {ex.Message}");
+        }
+    }
     // Phase 23-SC-OPTIONS-A — F10 (and pause menu's "Options" button in
     // a future slice once we wire it through) opens the modal Options
     // dialog with four tabs: Video, Audio, Input, Game. Skeleton lands
@@ -3174,21 +3231,7 @@ void main()
                 // on a viewer-mode boot (no player, no region) since
                 // CaptureSave still produces a file but ApplySave's region
                 // check would refuse it on the next F9 anyway.
-                else if (key == Key.F5)
-                {
-                    var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
-                    try
-                    {
-                        var save = CaptureSave();
-                        SiegeFX.Core.Save.SaveStore.Save(path, save);
-                        Console.WriteLine($"  save: wrote {save.Actors.Count} actor(s) + " +
-                                          $"{save.LootPiles.Count} pile(s) -> {path}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"  save: failed -- {ex.Message}");
-                    }
-                }
+                else if (key == Key.F5) DoQuickSave();
                 // Phase 17-SC-E — debug particle receipt. F11 spawns a
                 // burst of fire + smoke + sparks at the player's feet so
                 // the standalone backend has a visible test before the
@@ -3211,34 +3254,7 @@ void main()
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     else _optionsMenu.Open();
                 }
-                else if (key == Key.F9)
-                {
-                    // Phase 21-SC-SCROLL-C-2 — drop a half-finished scroll
-                    // drag before reloading; the post-load spellbook has
-                    // different slot contents so restoring to a stale
-                    // source index would put the spell in the wrong place.
-                    // Pure clear (no restore) — the spell wasn't in any
-                    // slot when the save was captured anyway since drag
-                    // state isn't persisted.
-                    if (_cursorScroll is not null) ClearScrollDrag();
-                    var path = SiegeFX.Core.Save.SaveStore.QuicksavePath();
-                    try
-                    {
-                        if (!File.Exists(path))
-                        {
-                            Console.WriteLine($"  load: no quicksave at {path}");
-                        }
-                        else
-                        {
-                            var save = SiegeFX.Core.Save.SaveStore.Load(path);
-                            ApplySave(save);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.Error.WriteLine($"  load: failed -- {ex.Message}");
-                    }
-                }
+                else if (key == Key.F9) DoQuickLoad();
                 else if (key == Key.F7)
                 {
                     // SC-FADE-DIAG — snapshot the live cutaway state to a log
@@ -3983,8 +3999,7 @@ void main()
                 }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
-                    _pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
-                    if (_pauseMenu.QuitRequested) _window.Close();
+                    HandleInGameMenuAction(_pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y));
                     return;
                 }
                 // Phase 20d — vendor LMB-up. Resolve the press to a Buy/Sell
