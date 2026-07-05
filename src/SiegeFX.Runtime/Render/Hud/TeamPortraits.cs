@@ -27,20 +27,36 @@ public sealed class TeamPortraits
         GlTexture? Slot1 = null, GlTexture? Slot2 = null, GlTexture? Slot3 = null,
         GlTexture? Slot4 = null, int ActiveSlot = -1);
 
-    /// <summary>Follower cell (0-based, i.e. PartyIndex-1) under the cursor,
-    /// or -1. Only the portrait rect is clickable (matches the gas
-    /// itemslot).</summary>
-    public int HitTest(int x, int y, int viewportH, int followerCount)
+    /// <summary>Which widget in a follower cell was clicked.</summary>
+    public enum HitKind { None, Portrait, Chevron, Slot }
+
+    /// <summary>Result of <see cref="HitTest"/>: the follower index (0-based,
+    /// i.e. PartyIndex-1), the widget kind, and — for <see cref="HitKind.Slot"/>
+    /// — the 0-based slot (0 melee, 1 ranged, 2 primary spell, 3 secondary).</summary>
+    public readonly record struct HitResult(int Member, HitKind Kind, int Slot);
+
+    /// <summary>Hit-tests a follower cell's interactive widgets: the portrait
+    /// (select), the >>> chevron (open inventory), and the four weapon/skill
+    /// slots (switch active combat mode) — at the same rects Draw uses.</summary>
+    public HitResult HitTest(int x, int y, int viewportH, int followerCount)
     {
         float s = Scale(viewportH);
         for (int i = 0; i < followerCount; i++)
         {
             int top = CellTop0 + i * CellStep;
-            int cx = (int)MathF.Round(13 * s), cy = (int)MathF.Round((top + 3) * s);
-            int cw = (int)MathF.Round(39 * s), ch = (int)MathF.Round(46 * s);
-            if (x >= cx && x < cx + cw && y >= cy && y < cy + ch) return i;
+            if (Hit(x, y, s, 13, top + 3, 39, 46)) return new(i, HitKind.Portrait, -1);
+            if (Hit(x, y, s, 64, top + 37, 84, 15)) return new(i, HitKind.Chevron, -1);
+            for (int k = 0; k < 4; k++)
+                if (Hit(x, y, s, 68 + k * 20, top + 3, 16, 32)) return new(i, HitKind.Slot, k);
         }
-        return -1;
+        return new(-1, HitKind.None, -1);
+    }
+
+    private static bool Hit(int x, int y, float s, int rx, int ry, int rw, int rh)
+    {
+        int ax = (int)MathF.Round(rx * s), ay = (int)MathF.Round(ry * s);
+        int aw = (int)MathF.Round(rw * s), ah = (int)MathF.Round(rh * s);
+        return x >= ax && x < ax + aw && y >= ay && y < ay + ah;
     }
 
     public void Draw(IconRenderer icons, BarRenderer bars, int viewportW, int viewportH,

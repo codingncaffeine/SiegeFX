@@ -3462,11 +3462,29 @@ void main()
 
                     if (_party.Count > 1)
                     {
-                        int fslot = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
-                        if (fslot >= 0)
+                        var th = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
+                        if (th.Kind != Hud.TeamPortraits.HitKind.None)
                         {
-                            int pidx = fslot + 1;   // slot 0 = first follower = PartyIndex 1
-                            _selectedPartyIndex = _selectedPartyIndex == pidx ? -1 : pidx;
+                            int pidx = th.Member + 1;   // follower 0 = PartyIndex 1
+                            switch (th.Kind)
+                            {
+                                case Hud.TeamPortraits.HitKind.Portrait:
+                                    // Toggle selection on the portrait.
+                                    _selectedPartyIndex = _selectedPartyIndex == pidx ? -1 : pidx;
+                                    break;
+                                case Hud.TeamPortraits.HitKind.Chevron:
+                                    // >>> opens this companion's inventory: select
+                                    // them and open the inventory panel (DS1 adds
+                                    // their panel to the multi-inventory row).
+                                    _selectedPartyIndex = pidx;
+                                    _inventoryOpen = true;
+                                    break;
+                                case Hud.TeamPortraits.HitKind.Slot:
+                                    // Switch this companion's active combat mode.
+                                    _selectedPartyIndex = pidx;
+                                    _memberActiveSlot[pidx] = th.Slot;
+                                    break;
+                            }
                             _audio?.Play(SfxGuiInventory);
                             return;
                         }
@@ -12564,7 +12582,9 @@ void main()
                 // follower spellbooks are wired. Active = whichever they carry.
                 var mSlot1 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_melee");
                 var mSlot2 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_ranged");
-                int mActive = mSlot1 is not null ? 0 : (mSlot2 is not null ? 1 : -1);
+                // Clicked slot wins; otherwise default to whichever weapon they carry.
+                int mActive = _memberActiveSlot.TryGetValue(m.PartyIndex, out var ov)
+                    ? ov : (mSlot1 is not null ? 0 : (mSlot2 is not null ? 1 : -1));
                 cells.Add(new Hud.TeamPortraits.Member(
                     ResolveMemberPortrait(m.Actor.Template),
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
@@ -12594,6 +12614,9 @@ void main()
     // resolved from each member template's [actor]portrait_icon and cached.
     private readonly Hud.TeamPortraits _teamPortraits = new();
     private int _selectedPartyIndex = -1;
+    // Per-companion active combat slot (PartyIndex → 0 melee/1 ranged/2·3 spell),
+    // set by clicking a strip slot; absent = auto (their equipped weapon's slot).
+    private readonly Dictionary<int, int> _memberActiveSlot = new();
     private GlTexture? _awpDeathTex;
 
     // Phase 27 — field_commands panel (bottom-right party orders). Order
@@ -17408,6 +17431,7 @@ void main()
         _actors.Clear();
         _party.Clear();          // Phase 26a — party roster is per-region-load
         _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
+        _memberActiveSlot.Clear();
         _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.
