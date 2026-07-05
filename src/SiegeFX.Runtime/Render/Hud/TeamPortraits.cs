@@ -60,7 +60,7 @@ public sealed class TeamPortraits
             //   slot chrome: window_slots_panel 64,3,148,40 uv 0.25,0.710938,0.578125,1
             //   4 slots: x 68/88/108/128, y6, 16×32 (slot1 melee … slot4 spell)
             //   chevron: awp_buttons 64,40,148,55
-            DrawWeaponStrip(icons, bars, viewportW, viewportH, s, top, m, awpAtlas, chevronTex);
+            DrawWeaponStrip(icons, viewportW, viewportH, s, top, m, awpAtlas, chevronTex);
 
             // Chrome frame behind the bars + portrait (gas window_portait_panel
             // uv 0,0.59375,0.253907,1; V-flipped for the bottom-up RAW).
@@ -95,7 +95,7 @@ public sealed class TeamPortraits
     // weapon/spell icon, a green ring on the active slot, and the >>> chevron —
     // the same widgets character_awp draws for the leader, offset to this cell.
     private static void DrawWeaponStrip(
-        IconRenderer icons, BarRenderer bars, int viewportW, int viewportH, float s,
+        IconRenderer icons, int viewportW, int viewportH, float s,
         int top, in Member m, GlTexture awpAtlas, GlTexture? chevronTex)
     {
         // Slot chrome (the wide 4-slot box): leader window_slots_panel
@@ -105,8 +105,9 @@ public sealed class TeamPortraits
         icons.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
             0.25f, 1f - 1f, 0.578125f, 1f - 0.710938f);
 
-        // Four slots at x 68/88/108/128, y top+3, 16×32. Active gets the green
-        // ring DS1 draws around the selected weapon set.
+        // Four slots at x 68/88/108/128, y top+3, 16×32 — exactly the leader
+        // AWP: the weapon/spell icon (1px inset) plus, on the active slot, the
+        // selection overlay (awp atlas uv 0.675781,0.710938,0.753907,0.992188).
         var slots = new[] { m.Slot1, m.Slot2, m.Slot3, m.Slot4 };
         for (int k = 0; k < 4; k++)
         {
@@ -114,18 +115,24 @@ public sealed class TeamPortraits
             int slw = (int)MathF.Round(16 * s), slh = (int)MathF.Round(32 * s);
             var slotTex = slots[k];
             if (slotTex is not null)
-                icons.DrawIcon(viewportW, viewportH, slotTex, slx, sly, slw, slh, Vector4.One);
+            {
+                int inset = (int)MathF.Round(1 * s);
+                icons.DrawIcon(viewportW, viewportH, slotTex,
+                    slx + inset, sly + inset, slw - 2 * inset, slh - 2 * inset, Vector4.One);
+            }
             if (k == m.ActiveSlot)
-                bars.DrawBorder(viewportW, viewportH, slx, sly, slw, slh,
-                    new Vector4(0.36f, 0.85f, 0.31f, 1f));
+                icons.DrawIcon(viewportW, viewportH, awpAtlas, slx, sly, slw, slh, Vector4.One,
+                    0.675781f, 1f - 0.992188f, 0.753907f, 1f - 0.710938f);
         }
 
-        // >>> chevron button below the slots: leader awp_buttons 64,40,148,55.
+        // >>> chevron: the leader's wide-button crop of awp_buttons
+        // (uv 0,0.0625,0.65625,1), same texture and region the player uses.
         if (chevronTex is not null)
         {
             int chx = (int)MathF.Round(64 * s), chy = (int)MathF.Round((top + 37) * s);
             int chw = (int)MathF.Round(84 * s), chh = (int)MathF.Round(15 * s);
-            icons.DrawIcon(viewportW, viewportH, chevronTex, chx, chy, chw, chh, Vector4.One);
+            icons.DrawIcon(viewportW, viewportH, chevronTex, chx, chy, chw, chh, Vector4.One,
+                0f, 0.0625f, 0.65625f, 1f);
         }
     }
 
