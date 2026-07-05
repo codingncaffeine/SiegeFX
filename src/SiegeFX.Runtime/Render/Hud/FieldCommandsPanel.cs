@@ -83,73 +83,68 @@ public sealed class FieldCommandsPanel
         return Action.None;
     }
 
+    // Formation radio icon per action (DS1's six formations use form1-4/6/7;
+    // form5 is unused). Selected radios swap the _up face for the pressed _dwn.
+    static string FormationTexture(Action a) => a switch
+    {
+        Action.FormRow          => "b_gui_ig_mnu_form1",
+        Action.FormDoubleRow    => "b_gui_ig_mnu_form2",
+        Action.FormColumn       => "b_gui_ig_mnu_form3",
+        Action.FormDoubleColumn => "b_gui_ig_mnu_form4",
+        Action.FormPyramid      => "b_gui_ig_mnu_form6",
+        Action.FormCircle       => "b_gui_ig_mnu_form7",
+        _                       => "",
+    };
+
     public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
                      Func<string, GlTexture?>? guiTex, int viewportW, int viewportH, State st)
     {
+        // DS1's field_commands authors no background frame — every control is a
+        // b_gui_* raw blitted at its authored rect with the authored UV crop
+        // (the metal button face is baked into the texture), and the icons dock
+        // on the command bar. Selected formation radios swap to the _dwn face;
+        // order crystals swap b_gui_cmn_crystal_off_up -> _on_up. Without the
+        // icon renderer / atlas (headless) nothing draws.
+        if (icons is null || guiTex is null) return;
+
         float s = Scale(viewportH);
         int originX = viewportW - (int)MathF.Round(640f * s);
-        var ink   = new Vector4(0.88f, 0.84f, 0.70f, 1f);
-        var dim   = new Vector4(0.58f, 0.56f, 0.47f, 1f);
-        var onCol = new Vector4(0.95f, 0.85f, 0.40f, 1f);
-        var panel = new Vector4(0.08f, 0.08f, 0.10f, 0.92f);
-        var edge  = new Vector4(0.667f, 0.655f, 0.557f, 1f);
+        var ink = new Vector4(0.88f, 0.84f, 0.70f, 1f);
 
-        // Backdrop over the whole cluster (formations row + order crystals +
-        // buttons) so the controls read against the world.
+        void Blit(string tex, (int, int, int, int) r, float u0, float v0, float u1, float v1)
         {
-            var frame = Px((424, 330, 638, 428), s, originX);
-            if (icons is not null && guiTex is not null)
-                NinePatch.DrawCpboxThinDark(icons, guiTex, viewportW, viewportH,
-                    frame.x, frame.y, frame.w, frame.h, Vector4.One);
-            else
-            {
-                bars.DrawRect(viewportW, viewportH, frame.x, frame.y, frame.w, frame.h, panel);
-                bars.DrawBorder(viewportW, viewportH, frame.x, frame.y, frame.w, frame.h, edge);
-            }
+            var t = guiTex(tex);
+            if (t is null) return;
+            var p = Px(r, s, originX);
+            icons.DrawIcon(viewportW, viewportH, t, p.x, p.y, p.w, p.h, Vector4.One, u0, v0, u1, v1);
         }
 
-        // Formation cells — highlight the active one.
-        foreach (var f in Formations)
-        {
-            var p = Px(f.R, s, originX);
-            bool active = f.A == st.Formation;
-            bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h,
-                active ? new Vector4(0.20f, 0.18f, 0.10f, 1f) : new Vector4(0.10f, 0.10f, 0.12f, 1f));
-            bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, active ? onCol : dim);
-            int lw = text.MeasureWidth(f.Label);
-            text.DrawString(viewportW, viewportH, f.Label,
-                p.x + (p.w - lw) / 2, p.y + p.h / 3, active ? ink : dim);
-        }
+        // Follow checkbox (docked above the main cluster).
+        Blit(st.Follow ? "b_gui_ig_mnu_follow_on_up" : "b_gui_ig_mnu_follow_off_up",
+             (519, 284, 563, 308), 0f, 0.25f, 0.6875f, 1f);
 
-        // Order crystals: filled = selected in its group.
-        void Row((Action A, (int, int, int, int) R)[] grp, Action sel, string label)
+        // Select-all / disband / collect-loot icon buttons.
+        Blit("b_gui_ig_mnu_select_up",   (571, 332, 603, 352), 0f, 0.375f,   1f,       1f);
+        Blit("b_gui_ig_mnu_disband_up",  (602, 332, 635, 353), 0f, 0.34375f, 1.03125f, 1f);
+        Blit("b_gui_ig_mnu_get_loot_up", (571, 425, 603, 445), 0f, 0.375f,   1f,       1f);
+
+        // Order rows: copperplate label on the left, three selection crystals on
+        // the right (lit = the current order in that group).
+        void Row((Action A, (int, int, int, int) R)[] grp, Action sel, string label, int labelY)
         {
-            var lblP = Px((428, grp[0].R.Item2, 470, grp[0].R.Item2 + 13), s, originX);
-            text.DrawString(viewportW, viewportH, label, lblP.x, lblP.y, dim);
+            var lp = Px((430, labelY, 574, labelY + 14), s, originX);
+            text.DrawString(viewportW, viewportH, label, lp.x, lp.y, ink);
             foreach (var o in grp)
-            {
-                var p = Px(o.R, s, originX);
-                bool on = o.A == sel;
-                bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h,
-                    on ? onCol : new Vector4(0.12f, 0.12f, 0.14f, 1f));
-                bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, dim);
-            }
+                Blit(o.A == sel ? "b_gui_cmn_crystal_on_up" : "b_gui_cmn_crystal_off_up",
+                     o.R, 0f, 0.1875f, 0.8125f, 1f);
         }
-        Row(Movement, st.Movement, "Move");
-        Row(Attack, st.Attack, "Atk");
-        Row(Targeting, st.Targeting, "Tgt");
+        Row(Movement,  st.Movement,  "Movement",  355);
+        Row(Attack,    st.Attack,    "Attack",    371);
+        Row(Targeting, st.Targeting, "Targeting", 387);
 
-        // Select-all / Disband / Follow.
-        foreach (var b in Buttons)
-        {
-            var p = Px(b.R, s, originX);
-            bool follow = b.A == Action.ToggleFollow && st.Follow;
-            bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h,
-                follow ? new Vector4(0.20f, 0.18f, 0.10f, 1f) : new Vector4(0.10f, 0.10f, 0.12f, 1f));
-            bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, follow ? onCol : dim);
-            int lw = text.MeasureWidth(b.Label);
-            text.DrawString(viewportW, viewportH, b.Label,
-                p.x + (p.w - lw) / 2, p.y + p.h / 3, ink);
-        }
+        // Formation radios (selected → pressed face).
+        foreach (var f in Formations)
+            Blit(FormationTexture(f.A) + (f.A == st.Formation ? "_dwn" : "_up"),
+                 f.R, 0f, 0.25f, 0.78125f, 1f);
     }
 }
