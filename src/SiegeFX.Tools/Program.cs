@@ -6423,8 +6423,43 @@ static int DispatchParty(string[] a)
     return a[0].ToLowerInvariant() switch
     {
         "recruit-audit" => CmdPartyRecruitAudit(a[1..]),
+        "inspect"       => CmdPartyInspect(a[1..]),
         _               => UnknownCommand("party " + a[0]),
     };
+}
+
+// Phase 26 — dump a companion's combat profile + inventory authoring so
+// follower-combat can resolve the right damage/attack-type. PCs author
+// DamageMax=0 (their weapon carries it), so we need to see the starting
+// weapon / spell to feed the brain.
+static int CmdPartyInspect(string[] a)
+{
+    if (a.Length < 2) { Console.Error.WriteLine("usage: siegefx party inspect <logic-tank> <template-name>"); return 1; }
+    using var logicTank = TankFile.Open(a[0]);
+    var (store, _) = TemplateStore.LoadFromTank(new TankReader(logicTank));
+    if (!store.TryGet(a[1], out var tpl) || tpl is null) { Console.Error.WriteLine($"template not found: {a[1]}"); return 1; }
+
+    var st = SiegeFX.Core.Actors.ActorStats.FromTemplate(store, tpl);
+    Console.WriteLine($"template: {tpl.Name}");
+    Console.WriteLine($"  DamageMin/Max = {st.DamageMin}/{st.DamageMax}   AttackRange = {st.AttackRange}   IsCombatant = {st.IsCombatant}");
+    Console.WriteLine($"  WeaponPreference = {st.WeaponPreference ?? "(none)"}   MaxLife = {st.MaxLife}   STR/DEX/INT = {st.Strength}/{st.Dexterity}/{st.Intelligence}");
+    foreach (var (grp, key) in new[] { ("attack","damage_min"), ("attack","damage_max"), ("aspect","gold_value"),
+                                       ("mind","actor_weapon_preference"), ("mind","melee_skill"), ("mind","ranged_skill"),
+                                       ("mind","combat_magic_skill"), ("mind","nature_magic_skill") })
+        Console.WriteLine($"  [{grp}]{key} = {store.GetAttribute(tpl, grp, key) ?? "(unset)"}");
+
+    void Dump(SiegeFX.Core.Assets.GasNode n, int depth)
+    {
+        var pad = new string(' ', depth * 2);
+        Console.WriteLine($"{pad}[{n.Header}]");
+        foreach (var at in n.Attributes) Console.WriteLine($"{pad}  {at.Name} = {at.Value}");
+        foreach (var c in n.Children) Dump(c, depth + 1);
+    }
+    var inv = store.GetSection(tpl, "inventory");
+    Console.WriteLine("  --- [inventory] ---");
+    if (inv is null) Console.WriteLine("  (no [inventory] block)");
+    else Dump(inv, 1);
+    return 0;
 }
 
 // Phase 26 — thoroughly maps how EVERY companion is recruited. DS1

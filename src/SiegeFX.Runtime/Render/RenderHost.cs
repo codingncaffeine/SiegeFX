@@ -812,11 +812,15 @@ public sealed class RenderHost : IDisposable
         // Phase 26a — set once an NPC is recruited into the party (the player
         // is member 0 and also carries IsPlayer). Party members follow the
         // party leader instead of wandering, count as party for trigger
-        // volumes, and are controllable. PartyFollower drives their catch-up
-        // movement toward their formation slot behind the leader.
+        // volumes, and are controllable. Their brain (with the starting
+        // weapon's damage injected) drives both combat and the catch-up
+        // movement toward the formation slot behind the leader.
         public bool IsPartyMember;
         public int  PartyIndex;                       // 0 = leader/player
-        public SiegeFX.Core.Nav.NavFollower? PartyFollower;
+        // Phase 26 — true when the recruit resolved a weapon or spell it can
+        // actually attack with. Casters whose only il_main is a lore book
+        // (no damage, no spell) follow but don't swing for zero.
+        public bool CanFight;
         public Vector3 PartyRenderPosPrev;            // 20Hz→render smoothing
         public Vector3 PartyRenderPosNext;
         public Vector3 PartyRenderFacePrev = Vector3.UnitZ;
@@ -943,27 +947,84 @@ public sealed class RenderHost : IDisposable
         return true;
     }
 
-    /// <summary>Phase 26b — convert a world NPC into a party follower:
-    /// drop its wander brain (the party follower drives movement now),
-    /// slot it after the current members, and give it a nav follower that
-    /// trails the leader.</summary>
+    /// <summary>Phase 26 — convert a world NPC into a party follower. The
+    /// recruit keeps a brain (rebuilt with its starting weapon's damage
+    /// injected, since PCs author DamageMax=0) so it fights enemies with the
+    /// same melee/ranged/magic machinery mobs use; TickPartyFollowers feeds
+    /// that brain the nearest enemy or drives it to a formation slot.</summary>
     private void RecruitActor(ActorRenderState npc)
     {
         EnsurePlayerInParty();
-        npc.Brain = null;
         npc.IsPartyMember = true;
         npc.PartyIndex = _party.Count;   // leader is 0; append behind
         _party.Add(npc);
-        if (_navMesh is not null)
+        npc.PartyRenderInit = false;
+
+        // Resolve the follower's fighting profile from its starting weapon.
+        var baseStats = npc.Actor.Stats;
+        var combatStats = InjectFollowerWeapon(npc.Actor.Template, baseStats) ?? baseStats;
+
+        // Reuse the wander follower the spawn already built (keeps position
+        // continuous); synthesize one if the NPC spawned off-mesh.
+        var wander = npc.Brain?.Wander;
+        if (wander is null && _navMesh is not null)
         {
-            var pos = npc.CurrentTransform.Translation;
-            float speed = npc.Actor.Stats.WalkSpeed > 0f ? npc.Actor.Stats.WalkSpeed : 4.5f;
-            npc.PartyFollower = new SiegeFX.Core.Nav.NavFollower(_navMesh, pos, speed)
+            var pos0 = npc.CurrentTransform.Translation;
+            float gait = baseStats.WalkSpeed > 0.5f ? baseStats.WalkSpeed : 4f;
+            wander = new SiegeFX.Core.Actors.ActorFollower(
+                _navMesh, pos0, gait, (int)npc.Actor.Instance.Scid, Vector3.UnitZ);
+        }
+        if (wander is not null)
+        {
+            var spell = ResolveBrainSpell(combatStats);
+            npc.Brain = new SiegeFX.Core.Actors.ActorBrain(
+                wander, combatStats,
+                rngSeed: (int)npc.Actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
+                selfActor: npc.Actor, castSpell: spell);
+            npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
+        }
+        else
+        {
+            npc.Brain = null;
+            npc.CanFight = false;
+        }
+    }
+
+    /// <summary>Phase 26 — PCs author no weapon damage ([attack] damage=0);
+    /// their bite comes from the weapon they carry in [inventory][other]
+    /// il_main. Resolve the first il_main entry that is a real weapon (has
+    /// [attack] damage — skips shields, lore books, spec strings) and fold
+    /// its damage / range / melee-vs-ranged into a copy of the recruit's
+    /// stats for the combat brain. Returns null when no weapon resolves
+    /// (pure casters), leaving the base stats.</summary>
+    private SiegeFX.Core.Actors.ActorStats? InjectFollowerWeapon(
+        SiegeFX.Core.Assets.Template tpl, SiegeFX.Core.Actors.ActorStats baseStats)
+    {
+        if (_templateStore is null) return null;
+        var other = _templateStore.GetSection(tpl, "inventory", "other");
+        if (other is null) return null;
+        foreach (var attr in other.Attributes)
+        {
+            if (!string.Equals(attr.Name.TrimEnd('*'), "il_main", StringComparison.OrdinalIgnoreCase)) continue;
+            var wref = attr.Value.Trim();
+            if (wref.Length == 0 || wref.StartsWith("#")) continue;   // spec/pcontent, not a fixed weapon
+            if (!_templateStore.TryGet(wref, out var wtpl) || wtpl is null) continue;
+            var ws = SiegeFX.Core.Actors.ActorStats.FromTemplate(_templateStore, wtpl);
+            if (ws.DamageMax <= 0f) continue;   // shield / book / non-weapon
+            bool ranged = ws.AttackRange >= 4f
+                       || wref.StartsWith("bw_", StringComparison.OrdinalIgnoreCase)
+                       || wref.StartsWith("xb_", StringComparison.OrdinalIgnoreCase);
+            return baseStats with
             {
-                Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                DamageMin = ws.DamageMin,
+                DamageMax = ws.DamageMax,
+                AttackRange = ranged ? MathF.Max(ws.AttackRange, 8f) : MathF.Max(ws.AttackRange, 1.8f),
+                WeaponPreference = ranged ? "WP_RANGED" : "WP_MELEE",
+                RangedEngageRange = ranged ? MathF.Max(ws.AttackRange, 10f) : baseStats.RangedEngageRange,
+                SightRange = baseStats.SightRange > 0.1f ? baseStats.SightRange : 12f,
             };
         }
-        npc.PartyRenderInit = false;
+        return null;
     }
 
     /// <summary>Phase 26c — the follow slot for member <paramref name="index"/>
@@ -982,10 +1043,12 @@ public sealed class RenderHost : IDisposable
         return leaderPos - leaderFace * (row * back) + right * (side * lateral);
     }
 
-    /// <summary>Phase 26c — advance every recruited follower toward its
-    /// formation slot. Runs on the 20Hz fixed step beside the player's
-    /// follower; feeds the same prev/next interp buffers the leader uses so
-    /// followers render smoothly between logic ticks.</summary>
+    /// <summary>Phase 26 — drive every recruited follower on the 20Hz fixed
+    /// step. Each member either engages the nearest enemy inside its aggro
+    /// radius (its brain chases + swings/fires/casts) or moves to its
+    /// formation slot behind the leader. Both paths advance the brain's own
+    /// nav follower, so position stays continuous when combat starts/ends;
+    /// results feed the prev/next interp buffers for smooth rendering.</summary>
     private void TickPartyFollowers(float dt)
     {
         if (_player is null || _player.IsDead) return;
@@ -994,26 +1057,40 @@ public sealed class RenderHost : IDisposable
         for (int i = 0; i < _party.Count; i++)
         {
             var m = _party[i];
-            if (m.PartyIndex == 0 || m.IsDead || m.PartyFollower is null) continue;
+            if (m.PartyIndex == 0 || m.IsDead || m.Brain is null) continue;
             m.Actor.Host.TickOverride(dt);
+            var follower = m.Brain.Wander.Follower;
+            var before = follower.Position;
 
-            var slot = PartyFormationSlot(m.PartyIndex, leaderPos, leaderFace);
-            var here = m.PartyFollower.Position;
-            float gapX = here.X - slot.X, gapZ = here.Z - slot.Z;
-            // Hold position inside a slack ring so an idle leader doesn't make
-            // the followers shuffle on the spot.
-            const float slack = 1.5f;
-            if (gapX * gapX + gapZ * gapZ > slack * slack)
-                m.PartyFollower.SetTarget(slot);
+            // Engage the nearest live enemy within aggro range, else follow.
+            ActorRenderState? foe = m.CanFight ? NearestEnemyTo(before, m.Brain.AggroRadius) : null;
+            Vector3 face;
+            if (foe is not null)
+            {
+                m.Brain.Tick(dt, foe.CurrentTransform.Translation,
+                             foe.Actor.Combat, foe.Actor.Stats);
+                face = m.Brain.Facing;
+            }
+            else
+            {
+                // Move to the formation slot (bypass the wander patrol by
+                // driving the nav follower straight at the slot).
+                m.Brain.ForceIdle();
+                var slot = PartyFormationSlot(m.PartyIndex, leaderPos, leaderFace);
+                float gapX = before.X - slot.X, gapZ = before.Z - slot.Z;
+                const float slack = 1.5f;   // hold ring so an idle leader doesn't jitter the line
+                if (gapX * gapX + gapZ * gapZ > slack * slack) follower.SetTarget(slot);
+                follower.Tick(dt);
+                var moved = follower.Position - before;
+                face = (moved.X * moved.X + moved.Z * moved.Z) > 1e-6f
+                    ? Vector3.Normalize(new Vector3(moved.X, 0f, moved.Z))
+                    : leaderFace;
+                m.Brain.Wander.SetFacing(face);
+            }
 
-            var before = m.PartyFollower.Position;
-            m.PartyFollower.Tick(dt);
-            var after = m.PartyFollower.Position;
+            var after = follower.Position;
             float dx = after.X - before.X, dz = after.Z - before.Z;
             float len2 = dx * dx + dz * dz;
-            Vector3 face = len2 > 1e-6f
-                ? new Vector3(dx, 0f, dz) / MathF.Sqrt(len2)
-                : leaderFace;   // idle → face the way the leader faces
 
             if (!m.PartyRenderInit)
             {
@@ -1031,6 +1108,50 @@ public sealed class RenderHost : IDisposable
             // Fallback transform (the post-loop interp overwrites it).
             float yaw = MathF.Atan2(face.X, face.Z);
             m.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(after);
+        }
+    }
+
+    /// <summary>Phase 26 — nearest living hostile combatant to a point within
+    /// <paramref name="radius"/> (XZ). Skips the player and party members so a
+    /// follower only ever swings at real enemies.</summary>
+    private ActorRenderState? NearestEnemyTo(Vector3 pos, float radius)
+    {
+        ActorRenderState? best = null;
+        float bestD2 = radius * radius;
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
+            if (!s.Actor.Stats.IsCombatant || s.Actor.Combat.IsDead) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - pos.X, dz = p.Z - pos.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; best = s; }
+        }
+        return best;
+    }
+
+    /// <summary>Phase 26 — sweep for enemies killed by something other than a
+    /// direct player swing/cast (i.e. a follower). The player kill paths run
+    /// the death funnel inline and set IsDead; ConsumeJustDied is one-shot so
+    /// whoever lands the killing blow first wins and this never double-fires.
+    /// Runs each fixed tick after the followers act.</summary>
+    private void SweepCombatDeaths()
+    {
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            if (s.IsPlayer || s.IsDead) continue;
+            if (!s.Actor.Combat.ConsumeJustDied()) continue;
+            s.IsDead = true;
+            s.Brain = null;
+            BeginDeathChore(s);
+            PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            LogLootDrop(s.Actor, s.CurrentTransform.Translation);
+            OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
+            CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
+            // Party shares the kill's XP (the follower dealt the blow).
+            AwardCombatXp(0, s.Actor.Stats.ExperienceValue, SiegeFX.Core.Assets.SkillKind.Melee);
         }
     }
 
@@ -8723,6 +8844,10 @@ void main()
                     // so non-combatants and brain-less actors still tick.
                     s.Actor.Host.TickOverride((float)stepSec);
                     if (s.Brain is null) continue;
+                    // Phase 26 — recruited followers run their own combat/follow
+                    // loop in TickPartyFollowers; skip them here so they don't
+                    // chase the player as if hostile.
+                    if (s.IsPartyMember) continue;
                     bool hostile = s.Actor.Stats.IsCombatant && _nisPhase == NisPhase.Off;
                     s.Brain.Tick(
                         (float)stepSec,
@@ -8867,6 +8992,9 @@ void main()
                 // Phase 26c — recruited followers trail the leader on the same
                 // fixed cadence (after the leader has moved this tick).
                 TickPartyFollowers((float)stepSec);
+                // Phase 26 — resolve enemies a follower just killed (the player
+                // kill paths self-report; this catches ally kills).
+                SweepCombatDeaths();
             }
             // Phase 9-SC-10b — render-state interpolation for the PC. Lerp
             // prev→next by the leftover accumulator (clamped 0..1). Yaw is
@@ -14023,7 +14151,11 @@ void main()
             // would silently flip the player's music mix without this
             // filter. Match the IsCombatant check the existing combat
             // pipeline uses (e.g. PerformPlayerSwing's actor scan).
-            if (!s.Actor.Stats.IsCombatant) continue;
+            // Phase 26 — recruited followers read as non-combatant on their
+            // base stats (PCs author DamageMax=0) but their brain fights with
+            // an injected weapon, so let them through for swing/cast/ranged
+            // visuals + the combat-music gate.
+            if (!s.Actor.Stats.IsCombatant && !s.IsPartyMember) continue;
             var brain = s.Brain;
             if (brain is null) continue;
             if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase

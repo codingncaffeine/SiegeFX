@@ -57,6 +57,17 @@ public sealed class ActorBrain
         return true;
     }
 
+    /// <summary>Phase 26 — drop the brain to a neutral, non-combat state
+    /// without ticking its wander. Party followers call this while they are
+    /// moving to a formation slot (their host drives the nav follower
+    /// directly), so a stale Chase/Attack from the last fight doesn't keep
+    /// the combat-music gate hot or leave the attack-facing pinned.</summary>
+    public void ForceIdle()
+    {
+        State = BrainState.Wander;
+        _attackFacing = null;
+    }
+
     /// <summary>One-shot edge + target position for the render layer's spell
     /// visual (beam/projectile from caster to victim). Set when a Magic-mode
     /// brain lands a cast.</summary>

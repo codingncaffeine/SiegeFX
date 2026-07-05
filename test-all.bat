@@ -2361,8 +2361,11 @@ echo  his "well met, friend!" accept line plays, console logs "party: recruited"
 echo  Decline shows his polite refusal; the corner X dismisses.]
 echo [The recruit drops its wander and TRAILS you in a wedge behind the leader;]
 echo  walk around and watch it path-follow. Party cap is 8 (7 followers + leader).]
-echo [Not yet in this slice: recruits don't fight yet (follower combat is next);]
-echo  the View/stats popover (hire_stats.gas) + pack mule land with Phase 27.]
+echo [FOLLOWERS FIGHT: a recruit engages the nearest enemy in range with its]
+echo  starting weapon (Gyorn=mace melee, Naidi=bow ranged), swings/fires, then]
+echo  returns to formation when the enemy's dead. Their kills award party XP + loot.]
+echo [Not yet: pure casters (lore-book il_main) follow but don't cast; hires use]
+echo  base stats (DS1 level-scaling TBD); the View/stats popover + pack mule = P27.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 echo.
