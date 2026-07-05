@@ -7528,15 +7528,16 @@ void main()
         if (_compassFace is not null)
             _iconRenderer.DrawIcon(viewportW, viewportH, _compassFace,
                 cx - size / 2, cy - size / 2, size, size, tint);
-        _iconRenderer.DrawIcon(viewportW, viewportH, _compassCover,
-            cx - size / 2, cy - size / 2, size, size, tint);
-        // Static bronze arrowhead docked at the dial's NE corner (hide button;
-        // button center sits ~ +35,-35 ref px off the dial centre in the gas).
+        // Static bronze arrowhead docked at the dial's NE corner (hide button).
+        // Drawn UNDER the cover so the ornate ring overlaps its base — it reads
+        // as tucked under a fold of the compass at the top-right, per the gas.
         if (_compassHideBtn is not null)
         {
             var (hx, hy, hw, hh) = CompassHideRect(cx, cy, scale);
             _iconRenderer.DrawIcon(viewportW, viewportH, _compassHideBtn, hx, hy, hw, hh, tint);
         }
+        _iconRenderer.DrawIcon(viewportW, viewportH, _compassCover,
+            cx - size / 2, cy - size / 2, size, size, tint);
         float camYaw = _camera.Yaw;
         void Letter(GlTexture? tex, float worldYaw)
         {
