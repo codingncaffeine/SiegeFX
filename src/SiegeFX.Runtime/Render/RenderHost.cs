@@ -1027,20 +1027,80 @@ public sealed class RenderHost : IDisposable
         return null;
     }
 
-    /// <summary>Phase 26c — the follow slot for member <paramref name="index"/>
-    /// (1-based follower) as a trailing double-column behind the leader.
-    /// Spacing is party.gas's approach_distance (~1.6u). Formation SHAPE
-    /// selection is Phase 27 (field_commands radios); this is the default
-    /// wedge the party holds until told otherwise.</summary>
-    private static Vector3 PartyFormationSlot(int index, Vector3 leaderPos, Vector3 leaderFace)
+    /// <summary>Phase 27 — DS1's six field-command formations
+    /// (field_commands.gas radio_group). Selected via
+    /// <see cref="_partyFormation"/>; default double-column.</summary>
+    internal enum PartyFormation { Circle, Column, DoubleColumn, DoubleRow, Pyramid, Row }
+    private PartyFormation _partyFormation = PartyFormation.DoubleColumn;
+
+    /// <summary>Phase 27 — the follow slot for follower <paramref name="index"/>
+    /// (1-based) under the active formation. <paramref name="count"/> is the
+    /// number of followers (excludes the leader), needed so the ring/rank
+    /// formations distribute members evenly. Spacing tracks party.gas's
+    /// approach_distance (~1.6-1.8u).</summary>
+    private static Vector3 PartyFormationSlot(PartyFormation formation, int index, int count,
+                                              Vector3 leaderPos, Vector3 leaderFace)
     {
-        // Perpendicular (leader's right) in XZ.
-        var right = new Vector3(leaderFace.Z, 0f, -leaderFace.X);
-        int i0 = index - 1;                 // 0-based follower
-        int row = i0 / 2 + 1;               // 1,1,2,2,3,3…
-        int side = (i0 % 2 == 0) ? -1 : 1;  // left, right, left…
-        const float back = 1.8f, lateral = 1.2f;
-        return leaderPos - leaderFace * (row * back) + right * (side * lateral);
+        var right = new Vector3(leaderFace.Z, 0f, -leaderFace.X); // leader's right (XZ)
+        var back  = -leaderFace;                                  // directly behind
+        int i0 = index - 1;                                       // 0-based follower
+        const float d = 1.8f;   // depth spacing
+        const float w = 1.3f;   // lateral spacing
+
+        switch (formation)
+        {
+            case PartyFormation.Column:            // single file
+                return leaderPos + back * ((i0 + 1) * d);
+
+            case PartyFormation.Row:               // single rank, one row back
+            {
+                int lane = i0 / 2 + 1;
+                int sign = (i0 % 2 == 0) ? -1 : 1;
+                return leaderPos + back * d + right * (sign * lane * w);
+            }
+
+            case PartyFormation.DoubleRow:         // two ranks
+            {
+                int perRow = Math.Max(1, (count + 1) / 2);
+                int rowIdx = i0 / perRow;          // 0,1
+                int col    = i0 % perRow;
+                float centered = col - (perRow - 1) * 0.5f;
+                return leaderPos + back * ((rowIdx + 1) * d) + right * (centered * w);
+            }
+
+            case PartyFormation.Circle:            // ring around the leader
+            {
+                int n = Math.Max(1, count);
+                float ang = (i0 + 1) * (MathF.Tau / (n + 1)); // 0 = behind, leave a front gap
+                var dir = back * MathF.Cos(ang) + right * MathF.Sin(ang);
+                return leaderPos + dir * 2.4f;
+            }
+
+            case PartyFormation.Pyramid:           // triangle: rows of 1,2,3,…
+            {
+                int row = 0, seen = 0;
+                while (seen + (row + 1) <= i0) { seen += row + 1; row++; }
+                int col = i0 - seen;               // 0..row
+                float centered = col - row * 0.5f;
+                return leaderPos + back * ((row + 1) * d) + right * (centered * w);
+            }
+
+            case PartyFormation.DoubleColumn:      // default: two files behind
+            default:
+            {
+                int row  = i0 / 2 + 1;             // 1,1,2,2,3,3…
+                int sign = (i0 % 2 == 0) ? -1 : 1; // left, right, left…
+                return leaderPos + back * (row * d) + right * (sign * w);
+            }
+        }
+    }
+
+    /// <summary>Phase 27 — cycle to the next formation (dev hook until the
+    /// field_commands panel radios drive this).</summary>
+    private void CyclePartyFormation()
+    {
+        _partyFormation = (PartyFormation)(((int)_partyFormation + 1) % 6);
+        Console.WriteLine($"party formation: {_partyFormation}");
     }
 
     /// <summary>Phase 26 — drive every recruited follower on the 20Hz fixed
@@ -1076,7 +1136,8 @@ public sealed class RenderHost : IDisposable
                 // Move to the formation slot (bypass the wander patrol by
                 // driving the nav follower straight at the slot).
                 m.Brain.ForceIdle();
-                var slot = PartyFormationSlot(m.PartyIndex, leaderPos, leaderFace);
+                var slot = PartyFormationSlot(_partyFormation, m.PartyIndex,
+                                              _party.Count - 1, leaderPos, leaderFace);
                 float gapX = before.X - slot.X, gapZ = before.Z - slot.Z;
                 const float slack = 1.5f;   // hold ring so an idle leader doesn't jitter the line
                 if (gapX * gapX + gapZ * gapZ > slack * slack) follower.SetTarget(slot);
@@ -2930,6 +2991,9 @@ void main()
                 else if (key == Key.C) { _charPanelOpen = !_charPanelOpen; _audio?.Play(SfxGuiInventory); }
                 // Phase 21-SC-SPELL-A: 'B' toggles the spell book pane.
                 else if (key == Key.B) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
+                // Phase 27 dev hook: 'F' cycles the party formation until the
+                // field_commands panel radios drive it. No-op with no party.
+                else if (key == Key.F && _party.Count > 1) { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
                 // Phase 13b → relocated: F8 flips between chase cam (follows
                 // the PC) and fly cam (free WASD+RMB). No-op if there's no
                 // player. C used to do this; freed for the character pane.
