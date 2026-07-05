@@ -61,7 +61,6 @@ public sealed class FieldCommandsPanel
         (Action.Disband,      (602, 332, 635, 353), "Dis"),
         (Action.ToggleFollow, (519, 284, 563, 308), "Follow"),
     };
-    static readonly (int, int, int, int) WindowPanel = (571, 351, 616, 402);
 
     public readonly record struct State(
         Action Formation, Action Movement, Action Attack, Action Targeting, bool Follow);

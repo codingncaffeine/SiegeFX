@@ -12398,7 +12398,7 @@ void main()
     /// (<see cref="_overheadLabelsVisible"/>).</summary>
     private void DrawMemberLabels(int viewportW, int viewportH)
     {
-        if (!_overheadLabelsVisible || _barRenderer is null || _party.Count == 0) return;
+        if (!_overheadLabelsVisible || _barRenderer is null || _textRenderer is null || _party.Count == 0) return;
         var ink = new Vector4(0.92f, 0.88f, 0.76f, 1f);
         foreach (var m in _party)
         {
@@ -12424,7 +12424,7 @@ void main()
 
     private void DrawCharacterAwp(int viewportW, int viewportH)
     {
-        if (_player is null || _iconRenderer is null || _barRenderer is null) return;
+        if (_player is null || _iconRenderer is null || _barRenderer is null || _textRenderer is null) return;
         if (!_awpLoaded)
         {
             _awpLoaded = true;
