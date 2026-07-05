@@ -12559,15 +12559,22 @@ void main()
                 if (m.PartyIndex == 0) continue;   // leader is slot 1 (character_awp)
                 var c = m.Actor.Combat;
                 var st = m.Actor.Stats;
+                // Slot 1 = equipped melee, slot 2 = equipped ranged (from the
+                // member's own template equipment); spells are slots 3/4 once
+                // follower spellbooks are wired. Active = whichever they carry.
+                var mSlot1 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_melee");
+                var mSlot2 = ResolveMemberWeaponSlot(m.Actor.Template, "weapon_ranged");
+                int mActive = mSlot1 is not null ? 0 : (mSlot2 is not null ? 1 : -1);
                 cells.Add(new Hud.TeamPortraits.Member(
                     ResolveMemberPortrait(m.Actor.Template),
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
                     st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
                     m.IsDead || c.IsDead,
-                    _selectedPartyIndex == m.PartyIndex));
+                    _selectedPartyIndex == m.PartyIndex,
+                    mSlot1, mSlot2, null, null, mActive));
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
-                                _awpAtlas, cells, _awpDeathTex);
+                                _awpAtlas, cells, _awpDeathTex, _awpInvBtnTex);
         }
 
         // Phase 27 — field_commands panel (bottom-right party orders). DS1 keeps
@@ -12914,6 +12921,29 @@ void main()
             if (string.Equals(t.Name, marker, System.StringComparison.OrdinalIgnoreCase))
                 return true;
         return false;
+    }
+
+    // Team-portrait strip counterpart to ResolveAwpSlotByWeaponClass: resolves a
+    // companion's weapon-slot icon from ITS OWN template's equipped es_weapon_hand
+    // (the same slot InjectFollowerWeapon reads), classified melee vs ranged.
+    private GlTexture? ResolveMemberWeaponSlot(SiegeFX.Core.Assets.Template tpl, string requiredClass)
+    {
+        if (_templateStore is null || tpl is null) return null;
+        var weaponRef = _templateStore.GetAttribute(tpl, "inventory", "equipment", "es_weapon_hand");
+        if (string.IsNullOrWhiteSpace(weaponRef)) return null;
+        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
+        bool classMatch = false;
+        for (var t = weaponTpl; t is not null; t = t.Specializes)
+            if (string.Equals(t.Name, requiredClass, System.StringComparison.OrdinalIgnoreCase))
+            { classMatch = true; break; }
+        if (!classMatch) return null;
+        string cacheKey = $"awpmember:{requiredClass}:{weaponRef}";
+        if (_paperdollEquipCache.TryGetValue(cacheKey, out var cached)) return cached;
+        string iconName = (_templateStore.GetAttribute(weaponTpl, "gui", "inventory_icon") ?? "")
+            .Trim().Trim('"');
+        GlTexture? tex = string.IsNullOrEmpty(iconName) ? null : TryGetGuiTexture(iconName);
+        _paperdollEquipCache[cacheKey] = tex;
+        return tex;
     }
 
     private GlTexture? ResolveAwpSlotByWeaponClass(string requiredClass)

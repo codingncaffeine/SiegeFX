@@ -23,7 +23,9 @@ public sealed class TeamPortraits
     const int CellTop0 = 56, CellStep = 53;
 
     public readonly record struct Member(
-        GlTexture? Portrait, float HpFrac, float MpFrac, bool Dead, bool Selected);
+        GlTexture? Portrait, float HpFrac, float MpFrac, bool Dead, bool Selected,
+        GlTexture? Slot1 = null, GlTexture? Slot2 = null, GlTexture? Slot3 = null,
+        GlTexture? Slot4 = null, int ActiveSlot = -1);
 
     /// <summary>Follower cell (0-based, i.e. PartyIndex-1) under the cursor,
     /// or -1. Only the portrait rect is clickable (matches the gas
@@ -42,7 +44,8 @@ public sealed class TeamPortraits
     }
 
     public void Draw(IconRenderer icons, BarRenderer bars, int viewportW, int viewportH,
-                     GlTexture awpAtlas, IReadOnlyList<Member> members, GlTexture? deathTex)
+                     GlTexture awpAtlas, IReadOnlyList<Member> members, GlTexture? deathTex,
+                     GlTexture? chevronTex = null)
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
@@ -50,6 +53,14 @@ public sealed class TeamPortraits
         {
             var m = members[i];
             int top = CellTop0 + i * CellStep;
+
+            // Weapon/skill strip — character_awp's 4-slot frame + >>> chevron,
+            // replicated per member. The leader authors these at frame-top y3;
+            // this cell's frame top is `top`, so everything shifts down by top-3.
+            //   slot chrome: window_slots_panel 64,3,148,40 uv 0.25,0.710938,0.578125,1
+            //   4 slots: x 68/88/108/128, y6, 16×32 (slot1 melee … slot4 spell)
+            //   chevron: awp_buttons 64,40,148,55
+            DrawWeaponStrip(icons, bars, viewportW, viewportH, s, top, m, awpAtlas, chevronTex);
 
             // Chrome frame behind the bars + portrait (gas window_portait_panel
             // uv 0,0.59375,0.253907,1; V-flipped for the bottom-up RAW).
@@ -77,6 +88,44 @@ public sealed class TeamPortraits
             if (m.Selected)
                 bars.DrawBorder(viewportW, viewportH, px - 1, py - 1, pw + 2, ph + 2,
                     new Vector4(0.95f, 0.85f, 0.40f, 1f));
+        }
+    }
+
+    // The per-member weapon/skill strip: the 4-slot chrome frame, each slot's
+    // weapon/spell icon, a green ring on the active slot, and the >>> chevron —
+    // the same widgets character_awp draws for the leader, offset to this cell.
+    private static void DrawWeaponStrip(
+        IconRenderer icons, BarRenderer bars, int viewportW, int viewportH, float s,
+        int top, in Member m, GlTexture awpAtlas, GlTexture? chevronTex)
+    {
+        // Slot chrome (the wide 4-slot box): leader window_slots_panel
+        // 64,3,148,40 → here (64, top, 84, 37). uv V-flipped for the RAW.
+        int sx = (int)MathF.Round(64 * s), sy = (int)MathF.Round(top * s);
+        int sw = (int)MathF.Round(84 * s), sh = (int)MathF.Round(37 * s);
+        icons.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
+            0.25f, 1f - 1f, 0.578125f, 1f - 0.710938f);
+
+        // Four slots at x 68/88/108/128, y top+3, 16×32. Active gets the green
+        // ring DS1 draws around the selected weapon set.
+        var slots = new[] { m.Slot1, m.Slot2, m.Slot3, m.Slot4 };
+        for (int k = 0; k < 4; k++)
+        {
+            int slx = (int)MathF.Round((68 + k * 20) * s), sly = (int)MathF.Round((top + 3) * s);
+            int slw = (int)MathF.Round(16 * s), slh = (int)MathF.Round(32 * s);
+            var slotTex = slots[k];
+            if (slotTex is not null)
+                icons.DrawIcon(viewportW, viewportH, slotTex, slx, sly, slw, slh, Vector4.One);
+            if (k == m.ActiveSlot)
+                bars.DrawBorder(viewportW, viewportH, slx, sly, slw, slh,
+                    new Vector4(0.36f, 0.85f, 0.31f, 1f));
+        }
+
+        // >>> chevron button below the slots: leader awp_buttons 64,40,148,55.
+        if (chevronTex is not null)
+        {
+            int chx = (int)MathF.Round(64 * s), chy = (int)MathF.Round((top + 37) * s);
+            int chw = (int)MathF.Round(84 * s), chh = (int)MathF.Round(15 * s);
+            icons.DrawIcon(viewportW, viewportH, chevronTex, chx, chy, chw, chh, Vector4.One);
         }
     }
 
