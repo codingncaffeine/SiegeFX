@@ -6462,6 +6462,19 @@ static int CmdStoreList(string[] a)
     return 0;
 }
 
+// Phase 25-fold C — stable FNV-1a over a lowercased string. String's
+// GetHashCode is randomized per process in .NET, so any audit seeded
+// with it is non-reproducible; this gives run-to-run stable shelves.
+static int StableHash(string s)
+{
+    unchecked
+    {
+        uint h = 2166136261u;
+        foreach (var c in s) { h ^= char.ToLowerInvariant(c); h *= 16777619u; }
+        return (int)h;
+    }
+}
+
 // Phase 25d — stock-completeness + pricing audit over every shopkeeper
 // PLACED in the world (user requirement: merchants carry everything a
 // user can buy, and pay correctly). Gates:
@@ -6529,10 +6542,19 @@ static int CmdStoreAudit(string[] a)
         foreach (var tab in table.Tabs) tabChecks++;
         for (int s = 1; s <= seeds; s++)
         {
-            var stock = table.GenerateStock(resolver, new Random(s * 7919 + name.GetHashCode(StringComparison.OrdinalIgnoreCase)));
+            // Phase 25-fold C — stable seed (String.GetHashCode is
+            // process-randomized; the audit must be reproducible).
+            var stock = table.GenerateStock(resolver, new Random(s * 7919 + StableHash(name)));
             foreach (var tab in table.Tabs)
-                if (!stock.Any(it => it.Tab.Equals(tab.Name, StringComparison.OrdinalIgnoreCase)))
-                    failures.Add($"{name} ({regionShort}): tab [{tab.Name}] rolled EMPTY at seed {s}");
+            {
+                // Phase 25-fold E — only a tab with at least one [all*] bag
+                // is GUARANTEED non-empty; a tab whose bags are all
+                // [oneof*] with chance<1 is authored to be sometimes-empty,
+                // so an empty roll there is authentic, not a defect.
+                bool guaranteed = tab.Bags.Any(b => !b.OneOf);
+                if (guaranteed && !stock.Any(it => it.Tab.Equals(tab.Name, StringComparison.OrdinalIgnoreCase)))
+                    failures.Add($"{name} ({regionShort}): guaranteed tab [{tab.Name}] rolled EMPTY at seed {s}");
+            }
             foreach (var it in stock)
             {
                 if (it.Tab.Equals("magic", StringComparison.OrdinalIgnoreCase)
@@ -6615,8 +6637,13 @@ static int CmdStoreDump(string[] a)
             Console.WriteLine($"    pow={it.Power,4}  buy={buy,6}  {it.TemplateName,-34} <- {it.Spec}");
         }
     }
-    // Empty-tab gate for the 25d completeness audit.
-    var emptyTabs = table.Tabs.Where(t => stock.All(s => !s.Tab.Equals(t.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+    // Empty-tab gate for the 25d completeness audit. Phase 25-fold E —
+    // only GUARANTEED tabs (≥1 [all*] bag) are expected non-empty; an
+    // all-[oneof*] tab is authored to sometimes roll empty.
+    var emptyTabs = table.Tabs
+        .Where(t => t.Bags.Any(b => !b.OneOf)
+                    && stock.All(s => !s.Tab.Equals(t.Name, StringComparison.OrdinalIgnoreCase)))
+        .ToList();
     if (emptyTabs.Count > 0)
     {
         Console.WriteLine($"\n  EMPTY TABS: {string.Join(", ", emptyTabs.Select(t => t.Name))}");

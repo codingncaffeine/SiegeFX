@@ -10820,7 +10820,7 @@ void main()
         if (bestConv is null && bestVendor is not null)
         {
             _lastTalkedTemplate = best.Actor.Template.Name;
-            _vendor.Open(bestVendor);
+            OpenVendorPanel(bestVendor);
             Console.WriteLine($"trade: opened vendor panel for {bestVendor.ScreenName} (no dialogue)");
             return true;
         }
@@ -10856,20 +10856,66 @@ void main()
             ? ResolveVendor(tpl)
             : null;
         if (def is null) return;
-        _vendor.Open(def);
+        OpenVendorPanel(def);
         Console.WriteLine($"trade: opened vendor panel for {def.ScreenName}");
         _lastTalkedTemplate = null; // one-shot per talk
+    }
+
+    // Phase 25-fold D — DS1 opens your inventory beside the store so you
+    // can click your own items to sell. Remember whether the inventory
+    // was already open so closing trade restores the prior state instead
+    // of leaving a stray panel up.
+    private bool _inventoryAutoOpenedForTrade;
+    private void OpenVendorPanel(SiegeFX.Core.Actors.VendorDefinition def)
+    {
+        if (!_inventoryOpen)
+        {
+            _inventoryOpen = true;
+            _inventoryAutoOpenedForTrade = true;
+        }
+        _vendor.Open(def);
+    }
+
+    /// <summary>Phase 25-fold D — when trade ends (Esc or the panel's own
+    /// Close button), drop the inventory panel if WE auto-opened it for
+    /// the trade. Runs every frame so it catches the in-panel Close path
+    /// that never returns through RenderHost.</summary>
+    private void ReconcileTradeInventory()
+    {
+        if (!_vendor.IsOpen && _inventoryAutoOpenedForTrade)
+        {
+            _inventoryOpen = false;
+            _inventoryAutoOpenedForTrade = false;
+        }
     }
 
     // ---- Phase 25b — data-driven shops ---------------------------------
     // Shops come straight from the template chain ([store] +
     // [inventory][store_pcontent], see StoreTable) instead of the old
-    // hand-authored VendorCatalog. Each shop's shelf rolls ONCE per
-    // session (seeded by template name) and is cached — full_ratio=0
-    // shipped data doesn't re-fill mid-visit; restock semantics land
-    // with the 25d audit.
+    // hand-authored VendorCatalog. Each shop's shelf rolls once per
+    // session (seeded by a STABLE hash of the template name) and is
+    // cached — full_ratio=0 shipped data doesn't re-fill mid-visit;
+    // restock semantics land with the 25d audit.
     private readonly Dictionary<string, SiegeFX.Core.Actors.VendorDefinition?> _storeDefs =
         new(StringComparer.OrdinalIgnoreCase);
+
+    // Phase 25-fold C — String.GetHashCode is randomized PER PROCESS in
+    // .NET, so a shelf seeded with it re-rolls every launch and the audit
+    // is non-reproducible. FNV-1a over the lowercased name is stable
+    // across sessions, giving each shop a persistent identity.
+    internal static int StableNameHash(string s)
+    {
+        unchecked
+        {
+            uint h = 2166136261u;
+            foreach (var c in s)
+            {
+                h ^= char.ToLowerInvariant(c);
+                h *= 16777619u;
+            }
+            return (int)h;
+        }
+    }
 
     private SiegeFX.Core.Actors.VendorDefinition? ResolveVendor(SiegeFX.Core.Assets.Template tpl)
     {
@@ -10902,7 +10948,7 @@ void main()
         if (table is not null && table.IsShop)
         {
             _playResolverPcontent ??= new SiegeFX.Core.Actors.PcontentResolver(_templateStore);
-            var rng = new Random(tpl.Name.GetHashCode(StringComparison.OrdinalIgnoreCase));
+            var rng = new Random(StableNameHash(tpl.Name));
             var stock = table.GenerateStock(_playResolverPcontent, rng);
             var items = new List<SiegeFX.Core.Actors.VendorStockItem>(stock.Count);
             foreach (var it in stock)
@@ -10946,19 +10992,51 @@ void main()
     /// <summary>Phase 25b — an item's base gold value: the authored
     /// [aspect]gold_value where present; otherwise a PROVISIONAL
     /// power-derived curve (flagged for the 25d pricing fit against DS1
-    /// captures — retail computes unauthored values from stats).</summary>
+    /// captures — retail computes unauthored values from stats).
+    ///
+    /// Phase 25-fold G — the provisional branch derives power from the
+    /// TEMPLATE's own stats (defense / avg damage) when the caller can't
+    /// supply it. Sell-side passes power 0 (the rolled tier isn't
+    /// persisted on the loot entry), so without this a provisional armor
+    /// bought for hundreds of gold sold back for a flat 5g. Reading the
+    /// template makes buy and sell agree.</summary>
     private long ItemBaseValue(string templateName, int power)
     {
-        if (_templateStore is not null
-            && _templateStore.TryGet(templateName, out var tpl) && tpl is not null)
+        SiegeFX.Core.Assets.Template? tpl = null;
+        if (_templateStore is not null)
+            _templateStore.TryGet(templateName, out tpl);
+
+        if (tpl is not null)
         {
-            var gv = _templateStore.GetAttribute(tpl, "aspect", "gold_value");
+            var gv = _templateStore!.GetAttribute(tpl, "aspect", "gold_value");
             if (!string.IsNullOrEmpty(gv)
                 && float.TryParse(gv, System.Globalization.NumberStyles.Float,
                                   System.Globalization.CultureInfo.InvariantCulture, out var v))
                 return (long)MathF.Round(v);
         }
-        return Math.Max(1, (long)MathF.Round(10f + power * power * 0.35f));
+
+        int effPower = power > 0 ? power : EstimateItemPower(tpl);
+        return Math.Max(1, (long)MathF.Round(10f + effPower * effPower * 0.35f));
+    }
+
+    /// <summary>Phase 25-fold G — intrinsic power estimate off a
+    /// template's own stats for the provisional-value curve: armor
+    /// defense, else average melee/ranged damage, else 0.</summary>
+    private int EstimateItemPower(SiegeFX.Core.Assets.Template? tpl)
+    {
+        if (tpl is null || _templateStore is null) return 0;
+        var def = _templateStore.GetAttribute(tpl, "defend", "defense");
+        if (!string.IsNullOrEmpty(def)
+            && float.TryParse(def, System.Globalization.NumberStyles.Float,
+                              System.Globalization.CultureInfo.InvariantCulture, out var d) && d > 0f)
+            return (int)MathF.Round(d);
+        var dmin = _templateStore.GetAttribute(tpl, "attack", "damage_min");
+        var dmax = _templateStore.GetAttribute(tpl, "attack", "damage_max");
+        float lo = 0f, hi = 0f;
+        float.TryParse(dmin, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out lo);
+        float.TryParse(dmax, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out hi);
+        if (hi > 0f) return (int)MathF.Round((lo + hi) * 0.5f);
+        return 0;
     }
 
     /// <summary>SC-QUEST-OBJ-A — credit "talk to NPC X" objectives against the
@@ -14550,6 +14628,7 @@ void main()
     {
         if (_gl is null) return;
         if (_diagMode) DiagRecordFrame(dt);
+        ReconcileTradeInventory();
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
         // Phase 18c — listener follows the PC every frame. We use camera
         // forward (not _playerFacing) so the audio image rotates with

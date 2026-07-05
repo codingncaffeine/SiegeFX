@@ -80,6 +80,18 @@ public sealed class PcontentResolver
             _        => _byClass.TryGetValue(parsed.Class, out var b) ? b : Enumerable.Empty<Entry>(),
         };
 
+        // Phase 25-fold A — never resolve an ABSTRACT template. DS1
+        // reserves the "base_" prefix for abstract parents (base_glove,
+        // base_helm, base_body_armor_cloth, …); they carry a [gui]
+        // equip_slot so the armor path indexed them into the sub-buckets,
+        // and with defense 0 / no screen_name / no gold_value they slipped
+        // through the Normal+allowed filter and showed up as literal
+        // "base_glove" junk on every blacksmith's shelf. Real items never
+        // use the prefix, so this is a safe, comprehensive gate (covers
+        // shop stock and loot alike).
+        candidates = candidates.Where(e =>
+            !e.Name.StartsWith("base_", StringComparison.OrdinalIgnoreCase));
+
         // Phase 25a — sub-class filter: "#body,ro" narrows body armor to
         // robes (chain rooted at base_body_armor_cloth). Unknown subs
         // keep the pre-25a no-op behavior.
@@ -212,19 +224,27 @@ public sealed class PcontentResolver
 
             // Phase 24a/25c — spell path (checked first: cheap name gate).
             // Player-school spells index with power = [magic]
-            // required_level (default 0) — that's the scale shop specs
-            // author: Adwana's regular-tier `#spell/1-7` stocks flash
-            // (required_level 3) and zap (unauthored → 0), and correctly
-            // excludes death_blast (24). max_level is the SKILL window,
-            // a different axis (zap authors max_level 21 yet is the
-            // starter spell). Monster-arsenal spells (chain rooted at
-            // base_spell_monster) never index.
+            // required_level — that's the scale shop specs author:
+            // Adwana's regular-tier `#spell/1-7` stocks flash
+            // (required_level 3), and death_blast (24) is correctly
+            // excluded. max_level is the SKILL window, a different axis
+            // (zap authors max_level 21 yet is the starter spell).
+            //
+            // Phase 25-fold B — floor at 1. Starter spells (zap,
+            // fireshot, basic heal) author NO required_level → 0, and a
+            // band floor of 1 (#spell/1-7) filtered them out entirely, so
+            // the two most iconic first spells were unbuyable anywhere. A
+            // spell usable from the start IS a tier-1 spell; flooring puts
+            // them in the low band while keeping every higher spell in its
+            // own tier (death_blast stays 24, out of 1-7 and in of 12-81).
+            // Monster-arsenal spells (chain rooted at base_spell_monster)
+            // never index.
             if (tpl.Name.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
             {
                 char school = ClassifySpellSchool(tpl);
                 if (school != '\0')
                 {
-                    var reqLevel = (int)ParseFloat(_store.GetAttribute(tpl, "magic", "required_level"));
+                    var reqLevel = Math.Max(1, (int)ParseFloat(_store.GetAttribute(tpl, "magic", "required_level")));
                     var entry = new Entry(tpl.Name, reqLevel, rarity, Group.Spell, allowed);
                     Bucket(school == 'c' ? "cmagic" : "nmagic").Add(entry);
                     _all.Add(entry);
