@@ -398,8 +398,14 @@ public sealed class InventoryPanel
         int portraitW = (int)System.Math.Round(RefArrangeW * s);
         int portraitH = (int)System.Math.Round(RefArrangeH * s);
         if (headerPortrait is not null && icons is not null)
+        {
+            // Crop to the portrait's opaque bounds so the face fills the slot
+            // instead of hugging a corner (the raw pads the face with alpha).
+            var uv = headerPortrait.ContentUv;
             icons.DrawIcon(viewportW, viewportH, headerPortrait,
-                portraitX, portraitY, portraitW, portraitH, white);
+                portraitX, portraitY, portraitW, portraitH, white,
+                uv.X, uv.Y, uv.Z, uv.W);
+        }
 
         // arrange button: shifted right to rect 279,2,303,30 → panel-rel x=26
         // (the portrait took the leftmost slot).
@@ -460,14 +466,16 @@ public sealed class InventoryPanel
                               goldBoxX, goldBoxY, goldBoxW, goldBoxH, "button4", ButtonChrome.State.Up);
         }
 
-        // gold count text: rect 302,8,360,24 → panel-rel x=49 y=8 w=58 h=16
-        // gas authors justify=center inside that rect, font copperplate-light.
-        int goldTextX = px + (int)System.Math.Round(49 * s);
-        int goldTextY = py + (int)System.Math.Round(8  * s);
+        // gold count text: centered both ways inside the gold box (panel-rel
+        // x=49 y=8 w=58 h=16). Scaled with the panel and vertically centered —
+        // was drawn at unity size anchored to the box top, so it read small and
+        // hugged the upper edge.
+        int goldFontScale = System.Math.Max(1, (int)System.Math.Round(s));
         var countText = Gold.ToString();
-        int countW = text.MeasureWidth(countText);
-        int textCenterX = goldTextX + ((int)System.Math.Round(RefGoldTextW * s) - countW) / 2;
-        text.DrawString(viewportW, viewportH, countText, textCenterX, goldTextY, ink);
+        int countW = text.MeasureWidth(countText, goldFontScale);
+        int textCenterX = goldBoxX + (goldBoxW - countW) / 2;
+        int goldTextY = goldBoxY + (goldBoxH - text.LineHeight * goldFontScale) / 2;
+        text.DrawString(viewportW, viewportH, countText, textCenterX, goldTextY, ink, goldFontScale);
 
         // X close button: rect 369,2,385,18 → panel-rel x=116 y=2 w=16 h=16
         int closeX = px + (int)System.Math.Round(116 * s);

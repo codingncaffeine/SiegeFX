@@ -191,8 +191,11 @@ public sealed class CharacterAwp
             // left visible empty top/bottom strips.
             if (portrait is not null)
             {
+                // Crop to opaque bounds so the face fills the frame regardless
+                // of how the character-creator padded the portrait raw.
+                var uv = portrait.ContentUv;
                 iconRenderer.DrawIcon(viewportW, viewportH, portrait,
-                    px, py, pw, ph, Vector4.One);
+                    px, py, pw, ph, Vector4.One, uv.X, uv.Y, uv.Z, uv.W);
             }
         }
 

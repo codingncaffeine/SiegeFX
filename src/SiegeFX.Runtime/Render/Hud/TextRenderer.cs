@@ -90,6 +90,10 @@ void main() {
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
     }
 
+    /// <summary>Unscaled bitmap glyph height; multiply by pixelScale for the
+    /// drawn height. Used to vertically centre text inside a scaled box.</summary>
+    public int LineHeight => _font?.Height ?? 0;
+
     /// <summary>Width in pixels that <paramref name="text"/> will occupy at the font's
     /// authored height. Useful for right/center alignment.</summary>
     public int MeasureWidth(string text)

@@ -98,7 +98,13 @@ public sealed class TeamPortraits
             icons.DrawIcon(viewportW, viewportH, awpAtlas, px, py, pw, ph, Vector4.One,
                 0.050781f, 1f - 0.585938f, 0.203125f, 1f - 0.226563f);
             if (m.Portrait is not null)
-                icons.DrawIcon(viewportW, viewportH, m.Portrait, px, py, pw, ph, Vector4.One);
+            {
+                // Crop to opaque bounds so the face fills the frame (the raw
+                // pads the face with transparency; framing varies per member).
+                var uv = m.Portrait.ContentUv;
+                icons.DrawIcon(viewportW, viewportH, m.Portrait, px, py, pw, ph, Vector4.One,
+                    uv.X, uv.Y, uv.Z, uv.W);
+            }
             if (m.Dead && deathTex is not null)
                 icons.DrawIcon(viewportW, viewportH, deathTex, px, py, pw, ph, Vector4.One);
             if (m.Selected)

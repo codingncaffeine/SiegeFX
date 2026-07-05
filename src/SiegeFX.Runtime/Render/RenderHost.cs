@@ -7581,7 +7581,9 @@ void main()
     // Both are docked up-right of the dial centre (cx,cy), matching the gas.
     private static (int x, int y, int w, int h) CompassHideRect(int cx, int cy, float scale)
     {
-        int sz = (int)(30 * scale), off = (int)(35 * scale);
+        // Dial radius is 54*scale; keep the arrowhead's NE corner inside that so
+        // it hugs the dial and tucks under the cover fold instead of jutting out.
+        int sz = (int)(28 * scale), off = (int)(20 * scale);
         return (cx + off - sz / 2, cy - off - sz / 2, sz, sz);
     }
     private static (int x, int y, int w, int h) CompassShowRect(int cx, int cy, float scale)

@@ -1,3 +1,4 @@
+using System.Numerics;
 using Silk.NET.OpenGL;
 using SiegeFX.Core.Assets;
 
@@ -15,6 +16,15 @@ public sealed class GlTexture : IDisposable
     public int Width  { get; }
     public int Height { get; }
     public int MipCount { get; }
+
+    /// <summary>Opaque-content bounding box in VISUAL top-down uv space
+    /// (uMin, vMin, uMax, vMax). DS1 portrait icons author the face in a
+    /// corner of the raw with transparent padding (and the exact framing
+    /// varies per character-creator choice and per companion), so drawing
+    /// this sub-rect stretched to a slot fills the box with the face instead
+    /// of hugging one edge. Full (0,0,1,1) for large textures (skipped for
+    /// cost) and for fully-opaque or fully-transparent images.</summary>
+    public Vector4 ContentUv { get; } = new(0f, 0f, 1f, 1f);
 
     public GlTexture(GL gl, RawImage image)
     {
@@ -52,6 +62,39 @@ public sealed class GlTexture : IDisposable
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT,     (int)GLEnum.Repeat);
 
         _gl.BindTexture(GLEnum.Texture2D, 0);
+
+        ContentUv = ComputeContentUv(image);
+    }
+
+    // Opaque bounding box (alpha over a small threshold) of surface 0, as a
+    // VISUAL top-down uv rect. Only small textures are scanned (icons/portraits);
+    // larger ones return full to avoid a load-time hitch. The raw's rgba is
+    // bottom-up (row 0 = image bottom), so the V bounds are flipped to visual.
+    private static Vector4 ComputeContentUv(RawImage image)
+    {
+        int w = image.GetSurfaceWidth(0), h = image.GetSurfaceHeight(0);
+        if (w <= 0 || h <= 0 || (long)w * h > 128 * 128) return new Vector4(0f, 0f, 1f, 1f);
+        var rgba = image.GetSurfaceRgba(0);
+        if (rgba.Length < w * h * 4) return new Vector4(0f, 0f, 1f, 1f);
+        int minX = w, minY = h, maxX = -1, maxY = -1;
+        for (int py = 0; py < h; py++)
+        {
+            int row = py * w * 4;
+            for (int px = 0; px < w; px++)
+            {
+                if (rgba[row + px * 4 + 3] > 16)
+                {
+                    if (px < minX) minX = px;
+                    if (px > maxX) maxX = px;
+                    if (py < minY) minY = py;
+                    if (py > maxY) maxY = py;
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) return new Vector4(0f, 0f, 1f, 1f);
+        float uMin = minX / (float)w, uMax = (maxX + 1) / (float)w;
+        float vMin = 1f - (maxY + 1) / (float)h, vMax = 1f - minY / (float)h;
+        return new Vector4(uMin, vMin, uMax, vMax);
     }
 
     /// <summary>Single-mip RGBA8888 upload. Used by the cursor pipeline for
