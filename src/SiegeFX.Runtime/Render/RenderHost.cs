@@ -3448,6 +3448,10 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    // Compass hide/show toggle (top-right) — only live while the
+                    // dial is actually on screen (NIS off).
+                    if (_nisPhase == NisPhase.Off &&
+                        CompassHitTest(mx, my, _window.Size.X, _window.Size.Y)) return;
                     // Phase 27 — party HUD clicks. The field_commands panel is
                     // always on screen (DS1 shows it from game start, solo or
                     // not), so its clicks are always live; the team-portrait
@@ -7470,8 +7474,9 @@ void main()
     // camera faces — a real compass read. North = world -Z (the yaw-zero
     // forward of our camera convention).
     // ────────────────────────────────────────────────────────────────────
-    private GlTexture? _compassCover, _compassFace, _compassN, _compassE, _compassS, _compassW, _compassHideBtn;
+    private GlTexture? _compassCover, _compassFace, _compassN, _compassE, _compassS, _compassW, _compassHideBtn, _compassShowBtn;
     private bool _compassLoadTried;
+    private bool _compassHidden; // toggled by the NE hide/show button
 
     private void EnsureCompassTextures()
     {
@@ -7491,6 +7496,9 @@ void main()
         // compass; we draw it decoratively (it never rotates), which is the
         // "graphic pointing top-right" the dial was missing.
         _compassHideBtn = LoadTexsetTexture("b_gui_ig_mnu_compass_spinner-up");
+        // The collapsed compass (button_compass_show): a small compass-star with
+        // the show chevron, drawn alone when the dial is hidden.
+        _compassShowBtn = LoadTexsetTexture("b_gui_ig_mnu_compass_spinner_small");
         if (_compassCover is null)
             Console.WriteLine("[compass] cover texture unresolved — compass hidden");
     }
@@ -7505,6 +7513,18 @@ void main()
         int cx = viewportW - size / 2 - (int)(6 * scale);
         int cy = size / 2 + (int)(6 * scale);
         var tint = new Vector4(1f, 1f, 1f, 1f);
+
+        // Collapsed: the dial folds down to the small compass-star show button.
+        if (_compassHidden)
+        {
+            if (_compassShowBtn is not null)
+            {
+                var (sx, sy, sw, sh) = CompassShowRect(cx, cy, scale);
+                _iconRenderer.DrawIcon(viewportW, viewportH, _compassShowBtn, sx, sy, sw, sh, tint);
+            }
+            return;
+        }
+
         if (_compassFace is not null)
             _iconRenderer.DrawIcon(viewportW, viewportH, _compassFace,
                 cx - size / 2, cy - size / 2, size, size, tint);
@@ -7514,10 +7534,8 @@ void main()
         // button center sits ~ +35,-35 ref px off the dial centre in the gas).
         if (_compassHideBtn is not null)
         {
-            int aSize = (int)(30 * scale);
-            int aOff  = (int)(35 * scale);
-            _iconRenderer.DrawIcon(viewportW, viewportH, _compassHideBtn,
-                cx + aOff - aSize / 2, cy - aOff - aSize / 2, aSize, aSize, tint);
+            var (hx, hy, hw, hh) = CompassHideRect(cx, cy, scale);
+            _iconRenderer.DrawIcon(viewportW, viewportH, _compassHideBtn, hx, hy, hw, hh, tint);
         }
         float camYaw = _camera.Yaw;
         void Letter(GlTexture? tex, float worldYaw)
@@ -7534,6 +7552,36 @@ void main()
         Letter(_compassE, MathF.PI / 2f);  // world +X
         Letter(_compassS, MathF.PI);       // world +Z
         Letter(_compassW, -MathF.PI / 2f); // world -X
+    }
+
+    // Shared geometry for the compass toggle buttons so Draw and hit-test agree.
+    // Both are docked up-right of the dial centre (cx,cy), matching the gas.
+    private static (int x, int y, int w, int h) CompassHideRect(int cx, int cy, float scale)
+    {
+        int sz = (int)(30 * scale), off = (int)(35 * scale);
+        return (cx + off - sz / 2, cy - off - sz / 2, sz, sz);
+    }
+    private static (int x, int y, int w, int h) CompassShowRect(int cx, int cy, float scale)
+    {
+        int sz = (int)(44 * scale), off = (int)(20 * scale);
+        return (cx + off - sz / 2, cy - off - sz / 2, sz, sz);
+    }
+
+    /// <summary>Toggle the compass dial hidden/shown if the click landed on the
+    /// NE hide/show button. Returns true when consumed.</summary>
+    private bool CompassHitTest(int px, int py, int viewportW, int viewportH)
+    {
+        if (_compassCover is null) return false;
+        float scale = Math.Clamp(viewportH / 480f, 1f, 3f);
+        int size = (int)(108 * scale);
+        int cx = viewportW - size / 2 - (int)(6 * scale);
+        int cy = size / 2 + (int)(6 * scale);
+        var (rx, ry, rw, rh) = _compassHidden ? CompassShowRect(cx, cy, scale)
+                                              : CompassHideRect(cx, cy, scale);
+        if (px < rx || px >= rx + rw || py < ry || py >= ry + rh) return false;
+        _compassHidden = !_compassHidden;
+        _audio?.Play(SfxGuiInventory);
+        return true;
     }
 
     private void DrawNisLetterbox(int viewportW, int viewportH)
