@@ -2023,16 +2023,21 @@ public sealed class RenderHost : IDisposable
         public float SpinRadPerSec;
 
         // SC-DOORS-OPEN — door props detected at spawn (template
-        // specializes chain hits base_door, or [aspect]is_usable=true
-        // with use_range authored). DoorOpenFrac lerps 0→1 over
-        // ~0.4s when the player enters UseRange; reverses on exit
-        // with hysteresis. Rotated around Y at draw time (DS1 doors
-        // pivot around the asp origin, which sits at the hinge).
-        // Animation chore_open / chore_close from gas come later
-        // (SC-DOORS-CHORE) — for now we just rotate the rigid mesh.
+        // specializes chain hits base_door). DoorTargetOpen is set when
+        // the player clicks the door; DoorOpenFrac then lerps 0→1 over
+        // ~0.4s (and back on close). Rotated around the raw-mesh Z axis
+        // at draw time: DS1 door .asp geometry is authored Z-up (height
+        // along Z, hinge edge at the local origin X=0) and the placement
+        // world bakes the Z-up→Y-up standup, so the vertical hinge axis
+        // in the pre-world mesh frame is Z, not Y. DoorSwingSign picks
+        // which way the leaf swings (computed to open away from the
+        // player at click time). Animation chore_open / chore_close from
+        // gas come later (SC-DOORS-CHORE) — for now we rotate the rigid mesh.
         public bool  IsDoor;
         public float DoorOpenFrac;
         public float DoorUseRange = 1.5f;
+        public bool  DoorTargetOpen;
+        public float DoorSwingSign = 1f;
 
         // SC-FADE-GROUPS — authored anchor snode from the placement's
         // node-relative position. When that snode fades out (cutaway,
@@ -8442,25 +8447,55 @@ void main()
 
     private void TickDoors(float dt)
     {
-        if (dt <= 0f || _doorProps.Count == 0 || _player is null) return;
-        var playerPos = _player.CurrentTransform.Translation;
+        if (dt <= 0f || _doorProps.Count == 0) return;
         const float OpenRate  = 1f / 0.4f;   // 0 → 1 in 0.4s
         const float CloseRate = 1f / 0.5f;   // 1 → 0 in 0.5s
-        const float CloseHysteresis = 0.5f;  // u beyond use_range before re-closing
+        // DS1 doors open on use (a click), not on proximity — so the frac
+        // just lerps toward the clicked-in DoorTargetOpen state.
         foreach (var prop in _doorProps)
         {
             if (prop.IsDestroyed) continue;
-            var doorPos = prop.World.Translation;
-            float dx = doorPos.X - playerPos.X;
-            float dz = doorPos.Z - playerPos.Z;
-            float distXZ = MathF.Sqrt(dx * dx + dz * dz);
-            bool wantOpen = distXZ <= prop.DoorUseRange
-                         || (prop.DoorOpenFrac > 0.5f && distXZ <= prop.DoorUseRange + CloseHysteresis);
-            if (wantOpen)
+            if (prop.DoorTargetOpen)
                 prop.DoorOpenFrac = MathF.Min(1f, prop.DoorOpenFrac + OpenRate * dt);
             else
                 prop.DoorOpenFrac = MathF.Max(0f, prop.DoorOpenFrac - CloseRate * dt);
         }
+    }
+
+    // SC-DOORS-OPEN — a left-click that lands on/near a door opens it (DS1
+    // doors are click-to-use, not proximity). The click ray is resolved
+    // against the navmesh, so a tall door's base sits at ~hit; the door's
+    // World.Translation is its hinge (the asp origin), and the leaf reaches
+    // ~1.6u from there, so a ~2u radius covers a click anywhere on the leaf.
+    private void OpenDoorNear(Vector3 worldPoint)
+    {
+        if (_doorProps.Count == 0) return;
+        StaticPropInstance? best = null;
+        float bestD2 = 2.0f * 2.0f;
+        foreach (var d in _doorProps)
+        {
+            if (d.IsDestroyed || d.DoorTargetOpen) continue;
+            var dp = d.World.Translation;
+            float dx = dp.X - worldPoint.X, dz = dp.Z - worldPoint.Z;
+            float dd = dx * dx + dz * dz;
+            if (dd < bestD2) { bestD2 = dd; best = d; }
+        }
+        if (best is null) return;
+        best.DoorTargetOpen = true;
+        best.DoorSwingSign = ComputeDoorSwingSign(best);
+    }
+
+    // Swing the leaf AWAY from the player: transform the player into the
+    // door's local (raw Z-up) frame — where Y is the thin thickness axis —
+    // and pick the sign so the free edge sweeps to the opposite side.
+    // CreateRotationZ(+) sends the -X free edge toward -Y, so a player on
+    // the +Y side wants +sign (door opens to -Y, away from them).
+    private float ComputeDoorSwingSign(StaticPropInstance door)
+    {
+        if (_player is null) return 1f;
+        if (!Matrix4x4.Invert(door.World, out var inv)) return 1f;
+        var pLocal = Vector3.Transform(_player.CurrentTransform.Translation, inv);
+        return pLocal.Y >= 0f ? 1f : -1f;
     }
 
     /// <summary>Phase 21c-1 barrel investigation: one-shot per-template dump of the
@@ -11464,6 +11499,9 @@ void main()
             }
         }
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
+        // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
+        // still walks to the click point, so you approach and pass through).
+        OpenDoorNear(hit);
         _playerFollower.SetTarget(hit);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
@@ -16389,16 +16427,19 @@ void main()
                     };
                     model = spin * prop.World;
                 }
-                // SC-DOORS-OPEN — apply door rotation per state.
-                // DS1 doors pivot around their authored asp origin
-                // (the hinge), so the rotation is in LOCAL space
-                // (multiplied BEFORE the placement transform). Y-axis
-                // is the hinge for upright wall doors; basement
-                // hatches that hinge differently come later as
-                // SC-DOORS-HINGE-AXIS splinter.
+                // SC-DOORS-OPEN — apply door rotation per state, in LOCAL
+                // space (multiplied BEFORE the placement transform) so it
+                // pivots around the authored asp origin (the hinge, at
+                // local X=0). DS1 door .asp geometry is authored Z-up — the
+                // height runs along Z and the placement world bakes the
+                // Z-up→Y-up standup — so the vertical hinge axis in this
+                // pre-world frame is Z, not Y. Rotating around Y instead
+                // swept the leaf through the width×height plane: the door
+                // spun like a clock dial rather than swinging out.
                 if (prop.IsDoor && prop.DoorOpenFrac > 0.001f)
                 {
-                    var swing = Matrix4x4.CreateRotationY(prop.DoorOpenFrac * (MathF.PI / 2f));
+                    var swing = Matrix4x4.CreateRotationZ(
+                        prop.DoorSwingSign * prop.DoorOpenFrac * (MathF.PI / 2f));
                     model = swing * prop.World;
                 }
                 _meshShader.SetMatrix4("uModel", model);
