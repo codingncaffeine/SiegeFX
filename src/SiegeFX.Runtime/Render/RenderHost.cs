@@ -7470,7 +7470,7 @@ void main()
     // camera faces — a real compass read. North = world -Z (the yaw-zero
     // forward of our camera convention).
     // ────────────────────────────────────────────────────────────────────
-    private GlTexture? _compassCover, _compassFace, _compassN, _compassE, _compassS, _compassW;
+    private GlTexture? _compassCover, _compassFace, _compassN, _compassE, _compassS, _compassW, _compassHideBtn;
     private bool _compassLoadTried;
 
     private void EnsureCompassTextures()
@@ -7486,6 +7486,11 @@ void main()
         _compassE = LoadTexsetTexture("b_gui_ig_mnu_compass_e");
         _compassS = LoadTexsetTexture("b_gui_ig_mnu_compass_s");
         _compassW = LoadTexsetTexture("b_gui_ig_mnu_compass_w");
+        // compass_hotpoints.gas's button_compass_hide — a static bronze
+        // arrowhead docked at the dial's NE corner. In DS1 it toggles the
+        // compass; we draw it decoratively (it never rotates), which is the
+        // "graphic pointing top-right" the dial was missing.
+        _compassHideBtn = LoadTexsetTexture("b_gui_ig_mnu_compass_spinner-up");
         if (_compassCover is null)
             Console.WriteLine("[compass] cover texture unresolved — compass hidden");
     }
@@ -7505,6 +7510,15 @@ void main()
                 cx - size / 2, cy - size / 2, size, size, tint);
         _iconRenderer.DrawIcon(viewportW, viewportH, _compassCover,
             cx - size / 2, cy - size / 2, size, size, tint);
+        // Static bronze arrowhead docked at the dial's NE corner (hide button;
+        // button center sits ~ +35,-35 ref px off the dial centre in the gas).
+        if (_compassHideBtn is not null)
+        {
+            int aSize = (int)(30 * scale);
+            int aOff  = (int)(35 * scale);
+            _iconRenderer.DrawIcon(viewportW, viewportH, _compassHideBtn,
+                cx + aOff - aSize / 2, cy - aOff - aSize / 2, aSize, aSize, tint);
+        }
         float camYaw = _camera.Yaw;
         void Letter(GlTexture? tex, float worldYaw)
         {
