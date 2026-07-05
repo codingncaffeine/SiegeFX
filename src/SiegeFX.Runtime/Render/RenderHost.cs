@@ -7564,7 +7564,7 @@ void main()
     }
     private static (int x, int y, int w, int h) CompassShowRect(int cx, int cy, float scale)
     {
-        int sz = (int)(44 * scale), off = (int)(20 * scale);
+        int sz = (int)(72 * scale), off = (int)(20 * scale);
         return (cx + off - sz / 2, cy - off - sz / 2, sz, sz);
     }
 
