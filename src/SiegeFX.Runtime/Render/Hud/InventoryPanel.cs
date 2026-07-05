@@ -425,6 +425,24 @@ public sealed class InventoryPanel
         if (goldCoinIcon is not null && icons is not null)
             icons.DrawIcon(viewportW, viewportH, goldCoinIcon, coinX, coinY, coinSz, coinSz, white);
 
+        // gold amount box: gas button_gold common_template=button_4 at rect
+        // 302,8,360,24 → panel-rel x=49 y=8 w=58 h=16. The ornate bevel + corner
+        // brackets around the number are the same button_4 chrome the Field
+        // Commands order buttons use. Drawn behind the count text.
+        int goldBoxX = px + (int)System.Math.Round(49 * s);
+        int goldBoxY = py + (int)System.Math.Round(8  * s);
+        int goldBoxW = (int)System.Math.Round(RefGoldTextW * s);
+        int goldBoxH = (int)System.Math.Round(16 * s);
+        if (icons is not null && resolveCommonChrome is not null)
+        {
+            // ButtonChrome asks for full b_gui_cmn_* basenames; the panel's
+            // resolver expects the key WITHOUT that prefix, so strip it.
+            System.Func<string, GlTexture?> chromeFull = n =>
+                resolveCommonChrome(n.StartsWith("b_gui_cmn_") ? n["b_gui_cmn_".Length..] : n);
+            ButtonChrome.Draw(icons, chromeFull, viewportW, viewportH,
+                              goldBoxX, goldBoxY, goldBoxW, goldBoxH, "button4", ButtonChrome.State.Up);
+        }
+
         // gold count text: rect 302,8,360,24 → panel-rel x=49 y=8 w=58 h=16
         // gas authors justify=center inside that rect, font copperplate-light.
         int goldTextX = px + (int)System.Math.Round(49 * s);
