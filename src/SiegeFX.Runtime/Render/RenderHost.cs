@@ -12347,6 +12347,50 @@ void main()
     /// widget at top-left. Loads the atlas + portrait lazily on first call.
     /// Player-only: party slots 2-8 live in team_portraits.gas which is the
     /// 22-D SC-HUD-PORTRAITS slice.</summary>
+    /// <summary>Phase 27 — project a world point to screen pixels (top-left
+    /// origin). Returns false when the point is behind the camera.</summary>
+    private bool ProjectToScreen(Vector3 world, int viewportW, int viewportH, out int sx, out int sy)
+    {
+        sx = sy = 0;
+        if (viewportH <= 0) return false;
+        float aspect = (float)viewportW / viewportH;
+        var clip = Vector4.Transform(new Vector4(world, 1f), _camera.GetViewProjection(aspect));
+        if (clip.W <= 1e-4f) return false;
+        float ndcX = clip.X / clip.W, ndcY = clip.Y / clip.W;
+        sx = (int)MathF.Round((ndcX * 0.5f + 0.5f) * viewportW);
+        sy = (int)MathF.Round((1f - (ndcY * 0.5f + 0.5f)) * viewportH);
+        return true;
+    }
+
+    /// <summary>Phase 27 — DS1 member_labels: each party member's screen_name
+    /// floating over their head, gated by the data_bar Labels toggle
+    /// (<see cref="_overheadLabelsVisible"/>).</summary>
+    private void DrawMemberLabels(int viewportW, int viewportH)
+    {
+        if (!_overheadLabelsVisible || _barRenderer is null || _party.Count == 0) return;
+        var ink = new Vector4(0.92f, 0.88f, 0.76f, 1f);
+        foreach (var m in _party)
+        {
+            if (m.IsDead) continue;
+            var head = m.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f);
+            if (!ProjectToScreen(head, viewportW, viewportH, out int sx, out int sy)) continue;
+            var name = ScreenNameOf(m.Actor.Template);
+            if (string.IsNullOrEmpty(name)) continue;
+            int lw = _textRenderer.MeasureWidth(name);
+            _barRenderer.DrawRect(viewportW, viewportH, sx - lw / 2 - 2, sy - 1, lw + 4, 13,
+                new Vector4(0f, 0f, 0f, 0.55f));
+            _textRenderer.DrawString(viewportW, viewportH, name, sx - lw / 2, sy, ink);
+        }
+    }
+
+    /// <summary>Screen name from a template's [common]screen_name (quote-stripped),
+    /// falling back to the template name.</summary>
+    private string ScreenNameOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        var n = _templateStore?.GetAttribute(tpl, "common", "screen_name")?.Trim().Trim('"');
+        return string.IsNullOrWhiteSpace(n) ? tpl.Name : n;
+    }
+
     private void DrawCharacterAwp(int viewportW, int viewportH)
     {
         if (_player is null || _iconRenderer is null || _barRenderer is null) return;
@@ -16321,6 +16365,10 @@ void main()
             // layout. Drawn at the same always-on z-tier as data_bar +
             // overhead bars; per-panel modals still overlay it.
             DrawCharacterAwp(size.X, size.Y);
+
+            // Phase 27 — member_labels: floating party-member names over
+            // their heads when the data_bar Labels toggle is on.
+            DrawMemberLabels(size.X, size.Y);
 
             // Phase 22-INFORAIL-B + anchor fold — gas-cited info-rail
             // layout. Per hud_character.gas / hud_inventory.gas /
