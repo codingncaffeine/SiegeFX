@@ -964,13 +964,20 @@ public sealed class RenderHost : IDisposable
         var baseStats = npc.Actor.Stats;
         var combatStats = InjectFollowerWeapon(npc.Actor.Template, baseStats) ?? baseStats;
 
-        // Reuse the wander follower the spawn already built (keeps position
-        // continuous); synthesize one if the NPC spawned off-mesh.
+        // Build the combat brain from the resolved fighting profile.
+        RebuildFollowerBrain(npc, combatStats);
+    }
+
+    // Build/replace a follower's combat brain from the given stats, reusing the
+    // existing wander follower so position/heading stay continuous. Used at
+    // recruit and again when a weapon is equipped/removed on their paperdoll.
+    private void RebuildFollowerBrain(ActorRenderState npc, SiegeFX.Core.Actors.ActorStats combatStats)
+    {
         var wander = npc.Brain?.Wander;
         if (wander is null && _navMesh is not null)
         {
             var pos0 = npc.CurrentTransform.Translation;
-            float gait = baseStats.WalkSpeed > 0.5f ? baseStats.WalkSpeed : 4f;
+            float gait = combatStats.WalkSpeed > 0.5f ? combatStats.WalkSpeed : 4f;
             wander = new SiegeFX.Core.Actors.ActorFollower(
                 _navMesh, pos0, gait, (int)npc.Actor.Instance.Scid, Vector3.UnitZ);
         }
@@ -1018,28 +1025,38 @@ public sealed class RenderHost : IDisposable
 
         foreach (var raw in candidates)
         {
-            var wref = raw.Trim();
-            // Skip spec/pcontent (#…) and spell refs (spell_…): a caster's il_main
-            // holds spells, not a physical weapon (their offense is the spell brain).
-            if (wref.Length == 0 || wref.StartsWith("#") ||
-                wref.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!_templateStore.TryGet(wref, out var wtpl) || wtpl is null) continue;
-            var ws = SiegeFX.Core.Actors.ActorStats.FromTemplate(_templateStore, wtpl);
-            if (ws.DamageMax <= 0f) continue;   // shield / book / non-weapon
-            bool ranged = ws.AttackRange >= 4f
-                       || wref.StartsWith("bw_", StringComparison.OrdinalIgnoreCase)
-                       || wref.StartsWith("xb_", StringComparison.OrdinalIgnoreCase);
-            return baseStats with
-            {
-                DamageMin = ws.DamageMin,
-                DamageMax = ws.DamageMax,
-                AttackRange = ranged ? MathF.Max(ws.AttackRange, 8f) : MathF.Max(ws.AttackRange, 1.8f),
-                WeaponPreference = ranged ? "WP_RANGED" : "WP_MELEE",
-                RangedEngageRange = ranged ? MathF.Max(ws.AttackRange, 10f) : baseStats.RangedEngageRange,
-                SightRange = baseStats.SightRange > 0.1f ? baseStats.SightRange : 12f,
-            };
+            var st = ApplyWeaponToStats(baseStats, raw);
+            if (st is not null) return st;
         }
         return null;
+    }
+
+    // Fold a single weapon ref's damage / range / melee-vs-ranged preference into
+    // a copy of baseStats, or null when the ref isn't a real weapon (spec/pcontent
+    // #…, spell_…, or a shield/book with no [attack] damage). Shared by recruit-time
+    // resolution and live paperdoll re-equip so both stay in lockstep.
+    private SiegeFX.Core.Actors.ActorStats? ApplyWeaponToStats(
+        SiegeFX.Core.Actors.ActorStats baseStats, string weaponRef)
+    {
+        if (_templateStore is null) return null;
+        var wref = weaponRef.Trim();
+        if (wref.Length == 0 || wref.StartsWith("#") ||
+            wref.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!_templateStore.TryGet(wref, out var wtpl) || wtpl is null) return null;
+        var ws = SiegeFX.Core.Actors.ActorStats.FromTemplate(_templateStore, wtpl);
+        if (ws.DamageMax <= 0f) return null;   // shield / book / non-weapon
+        bool ranged = ws.AttackRange >= 4f
+                   || wref.StartsWith("bw_", StringComparison.OrdinalIgnoreCase)
+                   || wref.StartsWith("xb_", StringComparison.OrdinalIgnoreCase);
+        return baseStats with
+        {
+            DamageMin = ws.DamageMin,
+            DamageMax = ws.DamageMax,
+            AttackRange = ranged ? MathF.Max(ws.AttackRange, 8f) : MathF.Max(ws.AttackRange, 1.8f),
+            WeaponPreference = ranged ? "WP_RANGED" : "WP_MELEE",
+            RangedEngageRange = ranged ? MathF.Max(ws.AttackRange, 10f) : baseStats.RangedEngageRange,
+            SightRange = baseStats.SightRange > 0.1f ? baseStats.SightRange : 12f,
+        };
     }
 
     /// <summary>Phase 27 — DS1's six field-command formations
@@ -12719,6 +12736,16 @@ void main()
                ?? member.Actor.Template.Name;
     }
 
+    // Class title shown under the name on the sheet — the member template's
+    // [actor]screen_class (same source the player uses). With no companion
+    // progression, ClassTitleResolver returns this verbatim.
+    private string ResolveMemberClass(ActorRenderState member)
+    {
+        if (_templateStore is null) return "";
+        return _templateStore.GetAttribute(member.Actor.Template, "actor", "screen_class")?.Trim().Trim('"')
+               ?? "";
+    }
+
     // Live-equipment weapon-slot icon: the equipped es_weapon_hand item's
     // [gui]inventory_icon, shown only when its class chain matches requiredClass
     // (weapon_melee / weapon_ranged) so a bow never renders on the melee slot.
@@ -13005,10 +13032,24 @@ void main()
         _paperdollEquipCache.Clear();
         if (partyIndex > 0)
         {
-            // Companion: the equip is accepted and its icon now shows on the
-            // sheet + team-strip. Live combat-stat / weapon-mesh refresh for a
-            // follower is a follow-up (their brain bakes weapon damage at recruit
-            // time in RecruitActor); it takes effect on the next recruit/reload.
+            // Companion: rebuild their combat brain from the LIVE equipped weapon
+            // so damage / range / attack mode track the gear you just put on them
+            // (non-weapon slots only refresh the icon caches cleared above).
+            if (string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase))
+            {
+                var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+                if (member is not null && member.IsPartyMember)
+                {
+                    // Actor.Stats is the clean base (PCs author 0 weapon damage);
+                    // fold in the currently equipped weapon, or go unarmed if none.
+                    var baseStats = member.Actor.Stats;
+                    GetEquipmentDict(partyIndex).TryGetValue("es_weapon_hand", out var wref);
+                    var combat = (!string.IsNullOrWhiteSpace(wref)
+                        ? ApplyWeaponToStats(baseStats, wref!) : null) ?? baseStats;
+                    RebuildFollowerBrain(member, combat);
+                    Console.WriteLine($"  companion[{partyIndex}]: combat brain refreshed for weapon '{wref}'");
+                }
+            }
             return;
         }
         bool isWeapon = string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase);
@@ -16747,7 +16788,7 @@ void main()
                 string sheetName = isPlayerSheet ? _heroName : ResolveMemberName(sheetMember);
                 var sheetProgression = isPlayerSheet ? _progression : null;
                 var sheetAttack = isPlayerSheet ? GetPlayerAttackStats() : sheetMember.Actor.Stats;
-                string sheetClassTitle = isPlayerSheet ? _playerStartingClass : "";
+                string sheetClassTitle = isPlayerSheet ? _playerStartingClass : ResolveMemberClass(sheetMember);
                 var portrait = isPlayerSheet
                     ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
                     : ResolveMemberPortrait(sheetMember.Actor.Template);
