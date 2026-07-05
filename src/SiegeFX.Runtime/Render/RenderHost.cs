@@ -12589,8 +12589,8 @@ void main()
             case Hud.FieldCommandsPanel.Action.CycleTargeting:
                 _fcTargeting = _fcTargeting switch
                 {
-                    Hud.FieldCommandsPanel.Action.TgtClosest     => Hud.FieldCommandsPanel.Action.TgtWeakest,
-                    Hud.FieldCommandsPanel.Action.TgtWeakest     => Hud.FieldCommandsPanel.Action.TgtStrongest,
+                    Hud.FieldCommandsPanel.Action.TgtClosest     => Hud.FieldCommandsPanel.Action.TgtStrongest,
+                    Hud.FieldCommandsPanel.Action.TgtStrongest   => Hud.FieldCommandsPanel.Action.TgtWeakest,
                     _                                            => Hud.FieldCommandsPanel.Action.TgtClosest,
                 };
                 break;

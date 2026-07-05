@@ -7,16 +7,17 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// (<c>/ui/interfaces/backend/field_commands/field_commands.gas</c>): the
 /// bottom-right party-command cluster. Six formation radios (radio_group
 /// radio_formations), three order rows (movement / attack / targeting) — each a
-/// button_4 label showing the active order plus a three-crystal radio group —
-/// select-all, disband, a follow toggle, the collect-loot / chat / minimize
-/// utility row, and the right-edge collapse tab. Rects are the authored 640×480
-/// reference, right-anchored and scaled by viewportH/480 (matches the other HUD
-/// panels). Order labels come from the active radio in each group; the DS1
-/// defaults are Engage / Defend / Target Closest.
+/// button_4 label showing the active order plus a three-crystal radio group set
+/// in the window_field_panel frame — select-all, disband, a follow toggle, the
+/// collect-loot / chat / minimize utility row, and the right-edge collapse tab.
+/// Rects are the authored 640×480 reference, right-anchored and scaled by
+/// viewportH/480, then lifted <see cref="LiftPx"/> so the bottom row clears the
+/// data_bar docked along the screen bottom. Order labels come from the active
+/// radio in each group; DS1 defaults are Engage / Defend / Target Closest.
 ///
 /// Two independent collapse controls, matching DS1:
 ///  • the tall right-edge tab (field_commands_min/max) folds only the command
-///    controls — the order rows and formation radios;
+///    controls — order rows, crystals + frame, formation radios, follow;
 ///  • the small minimize button (minimize_fc/maximize_fc) minimizes the whole
 ///    panel down to just the collect-loot bag beside it.
 /// </summary>
@@ -25,13 +26,18 @@ public sealed class FieldCommandsPanel
     public const int RefRes = 480;
     public static float Scale(int viewportH) => viewportH / (float)RefRes;
 
+    // The whole cluster is lifted by this many reference pixels so its bottom
+    // row (bag / minimize) clears the data_bar buttons docked at the very
+    // bottom of the screen (DS1 leaves a visible gap there). Tunable.
+    public const int LiftPx = 14;
+
     public enum Action
     {
         None,
         FormRow, FormDoubleRow, FormColumn, FormDoubleColumn, FormPyramid, FormCircle,
         MoveFree, MoveEngage, MoveHoldGround,
         AtkFree, AtkFightback, AtkHoldFire,
-        TgtClosest, TgtWeakest, TgtStrongest,
+        TgtClosest, TgtStrongest, TgtWeakest,
         SelectAll, Disband, ToggleFollow, CollectLoot, Chat,
         CycleMovement, CycleAttack, CycleTargeting,
         MinimizeFc, CollapseFc,
@@ -47,8 +53,7 @@ public sealed class FieldCommandsPanel
         (Action.FormPyramid,      (523, 401, 548, 425)),
         (Action.FormCircle,       (547, 401, 572, 425)),
     };
-    // Three crystal-radio order rows. Each option is a 12×13 crystal; the gas
-    // orders them left→right as authored below.
+    // Three crystal-radio order rows, ordered left→right exactly as the gas.
     static readonly (Action A, (int, int, int, int) R)[] Movement =
     {
         (Action.MoveFree,       (574, 354, 586, 367)),
@@ -61,12 +66,12 @@ public sealed class FieldCommandsPanel
         (Action.AtkFightback, (587, 370, 599, 383)),
         (Action.AtkHoldFire,  (600, 370, 612, 383)),
     };
-    // gas: closest | weakest | strongest (was previously mis-ordered).
+    // gas order: closest | strongest | weakest.
     static readonly (Action A, (int, int, int, int) R)[] Targeting =
     {
         (Action.TgtClosest,   (574, 386, 586, 399)),
-        (Action.TgtWeakest,   (587, 386, 599, 399)),
-        (Action.TgtStrongest, (600, 386, 612, 399)),
+        (Action.TgtStrongest, (587, 386, 599, 399)),
+        (Action.TgtWeakest,   (600, 386, 612, 399)),
     };
 
     // Order-label buttons (button_4 chrome). The chrome stops just short of the
@@ -78,27 +83,31 @@ public sealed class FieldCommandsPanel
         (Action.CycleTargeting, (428, 385, 573, 401)),
     };
 
-    // The collect-loot bag and the small minimize/maximize button share the
-    // bottom-right corner; when the panel is minimized only these two survive.
-    static readonly (int, int, int, int) LootBag   = (571, 425, 603, 445);
+    static readonly (int, int, int, int) LootBag    = (571, 425, 603, 445);
     static readonly (int, int, int, int) MiniButton = (602, 425, 635, 445);
     // Right-edge command-fold tab (fieldcom_r expanded → fieldcom_l folded).
     static readonly (int, int, int, int) CollapseTab = (615, 351, 636, 426);
+    // The follow toggle docks into the slot right above the loot bag. (The
+    // authored 519,284 rect floats it above the panel; DS1 shows it here, at
+    // the right end of the formation row.)
+    static readonly (int, int, int, int) FollowRect = (571, 401, 615, 425);
+    // window_field_panel — the recessed frame behind the 3×3 order crystals.
+    static readonly (int, int, int, int) CrystalFrame = (571, 351, 616, 402);
 
-    // Icon buttons blitted straight from their b_gui_* raws (always-on set).
+    // Always-on icon buttons blitted straight from their b_gui_* raws.
     static readonly (Action A, (int, int, int, int) R)[] TopIcons =
     {
-        (Action.ToggleFollow, (519, 284, 563, 308)),
-        (Action.SelectAll,    (571, 332, 603, 352)),
-        (Action.Disband,      (602, 332, 635, 353)),
+        (Action.SelectAll, (571, 332, 603, 352)),
+        (Action.Disband,   (602, 332, 635, 353)),
     };
 
     public readonly record struct State(
         Action Formation, Action Movement, Action Attack, Action Targeting,
         bool Follow, bool CommandsCollapsed, bool Minimized);
 
-    static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r, float s, int originX)
-        => (originX + (int)MathF.Round(r.x0 * s), (int)MathF.Round(r.y0 * s),
+    static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r,
+                                           float s, int originX, int originY)
+        => (originX + (int)MathF.Round(r.x0 * s), originY + (int)MathF.Round(r.y0 * s),
             (int)MathF.Round((r.x1 - r.x0) * s), (int)MathF.Round((r.y1 - r.y0) * s));
 
     static bool In((int x, int y, int w, int h) p, int px, int py)
@@ -109,31 +118,33 @@ public sealed class FieldCommandsPanel
     {
         float s = Scale(viewportH);
         int originX = viewportW - (int)MathF.Round(640f * s);
+        int originY = -(int)MathF.Round(LiftPx * s);
 
         // Minimized: only the loot bag and the maximize button are live.
         if (minimized)
         {
-            if (In(Px(LootBag, s, originX), px, py))    return Action.CollectLoot;
-            if (In(Px(MiniButton, s, originX), px, py)) return Action.MinimizeFc;
+            if (In(Px(LootBag, s, originX, originY), px, py))    return Action.CollectLoot;
+            if (In(Px(MiniButton, s, originX, originY), px, py)) return Action.MinimizeFc;
             return Action.None;
         }
 
         // Command-fold tab and the small minimize button are always live.
-        if (In(Px(CollapseTab, s, originX), px, py)) return Action.CollapseFc;
-        if (In(Px(MiniButton, s, originX), px, py))  return Action.MinimizeFc;
+        if (In(Px(CollapseTab, s, originX, originY), px, py)) return Action.CollapseFc;
+        if (In(Px(MiniButton, s, originX, originY), px, py))  return Action.MinimizeFc;
 
-        // Order + formation controls only when the commands aren't folded.
+        // Order / formation / follow controls only when commands aren't folded.
         // Crystals first — they overlay the right edge of the order buttons.
         if (!commandsCollapsed)
         {
             foreach (var g in new[] { Movement, Attack, Targeting })
-                foreach (var o in g) if (In(Px(o.R, s, originX), px, py)) return o.A;
-            foreach (var f in Formations) if (In(Px(f.R, s, originX), px, py)) return f.A;
-            foreach (var b in OrderButtons) if (In(Px(b.R, s, originX), px, py)) return b.Cycle;
+                foreach (var o in g) if (In(Px(o.R, s, originX, originY), px, py)) return o.A;
+            foreach (var f in Formations) if (In(Px(f.R, s, originX, originY), px, py)) return f.A;
+            foreach (var b in OrderButtons) if (In(Px(b.R, s, originX, originY), px, py)) return b.Cycle;
+            if (In(Px(FollowRect, s, originX, originY), px, py)) return Action.ToggleFollow;
         }
 
-        foreach (var b in TopIcons) if (In(Px(b.R, s, originX), px, py)) return b.A;
-        if (In(Px(LootBag, s, originX), px, py)) return Action.CollectLoot;
+        foreach (var b in TopIcons) if (In(Px(b.R, s, originX, originY), px, py)) return b.A;
+        if (In(Px(LootBag, s, originX, originY), px, py)) return Action.CollectLoot;
         return Action.None;
     }
 
@@ -176,6 +187,7 @@ public sealed class FieldCommandsPanel
 
         float s = Scale(viewportH);
         int originX = viewportW - (int)MathF.Round(640f * s);
+        int originY = -(int)MathF.Round(LiftPx * s);
         int fontScale = System.Math.Max(1, (int)MathF.Round(s));
         var ink = new Vector4(0.88f, 0.84f, 0.70f, 1f);
 
@@ -186,7 +198,7 @@ public sealed class FieldCommandsPanel
         {
             var t = guiTex(tex);
             if (t is null) return;
-            var p = Px(r, s, originX);
+            var p = Px(r, s, originX, originY);
             icons.DrawIcon(viewportW, viewportH, t, p.x, p.y, p.w, p.h, Vector4.One,
                            gu0, 1f - gv1, gu1, 1f - gv0);
         }
@@ -200,23 +212,22 @@ public sealed class FieldCommandsPanel
             return;
         }
 
-        // Follow checkbox (docked above the main cluster).
-        Blit(st.Follow ? "b_gui_ig_mnu_follow_on_up" : "b_gui_ig_mnu_follow_off_up",
-             (519, 284, 563, 308), 0f, 0.25f, 0.6875f, 1f);
-
-        // Select-all / disband icon buttons.
+        // Select-all / disband icon buttons (top of the right column).
         Blit("b_gui_ig_mnu_select_up",  (571, 332, 603, 352), 0f, 0.375f,   1f,       1f);
         Blit("b_gui_ig_mnu_disband_up", (602, 332, 635, 353), 0f, 0.34375f, 1.03125f, 1f);
 
-        // Command controls: order rows + formation radios, hidden when the
-        // command-fold tab is engaged.
+        // Command controls: crystal frame + order rows + formations + follow,
+        // hidden when the command-fold tab is engaged.
         if (!st.CommandsCollapsed)
         {
+            // Recessed frame behind the crystal grid (draw first, under crystals).
+            Blit("b_gui_ig_mnu_fieldcom", CrystalFrame, 0f, 0.203125f, 0.703125f, 1f);
+
             // Order rows: a button_4 push-button showing the current order, then
             // the group's three selection crystals (lit = active).
             void Row((Action A, (int, int, int, int) R)[] grp, Action sel, (int, int, int, int) btnRect)
             {
-                var bp = Px(btnRect, s, originX);
+                var bp = Px(btnRect, s, originX, originY);
                 ButtonChrome.Draw(icons, guiTex, viewportW, viewportH,
                                   bp.x, bp.y, bp.w, bp.h, "button4", ButtonChrome.State.Up);
                 string label = OrderLabel(sel);
@@ -236,6 +247,10 @@ public sealed class FieldCommandsPanel
             foreach (var f in Formations)
                 Blit(FormationTexture(f.A) + (f.A == st.Formation ? "_dwn" : "_up"),
                      f.R, 0f, 0.25f, 0.78125f, 1f);
+
+            // Follow toggle, docked in the slot above the loot bag.
+            Blit(st.Follow ? "b_gui_ig_mnu_follow_on_up" : "b_gui_ig_mnu_follow_off_up",
+                 FollowRect, 0f, 0.25f, 0.6875f, 1f);
         }
 
         // Bottom utility row: chat (MP), collect-loot bag, minimize button.
