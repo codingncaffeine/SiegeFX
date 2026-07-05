@@ -3389,6 +3389,19 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    // Phase 27 — clicking a team-portrait cell selects that
+                    // party member (toggles off if already selected).
+                    if (_party.Count > 1)
+                    {
+                        int fslot = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
+                        if (fslot >= 0)
+                        {
+                            int pidx = fslot + 1;   // slot 0 = first follower = PartyIndex 1
+                            _selectedPartyIndex = _selectedPartyIndex == pidx ? -1 : pidx;
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        }
+                    }
                     bool railOpen = _charPanelOpen || _inventoryOpen ||
                                     (_spellBookOpen && _spellbookOpenedWithI);
                     var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y, railOpen);
@@ -12362,6 +12375,48 @@ void main()
                            pressed: _awpPressed,
                            slot1Progress: sp1, slot2Progress: sp2,
                            slot3Progress: sp3, slot4Progress: sp4);
+
+        // Phase 27 — team_portraits strip: the follower cells stacked below
+        // the leader's slot-1 portrait. One cell per recruited member.
+        if (_party.Count > 1)
+        {
+            _awpDeathTex ??= TryGetGuiTexture("b_gui_ig_i_ic_c_death");
+            var cells = new List<Hud.TeamPortraits.Member>(_party.Count - 1);
+            for (int i = 0; i < _party.Count; i++)
+            {
+                var m = _party[i];
+                if (m.PartyIndex == 0) continue;   // leader is slot 1 (character_awp)
+                var c = m.Actor.Combat;
+                var st = m.Actor.Stats;
+                cells.Add(new Hud.TeamPortraits.Member(
+                    ResolveMemberPortrait(m.Actor.Template),
+                    st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
+                    st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
+                    m.IsDead || c.IsDead,
+                    _selectedPartyIndex == m.PartyIndex));
+            }
+            _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
+                                _awpAtlas, cells, _awpDeathTex);
+        }
+    }
+
+    // Phase 27 — team-portrait state: the strip below the leader + the
+    // currently selected party member (leader = 0). Portrait textures are
+    // resolved from each member template's [actor]portrait_icon and cached.
+    private readonly Hud.TeamPortraits _teamPortraits = new();
+    private int _selectedPartyIndex = -1;
+    private GlTexture? _awpDeathTex;
+    private readonly System.Collections.Generic.Dictionary<string, GlTexture?> _memberPortraitCache =
+        new(System.StringComparer.OrdinalIgnoreCase);
+    private GlTexture? ResolveMemberPortrait(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_templateStore is null) return null;
+        if (_memberPortraitCache.TryGetValue(tpl.Name, out var cached)) return cached;
+        var icon = (_templateStore.GetAttribute(tpl, "actor", "portrait_icon") ?? "")
+                   .Trim().Trim('"');
+        var tex = string.IsNullOrEmpty(icon) ? null : TryGetGuiTexture(icon);
+        _memberPortraitCache[tpl.Name] = tex;
+        return tex;
     }
 
     // INFORAIL-EQUIPPED-ICONS — slot-name → DS1 es_* tag, then template's
@@ -17032,6 +17087,7 @@ void main()
         _actorIdentityBones.Clear();
         _actors.Clear();
         _party.Clear();          // Phase 26a — party roster is per-region-load
+        _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
         _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.

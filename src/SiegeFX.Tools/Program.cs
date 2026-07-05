@@ -6444,6 +6444,7 @@ static int CmdPartyInspect(string[] a)
     Console.WriteLine($"  DamageMin/Max = {st.DamageMin}/{st.DamageMax}   AttackRange = {st.AttackRange}   IsCombatant = {st.IsCombatant}");
     Console.WriteLine($"  WeaponPreference = {st.WeaponPreference ?? "(none)"}   MaxLife = {st.MaxLife}   STR/DEX/INT = {st.Strength}/{st.Dexterity}/{st.Intelligence}");
     foreach (var (grp, key) in new[] { ("attack","damage_min"), ("attack","damage_max"), ("aspect","gold_value"),
+                                       ("actor","portrait_icon"), ("gui","portrait_icon"),
                                        ("mind","actor_weapon_preference"), ("mind","melee_skill"), ("mind","ranged_skill"),
                                        ("mind","combat_magic_skill"), ("mind","nature_magic_skill") })
         Console.WriteLine($"  [{grp}]{key} = {store.GetAttribute(tpl, grp, key) ?? "(unset)"}");
