@@ -11494,6 +11494,7 @@ void main()
         {
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
+            if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
             if (!s.Actor.Stats.IsCombatant) continue;
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
@@ -12733,6 +12734,7 @@ void main()
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer) continue;
+            if (s.IsPartyMember) continue;   // Phase 26b — recruits aren't attack targets
             if (!s.Actor.Stats.IsCombatant) continue;
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
@@ -14212,6 +14214,7 @@ void main()
             {
                 if (s.IsDead) continue;
                 if (s.IsPlayer) continue;
+                if (s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
