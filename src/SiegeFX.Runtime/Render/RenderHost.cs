@@ -8487,6 +8487,18 @@ void main()
         best.DoorTargetOpen = true;
         best.DoorSwingSign = ComputeDoorSwingSign(best);
         _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
+        // SC-DOORS-HINGE-AXIS diag: the swing spins around the mesh's local Z
+        // (the authored hinge axis for upright wall doors). This logs where that
+        // axis points in WORLD space — ~(0,±1,0) = upright (swings right); tilted
+        // or horizontal = a cellar/hatch door my Z-swing can't handle yet. Local
+        // bounds distinguish a different door mesh from a tilted placement.
+        var hingeAxisWorld = Vector3.Normalize(
+            Vector3.TransformNormal(new Vector3(0f, 0f, 1f), best.World));
+        Console.WriteLine($"[door] {best.Template} " +
+            $"bounds=({best.Mesh.Min.X:F2},{best.Mesh.Min.Y:F2},{best.Mesh.Min.Z:F2}).." +
+            $"({best.Mesh.Max.X:F2},{best.Mesh.Max.Y:F2},{best.Mesh.Max.Z:F2}) " +
+            $"hingeAxisWorld=({hingeAxisWorld.X:F2},{hingeAxisWorld.Y:F2},{hingeAxisWorld.Z:F2}) " +
+            $"sign={best.DoorSwingSign:F0}");
     }
 
     // Swing the leaf AWAY from the player: transform the player into the
