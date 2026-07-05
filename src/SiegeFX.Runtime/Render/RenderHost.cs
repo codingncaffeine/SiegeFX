@@ -12529,7 +12529,7 @@ void main()
     // (movement engage, attack free, target closest, follow on).
     private readonly Hud.FieldCommandsPanel _fieldPanel = new();
     private Hud.FieldCommandsPanel.Action _fcMovement  = Hud.FieldCommandsPanel.Action.MoveEngage;
-    private Hud.FieldCommandsPanel.Action _fcAttack    = Hud.FieldCommandsPanel.Action.AtkFree;
+    private Hud.FieldCommandsPanel.Action _fcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback; // DS1 default: Defend
     private Hud.FieldCommandsPanel.Action _fcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
     private bool _fcFollow = true;
 

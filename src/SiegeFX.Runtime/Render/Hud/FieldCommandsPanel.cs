@@ -96,6 +96,22 @@ public sealed class FieldCommandsPanel
         _                       => "",
     };
 
+    // The order-row buttons display the CURRENT selection's label (DS1 sets the
+    // button text to the active radio in that group), all-caps like the original.
+    static string OrderLabel(Action a) => a switch
+    {
+        Action.MoveFree       => "MOVE FREELY",
+        Action.MoveEngage     => "ENGAGE",
+        Action.MoveHoldGround => "HOLD GROUND",
+        Action.AtkFree        => "ATTACK FREELY",
+        Action.AtkFightback   => "DEFEND",
+        Action.AtkHoldFire    => "HOLD FIRE",
+        Action.TgtClosest     => "TARGET CLOSEST",
+        Action.TgtWeakest     => "TARGET WEAKEST",
+        Action.TgtStrongest   => "TARGET STRONGEST",
+        _                     => "",
+    };
+
     public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
                      Func<string, GlTexture?>? guiTex, int viewportW, int viewportH, State st)
     {
@@ -111,12 +127,17 @@ public sealed class FieldCommandsPanel
         int originX = viewportW - (int)MathF.Round(640f * s);
         var ink = new Vector4(0.88f, 0.84f, 0.70f, 1f);
 
-        void Blit(string tex, (int, int, int, int) r, float u0, float v0, float u1, float v1)
+        // DS1 RAWs are stored bottom-up and the gas authors uvcoords in that
+        // frame, so convert to the renderer's top-down space before drawing:
+        // vMin = 1 - gasV1, vMax = 1 - gasV0 (the inventory/data_bar flip rule).
+        // Passing the gas V values straight through cropped the top of each icon.
+        void Blit(string tex, (int, int, int, int) r, float gu0, float gv0, float gu1, float gv1)
         {
             var t = guiTex(tex);
             if (t is null) return;
             var p = Px(r, s, originX);
-            icons.DrawIcon(viewportW, viewportH, t, p.x, p.y, p.w, p.h, Vector4.One, u0, v0, u1, v1);
+            icons.DrawIcon(viewportW, viewportH, t, p.x, p.y, p.w, p.h, Vector4.One,
+                           gu0, 1f - gv1, gu1, 1f - gv0);
         }
 
         // Follow checkbox (docked above the main cluster).
@@ -130,17 +151,17 @@ public sealed class FieldCommandsPanel
 
         // Order rows: copperplate label on the left, three selection crystals on
         // the right (lit = the current order in that group).
-        void Row((Action A, (int, int, int, int) R)[] grp, Action sel, string label, int labelY)
+        void Row((Action A, (int, int, int, int) R)[] grp, Action sel, int labelY)
         {
-            var lp = Px((430, labelY, 574, labelY + 14), s, originX);
-            text.DrawString(viewportW, viewportH, label, lp.x, lp.y, ink);
+            var lp = Px((432, labelY, 574, labelY + 14), s, originX);
+            text.DrawString(viewportW, viewportH, OrderLabel(sel), lp.x, lp.y, ink);
             foreach (var o in grp)
                 Blit(o.A == sel ? "b_gui_cmn_crystal_on_up" : "b_gui_cmn_crystal_off_up",
                      o.R, 0f, 0.1875f, 0.8125f, 1f);
         }
-        Row(Movement,  st.Movement,  "Movement",  355);
-        Row(Attack,    st.Attack,    "Attack",    371);
-        Row(Targeting, st.Targeting, "Targeting", 387);
+        Row(Movement,  st.Movement,  355);
+        Row(Attack,    st.Attack,    371);
+        Row(Targeting, st.Targeting, 387);
 
         // Formation radios (selected → pressed face).
         foreach (var f in Formations)
