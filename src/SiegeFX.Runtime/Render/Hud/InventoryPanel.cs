@@ -292,7 +292,8 @@ public sealed class InventoryPanel
                      Func<string, GlTexture?>? resolveCommonChrome = null,
                      GlTexture? arrangeUp = null,
                      GlTexture? goldBg = null,
-                     GlTexture? gridTile = null)
+                     GlTexture? gridTile = null,
+                     GlTexture? headerPortrait = null)
     {
         EnsurePlacements(items.Count);
         Pack(items, resolveGridSize);
@@ -388,8 +389,21 @@ public sealed class InventoryPanel
         // === Title bar elements ======================================
         // gas authors these at fixed 640-ref X coords inside the panel.
         // Compute panel-relative X for each then scale.
-        // arrange button: rect 255,2,279,30 → panel-rel x=2 y=2 w=24 h=28
-        int arrangeX  = px + (int)System.Math.Round(2  * s);
+        // portrait: multi_inventory.gas docks the member's face in the leftmost
+        // 24×28 slot (255,2,279,30, slot_type=picture); the single inventory now
+        // matches so every open panel shows whose backpack it is. Stretched to
+        // fill the slot, like the AWP portraits.
+        int portraitX = px + (int)System.Math.Round(2 * s);
+        int portraitY = py + (int)System.Math.Round(2 * s);
+        int portraitW = (int)System.Math.Round(RefArrangeW * s);
+        int portraitH = (int)System.Math.Round(RefArrangeH * s);
+        if (headerPortrait is not null && icons is not null)
+            icons.DrawIcon(viewportW, viewportH, headerPortrait,
+                portraitX, portraitY, portraitW, portraitH, white);
+
+        // arrange button: shifted right to rect 279,2,303,30 → panel-rel x=26
+        // (the portrait took the leftmost slot).
+        int arrangeX  = px + (int)System.Math.Round(26 * s);
         int arrangeY  = py + (int)System.Math.Round(2  * s);
         int arrangeW  = (int)System.Math.Round(RefArrangeW * s);
         int arrangeH  = (int)System.Math.Round(RefArrangeH * s);
@@ -405,10 +419,12 @@ public sealed class InventoryPanel
                 0f, 0f, 0.75f, 1f - 0.125f);
         }
 
-        // gold readout bg: rect 279,2,362,30 → panel-rel x=26 y=2 w=83 h=28
-        int goldBgX = px + (int)System.Math.Round(26 * s);
+        // gold readout bg: compressed to panel-rel x=49 y=2 w=58 h=28 (302-360)
+        // now the portrait + shifted arrange occupy the header's left. Frames the
+        // button_4 gold box + coin below.
+        int goldBgX = px + (int)System.Math.Round(49 * s);
         int goldBgY = py + (int)System.Math.Round(2  * s);
-        int goldBgW = (int)System.Math.Round(RefGoldBgW * s);
+        int goldBgW = (int)System.Math.Round(RefGoldTextW * s);
         int goldBgH = (int)System.Math.Round(RefGoldBgH * s);
         if (goldBg is not null && icons is not null)
         {
@@ -418,8 +434,9 @@ public sealed class InventoryPanel
                 0f, 0f, 0.648438f, 1f - 0.125f);
         }
 
-        // gold coin icon: rect 285,8,301,24 → panel-rel x=32 y=8 w=16 h=16
-        int coinX = px + (int)System.Math.Round(32 * s);
+        // gold coin icon: multi rect 304,8,320,24 → panel-rel x=51 y=8 w=16 h=16
+        // (sits at the left of the compressed gold box).
+        int coinX = px + (int)System.Math.Round(51 * s);
         int coinY = py + (int)System.Math.Round(8  * s);
         int coinSz = (int)System.Math.Round(RefGoldIconSz * s);
         if (goldCoinIcon is not null && icons is not null)

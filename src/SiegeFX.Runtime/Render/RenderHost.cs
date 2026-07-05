@@ -16716,13 +16716,16 @@ void main()
                 var arrangeUp  = TryGetGuiTexture("b_gui_ig_mnu_ip_arrange_up");
                 var goldBg     = TryGetGuiTexture("b_gui_ig_mnu_ip_gold_box");
                 var gridTile   = TryGetGuiTexture("b_gui_ig_mnu_ip_grid");
+                var playerPortrait = string.IsNullOrEmpty(_playerPortraitIconName)
+                    ? null : TryGetGuiTexture(_playerPortraitIconName);
                 _inventoryPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                     size.X, size.Y, _playerInventory, TryGetItemIcon, TryGetItemGridSize,
                     invClose, goldCoin,
                     resolveCommonChrome: GetCommonTexture,
                     arrangeUp: arrangeUp,
                     goldBg: goldBg,
-                    gridTile: gridTile);
+                    gridTile: gridTile,
+                    headerPortrait: playerPortrait);
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
@@ -16734,6 +16737,11 @@ void main()
                     int slot = 1;
                     foreach (var pidx in _openInventoryMembers.OrderBy(x => x))
                     {
+                        // That companion's own face in the header, so the player
+                        // can tell whose backpack each tiled panel is.
+                        var member = _party.FirstOrDefault(mm => mm.PartyIndex == pidx);
+                        var memberPortrait = member is not null
+                            ? ResolveMemberPortrait(member.Actor.Template) : null;
                         _companionInvPanel.OriginX     = _inventoryPanel.OriginX + slot * stride;
                         _companionInvPanel.OriginY     = panelTopY;
                         _companionInvPanel.DimBackdrop = false;
@@ -16742,7 +16750,8 @@ void main()
                             size.X, size.Y, GetMemberInventory(pidx), TryGetItemIcon, TryGetItemGridSize,
                             invClose, goldCoin,
                             resolveCommonChrome: GetCommonTexture,
-                            arrangeUp: arrangeUp, goldBg: goldBg, gridTile: gridTile);
+                            arrangeUp: arrangeUp, goldBg: goldBg, gridTile: gridTile,
+                            headerPortrait: memberPortrait);
                         slot++;
                     }
                 }
