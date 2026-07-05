@@ -3473,11 +3473,13 @@ void main()
                                     _selectedPartyIndex = _selectedPartyIndex == pidx ? -1 : pidx;
                                     break;
                                 case Hud.TeamPortraits.HitKind.Chevron:
-                                    // >>> opens this companion's inventory: select
-                                    // them and open the inventory panel (DS1 adds
-                                    // their panel to the multi-inventory row).
+                                    // >>> toggles this companion's inventory panel
+                                    // in the multi-inventory row (opening the main
+                                    // inventory too, which it tiles beside).
                                     _selectedPartyIndex = pidx;
                                     _inventoryOpen = true;
+                                    if (!_openInventoryMembers.Add(pidx))
+                                        _openInventoryMembers.Remove(pidx);
                                     break;
                                 case Hud.TeamPortraits.HitKind.Slot:
                                     // Switch this companion's active combat mode.
@@ -3507,6 +3509,7 @@ void main()
                             _awpPressed = Hud.CharacterAwp.HitTarget.CloseArrow;
                             _charPanelOpen = false;
                             _inventoryOpen = false;
+                            _openInventoryMembers.Clear();
                             if (_spellbookOpenedWithI) _spellBookOpen = false;
                             _spellbookOpenedWithI = false;
                             _audio?.Play(SfxGuiInventory);
@@ -3601,6 +3604,7 @@ void main()
                     if (_inventoryOpen && _inventoryPanel.IsPointInClose(mx, my))
                     {
                         _inventoryOpen = false;
+                        _openInventoryMembers.Clear();
                         _audio?.Play(SfxGuiInventory);
                         return;
                     }
@@ -11529,6 +11533,7 @@ void main()
         if (!_vendor.IsOpen && _inventoryAutoOpenedForTrade)
         {
             _inventoryOpen = false;
+            _openInventoryMembers.Clear();
             _inventoryAutoOpenedForTrade = false;
         }
     }
@@ -12617,6 +12622,20 @@ void main()
     // Per-companion active combat slot (PartyIndex → 0 melee/1 ranged/2·3 spell),
     // set by clicking a strip slot; absent = auto (their equipped weapon's slot).
     private readonly Dictionary<int, int> _memberActiveSlot = new();
+    // Multi-inventory: each companion carries their own backpack (PartyIndex →
+    // items); a new companion's is empty until the player gives them loot. The
+    // player is index 0 → _playerInventory. _openInventoryMembers holds the
+    // companion panels currently tiled open beside the player's.
+    private readonly Dictionary<int, List<SiegeFX.Core.Actors.LootEntry>> _companionInventories = new();
+    private readonly HashSet<int> _openInventoryMembers = new();
+    private readonly InventoryPanel _companionInvPanel = new();
+    private List<SiegeFX.Core.Actors.LootEntry> GetMemberInventory(int partyIndex)
+    {
+        if (partyIndex <= 0) return _playerInventory;
+        if (!_companionInventories.TryGetValue(partyIndex, out var list))
+            _companionInventories[partyIndex] = list = new();
+        return list;
+    }
     private GlTexture? _awpDeathTex;
 
     // Phase 27 — field_commands panel (bottom-right party orders). Order
@@ -16704,6 +16723,29 @@ void main()
                     arrangeUp: arrangeUp,
                     goldBg: goldBg,
                     gridTile: gridTile);
+
+                // Multi-inventory — tile each open companion's panel to the right
+                // of the player's, one panel-width apart (DS1 multi_inventory.gas
+                // reuses the same 134-wide inventory panel per member). Each shows
+                // that companion's own backpack; gold is player-only in DS1.
+                if (_openInventoryMembers.Count > 0)
+                {
+                    int stride = InventoryPanel.PanelWidth(size.Y);
+                    int slot = 1;
+                    foreach (var pidx in _openInventoryMembers.OrderBy(x => x))
+                    {
+                        _companionInvPanel.OriginX     = _inventoryPanel.OriginX + slot * stride;
+                        _companionInvPanel.OriginY     = panelTopY;
+                        _companionInvPanel.DimBackdrop = false;
+                        _companionInvPanel.Gold        = 0;
+                        _companionInvPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                            size.X, size.Y, GetMemberInventory(pidx), TryGetItemIcon, TryGetItemGridSize,
+                            invClose, goldCoin,
+                            resolveCommonChrome: GetCommonTexture,
+                            arrangeUp: arrangeUp, goldBg: goldBg, gridTile: gridTile);
+                        slot++;
+                    }
+                }
             }
             if (_spellBookOpen && _barRenderer is not null)
             {
@@ -17432,6 +17474,8 @@ void main()
         _party.Clear();          // Phase 26a — party roster is per-region-load
         _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
         _memberActiveSlot.Clear();
+        _openInventoryMembers.Clear();
+        _companionInventories.Clear();
         _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.
