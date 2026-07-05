@@ -3145,6 +3145,32 @@ void main()
                 // Phase 27 dev hook: 'F' cycles the party formation until the
                 // field_commands panel radios drive it. No-op with no party.
                 else if (key == Key.F && _party.Count > 1) { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
+                // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
+                // the join dialogue + gold cost) so party follow/formation can be
+                // tested deterministically without hunting the recruit conversation.
+                else if (key == Key.G && _player is not null)
+                {
+                    var pp = _player.CurrentTransform.Translation;
+                    ActorRenderState? best = null; float bestD2 = 12f * 12f;
+                    foreach (var s in _actors)
+                    {
+                        if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
+                        if (ResolveHireable(s.Actor.Template) is null) continue;
+                        var p = s.CurrentTransform.Translation;
+                        float d2 = (p.X - pp.X) * (p.X - pp.X) + (p.Z - pp.Z) * (p.Z - pp.Z);
+                        if (d2 < bestD2) { bestD2 = d2; best = s; }
+                    }
+                    if (best is not null && _party.Count < MaxPartySize)
+                    {
+                        RecruitActor(best);
+                        Console.WriteLine($"[dev] force-recruited {best.Actor.Template.Name} " +
+                                          $"(party {_party.Count}/{MaxPartySize}, brain={(best.Brain is not null ? "ok" : "NULL")}, " +
+                                          $"canFight={best.CanFight})");
+                    }
+                    else
+                        Console.WriteLine("[dev] G: no hireable NPC within 12u (or party full)");
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // Phase 13b → relocated: F8 flips between chase cam (follows
                 // the PC) and fly cam (free WASD+RMB). No-op if there's no
                 // player. C used to do this; freed for the character pane.
@@ -13528,7 +13554,10 @@ void main()
             float t2 = ClickTalkRadius * ClickTalkRadius;
             foreach (var s in _actors)
             {
-                if (s.IsDead || s.IsPlayer) continue;
+                // Skip party members: a recruited companion keeps its conversation,
+                // so without this it still reads as a talkable NPC on hover (which
+                // looks like it "never joined") even though it's in the party.
+                if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
                 if (dx * dx + dz * dz > t2) continue;
