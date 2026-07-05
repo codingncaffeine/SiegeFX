@@ -65,14 +65,37 @@ public sealed record ActorStats(
     public string? PrimarySpell { get; init; }
     public string? SecondarySpell { get; init; }
 
+    // SC-SKILL-LEVELS — the four DS1 class skill levels + cumulative uberlevel,
+    // authored in [actor][skills] as "level, ?, base" triples (base 0 for skills).
+    // Companions ship differentiated (gyorn melee 2, sikra combat_magic 38); the
+    // hero and most monsters leave them at 0. Skill level feeds armor-penetration
+    // (dmg = f(skill) / defense), hire_stats display, and follower XP-leveling.
+    public float MeleeSkill { get; init; }
+    public float RangedSkill { get; init; }
+    public float CombatMagicSkill { get; init; }
+    public float NatureMagicSkill { get; init; }
+    public float UberLevel { get; init; }
+
     public static ActorStats FromTemplate(TemplateStore store, Template template)
     {
-        // Skill block uses "value, level" pairs (e.g. "strength = 16, 0;") — strip
-        // the level half before parsing. Default to 10 for any missing attribute,
-        // matching DS1's PC starting block.
-        float strength     = ParseFirstFloat(store.GetAttribute(template, "skills", "strength"))     ?? 10f;
-        float dexterity    = ParseFirstFloat(store.GetAttribute(template, "skills", "dexterity"))    ?? 10f;
-        float intelligence = ParseFirstFloat(store.GetAttribute(template, "skills", "intelligence")) ?? 10f;
+        // DS1 authors [actor][skills] entries as "value, ?, base" triples, where the
+        // effective score = value + base (base 10 for attributes, 0 for skills/monsters).
+        // gyorn's "strength = 1.28, 0, 10" is a level-1.28 gain over base 10 = 11.28,
+        // NOT a raw 1.28. Read the [actor][skills] block (fall back to a root [skills]
+        // for any template that authors the flat form); default missing attributes to
+        // 10 to match DS1's PC starting block.
+        string? Skill(string name) =>
+            store.GetAttribute(template, "actor", "skills", name)
+            ?? store.GetAttribute(template, "skills", name);
+
+        float strength     = ParseAttribute(Skill("strength"))     ?? 10f;
+        float dexterity    = ParseAttribute(Skill("dexterity"))    ?? 10f;
+        float intelligence = ParseAttribute(Skill("intelligence")) ?? 10f;
+        float meleeSkill   = ParseAttribute(Skill("melee"))         ?? 0f;
+        float rangedSkill  = ParseAttribute(Skill("ranged"))        ?? 0f;
+        float cmagSkill    = ParseAttribute(Skill("combat_magic"))  ?? 0f;
+        float nmagSkill    = ParseAttribute(Skill("nature_magic"))  ?? 0f;
+        float uberLevel    = ParseAttribute(Skill("uber"))          ?? 0f;
 
         // life first, max_life as fallback (a few templates set one or the other,
         // not both); same for mana. AttackRange / Defense / Damage are single-keyed.
@@ -85,12 +108,15 @@ public sealed record ActorStats(
         // explicit value (monster), so we honor it. A zero means the actor is
         // intended to derive its pool from STR/DEX/INT (player). Mana follows the
         // same convention even though most monsters skip mana entirely.
+        // Clamp the attribute-derived pools at 0: a low-stat monster that authors no
+        // explicit mana (e.g. krug_scout at 5/4/3) would otherwise derive a negative
+        // pool. Monsters don't use mana, but a negative max is never valid.
         float maxLife = templateLife > 0f
             ? templateLife
-            : ((strength - 9f) * 29.4f) + ((dexterity - 9f) * 9.8f) + ((intelligence - 9f) * 9.8f);
+            : MathF.Max(0f, ((strength - 9f) * 29.4f) + ((dexterity - 9f) * 9.8f) + ((intelligence - 9f) * 9.8f));
         float maxMana = templateMana > 0f
             ? templateMana
-            : (strength - 9f) + ((dexterity - 9f) * 4f) + ((intelligence - 9f) * 25f);
+            : MathF.Max(0f, (strength - 9f) + ((dexterity - 9f) * 4f) + ((intelligence - 9f) * 25f));
 
         float dmgMin  = ParseFloat(store.GetAttribute(template, "attack", "damage_min")) ?? 0f;
         float dmgMax  = ParseFloat(store.GetAttribute(template, "attack", "damage_max")) ?? 0f;
@@ -118,6 +144,11 @@ public sealed record ActorStats(
             ActiveLocation    = Clean(store.GetAttribute(template, "inventory", "selected_active_location")),
             PrimarySpell      = Clean(store.GetAttribute(template, "inventory", "other", "il_active_primary_spell")),
             SecondarySpell    = Clean(store.GetAttribute(template, "inventory", "other", "il_active_secondary_spell")),
+            MeleeSkill        = meleeSkill,
+            RangedSkill       = rangedSkill,
+            CombatMagicSkill  = cmagSkill,
+            NatureMagicSkill  = nmagSkill,
+            UberLevel         = uberLevel,
         };
     }
 
@@ -140,6 +171,22 @@ public sealed record ActorStats(
         var comma = s.IndexOf(',');
         var head = comma >= 0 ? s.AsSpan(0, comma) : s.AsSpan();
         return float.TryParse(head, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
+    }
+
+    /// <summary>Parses a DS1 "value, ?, base" skill/attribute triple to its effective
+    /// score (value + base). The base half is optional — monster attributes author
+    /// "16, 0" (base 0 → 16); PC/companion attributes author "1.28, 0, 10" (→ 11.28).</summary>
+    static float? ParseAttribute(string? s)
+    {
+        if (s is null) return null;
+        var parts = s.Split(',');
+        if (parts.Length == 0 ||
+            !float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            return null;
+        float baseScore = 0f;
+        if (parts.Length >= 3)
+            float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out baseScore);
+        return value + baseScore;
     }
 
     static int? ParseInt(string? s) =>

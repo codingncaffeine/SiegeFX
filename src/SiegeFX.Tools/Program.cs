@@ -4175,6 +4175,8 @@ static int CmdTemplatesStats(string[] a)
     Console.Write    ("chain             :");
     for (var cur = tpl; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
     Console.WriteLine();
+    Console.WriteLine($"attributes        : STR {stats.Strength:F2}  DEX {stats.Dexterity:F2}  INT {stats.Intelligence:F2}");
+    Console.WriteLine($"skill levels      : melee {stats.MeleeSkill:F2}  ranged {stats.RangedSkill:F2}  cmag {stats.CombatMagicSkill:F2}  nmag {stats.NatureMagicSkill:F2}  uber {stats.UberLevel:F2}");
     Console.WriteLine($"max life          : {stats.MaxLife:F2}");
     Console.WriteLine($"max mana          : {stats.MaxMana:F2}");
     Console.WriteLine($"damage            : {stats.DamageMin:F1} – {stats.DamageMax:F1}");
@@ -6456,6 +6458,13 @@ static int CmdPartyInspect(string[] a)
         foreach (var at in n.Attributes) Console.WriteLine($"{pad}  {at.Name} = {at.Value}");
         foreach (var c in n.Children) Dump(c, depth + 1);
     }
+    var actor = store.GetSection(tpl, "actor");
+    Console.WriteLine("  --- [actor] (authoritative skills/stats) ---");
+    if (actor is null) Console.WriteLine("  (no [actor] block)");
+    else Dump(actor, 1);
+    var aspect = store.GetSection(tpl, "aspect");
+    Console.WriteLine("  --- [aspect] (life/mana/gold) ---");
+    if (aspect is not null) Dump(aspect, 1);
     var inv = store.GetSection(tpl, "inventory");
     Console.WriteLine("  --- [inventory] ---");
     if (inv is null) Console.WriteLine("  (no [inventory] block)");

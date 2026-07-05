@@ -1001,13 +1001,28 @@ public sealed class RenderHost : IDisposable
         SiegeFX.Core.Assets.Template tpl, SiegeFX.Core.Actors.ActorStats baseStats)
     {
         if (_templateStore is null) return null;
+
+        // DS1 authors a follower's weapon in one of two places: the explicit
+        // [inventory][equipment] es_weapon_hand slot (gloern's axe), or the
+        // [inventory][other] il_main list (gyorn's mace, naidi's bow — where
+        // il_main also carries the shield and off-hand items). Gather both, slot
+        // first, and take the first ref that resolves to a real weapon.
+        var candidates = new List<string>();
+        var weaponHand = _templateStore.GetAttribute(tpl, "inventory", "equipment", "es_weapon_hand");
+        if (weaponHand is not null) candidates.Add(weaponHand);
         var other = _templateStore.GetSection(tpl, "inventory", "other");
-        if (other is null) return null;
-        foreach (var attr in other.Attributes)
+        if (other is not null)
+            foreach (var attr in other.Attributes)
+                if (string.Equals(attr.Name.TrimEnd('*'), "il_main", StringComparison.OrdinalIgnoreCase))
+                    candidates.Add(attr.Value);
+
+        foreach (var raw in candidates)
         {
-            if (!string.Equals(attr.Name.TrimEnd('*'), "il_main", StringComparison.OrdinalIgnoreCase)) continue;
-            var wref = attr.Value.Trim();
-            if (wref.Length == 0 || wref.StartsWith("#")) continue;   // spec/pcontent, not a fixed weapon
+            var wref = raw.Trim();
+            // Skip spec/pcontent (#…) and spell refs (spell_…): a caster's il_main
+            // holds spells, not a physical weapon (their offense is the spell brain).
+            if (wref.Length == 0 || wref.StartsWith("#") ||
+                wref.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) continue;
             if (!_templateStore.TryGet(wref, out var wtpl) || wtpl is null) continue;
             var ws = SiegeFX.Core.Actors.ActorStats.FromTemplate(_templateStore, wtpl);
             if (ws.DamageMax <= 0f) continue;   // shield / book / non-weapon
