@@ -24,6 +24,11 @@ public sealed class MenuButton
     private bool _hover;
     private bool _pressed;
 
+    /// <summary>Current hover / press state, for callers that render their own
+    /// chrome (e.g. the button_5 push-button faces) instead of the flat fill.</summary>
+    public bool Hovered => _hover;
+    public bool Pressed => _pressed;
+
     public MenuButton(string label, int x, int y, int width, int height)
     {
         Label  = label;

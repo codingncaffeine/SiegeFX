@@ -3452,7 +3452,8 @@ void main()
                     // always on screen (DS1 shows it from game start, solo or
                     // not), so its clicks are always live; the team-portrait
                     // cells only exist once followers have joined.
-                    var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y);
+                    var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y,
+                                                 _fcMinimized, _fcCommandsCollapsed);
                     if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
 
                     if (_party.Count > 1)
@@ -12512,7 +12513,8 @@ void main()
         // formation/order controls simply have no party to act on until one is
         // recruited).
         var fcState = new Hud.FieldCommandsPanel.State(
-            FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow);
+            FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow,
+            _fcCommandsCollapsed, _fcMinimized);
         _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                          TryGetGuiTexture, viewportW, viewportH, fcState);
     }
@@ -12532,6 +12534,8 @@ void main()
     private Hud.FieldCommandsPanel.Action _fcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback; // DS1 default: Defend
     private Hud.FieldCommandsPanel.Action _fcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
     private bool _fcFollow = true;
+    private bool _fcCommandsCollapsed;  // tall tab folds the order/formation controls
+    private bool _fcMinimized;          // small button minimizes the panel to the loot bag
 
     private Hud.FieldCommandsPanel.Action FormationAction() => _partyFormation switch
     {
@@ -12565,9 +12569,43 @@ void main()
             case Hud.FieldCommandsPanel.Action.TgtStrongest:
             case Hud.FieldCommandsPanel.Action.TgtWeakest:       _fcTargeting = a; break;
 
+            // Clicking an order label cycles that group to its next order.
+            case Hud.FieldCommandsPanel.Action.CycleMovement:
+                _fcMovement = _fcMovement switch
+                {
+                    Hud.FieldCommandsPanel.Action.MoveFree       => Hud.FieldCommandsPanel.Action.MoveEngage,
+                    Hud.FieldCommandsPanel.Action.MoveEngage     => Hud.FieldCommandsPanel.Action.MoveHoldGround,
+                    _                                            => Hud.FieldCommandsPanel.Action.MoveFree,
+                };
+                break;
+            case Hud.FieldCommandsPanel.Action.CycleAttack:
+                _fcAttack = _fcAttack switch
+                {
+                    Hud.FieldCommandsPanel.Action.AtkFree        => Hud.FieldCommandsPanel.Action.AtkFightback,
+                    Hud.FieldCommandsPanel.Action.AtkFightback   => Hud.FieldCommandsPanel.Action.AtkHoldFire,
+                    _                                            => Hud.FieldCommandsPanel.Action.AtkFree,
+                };
+                break;
+            case Hud.FieldCommandsPanel.Action.CycleTargeting:
+                _fcTargeting = _fcTargeting switch
+                {
+                    Hud.FieldCommandsPanel.Action.TgtClosest     => Hud.FieldCommandsPanel.Action.TgtWeakest,
+                    Hud.FieldCommandsPanel.Action.TgtWeakest     => Hud.FieldCommandsPanel.Action.TgtStrongest,
+                    _                                            => Hud.FieldCommandsPanel.Action.TgtClosest,
+                };
+                break;
+
             case Hud.FieldCommandsPanel.Action.ToggleFollow:     _fcFollow = !_fcFollow; break;
             case Hud.FieldCommandsPanel.Action.SelectAll:        _selectedPartyIndex = -1; break; // -1 = whole party
             case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollower(); break;
+            case Hud.FieldCommandsPanel.Action.CollectLoot:      break; // TODO: party auto-loot
+            case Hud.FieldCommandsPanel.Action.Chat:             break; // MP chat — no-op in single-player
+
+            // The tall tab folds just the command controls; the small button
+            // minimizes the whole panel. Both play the inventory min/max sound
+            // (the shared catch-all below).
+            case Hud.FieldCommandsPanel.Action.CollapseFc:       _fcCommandsCollapsed = !_fcCommandsCollapsed; break;
+            case Hud.FieldCommandsPanel.Action.MinimizeFc:       _fcMinimized = !_fcMinimized; break;
         }
         _audio?.Play(SfxGuiInventory);
     }
@@ -16644,7 +16682,7 @@ void main()
             // backdrop dims the inventory grid too — pause is the topmost UI.
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
-                _pauseMenu.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                _pauseMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
             }
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
             // menu so a future "open Options from pause" hookup stacks

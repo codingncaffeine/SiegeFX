@@ -88,7 +88,8 @@ public sealed class PauseMenu
         return Action.None;
     }
 
-    public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
+    public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
+                     Func<string, GlTexture?>? guiTex, int viewportW, int viewportH)
     {
         if (!IsOpen) return;
         Layout(viewportW, viewportH);
@@ -96,6 +97,27 @@ public sealed class PauseMenu
         // Modal dim so the paused world reads as suspended (DS1 sets b modal =
         // true; the button_5 chrome carries each button's background).
         bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, new Vector4(0f, 0f, 0f, 0.55f));
-        foreach (var b in _buttons) b.Draw(bars, text, viewportW, viewportH);
+
+        int fontScale = System.Math.Max(1, (int)MathF.Round(viewportH / (float)RefH));
+        foreach (var b in _buttons)
+        {
+            var state = b.Pressed ? ButtonChrome.State.Down
+                      : b.Hovered ? ButtonChrome.State.Hover
+                                  : ButtonChrome.State.Up;
+            // Authentic button_5 push-button chrome; fall back to the flat fill
+            // if the raws don't resolve (headless / missing art).
+            bool chrome = ButtonChrome.Draw(icons, guiTex, viewportW, viewportH,
+                                            b.X, b.Y, b.Width, b.Height, "button5", state);
+            if (!chrome) { b.Draw(bars, text, viewportW, viewportH); continue; }
+
+            var ink = b.Hovered ? new Vector4(1f, 0.96f, 0.85f, 1f)
+                                : new Vector4(0.88f, 0.82f, 0.70f, 1f);
+            int lw = text.MeasureWidth(b.Label, fontScale);
+            int fh = 12 * fontScale;
+            text.DrawString(viewportW, viewportH, b.Label,
+                            b.X + (b.Width - lw) / 2,
+                            b.Y + (b.Height - fh) / 2 + (b.Pressed ? fontScale : 0),
+                            ink, fontScale);
+        }
     }
 }
