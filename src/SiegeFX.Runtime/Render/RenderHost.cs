@@ -1065,66 +1065,53 @@ public sealed class RenderHost : IDisposable
     internal enum PartyFormation { Circle, Column, DoubleColumn, DoubleRow, Pyramid, Row }
     private PartyFormation _partyFormation = PartyFormation.DoubleColumn;
 
-    /// <summary>Phase 27 — the follow slot for follower <paramref name="index"/>
-    /// (1-based) under the active formation. <paramref name="count"/> is the
-    /// number of followers (excludes the leader), needed so the ring/rank
-    /// formations distribute members evenly. Spacing tracks party.gas's
-    /// approach_distance (~1.6-1.8u).</summary>
-    private static Vector3 PartyFormationSlot(PartyFormation formation, int index, int count,
+    // DS1 formation spots — world/ai/formations.gas. Each formation is a 9x9 grid
+    // (rows +4..-4 front→back, column 4 = center) whose cells name party slots 1-8.
+    // A slot at grid (row r, col c) sits, in the leader's frame:
+    //   forward (along facing) = r*spot_l - center_l   (negative = behind the leader)
+    //   lateral (leader's right) = (c-4)*spot_w + center_w
+    // spot_w/spot_l/center_* and the per-slot (row,col) are lifted verbatim from the
+    // gas; Spots are followers 1..8 in order. Row/DoubleRow/Pyramid map to the gas's
+    // line/double_line/wedge.
+    private readonly record struct FormationSpots(
+        float SpotW, float SpotL, float CenterW, float CenterL, (int R, int C)[] Spots);
+
+    private static readonly FormationSpots FmColumn = new(0.5f, 0.8f, 0f, 4f,
+        new (int, int)[] { (4,4),(3,4),(2,4),(1,4),(0,4),(-1,4),(-2,4),(-3,4) });
+    private static readonly FormationSpots FmDoubleColumn = new(0.8f, 0.8f, 0f, 4f,
+        new (int, int)[] { (4,4),(4,5),(3,4),(3,5),(2,4),(2,5),(1,4),(1,5) });
+    private static readonly FormationSpots FmLine = new(0.8f, 0.5f, 0f, 4f,
+        new (int, int)[] { (4,4),(4,5),(4,3),(4,6),(4,2),(4,7),(4,1),(4,8) });
+    private static readonly FormationSpots FmDoubleLine = new(0.8f, 0.8f, 0f, 4f,
+        new (int, int)[] { (4,4),(4,5),(4,3),(4,6),(3,4),(3,5),(3,3),(3,6) });
+    private static readonly FormationSpots FmWedge = new(0.5f, 0.5f, 0f, 4f,
+        new (int, int)[] { (4,4),(3,5),(3,3),(2,6),(2,2),(1,7),(1,1),(2,4) });
+    private static readonly FormationSpots FmCircle = new(0.35f, 0.35f, 0f, 4f,
+        new (int, int)[] { (4,4),(2,1),(2,7),(0,0),(0,8),(-2,1),(-2,7),(-4,4) });
+
+    private static FormationSpots FormationData(PartyFormation formation) => formation switch
+    {
+        PartyFormation.Column       => FmColumn,
+        PartyFormation.DoubleColumn => FmDoubleColumn,
+        PartyFormation.Row          => FmLine,        // DS1 "line"
+        PartyFormation.DoubleRow    => FmDoubleLine,  // DS1 "double_line"
+        PartyFormation.Pyramid      => FmWedge,       // DS1 "wedge"
+        PartyFormation.Circle       => FmCircle,
+        _                           => FmDoubleColumn,
+    };
+
+    /// <summary>The world-space follow slot for follower <paramref name="index"/>
+    /// (1-based) under the active formation, placed 1:1 per formations.gas.</summary>
+    private static Vector3 PartyFormationSlot(PartyFormation formation, int index,
                                               Vector3 leaderPos, Vector3 leaderFace)
     {
         var right = new Vector3(leaderFace.Z, 0f, -leaderFace.X); // leader's right (XZ)
-        var back  = -leaderFace;                                  // directly behind
-        int i0 = index - 1;                                       // 0-based follower
-        const float d = 1.8f;   // depth spacing
-        const float w = 1.3f;   // lateral spacing
-
-        switch (formation)
-        {
-            case PartyFormation.Column:            // single file
-                return leaderPos + back * ((i0 + 1) * d);
-
-            case PartyFormation.Row:               // single rank, one row back
-            {
-                int lane = i0 / 2 + 1;
-                int sign = (i0 % 2 == 0) ? -1 : 1;
-                return leaderPos + back * d + right * (sign * lane * w);
-            }
-
-            case PartyFormation.DoubleRow:         // two ranks
-            {
-                int perRow = Math.Max(1, (count + 1) / 2);
-                int rowIdx = i0 / perRow;          // 0,1
-                int col    = i0 % perRow;
-                float centered = col - (perRow - 1) * 0.5f;
-                return leaderPos + back * ((rowIdx + 1) * d) + right * (centered * w);
-            }
-
-            case PartyFormation.Circle:            // ring around the leader
-            {
-                int n = Math.Max(1, count);
-                float ang = (i0 + 1) * (MathF.Tau / (n + 1)); // 0 = behind, leave a front gap
-                var dir = back * MathF.Cos(ang) + right * MathF.Sin(ang);
-                return leaderPos + dir * 2.4f;
-            }
-
-            case PartyFormation.Pyramid:           // triangle: rows of 1,2,3,…
-            {
-                int row = 0, seen = 0;
-                while (seen + (row + 1) <= i0) { seen += row + 1; row++; }
-                int col = i0 - seen;               // 0..row
-                float centered = col - row * 0.5f;
-                return leaderPos + back * ((row + 1) * d) + right * (centered * w);
-            }
-
-            case PartyFormation.DoubleColumn:      // default: two files behind
-            default:
-            {
-                int row  = i0 / 2 + 1;             // 1,1,2,2,3,3…
-                int sign = (i0 % 2 == 0) ? -1 : 1; // left, right, left…
-                return leaderPos + back * (row * d) + right * (sign * w);
-            }
-        }
+        var f = FormationData(formation);
+        int i0 = System.Math.Clamp(index - 1, 0, f.Spots.Length - 1);
+        var (r, c) = f.Spots[i0];
+        float forward = r * f.SpotL - f.CenterL;     // negative → behind the leader
+        float lateral = (c - 4) * f.SpotW + f.CenterW;
+        return leaderPos + leaderFace * forward + right * lateral;
     }
 
     /// <summary>Phase 27 — cycle to the next formation (dev hook until the
@@ -1133,6 +1120,24 @@ public sealed class RenderHost : IDisposable
     {
         _partyFormation = (PartyFormation)(((int)_partyFormation + 1) % 6);
         Console.WriteLine($"party formation: {_partyFormation}");
+    }
+
+    /// <summary>Clamp a geometric formation slot onto the navmesh. A raw slot
+    /// (leader position + offset) often lands just off the mesh near a wall or
+    /// ledge, and <see cref="Nav.NavFollower.SetTarget"/> refuses an off-mesh
+    /// goal (PathBlocked → the follower never moves). March the point toward a
+    /// known-walkable anchor (the leader) until it's on the mesh so the follower
+    /// always gets a reachable target.</summary>
+    private Vector3 SnapToNavmesh(Vector3 p, Vector3 fallbackOnMesh)
+    {
+        if (_navMesh is null) return p;
+        if (_navMesh.TryFindTriangle(p, out _)) return p;
+        for (float t = 0.2f; t < 1f; t += 0.2f)
+        {
+            var q = Vector3.Lerp(p, fallbackOnMesh, t);
+            if (_navMesh.TryFindTriangle(q, out _)) return q;
+        }
+        return fallbackOnMesh;
     }
 
     /// <summary>Phase 26 — drive every recruited follower on the 20Hz fixed
@@ -1153,6 +1158,9 @@ public sealed class RenderHost : IDisposable
             m.Actor.Host.TickOverride(dt);
             var follower = m.Brain.Wander.Follower;
             var before = follower.Position;
+            // Base pace; the follow branch boosts it to catch up when far behind.
+            float baseGait = MathF.Max(m.Actor.Stats.WalkSpeed, 3.5f);
+            follower.Speed = baseGait;
 
             // Engage an enemy per the field_commands orders, else follow.
             // HoldFire never attacks; HoldGround only engages foes already
@@ -1173,23 +1181,43 @@ public sealed class RenderHost : IDisposable
             }
             else
             {
-                // Move to the formation slot (bypass the wander patrol by
-                // driving the nav follower straight at the slot). Follow off →
-                // hold position where they stand.
+                // Not fighting: hold formation on the leader. Drive the nav
+                // follower straight at the mesh-snapped slot; freeze in place when
+                // Follow is off or already parked inside the slot's hold ring.
+                // (Ticking here only while actually moving avoids dragging the
+                // follower along a stale wander leg when it's parked.)
                 m.Brain.ForceIdle();
+                bool moving = false;
                 if (_fcFollow)
                 {
-                    var slot = PartyFormationSlot(_partyFormation, m.PartyIndex,
-                                                  _party.Count - 1, leaderPos, leaderFace);
+                    var slot = SnapToNavmesh(
+                        PartyFormationSlot(_partyFormation, m.PartyIndex, leaderPos, leaderFace),
+                        leaderPos);
                     float gapX = before.X - slot.X, gapZ = before.Z - slot.Z;
-                    const float slack = 1.5f;   // hold ring so an idle leader doesn't jitter the line
-                    if (gapX * gapX + gapZ * gapZ > slack * slack) follower.SetTarget(slot);
+                    float gap2 = gapX * gapX + gapZ * gapZ;
+                    const float slack = 1.0f;   // hold ring so an idle leader doesn't jitter the line
+                    if (gap2 > slack * slack)
+                    {
+                        // DS1-style catch-up: hustle when far behind so a running
+                        // leader isn't lost, ease back to a walk as the gap closes.
+                        float gap = MathF.Sqrt(gap2);
+                        follower.Speed = baseGait * (gap > 6f ? 2.4f : gap > 3f ? 1.7f : 1.1f);
+                        follower.SetTarget(slot);
+                        follower.Tick(dt);
+                        moving = true;
+                    }
                 }
-                follower.Tick(dt);
-                var moved = follower.Position - before;
-                face = (moved.X * moved.X + moved.Z * moved.Z) > 1e-6f
-                    ? Vector3.Normalize(new Vector3(moved.X, 0f, moved.Z))
-                    : leaderFace;
+                if (moving)
+                {
+                    var moved = follower.Position - before;
+                    face = (moved.X * moved.X + moved.Z * moved.Z) > 1e-6f
+                        ? Vector3.Normalize(new Vector3(moved.X, 0f, moved.Z))
+                        : leaderFace;
+                }
+                else
+                {
+                    face = leaderFace;   // parked / follow off: match the leader's heading
+                }
                 m.Brain.Wander.SetFacing(face);
             }
 
