@@ -2353,13 +2353,16 @@ goto MENU
 :T103
 echo.
 echo --- Phase 26: Party recruitment (Stonebridge, bt_r1) ---
-echo [RMB a companion in Stonebridge — the hire prompt opens (name, STR/DEX/INT,]
-echo  cost, your gold, party count). Gyorn is free (no gold_value); others cost gold.]
-echo [Press H or Enter to hire — console logs "party: recruited ..."; Esc cancels.]
+echo [RMB a companion (Gyorn stands past the Stonebridge gate). His conversation]
+echo  opens in the authentic DS1 cpbox dialogue box (top-centre). Gyorn's join]
+echo  line ends "...can I come along?" with Accept / Decline buttons.]
+echo [Click Accept — he joins (free; paid companions debit [aspect]gold_value),]
+echo  his "well met, friend!" accept line plays, console logs "party: recruited".]
+echo  Decline shows his polite refusal; the corner X dismisses.]
 echo [The recruit drops its wander and TRAILS you in a wedge behind the leader;]
 echo  walk around and watch it path-follow. Party cap is 8 (7 followers + leader).]
-echo [Not yet in this slice: recruits don't fight yet, and the hire popover is a]
-echo  minimal panel (authored hire_stats.gas chrome + follower combat are next).]
+echo [Not yet in this slice: recruits don't fight yet (follower combat is next);]
+echo  the View/stats popover (hire_stats.gas) + pack mule land with Phase 27.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 echo.

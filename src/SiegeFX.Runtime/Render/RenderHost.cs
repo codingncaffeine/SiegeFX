@@ -1052,69 +1052,6 @@ public sealed class RenderHost : IDisposable
         }
     }
 
-    // Phase 26b — hire prompt (the recruit-confirmation the DS1 hire_stats
-    // popover fronts). Minimal chrome for now: name, key stats, cost, and
-    // an affordability line; the authored hire_stats.gas layout is the
-    // 26c UI slice. H hires, Esc cancels.
-    private ActorRenderState? _hireTarget;
-    private (long Cost, string Name) _hireInfo;
-    internal bool HirePromptOpen => _hireTarget is not null;
-
-    private void OpenHirePrompt(ActorRenderState npc, (long Cost, string Name) info)
-    {
-        _hireTarget = npc;
-        _hireInfo = info;
-        Console.WriteLine($"hire: {info.Name} — cost {info.Cost}g, party {_party.Count}/{MaxPartySize} " +
-                          $"(H to hire, Esc to cancel)");
-    }
-
-    private void CancelHirePrompt() => _hireTarget = null;
-
-    private void ConfirmHirePrompt()
-    {
-        var npc = _hireTarget;
-        _hireTarget = null;
-        if (npc is not null) TryRecruit(npc);
-    }
-
-    /// <summary>Phase 26b — minimal recruit-confirmation panel: name, the
-    /// three core attributes, hire cost vs. gold on hand, party-cap line,
-    /// and the Hire/Cancel hint. The authored hire_stats.gas chrome is the
-    /// 26c UI slice; this proves the recruit mechanic end to end.</summary>
-    private void DrawHirePrompt(int viewportW, int viewportH)
-    {
-        if (_hireTarget is null || _barRenderer is null) return;
-        var bars = _barRenderer; var text = _textRenderer;
-        var st = _hireTarget.Actor.Stats;
-        long gold = _progression?.Gold ?? 0;
-        bool full = _party.Count >= MaxPartySize;
-        bool afford = _hireInfo.Cost <= gold;
-
-        int w = 340, h = 176;
-        int x = (viewportW - w) / 2, y = (viewportH - h) / 2;
-        var ink   = new Vector4(0.86f, 0.83f, 0.69f, 1f);
-        var dim   = new Vector4(0.60f, 0.58f, 0.49f, 1f);
-        var bad   = new Vector4(0.85f, 0.25f, 0.20f, 1f);
-        var good  = new Vector4(0.55f, 0.80f, 0.45f, 1f);
-
-        bars.DrawRect(viewportW, viewportH, x, y, w, h, new Vector4(0.08f, 0.08f, 0.10f, 0.96f));
-        bars.DrawBorder(viewportW, viewportH, x, y, w, h, new Vector4(0.667f, 0.655f, 0.557f, 1f));
-
-        int cx = x + 16, cy = y + 14;
-        var title = $"Hire {_hireInfo.Name}";
-        text.DrawString(viewportW, viewportH, title, cx, cy, ink); cy += 22;
-        text.DrawString(viewportW, viewportH, $"STR {st.Strength:F0}   DEX {st.Dexterity:F0}   INT {st.Intelligence:F0}", cx, cy, dim); cy += 16;
-        text.DrawString(viewportW, viewportH, $"Life {st.MaxLife:F0}", cx, cy, dim); cy += 22;
-        text.DrawString(viewportW, viewportH, $"Cost: {_hireInfo.Cost}g", cx, cy, afford ? ink : bad); cy += 16;
-        text.DrawString(viewportW, viewportH, $"Your gold: {gold}", cx, cy, dim); cy += 16;
-        text.DrawString(viewportW, viewportH, $"Party: {_party.Count}/{MaxPartySize}", cx, cy, full ? bad : dim); cy += 22;
-
-        string hint = full ? "Party full — Esc to cancel"
-                     : !afford ? "Not enough gold — Esc to cancel"
-                     : "H / Enter to hire     Esc to cancel";
-        text.DrawString(viewportW, viewportH, hint, cx, cy, (full || !afford) ? bad : good);
-    }
-
     internal void PostTriggerWorldMessage(string name, uint fromScid, uint toScid)
     {
         // Skrit-side actors hear it through the bus; trigger-side rows hear it via
@@ -2116,6 +2053,11 @@ public sealed class RenderHost : IDisposable
     // _lastTalkedTemplate so the close edge knows which vendor to open.
     private readonly VendorPanel _vendor = new();
     private string? _lastTalkedTemplate;
+    // Phase 26 — the actor behind the current conversation, so a recruit
+    // offer accepted at the dialogue-close edge knows which NPC to add to
+    // the party (recruitment is a `choice = potential_member` node, not a
+    // separate prompt).
+    private ActorRenderState? _lastTalkedActor;
 
     // Phase 20a (follow-up) — authored player spawn. info/start_positions.gas
     // names a default start group ("farmhouse" in the shipped main map); we
@@ -2850,7 +2792,6 @@ void main()
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     // Phase 20a/d: dialogue + vendor swallow Esc first so closing
                     // a chat or trade doesn't double up into the pause menu.
-                    else if (HirePromptOpen) CancelHirePrompt();   // Phase 26b
                     else if (_vendor.IsOpen) _vendor.Close();
                     else if (_dialogue.IsOpen) _dialogue.Close();
                     // Phase 24-MAINMENU step 5+6-FOLD — pause menu is a
@@ -2861,13 +2802,6 @@ void main()
                     // instead, matching DS1's "Esc on the menu = exit."
                     else if (_bootMode) _window.Close();
                     else _pauseMenu.Toggle();
-                }
-                // Phase 26b — while the hire prompt is up, H / Enter confirms
-                // the recruit (wins over the debug HP-drain H below).
-                else if (HirePromptOpen && (key == Key.H || key == Key.Enter || key == Key.KeypadEnter))
-                {
-                    ConfirmHirePrompt();
-                    _audio?.Play(SfxGuiInventory);
                 }
                 // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
                 // chase↔fly camera flip moved to F8 so the muscle-memory C key
@@ -3850,6 +3784,16 @@ void main()
                             // data_bar when a quest activates so the player has
                             // a visible cue to open the journal.
                             if (added) FlashQuestIndicator();
+                        }
+                        // Phase 26 — recruit offer accepted (a text node with
+                        // choice = potential_member). Add the just-talked
+                        // companion to the party (paying [aspect]gold_value)
+                        // and play their _accept line. TryRecruit refuses if
+                        // the party is full or gold is short.
+                        if (_dialogue.ConsumePendingRecruit() && _lastTalkedActor is not null)
+                        {
+                            if (TryRecruit(_lastTalkedActor))
+                                OpenRecruitAcceptLine(_lastTalkedActor);
                         }
                         // SC-QUEST-OBJ-A — credit any "talk to NPC X" objective
                         // against the just-closed conversation. Runs BEFORE the
@@ -11077,7 +11021,6 @@ void main()
         ActorRenderState? best = null;
         SiegeFX.Core.Assets.ConversationDef? bestConv = null;
         SiegeFX.Core.Actors.VendorDefinition? bestVendor = null;
-        (long Cost, string Name)? bestHire = null;
         float bestDist = ClickTalkRadius;
         foreach (var s in _actors)
         {
@@ -11090,42 +11033,34 @@ void main()
             // talker outside NIS scenes, and would otherwise be filtered out.
             var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(s.Actor.Instance.Node);
 
-            SiegeFX.Core.Assets.ConversationDef? conv = null;
-            foreach (var k in keys)
-            {
-                if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0)
-                { conv = hit; break; }
-            }
-
             // Phase 25b — vendors resolve from their template chain
             // ([store] + store_pcontent). Shops with an empty
             // [conversation] open trade directly; ones with dialogue get
             // the trade panel after the conversation closes.
             var vdef = ResolveVendor(s.Actor.Template);
-            // Phase 26b — a hireable companion ([store] can_sell_self, no
-            // store_pcontent) resolves as a hire, not a shop.
-            var hire = vdef is null ? ResolveHireable(s.Actor.Template) : null;
-            if (conv is null && vdef is null && hire is null) continue;
+            // Phase 26 — a hireable companion ([store] can_sell_self) that
+            // is not yet in the party should greet with its `_join` offer
+            // (the `choice = potential_member` node), not whatever key the
+            // instance happens to list first. Everyone else takes the first
+            // non-empty conversation.
+            bool isHireable = vdef is null && ResolveHireable(s.Actor.Template) is not null;
+            var conv = PickConversation(keys, preferJoinOffer: isHireable);
+            if (conv is null && vdef is null) continue;
 
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
             float dz = pos.Z - groundHit.Z;
             float d  = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; bestVendor = vdef; bestHire = hire; }
+            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; bestVendor = vdef; }
         }
         if (best is null) return false;
         // No dialogue tree but the actor is a vendor — open trade directly.
         if (bestConv is null && bestVendor is not null)
         {
             _lastTalkedTemplate = best.Actor.Template.Name;
+            _lastTalkedActor = best;
             OpenVendorPanel(bestVendor);
             Console.WriteLine($"trade: opened vendor panel for {bestVendor.ScreenName} (no dialogue)");
-            return true;
-        }
-        // Phase 26b — a hireable with no chat opens the hire prompt directly.
-        if (bestConv is null && bestHire is not null)
-        {
-            OpenHirePrompt(best, bestHire.Value);
             return true;
         }
         if (bestConv is null) return false;
@@ -11141,10 +11076,65 @@ void main()
         }
         if (string.IsNullOrWhiteSpace(screenName)) screenName = best.Actor.Template.Name;
         _lastTalkedTemplate = best.Actor.Template.Name;
+        _lastTalkedActor = best;
         _dialogue.Open(screenName, bestConv);
         Console.WriteLine(
             $"talk: opened '{bestConv.Key}' with {screenName} ({bestConv.Nodes.Count} node(s))");
         return true;
+    }
+
+    /// <summary>Phase 26 — choose which of an actor's referenced
+    /// conversation keys to play. When <paramref name="preferJoinOffer"/>
+    /// is set (an un-recruited hireable), pick the key that carries the
+    /// recruit offer (<c>choice = potential_member</c>), preferring a
+    /// <c>*_join</c> key over any non-disband/rejoin offer — that is the
+    /// "...can I come along?" greeting. DS1 drives this with a per-actor
+    /// job_talk skrit; without running it we approximate the first-meeting
+    /// state, which is correct until a companion can leave and rejoin.</summary>
+    private SiegeFX.Core.Assets.ConversationDef? PickConversation(
+        IReadOnlyList<string> keys, bool preferJoinOffer)
+    {
+        if (_conversations is null) return null;
+        if (preferJoinOffer)
+        {
+            SiegeFX.Core.Assets.ConversationDef? joinHit = null, offerHit = null;
+            foreach (var k in keys)
+            {
+                if (!_conversations.TryGetValue(k, out var d) || d.Nodes.Count == 0) continue;
+                bool hasOffer = false;
+                foreach (var n in d.Nodes) if (n.IsRecruitOffer) { hasOffer = true; break; }
+                if (!hasOffer) continue;
+                bool rejoinish = k.Contains("disband", StringComparison.OrdinalIgnoreCase)
+                              || k.Contains("rejoin", StringComparison.OrdinalIgnoreCase);
+                if (k.EndsWith("_join", StringComparison.OrdinalIgnoreCase)) { joinHit ??= d; }
+                else if (!rejoinish) { offerHit ??= d; }
+            }
+            if (joinHit is not null) return joinHit;
+            if (offerHit is not null) return offerHit;
+        }
+        foreach (var k in keys)
+            if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0) return hit;
+        return null;
+    }
+
+    /// <summary>Phase 26 — after a recruit offer is accepted, play the
+    /// companion's <c>_accept</c> line ("Aye, well met, friend!"). Paid
+    /// companions author no accept monologue (the transaction is the
+    /// answer), so this is a no-op for them.</summary>
+    private void OpenRecruitAcceptLine(ActorRenderState npc)
+    {
+        if (_conversations is null) return;
+        var keys = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(npc.Actor.Instance.Node);
+        foreach (var k in keys)
+        {
+            if (!k.EndsWith("_accept", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!_conversations.TryGetValue(k, out var d) || d.Nodes.Count == 0) continue;
+            var name = _templateStore?.GetAttribute(npc.Actor.Template, "common", "screen_name")
+                          ?.Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(name)) name = npc.Actor.Template.Name;
+            _dialogue.Open(name, d);
+            return;
+        }
     }
 
     /// <summary>Phase 20d — call after every interaction that might have
@@ -16198,7 +16188,8 @@ void main()
             // overlay if the dialogue close-on-Esc somehow misses.
             if (_dialogue.IsOpen && _barRenderer is not null)
             {
-                _dialogue.Draw(_barRenderer, _textRenderer, size.X, size.Y);
+                _dialogue.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                               TryGetGuiTexture, size.X, size.Y);
             }
             // Phase 20d: vendor trade overlay. Same z-tier as the dialogue —
             // they're mutually exclusive in practice (vendor only opens once
@@ -16209,9 +16200,6 @@ void main()
                              TryGetGuiTexture, TryGetItemIcon,
                              size.X, size.Y, _progression?.Gold ?? 0);
             }
-            // Phase 26b — hire prompt (recruit confirmation).
-            if (HirePromptOpen && _barRenderer is not null)
-                DrawHirePrompt(size.X, size.Y);
             // Phase 15d: pause menu (Esc). Drawn after the inventory so its
             // backdrop dims the inventory grid too — pause is the topmost UI.
             if (_pauseMenu.IsOpen && _barRenderer is not null)

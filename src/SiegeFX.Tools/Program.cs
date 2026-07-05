@@ -34,6 +34,7 @@ try
         "sfx"       => DispatchSfx(args[1..]),
         "capture-kit" => CmdCaptureKitBuild(args[1..]),
         "store"     => DispatchStore(args[1..]),
+        "party"     => DispatchParty(args[1..]),
         "balance"   => DispatchBalance(args[1..]),
         "audio"     => DispatchAudio(args[1..]),
         "mood"      => DispatchMood(args[1..]),
@@ -6415,6 +6416,131 @@ static IEnumerable<string> ExtractAuditTextures(string paramString)
 // inventory the shipped /world/global/effects/*.gas pile and dump any
 // single script body (fireball, smoke_emitter, waterfall_froth, ...) so
 // the interpreter we build in SC-F has a verifiable source of truth.
+// Phase 26 — party/recruitment receipts.
+static int DispatchParty(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx party <recruit-audit> ..."); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "recruit-audit" => CmdPartyRecruitAudit(a[1..]),
+        _               => UnknownCommand("party " + a[0]),
+    };
+}
+
+// Phase 26 — thoroughly maps how EVERY companion is recruited. DS1
+// authors recruitment inside the companion's conversation: a [text]
+// node with `choice = potential_member` (ending in "...can I come
+// along?") renders the Accept/Decline join buttons; Accept plays the
+// _accept conversation and adds the NPC to the party (debiting
+// [aspect]gold_value). This scans every region's conversations.gas for
+// those offer nodes, resolves the companion + hire cost, and
+// cross-checks against the can_sell_self hireable roster so nothing is
+// missed.
+static int CmdPartyRecruitAudit(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx party recruit-audit <map-tank> <logic-tank>");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = TemplateStore.LoadFromTank(logicReader);
+
+    // Discover regions.
+    var regionPaths = new List<string>();
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // conversation key (lowercased) -> companion template guess.
+    static string CompanionFromKey(string key)
+    {
+        var k = key.StartsWith("conversation_", StringComparison.OrdinalIgnoreCase)
+            ? key["conversation_".Length..] : key;
+        foreach (var suf in new[] { "_join", "_rejoin", "_accept", "_reject", "_disband_rejoin", "_disband", "_multiplayer" })
+            if (k.EndsWith(suf, StringComparison.OrdinalIgnoreCase)) { k = k[..^suf.Length]; break; }
+        return k;
+    }
+
+    long GoldValue(string template)
+    {
+        if (store.TryGet(template, out var t) && t is not null)
+        {
+            var gv = store.GetAttribute(t, "aspect", "gold_value");
+            if (!string.IsNullOrEmpty(gv)
+                && float.TryParse(gv, System.Globalization.NumberStyles.Float,
+                                  System.Globalization.CultureInfo.InvariantCulture, out var v))
+                return (long)MathF.Round(v);
+        }
+        return 0;
+    }
+
+    // Collect every potential_member offer.
+    var offers = new List<(string Region, string Key, string Companion, long Cost, bool HasAccept, bool HasReject, string Snippet)>();
+    foreach (var rp in regionPaths)
+    {
+        var (convs, _) = SiegeFX.Core.Assets.ConversationStore.Load(mapReader, rp);
+        foreach (var (key, def) in convs)
+        {
+            foreach (var node in def.Nodes)
+            {
+                if (!node.Choice.Equals("potential_member", StringComparison.OrdinalIgnoreCase)) continue;
+                var companion = CompanionFromKey(key);
+                var baseKey = key.StartsWith("conversation_", StringComparison.OrdinalIgnoreCase)
+                    ? key["conversation_".Length..] : key;
+                // strip the trailing _join/_rejoin to derive the accept/reject stems
+                string stem = baseKey;
+                foreach (var suf in new[] { "_join", "_rejoin" })
+                    if (stem.EndsWith(suf, StringComparison.OrdinalIgnoreCase)) { stem = stem[..^suf.Length]; break; }
+                bool hasAccept = convs.ContainsKey($"conversation_{stem}_accept") || convs.ContainsKey($"{stem}_accept");
+                bool hasReject = convs.ContainsKey($"conversation_{stem}_reject") || convs.ContainsKey($"{stem}_reject");
+                var snip = node.Text.Length > 70 ? node.Text[^70..] : node.Text;
+                var rShort = rp[(rp.LastIndexOf('/') + 1)..];
+                offers.Add((rShort, key, companion, GoldValue(companion), hasAccept, hasReject, snip));
+            }
+        }
+    }
+
+    // Every can_sell_self hireable template (the roster the shop scan found).
+    var hireables = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var tpl in store.All)
+    {
+        if (tpl.Name.StartsWith("base_", StringComparison.OrdinalIgnoreCase)) continue;
+        var st = SiegeFX.Core.Actors.StoreTable.FromTemplate(store, tpl);
+        if (st is not null && st.CanSellSelf) hireables.Add(tpl.Name);
+    }
+
+    Console.WriteLine($"party recruit-audit — {regionPaths.Count} regions, {offers.Count} potential_member offer(s)");
+    Console.WriteLine();
+    Console.WriteLine("  RECRUIT OFFERS (choice = potential_member):");
+    foreach (var o in offers.OrderBy(o => o.Cost).ThenBy(o => o.Companion, StringComparer.Ordinal))
+        Console.WriteLine($"    {o.Companion,-16} {o.Region,-10} cost={o.Cost,7}  " +
+                          $"accept={(o.HasAccept ? "Y" : "-")} reject={(o.HasReject ? "Y" : "-")}  \"...{o.Snippet.Trim()}\"");
+
+    // Cross-check: hireables with no offer (quest/skrit-gated or MP), and
+    // offers whose companion isn't a can_sell_self template.
+    var offerCompanions = new HashSet<string>(offers.Select(o => o.Companion), StringComparer.OrdinalIgnoreCase);
+    var noOffer = hireables.Where(h => !offerCompanions.Contains(h)).ToList();
+    Console.WriteLine();
+    Console.WriteLine($"  can_sell_self hireables ({hireables.Count}): {string.Join(", ", hireables)}");
+    Console.WriteLine($"  hireables WITHOUT a potential_member offer in SP world (skrit/quest-gated or MP): {string.Join(", ", noOffer)}");
+    return 0;
+}
+
 // Phase 25a — shop authoring runtime receipts.
 static int DispatchStore(string[] a)
 {

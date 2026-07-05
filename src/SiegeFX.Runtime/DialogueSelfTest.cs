@@ -53,6 +53,17 @@ internal static class DialogueSelfTest
         scroll_rate = 2.7;
     }
 }
+[conversation_gyorn_join]
+{
+    [text*]
+    {
+        choice = potential_member;
+        activate_quest* = quest_gyorn_seek_overseer;
+        sample = s_v_bt_gyorn1;
+        screen_text = "If you're up for the task, can I come along?";
+        quest_dialog = true;
+    }
+}
 """;
 
         GasDocument doc;
@@ -105,6 +116,31 @@ internal static class DialogueSelfTest
                 failures.Add($"narrator node count: expected 1, got {narrator.Nodes.Count}");
             else if (!narrator.Nodes[0].IsNonInteractive)
                 failures.Add("narrator[0].IsNonInteractive should be true");
+        }
+
+        // Phase 26 — recruit offer. Gyorn's `_join` node carries
+        // `choice = potential_member`; it must flag as a recruit offer AND
+        // present the Accept/Decline fork (so the panel renders join
+        // buttons and the host adds him to the party on Accept). A plain
+        // quest_dialog node must NOT read as a recruit offer.
+        if (!convs.TryGetValue("conversation_gyorn_join", out var join) || join.Nodes.Count != 1)
+        {
+            failures.Add("conversation_gyorn_join missing or wrong node count");
+        }
+        else
+        {
+            var j = join.Nodes[0];
+            if (j.Choice != "potential_member") failures.Add($"join.Choice: expected 'potential_member', got '{j.Choice}'");
+            if (!j.IsRecruitOffer)              failures.Add("join.IsRecruitOffer should be true");
+            if (!j.IsChoiceFork)                failures.Add("join.IsChoiceFork should be true (renders Accept/Decline)");
+            if (j.ActivateQuest != "quest_gyorn_seek_overseer")
+                failures.Add($"join.ActivateQuest: expected 'quest_gyorn_seek_overseer', got '{j.ActivateQuest}'");
+        }
+        // A quest-only node is a fork but NOT a recruit offer.
+        if (edgaar.Nodes.Count == 3)
+        {
+            if (edgaar.Nodes[1].IsRecruitOffer) failures.Add("edgaar[1] (quest) should not be a recruit offer");
+            if (!edgaar.Nodes[1].IsChoiceFork)  failures.Add("edgaar[1] (quest) should still be a choice fork");
         }
 
         return Report(failures);

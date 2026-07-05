@@ -4,45 +4,65 @@ using SiegeFX.Core.Assets;
 namespace SiegeFX.Runtime.Render.Hud;
 
 /// <summary>
-/// Modal dialogue overlay. Walks a <see cref="ConversationDef"/> one node at a
-/// time and renders the speaker name, the current node's text (word-wrapped to
-/// the panel width), and the action buttons that drive node-to-node advance.
+/// Conversation overlay rendered to DS1's authored chrome
+/// (<c>/ui/interfaces/backend/dialogue_box/dialogue_box.gas</c>): a top-centre
+/// cpbox nine-slice frame with a recessed cpbox text panel, left-justified
+/// copperplate speech, a corner X, and context buttons. Geometry is the
+/// authored 640×480 reference scaled by viewport height.
 ///
-/// Buttons follow DS1's <c>dialogue_box.gas</c> shape:
+/// We page a <see cref="ConversationDef"/> one node at a time (DS1 scrolls the
+/// whole speech; paging keeps each voice line paired with its own screen).
+/// Buttons follow the authored groups:
 /// <list type="bullet">
-///   <item><c>choice == "more"</c> → single "More" advances to the next node.</item>
-///   <item><c>quest_dialog == true</c> → "Accept" / "Decline" branch. Accept emits
-///     <see cref="QuestActivated"/> with the node's <c>activate_quest</c>; Decline
-///     advances to the next un-quest-flagged node (typically the no-order tail
-///     authored as the polite-decline reply) before closing.</item>
-///   <item>Anything else → "Continue" advances if there's a next node, otherwise closes.</item>
+///   <item><c>quest_dialog</c> OR <c>choice = potential_member</c> →
+///     "Accept" / "Decline" (group <c>potential_member</c>). Accept emits the
+///     node's <c>activate_quest</c> and, for a recruit offer, flags
+///     <see cref="PendingRecruit"/> so the host adds the speaker to the party.
+///     Decline advances to the polite-decline tail.</item>
+///   <item>Anything else → a single bottom-right button, "Continue" mid-thread
+///     and "Close" on the last line.</item>
 /// </list>
-///
-/// The panel is bottom-anchored — DS1's authored layout puts the buttons near
-/// the bottom of the screen and the wrapped text scrolls upward from there.
-/// We don't actually scroll yet; if a line overflows we clip it and rely on the
-/// shipped lines fitting (most do — DS1 keeps single-screen dialogue tight).
+/// The corner X dismisses at any time (a fork closed this way is "no answer").
+/// If the speech overflows the panel we clip; shipped lines fit.
 /// </summary>
 public sealed class DialoguePanel
 {
     public bool IsOpen { get; private set; }
     public string? PendingQuestActivation { get; private set; }
 
-    private const int PanelW = 560;
-    private const int PanelH = 200;
-    private const int Padding = 14;
-    private const int TitleH  = 22;
-    private const int ButtonW = 110;
-    private const int ButtonH = 26;
-    private const int ButtonGap = 12;
-    private const int BottomMargin = 32;
+    /// <summary>Phase 26 — set true when the player hits Accept on a recruit
+    /// offer node (<c>choice = potential_member</c>). The host consumes it via
+    /// <see cref="ConsumePendingRecruit"/> to add the speaker to the party.</summary>
+    public bool PendingRecruit { get; private set; }
 
-    private readonly MenuButton _accept   = new("Accept",   0, 0, ButtonW, ButtonH);
-    private readonly MenuButton _decline  = new("Decline",  0, 0, ButtonW, ButtonH);
-    private readonly MenuButton _more     = new("More",     0, 0, ButtonW, ButtonH);
-    private readonly MenuButton _continue = new("Continue", 0, 0, ButtonW, ButtonH);
+    // Authentic DS1 conversation chrome — /ui/interfaces/backend/
+    // dialogue_box/dialogue_box.gas, authored in a 640×480 reference and
+    // top-centre anchored. A cpbox nine-slice frame wraps a recessed cpbox
+    // text panel; the copperplate text is left-justified; a recruit/quest
+    // fork shows Accept/Decline at fixed rects, other lines show a single
+    // Close button bottom-right, and the corner X always dismisses. Rects
+    // are (x0,y0,x1,y1) in the 640×480 reference.
+    static readonly (int x0, int y0, int x1, int y1) RFrame    = (187,   5, 602, 190);
+    static readonly (int x0, int y0, int x1, int y1) RTextBg   = (201,  12, 564, 137);
+    static readonly (int x0, int y0, int x1, int y1) RText     = (204,  15, 545, 134);
+    static readonly (int x0, int y0, int x1, int y1) RAccept   = (205, 145, 297, 161);
+    static readonly (int x0, int y0, int x1, int y1) RDecline  = (308, 145, 400, 161);
+    static readonly (int x0, int y0, int x1, int y1) RCloseBtn = (471, 165, 563, 181);
+    static readonly (int x0, int y0, int x1, int y1) RCloseX   = (581,  10, 597,  26);
 
-    private string _speaker = "";
+    private readonly MenuButton _accept   = new("Accept",   0, 0, 10, 10);
+    private readonly MenuButton _decline  = new("Decline",  0, 0, 10, 10);
+    private readonly MenuButton _more     = new("Continue", 0, 0, 10, 10);
+    private readonly MenuButton _continue = new("Continue", 0, 0, 10, 10);
+    private readonly MenuButton _closeX   = new("X",        0, 0, 10, 10);
+
+    static float Scale(int viewportH) => viewportH / 480f;
+    static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r, float s, int originX)
+        => (originX + (int)MathF.Round(r.x0 * s), (int)MathF.Round(r.y0 * s),
+            (int)MathF.Round((r.x1 - r.x0) * s), (int)MathF.Round((r.y1 - r.y0) * s));
+    static void Place(MenuButton b, (int x, int y, int w, int h) p)
+    { b.X = p.x; b.Y = p.y; b.Width = p.w; b.Height = p.h; }
+
     private ConversationDef? _conv;
     private int _index;
 
@@ -58,13 +78,17 @@ public sealed class DialoguePanel
     public ConversationDef? LastQuestConversation { get; private set; }
 
     /// <summary>Present a fresh conversation. Resets the cursor and clears any
-    /// stale press state on the buttons.</summary>
+    /// stale press state on the buttons. <paramref name="speakerName"/> is
+    /// accepted for call-site compatibility but not drawn — DS1's
+    /// dialogue_box.gas has no speaker-name control (the portrait/voice
+    /// identifies the speaker).</summary>
     public void Open(string speakerName, ConversationDef conv)
     {
-        _speaker = string.IsNullOrWhiteSpace(speakerName) ? "Speaker" : speakerName;
+        _ = speakerName;
         _conv = conv;
         _index = 0;
         PendingQuestActivation = null;
+        PendingRecruit = false;
         LastQuestConversation = null;
         IsOpen = conv.Nodes.Count > 0;
         CancelAllPresses();
@@ -83,6 +107,7 @@ public sealed class DialoguePanel
         _decline.CancelPress();
         _more.CancelPress();
         _continue.CancelPress();
+        _closeX.CancelPress();
     }
 
     private DialogueNode? CurrentNode =>
@@ -91,33 +116,32 @@ public sealed class DialoguePanel
 
     private void Layout(int viewportW, int viewportH)
     {
-        int px = (viewportW - PanelW) / 2;
-        int py = viewportH - PanelH - BottomMargin;
-        int by = py + PanelH - Padding - ButtonH;
+        // Map the authored 640×480 button rects to screen pixels, top-centre
+        // anchored, so hit-testing matches what the player sees.
+        float s = Scale(viewportH);
+        int originX = (viewportW - (int)MathF.Round(640f * s)) / 2;
 
-        // Two-button layout when the active node is a quest fork; one-button
-        // otherwise. Center the active button group inside the panel.
-        var node = CurrentNode;
-        if (node is { IsQuestDialog: true })
-        {
-            int totalW = ButtonW * 2 + ButtonGap;
-            int bx = px + (PanelW - totalW) / 2;
-            _accept.X  = bx;                       _accept.Y  = by;
-            _decline.X = bx + ButtonW + ButtonGap; _decline.Y = by;
-        }
-        else
-        {
-            int bx = px + (PanelW - ButtonW) / 2;
-            _more.X     = bx; _more.Y     = by;
-            _continue.X = bx; _continue.Y = by;
-        }
+        Place(_accept,  Px(RAccept,   s, originX));
+        Place(_decline, Px(RDecline,  s, originX));
+        var closeBtn = Px(RCloseBtn, s, originX);
+        Place(_more,     closeBtn);
+        Place(_continue, closeBtn);
+        Place(_closeX,   Px(RCloseX, s, originX));
+
+        // DS1 has no paging button — the whole speech scrolls. We page by
+        // node, so the bottom-right button reads "Continue" mid-thread and
+        // "Close" on the last line.
+        bool last = _conv is null || _index >= _conv.Nodes.Count - 1;
+        _continue.Label = last ? "Close" : "Continue";
+        _more.Label = "Continue";
     }
 
     public void OnMouseMove(int px, int py)
     {
         if (!IsOpen) return;
+        _closeX.UpdateHover(px, py);
         var node = CurrentNode;
-        if (node is { IsQuestDialog: true })
+        if (node is { IsChoiceFork: true })
         {
             _accept.UpdateHover(px, py);
             _decline.UpdateHover(px, py);
@@ -135,8 +159,9 @@ public sealed class DialoguePanel
     public bool OnMouseDown(int px, int py)
     {
         if (!IsOpen) return false;
+        _closeX.TryPress(px, py);
         var node = CurrentNode;
-        if (node is { IsQuestDialog: true })
+        if (node is { IsChoiceFork: true })
         {
             _accept.TryPress(px, py);
             _decline.TryPress(px, py);
@@ -155,13 +180,21 @@ public sealed class DialoguePanel
     public bool OnMouseUp(int px, int py)
     {
         if (!IsOpen) return false;
+        // Corner X — always dismisses the conversation (a fork closed this
+        // way counts as no answer: no recruit, no quest activation).
+        if (_closeX.Release(px, py)) { Close(); return true; }
         var node = CurrentNode;
 
-        if (node is { IsQuestDialog: true })
+        if (node is { IsChoiceFork: true })
         {
             if (_accept.Release(px, py))
             {
                 PendingQuestActivation = node.ActivateQuest;
+                // Phase 26 — recruit offer accepted: flag it so the host adds
+                // the speaker to the party. A join node can also carry
+                // activate_quest (Gyorn's join fires quest_gyorn_seek_overseer),
+                // so both hooks fire off the one Accept.
+                if (node.IsRecruitOffer) PendingRecruit = true;
                 LastQuestConversation = _conv; // snapshot before Close() nulls it
                 Close();
                 return true;
@@ -198,7 +231,7 @@ public sealed class DialoguePanel
         if (_conv is null) { Close(); return; }
         for (int i = _index + 1; i < _conv.Nodes.Count; i++)
         {
-            if (!_conv.Nodes[i].IsQuestDialog) { _index = i; return; }
+            if (!_conv.Nodes[i].IsChoiceFork) { _index = i; return; }
         }
         Close();
     }
@@ -213,65 +246,78 @@ public sealed class DialoguePanel
         return q;
     }
 
-    public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
+    /// <summary>Phase 26 — one-shot read of the recruit flag. The host calls
+    /// this once after a dialogue closes; a true return means the player
+    /// accepted the join offer and the speaker should enter the party.</summary>
+    public bool ConsumePendingRecruit()
+    {
+        var r = PendingRecruit;
+        PendingRecruit = false;
+        return r;
+    }
+
+    public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
+                     Func<string, GlTexture?>? guiTex, int viewportW, int viewportH)
     {
         if (!IsOpen) return;
         var node = CurrentNode;
         if (node is null) { Close(); return; }
         Layout(viewportW, viewportH);
 
-        int px = (viewportW - PanelW) / 2;
-        int py = viewportH - PanelH - BottomMargin;
+        float s = Scale(viewportH);
+        int originX = (viewportW - (int)MathF.Round(640f * s)) / 2;
+        var ink = new Vector4(0.90f, 0.86f, 0.74f, 1f);
 
-        var dim    = new Vector4(0f, 0f, 0f, 0.45f);
-        var panel  = new Vector4(0.08f, 0.08f, 0.10f, 0.94f);
-        var title  = new Vector4(0.16f, 0.13f, 0.10f, 1f);
-        var border = new Vector4(0.78f, 0.66f, 0.42f, 1f);
-        var ink    = new Vector4(0.92f, 0.88f, 0.78f, 1f);
+        // cpbox nine-slice frame + recessed text panel — DS1's dialogue_main_bg
+        // / dialogue_text_bg (both common_template = cpbox). Falls back to a
+        // flat panel when the chrome textures aren't resolvable so the box is
+        // still legible in the texture-load diagnostic case.
+        void Cpbox((int x0, int y0, int x1, int y1) r)
+        {
+            var p = Px(r, s, originX);
+            if (icons is not null && guiTex is not null)
+                NinePatch.DrawCpbox(icons, guiTex, viewportW, viewportH, p.x, p.y, p.w, p.h, Vector4.One);
+            else
+            {
+                bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.08f, 0.08f, 0.10f, 0.96f));
+                bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.667f, 0.655f, 0.557f, 1f));
+            }
+        }
 
-        bars.DrawRect  (viewportW, viewportH, 0, 0, viewportW, viewportH, dim);
-        bars.DrawRect  (viewportW, viewportH, px, py, PanelW, PanelH, panel);
-        bars.DrawRect  (viewportW, viewportH, px, py, PanelW, TitleH, title);
-        bars.DrawBorder(viewportW, viewportH, px, py, PanelW, PanelH, border);
-        bars.DrawBorder(viewportW, viewportH, px, py + TitleH, PanelW, 1, border);
+        Cpbox(RFrame);
+        Cpbox(RTextBg);
 
-        int sw = text.MeasureWidth(_speaker);
-        text.DrawString(viewportW, viewportH, _speaker, px + (PanelW - sw) / 2, py + 5, ink);
-
-        // Wrap node text into the panel interior. Line height comes from the
-        // font; we add 2px leading so successive lines breathe.
-        int textX = px + Padding;
-        int textY = py + TitleH + Padding;
-        int wrapW = PanelW - Padding * 2;
+        // Left-justified, word-wrapped speech inside the recessed panel
+        // (DS1's text_box: justify = left, copperplate-light).
+        var tr = Px(RText, s, originX);
         int lineH = (text.HasFont ? text.Font!.Height : 14) + 2;
-        int maxLines = (PanelH - TitleH - Padding * 2 - ButtonH - ButtonGap) / lineH;
-
+        int maxLines = Math.Max(1, tr.h / lineH);
         int line = 0;
         foreach (var rawLine in node.Text.Replace("\\n", "\n").Split('\n'))
         {
-            foreach (var visual in WrapLine(rawLine, text, wrapW))
+            foreach (var visual in WrapLine(rawLine, text, tr.w))
             {
                 if (line >= maxLines) break;
-                text.DrawString(viewportW, viewportH, visual,
-                                textX, textY + line * lineH, ink);
+                text.DrawString(viewportW, viewportH, visual, tr.x, tr.y + line * lineH, ink);
                 line++;
             }
             if (line >= maxLines) break;
         }
 
-        if (node.IsQuestDialog)
+        // Context buttons — Accept/Decline for a recruit or quest fork
+        // (group = potential_member), a single Close/Continue otherwise.
+        if (node.IsChoiceFork)
         {
             _accept.Draw(bars, text, viewportW, viewportH);
             _decline.Draw(bars, text, viewportW, viewportH);
         }
         else if (node.Choice == "more")
-        {
             _more.Draw(bars, text, viewportW, viewportH);
-        }
         else
-        {
             _continue.Draw(bars, text, viewportW, viewportH);
-        }
+
+        // Corner X (button_x) — always present.
+        _closeX.Draw(bars, text, viewportW, viewportH);
     }
 
     /// <summary>Word-wrap to a pixel width using the active font. Falls back to

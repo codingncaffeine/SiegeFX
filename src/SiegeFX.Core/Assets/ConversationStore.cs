@@ -17,6 +17,17 @@ public sealed class DialogueNode
     public string? ActivateQuest { get; init; } // emit on accept; Phase 20b consumes
     public bool IsQuestDialog { get; init; }    // "Accept" / "Decline" buttons
     public bool IsNonInteractive { get; init; } // narrator banners; auto-close on click
+
+    /// <summary>Phase 26 — DS1 recruitment: a text node with
+    /// <c>choice = potential_member</c> ("...can I come along?") is the
+    /// join offer. It renders the same Accept/Decline fork as a quest
+    /// dialog; Accept adds the speaker to the party.</summary>
+    public bool IsRecruitOffer =>
+        string.Equals(Choice, "potential_member", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>True when the node presents an Accept/Decline choice
+    /// (quest accept OR recruit offer) rather than a plain Continue.</summary>
+    public bool IsChoiceFork => IsQuestDialog || IsRecruitOffer;
 }
 
 /// <summary>One named conversation tree. Multiple actors can reference the same
