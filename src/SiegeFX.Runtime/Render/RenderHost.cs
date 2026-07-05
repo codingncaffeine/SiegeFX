@@ -809,6 +809,20 @@ public sealed class RenderHost : IDisposable
         // follower: the player stands still until the user clicks somewhere.
         public bool IsPlayer;
 
+        // Phase 26a — set once an NPC is recruited into the party (the player
+        // is member 0 and also carries IsPlayer). Party members follow the
+        // party leader instead of wandering, count as party for trigger
+        // volumes, and are controllable. PartyFollower drives their catch-up
+        // movement toward their formation slot behind the leader.
+        public bool IsPartyMember;
+        public int  PartyIndex;                       // 0 = leader/player
+        public SiegeFX.Core.Nav.NavFollower? PartyFollower;
+        public Vector3 PartyRenderPosPrev;            // 20Hz→render smoothing
+        public Vector3 PartyRenderPosNext;
+        public Vector3 PartyRenderFacePrev = Vector3.UnitZ;
+        public Vector3 PartyRenderFaceNext = Vector3.UnitZ;
+        public bool    PartyRenderInit;
+
         // Phase 21c-4 — last frame's XZ translation, used to decide whether the
         // actor is walking (swap to chore_walk clip) or idle (chore_default).
         // Initialized from the spawn position the first time the renderer sees
@@ -835,6 +849,270 @@ public sealed class RenderHost : IDisposable
     {
         if (_player is null) return null;
         return _player.CurrentTransform.Translation;
+    }
+
+    // Phase 26a — the party as the trigger runtime sees it: the player (member
+    // 0) plus every recruited follower. DS1 quest volumes fire on ANY party
+    // member entering (party_member_within_sphere/_box/_node), so the trigger
+    // context iterates this rather than the leader alone. With a party of one
+    // this yields exactly the player, so single-member behavior is unchanged.
+    private readonly List<ActorRenderState> _party = new();
+
+    internal IEnumerable<Vector3> PartyMemberPositionsForTriggers()
+    {
+        // Prefer the explicit roster; fall back to the lone player so the
+        // enumeration is never empty before the party list is populated.
+        if (_party.Count > 0)
+        {
+            for (int i = 0; i < _party.Count; i++)
+            {
+                var m = _party[i];
+                if (m.IsDead) continue;
+                yield return m.CurrentTransform.Translation;
+            }
+        }
+        else if (_player is not null)
+        {
+            yield return _player.CurrentTransform.Translation;
+        }
+    }
+
+    /// <summary>Phase 26a — register the player as party member 0 once it
+    /// spawns. Idempotent; safe to call from every spawn path.</summary>
+    private void EnsurePlayerInParty()
+    {
+        if (_player is null) return;
+        if (_party.Contains(_player)) return;
+        _player.IsPartyMember = true;
+        _player.PartyIndex = 0;
+        _party.Insert(0, _player);
+    }
+
+    /// <summary>Phase 26a — recruited followers currently in the party
+    /// (excludes the leader). Drives the count shown in party UI and the
+    /// 8-member cap.</summary>
+    internal int PartyFollowerCount => Math.Max(0, _party.Count - 1);
+    internal const int MaxPartySize = 8;   // party.gas max_party_size
+
+    // ---- Phase 26b/26c — recruitment + follow ---------------------------
+
+    /// <summary>Phase 26b — is this template a hireable companion? DS1
+    /// marks recruits with <c>[store] can_sell_self = true</c> and NO
+    /// store_pcontent (a shop sells items; a person sells themself). The
+    /// hire cost is <c>[aspect] gold_value</c>. Returns null for anything
+    /// that isn't a hireable.</summary>
+    private (long Cost, string Name)? ResolveHireable(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_templateStore is null) return null;
+        var table = SiegeFX.Core.Actors.StoreTable.FromTemplate(_templateStore, tpl);
+        if (table is null || !table.CanSellSelf) return null;
+        long cost = 0;
+        var gv = _templateStore.GetAttribute(tpl, "aspect", "gold_value");
+        if (!string.IsNullOrEmpty(gv)
+            && float.TryParse(gv, System.Globalization.NumberStyles.Float,
+                              System.Globalization.CultureInfo.InvariantCulture, out var v))
+            cost = (long)MathF.Round(v);
+        var name = _templateStore.GetAttribute(tpl, "common", "screen_name")?.Trim().Trim('"') ?? tpl.Name;
+        return (cost, name);
+    }
+
+    /// <summary>Phase 26b — pay the hire cost and recruit the NPC. Fails
+    /// (and refunds nothing) when the party is full or gold is short.</summary>
+    private bool TryRecruit(ActorRenderState npc)
+    {
+        if (npc.IsPartyMember) return false;
+        var hire = ResolveHireable(npc.Actor.Template);
+        if (hire is null) return false;
+        if (_party.Count >= MaxPartySize)
+        {
+            Console.WriteLine($"party: full ({MaxPartySize} max) — can't recruit {hire.Value.Name}");
+            return false;
+        }
+        if (hire.Value.Cost > 0)
+        {
+            if (_progression is null || !_progression.TryDebitGold(hire.Value.Cost))
+            {
+                Console.WriteLine($"party: can't afford {hire.Value.Name} " +
+                                  $"({hire.Value.Cost}g, have {_progression?.Gold ?? 0}g)");
+                return false;
+            }
+        }
+        RecruitActor(npc);
+        Console.WriteLine($"party: recruited {hire.Value.Name} for {hire.Value.Cost}g " +
+                          $"(party now {_party.Count}/{MaxPartySize})");
+        return true;
+    }
+
+    /// <summary>Phase 26b — convert a world NPC into a party follower:
+    /// drop its wander brain (the party follower drives movement now),
+    /// slot it after the current members, and give it a nav follower that
+    /// trails the leader.</summary>
+    private void RecruitActor(ActorRenderState npc)
+    {
+        EnsurePlayerInParty();
+        npc.Brain = null;
+        npc.IsPartyMember = true;
+        npc.PartyIndex = _party.Count;   // leader is 0; append behind
+        _party.Add(npc);
+        if (_navMesh is not null)
+        {
+            var pos = npc.CurrentTransform.Translation;
+            float speed = npc.Actor.Stats.WalkSpeed > 0f ? npc.Actor.Stats.WalkSpeed : 4.5f;
+            npc.PartyFollower = new SiegeFX.Core.Nav.NavFollower(_navMesh, pos, speed)
+            {
+                Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+            };
+        }
+        npc.PartyRenderInit = false;
+    }
+
+    /// <summary>Phase 26c — the follow slot for member <paramref name="index"/>
+    /// (1-based follower) as a trailing double-column behind the leader.
+    /// Spacing is party.gas's approach_distance (~1.6u). Formation SHAPE
+    /// selection is Phase 27 (field_commands radios); this is the default
+    /// wedge the party holds until told otherwise.</summary>
+    private static Vector3 PartyFormationSlot(int index, Vector3 leaderPos, Vector3 leaderFace)
+    {
+        // Perpendicular (leader's right) in XZ.
+        var right = new Vector3(leaderFace.Z, 0f, -leaderFace.X);
+        int i0 = index - 1;                 // 0-based follower
+        int row = i0 / 2 + 1;               // 1,1,2,2,3,3…
+        int side = (i0 % 2 == 0) ? -1 : 1;  // left, right, left…
+        const float back = 1.8f, lateral = 1.2f;
+        return leaderPos - leaderFace * (row * back) + right * (side * lateral);
+    }
+
+    /// <summary>Phase 26c — advance every recruited follower toward its
+    /// formation slot. Runs on the 20Hz fixed step beside the player's
+    /// follower; feeds the same prev/next interp buffers the leader uses so
+    /// followers render smoothly between logic ticks.</summary>
+    private void TickPartyFollowers(float dt)
+    {
+        if (_player is null || _player.IsDead) return;
+        var leaderPos  = _player.CurrentTransform.Translation;
+        var leaderFace = _playerFacing.LengthSquared() > 0.01f ? _playerFacing : Vector3.UnitZ;
+        for (int i = 0; i < _party.Count; i++)
+        {
+            var m = _party[i];
+            if (m.PartyIndex == 0 || m.IsDead || m.PartyFollower is null) continue;
+            m.Actor.Host.TickOverride(dt);
+
+            var slot = PartyFormationSlot(m.PartyIndex, leaderPos, leaderFace);
+            var here = m.PartyFollower.Position;
+            float gapX = here.X - slot.X, gapZ = here.Z - slot.Z;
+            // Hold position inside a slack ring so an idle leader doesn't make
+            // the followers shuffle on the spot.
+            const float slack = 1.5f;
+            if (gapX * gapX + gapZ * gapZ > slack * slack)
+                m.PartyFollower.SetTarget(slot);
+
+            var before = m.PartyFollower.Position;
+            m.PartyFollower.Tick(dt);
+            var after = m.PartyFollower.Position;
+            float dx = after.X - before.X, dz = after.Z - before.Z;
+            float len2 = dx * dx + dz * dz;
+            Vector3 face = len2 > 1e-6f
+                ? new Vector3(dx, 0f, dz) / MathF.Sqrt(len2)
+                : leaderFace;   // idle → face the way the leader faces
+
+            if (!m.PartyRenderInit)
+            {
+                m.PartyRenderPosPrev = before; m.PartyRenderFacePrev = face;
+                m.PartyRenderInit = true;
+            }
+            else
+            {
+                m.PartyRenderPosPrev = m.PartyRenderPosNext;
+                m.PartyRenderFacePrev = m.PartyRenderFaceNext;
+            }
+            m.PartyRenderPosNext  = after;
+            m.PartyRenderFaceNext = face;
+            m.IsMoving = len2 > 0.0025f;
+            // Fallback transform (the post-loop interp overwrites it).
+            float yaw = MathF.Atan2(face.X, face.Z);
+            m.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(after);
+        }
+    }
+
+    /// <summary>Phase 26c — lerp each follower prev→next by the leftover
+    /// fixed-step accumulator, mirroring the leader's render smoothing.</summary>
+    private void InterpPartyFollowers()
+    {
+        float alpha = (float)Math.Min(1.0, _actorTickAccumulator / (1.0 / SkritInstance.FramesPerSecond));
+        for (int i = 0; i < _party.Count; i++)
+        {
+            var m = _party[i];
+            if (m.PartyIndex == 0 || m.IsDead || !m.PartyRenderInit) continue;
+            var pos  = Vector3.Lerp(m.PartyRenderPosPrev, m.PartyRenderPosNext, alpha);
+            var face = Vector3.Lerp(m.PartyRenderFacePrev, m.PartyRenderFaceNext, alpha);
+            if (face.LengthSquared() > 1e-6f) face = Vector3.Normalize(face);
+            else face = m.PartyRenderFaceNext;
+            float yaw = MathF.Atan2(face.X, face.Z);
+            m.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(pos);
+        }
+    }
+
+    // Phase 26b — hire prompt (the recruit-confirmation the DS1 hire_stats
+    // popover fronts). Minimal chrome for now: name, key stats, cost, and
+    // an affordability line; the authored hire_stats.gas layout is the
+    // 26c UI slice. H hires, Esc cancels.
+    private ActorRenderState? _hireTarget;
+    private (long Cost, string Name) _hireInfo;
+    internal bool HirePromptOpen => _hireTarget is not null;
+
+    private void OpenHirePrompt(ActorRenderState npc, (long Cost, string Name) info)
+    {
+        _hireTarget = npc;
+        _hireInfo = info;
+        Console.WriteLine($"hire: {info.Name} — cost {info.Cost}g, party {_party.Count}/{MaxPartySize} " +
+                          $"(H to hire, Esc to cancel)");
+    }
+
+    private void CancelHirePrompt() => _hireTarget = null;
+
+    private void ConfirmHirePrompt()
+    {
+        var npc = _hireTarget;
+        _hireTarget = null;
+        if (npc is not null) TryRecruit(npc);
+    }
+
+    /// <summary>Phase 26b — minimal recruit-confirmation panel: name, the
+    /// three core attributes, hire cost vs. gold on hand, party-cap line,
+    /// and the Hire/Cancel hint. The authored hire_stats.gas chrome is the
+    /// 26c UI slice; this proves the recruit mechanic end to end.</summary>
+    private void DrawHirePrompt(int viewportW, int viewportH)
+    {
+        if (_hireTarget is null || _barRenderer is null) return;
+        var bars = _barRenderer; var text = _textRenderer;
+        var st = _hireTarget.Actor.Stats;
+        long gold = _progression?.Gold ?? 0;
+        bool full = _party.Count >= MaxPartySize;
+        bool afford = _hireInfo.Cost <= gold;
+
+        int w = 340, h = 176;
+        int x = (viewportW - w) / 2, y = (viewportH - h) / 2;
+        var ink   = new Vector4(0.86f, 0.83f, 0.69f, 1f);
+        var dim   = new Vector4(0.60f, 0.58f, 0.49f, 1f);
+        var bad   = new Vector4(0.85f, 0.25f, 0.20f, 1f);
+        var good  = new Vector4(0.55f, 0.80f, 0.45f, 1f);
+
+        bars.DrawRect(viewportW, viewportH, x, y, w, h, new Vector4(0.08f, 0.08f, 0.10f, 0.96f));
+        bars.DrawBorder(viewportW, viewportH, x, y, w, h, new Vector4(0.667f, 0.655f, 0.557f, 1f));
+
+        int cx = x + 16, cy = y + 14;
+        var title = $"Hire {_hireInfo.Name}";
+        text.DrawString(viewportW, viewportH, title, cx, cy, ink); cy += 22;
+        text.DrawString(viewportW, viewportH, $"STR {st.Strength:F0}   DEX {st.Dexterity:F0}   INT {st.Intelligence:F0}", cx, cy, dim); cy += 16;
+        text.DrawString(viewportW, viewportH, $"Life {st.MaxLife:F0}", cx, cy, dim); cy += 22;
+        text.DrawString(viewportW, viewportH, $"Cost: {_hireInfo.Cost}g", cx, cy, afford ? ink : bad); cy += 16;
+        text.DrawString(viewportW, viewportH, $"Your gold: {gold}", cx, cy, dim); cy += 16;
+        text.DrawString(viewportW, viewportH, $"Party: {_party.Count}/{MaxPartySize}", cx, cy, full ? bad : dim); cy += 22;
+
+        string hint = full ? "Party full — Esc to cancel"
+                     : !afford ? "Not enough gold — Esc to cancel"
+                     : "H / Enter to hire     Esc to cancel";
+        text.DrawString(viewportW, viewportH, hint, cx, cy, (full || !afford) ? bad : good);
     }
 
     internal void PostTriggerWorldMessage(string name, uint fromScid, uint toScid)
@@ -2572,6 +2850,7 @@ void main()
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     // Phase 20a/d: dialogue + vendor swallow Esc first so closing
                     // a chat or trade doesn't double up into the pause menu.
+                    else if (HirePromptOpen) CancelHirePrompt();   // Phase 26b
                     else if (_vendor.IsOpen) _vendor.Close();
                     else if (_dialogue.IsOpen) _dialogue.Close();
                     // Phase 24-MAINMENU step 5+6-FOLD — pause menu is a
@@ -2582,6 +2861,13 @@ void main()
                     // instead, matching DS1's "Esc on the menu = exit."
                     else if (_bootMode) _window.Close();
                     else _pauseMenu.Toggle();
+                }
+                // Phase 26b — while the hire prompt is up, H / Enter confirms
+                // the recruit (wins over the debug HP-drain H below).
+                else if (HirePromptOpen && (key == Key.H || key == Key.Enter || key == Key.KeypadEnter))
+                {
+                    ConfirmHirePrompt();
+                    _audio?.Play(SfxGuiInventory);
                 }
                 // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
                 // chase↔fly camera flip moved to F8 so the muscle-memory C key
@@ -8634,6 +8920,9 @@ void main()
                     // TryClickToCast read CooldownRemaining off the spellbook.
                     _playerSpellbook?.Tick((float)stepSec);
                 }
+                // Phase 26c — recruited followers trail the leader on the same
+                // fixed cadence (after the leader has moved this tick).
+                TickPartyFollowers((float)stepSec);
             }
             // Phase 9-SC-10b — render-state interpolation for the PC. Lerp
             // prev→next by the leftover accumulator (clamped 0..1). Yaw is
@@ -8651,6 +8940,9 @@ void main()
                     Matrix4x4.CreateRotationY(pyaw) *
                     Matrix4x4.CreateTranslation(pos);
             }
+            // Phase 26c — smooth followers with the same leftover-accumulator
+            // lerp the leader just used.
+            InterpPartyFollowers();
             foreach (var s in _actors)
             {
                 // Phase 12-SC-4 — dead actors keep ticking so chore_die can play
@@ -10078,6 +10370,7 @@ void main()
         };
         _actors.Add(state);
         _player = state;
+        EnsurePlayerInParty();   // Phase 26a — leader is party member 0
         // Phase 16d — XP/level state. Requires the formulas store, which loads
         // alongside the play-region path; viewer modes that skip TrySpawnPlayer
         // also skip this. The PC starts at level 1 with zero XP regardless of
@@ -10784,11 +11077,13 @@ void main()
         ActorRenderState? best = null;
         SiegeFX.Core.Assets.ConversationDef? bestConv = null;
         SiegeFX.Core.Actors.VendorDefinition? bestVendor = null;
+        (long Cost, string Name)? bestHire = null;
         float bestDist = ClickTalkRadius;
         foreach (var s in _actors)
         {
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
+            if (s.IsPartyMember) continue;   // Phase 26b — already recruited
             // The "has a [conversation] block in the placement" check is a
             // stronger talkable signal than Stats.IsCombatant: DS1's narrator
             // template inherits combat stats but is meant to be a static
@@ -10807,13 +11102,16 @@ void main()
             // [conversation] open trade directly; ones with dialogue get
             // the trade panel after the conversation closes.
             var vdef = ResolveVendor(s.Actor.Template);
-            if (conv is null && vdef is null) continue;
+            // Phase 26b — a hireable companion ([store] can_sell_self, no
+            // store_pcontent) resolves as a hire, not a shop.
+            var hire = vdef is null ? ResolveHireable(s.Actor.Template) : null;
+            if (conv is null && vdef is null && hire is null) continue;
 
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
             float dz = pos.Z - groundHit.Z;
             float d  = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; bestVendor = vdef; }
+            if (d < bestDist) { bestDist = d; best = s; bestConv = conv; bestVendor = vdef; bestHire = hire; }
         }
         if (best is null) return false;
         // No dialogue tree but the actor is a vendor — open trade directly.
@@ -10822,6 +11120,12 @@ void main()
             _lastTalkedTemplate = best.Actor.Template.Name;
             OpenVendorPanel(bestVendor);
             Console.WriteLine($"trade: opened vendor panel for {bestVendor.ScreenName} (no dialogue)");
+            return true;
+        }
+        // Phase 26b — a hireable with no chat opens the hire prompt directly.
+        if (bestConv is null && bestHire is not null)
+        {
+            OpenHirePrompt(best, bestHire.Value);
             return true;
         }
         if (bestConv is null) return false;
@@ -12470,6 +12774,8 @@ void main()
                 foreach (var k in keys)
                     if (_conversations.TryGetValue(k, out var c) && c.Nodes.Count > 0) { talkable = true; break; }
                 if (!talkable && ResolveVendor(s.Actor.Template) is not null) talkable = true;
+                // Phase 26b — hireable companions read as interactable too.
+                if (!talkable && !s.IsPartyMember && ResolveHireable(s.Actor.Template) is not null) talkable = true;
                 if (talkable) { _cursorState = CursorState.Talk; return; }
             }
         }
@@ -15900,6 +16206,9 @@ void main()
                              TryGetGuiTexture, TryGetItemIcon,
                              size.X, size.Y, _progression?.Gold ?? 0);
             }
+            // Phase 26b — hire prompt (recruit confirmation).
+            if (HirePromptOpen && _barRenderer is not null)
+                DrawHirePrompt(size.X, size.Y);
             // Phase 15d: pause menu (Esc). Drawn after the inventory so its
             // backdrop dims the inventory grid too — pause is the topmost UI.
             if (_pauseMenu.IsOpen && _barRenderer is not null)
@@ -16535,6 +16844,8 @@ void main()
         _actorMeshCache.Clear();
         _actorIdentityBones.Clear();
         _actors.Clear();
+        _party.Clear();          // Phase 26a — party roster is per-region-load
+        _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.
         foreach (var mesh in _propGlMeshCache.Values) mesh.Dispose();

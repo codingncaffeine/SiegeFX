@@ -172,6 +172,7 @@ echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG
 echo  100. SC-HUD-DATABAR               - Bottom-row HUD buttons (pause/HP-pot/MP-pot/labels/map/journal/menu) — click each in fh_r1
 echo  101. SC-HUD-OVERHEAD-BARS         - Floating HP/MP bars above every combatant (PC always on; enemies on hit/aggro)
 echo  102. SC-FADE-NODES-LNODE          - Spawn at fh_r1 farmhouse basement stairs (SIEGEFX_DEBUG_SPAWN=70,-4,-65); walk down + test dungeon reveal + click-pick
+echo  103. Phase 26 - PARTY RECRUIT     - Hire Gyorn at Stonebridge (bt_r1), he follows you; RMB a companion, H to hire
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -280,6 +281,7 @@ if /i "%CHOICE%"=="99" goto T99
 if /i "%CHOICE%"=="100" goto T100
 if /i "%CHOICE%"=="101" goto T101
 if /i "%CHOICE%"=="102" goto T102
+if /i "%CHOICE%"=="103" goto T103
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2344,6 +2346,22 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set "SIEGEFX_DEBUG_SPAWN="
 set "SIEGEFX_DEBUG_LOG_FILE="
 echo Log written to: %TEMP%\siegefx_diag\test102.log
+echo.
+pause
+goto MENU
+
+:T103
+echo.
+echo --- Phase 26: Party recruitment (Stonebridge, bt_r1) ---
+echo [RMB a companion in Stonebridge — the hire prompt opens (name, STR/DEX/INT,]
+echo  cost, your gold, party count). Gyorn is free (no gold_value); others cost gold.]
+echo [Press H or Enter to hire — console logs "party: recruited ..."; Esc cancels.]
+echo [The recruit drops its wander and TRAILS you in a wedge behind the leader;]
+echo  walk around and watch it path-follow. Party cap is 8 (7 followers + leader).]
+echo [Not yet in this slice: recruits don't fight yet, and the hire popover is a]
+echo  minimal panel (authored hire_stats.gas chrome + follower combat are next).]
+echo.
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 echo.
 pause
 goto MENU

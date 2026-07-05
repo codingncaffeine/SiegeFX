@@ -29,18 +29,26 @@ internal sealed class RenderHostTriggerContext : TriggerContext
 
     public override bool PartyMemberWithinSphere(Vector3 center, float radius)
     {
-        var p = _host.PlayerWorldPositionForTriggers();
-        if (p is null) return false;
-        var d = p.Value - center;
-        return d.LengthSquared() <= radius * radius;
+        // Phase 26a — ANY party member (leader + recruited followers) inside
+        // the volume satisfies the DS1 party_member_within_sphere trigger.
+        float r2 = radius * radius;
+        foreach (var p in _host.PartyMemberPositionsForTriggers())
+        {
+            var d = p - center;
+            if (d.LengthSquared() <= r2) return true;
+        }
+        return false;
     }
 
     public override bool PartyMemberWithinAabb(Vector3 center, float halfX, float halfY, float halfZ)
     {
-        var p = _host.PlayerWorldPositionForTriggers();
-        if (p is null) return false;
-        var d = p.Value - center;
-        return MathF.Abs(d.X) <= halfX && MathF.Abs(d.Y) <= halfY && MathF.Abs(d.Z) <= halfZ;
+        foreach (var p in _host.PartyMemberPositionsForTriggers())
+        {
+            var d = p - center;
+            if (MathF.Abs(d.X) <= halfX && MathF.Abs(d.Y) <= halfY && MathF.Abs(d.Z) <= halfZ)
+                return true;
+        }
+        return false;
     }
 
     public override void PostWorldMessage(string name, uint fromScid, uint toScid)
