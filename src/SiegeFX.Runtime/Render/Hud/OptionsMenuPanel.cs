@@ -192,16 +192,42 @@ internal sealed class OptionsMenuPanel
     static readonly (int X, int Y, int W, int H) RectOk       = (200, 358, 110, 16);
     static readonly (int X, int Y, int W, int H) RectCancel   = (330, 358, 110, 16);
     static readonly (int X, int Y, int W, int H) RectDefaults = (361, 318, 140, 16);
+    // Bottom-left button (Hotkeys on Input, More/Back on Game) — DS1 docks
+    // these opposite Defaults on the same row, not down in the content grid.
+    static readonly (int X, int Y, int W, int H) RectMore     = (165, 318, 140, 16);
 
     // Live (post-Layout) viewport-pixel rects so input handlers and the
     // draw loop share one source of truth.
     (int X, int Y, int W, int H) _outer, _inner, _title, _tabRow;
     (int X, int Y, int W, int H) _tabVideo, _tabAudio, _tabInput, _tabGame;
-    (int X, int Y, int W, int H) _ok, _cancel, _defaults;
+    (int X, int Y, int W, int H) _ok, _cancel, _defaults, _more;
     Tab? _hoveredTab;
     enum Btn { None, Ok, Cancel, Defaults }
     Btn _hoveredBtn;
     Btn _pressedBtn; // tracks LMB press → release for click validation
+
+    // SC-OPTIONS-CHROME — the authentic b_gui_cmn_* art (button_4 chrome, the
+    // slider `track` pieces, the dropdown `down` arrow) is resolved through the
+    // FrontendScene each Draw and stashed here so the per-widget helpers can
+    // reach it without threading a resolver through every signature. Null in
+    // headless/test bootstrap → every draw falls back to its solid-fill shape.
+    IconRenderer? _icons;
+    Func<string, GlTexture?>? _chrome; // full b_gui_cmn_* basename resolver
+    int _vw, _vh;
+
+    /// <summary>button_4 3-slice via <see cref="ButtonChrome"/>; false if the
+    /// art isn't available (caller then draws its solid-fill placeholder).</summary>
+    bool ChromeButton((int X, int Y, int W, int H) r, ButtonChrome.State st)
+        => _icons is not null && _chrome is not null
+           && ButtonChrome.Draw(_icons, _chrome, _vw, _vh, r.X, r.Y, r.W, r.H, "button4", st);
+
+    /// <summary>Blit a full common-chrome texture (b_gui_cmn_&lt;name&gt;).</summary>
+    void Tex(string cmnName, int x, int y, int w, int h)
+    {
+        var t = _chrome?.Invoke("b_gui_cmn_" + cmnName);
+        if (t is not null && _icons is not null)
+            _icons.DrawIcon(_vw, _vh, t, x, y, w, h, Vector4.One);
+    }
 
     static readonly Vector4 PanelBg     = new(0.10f, 0.10f, 0.12f, 0.92f);
     static readonly Vector4 InnerBg     = new(0.16f, 0.16f, 0.18f, 1.00f);
@@ -213,7 +239,8 @@ internal sealed class OptionsMenuPanel
     static readonly Vector4 BtnHover    = new(0.40f, 0.38f, 0.30f, 1.00f);
     static readonly Vector4 BtnPress    = new(0.20f, 0.18f, 0.16f, 1.00f);
     static readonly Vector4 Ink         = new(0.95f, 0.92f, 0.80f, 1.00f);
-    static readonly Vector4 InkDim      = new(0.65f, 0.62f, 0.55f, 1.00f);
+    // DS1 copperplate labels + inactive tab text read as a muted gold, not grey.
+    static readonly Vector4 InkDim      = new(0.83f, 0.68f, 0.38f, 1.00f);
 
     public void Open()
     {
@@ -295,6 +322,7 @@ internal sealed class OptionsMenuPanel
         _ok       = Scale(RectOk,       dx, dy, scale);
         _cancel   = Scale(RectCancel,   dx, dy, scale);
         _defaults = Scale(RectDefaults, dx, dy, scale);
+        _more     = Scale(RectMore,     dx, dy, scale);
     }
 
     static bool Hits((int X, int Y, int W, int H) r, int px, int py) =>
@@ -449,6 +477,14 @@ internal sealed class OptionsMenuPanel
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
 
+        // Stash the chrome resolver for this frame's widget helpers. The
+        // FrontendScene loads b_gui_cmn_* from Objects.dsres; strip the prefix
+        // ButtonChrome/Tex re-add so the shared resolver key form lines up.
+        _icons = icons;
+        _vw = viewportW; _vh = viewportH;
+        _chrome = scene is null ? null
+            : n => scene.GetCommonTexture(n.StartsWith("b_gui_cmn_") ? n["b_gui_cmn_".Length..] : n);
+
         // Modal dim: a screen-wide darkening so the underlying scene
         // stops competing for attention. 60% black is the same shade
         // PauseMenu uses.
@@ -505,9 +541,19 @@ internal sealed class OptionsMenuPanel
     {
         bool active = ActiveTab == id;
         bool hover  = _hoveredTab == id && !active;
-        var bg = active ? TabActiveBg : (hover ? TabHoverBg : TabIdleBg);
-        bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
-        DrawBorder(bars, vw, vh, r, Border);
+        // DS1 tabs are button_4 (common_control_art): the selected tab shows the
+        // brightest lit face, the others sit recessed (dark, merged into the
+        // content panel), lightening to the mid face on hover. Fall back to the
+        // flat placeholder fills when the art isn't loaded.
+        var st = active ? ButtonChrome.State.Hover
+               : hover  ? ButtonChrome.State.Up
+               :          ButtonChrome.State.Down;
+        if (!ChromeButton(r, st))
+        {
+            var bg = active ? TabActiveBg : (hover ? TabHoverBg : TabIdleBg);
+            bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
+            DrawBorder(bars, vw, vh, r, Border);
+        }
         int labelW = text.MeasureWidth(label, _fontScale);
         int lx = r.X + (r.W - labelW) / 2;
         // Phase 23-SC-OPTIONS-FOLD2 — match DrawButton's font-scale-aware
@@ -521,12 +567,16 @@ internal sealed class OptionsMenuPanel
     void DrawButton(BarRenderer bars, TextRenderer text, int vw, int vh,
                     (int X, int Y, int W, int H) r, string label, Btn id)
     {
-        Vector4 bg;
-        if (_pressedBtn == id && _hoveredBtn == id) bg = BtnPress;
-        else if (_hoveredBtn == id) bg = BtnHover;
-        else bg = BtnIdle;
-        bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
-        DrawBorder(bars, vw, vh, r, Border);
+        var st = (_pressedBtn == id && _hoveredBtn == id) ? ButtonChrome.State.Down
+               : _hoveredBtn == id ? ButtonChrome.State.Hover
+               : ButtonChrome.State.Up;
+        if (!ChromeButton(r, st))
+        {
+            var bg = st == ButtonChrome.State.Down ? BtnPress
+                   : st == ButtonChrome.State.Hover ? BtnHover : BtnIdle;
+            bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
+            DrawBorder(bars, vw, vh, r, Border);
+        }
         int labelW = text.MeasureWidth(label, _fontScale);
         int lx = r.X + (r.W - labelW) / 2;
         int ly = r.Y + (r.H - 12 * _fontScale) / 2;
@@ -623,18 +673,40 @@ internal sealed class OptionsMenuPanel
         int labelTextW = text.MeasureWidth(label, _fontScale);
         text.DrawString(vw, vh, label,
             labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
-        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y + widgetR.H / 2 - 1,
-            widgetR.W, 2, Border);
+
         float v01 = Math.Clamp(get(), 0f, 1f);
-        int thumbX = widgetR.X + (int)((widgetR.W - 8) * v01);
-        bars.DrawRect(vw, vh, thumbX, widgetR.Y, 8, widgetR.H,
-            _activeWidget == widgetIdx ? BtnPress
-            : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle);
-        DrawBorder(bars, vw, vh, (thumbX, widgetR.Y, 8, widgetR.H), Border);
-        int valDisp = displayMin + (int)MathF.Round((displayMax - displayMin) * v01);
-        var valStr = valDisp.ToString();
-        text.DrawString(vw, vh, valStr,
-            widgetR.X + widgetR.W + 8, widgetR.Y + 1, Ink, _fontScale);
+        // DS1 `track` (common_control_art): a left cap + a tiled notched centre
+        // (b_gui_cmn_track_center carries the tick marks) + a right cap, with the
+        // diamond b_gui_cmn_track_button_up thumb sliding along it. The 16×16 art
+        // scales with the row height.
+        int cap = widgetR.H, thumbW = widgetR.H;
+        bool drewTrack = false;
+        if (_chrome is not null && _icons is not null)
+        {
+            Tex("track_lt_side", widgetR.X, widgetR.Y, cap, widgetR.H);
+            int cx = widgetR.X + cap, cEnd = widgetR.X + widgetR.W - cap;
+            for (int x = cx; x < cEnd; x += cap)
+                Tex("track_center", x, widgetR.Y, Math.Min(cap, cEnd - x), widgetR.H);
+            Tex("track_rt_side", cEnd, widgetR.Y, cap, widgetR.H);
+            int thumbX = widgetR.X + (int)MathF.Round((widgetR.W - thumbW) * v01);
+            Tex("track_button_up", thumbX, widgetR.Y, thumbW, widgetR.H);
+            drewTrack = true;
+        }
+        if (!drewTrack)
+        {
+            bars.DrawRect(vw, vh, widgetR.X, widgetR.Y + widgetR.H / 2 - 1, widgetR.W, 2, Border);
+            int thumbX = widgetR.X + (int)((widgetR.W - 8) * v01);
+            bars.DrawRect(vw, vh, thumbX, widgetR.Y, 8, widgetR.H,
+                _activeWidget == widgetIdx ? BtnPress
+                : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle);
+            DrawBorder(bars, vw, vh, (thumbX, widgetR.Y, 8, widgetR.H), Border);
+        }
+        // - / + glyphs flanking the track (DS1 text_*_minus / _plus elements).
+        int minusW = text.MeasureWidth("-", _fontScale);
+        text.DrawString(vw, vh, "-",
+            widgetR.X - minusW - 4 * _fontScale, widgetR.Y + 1, Ink, _fontScale);
+        text.DrawString(vw, vh, "+",
+            widgetR.X + widgetR.W + 4 * _fontScale, widgetR.Y + 1, Ink, _fontScale);
         // Hit + drag state recorded in _activeWidget / _hoveredWidget
         // by a parent-loop pass below.
     }
@@ -644,20 +716,34 @@ internal sealed class OptionsMenuPanel
     /// (On/Off), enums (Easy/Normal/Hard), shadow types, etc.</summary>
     void CycleButton(BarRenderer bars, TextRenderer text, int vw, int vh,
                      int rowIdx, int widgetIdx, string label,
-                     Func<int> getIdx, Action<int> setIdx, string[] options)
+                     Func<int> getIdx, Action<int> setIdx, string[] options,
+                     bool dropdown = false)
     {
         RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
         int labelTextW = text.MeasureWidth(label, _fontScale);
         text.DrawString(vw, vh, label,
             labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
-        var bg = _activeWidget == widgetIdx ? BtnPress
-               : _hoveredWidget == widgetIdx ? BtnHover : BtnIdle;
-        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
-        DrawBorder(bars, vw, vh, widgetR, Border);
+        var st = _activeWidget == widgetIdx ? ButtonChrome.State.Down
+               : _hoveredWidget == widgetIdx ? ButtonChrome.State.Hover
+               : ButtonChrome.State.Up;
+        // Dropdowns (Resolution, Shadows) reserve a square at the right edge for
+        // the DS1 combo `down` arrow (b_gui_cmn_button_down_up); plain cycle /
+        // toggle buttons fill the whole box.
+        int arrowW = dropdown ? widgetR.H : 0;
+        var boxR = (X: widgetR.X, Y: widgetR.Y, W: widgetR.W - arrowW, H: widgetR.H);
+        if (!ChromeButton(boxR, st))
+        {
+            var bg = st == ButtonChrome.State.Down ? BtnPress
+                   : st == ButtonChrome.State.Hover ? BtnHover : BtnIdle;
+            bars.DrawRect(vw, vh, boxR.X, boxR.Y, boxR.W, boxR.H, bg);
+            DrawBorder(bars, vw, vh, boxR, Border);
+        }
+        if (dropdown)
+            Tex("button_down_up", widgetR.X + widgetR.W - arrowW, widgetR.Y, arrowW, widgetR.H);
         var optStr = options[Math.Clamp(getIdx(), 0, options.Length - 1)];
         int oW = text.MeasureWidth(optStr, _fontScale);
         text.DrawString(vw, vh, optStr,
-            widgetR.X + (widgetR.W - oW) / 2, widgetR.Y + 1, Ink, _fontScale);
+            boxR.X + (boxR.W - oW) / 2, widgetR.Y + 1, Ink, _fontScale);
     }
 
     /// <summary>Per-tab widget descriptor — the `_widgets` list
@@ -713,14 +799,6 @@ internal sealed class OptionsMenuPanel
         return idx;
     }
 
-    int AddButtonWidget(int rowIdx, Action onClick, int viewportW, int viewportH)
-    {
-        RowRect(rowIdx, out _, out var widgetR, viewportW, viewportH);
-        var idx = _widgets.Count;
-        _widgets.Add(new W { Rect = widgetR, OnClick = onClick });
-        return idx;
-    }
-
     void LayoutVideo(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
         var resOptions = new[] { "1280x720x32", "1600x900x32", "1920x1080x32",
@@ -729,9 +807,9 @@ internal sealed class OptionsMenuPanel
         var filter  = new[] { "bilinear", "trilinear" };
         int r = 0;
         CycleField(bars, text, vw, vh, r++, "Resolution",
-            () => _staged.Resolution, v => _staged.Resolution = v, resOptions);
+            () => _staged.Resolution, v => _staged.Resolution = v, resOptions, dropdown: true);
         CycleField(bars, text, vw, vh, r++, "Shadows",
-            () => _staged.Shadows, v => _staged.Shadows = v, shadows);
+            () => _staged.Shadows, v => _staged.Shadows = v, shadows, dropdown: true);
         CycleField(bars, text, vw, vh, r++, "Texture Filtering",
             () => _staged.TextureFiltering, v => _staged.TextureFiltering = v, filter);
         FloatSlider(bars, text, vw, vh, r++, "Gamma",
@@ -787,7 +865,7 @@ internal sealed class OptionsMenuPanel
             () => _staged.LockCameraX, v => _staged.LockCameraX = v);
         BoolCycle(bars, text, vw, vh, r++, "Lock Camera Y",
             () => _staged.LockCameraY, v => _staged.LockCameraY = v);
-        DrawPageButton(bars, text, vw, vh, r, "Hotkeys…", () => _hotkeysOpen = true);
+        DrawPageButton(bars, text, vw, vh, "Hotkeys…", () => _hotkeysOpen = true);
     }
 
     void LayoutGame(BarRenderer bars, TextRenderer text, int vw, int vh)
@@ -811,7 +889,7 @@ internal sealed class OptionsMenuPanel
                 () => _staged.TutorialTips, v => _staged.TutorialTips = v);
             CycleField(bars, text, vw, vh, r++, "Difficulty",
                 () => _staged.Difficulty, v => _staged.Difficulty = v, diff);
-            DrawPageButton(bars, text, vw, vh, r, "More →", () => _gamePage = 1);
+            DrawPageButton(bars, text, vw, vh, "More →", () => _gamePage = 1);
         }
         else
         {
@@ -821,20 +899,29 @@ internal sealed class OptionsMenuPanel
                 () => _staged.BloodColor, v => _staged.BloodColor = v, blood);
             BoolCycle(bars, text, vw, vh, r++, "Dismemberment",
                 () => _staged.Dismemberment, v => _staged.Dismemberment = v);
-            DrawPageButton(bars, text, vw, vh, r, "← Back", () => _gamePage = 0);
+            DrawPageButton(bars, text, vw, vh, "← Back", () => _gamePage = 0);
         }
     }
 
     void DrawPageButton(BarRenderer bars, TextRenderer text, int vw, int vh,
-                        int rowIdx, string label, Action onClick)
+                        string label, Action onClick)
     {
-        RowRect(rowIdx, out _, out var widgetR, vw, vh);
-        var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
-        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H, bg);
-        DrawBorder(bars, vw, vh, widgetR, Border);
+        // Docked bottom-left (mirror of Defaults) — not in the content grid.
+        var r = _more;
+        var st = _activeWidget == _widgets.Count ? ButtonChrome.State.Down
+               : _hoveredWidget == _widgets.Count ? ButtonChrome.State.Hover
+               : ButtonChrome.State.Up;
+        if (!ChromeButton(r, st))
+        {
+            var bg = st == ButtonChrome.State.Down ? BtnPress
+                   : st == ButtonChrome.State.Hover ? BtnHover : BtnIdle;
+            bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, bg);
+            DrawBorder(bars, vw, vh, r, Border);
+        }
         int lW = text.MeasureWidth(label, _fontScale);
-        text.DrawString(vw, vh, label, widgetR.X + (widgetR.W - lW) / 2, widgetR.Y + 1, Ink, _fontScale);
-        AddButtonWidget(rowIdx, onClick, vw, vh);
+        text.DrawString(vw, vh, label,
+            r.X + (r.W - lW) / 2, r.Y + (r.H - 12 * _fontScale) / 2, Ink, _fontScale);
+        _widgets.Add(new W { Rect = r, OnClick = onClick });
     }
 
     /// <summary>String-cycle field. Click steps forward, right-click
@@ -843,12 +930,13 @@ internal sealed class OptionsMenuPanel
     /// without relying on a label-string switch.</summary>
     void CycleField(BarRenderer bars, TextRenderer text, int vw, int vh,
                     int rowIdx, string label,
-                    Func<string> get, Action<string> set, string[] options)
+                    Func<string> get, Action<string> set, string[] options,
+                    bool dropdown = false)
     {
         int idx = Array.IndexOf(options, get());
         if (idx < 0) idx = 0;
         CycleButton(bars, text, vw, vh, rowIdx, _widgets.Count, label,
-            () => idx, _ => { }, options);
+            () => idx, _ => { }, options, dropdown);
         AddCycleWidget(rowIdx,
             () => { var i = Array.IndexOf(options, get());
                     if (i < 0) i = 0;
