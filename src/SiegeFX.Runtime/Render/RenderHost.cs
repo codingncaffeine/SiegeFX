@@ -8494,11 +8494,22 @@ void main()
         // bounds distinguish a different door mesh from a tilted placement.
         var hingeAxisWorld = Vector3.Normalize(
             Vector3.TransformNormal(new Vector3(0f, 0f, 1f), best.World));
-        Console.WriteLine($"[door] {best.Template} " +
+        var doorLine = $"[door] {best.Template} " +
             $"bounds=({best.Mesh.Min.X:F2},{best.Mesh.Min.Y:F2},{best.Mesh.Min.Z:F2}).." +
             $"({best.Mesh.Max.X:F2},{best.Mesh.Max.Y:F2},{best.Mesh.Max.Z:F2}) " +
             $"hingeAxisWorld=({hingeAxisWorld.X:F2},{hingeAxisWorld.Y:F2},{hingeAxisWorld.Z:F2}) " +
-            $"sign={best.DoorSwingSign:F0}");
+            $"sign={best.DoorSwingSign:F0}";
+        Console.WriteLine(doorLine);
+        // Also append to a dedicated log (survives across sessions, no console
+        // needed) — same pattern as the F7 fade dump, so the door line can be
+        // read back from the file rather than hunted in console scrollback.
+        try
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(System.AppContext.BaseDirectory, "siegefx_door_diag.log"),
+                doorLine + System.Environment.NewLine);
+        }
+        catch { }
     }
 
     // Swing the leaf AWAY from the player: transform the player into the
