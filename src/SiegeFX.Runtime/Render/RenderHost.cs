@@ -983,6 +983,13 @@ public sealed class RenderHost : IDisposable
         }
         if (wander is not null)
         {
+            // A recruited follower paths like the LEADER (a human player) so it can
+            // trail you through human-only zones — town interiors, scripted paths —
+            // that the default Computer traversal (lf_computer_player gate) blocks.
+            // That gate is why following was only "partial": followers kept up in
+            // shared areas but stalled at every human-only navmesh boundary you
+            // walked straight through.
+            wander.Follower.Traversal = SiegeFX.Core.Nav.NavTraversal.Player;
             var spell = ResolveBrainSpell(combatStats);
             npc.Brain = new SiegeFX.Core.Actors.ActorBrain(
                 wander, combatStats,
@@ -3168,7 +3175,21 @@ void main()
                                           $"canFight={best.CanFight})");
                     }
                     else
-                        Console.WriteLine("[dev] G: no hireable NPC within 12u (or party full)");
+                    {
+                        // Nobody to recruit → dump party follow state so a
+                        // not-following member's cause is visible in the console.
+                        var lp = _player.CurrentTransform.Translation;
+                        Console.WriteLine($"[dev] party dump: {_party.Count} members, follow={_fcFollow}, formation={_partyFormation}");
+                        foreach (var mm in _party)
+                        {
+                            if (mm.PartyIndex == 0) continue;
+                            var mp = mm.CurrentTransform.Translation;
+                            float dist = MathF.Sqrt((mp.X - lp.X) * (mp.X - lp.X) + (mp.Z - lp.Z) * (mp.Z - lp.Z));
+                            Console.WriteLine($"    #{mm.PartyIndex} {mm.Actor.Template.Name}: " +
+                                              $"brain={(mm.Brain is not null ? "ok" : "NULL")}, canFight={mm.CanFight}, " +
+                                              $"dead={mm.IsDead}, dist={dist:F1}u");
+                        }
+                    }
                     _audio?.Play(SfxGuiInventory);
                 }
                 // Phase 13b → relocated: F8 flips between chase cam (follows
