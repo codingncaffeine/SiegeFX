@@ -172,7 +172,7 @@ echo   99. SC-QUEST-OBJ-D               - Deliver quest objective (SIEGEFX_DEBUG
 echo  100. SC-HUD-DATABAR               - Bottom-row HUD buttons (pause/HP-pot/MP-pot/labels/map/journal/menu) — click each in fh_r1
 echo  101. SC-HUD-OVERHEAD-BARS         - Floating HP/MP bars above every combatant (PC always on; enemies on hit/aggro)
 echo  102. SC-FADE-NODES-LNODE          - Spawn at fh_r1 farmhouse basement stairs (SIEGEFX_DEBUG_SPAWN=70,-4,-65); walk down + test dungeon reveal + click-pick
-echo  103. Phase 26 - PARTY RECRUIT     - Hire Gyorn at Stonebridge (bt_r1), he follows you; RMB a companion, H to hire
+echo  103. Phase 26 - PARTY RECRUIT     - Recruit Gyorn at Stonebridge (bt_r1): RMB him, click Accept; he follows + fights
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -2362,10 +2362,15 @@ echo  Decline shows his polite refusal; the corner X dismisses.]
 echo [The recruit drops its wander and TRAILS you in a wedge behind the leader;]
 echo  walk around and watch it path-follow. Party cap is 8 (7 followers + leader).]
 echo [FOLLOWERS FIGHT: a recruit engages the nearest enemy in range with its]
-echo  starting weapon (Gyorn=mace melee, Naidi=bow ranged), swings/fires, then]
-echo  returns to formation when the enemy's dead. Their kills award party XP + loot.]
-echo [Not yet: pure casters (lore-book il_main) follow but don't cast; hires use]
-echo  base stats (DS1 level-scaling TBD); the View/stats popover + pack mule = P27.]
+echo  starting weapon (Gyorn=mace melee, Naidi=bow ranged, Gloern=axe), swings/]
+echo  fires, then returns to formation when dead. Kills award party XP + loot.]
+echo [PARTY GUI: the field-commands panel (formations / move-attack-target orders /]
+echo  select-all / disband / follow) sits BOTTOM-RIGHT and is on screen from game]
+echo  start, solo or not. Once Gyorn joins, his portrait cell appears below yours]
+echo  (top-left); click it to select, click a formation button to re-shape the wedge.]
+echo [Stats read from the gas per companion (Gyorn lvl-2 fighter, Sikra lvl-38 mage).]
+echo [Not yet: pure casters (lore-book il_main) follow but don't cast; full equipment]
+echo  slots + the View/stats popover + pack mule = Phase 27.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 echo.

@@ -3432,14 +3432,15 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    // Phase 27 — party HUD clicks (only with a party): the
-                    // field_commands panel (formation/orders/select/disband)
-                    // and the team-portrait cells (member selection).
+                    // Phase 27 — party HUD clicks. The field_commands panel is
+                    // always on screen (DS1 shows it from game start, solo or
+                    // not), so its clicks are always live; the team-portrait
+                    // cells only exist once followers have joined.
+                    var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y);
+                    if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
+
                     if (_party.Count > 1)
                     {
-                        var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y);
-                        if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
-
                         int fslot = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
                         if (fslot >= 0)
                         {
@@ -12488,13 +12489,17 @@ void main()
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                                 _awpAtlas, cells, _awpDeathTex);
-
-            // Phase 27 — field_commands panel (bottom-right party orders).
-            var fcState = new Hud.FieldCommandsPanel.State(
-                FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow);
-            _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
-                             TryGetGuiTexture, viewportW, viewportH, fcState);
         }
+
+        // Phase 27 — field_commands panel (bottom-right party orders). DS1 keeps
+        // this cluster on screen from the moment the game starts — solo or not —
+        // so it draws unconditionally, NOT gated on having followers (the
+        // formation/order controls simply have no party to act on until one is
+        // recruited).
+        var fcState = new Hud.FieldCommandsPanel.State(
+            FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow);
+        _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                         TryGetGuiTexture, viewportW, viewportH, fcState);
     }
 
     // Phase 27 — team-portrait state: the strip below the leader + the
