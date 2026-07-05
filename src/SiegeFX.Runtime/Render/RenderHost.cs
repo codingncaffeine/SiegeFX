@@ -8954,6 +8954,7 @@ void main()
     /// primary spell, plus a catalog-resolvable il_active_primary_spell
     /// (krug_apprentice = spell_apprentice_zap, krug_shaman = spell_fireshot).
     /// Non-casters and unresolvable spells return null → melee/ranged brain.</summary>
+    private readonly HashSet<string> _casterDiagSeen = new(StringComparer.OrdinalIgnoreCase);
     private SiegeFX.Core.Assets.SpellTemplate? ResolveBrainSpell(SiegeFX.Core.Actors.ActorStats stats)
     {
         if (_spellCatalog is null || stats.PrimarySpell is null) return null;
@@ -8962,7 +8963,13 @@ void main()
             stats.AutoSwitchToMagic ||
             string.Equals(stats.ActiveLocation, "il_active_primary_spell", StringComparison.OrdinalIgnoreCase);
         if (!caster) return null;
-        return _spellCatalog.TryGet(stats.PrimarySpell, out var spell) ? spell : null;
+        bool ok = _spellCatalog.TryGet(stats.PrimarySpell, out var spell);
+        // One-line-per-spell diagnostic so a caster enemy that isn't firing tells
+        // us whether it's a mode-resolution miss (spell not in catalog) vs elsewhere.
+        if (_casterDiagSeen.Add(stats.PrimarySpell))
+            Console.WriteLine($"[caster] {stats.PrimarySpell}: pref={stats.WeaponPreference} " +
+                              $"resolved={(ok ? $"yes ({spell!.Kind})" : "MISS (not in spell catalog)")}");
+        return ok ? spell : null;
     }
 
     /// <summary>Phase 21a-3 — find the nearest snode (in XZ) to <paramref name="worldPos"/>

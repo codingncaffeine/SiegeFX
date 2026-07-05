@@ -397,6 +397,27 @@ public sealed class SpellTemplate
             }
         }
 
+        // Monster-arsenal offensive path: monster spells (base_spell_monster —
+        // spell_phrak_dart etc.) carry their damage as flat [attack] damage_min/
+        // max, NOT the [magic] attack_damage_modifier formula the player spells
+        // use, so the offensive check above misses them and they used to land in
+        // the Other bucket with no damage — a caster that fired a harmless dart.
+        // Promote any spell with a real [attack] damage roll to OffensiveInstantHit
+        // using those flat values (plain numbers evaluate as constant SpellExprs).
+        string? atkMaxStr = store.GetAttribute(template, "attack", "damage_max");
+        string? atkMinStr = store.GetAttribute(template, "attack", "damage_min");
+        if (!string.IsNullOrEmpty(atkMaxStr) &&
+            float.TryParse(atkMaxStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var atkMax) &&
+            atkMax > 0f)
+        {
+            var mon = new SpellTemplate(template.Name, sn, SpellKind.OffensiveInstantHit,
+                range, reload, cost, (costModStr ?? "").Trim(),
+                (string.IsNullOrEmpty(atkMinStr) ? atkMaxStr : atkMinStr).Trim(), atkMaxStr.Trim(), "",
+                castSfx, invIcon);
+            mon.ApplyAcquisitionFields(template, store);
+            return mon;
+        }
+
         // Phase 24a — everything else with a usable [magic] block (buffs,
         // curses, summons, the monster arsenal) joins the catalog as
         // SpellKind.Other so acquisition systems (icons, pcontent rolls,
