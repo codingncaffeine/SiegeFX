@@ -400,10 +400,13 @@ public sealed class InventoryPanel
         if (headerPortrait is not null && icons is not null)
         {
             // Crop to the portrait's opaque bounds so the face fills the slot
-            // instead of hugging a corner (the raw pads the face with alpha).
+            // instead of hugging a corner (the raw pads the face with alpha),
+            // then inset ~5% so the face doesn't touch the panel/screen border.
             var uv = headerPortrait.ContentUv;
+            int pin = (int)System.Math.Round(portraitW * 0.05f);
+            int piny = (int)System.Math.Round(portraitH * 0.05f);
             icons.DrawIcon(viewportW, viewportH, headerPortrait,
-                portraitX, portraitY, portraitW, portraitH, white,
+                portraitX + pin, portraitY + piny, portraitW - 2 * pin, portraitH - 2 * piny, white,
                 uv.X, uv.Y, uv.Z, uv.W);
         }
 

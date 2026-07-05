@@ -16859,7 +16859,8 @@ void main()
             // visually correctly (Options on top of Pause's dim layer).
             if (_optionsMenu.IsOpen && _barRenderer is not null)
             {
-                _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, size.X, size.Y);
+                _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, size.X, size.Y,
+                    commonChrome: GetCommonTexture);
             }
             // Phase 21d-2a-viii-b: character creator. Topmost UI when open
             // (gates player spawn). Sits above pause because Esc-while-creator

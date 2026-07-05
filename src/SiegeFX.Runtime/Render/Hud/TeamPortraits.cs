@@ -100,9 +100,12 @@ public sealed class TeamPortraits
             if (m.Portrait is not null)
             {
                 // Crop to opaque bounds so the face fills the frame (the raw
-                // pads the face with transparency; framing varies per member).
+                // pads the face with transparency; framing varies per member),
+                // then inset ~5% so it doesn't touch the frame/screen border.
                 var uv = m.Portrait.ContentUv;
-                icons.DrawIcon(viewportW, viewportH, m.Portrait, px, py, pw, ph, Vector4.One,
+                int inx = (int)MathF.Round(pw * 0.05f), iny = (int)MathF.Round(ph * 0.05f);
+                icons.DrawIcon(viewportW, viewportH, m.Portrait,
+                    px + inx, py + iny, pw - 2 * inx, ph - 2 * iny, Vector4.One,
                     uv.X, uv.Y, uv.Z, uv.W);
             }
             if (m.Dead && deathTex is not null)
