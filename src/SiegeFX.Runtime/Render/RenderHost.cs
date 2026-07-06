@@ -8733,16 +8733,14 @@ void main()
             z.Norick.CurrentTransform = Matrix4x4.CreateTranslation(p);
         }
         z.Norick.IsMoving = false;
-        // The Down->Talking beat already starts the dying anim ("dead") mid-NIS; only
-        // (re)issue it when the NIS ended before that beat (a fast skip), and snap to the
-        // final still frame so a skip lands directly on the fully-dead pose.
-        if (z.Phase != NorickPhase.Talking)
-        {
-            z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
-            int di = z.Norick.Actor.GetClipIndex("dead");
-            if (di >= 0 && di < z.Norick.Actor.Clips.Length)
-                z.Norick.AnimTime = MathF.Max(0f, z.Norick.Actor.Clips[di].AnimLength - 0.02f);
-        }
+        // Snap straight to the final still frame of the dying anim ("dead") so a skip lands
+        // directly on the fully-dead pose. Do this even mid dying-words (Talking phase): there
+        // he's only part-way through the long gesturing death anim, so without the snap he keeps
+        // moving as if still talking instead of dropping still into the die pose.
+        z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+        int di = z.Norick.Actor.GetClipIndex("dead");
+        if (di >= 0 && di < z.Norick.Actor.Clips.Length)
+            z.Norick.AnimTime = MathF.Max(0f, z.Norick.Actor.Clips[di].AnimLength - 0.02f);
         z.Phase = NorickPhase.Dead;
         Console.WriteLine("[norick] dead");
         // Hero stands out of the kneel as control returns.
