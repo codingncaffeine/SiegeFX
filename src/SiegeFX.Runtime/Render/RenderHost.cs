@@ -7641,6 +7641,7 @@ void main()
         {
             case "cmd_enter_nis":
                 if (_nisPhase != NisPhase.Off) return;
+                _introNisSkipped = false; // fresh cinematic — allow its narration to start
                 _nisReturnPos = _camera.Position;
                 _nisReturnYaw = _camera.Yaw;
                 _nisReturnPitch = _camera.Pitch;
@@ -7820,10 +7821,20 @@ void main()
     private int _subtitlePage, _subtitlePageCount;
     private float _subtitlePageDuration;
     private bool _subtitleVoiceActive;
+    // SC-NIS-SKIP — set when the intro cinematic is Esc-skipped. Blocks any further
+    // narration beat from STARTING (the trigger chain schedules storyteller/Norick
+    // beats on its own clock, independent of the camera we just froze). Cleared when
+    // a fresh NIS enters, so later cinematics narrate normally.
+    private bool _introNisSkipped;
     private const int SubtitleLinesPerPage = 3;
 
     private void OnTalkBeginMessage(uint targetScid)
     {
+        // Intro Esc-skip halts the camera, but the trigger chain that fires narration
+        // beats runs on its own clock and would post the next we_req_talk_begin over
+        // restored gameplay — the voice heard "still going" after Esc. Once skipped,
+        // refuse to start any new beat (cleared when a fresh NIS enters).
+        if (_introNisSkipped) return;
         if (_conversations is null || _conversations.Count == 0) return;
         foreach (var s in _actors)
         {
@@ -8641,6 +8652,10 @@ void main()
     /// so gameplay resumes in the correct post-intro state.</summary>
     private void FastForwardIntroSkip()
     {
+        // Silence the narration for good — no further storyteller/Norick beats start
+        // after the player skips (see _introNisSkipped). StopIntroChoreography only
+        // stops the beat that's already playing; this stops the ones still scheduled.
+        _introNisSkipped = true;
         // Player: land him where the scripted run would have ended (the bridge). Fall
         // back to Norick's bridge spot if the run never started.
         var end = ResolvePlayerRunEndpoint();
