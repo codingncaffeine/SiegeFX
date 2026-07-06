@@ -10,11 +10,25 @@ using SiegeSmith.Services;
 namespace SiegeSmith.ViewModels;
 
 /// <summary>Drives the Tank Explorer: builds the VFS tree for an open <see cref="TankDocument"/>,
-/// runs search, surfaces selection metadata as property rows, and performs extraction.</summary>
+/// runs search, offers asset-category quick-jumps, surfaces selection metadata as property rows,
+/// and performs extraction.</summary>
 public sealed class TankExplorerViewModel : ObservableObject, IDisposable
 {
     private readonly TankDocument _doc;
     private readonly List<TankNodeViewModel> _allFiles = new();
+    private readonly Dictionary<string, TankNodeViewModel> _dirs = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Well-known asset homes in a DS1 tank's virtual filesystem. A category button
+    /// appears only when at least one of its candidate paths exists in the open tank.</summary>
+    private static readonly (string Label, string[] Paths)[] CategoryDefs =
+    {
+        ("Textures",   new[] { "/art/bitmaps" }),
+        ("Meshes",     new[] { "/art/meshes" }),
+        ("Animations", new[] { "/art/motion", "/art/animation" }),
+        ("Sounds",     new[] { "/sound", "/sounds" }),
+        ("World",      new[] { "/world" }),
+        ("Shaders",    new[] { "/shaders" }),
+    };
 
     public string TankName => _doc.Name;
     public string TankPath => _doc.Path;
@@ -22,6 +36,9 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
     public ObservableCollection<TankNodeViewModel> Roots { get; } = new();
     public ObservableCollection<TankNodeViewModel> SearchResults { get; } = new();
     public ObservableCollection<PropertyRow> Properties { get; } = new();
+
+    /// <summary>Asset-category quick-jumps present in this tank (may be empty).</summary>
+    public IReadOnlyList<AssetCategory> Categories { get; }
 
     public RelayCommand ExtractSelectedCommand { get; }
     public RelayCommand ExtractTreeCommand { get; }
@@ -35,6 +52,10 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         BuildTree();
         ExtractSelectedCommand = new RelayCommand(_ => ExtractSelected(), _ => HasSelectedFile);
         ExtractTreeCommand = new RelayCommand(_ => ExtractTree());
+        Categories = CategoryDefs
+            .Where(d => d.Paths.Any(_dirs.ContainsKey))
+            .Select(d => new AssetCategory(d.Label, new RelayCommand(_ => JumpTo(d.Paths))))
+            .ToList();
         ShowTankProperties();
     }
 
@@ -64,8 +85,8 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
 
     // ── preview viewer ──────────────────────────────────────────
     private object? _currentViewer;
-    /// <summary>The format-aware viewer for the selected file (texture / text / hex), or null
-    /// for a directory or an empty selection (the workspace shows the overview card instead).</summary>
+    /// <summary>The format-aware viewer for the selected file (texture / gas / text / hex), or
+    /// null for a directory or an empty selection (the workspace shows the overview card).</summary>
     public object? CurrentViewer
     {
         get => _currentViewer;
@@ -102,6 +123,33 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ── asset-category quick-jump ───────────────────────────────
+    private void JumpTo(string[] candidates)
+    {
+        if (HasSearch) SearchText = ""; // ensure the tree (not search results) is showing
+        foreach (var path in candidates)
+        {
+            if (!_dirs.TryGetValue(path, out var node)) continue;
+            ExpandAncestors(node);
+            node.IsExpanded = true;
+            node.IsSelected = true;
+            Status?.Invoke($"Jumped to {path}");
+            return;
+        }
+        Status?.Invoke("That asset category isn't in this tank.");
+    }
+
+    private void ExpandAncestors(TankNodeViewModel node)
+    {
+        var path = node.FullPath;
+        int slash;
+        while ((slash = path.LastIndexOf('/')) > 0)
+        {
+            path = path[..slash];
+            if (_dirs.TryGetValue(path, out var dir)) dir.IsExpanded = true;
+        }
+    }
+
     // ── search ──────────────────────────────────────────────────
     private string _searchText = "";
     public string SearchText
@@ -125,20 +173,18 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
             if (SearchResults.Count >= MaxResults) { capped = true; break; }
             SearchResults.Add(f);
         }
-        Status?.Invoke($"{SearchResults.Count} match(es) for “{q}”{(capped ? " (capped)" : "")}");
+        Status?.Invoke($"{SearchResults.Count} match(es) for \"{q}\"{(capped ? " (capped)" : "")}");
     }
 
     // ── tree build ──────────────────────────────────────────────
     private void BuildTree()
     {
-        var dirs = new Dictionary<string, TankNodeViewModel>(StringComparer.OrdinalIgnoreCase);
-
         TankNodeViewModel GetDir(string dirPath) // dirPath is '/'-rooted, e.g. "/world/maps"
         {
-            if (dirs.TryGetValue(dirPath, out var existing)) return existing;
+            if (_dirs.TryGetValue(dirPath, out var existing)) return existing;
             var name = dirPath[(dirPath.LastIndexOf('/') + 1)..];
             var node = new TankNodeViewModel(name, dirPath, true, null);
-            dirs[dirPath] = node;
+            _dirs[dirPath] = node;
             var slash = dirPath.LastIndexOf('/');
             var parent = slash <= 0 ? "" : dirPath[..slash];
             if (parent.Length == 0) Roots.Add(node);
@@ -160,7 +206,7 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         }
 
         SortChildren(Roots);
-        foreach (var d in dirs.Values) SortChildren(d.Children);
+        foreach (var d in _dirs.Values) SortChildren(d.Children);
     }
 
     private static void SortChildren(IList<TankNodeViewModel> nodes)
@@ -290,3 +336,6 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
 
 /// <summary>A name/value row shown in the Properties inspector.</summary>
 public sealed record PropertyRow(string Name, string Value);
+
+/// <summary>An asset-category quick-jump button (label + command that reveals its tree folder).</summary>
+public sealed record AssetCategory(string Label, RelayCommand Jump);
