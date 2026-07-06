@@ -2750,10 +2750,17 @@ public sealed class RenderHost : IDisposable
         // reads upside-down on screen (waterfalls would flow upward). Negate
         // the V component so the cascade falls down as authored, and the
         // -0.20 mist on b_t_grs01_rvr_fall-mist-08x08-dynamic correctly
-        // drifts upward to look like spray rising at the base. U is left
-        // alone (no horizontal flip is applied).
-        l1Off = new Vector2(l1Off.X, -l1Off.Y);
-        l2Off = new Vector2(l2Off.X, -l2Off.Y);
+        // drifts upward to look like spray rising at the base.
+        //
+        // Exception: the FLAT river surfaces (b_t_grs01_rvr_* that are NOT the
+        // vertical rvr_fall cascade/mist) author a +0.5 layer-2 V scroll. That
+        // flip — a compensation shaped for the vertical fall — reversed their
+        // flow, running the current back upstream toward the waterfall. Keep
+        // their authored +V so the river runs downstream, away from the fall.
+        float vSign = textureName.Contains("rvr", StringComparison.OrdinalIgnoreCase)
+                   && !textureName.Contains("fall", StringComparison.OrdinalIgnoreCase) ? 1f : -1f;
+        l1Off = new Vector2(l1Off.X, vSign * l1Off.Y);
+        l2Off = new Vector2(l2Off.X, vSign * l2Off.Y);
         if (_snoTextures.TryGetValue(l1, out var t1))
         {
             t1.Bind(TextureUnit.Texture0);
