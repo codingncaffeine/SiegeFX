@@ -18595,7 +18595,19 @@ void main()
         // Belt-and-braces — if Closing didn't fire (process kill, exception
         // during Run), GL resources leak with the process. Don't try to
         // re-release them post-context here; the OS will reclaim everything.
-        _input?.Dispose();
+        //
+        // SC-TEARDOWN — deliberately do NOT dispose the Silk.NET GLFW input
+        // context. Its teardown (GlfwInputContext.CoreDispose -> GlfwEvents.Dispose
+        // -> SetCharCallback -> Marshal.GetDelegateForFunctionPointer) raises an
+        // *uncatchable* ExecutionEngineException (0x80131506, process exit
+        // 0xC0000005) on shutdown — a known Silk.NET input-teardown fault, hit
+        // here on the menu->region relaunch (and any normal quit). Dispose() only
+        // runs as the process is exiting, so the OS reclaims the input context,
+        // its GLFW callbacks and all native state regardless; skipping the explicit
+        // dispose — and suppressing the finalizer that would otherwise re-enter the
+        // same crash path from the GC thread — sidesteps it with nothing leaked.
+        // The window/audio/tank handles below dispose cleanly and are kept.
+        if (_input is not null) GC.SuppressFinalize(_input);
         // Audio first — DeleteSources/Buffers before tearing down the
         // Sound.dsres handle isn't required (we already extracted bytes),
         // but the OpenAL context wants to outlive any pending playback.
