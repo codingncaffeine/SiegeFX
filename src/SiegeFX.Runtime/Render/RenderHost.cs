@@ -7620,6 +7620,9 @@ void main()
         _nisSegDuration = MathF.Max(0.05f, cmd.Duration);
         _nisTimer = 0f;
         _nisCurrent = cmd;
+        // SC-INTRO-DOG — DS1 hangs the dog's sniff off this specific camera cut (+0.5s).
+        // Arm the one-shot here so it fires when the camera reaches the dog, not on a loop.
+        if (cmd.Scid == DogLookCameraScid) { _introDogSniffDelay = 0.5f; _introDogSniffArmed = true; }
         Console.WriteLine($"[nis] {(cmd.Snap ? "snap" : "pan")} 0x{cmd.Scid:X8} " +
             $"pos=({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) dur={_nisSegDuration:F1}s next=0x{cmd.Next:X8}");
     }
@@ -8376,7 +8379,9 @@ void main()
     // one look cue during the NIS and retires it (stops drawing) once the NIS ends.
     private ActorRenderState? _introDog;
     private bool _introDogResolved;
-    private float _introDogSniffTimer;
+    private bool _introDogSniffArmed;
+    private float _introDogSniffDelay;
+    private const uint DogLookCameraScid = 0x01c00786;  // the NIS camera cut DS1 hangs the dog "look" off (+0.5s)
 
     private void TickIntroDog(float dt)
     {
@@ -8392,19 +8397,19 @@ void main()
                     break;
                 }
             }
-            // Loop the sniff ("look" = dsf-02) through the intro so the dog is mid-sniff
-            // whenever the camera pans to it. PlayChoreOnce end-holds on the clip's last
-            // frame, so a single play at NIS start would be frozen by the time the pan
-            // arrives; re-arming it (with an AnimTime reset) every couple seconds keeps
-            // the head-lift/sniff alive across the whole intro.
-            if (_introDog is not null)
+            // One sniff, timed to the camera cutting back to the dog after the hoe beat —
+            // DS1 fires it 0.5s after camera command 0x01c00786 (armed in StartNisSegment).
+            // Not looped: before the cut the dog just sits; after, it sniffs once and holds
+            // (the "look" command is hold_animation, repeat=false).
+            if (_introDogSniffArmed && _introDog is not null)
             {
-                _introDogSniffTimer -= dt;
-                if (_introDogSniffTimer <= 0f)
+                _introDogSniffDelay -= dt;
+                if (_introDogSniffDelay <= 0f)
                 {
                     _introDog.AnimTime = 0;
-                    _introDog.Actor.PlayChoreOnce("look", 2f);
-                    _introDogSniffTimer = 2f;
+                    _introDog.Actor.PlayChoreOnce("look", float.PositiveInfinity);
+                    _introDogSniffArmed = false;
+                    Console.WriteLine("[intro] dog sniffs (camera cut back to it)");
                 }
             }
         }
