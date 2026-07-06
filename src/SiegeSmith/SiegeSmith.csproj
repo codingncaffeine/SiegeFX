@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SiegeSmith — the Dungeon Siege modding studio, built on SiegeFX.Core.
+       On .NET 11 (preview 5). The SiegeFX engine projects (Core/Runtime/Tools/
+       Audio) are still net8 and referenced cross-target; migrating the engine to
+       net11 as well is tracked as the ".NET 11 migration" task. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net11.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SiegeSmith</RootNamespace>
+    <AssemblyName>SiegeSmith</AssemblyName>
+    <Product>SiegeSmith</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
+  </ItemGroup>
+
+</Project>
