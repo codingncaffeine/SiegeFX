@@ -771,8 +771,164 @@ static int DispatchRegion(string[] a)
         "nav-components" => CmdRegionNavComponents(a[1..]),
         "follow"      => CmdRegionFollow(a[1..]),
         "triggers"    => CmdRegionTriggers(a[1..]),
+        "gen-audit"   => CmdRegionGenAudit(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
+}
+
+// SC-MOB-SPAWNER audit — enumerate every generator / on-death spawn edge across
+// one region (substring match) or all, so a "massive mob spawning where it
+// shouldn't" surfaces by name + region + gating. Sorted by child life (boss-tier
+// first). Gating: incubate@load (basic, spawns at boot) / proximity@Nu (bush
+// ambush) / message-parked (armed, waits for we_req_activate) / on-death/entered
+// (generator_in_object family — the Gom_Super chain). Flags children SiegeFX
+// spawns at the generator gizmo while an authored spawnpoint SCID goes unused.
+static int CmdRegionGenAudit(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region gen-audit <World.dsmap> <Logic.dsres> [region|all]");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    var mapReader = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    string filter = a.Length >= 3 ? a[2].Trim() : "all";
+
+    static float? PF(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        s = s.Trim().Trim('"').Trim();
+        return float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : (float?)null;
+    }
+    float ChildLife(string child) =>
+        store.TryGet(child, out var t) && t is not null
+            ? (PF(store.GetAttribute(t, "aspect", "max_life")) ?? PF(store.GetAttribute(t, "aspect", "life")) ?? 0f) : 0f;
+    float ChildScale(string child) =>
+        store.TryGet(child, out var t) && t is not null
+            ? (PF(store.GetAttribute(t, "aspect", "scale_base")) ?? 1f) : 1f;
+    static string RegionName(string rp) { int i = rp.LastIndexOf('/'); return i >= 0 ? rp[(i + 1)..] : rp; }
+
+    var regionPaths = new List<string>();
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    if (!filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        regionPaths = regionPaths.Where(r => r.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+    if (regionPaths.Count == 0) { Console.Error.WriteLine($"no regions matched '{filter}'"); return 1; }
+
+    var rows = new Dictionary<string, (string Region, string File, string Parent, string Child, string Gating, float Life, float Scale, int Count, bool SpIgnored, bool HasCmd)>();
+    void Add(string region, string file, string parent, string block, string child, string gating, bool spIgnored, bool hasCmd)
+    {
+        string key = $"{region}|{file}|{parent}|{block}|{child}|{gating}";
+        if (rows.TryGetValue(key, out var ex)) { ex.Count++; rows[key] = ex; return; }
+        rows[key] = (RegionName(region), file, parent, child, gating, ChildLife(child), ChildScale(child), 1, spIgnored, hasCmd);
+    }
+
+    foreach (var rp in regionPaths)
+    {
+        // 1) generator.gas — the primary spawner file.
+        var (gens, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "generator.gas");
+        foreach (var p in gens)
+        {
+            store.TryGet(p.TemplateName, out var genT);
+            SiegeFX.Core.Assets.GasNode? pblock = null;
+            foreach (var c in p.Node.Children)
+                if (c.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) { pblock = c; break; }
+            string? blockHeader = pblock?.Header;
+            if (blockHeader is null && genT is not null)
+                for (var t = genT; t is not null && blockHeader is null; t = t.Specializes)
+                    foreach (var c in t.Node.Children)
+                    {
+                        if (!c.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (c.Header.Equals("generator_in_object", StringComparison.OrdinalIgnoreCase)) continue;
+                        blockHeader = c.Header; break;
+                    }
+            if (blockHeader is null) continue;
+
+            string? child = null; bool sp = false, cmd = false; float trig = -1f;
+            if (pblock is not null)
+                foreach (var at in pblock.Attributes)
+                {
+                    if (at.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase)) child = at.Value.Trim().Trim('"');
+                    else if (at.Name.Equals("spawnpoint", StringComparison.OrdinalIgnoreCase)) sp = true;
+                    else if (at.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase)) cmd = true;
+                    else if (at.Name.Equals("trigger_range", StringComparison.OrdinalIgnoreCase)) { if (PF(at.Value) is float f) trig = f; }
+                }
+            if (string.IsNullOrEmpty(child) && genT is not null)
+                child = store.GetAttribute(genT, blockHeader, "child_template_name")?.Trim().Trim('"');
+            if (string.IsNullOrEmpty(child)) continue;
+            if (trig < 0f && genT is not null && PF(store.GetAttribute(genT, blockHeader, "trigger_range")) is float tf) trig = tf;
+
+            bool basic = blockHeader.Contains("basic", StringComparison.OrdinalIgnoreCase);
+            bool explod = blockHeader.Contains("explod", StringComparison.OrdinalIgnoreCase);
+            string gating = basic ? "incubate@load"
+                : explod ? (trig > 0 ? $"exploding@{trig:0}u" : "exploding@?")
+                : trig > 0f ? $"proximity@{trig:0}u"
+                : "message-parked";
+            Add(rp, "generator.gas", p.TemplateName, blockHeader, child!, gating, sp, cmd);
+        }
+
+        // 2) on-death / entered-world spawns: templates carrying a generator_in_object
+        //    or *auto_object* block with a child (the Gom_Super family), placed via
+        //    actor.gas / special.gas.
+        foreach (var file in new[] { "actor.gas", "special.gas" })
+        {
+            var (ps, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, file);
+            foreach (var p in ps)
+            {
+                if (!store.TryGet(p.TemplateName, out var t) || t is null) continue;
+                for (var w = t; w is not null; w = w.Specializes)
+                    foreach (var c in w.Node.Children)
+                    {
+                        if (!c.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (c.Header.Contains("basic", StringComparison.OrdinalIgnoreCase)) continue;
+                        string? child = null;
+                        foreach (var at in c.Attributes)
+                            if (at.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase)) child = at.Value.Trim().Trim('"');
+                        if (string.IsNullOrEmpty(child)) continue;
+                        Add(rp, file, p.TemplateName, c.Header, child!, "on-death/entered", false, false);
+                    }
+            }
+        }
+    }
+
+    var ordered = rows.Values.OrderByDescending(r => r.Life).ThenByDescending(r => r.Scale).ThenBy(r => r.Region).ToList();
+    Console.WriteLine($"GENERATOR / SPAWN AUDIT — {(filter.Equals("all", StringComparison.OrdinalIgnoreCase) ? regionPaths.Count + " region(s)" : filter)}");
+    Console.WriteLine($"  {ordered.Count} distinct spawner->child edge(s)");
+    Console.WriteLine();
+    Console.WriteLine($"  {"life",6} {"scale",5}  {"region",-12} {"gating",-16} {"child",-26} parent");
+    foreach (var r in ordered)
+    {
+        string flags = "";
+        if (r.Life >= 200f) flags += " BOSS";
+        if (r.Scale >= 1.4f) flags += " BIG";
+        if (r.Gating.StartsWith("incubate")) flags += " @load";
+        if (r.Gating == "on-death/entered") flags += " onEnter/Die";
+        if (r.SpIgnored) flags += " spawnpt-ignored";
+        string cnt = r.Count > 1 ? $" x{r.Count}" : "";
+        Console.WriteLine($"  {r.Life,6:0} {r.Scale,5:0.0}  {r.Region,-12} {r.Gating,-16} {r.Child,-26} {r.Parent}{cnt}{(flags.Length > 0 ? "  <=" + flags : "")}");
+    }
+    Console.WriteLine();
+    int boss = ordered.Count(r => r.Life >= 200f);
+    int atLoad = ordered.Count(r => r.Gating.StartsWith("incubate"));
+    int spIgn = ordered.Count(r => r.SpIgnored);
+    Console.WriteLine($"VERDICT: {boss} boss-tier (life>=200) spawn edge(s); {atLoad} incubate-at-load; {spIgn} with an authored spawnpoint SiegeFX currently ignores.");
+    return 0;
 }
 
 static int DispatchWorld(string[] a)
