@@ -3165,6 +3165,7 @@ void main()
                     if (_nisPhase != NisPhase.Off && _nisPhase != NisPhase.Leaving)
                     {
                         Console.WriteLine("[nis] skipped by Esc");
+                        StopIntroChoreography();
                         BeginNisLeave(0.8f);
                         return;
                     }
@@ -7843,6 +7844,38 @@ void main()
             return;
         }
         AdvanceSubtitleNode();
+    }
+
+    /// <summary>SC-NIS-SKIP — halt the intro's trigger-side choreography when
+    /// the player Esc-skips the cinematic. The camera fast-forwards via
+    /// BeginNisLeave on its own clock, but the narration voice + subtitle text
+    /// run on the independent subtitle clock and would otherwise keep playing
+    /// over restored gameplay (the reported bug). Silence the voice, wipe the
+    /// text, and still grant the quest the narration was about to activate so
+    /// an Esc-skip lands in the same post-intro state as watching it through.</summary>
+    private void StopIntroChoreography()
+    {
+        if (_subtitleNodes is not null && _progression is not null)
+        {
+            for (int i = Math.Max(0, _subtitleIdx); i < _subtitleNodes.Count; i++)
+            {
+                var q = _subtitleNodes[i].ActivateQuest;
+                if (string.IsNullOrEmpty(q)) continue;
+                if (_progression.Journal.AddActive(q))
+                {
+                    _progression.Journal.RecordDialogue(q,
+                        _subtitleNodes.Where(n => !string.IsNullOrWhiteSpace(n.Text))
+                                      .Select(n => n.Text.Replace("\\n", " ")));
+                    Console.WriteLine($"[nis] skip granted quest: {q}");
+                    FlashQuestIndicator();
+                }
+            }
+        }
+        _subtitleVoiceActive = false;
+        _voicePlayer?.Stop();
+        _subtitleNodes = null;
+        _subtitleLines = Array.Empty<string>();
+        _subtitleRemaining = 0f;
     }
 
     private void DrawSubtitles(int viewportW, int viewportH)
