@@ -8734,13 +8734,17 @@ void main()
         }
         z.Norick.IsMoving = false;
         // Snap straight to the final still frame of the dying anim ("dead") so a skip lands
-        // directly on the fully-dead pose. Do this even mid dying-words (Talking phase): there
-        // he's only part-way through the long gesturing death anim, so without the snap he keeps
-        // moving as if still talking instead of dropping still into the die pose.
+        // directly on the fully-dead pose. Pin LastClipIndex as well (same as BeginDeathChore):
+        // without it the anim tick sees the clip change — e.g. from "fall" when Esc lands before
+        // the dying-words beat — and resets AnimTime to 0, replaying the whole gesturing death
+        // anim, which reads as Norick still moving/talking after the skip.
         z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
         int di = z.Norick.Actor.GetClipIndex("dead");
         if (di >= 0 && di < z.Norick.Actor.Clips.Length)
+        {
+            z.Norick.LastClipIndex = di;
             z.Norick.AnimTime = MathF.Max(0f, z.Norick.Actor.Clips[di].AnimLength - 0.02f);
+        }
         z.Phase = NorickPhase.Dead;
         Console.WriteLine("[norick] dead");
         // Hero stands out of the kneel as control returns.
