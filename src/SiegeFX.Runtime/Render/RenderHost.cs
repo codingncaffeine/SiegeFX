@@ -8444,8 +8444,13 @@ void main()
     private const uint IntroHoeItemScid = 0x01c007c9;   // fh_r1 inventory.gas [t:hoe] — the ground hoe pickup
     // Dev grip tuner for the in-hand hoe (numpad). Extra rot/trans applied on top of the
     // base weapon grip while the hoe is held; bake the dialed-in values once it looks right.
-    private Vector3 _hoeGripEulerDeg = new Vector3(-95f, 0f, -5f);   // pitch(X), yaw(Y), roll(Z) deg — seeded with the dialed-in hoe rotation so a rebuild doesn't lose it
-    private Vector3 _hoeGripTrans;
+    // Baked hoe grip (tuned 2026-07-06, off-hand / shield_grip): rotation pitch/yaw/roll in
+    // degrees (hoe-local frame) + a player-space position offset. The numpad tuner below layers
+    // a live delta on top of these; delta stays zero in shipping play.
+    private static readonly Vector3 s_hoeGripEulerDeg = new Vector3(-105f, 270f, -85f);
+    private static readonly Vector3 s_hoeGripTrans = new Vector3(0.010f, -0.110f, 0.000f);
+    private Vector3 _hoeGripEulerDeg;   // dev delta on the baked rotation (pitch X, yaw Y, roll Z)
+    private Vector3 _hoeGripTrans;       // dev delta on the baked player-space position
     private bool _hoeGripDevMode;       // Keypad0 — hoe in hand + hoeing loop for grip tuning, any time
     private bool _hoeRenderDiagLogged;  // one-shot per equip: confirm the in-hand hoe render fires + where
     // Grip tuner mirrors its live value here every change so it can be read back without
@@ -8603,9 +8608,11 @@ void main()
 
     private void PrintHoeGrip()
     {
+        var euler = s_hoeGripEulerDeg + _hoeGripEulerDeg;
+        var trans = s_hoeGripTrans + _hoeGripTrans;
         string hand = _weaponGripBoneOverride >= 0 ? "off-hand(shield_grip)" : "main-hand(weapon_grip)";
-        string vals = $"rot(pitch,yaw,roll)=({_hoeGripEulerDeg.X:F0},{_hoeGripEulerDeg.Y:F0},{_hoeGripEulerDeg.Z:F0})deg " +
-                      $"trans=({_hoeGripTrans.X:F3},{_hoeGripTrans.Y:F3},{_hoeGripTrans.Z:F3}) hand={hand}";
+        string vals = $"rot(pitch,yaw,roll)=({euler.X:F0},{euler.Y:F0},{euler.Z:F0})deg " +
+                      $"trans=({trans.X:F3},{trans.Y:F3},{trans.Z:F3}) hand={hand}";
         Console.WriteLine($"[hoe-grip] {vals}");
         // Mirror the live value to a file so it can be read back cleanly (the frame log
         // buries it). Written on every grip change; the file always holds the current pose.
@@ -17710,13 +17717,13 @@ void main()
                     // Hoe in hand: layer the dev-tunable grip offset (numpad) on top of the
                     // base grip so its angle/twist can be dialed in live, then baked.
                     const float d2r = MathF.PI / 180f;
-                    var hoeRot = Matrix4x4.CreateFromYawPitchRoll(
-                        _hoeGripEulerDeg.Y * d2r, _hoeGripEulerDeg.X * d2r, _hoeGripEulerDeg.Z * d2r);
-                    // Position offset applied in PLAYER space (after the hand-bone world, before
-                    // the player->world transform) so numpad nudges move the hoe relative to the
-                    // hero — Y up/down, X across, Z fore/aft — instead of along the hoe's own
-                    // tilted local axes, where "down" came out sideways.
-                    var hoeTrans = Matrix4x4.CreateTranslation(_hoeGripTrans);
+                    // Baked grip pose + live dev delta (numpad tuner). Rotation in the hoe's local
+                    // frame; position in PLAYER space (after the hand-bone world, before the
+                    // player->world transform) so the axes map to the hero (Y up/down, X across,
+                    // Z fore/aft) rather than the hoe's tilted local axes.
+                    var euler = s_hoeGripEulerDeg + _hoeGripEulerDeg;
+                    var hoeRot = Matrix4x4.CreateFromYawPitchRoll(euler.Y * d2r, euler.X * d2r, euler.Z * d2r);
+                    var hoeTrans = Matrix4x4.CreateTranslation(s_hoeGripTrans + _hoeGripTrans);
                     weaponModel = _weaponBindInv * hoeRot * gripPreRot * gripPreTrans * gripLocal * hoeTrans * _player.CurrentTransform;
                 }
                 else
