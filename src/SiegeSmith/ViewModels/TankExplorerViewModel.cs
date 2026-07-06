@@ -58,7 +58,48 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         if (SelectedNode is null) ShowTankProperties();
         else if (SelectedNode.IsDirectory) ShowDirectoryProperties(SelectedNode);
         else ShowFileProperties(SelectedNode);
+        UpdateViewer();
         ExtractSelectedCommand.RaiseCanExecuteChanged();
+    }
+
+    // ── preview viewer ──────────────────────────────────────────
+    private object? _currentViewer;
+    /// <summary>The format-aware viewer for the selected file (texture / text / hex), or null
+    /// for a directory or an empty selection (the workspace shows the overview card instead).</summary>
+    public object? CurrentViewer
+    {
+        get => _currentViewer;
+        private set
+        {
+            if (SetProperty(ref _currentViewer, value))
+            {
+                OnPropertyChanged(nameof(HasViewer));
+                OnPropertyChanged(nameof(ShowOverview));
+            }
+        }
+    }
+    public bool HasViewer => _currentViewer is not null;
+    public bool ShowOverview => _currentViewer is null;
+
+    private void UpdateViewer()
+    {
+        if (SelectedNode is { IsDirectory: false } file)
+        {
+            try
+            {
+                var bytes = _doc.Reader.ExtractToMemory(file.FullPath);
+                CurrentViewer = ViewerFactory.Create(file.Name, bytes);
+            }
+            catch (Exception ex)
+            {
+                CurrentViewer = null;
+                Status?.Invoke($"Preview failed: {ex.Message}");
+            }
+        }
+        else
+        {
+            CurrentViewer = null;
+        }
     }
 
     // ── search ──────────────────────────────────────────────────

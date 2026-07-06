@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:SiegeSmith.ViewModels"
+        xmlns:viewers="clr-namespace:SiegeSmith.ViewModels.Viewers"
         Title="SiegeSmith — Dungeon Siege Modding Studio"
         Height="760" Width="1280"
         Background="{StaticResource Brush.Window}"
@@ -120,7 +121,7 @@
 
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
 
-            <!-- ░░ Center: welcome / selection detail ░░ -->
+            <!-- ░░ Center: welcome / overview / file viewer ░░ -->
             <Border Grid.Column="2" Background="{StaticResource Brush.Window}">
                 <Grid>
                     <!-- Welcome (no tank open) -->
@@ -134,24 +135,82 @@
                                    Foreground="{StaticResource Brush.Foreground}"/>
                     </StackPanel>
 
-                    <!-- Selection detail (tank open) -->
-                    <DockPanel Margin="28,24" Visibility="{Binding HasTank, Converter={StaticResource BoolToVis}}">
+                    <!-- Overview card (tank open, directory or empty selection) -->
+                    <DockPanel Margin="28,24" Visibility="{Binding Explorer.ShowOverview, Converter={StaticResource BoolToVis}}">
                         <StackPanel DockPanel.Dock="Top">
                             <TextBlock Text="{Binding Explorer.SelectionTitle}" FontSize="24"
                                        Foreground="{StaticResource Brush.Foreground}" TextWrapping="Wrap"/>
                             <TextBlock Text="{Binding Explorer.SelectionSubtitle}" Foreground="{StaticResource Brush.Muted}"
                                        Margin="0,4,0,18" TextWrapping="Wrap"/>
-                            <StackPanel Orientation="Horizontal">
-                                <Button Content="Extract file…" Command="{Binding Explorer.ExtractSelectedCommand}"
-                                        Margin="0,0,10,0"
-                                        Visibility="{Binding Explorer.HasSelectedFile, Converter={StaticResource BoolToVis}}"/>
-                                <Button Content="Extract folder / tank…" Command="{Binding Explorer.ExtractTreeCommand}"/>
-                            </StackPanel>
+                            <Button Content="Extract folder / tank…" Command="{Binding Explorer.ExtractTreeCommand}"
+                                    HorizontalAlignment="Left"/>
                         </StackPanel>
                         <TextBlock DockPanel.Dock="Bottom" TextWrapping="Wrap" Foreground="{StaticResource Brush.Muted}"
-                                   Text="Format-aware viewers — textures, gas, meshes — arrive in Phase 2. For now: browse the tree, search, inspect properties, and extract."/>
+                                   Text="Select a file to preview it — textures render, gas/scripts show as text, everything else falls back to a hex view."/>
                         <Grid/>
                     </DockPanel>
+
+                    <!-- File viewer (a file is selected) -->
+                    <ContentControl Content="{Binding Explorer.CurrentViewer}"
+                                    Visibility="{Binding Explorer.HasViewer, Converter={StaticResource BoolToVis}}">
+                        <ContentControl.Resources>
+
+                            <!-- Texture -->
+                            <DataTemplate DataType="{x:Type viewers:TextureViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"/>
+                                            <Button Content="Prev" Command="{Binding PrevSurfaceCommand}" Padding="8,2" Margin="16,0,4,0"
+                                                    Visibility="{Binding HasMips, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Content="Next" Command="{Binding NextSurfaceCommand}" Padding="8,2" Margin="0,0,8,0"
+                                                    Visibility="{Binding HasMips, Converter={StaticResource BoolToVis}}"/>
+                                            <TextBlock Text="{Binding SurfaceLabel}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"
+                                                       Visibility="{Binding HasMips, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Content="Export PNG…" Command="{Binding ExportPngCommand}" Margin="16,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <Border Background="#FF141414" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                                            <Image Source="{Binding Bitmap}" Stretch="None" Margin="10"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </DockPanel>
+                            </DataTemplate>
+
+                            <!-- Text -->
+                            <DataTemplate DataType="{x:Type viewers:TextViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
+                                             Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
+                                             BorderThickness="1" BorderBrush="{StaticResource Brush.Border}" Padding="8"
+                                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                </DockPanel>
+                            </DataTemplate>
+
+                            <!-- Hex -->
+                            <DataTemplate DataType="{x:Type viewers:HexViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <TextBox Text="{Binding HexText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
+                                             Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
+                                             BorderThickness="1" BorderBrush="{StaticResource Brush.Border}" Padding="8"
+                                             VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                </DockPanel>
+                            </DataTemplate>
+
+                        </ContentControl.Resources>
+                    </ContentControl>
                 </Grid>
             </Border>
 
