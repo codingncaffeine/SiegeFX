@@ -3266,9 +3266,9 @@ void main()
                 else if (key == Key.Keypad0 && _player is not null && !_player.IsDead)
                 {
                     _hoeGripDevMode = !_hoeGripDevMode;
-                    if (_hoeGripDevMode) { EquipHoeInHand(); _introHoeTimer = 0f; }
+                    if (_hoeGripDevMode) { EquipHoeInHand(); _introHoeTimer = 0f; PrintHoeGrip(); }
                     else { _player.Actor.Host.OverrideAnimIndex(-1, 0f); RestoreIntroHoeWeapon(); }
-                    Console.WriteLine($"[hoe-grip] dev mode = {_hoeGripDevMode} (hoe in hand + hoeing loop)");
+                    Console.WriteLine($"[hoe-grip] dev mode = {_hoeGripDevMode} (hoe in hand + hoeing loop); live value -> {HoeGripDevFile}");
                 }
                 else if (key == Key.Keypad8) { _hoeGripEulerDeg.X += 5f; PrintHoeGrip(); }
                 else if (key == Key.Keypad2) { _hoeGripEulerDeg.X -= 5f; PrintHoeGrip(); }
@@ -8448,6 +8448,10 @@ void main()
     private Vector3 _hoeGripTrans;
     private bool _hoeGripDevMode;       // Keypad0 — hoe in hand + hoeing loop for grip tuning, any time
     private bool _hoeRenderDiagLogged;  // one-shot per equip: confirm the in-hand hoe render fires + where
+    // Grip tuner mirrors its live value here every change so it can be read back without
+    // hunting through the frame-log spam. Dev-only; stripped with the tuner before v1.0.
+    private static readonly string HoeGripDevFile =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "siegefx_hoe_grip.txt");
 
     private void TickIntroDog(float dt)
     {
@@ -8598,10 +8602,16 @@ void main()
         }
     }
 
-    private void PrintHoeGrip() => Console.WriteLine(
-        $"[hoe-grip] rot(pitch,yaw,roll)=({_hoeGripEulerDeg.X:F0},{_hoeGripEulerDeg.Y:F0},{_hoeGripEulerDeg.Z:F0})deg " +
-        $"trans=({_hoeGripTrans.X:F3},{_hoeGripTrans.Y:F3},{_hoeGripTrans.Z:F3})  " +
-        "(bake: s_hoeGripRot = CreateFromYawPitchRoll(yaw,pitch,roll in rad), s_hoeGripTrans = trans)");
+    private void PrintHoeGrip()
+    {
+        string hand = _weaponGripBoneOverride >= 0 ? "off-hand(shield_grip)" : "main-hand(weapon_grip)";
+        string vals = $"rot(pitch,yaw,roll)=({_hoeGripEulerDeg.X:F0},{_hoeGripEulerDeg.Y:F0},{_hoeGripEulerDeg.Z:F0})deg " +
+                      $"trans=({_hoeGripTrans.X:F3},{_hoeGripTrans.Y:F3},{_hoeGripTrans.Z:F3}) hand={hand}";
+        Console.WriteLine($"[hoe-grip] {vals}");
+        // Mirror the live value to a file so it can be read back cleanly (the frame log
+        // buries it). Written on every grip change; the file always holds the current pose.
+        try { System.IO.File.WriteAllText(HoeGripDevFile, vals + System.Environment.NewLine); } catch { }
+    }
 
     /// <summary>Esc during the intro skips the *witnessing*, not the events: the player
     /// still ends up at the bridge and Norick still dies — you just don't watch it.
