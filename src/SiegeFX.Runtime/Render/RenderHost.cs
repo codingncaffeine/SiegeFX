@@ -2455,9 +2455,13 @@ public sealed class RenderHost : IDisposable
     private Vector3? _authoredSpawn;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
-    // SC-TERRAIN-UV — current terrain tile UV orientation (0..7), cycled by 'U'
-    // in-game to find the one where the ground pattern connects across tiles.
-    private int _terrainUvOrient;
+    // SC-TERRAIN-UV — current terrain tile UV orientation (0..7), cycled by 'U'.
+    // Default 3 (flipV) is the orientation found in-game where the ground pattern
+    // connects across tiles: terrain inherits an unconditional uFlipV=1 from the
+    // shared mesh shader, and orient 3 flips V a second time, so the two cancel and
+    // the terrain samples its raw authored UVs. (Equivalent to uFlipV=0 for terrain;
+    // kept as an orient so the numbering matches the in-game cycler for verification.)
+    private int _terrainUvOrient = 3;
     private SkinnedMesh? _skinnedMesh;
     private AspMesh? _skinnedAsp;
     private PrsAnimation? _anim;
