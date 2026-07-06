@@ -8366,6 +8366,7 @@ void main()
         public float FallTimer;      // counts down the collapse clip, then flips to the dying-words gesture
     }
     private NorickDeathSeq? _norickDeath;
+    private bool _introPlayerKneeling;                  // hero "fall to knees" while Norick gives his dying words
     private const float NorickWalkSpeed = 1.5f;         // "walk slow hunched"
     private const float NorickPlayerNearBridge = 14f;   // player within this of the bridge spot ⇒ arrived
 
@@ -8526,6 +8527,12 @@ void main()
         }
         z.Phase = NorickPhase.Dead;
         Console.WriteLine("[norick] dead");
+        // Hero stands out of the kneel as control returns.
+        if (_introPlayerKneeling && _player is not null)
+        {
+            _player.Actor.Host.OverrideAnimIndex(-1, 0f);
+            _introPlayerKneeling = false;
+        }
     }
 
     private void TickNorickDeath(float dt)
@@ -8599,6 +8606,13 @@ void main()
                 {
                     z.Phase = NorickPhase.Talking;
                     z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+                    // Hero drops to his knees beside the bridge while Norick gives his
+                    // dying words — DS1 drives cmd_ai_c_animate "knee" on the party leader.
+                    if (_player is not null && !_player.IsDead)
+                    {
+                        _player.Actor.PlayChoreOnce("knee", float.PositiveInfinity);
+                        _introPlayerKneeling = true;
+                    }
                     Console.WriteLine("[norick] dying-words gesture during the pans");
                 }
                 break;
