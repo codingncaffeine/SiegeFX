@@ -7612,6 +7612,13 @@ void main()
     private void BeginNisLeave(float duration)
     {
         _nisPhase = NisPhase.Leaving;
+        // SC-NIS — return to the player's CURRENT chase pose, not the pose captured
+        // at NIS-enter. The intro camera starts before the player runs to the bridge,
+        // so the enter-pose sits at his starting spot; interpolating back there added
+        // a stray pan to the start after the sequence. Re-aim the return at where the
+        // player actually is now so the chase camera resumes seamlessly.
+        if (_player is not null && _cameraMode == CameraMode.Chase)
+            ComputeChasePose(out _nisReturnPos, out _nisReturnYaw, out _nisReturnPitch);
         _nisFromPos = _camera.Position;
         _nisLeaveFromYaw = _camera.Yaw;
         _nisLeaveFromPitch = _camera.Pitch;
@@ -7619,6 +7626,30 @@ void main()
         _nisTimer = 0f;
         _nisCurrent = null;
         _nisLetterboxTarget = 0f;
+    }
+
+    /// <summary>The chase-camera pose for the player's current position — the
+    /// same framing the live chase update produces. Used to re-aim a NIS leave at
+    /// where the player is now rather than the stale pre-NIS pose.</summary>
+    private void ComputeChasePose(out Vector3 pos, out float yaw, out float pitch)
+    {
+        var target = (_player?.CurrentTransform.Translation ?? Vector3.Zero) + new Vector3(0, ChaseLookTargetY, 0);
+        float horiz, height;
+        if (_devCamUnclampedPitch)
+        {
+            horiz = _chaseDistance * MathF.Cos(_chasePitch);
+            height = _chaseDistance * MathF.Sin(_chasePitch);
+        }
+        else
+        {
+            horiz = _chaseDistance;
+            height = _chaseDistance * ChasePitchSlope;
+        }
+        var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * horiz;
+        pos = target + offset + new Vector3(0, height, 0);
+        var dir = Vector3.Normalize(target - pos);
+        yaw = MathF.Atan2(dir.X, -dir.Z);
+        pitch = MathF.Asin(Math.Clamp(dir.Y, -0.999f, 0.999f));
     }
 
     private static Quaternion NisQFromYawPitch(float yaw, float pitch)
@@ -8321,6 +8352,7 @@ void main()
     private NorickDeathSeq? _norickDeath;
     private const float NorickWalkSpeed = 1.5f;         // "walk slow hunched"
     private const float NorickPlayerNearBridge = 14f;   // player within this of the bridge spot ⇒ arrived
+    private const float NorickCollapseRadius = 2.5f;    // stop this short of the fall gizmo so he collapses on the bridge deck, not the water edge beside it
 
     private void TickNorickDeath(float dt)
     {
@@ -8334,12 +8366,28 @@ void main()
                 if (s.IsDead) continue;
                 if (!s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
                 _norickDeath = new NorickDeathSeq { Norick = s };
-                // His authored collapse spot is the position of the "fall" animation
-                // command that targets him — the middle of the bridge, a short walk
-                // from his post. Fall back to collapsing in place if it isn't indexed.
-                if (_animCommandPos.TryGetValue(s.Actor.Instance.Scid, out var bp))
-                { _norickDeath.BridgePos = bp; _norickDeath.HasBridgePos = true; }
-                else _norickDeath.BridgePos = s.CurrentTransform.Translation;
+                var spawn = s.CurrentTransform.Translation;
+                // His collapse spot is the "fall" animation command's position (mid-
+                // bridge). Aiming straight at it made him cross the bridge diagonally,
+                // so instead walk STRAIGHT AHEAD along his authored facing to the same
+                // forward depth — same distance, no sideways drift. Falls back to
+                // collapsing in place if the gizmo isn't indexed.
+                if (_animCommandPos.TryGetValue(s.Actor.Instance.Scid, out var gizmo))
+                {
+                    var fwd = Vector3.TransformNormal(Vector3.UnitZ, s.CurrentTransform);
+                    fwd.Y = 0f;
+                    float fl = fwd.Length();
+                    if (fl > 1e-4f)
+                    {
+                        fwd /= fl;
+                        var toGizmo = gizmo - spawn; toGizmo.Y = 0f;
+                        float depth = MathF.Max(0f, Vector3.Dot(toGizmo, fwd));
+                        _norickDeath.BridgePos = spawn + fwd * depth;
+                    }
+                    else _norickDeath.BridgePos = gizmo;
+                    _norickDeath.HasBridgePos = true;
+                }
+                else _norickDeath.BridgePos = spawn;
                 break;
             }
             if (_norickDeath is null) return;
@@ -8364,17 +8412,26 @@ void main()
             }
             case NorickPhase.Walking:
             {
-                z.WalkClipTimer -= dt;
-                if (z.WalkClipTimer <= 0f)
+                // Stop a couple units short of the fall gizmo — it sits at the bridge
+                // edge and walking onto it dropped him into the water beside the deck.
+                var np = z.Norick.CurrentTransform.Translation;
+                float wdx = z.BridgePos.X - np.X, wdz = z.BridgePos.Z - np.Z;
+                bool arrived = wdx * wdx + wdz * wdz <= NorickCollapseRadius * NorickCollapseRadius;
+                if (!arrived)
                 {
-                    z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
-                    z.WalkClipTimer = 0.8f;
+                    z.WalkClipTimer -= dt;
+                    if (z.WalkClipTimer <= 0f)
+                    {
+                        z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
+                        z.WalkClipTimer = 0.8f;
+                    }
+                    arrived = StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed);
                 }
-                if (StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed))
+                if (arrived)
                 {
                     z.Phase = NorickPhase.Down;
                     z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
-                    Console.WriteLine("[norick] collapsed at the bridge");
+                    Console.WriteLine("[norick] collapsed on the bridge");
                 }
                 break;
             }
