@@ -772,8 +772,123 @@ static int DispatchRegion(string[] a)
         "follow"      => CmdRegionFollow(a[1..]),
         "triggers"    => CmdRegionTriggers(a[1..]),
         "gen-audit"   => CmdRegionGenAudit(a[1..]),
+        "cmd-audit"   => CmdRegionCmdAudit(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
+}
+
+// SC-MOB-COMMANDS audit — inventory every scripted AI command (command.gas) across
+// one region or all: the verb (command template), how many placements use it, and
+// whether the runtime HANDLES it (movement + NIS) or STUBS it ("recognized but not
+// yet implemented"). Also counts actors that reference a scripted route via
+// [mind] initial_command. Surfaces exactly which scripted set-pieces are unwired —
+// the barn-fence smash falls out as a stubbed cmd_ai_* attack/job verb.
+static int CmdRegionCmdAudit(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx region cmd-audit <World.dsmap> [region|all]");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    string filter = a.Length >= 2 ? a[1].Trim() : "all";
+
+    // Verbs the runtime actually dispatches (RenderHost.ActivateAiCommand /
+    // BuildCommandRoute / the NIS engine). Everything else logs "recognized but
+    // not yet implemented" and is effectively inert.
+    var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "cmd_ai_c_move", "cmd_ai_c_move_orient", "cmd_ai_t_move", "cmd_ai_t_move_orient",
+        "cmd_enter_nis", "cmd_camera_command", "cmd_camera_waypoint", "cmd_leave_nis",
+    };
+    // "route" verbs aren't message-dispatched, but their positions ARE consumed by
+    // BuildCommandRoute -> AssignPatrolRoutes: an actor whose [mind] initial_command
+    // points at one of these walks the chain as a patrol. So the 105 scripted
+    // patrollers DO move; the verb-specific nuance (orient/face-on-arrival) is lost.
+    var routeVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "cmd_ai_c_patrol", "cmd_ai_c_patrol_orient",
+    };
+
+    var regionPaths = new List<string>();
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    if (!filter.Equals("all", StringComparison.OrdinalIgnoreCase))
+        regionPaths = regionPaths.Where(r => r.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+    if (regionPaths.Count == 0) { Console.Error.WriteLine($"no regions matched '{filter}'"); return 1; }
+
+    var verbCount = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var verbRegions = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+    int totalCmds = 0, actorsWithInitial = 0;
+    var initialByRegion = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    static string RegionName(string rp) { int i = rp.LastIndexOf('/'); return i >= 0 ? rp[(i + 1)..] : rp; }
+    static bool HasInitialCommand(SiegeFX.Core.Assets.GasNode node)
+    {
+        foreach (var at in node.Attributes)
+            if (at.Name.Equals("initial_command", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(at.Value) && !at.Value.Trim().Trim('"').Equals("0"))
+                return true;
+        foreach (var c in node.Children)
+            if (HasInitialCommand(c)) return true;
+        return false;
+    }
+
+    foreach (var rp in regionPaths)
+    {
+        var name = RegionName(rp);
+        var (cmds, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "command.gas");
+        foreach (var p in cmds)
+        {
+            verbCount.TryGetValue(p.TemplateName, out var c);
+            verbCount[p.TemplateName] = c + 1;
+            if (!verbRegions.TryGetValue(p.TemplateName, out var set)) verbRegions[p.TemplateName] = set = new(StringComparer.OrdinalIgnoreCase);
+            set.Add(name);
+            totalCmds++;
+        }
+        var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+        foreach (var p in actors)
+            if (HasInitialCommand(p.Node)) { actorsWithInitial++; initialByRegion.TryGetValue(name, out var ic); initialByRegion[name] = ic + 1; }
+    }
+
+    Console.WriteLine($"SCRIPTED COMMAND AUDIT — {(filter.Equals("all", StringComparison.OrdinalIgnoreCase) ? regionPaths.Count + " region(s)" : filter)}");
+    Console.WriteLine($"  {totalCmds} command placement(s), {verbCount.Count} distinct verb(s)");
+    Console.WriteLine($"  {actorsWithInitial} actor(s) reference a scripted route via [mind] initial_command");
+    Console.WriteLine();
+    Console.WriteLine($"  {"count",5} {"status",-8} verb (regions)");
+    int stubbed = 0, stubPlacements = 0;
+    foreach (var kv in verbCount.OrderByDescending(k => k.Value))
+    {
+        string status = handled.Contains(kv.Key) ? "handled"
+                      : routeVerbs.Contains(kv.Key) ? "route"
+                      : "STUB";
+        if (status == "STUB") { stubbed++; stubPlacements += kv.Value; }
+        int rc = verbRegions.TryGetValue(kv.Key, out var s) ? s.Count : 0;
+        Console.WriteLine($"  {kv.Value,5} {status,-8} {kv.Key}  ({rc} region{(rc == 1 ? "" : "s")})");
+    }
+    Console.WriteLine();
+    if (initialByRegion.Count > 0)
+    {
+        Console.WriteLine("actors with initial_command, by region (top 12):");
+        foreach (var kv in initialByRegion.OrderByDescending(k => k.Value).Take(12))
+            Console.WriteLine($"  {kv.Value,4}  {kv.Key}");
+        Console.WriteLine();
+    }
+    Console.WriteLine($"VERDICT: {verbCount.Count - stubbed}/{verbCount.Count} verb type(s) handled; {stubbed} stubbed ({stubPlacements} placements) — those scripted set-pieces are inert.");
+    return 0;
 }
 
 // SC-MOB-SPAWNER audit — enumerate every generator / on-death spawn edge across
