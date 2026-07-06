@@ -20,4 +20,9 @@
     <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Resource Include="Assets\banner.png" />
+    <Resource Include="Assets\logo.png" />
+  </ItemGroup>
+
 </Project>

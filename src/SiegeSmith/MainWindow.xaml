@@ -3,8 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:SiegeSmith.ViewModels"
         Title="SiegeSmith — Dungeon Siege Modding Studio"
-        Height="720" Width="1200"
+        Height="760" Width="1280"
         Background="{StaticResource Brush.Window}"
+        Icon="Assets/logo.png"
         FontFamily="Segoe UI" FontSize="13"
         TextOptions.TextFormattingMode="Display">
     <Window.DataContext>
@@ -12,83 +13,171 @@
     </Window.DataContext>
 
     <DockPanel>
-        <!-- Menu bar -->
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
-                <MenuItem Header="_Open Tank…" IsEnabled="False"/>
-                <MenuItem Header="Open _Install Folder…" IsEnabled="False"/>
+                <MenuItem Header="_Open Tank…" Command="{Binding OpenTankCommand}"/>
+                <MenuItem Header="_Close Tank" Command="{Binding CloseTankCommand}"/>
                 <Separator/>
                 <MenuItem Header="_Refresh Install" Command="{Binding RefreshInstallCommand}"/>
                 <Separator/>
                 <MenuItem Header="E_xit" Command="{Binding ExitCommand}"/>
             </MenuItem>
-            <MenuItem Header="_View"/>
-            <MenuItem Header="_Tools"/>
+            <MenuItem Header="_Tools">
+                <MenuItem Header="_Extract Selected File…" Command="{Binding Explorer.ExtractSelectedCommand}"/>
+                <MenuItem Header="Extract _Folder / Tank…" Command="{Binding Explorer.ExtractTreeCommand}"/>
+            </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About SiegeSmith" IsEnabled="False"/>
             </MenuItem>
         </Menu>
 
-        <!-- Status bar -->
         <StatusBar DockPanel.Dock="Bottom">
-            <StatusBarItem>
-                <TextBlock Text="{Binding StatusText}"/>
-            </StatusBarItem>
+            <StatusBarItem><TextBlock Text="{Binding StatusText}"/></StatusBarItem>
         </StatusBar>
 
-        <!-- Tri-pane workspace: explorer | content | inspector -->
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" MinWidth="200"/>
+                <ColumnDefinition Width="320" MinWidth="220"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="340" MinWidth="220"/>
+                <ColumnDefinition Width="340" MinWidth="240"/>
             </Grid.ColumnDefinitions>
 
-            <!-- Left rail: resource tanks (Phase 1 upgrades this to the full VFS tree) -->
+            <!-- ░░ Left rail: resource tanks + explorer ░░ -->
             <Border Grid.Column="0" Background="{StaticResource Brush.Panel}"
                     BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,1,0">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="RESOURCE TANKS"
-                               Style="{StaticResource Header.Section}"/>
-                    <ListBox ItemsSource="{Binding Tanks}">
+                    <TextBlock DockPanel.Dock="Top" Text="RESOURCE TANKS" Style="{StaticResource Header.Section}"/>
+                    <ListBox DockPanel.Dock="Top" MaxHeight="150" ItemsSource="{Binding Tanks}"
+                             SelectedItem="{Binding SelectedTank, Mode=TwoWay}">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <TextBlock Text="{Binding Name}" ToolTip="{Binding FullPath}"/>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
+                    <Button DockPanel.Dock="Top" Content="Open other tank…" Command="{Binding OpenTankCommand}"
+                            HorizontalAlignment="Left" Margin="10,8"/>
+                    <Border DockPanel.Dock="Top" Height="1" Background="{StaticResource Brush.Border}" Margin="0,2"/>
+                    <TextBlock DockPanel.Dock="Top" Text="EXPLORER" Style="{StaticResource Header.Section}"/>
+                    <TextBox DockPanel.Dock="Top" Margin="10,0,10,8" IsEnabled="{Binding HasTank}"
+                             Text="{Binding Explorer.SearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"/>
+
+                    <Grid>
+                        <!-- VFS tree -->
+                        <TreeView ItemsSource="{Binding Explorer.Roots}"
+                                  SelectedItemChanged="OnTreeSelectedItemChanged"
+                                  VirtualizingStackPanel.IsVirtualizing="True"
+                                  VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                  Visibility="{Binding Explorer.HasSearch, Converter={StaticResource InverseBoolToVis}}">
+                            <TreeView.ItemContainerStyle>
+                                <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                                    <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                    <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/>
+                                </Style>
+                            </TreeView.ItemContainerStyle>
+                            <TreeView.Resources>
+                                <HierarchicalDataTemplate DataType="{x:Type vm:TankNodeViewModel}" ItemsSource="{Binding Children}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Glyph}" FontFamily="Segoe MDL2 Assets"
+                                                   Margin="0,0,6,0" VerticalAlignment="Center">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Setter Property="Foreground" Value="{StaticResource Brush.Muted}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsDirectory}" Value="True">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Accent}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </HierarchicalDataTemplate>
+                            </TreeView.Resources>
+                        </TreeView>
+
+                        <!-- Search results (flat) -->
+                        <ListBox ItemsSource="{Binding Explorer.SearchResults}"
+                                 SelectedItem="{Binding Explorer.SelectedNode, Mode=TwoWay}"
+                                 Visibility="{Binding Explorer.HasSearch, Converter={StaticResource BoolToVis}}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding FullPath}" ToolTip="{Binding FullPath}"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+
+                        <!-- Empty-state hint (declared last so it paints over the empty tree) -->
+                        <TextBlock Text="Open a tank to browse its contents." Margin="14,6"
+                                   TextWrapping="Wrap" Foreground="{StaticResource Brush.Muted}"
+                                   Visibility="{Binding HasTank, Converter={StaticResource InverseBoolToVis}}"/>
+                    </Grid>
                 </DockPanel>
             </Border>
 
-            <GridSplitter Grid.Column="1" Width="4"
-                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
 
-            <!-- Center: welcome / workspace -->
+            <!-- ░░ Center: welcome / selection detail ░░ -->
             <Border Grid.Column="2" Background="{StaticResource Brush.Window}">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="560">
-                    <TextBlock Text="SiegeSmith" FontSize="40" FontWeight="Light"
-                               Foreground="{StaticResource Brush.Accent}" HorizontalAlignment="Center"/>
-                    <TextBlock Text="Dungeon Siege Modding Studio" FontSize="15"
-                               Foreground="{StaticResource Brush.Muted}" HorizontalAlignment="Center"
-                               Margin="0,4,0,24"/>
-                    <TextBlock Text="{Binding InstallLabel}" TextWrapping="Wrap" TextAlignment="Center"
-                               Foreground="{StaticResource Brush.Foreground}"/>
-                </StackPanel>
+                <Grid>
+                    <!-- Welcome (no tank open) -->
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="560"
+                                Visibility="{Binding HasTank, Converter={StaticResource InverseBoolToVis}}">
+                        <Image Source="Assets/banner.png" MaxWidth="520" Stretch="Uniform"
+                               HorizontalAlignment="Center" Margin="0,0,0,10"/>
+                        <TextBlock Text="Dungeon Siege Modding Studio" FontSize="15"
+                                   Foreground="{StaticResource Brush.Muted}" HorizontalAlignment="Center" Margin="0,0,0,24"/>
+                        <TextBlock Text="{Binding InstallLabel}" TextWrapping="Wrap" TextAlignment="Center"
+                                   Foreground="{StaticResource Brush.Foreground}"/>
+                    </StackPanel>
+
+                    <!-- Selection detail (tank open) -->
+                    <DockPanel Margin="28,24" Visibility="{Binding HasTank, Converter={StaticResource BoolToVis}}">
+                        <StackPanel DockPanel.Dock="Top">
+                            <TextBlock Text="{Binding Explorer.SelectionTitle}" FontSize="24"
+                                       Foreground="{StaticResource Brush.Foreground}" TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Explorer.SelectionSubtitle}" Foreground="{StaticResource Brush.Muted}"
+                                       Margin="0,4,0,18" TextWrapping="Wrap"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Button Content="Extract file…" Command="{Binding Explorer.ExtractSelectedCommand}"
+                                        Margin="0,0,10,0"
+                                        Visibility="{Binding Explorer.HasSelectedFile, Converter={StaticResource BoolToVis}}"/>
+                                <Button Content="Extract folder / tank…" Command="{Binding Explorer.ExtractTreeCommand}"/>
+                            </StackPanel>
+                        </StackPanel>
+                        <TextBlock DockPanel.Dock="Bottom" TextWrapping="Wrap" Foreground="{StaticResource Brush.Muted}"
+                                   Text="Format-aware viewers — textures, gas, meshes — arrive in Phase 2. For now: browse the tree, search, inspect properties, and extract."/>
+                        <Grid/>
+                    </DockPanel>
+                </Grid>
             </Border>
 
-            <GridSplitter Grid.Column="3" Width="4"
-                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+            <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
 
-            <!-- Right rail: inspector (populated from Phase 2 onward) -->
+            <!-- ░░ Right: properties inspector ░░ -->
             <Border Grid.Column="4" Background="{StaticResource Brush.Panel}"
                     BorderBrush="{StaticResource Brush.Border}" BorderThickness="1,0,0,0">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="INSPECTOR"
-                               Style="{StaticResource Header.Section}"/>
-                    <TextBlock Text="Select an asset to inspect." Margin="10,0"
-                               Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"/>
+                    <TextBlock DockPanel.Dock="Top" Text="PROPERTIES" Style="{StaticResource Header.Section}"/>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Explorer.Properties}" Margin="12,0,12,12">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="110"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Value}" Foreground="{StaticResource Brush.Foreground}" TextWrapping="Wrap"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
                 </DockPanel>
             </Border>
         </Grid>

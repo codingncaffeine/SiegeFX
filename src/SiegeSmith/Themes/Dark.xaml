@@ -123,4 +123,24 @@
         <Setter Property="Background" Value="{StaticResource Brush.Border}"/>
     </Style>
 
+    <!-- ══════════ TextBox ══════════ -->
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="CaretBrush" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="6,4"/>
+    </Style>
+
+    <!-- ══════════ Tree ══════════ -->
+    <Style TargetType="TreeView">
+        <Setter Property="Background" Value="{StaticResource Brush.Panel}"/>
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="BorderThickness" Value="0"/>
+    </Style>
+    <Style TargetType="TreeViewItem">
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+    </Style>
+
 </ResourceDictionary>
