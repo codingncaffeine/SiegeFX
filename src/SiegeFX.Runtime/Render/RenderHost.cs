@@ -3258,6 +3258,30 @@ void main()
                     Console.WriteLine($"[terrain-uv] orient={_terrainUvOrient} ({modes[_terrainUvOrient]})");
                     _audio?.Play(SfxGuiInventory);
                 }
+                // Hoe grip tuner (dev, NUMPAD — NumLock on). Dials in the in-hand hoe's
+                // grip angle live, then bake the printed values. Keypad0 toggles the hoe
+                // into the hero's hand outside the cinematic so it can be tuned with full
+                // camera control. 8/2 pitch, 4/6 yaw, 7/9 roll (±5°); 1/3 X, +/− Y, * / Z
+                // (±0.01); 5 resets; . prints. Same live-tweak flow the dagger grip used.
+                else if (key == Key.Keypad0 && _player is not null && !_player.IsDead)
+                {
+                    if (_introHoeSwapped) RestoreIntroHoeWeapon(); else EquipHoeInHand();
+                    Console.WriteLine($"[hoe-grip] hoe in hand = {_introHoeSwapped}");
+                }
+                else if (key == Key.Keypad8) { _hoeGripEulerDeg.X += 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad2) { _hoeGripEulerDeg.X -= 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad4) { _hoeGripEulerDeg.Y -= 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad6) { _hoeGripEulerDeg.Y += 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad7) { _hoeGripEulerDeg.Z -= 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad9) { _hoeGripEulerDeg.Z += 5f; PrintHoeGrip(); }
+                else if (key == Key.Keypad1) { _hoeGripTrans.X -= 0.01f; PrintHoeGrip(); }
+                else if (key == Key.Keypad3) { _hoeGripTrans.X += 0.01f; PrintHoeGrip(); }
+                else if (key == Key.KeypadAdd) { _hoeGripTrans.Y += 0.01f; PrintHoeGrip(); }
+                else if (key == Key.KeypadSubtract) { _hoeGripTrans.Y -= 0.01f; PrintHoeGrip(); }
+                else if (key == Key.KeypadMultiply) { _hoeGripTrans.Z += 0.01f; PrintHoeGrip(); }
+                else if (key == Key.KeypadDivide) { _hoeGripTrans.Z -= 0.01f; PrintHoeGrip(); }
+                else if (key == Key.Keypad5) { _hoeGripEulerDeg = Vector3.Zero; _hoeGripTrans = Vector3.Zero; PrintHoeGrip(); }
+                else if (key == Key.KeypadDecimal) { PrintHoeGrip(); }
                 // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
@@ -8410,6 +8434,10 @@ void main()
     private bool _introHoeSwapped;
     private string? _introHoeOrigWeapon;
     private const uint IntroHoeItemScid = 0x01c007c9;   // fh_r1 inventory.gas [t:hoe] — the ground hoe pickup
+    // Dev grip tuner for the in-hand hoe (numpad). Extra rot/trans applied on top of the
+    // base weapon grip while the hoe is held; bake the dialed-in values once it looks right.
+    private Vector3 _hoeGripEulerDeg;   // pitch(X), yaw(Y), roll(Z) in degrees
+    private Vector3 _hoeGripTrans;
 
     private void TickIntroDog(float dt)
     {
@@ -8474,11 +8502,7 @@ void main()
             // Put the actual hoe in his hands: swap the weapon_grip mesh to the hoe
             // item (m_w_misc_hoe) for the farming, remembering the equipped weapon so
             // it comes back when he drops it for the bridge run.
-            _introHoeOrigWeapon = _playerEquipment.TryGetValue("es_weapon_hand", out var cur) ? cur : null;
-            _introHoeSwapped = true;
-            _playerEquipment["es_weapon_hand"] = "hoe";
-            TryLoadPlayerWeapon();
-            _weaponGripBoneOverride = _shieldGripBoneIdx;   // ride the off-hand
+            EquipHoeInHand();
             // He's holding the hoe now — remove the ground hoe pickup so there isn't a
             // second hoe standing in the dirt next to him (DS1: the hoe just vanishes
             // after the beat, it never enters inventory).
@@ -8522,6 +8546,23 @@ void main()
         else _playerEquipment.Remove("es_weapon_hand");
         TryLoadPlayerWeapon();
     }
+
+    /// <summary>Swap the hero's weapon_grip mesh to the hoe on the off-hand, remembering
+    /// his real weapon. Shared by the intro farming beat and the dev grip tuner (Keypad0).</summary>
+    private void EquipHoeInHand()
+    {
+        if (_introHoeSwapped) return;
+        _introHoeOrigWeapon = _playerEquipment.TryGetValue("es_weapon_hand", out var cur) ? cur : null;
+        _introHoeSwapped = true;
+        _playerEquipment["es_weapon_hand"] = "hoe";
+        TryLoadPlayerWeapon();
+        _weaponGripBoneOverride = _shieldGripBoneIdx;   // ride the off-hand
+    }
+
+    private void PrintHoeGrip() => Console.WriteLine(
+        $"[hoe-grip] rot(pitch,yaw,roll)=({_hoeGripEulerDeg.X:F0},{_hoeGripEulerDeg.Y:F0},{_hoeGripEulerDeg.Z:F0})deg " +
+        $"trans=({_hoeGripTrans.X:F3},{_hoeGripTrans.Y:F3},{_hoeGripTrans.Z:F3})  " +
+        "(bake: s_hoeGripRot = CreateFromYawPitchRoll(yaw,pitch,roll in rad), s_hoeGripTrans = trans)");
 
     /// <summary>Esc during the intro skips the *witnessing*, not the events: the player
     /// still ends up at the bridge and Norick still dies — you just don't watch it.
@@ -17614,7 +17655,21 @@ void main()
                 // from 21d-2a-vi A/B work — see field-level comment for context.
                 var gripPreRot = Matrix4x4.CreateFromQuaternion(s_gripPreRot);
                 var gripPreTrans = Matrix4x4.CreateTranslation(s_gripPreTrans);
-                var weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                Matrix4x4 weaponModel;
+                if (_introHoeSwapped)
+                {
+                    // Hoe in hand: layer the dev-tunable grip offset (numpad) on top of the
+                    // base grip so its angle/twist can be dialed in live, then baked.
+                    const float d2r = MathF.PI / 180f;
+                    var hoeRot = Matrix4x4.CreateFromYawPitchRoll(
+                        _hoeGripEulerDeg.Y * d2r, _hoeGripEulerDeg.X * d2r, _hoeGripEulerDeg.Z * d2r);
+                    var hoeTrans = Matrix4x4.CreateTranslation(_hoeGripTrans);
+                    weaponModel = _weaponBindInv * hoeRot * hoeTrans * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                }
+                else
+                {
+                    weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                }
 
                 _meshShader.Use();
                 _meshShader.SetMatrix4("uViewProj", vp);
