@@ -43,6 +43,7 @@ try
         "music"     => DispatchMusic(args[1..]),
         "tsd"       => DispatchTsd(args[1..]),
         "quests"    => DispatchQuests(args[1..]),
+        "weapons"   => DispatchWeapons(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -6470,6 +6471,149 @@ static int CmdPartyInspect(string[] a)
     if (inv is null) Console.WriteLine("  (no [inventory] block)");
     else Dump(inv, 1);
     return 0;
+}
+
+static int DispatchWeapons(string[] a)
+{
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx weapons damage-audit <logic-tank> [--list]"); return 1; }
+    return a[0].ToLowerInvariant() switch
+    {
+        "damage-audit" => CmdWeaponsDamageAudit(a[1..]),
+        _              => UnknownCommand("weapons " + a[0]),
+    };
+}
+
+// Receipts-grade audit: enumerate every weapon-item template (an [attack]
+// [attack_class] plus an [aspect][model] grip mesh — the same definition the
+// pcontent/loot resolver uses) and confirm SiegeFX resolves each weapon's
+// authored damage_min/damage_max 1:1 through the in-game ActorStats path (what
+// an equipped weapon feeds its wielder via RenderHost.ApplyWeaponToStats).
+// Flags any weapon whose damage reads missing / zero / min>max — those deal no
+// or wrong damage in-game. Audits the SOURCE damage only; the defense-mitigation
+// formula in CombatResolver is a separate, explicitly-approximated concern.
+static int CmdWeaponsDamageAudit(string[] a)
+{
+    if (a.Length < 1) { Console.Error.WriteLine("usage: siegefx weapons damage-audit <logic-tank> [--list]"); return 1; }
+    bool list = a.Contains("--list");
+    using var logicTank = TankFile.Open(a[0]);
+    var (store, _) = TemplateStore.LoadFromTank(new TankReader(logicTank));
+
+    static float? Parse(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        s = s.Trim().Trim('"').Trim();
+        return float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : (float?)null;
+    }
+
+    static bool ContainsAny(string s, params string[] needles)
+    {
+        foreach (var n in needles)
+            if (s.Contains(n, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    int items = 0, innateNoModel = 0, actors = 0, devTest = 0;
+    var ammoThrown = new List<string>();
+    var zeroBug = new List<string>();
+    var swapped = new List<string>();
+    var mismatch = new List<string>();
+    var byClass = new SortedDictionary<string, (int n, float lo, float hi)>();
+    var rows = new List<(string name, string ac, float mn, float mx)>();
+
+    foreach (var tpl in store.All)
+    {
+        var ac = store.GetAttribute(tpl, "attack", "attack_class");
+        if (string.IsNullOrEmpty(ac)) continue;
+        if (string.IsNullOrEmpty(store.GetAttribute(tpl, "aspect", "model"))) { innateNoModel++; continue; }
+        var key = ac.StartsWith("ac_", StringComparison.OrdinalIgnoreCase) ? ac[3..] : ac;
+        // Exclude actors: a creature carries an innate attack (ac_beastfu) plus a
+        // [mind] AI brain; an equippable weapon ITEM has neither. (Weapons DO carry
+        // a [body] block for ground physics, so don't filter on that.) Creature
+        // damage is a separate monster-damage question, not a weapon.
+        if (string.Equals(key, "beastfu", StringComparison.OrdinalIgnoreCase)
+            || store.GetSection(tpl, "mind") is not null)
+        { actors++; continue; }
+        // Dev/test-only templates (test_*, dev_*) are never shipped as playable weapons.
+        if (tpl.Name.StartsWith("test_", StringComparison.OrdinalIgnoreCase)
+            || tpl.Name.StartsWith("dev_", StringComparison.OrdinalIgnoreCase))
+        { devTest++; continue; }
+        items++;
+
+        var authoredMin = Parse(store.GetAttribute(tpl, "attack", "damage_min"));
+        var authoredMax = Parse(store.GetAttribute(tpl, "attack", "damage_max"));
+        var st = SiegeFX.Core.Actors.ActorStats.FromTemplate(store, tpl);
+
+        float mn = authoredMin ?? 0f, mx = authoredMax ?? 0f;
+        rows.Add((tpl.Name, key, mn, mx));
+
+        // 1:1 check: what combat resolves (ActorStats) must equal what the
+        // template authored ([attack]damage_min/max).
+        if (Math.Abs(st.DamageMin - mn) > 0.001f || Math.Abs(st.DamageMax - mx) > 0.001f)
+            mismatch.Add($"{tpl.Name}: authored {mn}/{mx} but ActorStats {st.DamageMin}/{st.DamageMax}");
+
+        if (authoredMin is null || authoredMax is null || mx <= 0f)
+        {
+            // Ammunition (arrows/bolts/rocks) and throwables (grenades/bombs) carry no
+            // damage_min/max — their damage comes from the launcher that fires them or
+            // the explosion/spell they trigger. That's how DS1 authors them, not a bug.
+            bool ammo = key is "arrow" or "bolt"
+                || ContainsAny(tpl.Name, "grenade", "bomb", "powder", "rock", "shot", "frag");
+            (ammo ? ammoThrown : zeroBug).Add($"{tpl.Name} ({key})");
+        }
+        else
+        {
+            if (mn > mx) swapped.Add($"{tpl.Name} ({key}) {mn}>{mx}");
+            var cur = byClass.TryGetValue(key, out var v) ? v : (0, float.MaxValue, float.MinValue);
+            byClass[key] = (cur.Item1 + 1, Math.Min(cur.Item2, mn), Math.Max(cur.Item3, mx));
+        }
+    }
+
+    Console.WriteLine($"WEAPON DAMAGE AUDIT — {a[0]}");
+    Console.WriteLine($"  {items} weapon-item template(s)  ([attack][attack_class] + [aspect][model], not an actor)");
+    Console.WriteLine($"  {actors} excluded as actors (creatures w/ innate ac_beastfu / [mind])");
+    Console.WriteLine($"  {devTest} excluded as dev/test templates (test_* / dev_*)");
+    Console.WriteLine($"  {innateNoModel} excluded: attack_class but no [aspect][model] grip mesh");
+    Console.WriteLine();
+    Console.WriteLine("Per weapon class (damage range across the class):");
+    foreach (var kv in byClass)
+        Console.WriteLine($"  {kv.Key,-14} {kv.Value.n,4} weapon(s)   damage {kv.Value.lo:0.#}..{kv.Value.hi:0.#}");
+    Console.WriteLine();
+    Console.WriteLine("Resolution — in-game ActorStats path vs authored [attack]damage_min/max:");
+    Console.WriteLine($"  {items - mismatch.Count}/{items} resolve their authored damage 1:1");
+    if (mismatch.Count > 0)
+    {
+        Console.WriteLine($"  !! {mismatch.Count} MISMATCH (ActorStats != authored):");
+        foreach (var m in mismatch) Console.WriteLine($"       {m}");
+    }
+    if (zeroBug.Count > 0)
+    {
+        Console.WriteLine($"  !! {zeroBug.Count} weapon(s) reading NO/zero damage (deal nothing in-game):");
+        foreach (var z in zeroBug) Console.WriteLine($"       {z}");
+    }
+    if (ammoThrown.Count > 0)
+    {
+        Console.WriteLine($"  . {ammoThrown.Count} ammunition/thrown item(s): no damage_min/max — damage comes from the launcher or explosion, not the projectile (expected in DS1):");
+        foreach (var z in ammoThrown) Console.WriteLine($"       {z}");
+    }
+    if (swapped.Count > 0)
+    {
+        Console.WriteLine($"  ~ {swapped.Count} weapon(s) authored min>max (CombatResolver swaps them, but flag anyway):");
+        foreach (var s in swapped) Console.WriteLine($"       {s}");
+    }
+    if (list)
+    {
+        Console.WriteLine();
+        Console.WriteLine("All weapons (name  class  min..max):");
+        foreach (var r in rows.OrderBy(r => r.ac).ThenBy(r => r.name))
+            Console.WriteLine($"  {r.name,-40} {r.ac,-12} {r.mn:0.#}..{r.mx:0.#}");
+    }
+    Console.WriteLine();
+    bool ok = mismatch.Count == 0 && zeroBug.Count == 0;
+    Console.WriteLine(ok
+        ? $"VERDICT: PASS — all {items - ammoThrown.Count} damage-dealing weapons resolve their authored DS1 damage_min/max 1:1 ({ammoThrown.Count} ammo/thrown carry damage via launcher/explosion). Source damage only; mitigation is audited separately."
+        : $"VERDICT: {mismatch.Count} misread + {zeroBug.Count} zero-damage weapon(s) — NOT 1:1.");
+    return ok ? 0 : 1;
 }
 
 // Phase 26 — thoroughly maps how EVERY companion is recruited. DS1
