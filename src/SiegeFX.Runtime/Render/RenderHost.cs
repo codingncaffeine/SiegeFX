@@ -7989,15 +7989,24 @@ void main()
         int start = _subtitlePage * SubtitleLinesPerPage;
         int count = Math.Min(SubtitleLinesPerPage, _subtitleLines.Length - start);
         if (count <= 0) return;
-        const int lineH = 18;
+
+        // DS1 renders the NIS narration + quest text down inside the bottom letterbox
+        // bar (light ink on the black reads much more easily). Bump the bitmap font one
+        // integer size and vertically center the block within the bar.
+        const int scale = 2;
+        int lineH = _textRenderer.LineHeight * scale + 4;
         int barH = (int)(viewportH * 0.125f * _nisLetterbox);
-        int y0 = viewportH - Math.Max(barH, 24) - count * lineH - 8;
+        if (barH <= 0) return;
+        int barTop = viewportH - barH;
+        int blockH = count * lineH;
+        int y0 = barTop + Math.Max(2, (barH - blockH) / 2);
         var ink = new Vector4(0.96f, 0.94f, 0.85f, 1f);
         for (int i = 0; i < count; i++)
         {
             var line = _subtitleLines[start + i];
-            int x = Math.Max(8, viewportW / 2 - line.Length * 4);
-            _textRenderer.DrawString(viewportW, viewportH, line, x, y0 + i * lineH, ink);
+            int w = _textRenderer.MeasureWidth(line, scale);
+            int x = Math.Max(8, viewportW / 2 - w / 2);
+            _textRenderer.DrawString(viewportW, viewportH, line, x, y0 + i * lineH, ink, scale);
         }
     }
 
