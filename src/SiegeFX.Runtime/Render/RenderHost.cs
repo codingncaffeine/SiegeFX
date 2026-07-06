@@ -8016,7 +8016,7 @@ void main()
             foreach (var d in diags) Console.WriteLine("  " + d);
             foreach (var p in placements)
             {
-                uint next = 0, target1 = 0;
+                uint next = 0, target1 = 0, target2 = 0;
                 foreach (var child in p.Node.Children)
                 {
                     if (!child.Header.Equals("cmd_ai_dojob", StringComparison.OrdinalIgnoreCase)) continue;
@@ -8026,6 +8026,8 @@ void main()
                             TryParseSnodeGuid(a.Value, out next);
                         else if (a.Name.Equals("target1", StringComparison.OrdinalIgnoreCase))
                             TryParseSnodeGuid(a.Value, out target1);
+                        else if (a.Name.Equals("target2", StringComparison.OrdinalIgnoreCase))
+                            TryParseSnodeGuid(a.Value, out target2);
                     }
                     break;
                 }
@@ -8036,6 +8038,22 @@ void main()
                     world = Vector3.Transform(local, nodeWorld);
                 _commands[p.Scid] = (p.TemplateName, next, world, target1);
                 loaded++;
+                // SC-SMASH — a cmd_ai_t_attack_object authors a scripted actor
+                // (target1) breaking a breakable object (target2). The one shipped
+                // instance is the fh_r1 barn-fence beat: krug 0x01C005CA smashes
+                // the farmhouse fence. Register it for the proximity smash runner.
+                if (p.TemplateName.Equals("cmd_ai_t_attack_object", StringComparison.OrdinalIgnoreCase)
+                    && target1 != 0
+                    && !_scriptedSmashes.Exists(z => z.AttackerScid == target1 && z.ObjectScid == target2))
+                {
+                    _scriptedSmashes.Add(new ScriptedSmash
+                    {
+                        AttackerScid = target1,
+                        ObjectScid   = target2,
+                        AttackPos    = world,
+                    });
+                    Console.WriteLine($"  [smash] set-piece registered: actor 0x{target1:X8} -> break 0x{target2:X8} at ({world.X:F1},{world.Y:F1},{world.Z:F1})");
+                }
                 // SC-NIS - index NIS gizmos with world pose (placement
                 // quaternion composed with the anchor node's rotation).
                 var tnLower = p.TemplateName.ToLowerInvariant();
@@ -8162,6 +8180,165 @@ void main()
             float yaw = MathF.Atan2(dx, dz);
             s.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(np);
             s.IsMoving = true;
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // SC-SMASH — scripted "attack object" set-piece. DS1's fh_r1 authors a
+    // krug (cmd_ai_t_attack_object, target1 = the krug, target2 = a breakable
+    // object) that runs to the farmhouse fence and smashes it, gated behind
+    // the intro NIS's we_req_activate cascade ("make krug evil" / "krug starts
+    // moving"). Rather than reimplement the delayed-message chain we drive the
+    // visible beat directly: when the player nears the fence the krug runs in,
+    // swings, breaks it, walks back to its spawn, and hands movement back to
+    // its brain. Single-shot per set-piece.
+    // ────────────────────────────────────────────────────────────────────
+    private enum SmashPhase { Idle, ToFence, Returning }
+    private sealed class ScriptedSmash
+    {
+        public uint AttackerScid;
+        public uint ObjectScid;
+        public Vector3 AttackPos;      // authored spot the krug stands to attack
+        public Vector3 OriginPos;      // krug spawn, captured at trigger, returned to
+        public SmashPhase Phase = SmashPhase.Idle;
+        public ActorRenderState? Actor;
+        public float SwingTimer;       // brief dwell at the fence for the swing→break
+    }
+    private readonly List<ScriptedSmash> _scriptedSmashes = new();
+    private const float SmashTriggerRange = 18f;
+
+    /// <summary>True while the barn set-piece owns this actor's movement — the
+    /// brain loop skips it so it doesn't fight the scripted walk or clobber
+    /// the pose from its own follower position.</summary>
+    private bool IsInScriptedSmash(ActorRenderState s)
+    {
+        foreach (var z in _scriptedSmashes)
+            if (z.Phase != SmashPhase.Idle && ReferenceEquals(z.Actor, s)) return true;
+        return false;
+    }
+
+    // Kinematic step toward a goal (mirrors TickScriptedMoves): constant
+    // walk-speed translation with nav Y-snap and travel-direction facing.
+    // Returns true once the actor is within a step of the goal.
+    private bool StepScriptedActor(ActorRenderState s, Vector3 to, float dt)
+    {
+        var pos = s.CurrentTransform.Translation;
+        float dx = to.X - pos.X, dz = to.Z - pos.Z;
+        float dist = MathF.Sqrt(dx * dx + dz * dz);
+        float speed = s.Actor.Stats.WalkSpeed > 0.5f ? s.Actor.Stats.WalkSpeed : 3f;
+        if (dist <= MathF.Max(0.15f, speed * dt)) { s.IsMoving = false; return true; }
+        float step = speed * dt / dist;
+        var np = new Vector3(pos.X + dx * step, pos.Y, pos.Z + dz * step);
+        if (_navMesh is not null && _navMesh.TryFindTriangle(np, out var tri, includeFadeHidden: true))
+            np.Y = _navMesh.SampleYOnTriangle(tri, np);
+        float yaw = MathF.Atan2(dx, dz);
+        s.CurrentTransform = Matrix4x4.CreateRotationY(yaw) * Matrix4x4.CreateTranslation(np);
+        s.IsMoving = true;
+        return false;
+    }
+
+    private StaticPropInstance? ResolveSmashTarget(uint objScid, Vector3 nearPos)
+    {
+        // Prefer the authored target SCID; fall back to the nearest live
+        // breakable to the attack spot (target2 can resolve to a gizmo we
+        // don't index as a static prop).
+        foreach (var p in _staticProps)
+            if (p.Scid == objScid && p.IsBreakable && !p.IsDestroyed) return p;
+        StaticPropInstance? best = null;
+        float bestD = 6f;
+        foreach (var p in _staticProps)
+        {
+            if (!p.IsBreakable || p.IsDestroyed) continue;
+            var pp = p.World.Translation;
+            float d = MathF.Sqrt((pp.X - nearPos.X) * (pp.X - nearPos.X) + (pp.Z - nearPos.Z) * (pp.Z - nearPos.Z));
+            if (d < bestD) { bestD = d; best = p; }
+        }
+        return best;
+    }
+
+    /// <summary>Shatter a prop outright (scripted break — no to-hit roll).
+    /// Same debris / loot / sfx / particle beats as PerformPropBreak's
+    /// Life&lt;=0 branch.</summary>
+    private void ForceBreakProp(StaticPropInstance prop)
+    {
+        if (prop.IsDestroyed) return;
+        prop.Life = 0f;
+        prop.IsDestroyed = true;
+        SpawnPropDebris(prop);
+        LogPropLootDrop(prop);
+        PlayPropBreakSfx(prop);
+        if (_particles is not null)
+        {
+            var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
+            _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
+            _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
+        }
+    }
+
+    private void TickScriptedSmashes(float dt)
+    {
+        if (_scriptedSmashes.Count == 0 || _player is null || _player.IsDead) return;
+        var playerPos = _player.CurrentTransform.Translation;
+        for (int i = _scriptedSmashes.Count - 1; i >= 0; i--)
+        {
+            var z = _scriptedSmashes[i];
+            switch (z.Phase)
+            {
+                case SmashPhase.Idle:
+                {
+                    float dx = playerPos.X - z.AttackPos.X, dz = playerPos.Z - z.AttackPos.Z;
+                    if (dx * dx + dz * dz > SmashTriggerRange * SmashTriggerRange) break;
+                    ActorRenderState? act = null;
+                    foreach (var s in _actors)
+                        if (!s.IsDead && s.Actor.Instance.Scid == z.AttackerScid) { act = s; break; }
+                    if (act is null) { _scriptedSmashes.RemoveAt(i); break; } // attacker never spawned / gone
+                    z.Actor = act;
+                    z.OriginPos = act.CurrentTransform.Translation;
+                    z.Phase = SmashPhase.ToFence;
+                    Console.WriteLine($"[smash] triggered: actor 0x{z.AttackerScid:X8} runs in to break 0x{z.ObjectScid:X8}");
+                    break;
+                }
+                case SmashPhase.ToFence:
+                {
+                    if (z.Actor is null || z.Actor.IsDead) { _scriptedSmashes.RemoveAt(i); break; }
+                    if (StepScriptedActor(z.Actor, z.AttackPos, dt))
+                    {
+                        if (z.SwingTimer <= 0f)
+                        {
+                            z.SwingTimer = 0.5f;
+                            z.Actor.Actor.PlayChoreOnce("chore_attack", 0.8f);
+                            _audio?.Play(SfxMeleeSwingGroup);
+                        }
+                        z.SwingTimer -= dt;
+                        if (z.SwingTimer <= 0f)
+                        {
+                            var prop = ResolveSmashTarget(z.ObjectScid, z.AttackPos);
+                            if (prop is not null)
+                            {
+                                ForceBreakProp(prop);
+                                Console.WriteLine($"[smash] {z.Actor.Actor.Template.Name} broke {prop.Template} (0x{prop.Scid:X8})");
+                            }
+                            else
+                                Console.WriteLine($"[smash] no breakable prop resolved for 0x{z.ObjectScid:X8} near ({z.AttackPos.X:F1},{z.AttackPos.Z:F1})");
+                            z.Phase = SmashPhase.Returning;
+                        }
+                    }
+                    break;
+                }
+                case SmashPhase.Returning:
+                {
+                    if (z.Actor is null || z.Actor.IsDead) { _scriptedSmashes.RemoveAt(i); break; }
+                    if (StepScriptedActor(z.Actor, z.OriginPos, dt))
+                    {
+                        // Home — resync the brain's follower to this spot so it
+                        // resumes from the origin instead of snapping back.
+                        z.Actor.Brain?.Teleport(z.OriginPos);
+                        Console.WriteLine($"[smash] actor 0x{z.AttackerScid:X8} returned to origin");
+                        _scriptedSmashes.RemoveAt(i);
+                    }
+                    break;
+                }
+            }
         }
     }
 
@@ -9516,6 +9693,7 @@ void main()
                 UpdateGenerators((float)stepSec);
                 TickPendingObjectSpawns((float)stepSec);
                 TickScriptedMoves((float)stepSec);
+                TickScriptedSmashes((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -9540,6 +9718,10 @@ void main()
                     // so non-combatants and brain-less actors still tick.
                     s.Actor.Host.TickOverride((float)stepSec);
                     if (s.Brain is null) continue;
+                    // SC-SMASH — while the barn set-piece drives this actor, pause
+                    // its brain so it doesn't fight the scripted walk or overwrite
+                    // the pose from its own (stale) follower position.
+                    if (_scriptedSmashes.Count > 0 && IsInScriptedSmash(s)) continue;
                     // Phase 26 — recruited followers run their own combat/follow
                     // loop in TickPartyFollowers; skip them here so they don't
                     // chase the player as if hostile.
