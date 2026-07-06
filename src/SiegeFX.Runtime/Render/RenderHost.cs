@@ -3286,9 +3286,9 @@ void main()
                 else if (key == Key.KeypadDecimal) { PrintHoeGrip(); }
                 else if (key == Key.KeypadEnter && _introHoeSwapped)
                 {
-                    // Flip the hoe between the weapon (main) hand and the off-hand to compare.
+                    // Flip the hoe between the off-hand (character's left) and the weapon hand.
                     _weaponGripBoneOverride = _weaponGripBoneOverride >= 0 ? -1 : _shieldGripBoneIdx;
-                    Console.WriteLine($"[hoe-grip] hand = {(_weaponGripBoneOverride >= 0 ? "off-hand (shield_grip)" : "main hand (weapon_grip)")}");
+                    PrintHoeGrip();   // reflect the hand change in the mirror file
                 }
                 // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
@@ -8444,7 +8444,7 @@ void main()
     private const uint IntroHoeItemScid = 0x01c007c9;   // fh_r1 inventory.gas [t:hoe] — the ground hoe pickup
     // Dev grip tuner for the in-hand hoe (numpad). Extra rot/trans applied on top of the
     // base weapon grip while the hoe is held; bake the dialed-in values once it looks right.
-    private Vector3 _hoeGripEulerDeg;   // pitch(X), yaw(Y), roll(Z) in degrees
+    private Vector3 _hoeGripEulerDeg = new Vector3(-95f, 0f, -5f);   // pitch(X), yaw(Y), roll(Z) deg — seeded with the dialed-in hoe rotation so a rebuild doesn't lose it
     private Vector3 _hoeGripTrans;
     private bool _hoeGripDevMode;       // Keypad0 — hoe in hand + hoeing loop for grip tuning, any time
     private bool _hoeRenderDiagLogged;  // one-shot per equip: confirm the in-hand hoe render fires + where
@@ -8573,10 +8573,9 @@ void main()
         _introHoeSwapped = true;
         _playerEquipment["es_weapon_hand"] = "hoe";
         TryLoadPlayerWeapon();
-        // Default to the weapon (main) hand — that's where the hoeing animation actually
-        // holds the hoe, so pinned to the off-hand it clipped behind the body and read as
-        // empty. KeypadEnter flips main<->off to compare.
-        _weaponGripBoneOverride = -1;
+        // The hoeing reads right in the hero's LEFT hand (shield_grip / off-hand) — the hand
+        // the grip was tuned against. KeypadEnter flips off<->main to compare.
+        _weaponGripBoneOverride = _shieldGripBoneIdx;
         _hoeRenderDiagLogged = false;   // re-log one render fire for this equip
         Console.WriteLine($"[hoe] equipped: mesh={(_weaponMesh is null ? "NULL — failed to load" : "ok")} " +
                           $"weaponGrip={_weaponGripBoneIdx} shieldGrip={_shieldGripBoneIdx}");
@@ -17713,8 +17712,12 @@ void main()
                     const float d2r = MathF.PI / 180f;
                     var hoeRot = Matrix4x4.CreateFromYawPitchRoll(
                         _hoeGripEulerDeg.Y * d2r, _hoeGripEulerDeg.X * d2r, _hoeGripEulerDeg.Z * d2r);
+                    // Position offset applied in PLAYER space (after the hand-bone world, before
+                    // the player->world transform) so numpad nudges move the hoe relative to the
+                    // hero — Y up/down, X across, Z fore/aft — instead of along the hoe's own
+                    // tilted local axes, where "down" came out sideways.
                     var hoeTrans = Matrix4x4.CreateTranslation(_hoeGripTrans);
-                    weaponModel = _weaponBindInv * hoeRot * hoeTrans * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                    weaponModel = _weaponBindInv * hoeRot * gripPreRot * gripPreTrans * gripLocal * hoeTrans * _player.CurrentTransform;
                 }
                 else
                 {
