@@ -3165,13 +3165,15 @@ void main()
                         CancelScrollDrag();
                         return;
                     }
-                    // SC-NIS - Esc skips the cinematic (v1 of DS1's silent
-                    // fast-forward: jump to the leave pan; the trigger-side
-                    // delayed choreography keeps its own clocks).
+                    // SC-NIS - Esc skips the cinematic, but the scripted events still
+                    // resolve (DS1's silent fast-forward): stop the narration, land the
+                    // player at the end of his bridge run, kill Norick, retire the dog,
+                    // then pan back. You skip watching it, not the outcome.
                     if (_nisPhase != NisPhase.Off && _nisPhase != NisPhase.Leaving)
                     {
                         Console.WriteLine("[nis] skipped by Esc");
                         StopIntroChoreography();
+                        FastForwardIntroSkip();
                         BeginNisLeave(0.8f);
                         return;
                     }
@@ -8365,7 +8367,6 @@ void main()
     private NorickDeathSeq? _norickDeath;
     private const float NorickWalkSpeed = 1.5f;         // "walk slow hunched"
     private const float NorickPlayerNearBridge = 14f;   // player within this of the bridge spot ⇒ arrived
-    private const float NorickCollapseRadius = 2.5f;    // stop this short of the fall gizmo so he collapses on the bridge deck, not the water edge beside it
 
     // SC-INTRO-DOG — the farmhouse dog (dog_sleeping) sits by the wheelbarrow and
     // looks up when the intro camera pans to it, then is gone in normal gameplay.
@@ -8373,22 +8374,36 @@ void main()
     // one look cue during the NIS and retires it (stops drawing) once the NIS ends.
     private ActorRenderState? _introDog;
     private bool _introDogResolved;
+    private float _introDogSniffTimer;
 
-    private void TickIntroDog()
+    private void TickIntroDog(float dt)
     {
         if (_nisPhase != NisPhase.Off)
         {
-            if (_introDogResolved) return;
-            foreach (var s in _actors)
+            if (!_introDogResolved)
             {
-                if (!s.Actor.Template.Name.Equals("dog_sleeping", StringComparison.OrdinalIgnoreCase)) continue;
-                _introDog = s;
-                _introDogResolved = true;
-                // Raise its head toward the camera for the pan. "look" is the anim the
-                // intro's cmd_animation_command drives on it; if that clip isn't present
-                // it simply holds its sitting pose (still correct — just no head-lift).
-                s.Actor.PlayChoreOnce("look", float.PositiveInfinity);
-                break;
+                foreach (var s in _actors)
+                {
+                    if (!s.Actor.Template.Name.Equals("dog_sleeping", StringComparison.OrdinalIgnoreCase)) continue;
+                    _introDog = s;
+                    _introDogResolved = true;
+                    break;
+                }
+            }
+            // Loop the sniff ("look" = dsf-02) through the intro so the dog is mid-sniff
+            // whenever the camera pans to it. PlayChoreOnce end-holds on the clip's last
+            // frame, so a single play at NIS start would be frozen by the time the pan
+            // arrives; re-arming it (with an AnimTime reset) every couple seconds keeps
+            // the head-lift/sniff alive across the whole intro.
+            if (_introDog is not null)
+            {
+                _introDogSniffTimer -= dt;
+                if (_introDogSniffTimer <= 0f)
+                {
+                    _introDog.AnimTime = 0;
+                    _introDog.Actor.PlayChoreOnce("look", 2f);
+                    _introDogSniffTimer = 2f;
+                }
             }
         }
         else if (_introDogResolved && _introDog is not null && !_introDog.Hidden)
@@ -8399,52 +8414,134 @@ void main()
         }
     }
 
+    /// <summary>Esc during the intro skips the *witnessing*, not the events: the player
+    /// still ends up at the bridge and Norick still dies — you just don't watch it.
+    /// Snap the player to the end of his scripted run and force the Norick/dog outcomes
+    /// so gameplay resumes in the correct post-intro state.</summary>
+    private void FastForwardIntroSkip()
+    {
+        // Player: land him where the scripted run would have ended (the bridge). Fall
+        // back to Norick's bridge spot if the run never started.
+        var end = ResolvePlayerRunEndpoint();
+        if (end is null && EnsureNorickDeathSeq() is { HasBridgePos: true } b) end = b.BridgePos;
+        if (end is Vector3 dest) TeleportPlayerTo(dest);
+
+        // Norick: dead at the bridge no matter how far his walk got.
+        if (EnsureNorickDeathSeq() is { } seq) SettleNorickDead(seq);
+
+        // Dog: retire the one-shot intro prop immediately.
+        if (_introDog is not null) _introDog.Hidden = true;
+    }
+
+    /// <summary>Walk the hero's scripted move chain to its final destination (the last
+    /// cmd_ai_c_move in the sequence), or his current in-flight goal. Null if no run.</summary>
+    private Vector3? ResolvePlayerRunEndpoint()
+    {
+        Vector3? dest = null;
+        if (_playerFollower is not null && !_playerFollower.ReachedGoal) dest = _playerFollower.Target;
+        uint cursor = _playerScriptedNext;
+        int guard = 0;
+        while (cursor != 0 && _commands.TryGetValue(cursor, out var c) && guard++ < 128)
+        {
+            if (c.Type is "cmd_ai_c_move" or "cmd_ai_c_move_orient") dest = c.Pos;
+            cursor = c.Next;
+        }
+        return dest;
+    }
+
+    /// <summary>Snap the hero (and his nav follower + render interp) to a world point,
+    /// cancelling any scripted-run chain. Y is nav-snapped.</summary>
+    private void TeleportPlayerTo(Vector3 dest)
+    {
+        if (_player is null) return;
+        if (_navMesh is not null && _navMesh.TryFindTriangle(dest, out var tri, includeFadeHidden: true))
+            dest.Y = _navMesh.SampleYOnTriangle(tri, dest);
+        _playerFollower?.Teleport(dest);
+        _player.CurrentTransform = Matrix4x4.CreateTranslation(dest);
+        _player.IsMoving = false;
+        _playerRenderInit = false;           // re-seed interp buffers so the draw doesn't slide there
+        _playerScriptedNext = 0;             // cancel the remaining scripted-run chain
+        _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, _player));
+    }
+
+    /// <summary>Locate SP Norick and resolve his straight-ahead bridge collapse spot —
+    /// his "fall" command's position projected onto his authored facing, so he walks
+    /// forward rather than diagonally. Cached in _norickDeath; null until he's spawned.</summary>
+    private NorickDeathSeq? EnsureNorickDeathSeq()
+    {
+        if (_norickDeath is not null) return _norickDeath;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead) continue;
+            if (!s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
+            var seq = new NorickDeathSeq { Norick = s };
+            var spawn = s.CurrentTransform.Translation;
+            if (_animCommandPos.TryGetValue(s.Actor.Instance.Scid, out var gizmo))
+            {
+                var fwd = Vector3.TransformNormal(Vector3.UnitZ, s.CurrentTransform);
+                fwd.Y = 0f;
+                float fl = fwd.Length();
+                if (fl > 1e-4f)
+                {
+                    fwd /= fl;
+                    var toGizmo = gizmo - spawn; toGizmo.Y = 0f;
+                    float depth = MathF.Max(0f, Vector3.Dot(toGizmo, fwd));
+                    seq.BridgePos = spawn + fwd * depth;
+                }
+                else seq.BridgePos = gizmo;
+                seq.HasBridgePos = true;
+            }
+            else seq.BridgePos = spawn;
+            _norickDeath = seq;
+            return seq;
+        }
+        return null;
+    }
+
+    /// <summary>Put Norick in the final dead pose at the bridge collapse spot no matter
+    /// how far the walk got. Called when the intro NIS ends — played out or Esc-skipped
+    /// (the death still happens; the player may just not have witnessed it). Idempotent.</summary>
+    private void SettleNorickDead(NorickDeathSeq z)
+    {
+        if (z.Norick is null || z.Phase == NorickPhase.Dead) return;
+        if (z.Phase is NorickPhase.Idle or NorickPhase.Walking && z.HasBridgePos)
+        {
+            // Skipped before he finished walking — drop him at the bridge spot.
+            var p = z.BridgePos;
+            if (_navMesh is not null && _navMesh.TryFindTriangle(p, out var tri, includeFadeHidden: true))
+                p.Y = _navMesh.SampleYOnTriangle(tri, p);
+            z.Norick.CurrentTransform = Matrix4x4.CreateTranslation(p);
+        }
+        z.Norick.IsMoving = false;
+        z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+        z.Phase = NorickPhase.Dead;
+        Console.WriteLine("[norick] dead");
+    }
+
     private void TickNorickDeath(float dt)
     {
         if (_player is null || _player.IsDead) return;
+        // Only active once the intro NIS has begun (that's the one scene Norick performs).
         if (_norickDeath is null)
         {
-            // Only hunt during the intro NIS — that's the one scene Norick performs.
             if (_nisPhase == NisPhase.Off) return;
-            foreach (var s in _actors)
-            {
-                if (s.IsDead) continue;
-                if (!s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
-                _norickDeath = new NorickDeathSeq { Norick = s };
-                var spawn = s.CurrentTransform.Translation;
-                // His collapse spot is the "fall" animation command's position (mid-
-                // bridge). Aiming straight at it made him cross the bridge diagonally,
-                // so instead walk STRAIGHT AHEAD along his authored facing to the same
-                // forward depth — same distance, no sideways drift. Falls back to
-                // collapsing in place if the gizmo isn't indexed.
-                if (_animCommandPos.TryGetValue(s.Actor.Instance.Scid, out var gizmo))
-                {
-                    var fwd = Vector3.TransformNormal(Vector3.UnitZ, s.CurrentTransform);
-                    fwd.Y = 0f;
-                    float fl = fwd.Length();
-                    if (fl > 1e-4f)
-                    {
-                        fwd /= fl;
-                        var toGizmo = gizmo - spawn; toGizmo.Y = 0f;
-                        float depth = MathF.Max(0f, Vector3.Dot(toGizmo, fwd));
-                        _norickDeath.BridgePos = spawn + fwd * depth;
-                    }
-                    else _norickDeath.BridgePos = gizmo;
-                    _norickDeath.HasBridgePos = true;
-                }
-                else _norickDeath.BridgePos = spawn;
-                break;
-            }
-            if (_norickDeath is null) return;
+            if (EnsureNorickDeathSeq() is null) return;
         }
-        var z = _norickDeath;
+        var z = _norickDeath!;
         if (z.Norick is null || z.Norick.IsDead) return;
+
+        // NIS ended — guarantee the death outcome regardless of how far the walk got.
+        if (_nisPhase == NisPhase.Off)
+        {
+            SettleNorickDead(z);
+            return;
+        }
+
         var playerPos = _player.CurrentTransform.Translation;
         switch (z.Phase)
         {
             case NorickPhase.Idle:
             {
-                if (_nisPhase == NisPhase.Off) break;          // gate on the intro NIS
                 // Wait until the player has reached the bridge (is near Norick's
                 // authored collapse spot) before Norick starts his walk.
                 float dx = playerPos.X - z.BridgePos.X, dz = playerPos.Z - z.BridgePos.Z;
@@ -8457,23 +8554,18 @@ void main()
             }
             case NorickPhase.Walking:
             {
-                // Stop a couple units short of the fall gizmo — it sits at the bridge
-                // edge and walking onto it dropped him into the water beside the deck.
-                var np = z.Norick.CurrentTransform.Translation;
-                float wdx = z.BridgePos.X - np.X, wdz = z.BridgePos.Z - np.Z;
-                bool arrived = wdx * wdx + wdz * wdz <= NorickCollapseRadius * NorickCollapseRadius;
-                if (!arrived)
+                z.WalkClipTimer -= dt;
+                if (z.WalkClipTimer <= 0f)
                 {
-                    z.WalkClipTimer -= dt;
-                    if (z.WalkClipTimer <= 0f)
-                    {
-                        z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
-                        z.WalkClipTimer = 0.8f;
-                    }
-                    arrived = StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed);
+                    z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
+                    z.WalkClipTimer = 0.8f;
                 }
-                if (arrived)
+                if (StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed))
                 {
+                    // Arrived — clear IsMoving so the render's walk-clip gate releases and
+                    // the held "fall" collapse pose actually shows (it was masked before,
+                    // which read as "stuck walking in place, never fell").
+                    z.Norick.IsMoving = false;
                     z.Phase = NorickPhase.Down;
                     z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
                     Console.WriteLine("[norick] collapsed on the bridge");
@@ -8481,17 +8573,9 @@ void main()
                 break;
             }
             case NorickPhase.Down:
-            {
-                // Hold the collapse/gesture pose through the sitting-up shot; settle
-                // to the dead pose once the NIS returns control to normal gameplay.
-                if (_nisPhase == NisPhase.Off)
-                {
-                    z.Phase = NorickPhase.Dead;
-                    z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
-                    Console.WriteLine("[norick] dead");
-                }
+                // Hold the collapse/gesture pose through the sitting-up shot; the dead
+                // settle happens in the NIS-ended handler above.
                 break;
-            }
             case NorickPhase.Dead:
                 break;
         }
@@ -9960,7 +10044,7 @@ void main()
                 TickScriptedMoves((float)stepSec);
                 TickScriptedSmashes((float)stepSec);
                 TickNorickDeath((float)stepSec);
-                TickIntroDog();
+                TickIntroDog((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -16967,7 +17051,12 @@ void main()
                     // is translating this actor; otherwise honor the skrit-driven default.
                     // Without this every NPC played its idle while striding across the map.
                     int idx;
-                    if (!s.IsDead && s.IsMoving && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length)
+                    // A pinned chore override (fall/dead/look, cast, swing) wins over the
+                    // IsMoving walk swap — matches the AnimTime tick's gate. Without the
+                    // !IsOverrideActive check a scripted actor that stopped moving with a
+                    // held pose (Norick's "fall") kept drawing the walk clip in place.
+                    if (!s.IsDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
+                        && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length)
                         idx = s.Actor.WalkClipIndex;
                     else
                         idx = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
