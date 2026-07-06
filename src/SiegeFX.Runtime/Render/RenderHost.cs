@@ -8606,6 +8606,11 @@ void main()
                 {
                     z.Phase = NorickPhase.Talking;
                     z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+                    // Scroll NORICK'S OWN dialogue (his dying words = the first-quest text
+                    // he speaks) along the bottom, using the same subtitle path as the
+                    // opening narration but with his conversation. This is separate from
+                    // the narrator intro (which has long since finished by now).
+                    OnTalkBeginMessage(z.Norick.Actor.Instance.Scid);
                     // Hero drops to his knees beside the bridge while Norick gives his
                     // dying words — DS1 drives cmd_ai_c_animate "knee" on the party leader.
                     if (_player is not null && !_player.IsDead)
