@@ -14,6 +14,7 @@
     <RootNamespace>SiegeSmith</RootNamespace>
     <AssemblyName>SiegeSmith</AssemblyName>
     <Product>SiegeSmith</Product>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
