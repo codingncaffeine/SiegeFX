@@ -3284,6 +3284,12 @@ void main()
                 else if (key == Key.KeypadDivide) { _hoeGripTrans.Z -= 0.01f; PrintHoeGrip(); }
                 else if (key == Key.Keypad5) { _hoeGripEulerDeg = Vector3.Zero; _hoeGripTrans = Vector3.Zero; PrintHoeGrip(); }
                 else if (key == Key.KeypadDecimal) { PrintHoeGrip(); }
+                else if (key == Key.KeypadEnter && _introHoeSwapped)
+                {
+                    // Flip the hoe between the weapon (main) hand and the off-hand to compare.
+                    _weaponGripBoneOverride = _weaponGripBoneOverride >= 0 ? -1 : _shieldGripBoneIdx;
+                    Console.WriteLine($"[hoe-grip] hand = {(_weaponGripBoneOverride >= 0 ? "off-hand (shield_grip)" : "main hand (weapon_grip)")}");
+                }
                 // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
@@ -8554,12 +8560,17 @@ void main()
     /// his real weapon. Shared by the intro farming beat and the dev grip tuner (Keypad0).</summary>
     private void EquipHoeInHand()
     {
-        if (_introHoeSwapped) return;
+        if (_introHoeSwapped) { Console.WriteLine("[hoe] equip skipped (already in hand)"); return; }
         _introHoeOrigWeapon = _playerEquipment.TryGetValue("es_weapon_hand", out var cur) ? cur : null;
         _introHoeSwapped = true;
         _playerEquipment["es_weapon_hand"] = "hoe";
         TryLoadPlayerWeapon();
-        _weaponGripBoneOverride = _shieldGripBoneIdx;   // ride the off-hand
+        // Default to the weapon (main) hand — that's where the hoeing animation actually
+        // holds the hoe, so pinned to the off-hand it clipped behind the body and read as
+        // empty. KeypadEnter flips main<->off to compare.
+        _weaponGripBoneOverride = -1;
+        Console.WriteLine($"[hoe] equipped: mesh={(_weaponMesh is null ? "NULL — failed to load" : "ok")} " +
+                          $"weaponGrip={_weaponGripBoneIdx} shieldGrip={_shieldGripBoneIdx}");
     }
 
     /// <summary>Dev grip-tuning aid: while Keypad0 dev mode is on (outside the intro),
