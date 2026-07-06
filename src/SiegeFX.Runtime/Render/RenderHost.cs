@@ -9831,7 +9831,7 @@ void main()
     /// which then owns + disposes it. Null if the basename doesn't resolve.</summary>
     private GlTexture? LoadDecalTexture(string basename)
     {
-        if (_playResolver is null) return null;
+        if (_gl is null || _playResolver is null) return null;
         if (!_playResolver.TryLoadByBasename(basename + ".raw", out var bytes)) return null;
         try { return new GlTexture(_gl, RawImage.Load(bytes)); }
         catch { return null; }
