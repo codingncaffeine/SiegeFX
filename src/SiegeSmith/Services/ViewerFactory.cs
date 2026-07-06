@@ -20,6 +20,12 @@ public static class ViewerFactory
             catch { /* corrupt/unsupported RAW — fall through to hex */ }
         }
 
+        if (ext == ".gas")
+        {
+            try { return new GasViewerViewModel(name, bytes); }
+            catch { /* malformed gas — fall through to the text reader */ }
+        }
+
         return LooksLikeText(bytes)
             ? new TextViewerViewModel(name, bytes)
             : new HexViewerViewModel(name, bytes);

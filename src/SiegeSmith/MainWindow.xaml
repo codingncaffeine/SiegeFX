@@ -182,6 +182,55 @@
                                 </DockPanel>
                             </DataTemplate>
 
+                            <!-- Gas (structured block/attribute tree + raw toggle) -->
+                            <DataTemplate DataType="{x:Type viewers:GasViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"/>
+                                            <Button Content="{Binding ToggleLabel}" Command="{Binding ToggleViewCommand}" Margin="16,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <Border BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                                        <Grid>
+                                            <TreeView ItemsSource="{Binding Roots}" Background="{StaticResource Brush.Panel}"
+                                                      Visibility="{Binding ShowTree, Converter={StaticResource BoolToVis}}"
+                                                      VirtualizingStackPanel.IsVirtualizing="True"
+                                                      VirtualizingStackPanel.VirtualizationMode="Recycling">
+                                                <TreeView.ItemContainerStyle>
+                                                    <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+                                                        <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                                                    </Style>
+                                                </TreeView.ItemContainerStyle>
+                                                <TreeView.Resources>
+                                                    <HierarchicalDataTemplate DataType="{x:Type viewers:GasTreeNode}" ItemsSource="{Binding Children}">
+                                                        <TextBlock Text="{Binding Text}" FontFamily="Consolas" FontSize="12.5">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                                    <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsBlock}" Value="True">
+                                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Accent}"/>
+                                                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </HierarchicalDataTemplate>
+                                                </TreeView.Resources>
+                                            </TreeView>
+                                            <TextBox Text="{Binding RawText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
+                                                     Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
+                                                     BorderThickness="0" Padding="8"
+                                                     Visibility="{Binding ShowRaw, Converter={StaticResource BoolToVis}}"
+                                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                        </Grid>
+                                    </Border>
+                                </DockPanel>
+                            </DataTemplate>
+
                             <!-- Text -->
                             <DataTemplate DataType="{x:Type viewers:TextViewerViewModel}">
                                 <DockPanel Margin="16">
