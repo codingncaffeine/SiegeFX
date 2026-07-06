@@ -154,6 +154,12 @@ public sealed class RenderHost : IDisposable
     // the placeholder forced (straight alpha blend, so the tint IS the visible grey).
     private static readonly Vector4 s_smokeTint = new(0.52f, 0.52f, 0.55f, 1f);
 
+    // SC-DECALS — region projected-decal layer (burnt-wood char on the farmhouse
+    // doors, blood, ground scorch, drop shadows, dirt, straw, rugs). Built once per
+    // region load from decals/decals.gas; drawn over the world each frame. Null
+    // until a region carrying decals loads.
+    private DecalRenderer? _decalRenderer;
+
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
     // terrain RegionInstance AABB centers in that region). Computed once
     // after the world layout settles; used by the render gates to decide
@@ -5866,6 +5872,7 @@ void main()
         // registers them; we kick the message below so the rows fire.
         var emitterPlacementCount = 0;
         var legacyParticleCount = 0;
+        var decalQuads = new List<DecalRenderer.DecalQuad>();
         foreach (var rp in triggerRegions)
         {
             var (placements, diags) =
@@ -5881,6 +5888,20 @@ void main()
             // fh_r1's burning farmhouse is the canary: fire+smoke at the
             // doorway, dark/light columns from the same template family.
             legacyParticleCount += RegisterLegacyParticleEmitters(placements);
+
+            // SC-DECALS — accumulate this region's projected decals (the char on the
+            // burnt farmhouse doors, blood, ground scorch, drop shadows, dirt, straw,
+            // rugs). Node transforms resolve against _regionLayout, same as above.
+            RegisterRegionDecals(mapReader, rp, decalQuads);
+        }
+        // SC-DECALS — build the region's decal layer as one texture-batched VBO,
+        // drawn over the world each frame in OnRender.
+        if (decalQuads.Count > 0)
+        {
+            _decalRenderer ??= new DecalRenderer(_gl);
+            _decalRenderer.SetDecals(decalQuads, LoadDecalTexture);
+            Console.WriteLine($"  decals: {_decalRenderer.DecalCount} projected quads " +
+                              $"from {decalQuads.Count} placements");
         }
         Console.WriteLine($"  triggers: {_triggerRuntime.Instances.Count} active matrices " +
                           $"from {triggerPlacementCount} special.gas + " +
@@ -9772,6 +9793,48 @@ void main()
             registered++;
         }
         return registered;
+    }
+
+    /// <summary>SC-DECALS — parse a region's decals/decals.gas and append one world
+    /// quad per decal to <paramref name="outQuads"/>. decal_origin is node-local and
+    /// carries its anchor node's GUID, so the node's world transform resolves via
+    /// _regionLayout (identity fallback) exactly like the legacy particle emitters.
+    /// The orientation basis supplies the in-plane axes; the quad spans ±horizontal/2
+    /// and ±vertical/2 metres about the origin.</summary>
+    private void RegisterRegionDecals(TankReader mapReader, string regionPath,
+                                      List<DecalRenderer.DecalQuad> outQuads)
+    {
+        var path = regionPath.TrimEnd('/') + "/decals/decals.gas";
+        if (!mapReader.TryGetFile(path, out _)) return;
+        byte[] bytes;
+        try { bytes = mapReader.ExtractToMemory(path); }
+        catch { return; }
+        var store = SiegeFX.Core.Assets.DecalStore.Load(bytes);
+        foreach (var d in store.Decals)
+        {
+            Matrix4x4 nw = (_regionLayout is not null && _regionLayout.TryGetTransform(d.NodeGuid, out var m))
+                ? m : Matrix4x4.Identity;
+            var center = Vector3.Transform(d.LocalOrigin, nw);
+            var axisH  = Vector3.TransformNormal(d.AxisH, nw) * (d.HorizontalMeters * 0.5f);
+            var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
+            outQuads.Add(new DecalRenderer.DecalQuad(
+                center - axisH - axisV,
+                center + axisH - axisV,
+                center + axisH + axisV,
+                center - axisH + axisV,
+                d.TextureName));
+        }
+    }
+
+    /// <summary>SC-DECALS — load a decal texture (Art/Bitmaps/Decals/&lt;name&gt;.raw)
+    /// as a fresh GL texture. Called once per unique decal texture by the renderer,
+    /// which then owns + disposes it. Null if the basename doesn't resolve.</summary>
+    private GlTexture? LoadDecalTexture(string basename)
+    {
+        if (_playResolver is null) return null;
+        if (!_playResolver.TryLoadByBasename(basename + ".raw", out var bytes)) return null;
+        try { return new GlTexture(_gl, RawImage.Load(bytes)); }
+        catch { return null; }
     }
 
     private static float ReadFloat(SiegeFX.Core.Assets.GasNode node, string name, float fallback)
@@ -18025,6 +18088,12 @@ void main()
             _meshShader.SetInt("uUvOrient", 0);
         }
 
+        // SC-DECALS — projected decal layer (burnt-wood char on the farmhouse doors,
+        // blood, ground scorch, drop shadows) over the finished world geometry, before
+        // particles + HUD. Depth-tested against terrain + props; manages + restores its
+        // own blend/depth-write/polygon-offset state.
+        _decalRenderer?.Draw(vp);
+
         // Phase 17-SC-E — billboard particles. Sit above the world scene
         // (depth-tested against actors + props) but below the HUD ortho
         // pass so smoke columns get occluded by the farmhouse correctly.
@@ -19106,6 +19175,7 @@ void main()
         _skinShader?.Dispose();
         _meshShader?.Dispose();
         _gridShader?.Dispose();
+        _decalRenderer?.Dispose();
     }
 
     // Phase 19b — capture every piece of mid-session state worth restoring
