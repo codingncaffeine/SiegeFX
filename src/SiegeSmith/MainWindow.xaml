@@ -8,7 +8,8 @@
         Background="{StaticResource Brush.Window}"
         Icon="Assets/logo.png"
         FontFamily="Segoe UI" FontSize="13"
-        TextOptions.TextFormattingMode="Display">
+        TextOptions.TextFormattingMode="Display"
+        Loaded="OnLoaded">
     <Window.DataContext>
         <vm:MainViewModel/>
     </Window.DataContext>
