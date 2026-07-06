@@ -16506,7 +16506,14 @@ void main()
                     AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t, _skinScratch);
                     skin = _skinScratch.AsSpan(0, boneCount);
                 }
-                _skinShader.SetMatrix4("uModel", s.CurrentTransform);
+                // SC-ACTOR-SCALE — apply the creature's authored [aspect] scale_base
+                // (× scale_multiplier) to the visual model only. Most mobs are 1.0
+                // (no-op); shrink-scaled ones (phrak 0.55, skrubbs 0.3-0.5) render at
+                // native size without this, oversized and clipping through the ground.
+                float renderScale = s.Actor.Stats.RenderScale;
+                _skinShader.SetMatrix4("uModel",
+                    renderScale == 1f ? s.CurrentTransform
+                                      : Matrix4x4.CreateScale(renderScale) * s.CurrentTransform);
                 _skinShader.SetMatrix4Array("uBones[0]", skin);
 
                 // Phase 21d-2a-ii — walk per-mesh subsets emitted by the ASP parser.

@@ -76,6 +76,14 @@ public sealed record ActorStats(
     public float NatureMagicSkill { get; init; }
     public float UberLevel { get; init; }
 
+    /// <summary>DS1 <c>[aspect] scale_base × scale_multiplier</c> — the authored
+    /// visual size of the creature. phrak ships 0.55; ignoring it renders the mesh
+    /// at native size (a "whale-sized" phrak whose oversized body clips down through
+    /// the terrain). Applied to the skinned-mesh model matrix only (visual) — nav,
+    /// targeting and combat ranges stay in world units. Defaults to 1 so an
+    /// ActorStats built without a template (synthetic combat targets) is unaffected.</summary>
+    public float RenderScale { get; init; } = 1f;
+
     public static ActorStats FromTemplate(TemplateStore store, Template template)
     {
         // DS1 authors [actor][skills] entries as "value, ?, base" triples, where the
@@ -122,6 +130,14 @@ public sealed record ActorStats(
         float dmgMax  = ParseFloat(store.GetAttribute(template, "attack", "damage_max")) ?? 0f;
         float defense = ParseFloat(store.GetAttribute(template, "defend", "defense")) ?? 0f;
         float range   = ParseFloat(store.GetAttribute(template, "attack", "attack_range")) ?? 0f;
+        // DS1 authors creature size as [aspect] scale_base (× an optional
+        // scale_multiplier). Most mobs ship 1.0 (native mesh = intended size), so
+        // this is a no-op for them; the shrink-scaled ones (phrak 0.55, skrubbs
+        // 0.3-0.5) render at native size without it. Clamp above 0 so a malformed
+        // 0 can't collapse a creature to an invisible point.
+        float scaleBase = ParseFloat(store.GetAttribute(template, "aspect", "scale_base")) ?? 1f;
+        float scaleMult = ParseFloat(store.GetAttribute(template, "aspect", "scale_multiplier")) ?? 1f;
+        float renderScale = MathF.Max(0.05f, scaleBase * scaleMult);
         // avg_move_velocity is the DS1 idle-walk gait (krug ≈ 2.5, chickens ≈ 1.9).
         // Fall back to 4 u/s — what Phase 11d hardcoded — when no template in the
         // chain sets one, so non-combatants still wander at a visible pace.
@@ -149,6 +165,7 @@ public sealed record ActorStats(
             CombatMagicSkill  = cmagSkill,
             NatureMagicSkill  = nmagSkill,
             UberLevel         = uberLevel,
+            RenderScale       = renderScale,
         };
     }
 
