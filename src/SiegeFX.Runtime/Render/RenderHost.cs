@@ -145,6 +145,15 @@ public sealed class RenderHost : IDisposable
     private readonly List<FlameSource> _flameSources = new();
     private sealed class FlameSource { public Vector3 Pos; public float Carry; }
 
+    // SC-FLAME-TINT — one warm flame colour shared by every fire in the world so
+    // they read consistently: the farmhouse blaze (RegisterLegacyParticleEmitters)
+    // and the torch/sconce props (MaintainFire loop). Golden yellow-orange to match
+    // the retail farmhouse glow — get this right once and every fire follows.
+    private static readonly Vector4 s_flameTint = new(1.00f, 0.72f, 0.30f, 1f);
+    // Neutral grey smoke plume — the reference reads mid-grey, not the pure white
+    // the placeholder forced (straight alpha blend, so the tint IS the visible grey).
+    private static readonly Vector4 s_smokeTint = new(0.52f, 0.52f, 0.55f, 1f);
+
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
     // terrain RegionInstance AABB centers in that region). Computed once
     // after the world layout settles; used by the render gates to decide
@@ -9748,24 +9757,12 @@ void main()
             // farmhouse plumes are visibly white in retail; force white tint
             // so the textured smoke billboard reads correctly until SC-L
             // wires up a real dark/multiply blend mode.
-            Vector4 tint;
-            if (kind == ParticleKind.Smoke)
-            {
-                tint = new Vector4(1f, 1f, 1f, 1f);
-            }
-            else
-            {
-                // Fire: saturate the authored colour so the additive plume
-                // actually lights up. DS1 ships rgb=(0.6,0.4,0) for the
-                // farmhouse fire — our texture * tint additive needs that
-                // pushed up to read as flame, not "very dim ember".
-                float boost = MathF.Max(red, MathF.Max(green, blue));
-                float k = boost > 0f ? 1f / boost : 1f;
-                tint = new Vector4(MathF.Min(red * k, 1f),
-                                   MathF.Min(green * k, 1f),
-                                   MathF.Min(blue  * k, 1f),
-                                   1f);
-            }
+            // Fire and smoke both read from shared tints (s_flameTint / s_smokeTint)
+            // so the whole world's fire matches and one colour tweak covers every
+            // column + prop flame. DS1's authored rgb only tells us fire-vs-smoke
+            // (handled above by `kind`); its raw values are a dim ember/near-black in
+            // our straight-alpha pipeline, so we drive the visible colour ourselves.
+            Vector4 tint = kind == ParticleKind.Smoke ? s_smokeTint : s_flameTint;
 
             _sfxRuntime.AddPersistentEmitter(kind, origin, tint, scale, rate);
             Console.WriteLine($"    legacy emitter [{inst.TemplateName} 0x{inst.Scid:x8}] -> " +
@@ -17036,7 +17033,7 @@ void main()
             // MaintainTorchFlame is kept in the particle system as the seed
             // for the future opt-in enhanced-effects layer, but the shipped
             // default is this plain plume.
-            var flameCol = new Vector4(1.00f, 0.60f, 0.22f, 1f);
+            var flameCol = s_flameTint;
             var camPos = _camera.Position;
             foreach (var f in _flameSources)
             {
