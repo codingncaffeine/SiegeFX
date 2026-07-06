@@ -8402,6 +8402,8 @@ void main()
     private bool _introHoeDone;
     private float _introHoeTimer;
     private Vector3 _introHoeSpot;
+    private bool _introHoeSwapped;
+    private string? _introHoeOrigWeapon;
 
     private void TickIntroDog(float dt)
     {
@@ -8450,13 +8452,26 @@ void main()
     private void TickIntroHoe(float dt)
     {
         if (_player is null || _player.IsDead) return;
-        if (_nisPhase == NisPhase.Off) return;   // only during the intro cinematic
+        if (_nisPhase == NisPhase.Off)
+        {
+            // NIS ended without him leaving his spot (the bridge-run distance check
+            // below normally puts the hoe away) — restore his weapon if still swapped.
+            if (_introHoeSwapped) RestoreIntroHoeWeapon();
+            return;
+        }
         if (_introHoeDone) return;
 
         if (!_introHoeStarted)
         {
             _introHoeStarted = true;
             _introHoeSpot = _player.CurrentTransform.Translation;
+            // Put the actual hoe in his hands: swap the weapon_grip mesh to the hoe
+            // item (m_w_misc_hoe) for the farming, remembering the equipped weapon so
+            // it comes back when he drops it for the bridge run.
+            _introHoeOrigWeapon = _playerEquipment.TryGetValue("es_weapon_hand", out var cur) ? cur : null;
+            _introHoeSwapped = true;
+            _playerEquipment["es_weapon_hand"] = "hoe";
+            TryLoadPlayerWeapon();
             Console.WriteLine("[intro] hero farming with the hoe");
         }
 
@@ -8466,6 +8481,7 @@ void main()
         {
             _introHoeDone = true;
             _player.Actor.Host.OverrideAnimIndex(-1, 0f);   // release the hoe pose
+            RestoreIntroHoeWeapon();                        // original weapon back in hand
             Console.WriteLine("[intro] hero drops the hoe, heads to the bridge");
             return;
         }
@@ -8481,6 +8497,18 @@ void main()
             float hl = (hi >= 0 && hi < _player.Actor.Clips.Length) ? _player.Actor.Clips[hi].AnimLength : 0f;
             _introHoeTimer = hl > 0.2f ? hl : 1.5f;
         }
+    }
+
+    /// <summary>Restore the hero's real weapon after the intro hoe beat: put the
+    /// remembered es_weapon_hand ref back and rebuild the weapon_grip mesh (the
+    /// dagger). No-op if nothing was swapped.</summary>
+    private void RestoreIntroHoeWeapon()
+    {
+        if (!_introHoeSwapped) return;
+        _introHoeSwapped = false;
+        if (_introHoeOrigWeapon is not null) _playerEquipment["es_weapon_hand"] = _introHoeOrigWeapon;
+        else _playerEquipment.Remove("es_weapon_hand");
+        TryLoadPlayerWeapon();
     }
 
     /// <summary>Esc during the intro skips the *witnessing*, not the events: the player
@@ -8501,9 +8529,11 @@ void main()
         // Dog: retire the one-shot intro prop immediately.
         if (_introDog is not null) _introDog.Hidden = true;
 
-        // Hoe: stop farming and clear the pose so the skipped-to hero isn't mid-swing.
+        // Hoe: stop farming, clear the pose, and put his real weapon back so the
+        // skipped-to hero isn't mid-swing holding the hoe.
         _introHoeDone = true;
         if (_player is not null && !_player.IsDead) _player.Actor.Host.OverrideAnimIndex(-1, 0f);
+        RestoreIntroHoeWeapon();
     }
 
     /// <summary>Walk the hero's scripted move chain to its final destination (the last
