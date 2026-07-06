@@ -8500,7 +8500,10 @@ void main()
         {
             // NIS ended without him leaving his spot (the bridge-run distance check
             // below normally puts the hoe away) — restore his weapon if still swapped.
-            if (_introHoeSwapped) RestoreIntroHoeWeapon();
+            // Exception: the Keypad0 grip-tuner holds the hoe outside any NIS on purpose
+            // (it owns the swap and toggles it off itself), so don't yank it back here or
+            // the dev-mode hoe is un-equipped one frame after Keypad0 equips it.
+            if (_introHoeSwapped && !_hoeGripDevMode) RestoreIntroHoeWeapon();
             return;
         }
         if (_introHoeDone) return;
