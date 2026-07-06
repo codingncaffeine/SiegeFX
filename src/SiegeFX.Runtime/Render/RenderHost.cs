@@ -12071,6 +12071,13 @@ void main()
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
             if (s.IsPartyMember) continue;   // Phase 26b — already recruited
+            // SC-NIS — Norick is the intro's dying storyteller: his monologue
+            // plays as narration during the bridge NIS (OnTalkBeginMessage),
+            // never a click-to-talk panel. DS1 never let the player interact
+            // with him; a test scaffold had him clickable + quest-giving. The
+            // quest still auto-grants from the narration (and on Esc-skip), so
+            // excluding him from the RMB path removes the scaffold cleanly.
+            if (s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
             // The "has a [conversation] block in the placement" check is a
             // stronger talkable signal than Stats.IsCombatant: DS1's narrator
             // template inherits combat stats but is meant to be a static
