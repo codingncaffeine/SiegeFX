@@ -8374,7 +8374,6 @@ void main()
                 {
                     z.Phase = NorickPhase.Down;
                     z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
-                    z.FallStarted = true;
                     Console.WriteLine("[norick] collapsed at the bridge");
                 }
                 break;
