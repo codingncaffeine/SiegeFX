@@ -150,9 +150,10 @@ public sealed class RenderHost : IDisposable
     // and the torch/sconce props (MaintainFire loop). Golden yellow-orange to match
     // the retail farmhouse glow — get this right once and every fire follows.
     private static readonly Vector4 s_flameTint = new(1.00f, 0.72f, 0.30f, 1f);
-    // Neutral grey smoke plume — the reference reads mid-grey, not the pure white
-    // the placeholder forced (straight alpha blend, so the tint IS the visible grey).
-    private static readonly Vector4 s_smokeTint = new(0.52f, 0.52f, 0.55f, 1f);
+    // Light-grey, semi-transparent smoke plume — the retail farmhouse smoke reads
+    // as a thin light-grey haze, not a dense dark column. Alpha < 1 makes each puff
+    // translucent so the plume stays wispy (straight alpha blend, tint = visible colour).
+    private static readonly Vector4 s_smokeTint = new(0.72f, 0.72f, 0.76f, 0.5f);
 
     // SC-DECALS — region projected-decal layer (burnt-wood char on the farmhouse
     // doors, blood, ground scorch, drop shadows, dirt, straw, rugs). Built once per
@@ -9804,25 +9805,46 @@ void main()
     private void RegisterRegionDecals(TankReader mapReader, string regionPath,
                                       List<DecalRenderer.DecalQuad> outQuads)
     {
+        var rname = System.IO.Path.GetFileName(regionPath.TrimEnd('/'));
         var path = regionPath.TrimEnd('/') + "/decals/decals.gas";
-        if (!mapReader.TryGetFile(path, out _)) return;
+        if (!mapReader.TryGetFile(path, out _)) { Console.WriteLine($"  [decals] {rname}: no decals.gas"); return; }
         byte[] bytes;
         try { bytes = mapReader.ExtractToMemory(path); }
-        catch { return; }
+        catch (Exception ex) { Console.WriteLine($"  [decals] {rname}: extract failed: {ex.Message}"); return; }
         var store = SiegeFX.Core.Assets.DecalStore.Load(bytes);
+        int resolved = 0, fallback = 0, charCount = 0;
+        DecalRenderer.DecalQuad? firstChar = null;
         foreach (var d in store.Decals)
         {
-            Matrix4x4 nw = (_regionLayout is not null && _regionLayout.TryGetTransform(d.NodeGuid, out var m))
-                ? m : Matrix4x4.Identity;
+            Matrix4x4 m = Matrix4x4.Identity;
+            bool ok = _regionLayout is not null && _regionLayout.TryGetTransform(d.NodeGuid, out m);
+            Matrix4x4 nw = ok ? m : Matrix4x4.Identity;
+            if (ok) resolved++; else fallback++;
             var center = Vector3.Transform(d.LocalOrigin, nw);
             var axisH  = Vector3.TransformNormal(d.AxisH, nw) * (d.HorizontalMeters * 0.5f);
             var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
-            outQuads.Add(new DecalRenderer.DecalQuad(
-                center - axisH - axisV,
-                center + axisH - axisV,
-                center + axisH + axisV,
-                center - axisH + axisV,
-                d.TextureName));
+            var quad = new DecalRenderer.DecalQuad(
+                center - axisH - axisV, center + axisH - axisV,
+                center + axisH + axisV, center - axisH + axisV, d.TextureName);
+            outQuads.Add(quad);
+            if (d.TextureName.Contains("burnt", StringComparison.OrdinalIgnoreCase))
+            {
+                charCount++;
+                firstChar ??= quad;
+            }
+        }
+        // SC-DECALS diag — confirms the layer loaded + WHERE it landed. fallback>0
+        // means a node GUID didn't resolve (decals dumped near the map origin). A
+        // char world-center far from the barn's fire emitters, or a ~0 corner span
+        // (orientation collapsed the quad edge-on), pinpoints a placement bug vs a
+        // render bug. Compare the world-center against the "legacy emitter" fire pos.
+        Console.WriteLine($"  [decals] {rname}: parsed {store.Decals.Count} " +
+                          $"(node-resolved {resolved}, identity-fallback {fallback}); char(burnt-wood)={charCount}");
+        if (firstChar is { } fc)
+        {
+            var c = (fc.P0 + fc.P2) * 0.5f;
+            Console.WriteLine($"  [decals]   first char world-center=({c.X:F1},{c.Y:F1},{c.Z:F1}) " +
+                              $"corner-span={(fc.P2 - fc.P0).Length():F2}m");
         }
     }
 

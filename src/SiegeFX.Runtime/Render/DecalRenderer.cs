@@ -126,9 +126,16 @@ void main() {
     /// (occluded by nearer geometry) but depth-write off, backface-cull off (decals
     /// read from either side), polygon-offset toward the camera so a decal co-planar
     /// with its surface wins the depth test. GL state is saved and restored.</summary>
+    private bool _loggedDraw;
+
     public void Draw(Matrix4x4 viewProj)
     {
         if (_disposed || _batches.Count == 0) return;
+        if (!_loggedDraw)
+        {
+            _loggedDraw = true;
+            Console.WriteLine($"[decals] draw path live: {_batches.Count} texture batch(es), {DecalCount} decals");
+        }
 
         bool blendWas = _gl.IsEnabled(GLEnum.Blend);
         bool cullWas  = _gl.IsEnabled(GLEnum.CullFace);
