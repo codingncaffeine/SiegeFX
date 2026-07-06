@@ -26,6 +26,18 @@ public static class ViewerFactory
             catch { /* malformed gas — fall through to the text reader */ }
         }
 
+        if (ext == ".asp")
+        {
+            try { return ModelInfoViewerViewModel.FromAsp(name, AspMesh.Load(bytes)); }
+            catch { /* fall through to hex */ }
+        }
+
+        if (ext == ".sno")
+        {
+            try { return ModelInfoViewerViewModel.FromSno(name, SnoModel.Load(bytes)); }
+            catch { /* fall through to hex */ }
+        }
+
         return LooksLikeText(bytes)
             ? new TextViewerViewModel(name, bytes)
             : new HexViewerViewModel(name, bytes);

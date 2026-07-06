@@ -193,6 +193,39 @@
                                 </DockPanel>
                             </DataTemplate>
 
+                            <!-- Model info (.asp / .sno structure) -->
+                            <DataTemplate DataType="{x:Type viewers:ModelInfoViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Title}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding Kind}" Foreground="{StaticResource Brush.Accent}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <ItemsControl ItemsSource="{Binding Sections}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="0,0,0,14">
+                                                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource Brush.Foreground}" Margin="0,0,0,4"/>
+                                                        <ItemsControl ItemsSource="{Binding Lines}">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12.5"
+                                                                               Foreground="{StaticResource Brush.Muted}" Margin="8,1,0,1" TextWrapping="Wrap"/>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </DockPanel>
+                            </DataTemplate>
+
                             <!-- Gas (structured block/attribute tree + raw toggle) -->
                             <DataTemplate DataType="{x:Type viewers:GasViewerViewModel}">
                                 <DockPanel Margin="16">
