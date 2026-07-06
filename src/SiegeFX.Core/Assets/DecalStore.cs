@@ -9,10 +9,11 @@ namespace SiegeFX.Core.Assets;
 /// a 3×3 orientation basis, a node-local origin plus the anchor node's GUID, a
 /// texture, and horizontal/vertical extents in metres.
 ///
-/// <para>Orientation is stored as three rows. Empirically (validated against the
-/// fh_r1 floor rug + ground scorch, which must lie flat) row0 is the projection
-/// NORMAL and row1/row2 are the in-plane axes scaled by horizontal/vertical
-/// metres. The burnt farmhouse's charred-door look is <c>8× b_d_burnt-wood-a</c> +
+/// <para>Orientation is a column-major 3×3: column 0 = horizontal (U) axis,
+/// column 1 = vertical (V) axis, column 2 = projection NORMAL, each scaled by
+/// horizontal/vertical metres for the in-plane axes. (Reading it row-major lays the
+/// flat floor rug down too, but reads the vertical wall/door decals edge-on so they
+/// float.) The burnt farmhouse's charred-door look is <c>8× b_d_burnt-wood-a</c> +
 /// <c>3× b_d_scorch</c> projected over otherwise-clean door meshes — this is the
 /// only place that char exists (the door texture itself is clean plank wood).</para></summary>
 public sealed class DecalStore
@@ -75,9 +76,14 @@ public sealed class DecalStore
 
         var o = SplitFloats(ori);
         if (o.Length < 9) return null;
-        var normal = new Vector3(o[0], o[1], o[2]);
-        var axisH  = new Vector3(o[3], o[4], o[5]);
-        var axisV  = new Vector3(o[6], o[7], o[8]);
+        // DS1 stores decal_orientation COLUMN-major: the 3x3's columns are the decal's
+        // local axes — column 0 = horizontal (U) axis, column 1 = vertical (V) axis,
+        // column 2 = projection normal. (Reading it row-major with normal=row0 also lays
+        // the flat floor rug down, but reads the wall/door decals edge-on / floating;
+        // column-major faces them onto the surface as authored.)
+        var axisH  = new Vector3(o[0], o[3], o[6]);   // column 0 — horizontal
+        var axisV  = new Vector3(o[1], o[4], o[7]);   // column 1 — vertical
+        var normal = new Vector3(o[2], o[5], o[8]);   // column 2 — projection normal
         // A degenerate (all-zero) basis can't project anything — skip it.
         if (axisH.LengthSquared() < 1e-8f || axisV.LengthSquared() < 1e-8f) return null;
 
