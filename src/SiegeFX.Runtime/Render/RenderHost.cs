@@ -8355,7 +8355,7 @@ void main()
     // then settles into "dead" once the NIS hands control back to gameplay.
     // Timing tunables live here (walk speed, the player-at-bridge distance).
     // ────────────────────────────────────────────────────────────────────
-    private enum NorickPhase { Idle, Walking, Down, Dead }
+    private enum NorickPhase { Idle, Walking, Down, Talking, Dead }
     private sealed class NorickDeathSeq
     {
         public ActorRenderState? Norick;
@@ -8363,6 +8363,7 @@ void main()
         public Vector3 BridgePos;    // authored mid-bridge collapse spot (his "fall" command)
         public bool HasBridgePos;
         public float WalkClipTimer;  // re-triggers the walk loop
+        public float FallTimer;      // counts down the collapse clip, then flips to the dying-words gesture
     }
     private NorickDeathSeq? _norickDeath;
     private const float NorickWalkSpeed = 1.5f;         // "walk slow hunched"
@@ -8513,7 +8514,16 @@ void main()
             z.Norick.CurrentTransform = Matrix4x4.CreateTranslation(p);
         }
         z.Norick.IsMoving = false;
-        z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+        // The Down->Talking beat already starts the dying anim ("dead") mid-NIS; only
+        // (re)issue it when the NIS ended before that beat (a fast skip), and snap to the
+        // final still frame so a skip lands directly on the fully-dead pose.
+        if (z.Phase != NorickPhase.Talking)
+        {
+            z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+            int di = z.Norick.Actor.GetClipIndex("dead");
+            if (di >= 0 && di < z.Norick.Actor.Clips.Length)
+                z.Norick.AnimTime = MathF.Max(0f, z.Norick.Actor.Clips[di].AnimLength - 0.02f);
+        }
         z.Phase = NorickPhase.Dead;
         Console.WriteLine("[norick] dead");
     }
@@ -8563,18 +8573,38 @@ void main()
                 if (StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed))
                 {
                     // Arrived — clear IsMoving so the render's walk-clip gate releases and
-                    // the held "fall" collapse pose actually shows (it was masked before,
-                    // which read as "stuck walking in place, never fell").
+                    // the "fall" collapse actually shows (it was masked before, which read
+                    // as "stuck walking in place, never fell").
                     z.Norick.IsMoving = false;
                     z.Phase = NorickPhase.Down;
-                    z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
+                    z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse
+                    // Time the collapse so we flip to the dying-words gesture right after
+                    // it lands — DS1's fall command sets start_fidget (gesture after the
+                    // fall), DURING the camera pans, not after the player gets control.
+                    int fi = z.Norick.Actor.GetClipIndex("fall");
+                    float af = (fi >= 0 && fi < z.Norick.Actor.Clips.Length) ? z.Norick.Actor.Clips[fi].AnimLength : 0f;
+                    z.FallTimer = af > 0.05f ? af : 1.5f;
                     Console.WriteLine("[norick] collapsed on the bridge");
                 }
                 break;
             }
             case NorickPhase.Down:
-                // Hold the collapse/gesture pose through the sitting-up shot; the dead
-                // settle happens in the NIS-ended handler above.
+            {
+                // Right after the collapse lands, play the dying-words gesture ("dead" =
+                // di-02, his long gesturing death anim) so he's "talking" during the pans.
+                // It end-holds on the final still frame, so he's fully dead by the time the
+                // player regains control.
+                z.FallTimer -= dt;
+                if (z.FallTimer <= 0f)
+                {
+                    z.Phase = NorickPhase.Talking;
+                    z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+                    Console.WriteLine("[norick] dying-words gesture during the pans");
+                }
+                break;
+            }
+            case NorickPhase.Talking:
+                // di-02 plays then end-holds on the still dead pose; nothing to drive.
                 break;
             case NorickPhase.Dead:
                 break;
