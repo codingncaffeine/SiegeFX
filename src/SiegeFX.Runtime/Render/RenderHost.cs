@@ -7827,6 +7827,10 @@ void main()
     private void UpdateSubtitles(float dt)
     {
         _voicePlayer?.Tick();
+        // Duck the mood music while the narrator is on screen so the voice reads
+        // clearly; restore it the moment the narration sequence ends (also covers
+        // the Esc-skip path, which nulls _subtitleNodes).
+        SetMusicDuckedForVoice(_subtitleNodes is not null);
         if (_subtitleNodes is null) return;
         _subtitleRemaining -= dt;
         if (_subtitleRemaining > 0f) return;
@@ -10499,7 +10503,27 @@ void main()
             _audio.SetMasterVolume(master);
             _audio.SetSfxVolume(s.SfxVolume / 127f);
         }
-        _music?.SetVolume(s.MusicVolume / 127f);
+        _musicBaseVolume = s.MusicVolume / 127f;
+        ApplyMusicVolume();
+    }
+
+    // SC-NIS-DUCK — the intro narrator shares the mix with the mood music on a
+    // separate MusicPlayer channel, and it was hard to hear the narrator over it.
+    // Duck the music to a fraction of its configured level while narration
+    // subtitles are on screen, then restore. Base volume mirrors the MusicVolume
+    // setting so the duck stacks under whatever the player chose.
+    private float _musicBaseVolume = 0.7f;
+    private bool _musicDuckedForVoice;
+    private const float NarrationDuckFactor = 0.3f;
+
+    private void ApplyMusicVolume() =>
+        _music?.SetVolume(_musicBaseVolume * (_musicDuckedForVoice ? NarrationDuckFactor : 1f));
+
+    private void SetMusicDuckedForVoice(bool ducked)
+    {
+        if (_musicDuckedForVoice == ducked) return;
+        _musicDuckedForVoice = ducked;
+        ApplyMusicVolume();
     }
 
     private void FlushCreator()
