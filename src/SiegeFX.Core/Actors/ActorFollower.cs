@@ -4,15 +4,13 @@ using SiegeFX.Core.Nav;
 namespace SiegeFX.Core.Actors;
 
 /// <summary>
-/// Per-actor wander driver. Wraps a <see cref="NavFollower"/> and keeps feeding it
-/// random nearby nav-mesh points so spawned actors roam their region instead of
-/// idling on their authored spawn pose. Facing is derived from the tick's XZ
-/// delta so the render layer can rotate the actor to match its direction of travel.
-///
-/// This is the minimum useful wander AI — no territory markers, no clustering, no
-/// fleeing/chasing. Those are Phase 12+ when combat lands and actors need opinions
-/// about other actors. For now we just prove the follower plumbing is live per-actor
-/// and that the nav mesh holds up under 181 concurrent walkers.
+/// Per-actor wander driver. Wraps a <see cref="NavFollower"/> and feeds it occasional
+/// short strolls sampled around the actor's spawn <b>anchor</b>, with a random idle
+/// dwell between them (SC-MOB-ROAM), so a spawn holds near its authored post and mostly
+/// stands — DS1's idle model — instead of random-walking away across the region. Facing
+/// is derived from the tick's XZ delta so the render layer can rotate the actor to match
+/// its direction of travel. A brain's Chase/Attack states drive the underlying follower
+/// directly; when they release back to wander, the anchor pulls the mob home.
 ///
 /// <b>Not reentrant.</b> The underlying <see cref="NavFollower"/> shares a pathfinder
 /// workspace with itself, so calling <see cref="Tick"/> from a skrit callback that
@@ -39,6 +37,19 @@ public sealed class ActorFollower
     Vector3 _facing;
     readonly Random _rng;
 
+    // SC-MOB-ROAM — the spawn pose the actor leashes to. DS1 idle mobs hold near
+    // their authored post and take occasional short strolls, returning afterward,
+    // rather than random-walking away across the region. Wander picks sample around
+    // THIS anchor (not the live position), so a mob drifts back toward its post and,
+    // after a chase ends, walks home instead of milling wherever the fight stopped.
+    Vector3 _anchor;
+
+    // SC-MOB-ROAM — idle dwell between strolls. DS1 mobs stand most of the time; a
+    // completed stroll parks the actor for a random beat (~2-7s at 20 Hz) before the
+    // next pick, so a spawn reads as "milling at its post", not "endlessly pacing".
+    public int IdleMinTicks { get; set; } = 45;
+    public int IdleMaxTicks { get; set; } = 150;
+
     // After a failed target pick or a blocked path, wait this many ticks before
     // retrying. At 20 Hz that's ~1 second of idling — enough that a permanently
     // pinned actor (e.g., chicken in a fenced pen with no reachable samples) spends
@@ -60,6 +71,7 @@ public sealed class ActorFollower
         var flat = new Vector3(initialFacing.X, 0f, initialFacing.Z);
         float len = flat.Length();
         _facing = len > 1e-4f ? flat / len : Vector3.UnitZ;
+        _anchor = startPos;
         PickNewTarget();
     }
 
@@ -90,8 +102,13 @@ public sealed class ActorFollower
             _facing = new Vector3(dx / len, 0f, dz / len);
         }
 
-        if (Follower.ReachedGoal || Follower.PathBlocked)
+        // SC-MOB-ROAM — a finished stroll parks the actor at its post for a random
+        // dwell instead of immediately re-rolling, so idle mobs mostly stand and
+        // fidget. A blocked path re-routes right away (no point pressing a wall).
+        if (Follower.PathBlocked)
             PickNewTarget();
+        else if (Follower.ReachedGoal)
+            _idleTicksRemaining = _rng.Next(IdleMinTicks, IdleMaxTicks + 1);
     }
 
     /// <summary>Phase 19b — teleport the underlying nav follower to
@@ -121,7 +138,10 @@ public sealed class ActorFollower
 
     void PickNewTarget()
     {
-        var origin = Follower.Position;
+        // SC-MOB-ROAM — sample around the spawn anchor, not the live position, so
+        // strolls stay leashed to the post and a disengaged mob heads home rather
+        // than random-walking ever further from where it was authored.
+        var origin = _anchor;
         var mesh = Follower.Mesh;
         // Three radius scales — full / half / quarter. NPCs on tight
         // islands or near a navmesh seam can fail every sample at the
