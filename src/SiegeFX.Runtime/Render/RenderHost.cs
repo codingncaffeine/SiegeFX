@@ -150,10 +150,11 @@ public sealed class RenderHost : IDisposable
     // and the torch/sconce props (MaintainFire loop). Golden yellow-orange to match
     // the retail farmhouse glow — get this right once and every fire follows.
     private static readonly Vector4 s_flameTint = new(1.00f, 0.72f, 0.30f, 1f);
-    // Light-grey, semi-transparent smoke plume — the retail farmhouse smoke reads
-    // as a thin light-grey haze, not a dense dark column. Alpha < 1 makes each puff
-    // translucent so the plume stays wispy (straight alpha blend, tint = visible colour).
-    private static readonly Vector4 s_smokeTint = new(0.72f, 0.72f, 0.76f, 0.5f);
+    // Light-grey, translucent smoke plume — the retail farmhouse smoke reads as a
+    // thin light-grey haze, not the dense near-black column we drew. Low alpha keeps
+    // each puff see-through so the plume stays wispy (straight alpha blend, tint =
+    // visible colour); the spawn rate is also thinned for smoke in the emitter path.
+    private static readonly Vector4 s_smokeTint = new(0.82f, 0.82f, 0.86f, 0.40f);
 
     // SC-DECALS — region projected-decal layer (burnt-wood char on the farmhouse
     // doors, blood, ground scorch, drop shadows, dirt, straw, rugs). Built once per
@@ -5895,6 +5896,11 @@ void main()
             // rugs). Node transforms resolve against _regionLayout, same as above.
             RegisterRegionDecals(mapReader, rp, decalQuads);
         }
+        // The decal texture loader (LoadDecalTexture) resolves .raw files through
+        // _playResolver, so the field must be live BEFORE the decal build below.
+        // It was previously assigned further down (post-decals), leaving SetDecals to
+        // resolve against a null resolver and silently drop every quad (decals: 0).
+        _playResolver = resolver;
         // SC-DECALS — build the region's decal layer as one texture-batched VBO,
         // drawn over the world each frame in OnRender.
         if (decalQuads.Count > 0)
@@ -5920,7 +5926,7 @@ void main()
         _triggerCtx = new RenderHostTriggerContext(this);
         _templateStore = store;
         _pcontentResolver = new SiegeFX.Core.Actors.PcontentResolver(store);
-        _playResolver = resolver;
+        // (_playResolver is assigned earlier now — before the decal build above.)
         // Phase 21a-3 — promote spawner so OnPlayerRegionChanged can call
         // Spawn() again with the newly-loaded regions' actors. Track the
         // player's launch region as the initial _currentPlayerRegion; the
@@ -9770,6 +9776,9 @@ void main()
             // per second to maintain steady-state population. Clamp so a
             // pathological count=8000 emitter doesn't melt the renderer.
             float rate = (count > 0 && fade > 0f) ? Math.Min(count / fade, 60f) : 18f;
+            // Thin the smoke: the authored count/fade drives a dense ~60/s column, but
+            // the retail farmhouse smoke is a sparse wispy haze. Fire keeps its rate.
+            if (kind == ParticleKind.Smoke) rate = MathF.Min(rate, 22f);
             float scale = MathF.Max(0.6f, size);
 
             // DS1's `dark=true` is a blend-mode flag for opacity/multiply
