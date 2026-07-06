@@ -2039,6 +2039,13 @@ public sealed class RenderHost : IDisposable
         public float DoorUseRange = 1.5f;
         public bool  DoorTargetOpen;
         public float DoorSwingSign = 1f;
+        // SC-DOORS-HINGE-AXIS — bulkhead/storm doors (e.g. door_glb_stormdoor)
+        // are a different mesh convention from wall doors: the leaf lies in the
+        // local X-Y plane (thin along Z, tall along Y) and is placed tilted, so
+        // its hinge is horizontal, not vertical. Flip doors swing around local
+        // Y (flipping the outer edge up) instead of Z, and they come in a pair
+        // that opens together. Detected at spawn from the mesh extents.
+        public bool  DoorIsFlip;
 
         // SC-FADE-GROUPS — authored anchor snode from the placement's
         // node-relative position. When that snode fades out (cutaway,
@@ -6866,6 +6873,20 @@ void main()
                         }
                     }
 
+                    // SC-DOORS-HINGE-AXIS — classify wall vs bulkhead/flip door
+                    // from the mesh extents. Wall doors are thin along Y (leaf
+                    // stands in X-Z, height along Z); bulkhead/storm doors are
+                    // thin along Z (leaf lies in X-Y, tall along Y). So the
+                    // thinnest axis being Z marks a flip door that hinges on a
+                    // horizontal edge rather than the vertical Z hinge.
+                    bool doorIsFlip = false;
+                    if (isDoor)
+                    {
+                        var dmin = glMesh.Min; var dmax = glMesh.Max;
+                        float xsp = dmax.X - dmin.X, ysp = dmax.Y - dmin.Y, zsp = dmax.Z - dmin.Z;
+                        doorIsFlip = zsp <= ysp && zsp <= xsp;
+                    }
+
                     var inst = new StaticPropInstance
                     {
                         Mesh          = glMesh,
@@ -6878,6 +6899,7 @@ void main()
                         Life          = maxLife,
                         MaxLife       = maxLife,
                         IsDoor        = isDoor,
+                        DoorIsFlip    = doorIsFlip,
                         DoorUseRange  = useRange,
                         NodeGuid      = p.Placement.NodeGuid,
                         Scid          = p.Scid,
@@ -8484,25 +8506,48 @@ void main()
             if (dd < bestD2) { bestD2 = dd; best = d; }
         }
         if (best is null) return;
+
+        if (best.DoorIsFlip)
+        {
+            // Bulkhead/storm doors come as a pair that opens together — open
+            // every flip door near the click, not just the nearest leaf. Each
+            // leaf swings around its local-Y seam hinge with a geometry-based
+            // sign that lifts its outer edge up.
+            var seed = best.World.Translation;
+            foreach (var d in _doorProps)
+            {
+                if (d.IsDestroyed || d.DoorTargetOpen || !d.DoorIsFlip) continue;
+                var dp = d.World.Translation;
+                float ex = dp.X - seed.X, ez = dp.Z - seed.Z;
+                if (ex * ex + ez * ez > 3.0f * 3.0f) continue;
+                d.DoorTargetOpen = true;
+                d.DoorSwingSign = ComputeFlipSwingSign(d);
+                LogDoorDiag(d);
+            }
+            _audio?.PlayAt(SfxDoorOpen, seed);
+            return;
+        }
+
         best.DoorTargetOpen = true;
         best.DoorSwingSign = ComputeDoorSwingSign(best);
         _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
-        // SC-DOORS-HINGE-AXIS diag: the swing spins around the mesh's local Z
-        // (the authored hinge axis for upright wall doors). This logs where that
-        // axis points in WORLD space — ~(0,±1,0) = upright (swings right); tilted
-        // or horizontal = a cellar/hatch door my Z-swing can't handle yet. Local
-        // bounds distinguish a different door mesh from a tilted placement.
+        LogDoorDiag(best);
+    }
+
+    // SC-DOORS-HINGE-AXIS diag: log the door template, local mesh bounds, and
+    // where the mesh local-Z points in world space (~(0,±1,0) = upright wall
+    // door; tilted/horizontal = a bulkhead/flip door), plus the classification
+    // and chosen sign — to both the console and a session-surviving log file.
+    private void LogDoorDiag(StaticPropInstance door)
+    {
         var hingeAxisWorld = Vector3.Normalize(
-            Vector3.TransformNormal(new Vector3(0f, 0f, 1f), best.World));
-        var doorLine = $"[door] {best.Template} " +
-            $"bounds=({best.Mesh.Min.X:F2},{best.Mesh.Min.Y:F2},{best.Mesh.Min.Z:F2}).." +
-            $"({best.Mesh.Max.X:F2},{best.Mesh.Max.Y:F2},{best.Mesh.Max.Z:F2}) " +
+            Vector3.TransformNormal(new Vector3(0f, 0f, 1f), door.World));
+        var doorLine = $"[door] {door.Template} " +
+            $"bounds=({door.Mesh.Min.X:F2},{door.Mesh.Min.Y:F2},{door.Mesh.Min.Z:F2}).." +
+            $"({door.Mesh.Max.X:F2},{door.Mesh.Max.Y:F2},{door.Mesh.Max.Z:F2}) " +
             $"hingeAxisWorld=({hingeAxisWorld.X:F2},{hingeAxisWorld.Y:F2},{hingeAxisWorld.Z:F2}) " +
-            $"sign={best.DoorSwingSign:F0}";
+            $"flip={door.DoorIsFlip} sign={door.DoorSwingSign:F0}";
         Console.WriteLine(doorLine);
-        // Also append to a dedicated log (survives across sessions, no console
-        // needed) — same pattern as the F7 fade dump, so the door line can be
-        // read back from the file rather than hunted in console scrollback.
         try
         {
             System.IO.File.AppendAllText(
@@ -8510,6 +8555,15 @@ void main()
                 doorLine + System.Environment.NewLine);
         }
         catch { }
+    }
+
+    // Flip (bulkhead) doors hinge on the local-Y seam edge at the origin; the
+    // swing should lift the leaf's OUTER edge up. Which rotation sign does that
+    // depends on which side of the seam the leaf extends — its X-center sign.
+    private static float ComputeFlipSwingSign(StaticPropInstance door)
+    {
+        float xCenter = (door.Mesh.Min.X + door.Mesh.Max.X) * 0.5f;
+        return xCenter >= 0f ? -1f : 1f;
     }
 
     // Swing the leaf AWAY from the player: transform the player into the
@@ -16472,8 +16526,13 @@ void main()
                 // spun like a clock dial rather than swinging out.
                 if (prop.IsDoor && prop.DoorOpenFrac > 0.001f)
                 {
-                    var swing = Matrix4x4.CreateRotationZ(
-                        prop.DoorSwingSign * prop.DoorOpenFrac * (MathF.PI / 2f));
+                    // Wall doors hinge on the vertical Z axis; bulkhead/storm
+                    // doors (DoorIsFlip) lie in the X-Y plane and hinge on the
+                    // horizontal Y edge at the seam, flipping the outer edge up.
+                    float ang = prop.DoorSwingSign * prop.DoorOpenFrac * (MathF.PI / 2f);
+                    var swing = prop.DoorIsFlip
+                        ? Matrix4x4.CreateRotationY(ang)
+                        : Matrix4x4.CreateRotationZ(ang);
                     model = swing * prop.World;
                 }
                 _meshShader.SetMatrix4("uModel", model);
