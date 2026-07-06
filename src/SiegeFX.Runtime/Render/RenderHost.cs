@@ -9821,17 +9821,30 @@ void main()
         try { bytes = mapReader.ExtractToMemory(path); }
         catch (Exception ex) { Console.WriteLine($"  [decals] {rname}: extract failed: {ex.Message}"); return; }
         var store = SiegeFX.Core.Assets.DecalStore.Load(bytes);
+        // decal_origin is node-local (needs the node transform for its world position),
+        // but decal_orientation is WORLD-space (absolute). Applying the node's rotation
+        // to the axes as well double-rotates them and tilts every quad off its target
+        // surface — that was the char "not lying flat" on the barn doors. So the axes are
+        // used as-authored; only the origin gets the node transform. SIEGEFX_DECAL_PUSH
+        // nudges the quad along its facing normal (metres, +/-) to seat it on the door
+        // face if it floats a little proud of / behind it — dial it live, no rebuild.
+        float decalPush = 0f;
+        float.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_DECAL_PUSH"),
+                       System.Globalization.NumberStyles.Float,
+                       System.Globalization.CultureInfo.InvariantCulture, out decalPush);
         int resolved = 0, fallback = 0, charCount = 0;
         DecalRenderer.DecalQuad? firstChar = null;
+        Vector3 firstCharNormal = Vector3.Zero;
         foreach (var d in store.Decals)
         {
             Matrix4x4 m = Matrix4x4.Identity;
             bool ok = _regionLayout is not null && _regionLayout.TryGetTransform(d.NodeGuid, out m);
             Matrix4x4 nw = ok ? m : Matrix4x4.Identity;
             if (ok) resolved++; else fallback++;
-            var center = Vector3.Transform(d.LocalOrigin, nw);
-            var axisH  = Vector3.TransformNormal(d.AxisH, nw) * (d.HorizontalMeters * 0.5f);
-            var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
+            var normal = d.Normal.LengthSquared() > 1e-8f ? Vector3.Normalize(d.Normal) : Vector3.UnitY;
+            var center = Vector3.Transform(d.LocalOrigin, nw) + normal * decalPush;
+            var axisH  = d.AxisH * (d.HorizontalMeters * 0.5f);
+            var axisV  = d.AxisV * (d.VerticalMeters * 0.5f);
             var quad = new DecalRenderer.DecalQuad(
                 center - axisH - axisV, center + axisH - axisV,
                 center + axisH + axisV, center - axisH + axisV, d.TextureName);
@@ -9839,7 +9852,7 @@ void main()
             if (d.TextureName.Contains("burnt", StringComparison.OrdinalIgnoreCase))
             {
                 charCount++;
-                firstChar ??= quad;
+                if (firstChar is null) { firstChar = quad; firstCharNormal = normal; }
             }
         }
         // SC-DECALS diag — confirms the layer loaded + WHERE it landed. fallback>0
@@ -9853,7 +9866,9 @@ void main()
         {
             var c = (fc.P0 + fc.P2) * 0.5f;
             Console.WriteLine($"  [decals]   first char world-center=({c.X:F1},{c.Y:F1},{c.Z:F1}) " +
-                              $"corner-span={(fc.P2 - fc.P0).Length():F2}m");
+                              $"corner-span={(fc.P2 - fc.P0).Length():F2}m " +
+                              $"normal=({firstCharNormal.X:F2},{firstCharNormal.Y:F2},{firstCharNormal.Z:F2}) " +
+                              $"push={decalPush:F2}m");
         }
     }
 
