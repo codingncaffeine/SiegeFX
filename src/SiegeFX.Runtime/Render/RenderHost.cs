@@ -8039,6 +8039,12 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos, uint Target1)> _commands = new();
     private HashSet<string>? _commandGasLoaded;
 
+    // SC-NORICK — cmd_animation_command target actor (client_scid) -> the command's
+    // authored world position, i.e. where that actor is meant to perform its NIS
+    // anim. Norick's "fall" entry is his mid-bridge collapse spot — a short walk
+    // from his post, the destination for his death walk.
+    private readonly System.Collections.Generic.Dictionary<uint, Vector3> _animCommandPos = new();
+
     private void LoadCommands(IEnumerable<string> regionPaths)
     {
         if (_playMapTank is null) return;
@@ -8090,6 +8096,22 @@ void main()
                         AttackPos    = world,
                     });
                     Console.WriteLine($"  [smash] set-piece registered: actor 0x{target1:X8} -> break 0x{target2:X8} at ({world.X:F1},{world.Y:F1},{world.Z:F1})");
+                }
+                // SC-NORICK — index cmd_animation_command by its target actor so the
+                // NIS drivers know where an actor is authored to perform (Norick's
+                // "fall" gizmo sits at the mid-bridge collapse spot).
+                if (p.TemplateName.Equals("cmd_animation_command", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("cmd_animation_command", StringComparison.OrdinalIgnoreCase)) continue;
+                        uint clientScid = 0;
+                        foreach (var at in child.Attributes)
+                            if (at.Name.Equals("client_scid", StringComparison.OrdinalIgnoreCase))
+                                TryParseSnodeGuid(at.Value, out clientScid);
+                        if (clientScid != 0) _animCommandPos[clientScid] = world;
+                        break;
+                    }
                 }
                 // SC-NIS - index NIS gizmos with world pose (placement
                 // quaternion composed with the anchor node's rotation).
@@ -8292,14 +8314,13 @@ void main()
     {
         public ActorRenderState? Norick;
         public NorickPhase Phase = NorickPhase.Idle;
-        public Vector3 Target;      // mid-bridge = where the player arrived
-        public Vector3 Spawn;       // Norick's authored post (farmhouse)
-        public float WalkClipTimer; // re-triggers the walk loop
-        public bool FallStarted;
+        public Vector3 BridgePos;    // authored mid-bridge collapse spot (his "fall" command)
+        public bool HasBridgePos;
+        public float WalkClipTimer;  // re-triggers the walk loop
     }
     private NorickDeathSeq? _norickDeath;
-    private const float NorickWalkSpeed = 1.5f;          // "walk slow hunched"
-    private const float NorickPlayerAtBridgeDist = 12f;  // player this far from Norick's post ⇒ arrived at the bridge
+    private const float NorickWalkSpeed = 1.5f;         // "walk slow hunched"
+    private const float NorickPlayerNearBridge = 14f;   // player within this of the bridge spot ⇒ arrived
 
     private void TickNorickDeath(float dt)
     {
@@ -8312,7 +8333,13 @@ void main()
             {
                 if (s.IsDead) continue;
                 if (!s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
-                _norickDeath = new NorickDeathSeq { Norick = s, Spawn = s.CurrentTransform.Translation };
+                _norickDeath = new NorickDeathSeq { Norick = s };
+                // His authored collapse spot is the position of the "fall" animation
+                // command that targets him — the middle of the bridge, a short walk
+                // from his post. Fall back to collapsing in place if it isn't indexed.
+                if (_animCommandPos.TryGetValue(s.Actor.Instance.Scid, out var bp))
+                { _norickDeath.BridgePos = bp; _norickDeath.HasBridgePos = true; }
+                else _norickDeath.BridgePos = s.CurrentTransform.Translation;
                 break;
             }
             if (_norickDeath is null) return;
@@ -8325,10 +8352,10 @@ void main()
             case NorickPhase.Idle:
             {
                 if (_nisPhase == NisPhase.Off) break;          // gate on the intro NIS
-                float dx = playerPos.X - z.Spawn.X, dz = playerPos.Z - z.Spawn.Z;
-                if (dx * dx + dz * dz < NorickPlayerAtBridgeDist * NorickPlayerAtBridgeDist)
-                    break;                                     // wait until the player has run to the bridge
-                z.Target = playerPos;                          // mid-bridge = the player's arrival spot
+                // Wait until the player has reached the bridge (is near Norick's
+                // authored collapse spot) before Norick starts his walk.
+                float dx = playerPos.X - z.BridgePos.X, dz = playerPos.Z - z.BridgePos.Z;
+                if (dx * dx + dz * dz > NorickPlayerNearBridge * NorickPlayerNearBridge) break;
                 z.Phase = NorickPhase.Walking;
                 z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);
                 z.WalkClipTimer = 0.8f;
@@ -8343,7 +8370,7 @@ void main()
                     z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
                     z.WalkClipTimer = 0.8f;
                 }
-                if (StepScriptedActor(z.Norick, z.Target, dt, NorickWalkSpeed))
+                if (StepScriptedActor(z.Norick, z.BridgePos, dt, NorickWalkSpeed))
                 {
                     z.Phase = NorickPhase.Down;
                     z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
