@@ -27,6 +27,17 @@ public sealed class AssetResolver
         }
     }
 
+    /// <summary>Enumerates every indexed basename that starts with <paramref name="prefix"/>
+    /// (case-insensitive). Used by the character creator to cycle only over hero
+    /// texture variants that actually ship — the skin family mixes two- and
+    /// three-digit numbering, so a hardcoded 1..N range would hit gaps.</summary>
+    public IEnumerable<string> BasenamesWithPrefix(string prefix)
+    {
+        foreach (var key in _byBasename.Keys)
+            if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                yield return key;
+    }
+
     /// <summary>Looks up a file by exact basename (e.g. <c>m_c_eam_kg_pos_1.asp</c>).
     /// Returns false and leaves <paramref name="bytes"/> null if not found.</summary>
     public bool TryLoadByBasename(string basename, out byte[] bytes)

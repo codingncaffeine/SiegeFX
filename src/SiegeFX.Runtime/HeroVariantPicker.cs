@@ -53,6 +53,19 @@ internal sealed class HeroVariantPicker
     /// <summary>Three-digit zero-padded suffix (e.g. "015"). Null = no override.</summary>
     public string? PantsSuffix { get; init; }
 
+    // SC-CD-COMPOSITE — the creator's real, label-matching appearance axes.
+    // Head=hairstyle (which hair_NNN overlay = the shape), Hair=color (a recolor
+    // tint of that style), Face=skin (skin_NN), Shirt=shrt_NNN, Pants=pant_NNN.
+    // These are plain indices cycled UNBOUNDED by CharacterCreatorPanel; the
+    // renderer mods each by the count of variants that actually ship (skin
+    // numbering is sparse, so ranges are enumerated, not hardcoded). They
+    // supersede the suffix fields above, which now only feed the (default) mesh
+    // pick + save plumbing — the body mesh no longer changes from a lever.
+    public int FaceIdx  { get; init; }
+    public int StyleIdx { get; init; }
+    public int ColorIdx { get; init; }
+    public int PantsIdx { get; init; }
+
     public static HeroVariantPicker FromEnv()
     {
         var genderRaw = Environment.GetEnvironmentVariable("SIEGEFX_HERO_GENDER");

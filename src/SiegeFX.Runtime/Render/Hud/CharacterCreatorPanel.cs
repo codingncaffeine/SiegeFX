@@ -268,42 +268,25 @@ internal sealed class CharacterCreatorPanel
     /// release lands on the same rect the press did.</summary>
     void ApplyCycle(Action act)
     {
+        // SC-CD-COMPOSITE — each lever now drives its real, label-matching axis
+        // (Head=hairstyle, Hair=color, Face=skin, Shirt/Pants=clothing). Indices
+        // cycle unbounded; the renderer wraps each by the shipped-variant count.
         switch (act)
         {
             case Action.GenderLeft:
             case Action.GenderRight:
                 Picker = With(g: Toggle(Picker.Gender));
                 break;
-            case Action.HeadLeft:
-                Picker = With(b: Cycle(Picker.BodyTypeIdx, -1, 0, 6));
-                break;
-            case Action.HeadRight:
-                Picker = With(b: Cycle(Picker.BodyTypeIdx, +1, 0, 6));
-                break;
-            case Action.FaceLeft:
-                Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, -1, SkinMin, SkinMax), 2));
-                break;
-            case Action.FaceRight:
-                Picker = With(s: PadN(CycleStr(Picker.SkinSuffix, +1, SkinMin, SkinMax), 2));
-                break;
-            case Action.HairLeft:
-                Picker = With(hh: PadN(CycleStr(Picker.HairSuffix, -1, HairMin, HairMax), 3));
-                break;
-            case Action.HairRight:
-                Picker = With(hh: PadN(CycleStr(Picker.HairSuffix, +1, HairMin, HairMax), 3));
-                break;
-            case Action.ShirtLeft:
-                Picker = With(si: Cycle(Picker.ShirtIdx, -1, 0, ShirtMax));
-                break;
-            case Action.ShirtRight:
-                Picker = With(si: Cycle(Picker.ShirtIdx, +1, 0, ShirtMax));
-                break;
-            case Action.PantsLeft:
-                Picker = With(p: PadN(CycleStr(Picker.PantsSuffix, -1, PantsMin, PantsMax), 3));
-                break;
-            case Action.PantsRight:
-                Picker = With(p: PadN(CycleStr(Picker.PantsSuffix, +1, PantsMin, PantsMax), 3));
-                break;
+            case Action.HeadLeft:   Picker = With(style: Picker.StyleIdx - 1); break;
+            case Action.HeadRight:  Picker = With(style: Picker.StyleIdx + 1); break;
+            case Action.FaceLeft:   Picker = With(face:  Picker.FaceIdx  - 1); break;
+            case Action.FaceRight:  Picker = With(face:  Picker.FaceIdx  + 1); break;
+            case Action.HairLeft:   Picker = With(color: Picker.ColorIdx - 1); break;
+            case Action.HairRight:  Picker = With(color: Picker.ColorIdx + 1); break;
+            case Action.ShirtLeft:  Picker = With(shirt: Picker.ShirtIdx - 1); break;
+            case Action.ShirtRight: Picker = With(shirt: Picker.ShirtIdx + 1); break;
+            case Action.PantsLeft:  Picker = With(pants: Picker.PantsIdx - 1); break;
+            case Action.PantsRight: Picker = With(pants: Picker.PantsIdx + 1); break;
         }
     }
 
@@ -351,15 +334,21 @@ internal sealed class CharacterCreatorPanel
         => n.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width, '0');
 
     HeroVariantPicker With(
-        HeroGender? g = null, int? b = null, string? s = null,
-        string? hh = null, int? si = null, string? p = null)
+        HeroGender? g = null, int? style = null, int? color = null,
+        int? face = null, int? shirt = null, int? pants = null)
         => new()
         {
-            Gender      = g  ?? Picker.Gender,
-            BodyTypeIdx = b  ?? Picker.BodyTypeIdx,
-            SkinSuffix  = s  ?? Picker.SkinSuffix,
-            HairSuffix  = hh ?? Picker.HairSuffix,
-            ShirtIdx    = si ?? Picker.ShirtIdx,
-            PantsSuffix = p  ?? Picker.PantsSuffix,
+            Gender      = g ?? Picker.Gender,
+            // Suffix fields are preserved (they feed the default mesh/spawn
+            // plumbing); the levers now drive the index axes below.
+            BodyTypeIdx = Picker.BodyTypeIdx,
+            SkinSuffix  = Picker.SkinSuffix,
+            HairSuffix  = Picker.HairSuffix,
+            PantsSuffix = Picker.PantsSuffix,
+            StyleIdx    = style ?? Picker.StyleIdx,
+            ColorIdx    = color ?? Picker.ColorIdx,
+            FaceIdx     = face  ?? Picker.FaceIdx,
+            ShirtIdx    = shirt ?? Picker.ShirtIdx,
+            PantsIdx    = pants ?? Picker.PantsIdx,
         };
 }

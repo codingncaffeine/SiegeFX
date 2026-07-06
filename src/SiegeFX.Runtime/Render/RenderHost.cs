@@ -637,6 +637,35 @@ public sealed class RenderHost : IDisposable
     private string? _pantsTexOverrideName;
     private readonly Dictionary<(string Mesh, string Tex), GlTexture?> _equipTexCache = new();
 
+    // SC-CD-COMPOSITE — character-creator appearance composited at runtime.
+    // The hero mesh has 2 texture slots (skin, clothing) but DS1 builds each
+    // from overlay families: skin = base skin_NN + hair_NNN overlay; clothing =
+    // base + shrt_NNN + pant_NNN. We alpha-blend those into the two slot
+    // textures on the CPU and upload the result (cached by combo). Head cycles
+    // the hair overlay (shape); Hair recolors it (luma x palette tint); Face
+    // cycles the skin; Shirt/Pants cycle their overlays. The full picker of the
+    // spawned player is kept so the created look carries into the game.
+    private HeroVariantPicker? _playerPicker;
+    private HeroGender? _ccOptGender;
+    private List<string> _ccHair  = new();
+    private List<string> _ccSkin  = new();
+    private List<string> _ccShirt = new();
+    private List<string> _ccPant  = new();
+    private readonly Dictionary<string, GlTexture?> _ccCompCache = new();
+    // Hair-color palette (target hair tints, 0..1 per channel). Head picks the
+    // style; this recolors it so the same style can be any colour.
+    private static readonly (float R, float G, float B)[] HairPalette =
+    {
+        (0.10f, 0.09f, 0.08f), // black
+        (0.27f, 0.18f, 0.11f), // dark brown
+        (0.45f, 0.30f, 0.16f), // brown
+        (0.63f, 0.46f, 0.26f), // light brown
+        (0.82f, 0.68f, 0.40f), // blond
+        (0.56f, 0.24f, 0.13f), // auburn
+        (0.60f, 0.60f, 0.58f), // grey
+        (0.88f, 0.86f, 0.82f), // platinum
+    };
+
     private sealed class EquippedLayer
     {
         public required SiegeFX.Core.Assets.AspMesh Asp { get; init; }
@@ -6564,6 +6593,155 @@ void main()
         };
     }
 
+    // SC-CD-COMPOSITE — enumerate the shipped appearance variants for a gender
+    // once (skin numbering is sparse, so we list what's really in the tanks and
+    // skip blank/no-art skin slots). Re-runs only when the gender changes.
+    private void EnsureCreatorOptions(HeroGender gender)
+    {
+        if (_ccOptGender == gender && _ccSkin.Count > 0) return;
+        _ccOptGender = gender;
+        _ccCompCache.Clear();
+        string stem = gender == HeroGender.Girl ? "fg" : "fb";
+        _ccHair  = StrippedSorted($"b_c_gah_{stem}_hair_");
+        _ccShirt = StrippedSorted("b_c_pos_a1_shrt_");
+        _ccPant  = StrippedSorted("b_c_pos_a1_pant_");
+        var skins = StrippedSorted($"b_c_gah_{stem}_skin_");
+        _ccSkin = new List<string>();
+        foreach (var s in skins) if (!IsBlankTexture(s)) _ccSkin.Add(s);
+        if (_ccSkin.Count == 0) _ccSkin = skins; // never leave the face with nothing
+        Console.WriteLine($"[cc-options] {stem}: styles={_ccHair.Count} skins={_ccSkin.Count}/{skins.Count} " +
+                          $"shirts={_ccShirt.Count} pants={_ccPant.Count} colors={HairPalette.Length}");
+    }
+
+    private List<string> StrippedSorted(string prefix)
+    {
+        var list = new List<string>();
+        if (_playResolver is null) return list;
+        foreach (var bn in _playResolver.BasenamesWithPrefix(prefix))
+            if (bn.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
+                list.Add(bn.Substring(0, bn.Length - 4));
+        list.Sort(StringComparer.OrdinalIgnoreCase);
+        return list;
+    }
+
+    private static string? PickVariant(List<string> list, int idx)
+        => list.Count == 0 ? null : list[((idx % list.Count) + list.Count) % list.Count];
+
+    // Load a .raw as an RGBA surface-0 buffer (BGRA on disk; RawImage swizzles).
+    private byte[]? LoadRawRgba(string baseName, out int w, out int h)
+    {
+        w = 0; h = 0;
+        if (_playResolver is null) return null;
+        if (!_playResolver.TryLoadByBasename(baseName + ".raw", out var bytes)) return null;
+        try
+        {
+            var img = SiegeFX.Core.Assets.RawImage.Load(bytes);
+            w = img.Width; h = img.Height;
+            return img.GetSurfaceRgba(0);
+        }
+        catch { return null; }
+    }
+
+    // A skin slot is "blank" (an unused placeholder) if it's fully transparent
+    // or a single flat colour. Sampled cheaply so enumeration stays fast.
+    private bool IsBlankTexture(string baseName)
+    {
+        var rgba = LoadRawRgba(baseName, out _, out _);
+        if (rgba is null || rgba.Length < 4) return true;
+        int aMax = 0; byte r0 = rgba[0], g0 = rgba[1], b0 = rgba[2]; bool varied = false;
+        for (int i = 0; i < rgba.Length; i += 4 * 101)
+        {
+            if (rgba[i + 3] > aMax) aMax = rgba[i + 3];
+            if (Math.Abs(rgba[i] - r0) > 10 || Math.Abs(rgba[i + 1] - g0) > 10 || Math.Abs(rgba[i + 2] - b0) > 10)
+                varied = true;
+        }
+        return aMax <= 8 || !varied;
+    }
+
+    // Composite a hero texture slot from the picker: slot 0 = skin + hair overlay
+    // (recoloured by the Hair palette); slot 1 = clothing base + shirt + pants.
+    // Cached by combo. Returns null on a base-load miss so the caller falls
+    // through to the mesh's authored texture.
+    private GlTexture? ResolveCreatorTexture(HeroVariantPicker picker, int slot)
+    {
+        if (_gl is null || _playResolver is null) return null;
+        EnsureCreatorOptions(picker.Gender);
+        if (slot == 0)
+        {
+            var skin = PickVariant(_ccSkin, picker.FaceIdx);
+            if (skin is null) return null;
+            var hair = PickVariant(_ccHair, picker.StyleIdx);
+            return CompositeSkin(skin, hair, picker.ColorIdx);
+        }
+        if (slot == 1)
+        {
+            var baseCloth = picker.Gender == HeroGender.Girl ? "b_c_pos_a1_009" : "b_c_pos_a1_008";
+            return CompositeClothing(baseCloth,
+                PickVariant(_ccShirt, picker.ShirtIdx), PickVariant(_ccPant, picker.PantsIdx));
+        }
+        return null;
+    }
+
+    private GlTexture? CompositeSkin(string skinName, string? hairName, int colorIdx)
+    {
+        string key = $"S|{skinName}|{hairName}|{colorIdx}";
+        if (_ccCompCache.TryGetValue(key, out var hit)) return hit;
+        var baseRgba = LoadRawRgba(skinName, out int w, out int h);
+        if (baseRgba is null) { _ccCompCache[key] = null; return null; }
+        if (hairName is not null)
+        {
+            var hair = LoadRawRgba(hairName, out int hw, out int hh);
+            if (hair is not null && hw == w && hh == h)
+            {
+                var c = HairPalette[((colorIdx % HairPalette.Length) + HairPalette.Length) % HairPalette.Length];
+                for (int i = 0; i < baseRgba.Length; i += 4)
+                {
+                    float a = hair[i + 3] / 255f;
+                    if (a <= 0f) continue;
+                    // Neutralize the overlay to luminance, then tint — so Head
+                    // sets the shape and Hair sets the colour independently.
+                    float luma = (0.299f * hair[i] + 0.587f * hair[i + 1] + 0.114f * hair[i + 2]) / 255f;
+                    float shade = 0.30f + 0.85f * luma;
+                    if (shade > 1f) shade = 1f;
+                    baseRgba[i]     = (byte)(Math.Clamp(c.R * shade, 0f, 1f) * 255f * a + baseRgba[i]     * (1 - a));
+                    baseRgba[i + 1] = (byte)(Math.Clamp(c.G * shade, 0f, 1f) * 255f * a + baseRgba[i + 1] * (1 - a));
+                    baseRgba[i + 2] = (byte)(Math.Clamp(c.B * shade, 0f, 1f) * 255f * a + baseRgba[i + 2] * (1 - a));
+                }
+            }
+        }
+        var tex = new GlTexture(_gl!, baseRgba, w, h, nearestFilter: false);
+        _ccCompCache[key] = tex;
+        return tex;
+    }
+
+    private GlTexture? CompositeClothing(string baseName, string? shrt, string? pant)
+    {
+        string key = $"C|{baseName}|{shrt}|{pant}";
+        if (_ccCompCache.TryGetValue(key, out var hit)) return hit;
+        var baseRgba = LoadRawRgba(baseName, out int w, out int h);
+        if (baseRgba is null) { _ccCompCache[key] = null; return null; }
+        AlphaOver(baseRgba, shrt, w, h);
+        AlphaOver(baseRgba, pant, w, h);
+        var tex = new GlTexture(_gl!, baseRgba, w, h, nearestFilter: false);
+        _ccCompCache[key] = tex;
+        return tex;
+    }
+
+    private void AlphaOver(byte[] dst, string? overlayName, int w, int h)
+    {
+        if (overlayName is null) return;
+        var ov = LoadRawRgba(overlayName, out int ow, out int oh);
+        if (ov is null || ow != w || oh != h) return;
+        for (int i = 0; i < dst.Length; i += 4)
+        {
+            float a = ov[i + 3] / 255f;
+            if (a <= 0f) continue;
+            dst[i]     = (byte)(ov[i]     * a + dst[i]     * (1 - a));
+            dst[i + 1] = (byte)(ov[i + 1] * a + dst[i + 1] * (1 - a));
+            dst[i + 2] = (byte)(ov[i + 2] * a + dst[i + 2] * (1 - a));
+        }
+    }
+
     private GlTexture? ResolveActorTexture(SiegeFX.Core.Actors.Actor actor, int textureIndex)
     {
         // 21d-2a-viii-FE-2 — preview hero (the live 3D char in the creator's
@@ -6574,10 +6752,10 @@ void main()
         if (_heroPreview is not null && _heroPreview.Actor is not null
             && ReferenceEquals(actor, _heroPreview.Actor))
         {
-            if (textureIndex == 0 && _heroPreview.SkinOverrideName is not null)
-                return LoadEquipmentTexture("__preview_skin__", _heroPreview.SkinOverrideName);
-            if (textureIndex == 1 && _heroPreview.PantsOverrideName is not null)
-                return LoadEquipmentTexture("__preview_pants__", _heroPreview.PantsOverrideName);
+            // SC-CD-COMPOSITE — the live creator preview composites its two slots
+            // from the panel's current picks (Head/Hair/Face/Shirt/Pants).
+            var t = ResolveCreatorTexture(_creator.Picker, textureIndex);
+            if (t is not null) return t;
         }
         // Player overrides — checked in priority order so equipment beats the
         // creator pick that would otherwise show through. Only the player ever
@@ -6589,14 +6767,14 @@ void main()
             if (textureIndex == 1 && _chestTexOverrideName is not null)
                 return LoadEquipmentTexture("__chest__", _chestTexOverrideName);
 
-            // 21d-2a-viii — character creator picks. Slot 0 is the body's
-            // face/hair/arms region; slot 1 is the clothing strip below it.
-            // Routed through _equipTexCache (slot-keyed by '__skin__' /
-            // '__pants__') so swapping picks mid-session re-uses prior uploads.
-            if (textureIndex == 0 && _skinTexOverrideName is not null)
-                return LoadEquipmentTexture("__skin__", _skinTexOverrideName);
-            if (textureIndex == 1 && _pantsTexOverrideName is not null)
-                return LoadEquipmentTexture("__pants__", _pantsTexOverrideName);
+            // SC-CD-COMPOSITE — the created appearance carries into the game:
+            // composite the player's two slots from the picker chosen at spawn.
+            // (Equipped chest armor above already won slot 1 if present.)
+            if (_playerPicker is not null)
+            {
+                var t = ResolveCreatorTexture(_playerPicker, textureIndex);
+                if (t is not null) return t;
+            }
         }
         var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
@@ -10875,6 +11053,7 @@ void main()
         }
         _skinTexOverrideName  = heroOverride?.SkinTextureName;
         _pantsTexOverrideName = heroOverride?.ClothingTextureName;
+        _playerPicker = pick;   // SC-CD-COMPOSITE — carry the creator look in-game
         var overrides = heroOverride is null
             ? null
             : new Dictionary<string, SiegeFX.Core.Actors.TemplateOverride>(StringComparer.OrdinalIgnoreCase)
@@ -18350,6 +18529,7 @@ void main()
                     var ov = restored.BuildOverride(_templateStore, pickTpl);
                     _skinTexOverrideName  = ov?.SkinTextureName;
                     _pantsTexOverrideName = ov?.ClothingTextureName;
+                    _playerPicker = restored;   // SC-CD-COMPOSITE — restored look
                     if (_heroVariant is not null
                         && (_heroVariant.BodyTypeIdx != restored.BodyTypeIdx
                          || _heroVariant.Gender      != restored.Gender))
