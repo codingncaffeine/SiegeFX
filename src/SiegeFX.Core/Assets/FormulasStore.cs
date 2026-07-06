@@ -54,12 +54,17 @@ public sealed class FormulasStore
     /// 160 entries in shipped data; capped to 250 via skill max_level.</summary>
     public IReadOnlyList<long> XpTable { get; }
 
+    /// <summary>DS1 <c>[combat_constants]</c> — attack/defend rating coefficients,
+    /// to-hit curve, armor scalar, difficulty multipliers. Consumed by CombatResolver.</summary>
+    public CombatConstants Combat { get; }
+
     private FormulasStore(
         float maxLifeBase, float maxLifeConstant, float maxLifeStr, float maxLifeDex, float maxLifeInt,
         float maxManaBase, float maxManaConstant, float maxManaStr, float maxManaDex, float maxManaInt,
         float deathThreshold,
         float lrUnit, float lrPeriod, float mrUnit, float mrPeriod,
-        Dictionary<SkillKind, AttributeShare> gains, IReadOnlyList<long> xpTable)
+        Dictionary<SkillKind, AttributeShare> gains, IReadOnlyList<long> xpTable,
+        CombatConstants combat)
     {
         MaxLifeBase = maxLifeBase; MaxLifeConstant = maxLifeConstant;
         MaxLifeStrPct = maxLifeStr; MaxLifeDexPct = maxLifeDex; MaxLifeIntPct = maxLifeInt;
@@ -70,6 +75,7 @@ public sealed class FormulasStore
         ManaRecoveryUnit = mrUnit; ManaRecoveryPeriod = mrPeriod;
         _gains = gains;
         XpTable = xpTable;
+        Combat = combat;
     }
 
     public AttributeShare ProportionalGains(SkillKind skill) =>
@@ -192,12 +198,43 @@ public sealed class FormulasStore
         }
 
         var xp = ParseXpTable(xpTbl);
+        var cc = ParseCombat(combat);
 
         return new FormulasStore(
             lifeBase, lifeConst, lifeStr, lifeDex, lifeInt,
             manaBase, manaConst, manaStr, manaDex, manaInt,
             death, lrUnit, lrPeriod, mrUnit, mrPeriod,
-            gains, xp);
+            gains, xp, cc);
+    }
+
+    /// <summary>Parse the <c>[combat_constants]</c> block. The attack/defend rating
+    /// coefficients live in nested <c>[attack_rating]</c>/<c>[defend_rating]</c>
+    /// sub-blocks (NOT the flat <c>skill_scalar/dex_scalar/int_scalar</c> at the block
+    /// root — those are the ranged aiming-error terms). Everything else is a flat
+    /// attribute of the block. Missing values fall back to the shipped defaults.</summary>
+    private static CombatConstants ParseCombat(GasNode? combat)
+    {
+        var d = CombatConstants.Ds1Default;
+        if (combat is null) return d;
+
+        GasNode? ar = null, dr = null;
+        foreach (var c in combat.Children)
+        {
+            if (string.Equals(c.Header, "attack_rating", StringComparison.OrdinalIgnoreCase)) ar = c;
+            else if (string.Equals(c.Header, "defend_rating", StringComparison.OrdinalIgnoreCase)) dr = c;
+        }
+
+        return new CombatConstants(
+            ReadFloat(ar, "skill_scalar", d.AttackSkillScalar), ReadFloat(ar, "dex_scalar", d.AttackDexScalar), ReadFloat(ar, "int_scalar", d.AttackIntScalar),
+            ReadFloat(dr, "skill_scalar", d.DefendSkillScalar), ReadFloat(dr, "dex_scalar", d.DefendDexScalar), ReadFloat(dr, "int_scalar", d.DefendIntScalar),
+            ReadFloat(combat, "hit_chance", d.BaseHitChance),
+            ReadFloat(combat, "attacker_diff_scalar", d.AttackerDiffScalar),
+            ReadFloat(combat, "victim_diff_scalar", d.VictimDiffScalar),
+            ReadFloat(combat, "attacker_hit_cap", d.AttackerHitCap),
+            ReadFloat(combat, "defender_hit_cap", d.DefenderHitCap),
+            ReadFloat(combat, "armor_scalar", d.ArmorScalar),
+            ReadFloat(combat, "difficulty_medium_player", d.DifficultyPlayer),
+            ReadFloat(combat, "difficulty_medium_computer", d.DifficultyComputer));
     }
 
     private static GasNode? FindBlock(IReadOnlyList<GasNode> roots, string header)

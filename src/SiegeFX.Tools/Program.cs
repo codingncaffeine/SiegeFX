@@ -4220,36 +4220,50 @@ static int CmdTemplatesCombat(string[] a)
     var tgtStats = ActorStats.FromTemplate(store, targetT);
     if (!atkStats.IsCombatant) { Console.Error.WriteLine($"{attackerT.Name}: not a combatant (no life/damage)"); return 1; }
 
-    Console.WriteLine($"attacker  : {attackerT.Name}  life={atkStats.MaxLife:F0} dmg={atkStats.DamageMin:F0}-{atkStats.DamageMax:F0} def={atkStats.Defense:F0}");
-    Console.WriteLine($"target    : {targetT.Name}  life={tgtStats.MaxLife:F0} def={tgtStats.Defense:F0}");
+    // Load the shipped [combat_constants] so the sim resolves with the same to-hit
+    // + armor + difficulty math the game uses (falls back to Ds1Default if missing).
+    CombatConstants cc;
+    try { cc = FormulasStore.LoadFromTank(reader).Combat; }
+    catch { cc = CombatConstants.Ds1Default; }
+
+    float atkRating = CombatResolver.AttackRating(atkStats, cc);
+    float defRating = CombatResolver.DefendRating(tgtStats, cc);
+    float hitPct    = CombatResolver.HitChance(atkStats, tgtStats, cc);
+
+    Console.WriteLine($"attacker  : {attackerT.Name}  life={atkStats.MaxLife:F0} dmg={atkStats.DamageMin:F0}-{atkStats.DamageMax:F0} def={atkStats.Defense:F0}  dex={atkStats.Dexterity:F0} melee={atkStats.MeleeSkill:F0}");
+    Console.WriteLine($"target    : {targetT.Name}  life={tgtStats.MaxLife:F0} def={tgtStats.Defense:F0}  dex={tgtStats.Dexterity:F0} melee={tgtStats.MeleeSkill:F0}");
+    Console.WriteLine($"to-hit    : {hitPct:F1}%   (attack_rating {atkRating:F1} vs defend_rating {defRating:F1})");
     Console.WriteLine($"duels     : {duels}{(rngSeed is null ? "" : $"  seed={rngSeed}")}");
     Console.WriteLine();
 
     var rng = new Random(rngSeed ?? Environment.TickCount);
-    int totalHits = 0;
+    long totalSwings = 0, totalLanded = 0;
     double totalDmg = 0;
     int kills = 0;
-    int capHits = 200; // safety cap — a zero-damage resolver would otherwise loop forever
+    int capSwings = 4000; // safety cap — misses inflate the swing count vs the old hit-only loop
     for (int d = 0; d < duels; d++)
     {
         var target = new ActorCombatState(tgtStats);
-        int hits = 0;
-        while (!target.IsDead && hits < capHits)
+        int swings = 0, landed = 0;
+        while (!target.IsDead && swings < capSwings)
         {
-            float dmg = CombatResolver.RollMeleeDamage(atkStats, tgtStats, rng);
-            float actual = target.ApplyDamage(dmg);
-            totalDmg += actual;
-            hits++;
+            var res = CombatResolver.Resolve(atkStats, tgtStats, rng, cc);
+            float actual = target.ApplyDamage(res.Damage);
+            if (res.Hit) { landed++; totalDmg += actual; }
+            swings++;
         }
-        totalHits += hits;
+        totalSwings += swings;
+        totalLanded += landed;
         if (target.IsDead) kills++;
     }
 
-    double meanHits = totalHits / (double)duels;
-    double meanDmg  = totalDmg / totalHits;
+    double meanSwings = totalSwings / (double)duels;
+    double meanLanded = totalLanded / (double)duels;
+    double meanDmg    = totalLanded > 0 ? totalDmg / totalLanded : 0;
+    double landRate   = totalSwings > 0 ? 100.0 * totalLanded / totalSwings : 0;
     Console.WriteLine($"result    : {kills}/{duels} duel(s) reached a kill");
-    Console.WriteLine($"  mean hits to kill : {meanHits:F1}");
-    Console.WriteLine($"  mean damage / hit : {meanDmg:F1}");
+    Console.WriteLine($"  mean swings to kill      : {meanSwings:F1}   (landed {meanLanded:F1}, {landRate:F0}% connect)");
+    Console.WriteLine($"  mean damage / landed hit : {meanDmg:F1}");
     return 0;
 }
 
@@ -5843,6 +5857,14 @@ static int CmdFormulasDump(string[] a)
 
     Console.WriteLine($"experience_table: {f.XpTable.Count} entries  (lvl 1: {f.XpForLevel(1):N0}, lvl 10: {f.XpForLevel(10):N0}, lvl 50: {f.XpForLevel(50):N0}, lvl 100: {f.XpForLevel(100):N0}, lvl 160: {f.XpForLevel(160):N0})");
     Console.WriteLine($"  reverse: 1000 xp -> level {f.LevelForXp(1000)}, 50000 -> {f.LevelForXp(50000)}, 1000000 -> {f.LevelForXp(1000000)}");
+    Console.WriteLine();
+
+    var cc = f.Combat;
+    Console.WriteLine("combat_constants (drives CombatResolver):");
+    Console.WriteLine($"  attack_rating = {cc.AttackSkillScalar}*skill + {cc.AttackDexScalar}*dex + {cc.AttackIntScalar}*int");
+    Console.WriteLine($"  defend_rating = {cc.DefendSkillScalar}*skill + {cc.DefendDexScalar}*dex + {cc.DefendIntScalar}*int");
+    Console.WriteLine($"  hit_chance    = {cc.BaseHitChance} + (AR-DR)*{cc.AttackerDiffScalar}, clamp [{cc.DefenderHitCap}, {cc.AttackerHitCap}]");
+    Console.WriteLine($"  armor         = dmg*difficulty - defense*{cc.ArmorScalar}/{CombatResolver.ArmorDivisor}   (medium: player {cc.DifficultyPlayer}, computer {cc.DifficultyComputer})");
     return 0;
 }
 
