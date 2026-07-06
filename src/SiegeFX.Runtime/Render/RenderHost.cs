@@ -2455,6 +2455,9 @@ public sealed class RenderHost : IDisposable
     private Vector3? _authoredSpawn;
     private StaticMesh? _mesh;
     private SnoMesh? _sno;
+    // SC-TERRAIN-UV — current terrain tile UV orientation (0..7), cycled by 'U'
+    // in-game to find the one where the ground pattern connects across tiles.
+    private int _terrainUvOrient;
     private SkinnedMesh? _skinnedMesh;
     private AspMesh? _skinnedAsp;
     private PrsAnimation? _anim;
@@ -2924,6 +2927,11 @@ uniform vec4      uSubsetTint;
 // faces. Default = flip (preserves the working NPC look); the static-prop pass
 // sets uFlipV=0 before drawing.
 uniform int       uFlipV;
+// SC-TERRAIN-UV — dihedral orientation for terrain tile UVs (0=identity,
+// 1=transpose, 2=flipU, 3=flipV, 4=rot90, 5=rot180, 6=rot270, 7=anti-transpose),
+// cycled by the 'U' dev key to find the orientation where the ground tiles
+// connect. Non-terrain passes leave it 0 (identity), so props are unaffected.
+uniform int       uUvOrient;
 // Phase 17-SC-I — per-draw UV scroll for animated terrain textures
 // (waterfalls vshift 0.5/sec in DS1's TSD sidecars). Defaults to (0,0)
 // for everything else, which the host resets between water and non-water
@@ -2952,9 +2960,22 @@ uniform int       uDirCount;
 uniform vec3      uDirDir[4];
 uniform vec3      uDirColor[4];
 uniform float     uAmbient;
+// SC-TERRAIN-UV — the 8 dihedral symmetries of a square tile.
+vec2 orientUv(vec2 uv, int o)
+{
+    if (o == 1) return vec2(uv.y, uv.x);              // transpose
+    if (o == 2) return vec2(1.0 - uv.x, uv.y);        // flip U
+    if (o == 3) return vec2(uv.x, 1.0 - uv.y);        // flip V
+    if (o == 4) return vec2(1.0 - uv.y, uv.x);        // rot 90
+    if (o == 5) return vec2(1.0 - uv.x, 1.0 - uv.y);  // rot 180
+    if (o == 6) return vec2(uv.y, 1.0 - uv.x);        // rot 270
+    if (o == 7) return vec2(1.0 - uv.y, 1.0 - uv.x);  // anti-transpose
+    return uv;                                         // 0 = identity
+}
 void main()
 {
     vec2 uv = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+    uv = orientUv(uv, uUvOrient);
     uv += uUvOffset;
     vec4 fallback = (uDebugFallback != 0)
         ? vec4(1.0, 0.0, 1.0, 1.0)
@@ -2991,6 +3012,7 @@ void main()
     }
     if (uHasTexture2 != 0) {
         vec2 uv2 = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
+        uv2 = orientUv(uv2, uUvOrient);
         uv2 += uUvOffset2;
         vec4 s2 = texture(uAlbedo2, uv2);
         if (uColorop2 == 1) {
@@ -3207,6 +3229,17 @@ void main()
                 // Phase 27 dev hook: 'F' cycles the party formation until the
                 // field_commands panel radios drive it. No-op with no party.
                 else if (key == Key.F && _party.Count > 1) { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
+                // SC-TERRAIN-UV dev hook: 'U' cycles the terrain tile UV
+                // orientation (8 dihedral flips/rotations) to find the one where
+                // the ground pattern connects across tiles. Logs the mode.
+                else if (key == Key.U)
+                {
+                    _terrainUvOrient = (_terrainUvOrient + 1) % 8;
+                    string[] modes = { "identity", "transpose", "flipU", "flipV",
+                                       "rot90", "rot180", "rot270", "anti-transpose" };
+                    Console.WriteLine($"[terrain-uv] orient={_terrainUvOrient} ({modes[_terrainUvOrient]})");
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
@@ -16331,6 +16364,7 @@ void main()
             _meshShader.SetMatrix4("uModel", Matrix4x4.Identity);
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uFlipV", 1);
+            _meshShader.SetInt("uUvOrient", _terrainUvOrient);
             ApplyLightingUniforms(_meshShader);
             _meshShader.SetInt("uAlbedo2", 1);
             for (var i = 0; i < _sno.Subsets.Count; i++)
@@ -16340,6 +16374,7 @@ void main()
                 _sno.DrawSubset(i);
             }
             ResetAnimatedTextureBinding();
+            _meshShader.SetInt("uUvOrient", 0);
         }
 
         if (_skinShader is not null && _skinnedMesh is not null && _skinnedAsp is not null && _anim is not null)
@@ -16993,6 +17028,7 @@ void main()
             _meshShader.SetMatrix4("uViewProj", vp);
             _meshShader.SetInt("uAlbedo", 0);
             _meshShader.SetInt("uFlipV", 1);
+            _meshShader.SetInt("uUvOrient", _terrainUvOrient);
             ApplyLightingUniforms(_meshShader);
             _meshShader.SetInt("uAlbedo2", 1);
             // SC-TSD-ANIM draw-order — split the region pass in two: pass 1
@@ -17056,6 +17092,7 @@ void main()
                 }
             }
             ResetAnimatedTextureBinding();
+            _meshShader.SetInt("uUvOrient", 0);
         }
 
         // Phase 17-SC-E — billboard particles. Sit above the world scene
