@@ -8383,6 +8383,11 @@ void main()
     private float _introDogSniffDelay;
     private const uint DogLookCameraScid = 0x01c00786;  // the NIS camera cut DS1 hangs the dog "look" off (+0.5s)
 
+    private bool _introHoeStarted;
+    private bool _introHoeDone;
+    private float _introHoeTimer;
+    private Vector3 _introHoeSpot;
+
     private void TickIntroDog(float dt)
     {
         if (_nisPhase != NisPhase.Off)
@@ -8421,6 +8426,48 @@ void main()
         }
     }
 
+    // SC-INTRO-HOE — the hero farms with the hoe during the opening NIS, then puts it
+    // away and heads to the bridge. Feasibility confirmed: base_farmboy chore_misc keys
+    // hoe1 = a_c_gah_fb_fs5_dsf-02 (same class as the working "knee"/"lstn"). Motion for
+    // now — the visible hoe prop is a follow-up. Loops the swing so the farming reads as
+    // sustained; stops when the hero leaves his spot for the scripted bridge run (the big
+    // move, distinct from the small in-place hoe-positioning turn).
+    private void TickIntroHoe(float dt)
+    {
+        if (_player is null || _player.IsDead) return;
+        if (_nisPhase == NisPhase.Off) return;   // only during the intro cinematic
+        if (_introHoeDone) return;
+
+        if (!_introHoeStarted)
+        {
+            _introHoeStarted = true;
+            _introHoeSpot = _player.CurrentTransform.Translation;
+            Console.WriteLine("[intro] hero farming with the hoe");
+        }
+
+        var p = _player.CurrentTransform.Translation;
+        float dx = p.X - _introHoeSpot.X, dz = p.Z - _introHoeSpot.Z;
+        if (dx * dx + dz * dz > 3f * 3f)
+        {
+            _introHoeDone = true;
+            _player.Actor.Host.OverrideAnimIndex(-1, 0f);   // release the hoe pose
+            Console.WriteLine("[intro] hero drops the hoe, heads to the bridge");
+            return;
+        }
+
+        // Sustained farming: replay the hoe swing on a loop (PlayChoreOnce end-holds a
+        // single swing, so re-arm it each clip-length like the dog's intermediate loop).
+        _introHoeTimer -= dt;
+        if (_introHoeTimer <= 0f)
+        {
+            _player.AnimTime = 0;
+            _player.Actor.PlayChoreOnce("hoe1", float.PositiveInfinity);
+            int hi = _player.Actor.GetClipIndex("hoe1");
+            float hl = (hi >= 0 && hi < _player.Actor.Clips.Length) ? _player.Actor.Clips[hi].AnimLength : 0f;
+            _introHoeTimer = hl > 0.2f ? hl : 1.5f;
+        }
+    }
+
     /// <summary>Esc during the intro skips the *witnessing*, not the events: the player
     /// still ends up at the bridge and Norick still dies — you just don't watch it.
     /// Snap the player to the end of his scripted run and force the Norick/dog outcomes
@@ -8438,6 +8485,10 @@ void main()
 
         // Dog: retire the one-shot intro prop immediately.
         if (_introDog is not null) _introDog.Hidden = true;
+
+        // Hoe: stop farming and clear the pose so the skipped-to hero isn't mid-swing.
+        _introHoeDone = true;
+        if (_player is not null && !_player.IsDead) _player.Actor.Host.OverrideAnimIndex(-1, 0f);
     }
 
     /// <summary>Walk the hero's scripted move chain to its final destination (the last
@@ -10099,6 +10150,7 @@ void main()
                 TickScriptedSmashes((float)stepSec);
                 TickNorickDeath((float)stepSec);
                 TickIntroDog((float)stepSec);
+                TickIntroHoe((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
