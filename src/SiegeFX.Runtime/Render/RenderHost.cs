@@ -18237,7 +18237,7 @@ void main()
             // bottom-right labels button both flip this flag, matching
             // DS1's notify(labels_on)/notify(labels_off) behavior.
             if (_frameLootLabels.Count > 0 && _barRenderer is not null
-                && _overheadLabelsVisible)
+                && _overheadLabelsVisible && _nisPhase == NisPhase.Off)
             {
                 int mx = -1, my = -1;
                 if (_input is not null && _input.Mice.Count > 0)
