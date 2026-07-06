@@ -237,6 +237,25 @@ public sealed class ActorSpawner
                 if (name.Equals("chore_walk", StringComparison.OrdinalIgnoreCase))
                     walkIdx = idx;
             }
+            // SC-NIS — chore_misc (chore_stances=ignore) maps NAMED anims to full-name
+            // PRS clips; the loop above only kept its first entry (as "chore_misc").
+            // Also expose each by its own key ("fall", "dead", "hurt", …) so NIS drivers
+            // and cmd_animation_command can play them by name — Norick's bridge death
+            // uses fall→dsf-03 (collapse) and dead→di-02 (final pose).
+            var miscSection = TemplateStore.FindChild(dictionary!, "chore_misc");
+            var miscAnims = miscSection is null ? null : TemplateStore.FindChild(miscSection, "anim_files");
+            if (miscAnims is not null)
+            {
+                foreach (var attr in miscAnims.Attributes)
+                {
+                    if (string.IsNullOrWhiteSpace(attr.Name) || string.IsNullOrWhiteSpace(attr.Value)) continue;
+                    if (clipIndexByName.ContainsKey(attr.Name)) continue;
+                    var miscClip = TryLoadFullNameClip(attr.Value, inst);
+                    if (miscClip is null) continue;
+                    clipIndexByName[attr.Name] = clipList.Count;
+                    clipList.Add(miscClip);
+                }
+            }
         }
         var clips = clipList.ToArray();
 

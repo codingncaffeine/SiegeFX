@@ -8253,12 +8253,13 @@ void main()
     // Kinematic step toward a goal (mirrors TickScriptedMoves): constant
     // walk-speed translation with nav Y-snap and travel-direction facing.
     // Returns true once the actor is within a step of the goal.
-    private bool StepScriptedActor(ActorRenderState s, Vector3 to, float dt)
+    private bool StepScriptedActor(ActorRenderState s, Vector3 to, float dt, float speedOverride = 0f)
     {
         var pos = s.CurrentTransform.Translation;
         float dx = to.X - pos.X, dz = to.Z - pos.Z;
         float dist = MathF.Sqrt(dx * dx + dz * dz);
-        float speed = s.Actor.Stats.WalkSpeed > 0.5f ? s.Actor.Stats.WalkSpeed : 3f;
+        float speed = speedOverride > 0f ? speedOverride
+                    : s.Actor.Stats.WalkSpeed > 0.5f ? s.Actor.Stats.WalkSpeed : 3f;
         if (dist <= MathF.Max(0.15f, speed * dt)) { s.IsMoving = false; return true; }
         float step = speed * dt / dist;
         var np = new Vector3(pos.X + dx * step, pos.Y, pos.Z + dz * step);
@@ -8269,6 +8270,102 @@ void main()
         s.IsMoving = true;
         return false;
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    // SC-NORICK — the fh_r1 bridge-death cinematic. DS1 authors Norick's
+    // collapse via cmd_animation_command "fall" (his chore_misc → dsf-03) but
+    // NO scripted move, and in single-player there is one Norick (0x01C007C0,
+    // a brain-less talkable so his pose is ours to drive). We reproduce the
+    // user-visible beats directly, gated on the player having run to the bridge
+    // during the intro NIS (the camera is already sequenced there): Norick
+    // hunch-walks slowly to the bridge, plays "fall" held (the collapse that
+    // settles into the propped-up gesture) while the quest subtitles scroll,
+    // then settles into "dead" once the NIS hands control back to gameplay.
+    // Timing tunables live here (walk speed, the player-at-bridge distance).
+    // ────────────────────────────────────────────────────────────────────
+    private enum NorickPhase { Idle, Walking, Down, Dead }
+    private sealed class NorickDeathSeq
+    {
+        public ActorRenderState? Norick;
+        public NorickPhase Phase = NorickPhase.Idle;
+        public Vector3 Target;      // mid-bridge = where the player arrived
+        public Vector3 Spawn;       // Norick's authored post (farmhouse)
+        public float WalkClipTimer; // re-triggers the walk loop
+        public bool FallStarted;
+    }
+    private NorickDeathSeq? _norickDeath;
+    private const float NorickWalkSpeed = 1.5f;          // "walk slow hunched"
+    private const float NorickPlayerAtBridgeDist = 12f;  // player this far from Norick's post ⇒ arrived at the bridge
+
+    private void TickNorickDeath(float dt)
+    {
+        if (_player is null || _player.IsDead) return;
+        if (_norickDeath is null)
+        {
+            // Only hunt during the intro NIS — that's the one scene Norick performs.
+            if (_nisPhase == NisPhase.Off) return;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead) continue;
+                if (!s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
+                _norickDeath = new NorickDeathSeq { Norick = s, Spawn = s.CurrentTransform.Translation };
+                break;
+            }
+            if (_norickDeath is null) return;
+        }
+        var z = _norickDeath;
+        if (z.Norick is null || z.Norick.IsDead) return;
+        var playerPos = _player.CurrentTransform.Translation;
+        switch (z.Phase)
+        {
+            case NorickPhase.Idle:
+            {
+                if (_nisPhase == NisPhase.Off) break;          // gate on the intro NIS
+                float dx = playerPos.X - z.Spawn.X, dz = playerPos.Z - z.Spawn.Z;
+                if (dx * dx + dz * dz < NorickPlayerAtBridgeDist * NorickPlayerAtBridgeDist)
+                    break;                                     // wait until the player has run to the bridge
+                z.Target = playerPos;                          // mid-bridge = the player's arrival spot
+                z.Phase = NorickPhase.Walking;
+                z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);
+                z.WalkClipTimer = 0.8f;
+                Console.WriteLine("[norick] intro: hunch-walking to the bridge");
+                break;
+            }
+            case NorickPhase.Walking:
+            {
+                z.WalkClipTimer -= dt;
+                if (z.WalkClipTimer <= 0f)
+                {
+                    z.Norick.Actor.PlayChoreOnce("chore_walk", 1.0f);   // loop the walk clip
+                    z.WalkClipTimer = 0.8f;
+                }
+                if (StepScriptedActor(z.Norick, z.Target, dt, NorickWalkSpeed))
+                {
+                    z.Phase = NorickPhase.Down;
+                    z.Norick.Actor.PlayChoreOnce("fall", float.PositiveInfinity); // collapse → held gesture pose
+                    z.FallStarted = true;
+                    Console.WriteLine("[norick] collapsed at the bridge");
+                }
+                break;
+            }
+            case NorickPhase.Down:
+            {
+                // Hold the collapse/gesture pose through the sitting-up shot; settle
+                // to the dead pose once the NIS returns control to normal gameplay.
+                if (_nisPhase == NisPhase.Off)
+                {
+                    z.Phase = NorickPhase.Dead;
+                    z.Norick.Actor.PlayChoreOnce("dead", float.PositiveInfinity);
+                    Console.WriteLine("[norick] dead");
+                }
+                break;
+            }
+            case NorickPhase.Dead:
+                break;
+        }
+    }
+
+    /// <summary>Walk a command chain into a waypoint list. Loops when the
 
     private StaticPropInstance? ResolveSmashTarget(uint objScid, Vector3 nearPos)
     {
@@ -9727,6 +9824,7 @@ void main()
                 TickPendingObjectSpawns((float)stepSec);
                 TickScriptedMoves((float)stepSec);
                 TickScriptedSmashes((float)stepSec);
+                TickNorickDeath((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
