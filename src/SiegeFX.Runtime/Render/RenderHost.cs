@@ -820,6 +820,12 @@ public sealed class RenderHost : IDisposable
         public double AnimTime;
         public int LastClipIndex;
 
+        // Intro NIS gizmos — the narrator (a King-model voice-over actor) and the
+        // sleeping dog (a one-shot "look at the camera" prop) are spawned so the
+        // intro scripting can find them, but must not draw as visible NPCs. Hidden
+        // actors are skipped in the draw pass and can't be clicked/talked to.
+        public bool Hidden;
+
         // Phase 11d — actors that spawn over the nav mesh get a brain (wander + aggro)
         // and roam/chase. Those that land off-mesh (pens inside buildings, props) have
         // Brain=null and just render at their authored spawn pose via CurrentTransform.
@@ -6245,7 +6251,11 @@ void main()
             // attack template.
             bool isTalkable = SiegeFX.Core.Assets.ConversationStore
                 .KeysFromInstance(actor.Instance.Node).Count > 0;
-            if (isTalkable)
+            // dog_sleeping is a life-less ambient prop asleep/sitting in place (by the
+            // farmhouse wheelbarrow in the intro) — it must hold its pose, not wander
+            // like a live mob, so it gets no brain the same way talkables don't.
+            bool isSleepingDog = actor.Template.Name.Equals("dog_sleeping", StringComparison.OrdinalIgnoreCase);
+            if (isTalkable || isSleepingDog)
             {
                 actorsOffMesh++;
             }
@@ -6298,6 +6308,9 @@ void main()
                 LastClipIndex     = actor.CurrentClipIndex,
                 Brain             = brain,
                 CurrentTransform  = actor.WorldTransform,
+                // The intro narrator is a King-model voice-over actor — spawned so the
+                // narration can trigger off it, but never a visible NPC in the world.
+                Hidden            = actor.Template.Name.Equals("narrator", StringComparison.OrdinalIgnoreCase),
             });
         }
 
@@ -8354,6 +8367,38 @@ void main()
     private const float NorickPlayerNearBridge = 14f;   // player within this of the bridge spot ⇒ arrived
     private const float NorickCollapseRadius = 2.5f;    // stop this short of the fall gizmo so he collapses on the bridge deck, not the water edge beside it
 
+    // SC-INTRO-DOG — the farmhouse dog (dog_sleeping) sits by the wheelbarrow and
+    // looks up when the intro camera pans to it, then is gone in normal gameplay.
+    // It's a brain-less ambient prop (no wander, handled at spawn); this drives its
+    // one look cue during the NIS and retires it (stops drawing) once the NIS ends.
+    private ActorRenderState? _introDog;
+    private bool _introDogResolved;
+
+    private void TickIntroDog()
+    {
+        if (_nisPhase != NisPhase.Off)
+        {
+            if (_introDogResolved) return;
+            foreach (var s in _actors)
+            {
+                if (!s.Actor.Template.Name.Equals("dog_sleeping", StringComparison.OrdinalIgnoreCase)) continue;
+                _introDog = s;
+                _introDogResolved = true;
+                // Raise its head toward the camera for the pan. "look" is the anim the
+                // intro's cmd_animation_command drives on it; if that clip isn't present
+                // it simply holds its sitting pose (still correct — just no head-lift).
+                s.Actor.PlayChoreOnce("look", float.PositiveInfinity);
+                break;
+            }
+        }
+        else if (_introDogResolved && _introDog is not null && !_introDog.Hidden)
+        {
+            // Intro's over — the dog is a one-shot prop, so stop drawing it.
+            _introDog.Hidden = true;
+            Console.WriteLine("[intro] sleeping dog retired after the NIS");
+        }
+    }
+
     private void TickNorickDeath(float dt)
     {
         if (_player is null || _player.IsDead) return;
@@ -9595,7 +9640,9 @@ void main()
             SiegeFX.Core.Actors.ActorBrain? brain = null;
             bool isTalkable = SiegeFX.Core.Assets.ConversationStore
                 .KeysFromInstance(actor.Instance.Node).Count > 0;
-            if (isTalkable)
+            // Life-less ambient sleeping dog holds its pose — no wander brain.
+            bool isSleepingDog = actor.Template.Name.Equals("dog_sleeping", StringComparison.OrdinalIgnoreCase);
+            if (isTalkable || isSleepingDog)
             {
                 offMesh++;
             }
@@ -9629,6 +9676,7 @@ void main()
                 LastClipIndex     = actor.CurrentClipIndex,
                 Brain             = brain,
                 CurrentTransform  = actor.WorldTransform,
+                Hidden            = actor.Template.Name.Equals("narrator", StringComparison.OrdinalIgnoreCase),
             });
         }
         return (onMesh, offMesh);
@@ -9912,6 +9960,7 @@ void main()
                 TickScriptedMoves((float)stepSec);
                 TickScriptedSmashes((float)stepSec);
                 TickNorickDeath((float)stepSec);
+                TickIntroDog();
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
@@ -12283,6 +12332,9 @@ void main()
             // quest still auto-grants from the narration (and on Esc-skip), so
             // excluding him from the RMB path removes the scaffold cleanly.
             if (s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase)) continue;
+            // Intro gizmos (the invisible narrator; the spent sleeping dog) are never
+            // clickable — they don't draw, so they can't be a talk target either.
+            if (s.Hidden) continue;
             // The "has a [conversation] block in the placement" check is a
             // stronger talkable signal than Stats.IsCombatant: DS1's narrator
             // template inherits combat stats but is meant to be a static
@@ -16882,6 +16934,9 @@ void main()
                 // spawn is on the surface → body culled with the surface
                 // while the separately-drawn boots + dagger kept walking).
                 if (!s.IsPlayer && IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
+                // Intro NIS gizmos (narrator voice-over; spent sleeping dog) stay in
+                // _actors for scripting but never draw as visible NPCs.
+                if (s.Hidden) continue;
                 int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
