@@ -8447,6 +8447,7 @@ void main()
     private Vector3 _hoeGripEulerDeg;   // pitch(X), yaw(Y), roll(Z) in degrees
     private Vector3 _hoeGripTrans;
     private bool _hoeGripDevMode;       // Keypad0 — hoe in hand + hoeing loop for grip tuning, any time
+    private bool _hoeRenderDiagLogged;  // one-shot per equip: confirm the in-hand hoe render fires + where
 
     private void TickIntroDog(float dt)
     {
@@ -8569,6 +8570,7 @@ void main()
         // holds the hoe, so pinned to the off-hand it clipped behind the body and read as
         // empty. KeypadEnter flips main<->off to compare.
         _weaponGripBoneOverride = -1;
+        _hoeRenderDiagLogged = false;   // re-log one render fire for this equip
         Console.WriteLine($"[hoe] equipped: mesh={(_weaponMesh is null ? "NULL — failed to load" : "ok")} " +
                           $"weaponGrip={_weaponGripBoneIdx} shieldGrip={_shieldGripBoneIdx}");
     }
@@ -17704,6 +17706,15 @@ void main()
                 else
                 {
                     weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                }
+
+                if (_introHoeSwapped && !_hoeRenderDiagLogged)
+                {
+                    var hw = weaponModel.Translation;
+                    var pw = _player.CurrentTransform.Translation;
+                    Console.WriteLine($"[hoe] render firing: hoe world=({hw.X:F2},{hw.Y:F2},{hw.Z:F2}) " +
+                                      $"player=({pw.X:F2},{pw.Y:F2},{pw.Z:F2}) gripIdx={gripIdx} clip={_player.Actor.CurrentClipIndex}/{clips.Length}");
+                    _hoeRenderDiagLogged = true;
                 }
 
                 _meshShader.Use();
