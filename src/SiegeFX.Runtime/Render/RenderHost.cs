@@ -13842,6 +13842,11 @@ void main()
                               $"dwn: {(_awpInvBtnDwnTex is not null ? "ok" : "MISS")}");
         }
         if (_awpAtlas is null) return;
+        // Hidden during NIS cinematics like the rest of the in-game HUD. The character AWP,
+        // the team_portraits companion strip, and the field-commands panel all draw from here;
+        // the companion strip in particular slips below the top letterbox bar into view. The
+        // atlas still loads above, so there's no pop when the cinematic ends.
+        if (_nisPhase != NisPhase.Off) return;
         var combat = _player.Actor.Combat;
         var stats  = _player.Actor.Stats;
         float hpFrac = stats.MaxLife > 0f ? combat.CurrentLife / stats.MaxLife : 0f;
