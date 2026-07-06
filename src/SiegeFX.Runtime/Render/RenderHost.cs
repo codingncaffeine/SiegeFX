@@ -574,6 +574,11 @@ public sealed class RenderHost : IDisposable
     private StaticMesh? _weaponMesh;
     private GlTexture? _weaponTexture;
     private int _weaponGripBoneIdx = -1;
+    // Off-hand (shield_grip) bone index + a per-render override so a beat can pin the
+    // weapon mesh to the other hand. -1 override = normal weapon_grip. The intro hoe
+    // rides the off-hand.
+    private int _shieldGripBoneIdx = -1;
+    private int _weaponGripBoneOverride = -1;
     // Phase 14d — inverse bind-pose of the weapon ASP's grip bone (bone 0 for DS1
     // weapons; every corner weights to it). Pre-multiplied into uModel so the
     // weapon's grip bone origin snaps to the player's hand bone. Without this
@@ -8404,6 +8409,7 @@ void main()
     private Vector3 _introHoeSpot;
     private bool _introHoeSwapped;
     private string? _introHoeOrigWeapon;
+    private const uint IntroHoeItemScid = 0x01c007c9;   // fh_r1 inventory.gas [t:hoe] — the ground hoe pickup
 
     private void TickIntroDog(float dt)
     {
@@ -8472,6 +8478,11 @@ void main()
             _introHoeSwapped = true;
             _playerEquipment["es_weapon_hand"] = "hoe";
             TryLoadPlayerWeapon();
+            _weaponGripBoneOverride = _shieldGripBoneIdx;   // ride the off-hand
+            // He's holding the hoe now — remove the ground hoe pickup so there isn't a
+            // second hoe standing in the dirt next to him (DS1: the hoe just vanishes
+            // after the beat, it never enters inventory).
+            _lootPiles.RemoveAll(pl => pl.SourceScid == IntroHoeItemScid);
             Console.WriteLine("[intro] hero farming with the hoe");
         }
 
@@ -8506,6 +8517,7 @@ void main()
     {
         if (!_introHoeSwapped) return;
         _introHoeSwapped = false;
+        _weaponGripBoneOverride = -1;   // weapon back on the main hand
         if (_introHoeOrigWeapon is not null) _playerEquipment["es_weapon_hand"] = _introHoeOrigWeapon;
         else _playerEquipment.Remove("es_weapon_hand");
         TryLoadPlayerWeapon();
@@ -12098,6 +12110,12 @@ void main()
         {
             if (string.Equals(player.Mesh.BoneNames[bi], "weapon_grip", StringComparison.OrdinalIgnoreCase))
             { _weaponGripBoneIdx = bi; break; }
+        }
+        _shieldGripBoneIdx = -1;
+        for (int bi = 0; bi < player.Mesh.BoneNames.Count; bi++)
+        {
+            if (string.Equals(player.Mesh.BoneNames[bi], "shield_grip", StringComparison.OrdinalIgnoreCase))
+            { _shieldGripBoneIdx = bi; break; }
         }
         if (_weaponGripBoneIdx < 0)
             Console.WriteLine("  weapon: no weapon_grip bone on PC skeleton — weapon render disabled");
@@ -17546,8 +17564,11 @@ void main()
         // * player.CurrentTransform. Drawn with the static-mesh pipeline because
         // DS1 weapon ASPs weight every corner to bone 0 (effectively rigid); the
         // bind-inverse pre-multiply is what snaps the ASP's grip bone onto the hand.
+        // The intro hoe beat can pin the weapon mesh to the off-hand (shield_grip) via
+        // _weaponGripBoneOverride; otherwise it rides weapon_grip as normal.
+        int gripIdx = _weaponGripBoneOverride >= 0 ? _weaponGripBoneOverride : _weaponGripBoneIdx;
         if (_meshShader is not null && _weaponMesh is not null && _player is not null
-            && !_player.IsDead && _weaponGripBoneIdx >= 0)
+            && !_player.IsDead && gripIdx >= 0)
         {
             var pcMesh = _player.Actor.Mesh;
             var clips = _player.Actor.Clips;
@@ -17576,9 +17597,9 @@ void main()
                 AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t, _boneWorldsScratch);
             }
 
-            if (_weaponGripBoneIdx < pcBones)
+            if (gripIdx < pcBones)
             {
-                var gripLocal = _boneWorldsScratch[_weaponGripBoneIdx];
+                var gripLocal = _boneWorldsScratch[gripIdx];
                 // weaponBindInv cancels the weapon ASP's own grip-bone bind offset
                 // so the grip sits at the hand bone's world origin, then gripLocal
                 // places it in the player mesh frame, then CurrentTransform moves
