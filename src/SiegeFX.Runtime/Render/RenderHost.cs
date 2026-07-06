@@ -3265,8 +3265,10 @@ void main()
                 // (±0.01); 5 resets; . prints. Same live-tweak flow the dagger grip used.
                 else if (key == Key.Keypad0 && _player is not null && !_player.IsDead)
                 {
-                    if (_introHoeSwapped) RestoreIntroHoeWeapon(); else EquipHoeInHand();
-                    Console.WriteLine($"[hoe-grip] hoe in hand = {_introHoeSwapped}");
+                    _hoeGripDevMode = !_hoeGripDevMode;
+                    if (_hoeGripDevMode) { EquipHoeInHand(); _introHoeTimer = 0f; }
+                    else { _player.Actor.Host.OverrideAnimIndex(-1, 0f); RestoreIntroHoeWeapon(); }
+                    Console.WriteLine($"[hoe-grip] dev mode = {_hoeGripDevMode} (hoe in hand + hoeing loop)");
                 }
                 else if (key == Key.Keypad8) { _hoeGripEulerDeg.X += 5f; PrintHoeGrip(); }
                 else if (key == Key.Keypad2) { _hoeGripEulerDeg.X -= 5f; PrintHoeGrip(); }
@@ -8438,6 +8440,7 @@ void main()
     // base weapon grip while the hoe is held; bake the dialed-in values once it looks right.
     private Vector3 _hoeGripEulerDeg;   // pitch(X), yaw(Y), roll(Z) in degrees
     private Vector3 _hoeGripTrans;
+    private bool _hoeGripDevMode;       // Keypad0 — hoe in hand + hoeing loop for grip tuning, any time
 
     private void TickIntroDog(float dt)
     {
@@ -8557,6 +8560,26 @@ void main()
         _playerEquipment["es_weapon_hand"] = "hoe";
         TryLoadPlayerWeapon();
         _weaponGripBoneOverride = _shieldGripBoneIdx;   // ride the off-hand
+    }
+
+    /// <summary>Dev grip-tuning aid: while Keypad0 dev mode is on (outside the intro),
+    /// keep the hero performing the hoeing swing with the hoe in hand so the grip offset
+    /// can be lined up against the live action from anywhere in the game. The intro's
+    /// own <see cref="TickIntroHoe"/> owns the hoe during the NIS.</summary>
+    private void TickHoeGripDev(float dt)
+    {
+        if (!_hoeGripDevMode) return;
+        if (_nisPhase != NisPhase.Off) return;   // intro drives the hoe during the cinematic
+        if (_player is null || _player.IsDead) return;
+        _introHoeTimer -= dt;
+        if (_introHoeTimer <= 0f)
+        {
+            _player.AnimTime = 0;
+            _player.Actor.PlayChoreOnce("hoe1", float.PositiveInfinity);
+            int hi = _player.Actor.GetClipIndex("hoe1");
+            float hl = (hi >= 0 && hi < _player.Actor.Clips.Length) ? _player.Actor.Clips[hi].AnimLength : 0f;
+            _introHoeTimer = hl > 0.2f ? hl : 1.5f;
+        }
     }
 
     private void PrintHoeGrip() => Console.WriteLine(
@@ -10249,6 +10272,7 @@ void main()
                 TickNorickDeath((float)stepSec);
                 TickIntroDog((float)stepSec);
                 TickIntroHoe((float)stepSec);
+                TickHoeGripDev((float)stepSec);
                 // Phase 11d/16c — drive each brain at the same fixed cadence as the
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
