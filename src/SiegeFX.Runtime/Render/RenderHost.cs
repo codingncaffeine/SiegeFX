@@ -7247,14 +7247,29 @@ void main()
             foreach (var p in placements)
             {
                 if (!_templateStore.TryGet(p.TemplateName, out _)) { skippedNoTemplate++; continue; }
-                // Compose region-local placement to world coords. Mirrors the
-                // actor/static-prop placement math (ComposePlacementWorld) but
-                // we only need the translation component for a LootPile.
-                var local = p.Placement.LocalPosition;
-                var world = local;
-                if (_regionLayout is not null &&
-                    _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
-                    world = Vector3.Transform(local, nodeWorld);
+                // Compose region-local placement to world coords through the SAME
+                // bind-root + orientation math props/actors use (ComposePlacementWorld),
+                // then take the origin. The old shortcut transformed only LocalPosition
+                // by the node and dropped the mesh's root-bind offset, which left
+                // authored items posed against props (the pitchfork stuck in the fh_r1
+                // hay) a little off. This collapses to the shortcut for meshes with an
+                // identity bind-root, so ground drops are unaffected; only items whose
+                // mesh carries a root offset get nudged onto the prop-consistent spot.
+                // Falls back to the shortcut if the item mesh can't be loaded.
+                Vector3 world;
+                var itemAsp = TryGetItemAsp(p.TemplateName);
+                if (itemAsp is not null)
+                {
+                    world = ComposePlacementWorld(itemAsp, p.Placement).Translation;
+                }
+                else
+                {
+                    var local = p.Placement.LocalPosition;
+                    world = local;
+                    if (_regionLayout is not null &&
+                        _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                        world = Vector3.Transform(local, nodeWorld);
+                }
                 // Single guaranteed drop entry; empty Slot = world-drop
                 // (matches il_main / LootRoller's drop-bucket shape).
                 // SC-WORLD-INVENTORY-CONSUMED — skip pickups the player has
@@ -15333,6 +15348,23 @@ void main()
         _resolvedSpecCache[itemRef] = rolled;
         Console.WriteLine($"  pcontent: {itemRef} -> {rolled} (power={power})");
         return rolled;
+    }
+
+    /// <summary>SC-WORLD-INVENTORY-PLACED — load just the CPU <see cref="AspMesh"/>
+    /// for a placed item so its world position can be composed through the same
+    /// <see cref="ComposePlacementWorld"/> bind-root + orientation math props use.
+    /// No GL handle needed (bind pose is CPU data), so this is safe to call at
+    /// region-load time. Returns null when the template has no aspect.model or the
+    /// asset fails to load — the caller falls back to the translation-only shortcut.</summary>
+    private SiegeFX.Core.Assets.AspMesh? TryGetItemAsp(string itemRef)
+    {
+        if (_playResolver is null || _templateStore is null) return null;
+        var resolvedRef = ResolveItemRef(itemRef);
+        if (!_templateStore.TryGet(resolvedRef, out var tpl)) return null;
+        var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
+        if (string.IsNullOrEmpty(modelName)) return null;
+        if (!_playResolver.TryLoadModel(modelName!, out var aspBytes)) return null;
+        try { return SiegeFX.Core.Assets.AspMesh.Load(aspBytes); } catch { return null; }
     }
 
     /// <summary>Phase 9-SC-7 — resolve and cache the ASP+RAW for an item
