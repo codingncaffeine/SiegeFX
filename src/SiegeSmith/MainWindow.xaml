@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:SiegeSmith.ViewModels"
         xmlns:viewers="clr-namespace:SiegeSmith.ViewModels.Viewers"
+        xmlns:controls="clr-namespace:SiegeSmith.Controls"
         Title="SiegeSmith — Dungeon Siege Modding Studio"
         Height="760" Width="1280"
         Background="{StaticResource Brush.Window}"
@@ -214,14 +215,17 @@
                                             <TextBlock Text="{Binding SurfaceLabel}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"
                                                        Visibility="{Binding HasMips, Converter={StaticResource BoolToVis}}"/>
                                             <Button Content="Export PNG…" Command="{Binding ExportPngCommand}" Margin="16,0,0,0"/>
+                                            <TextBlock Text="{Binding ScaleValue, ElementName=TexZoom, StringFormat={}{0:P0}}"
+                                                       Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" Margin="16,0,0,0"/>
+                                            <TextBlock Text="drag · wheel · dbl-click fits" Foreground="{StaticResource Brush.Muted}"
+                                                       VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Opacity="0.7"/>
                                         </StackPanel>
                                     </StackPanel>
                                     <Border Background="#FF141414" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
-                                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                                            <Image Source="{Binding Bitmap}" Stretch="None" Margin="10"
-                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                        <controls:ZoomPanBorder x:Name="TexZoom">
+                                            <Image Source="{Binding Bitmap}" Stretch="None"
                                                    RenderOptions.BitmapScalingMode="NearestNeighbor"/>
-                                        </ScrollViewer>
+                                        </controls:ZoomPanBorder>
                                     </Border>
                                 </DockPanel>
                             </DataTemplate>
