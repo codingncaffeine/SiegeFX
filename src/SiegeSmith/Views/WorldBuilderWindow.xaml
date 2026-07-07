@@ -86,6 +86,10 @@
                         <Button Content="Link to selected door (close loop)" Command="{Binding LinkExistingCommand}" Margin="0,3" Padding="8,5"
                                 ToolTip="Link the selected node's free door to a free door on another placed node — closes a loop without adding a node"/>
                         <Button Content="Delete selected node" Command="{Binding DeleteNodeCommand}" Margin="0,3" Padding="8,5"/>
+                        <TextBlock Text="Texture set (selected node)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,10,0,3"/>
+                        <ComboBox ItemsSource="{Binding AvailableTexsets}" SelectedItem="{Binding SelectedNodeTexset, Mode=TwoWay}"
+                                  ToolTip="Re-skin the selected node with another texture set used in this region — the preview updates live"/>
                         <TextBlock Text="Load a region from the game" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <ComboBox ItemsSource="{Binding InstallRegions}" SelectedItem="{Binding SelectedInstallRegion, Mode=TwoWay}"

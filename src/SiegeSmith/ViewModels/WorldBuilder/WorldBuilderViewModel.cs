@@ -73,6 +73,23 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private NodeDoorRow? _selectedOtherDoor;
     public NodeDoorRow? SelectedOtherDoor { get => _selectedOtherDoor; set { if (SetProperty(ref _selectedOtherDoor, value)) RaiseCommands(); } }
 
+    // Per-node texture set — pick another texset used in the region to re-skin the selected node live.
+    public ObservableCollection<string> AvailableTexsets { get; } = new();
+    public string? SelectedNodeTexset
+    {
+        get => _selectedNode is null ? null : _region.Find(_selectedNode.Guid)?.TexsetAbbr;
+        set
+        {
+            if (_selectedNode is null) return;
+            var n = _region.Find(_selectedNode.Guid);
+            var v = value ?? "";
+            if (n is null || n.TexsetAbbr == v) return;
+            n.TexsetAbbr = v;
+            Render();
+            Status = $"Texset for {_catalog?.NameOf(n.MeshGuid)} → '{v}'.";
+        }
+    }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -231,6 +248,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                         OtherFreeDoors.Add(new NodeDoorRow(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}"));
             }
         }
+        OnPropertyChanged(nameof(SelectedNodeTexset));
         RaiseCommands();
     }
 
@@ -306,11 +324,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AfterModelChanged(string status)
     {
         RebuildNodeRows();
+        RebuildTexsets();
         OnPropertyChanged(nameof(NodeCount));
         OnPropertyChanged(nameof(IsEmpty));
         Status = status;
         Render();
         RaiseCommands();
+    }
+
+    /// <summary>Distinct texset abbreviations in use across the region — the picker's options.</summary>
+    private void RebuildTexsets()
+    {
+        var seen = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var n in _region.Nodes)
+            if (!string.IsNullOrEmpty(n.TexsetAbbr)) seen.Add(n.TexsetAbbr);
+        AvailableTexsets.Clear();
+        foreach (var t in seen) AvailableTexsets.Add(t);
     }
 
     private void RebuildNodeRows()
