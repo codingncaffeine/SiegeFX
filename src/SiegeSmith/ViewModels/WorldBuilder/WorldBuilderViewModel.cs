@@ -1243,6 +1243,38 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (water > 0) rows.Add(new ValidationRow(true, $"{water} water grouping(s) — impassable to stock actors."));
         }
 
+        // Custom-asset integrity (LE-11/LE-12) — catch a placed custom mesh whose .asp went missing, and a
+        // generated .sno tile with no index entry (both pass the generic checks but fail silently at launch).
+        if (_assetsFolder is not null)
+        {
+            int missingAsp = 0;
+            foreach (var o in _objects)
+            {
+                if (o.Template is null || !o.Template.StartsWith("ss_custom_", StringComparison.OrdinalIgnoreCase)) continue;
+                var model = _templateModel.TryGetValue(o.Template, out var mm) ? mm : null;
+                if (model is null) { missingAsp++; continue; }
+                if (!System.IO.File.Exists(System.IO.Path.Combine(_assetsFolder, "art", "meshes", model + ".asp"))) missingAsp++;
+            }
+            if (missingAsp > 0)
+                rows.Add(new ValidationRow(false, $"{missingAsp} placed custom mesh(es) have no matching .asp in art/meshes (won't render)."));
+
+            var snoDir = System.IO.Path.Combine(_assetsFolder, "art", "terrain", "ss_custom");
+            if (System.IO.Directory.Exists(snoDir))
+            {
+                var idxFile = System.IO.Path.Combine(_assetsFolder, "world", "global", "siege_nodes", "ss_custom", "misc_ss_custom.gas");
+                string idxText = System.IO.File.Exists(idxFile) ? System.IO.File.ReadAllText(idxFile) : "";
+                int orphanTiles = 0;
+                foreach (var f in System.IO.Directory.GetFiles(snoDir, "*.sno"))
+                {
+                    var bare = System.IO.Path.GetFileNameWithoutExtension(f);
+                    if (!idxText.Contains($"filename={bare};", StringComparison.OrdinalIgnoreCase)) orphanTiles++;
+                }
+                rows.Add(orphanTiles == 0
+                    ? new ValidationRow(true, "Custom terrain tiles all carry a [mesh_file] index entry.")
+                    : new ValidationRow(false, $"{orphanTiles} custom .sno tile(s) have no [mesh_file] index entry (mesh_guid won't resolve)."));
+            }
+        }
+
         var terrain = FindTank("terrain");
         rows.Add(new ValidationRow(terrain is not null,
             terrain is not null ? "Terrain.dsres found." : "Terrain.dsres not found in the install tanks."));
