@@ -98,6 +98,21 @@
                         <Button Content="…or open a nodes.gas file…" Command="{Binding ImportNodesCommand}" Margin="0,0,0,3" Padding="8,5"
                                 ToolTip="Manually browse to any nodes.gas"/>
                         <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,6,0,3" Padding="8,5"/>
+
+                        <TextBlock Text="Startable map (SiegeFX engine)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,12,0,3"/>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding MapName, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,0,3,0" ToolTip="Map name — a map_ prefix is added automatically"/>
+                            <TextBox Grid.Column="1" Text="{Binding RegionName, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="3,0,0,0" ToolTip="Region name"/>
+                        </Grid>
+                        <Button Content="Test terrain in engine ▶" Command="{Binding TestInEngineCommand}" Padding="8,5"
+                                ToolTip="Pack this region into a .dsmap and launch SiegeFX to walk its terrain"/>
                     </StackPanel>
 
                     <ListBox DockPanel.Dock="Bottom" MaxHeight="160" ItemsSource="{Binding SourceDoors}"

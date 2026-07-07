@@ -115,6 +115,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     }
     public string TexturedLabel => _textured ? "Flat" : "Textured"; // name the action, matching Wireframe
 
+    // ── startable map export ────────────────────────────────────
+    private readonly IReadOnlyList<string> _tankPaths;
+    private string _mapName = "custom";
+    public string MapName { get => _mapName; set => SetProperty(ref _mapName, value); }
+    private string _regionName = "custom_r1";
+    public string RegionName { get => _regionName; set => SetProperty(ref _regionName, value); }
+
     // ── commands ────────────────────────────────────────────────
     public RelayCommand PlaceAnchorCommand { get; }
     public RelayCommand ConnectCommand { get; }
@@ -125,10 +132,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand ResetViewCommand { get; }
     public RelayCommand WireframeCommand { get; }
     public RelayCommand TexturedCommand { get; }
+    public RelayCommand TestInEngineCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
+        _tankPaths = tankPaths;
         TexturedCommand = new RelayCommand(_ => Textured = !Textured);
+        TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
             _ => IsReady && IsEmpty && _selectedMesh is not null);
         ConnectCommand = new RelayCommand(_ => Connect(),
@@ -410,6 +420,45 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.");
     }
 
+    /// <summary>Packs the current region into a startable .dsmap and launches the SiegeFX engine to
+    /// render its terrain — the fastest way to see the level in-engine. The terrain view needs only the
+    /// region's nodes.gas, so this works as soon as one node is placed.</summary>
+    private void TestInEngine()
+    {
+        if (IsEmpty) { Status = "Place at least one node before testing in the engine."; return; }
+
+        string nodesGas;
+        try
+        {
+            nodesGas = NodesGasWriter.Write(_region);
+            RegionGraph.FromDocument(GasDocument.Parse(nodesGas)); // engine reads nodes.gas with no error guard — validate first
+        }
+        catch (Exception ex) { Status = "Region won't load (nodes.gas invalid): " + ex.Message; return; }
+
+        var terrain = FindTerrainTank();
+        if (terrain is null) { Status = "Couldn't find Terrain.dsres among the install tanks."; return; }
+
+        var runtime = RuntimeLauncher.FindRuntime();
+        if (runtime is null) { Status = "Couldn't find SiegeFX.Runtime — build the engine (Release) first."; return; }
+
+        try
+        {
+            var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir);
+            RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
+            Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
+        }
+        catch (Exception ex) { Status = "Test-in-engine failed: " + ex.Message; }
+    }
+
+    private string? FindTerrainTank()
+    {
+        foreach (var p in _tankPaths)
+            if (Path.GetFileName(p).Contains("terrain", StringComparison.OrdinalIgnoreCase))
+                return p;
+        return null;
+    }
+
     private void SaveNodes()
     {
         if (IsEmpty) return;
@@ -606,6 +655,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         DeleteNodeCommand.RaiseCanExecuteChanged();
         SaveNodesCommand.RaiseCanExecuteChanged();
         ImportNodesCommand.RaiseCanExecuteChanged();
+        TestInEngineCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()
