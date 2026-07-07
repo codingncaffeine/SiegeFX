@@ -35,7 +35,9 @@ public static class MapPackager
         IReadOnlyList<AuthoredLight>? lights = null, AuthoredMood? mood = null,
         IReadOnlyList<RegionEmitter>? emitters = null, IReadOnlyList<RegionDecal>? decals = null,
         IReadOnlyList<RegionTrigger>? triggers = null, IReadOnlyList<CommandPlacement>? commands = null,
-        IReadOnlyList<Conversation>? conversations = null)
+        IReadOnlyList<Conversation>? conversations = null,
+        uint sourceGuid = 0, IReadOnlyList<RegionStitch>? stitches = null,
+        IReadOnlyList<StitchRegionRef>? siblings = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -132,6 +134,32 @@ public static class MapPackager
             string convDir = Path.Combine(mapDir, "regions", region, "conversations");
             Directory.CreateDirectory(convDir);
             File.WriteAllText(Path.Combine(convDir, "conversations.gas"), ConversationGasWriter.Write(conversations));
+        }
+
+        // World stitching: the primary region's editor/stitch_helper.gas + each sibling region staged
+        // whole (its nodes.gas + its reciprocal stitch_helper.gas) so the map is a real multi-region world.
+        if (sourceGuid != 0 && stitches is { Count: > 0 })
+        {
+            string edDir = Path.Combine(mapDir, "regions", region, "editor");
+            Directory.CreateDirectory(edDir);
+            File.WriteAllText(Path.Combine(edDir, "stitch_helper.gas"), StitchHelperWriter.Write(sourceGuid, region, stitches));
+        }
+        if (siblings is { Count: > 0 })
+        {
+            foreach (var sib in siblings)
+            {
+                string leaf = Sanitize(sib.LeafName, "region_r2");
+                if (leaf == region) continue; // never clobber the primary
+                string sibNodes = Path.Combine(mapDir, "regions", leaf, "terrain_nodes");
+                Directory.CreateDirectory(sibNodes);
+                File.WriteAllText(Path.Combine(sibNodes, "nodes.gas"), sib.NodesGas);
+                if (sib.SourceGuid != 0 && sib.Stitches.Count > 0)
+                {
+                    string sibEd = Path.Combine(mapDir, "regions", leaf, "editor");
+                    Directory.CreateDirectory(sibEd);
+                    File.WriteAllText(Path.Combine(sibEd, "stitch_helper.gas"), StitchHelperWriter.Write(sib.SourceGuid, leaf, sib.Stitches));
+                }
+            }
         }
 
         Directory.CreateDirectory(outputDir);

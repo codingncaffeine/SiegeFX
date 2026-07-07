@@ -325,6 +325,36 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public DialogueLine? SelectedDialogue { get => _selectedDialogue; set { if (SetProperty(ref _selectedDialogue, value)) { OnPropertyChanged(nameof(HasSelectedDialogue)); RaiseCommands(); } } }
     public bool HasSelectedDialogue => _selectedDialogue is not null;
 
+    // ── world stitching: multi-region adjacency (LE-9) ─────────
+    private uint _nextRegionGuid = 0x0A000001;
+    private uint _nextPairId = 0x0B000001;
+    private uint _primarySourceGuid;
+    private int _stitchDangling, _stitchCollisions, _stitchUnreachable;
+    public ObservableCollection<RegionStitch> PrimaryStitches { get; } = new();
+    public ObservableCollection<StitchDoor> PrimaryFreeDoors { get; } = new();
+    public ObservableCollection<StitchRegionRef> Siblings { get; } = new();
+    public ObservableCollection<StitchDoor> SiblingFreeDoors { get; } = new();
+
+    private StitchDoor? _selectedPrimaryDoor;
+    public StitchDoor? SelectedPrimaryDoor { get => _selectedPrimaryDoor; set { if (SetProperty(ref _selectedPrimaryDoor, value)) RaiseCommands(); } }
+
+    private StitchRegionRef? _selectedSibling;
+    public StitchRegionRef? SelectedSibling
+    {
+        get => _selectedSibling;
+        set { if (SetProperty(ref _selectedSibling, value)) { OnPropertyChanged(nameof(HasSelectedSibling)); RaiseSiblingDoors(); RaiseCommands(); } }
+    }
+    public bool HasSelectedSibling => _selectedSibling is not null;
+
+    private StitchDoor? _selectedSiblingDoor;
+    public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) RaiseCommands(); } }
+
+    private RegionStitch? _selectedStitch;
+    public RegionStitch? SelectedStitch { get => _selectedStitch; set { if (SetProperty(ref _selectedStitch, value)) RaiseCommands(); } }
+
+    private string _stitchDiagnostics = "No stitches — the region is a standalone (isolated) world.";
+    public string StitchDiagnostics { get => _stitchDiagnostics; private set => SetProperty(ref _stitchDiagnostics, value); }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -427,6 +457,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand AddDialogueCommand { get; }
     public RelayCommand DeleteDialogueCommand { get; }
     public RelayCommand BindConversationCommand { get; }
+    public RelayCommand ImportSiblingCommand { get; }
+    public RelayCommand RemoveSiblingCommand { get; }
+    public RelayCommand CreateStitchCommand { get; }
+    public RelayCommand DeleteStitchCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -462,6 +496,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddDialogueCommand = new RelayCommand(_ => AddDialogue(), _ => _selectedConversation is not null);
         DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
         BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null && _selectedPlacedObject is not null);
+        ImportSiblingCommand = new RelayCommand(_ => ImportSibling());
+        RemoveSiblingCommand = new RelayCommand(_ => RemoveSibling(), _ => _selectedSibling is not null);
+        CreateStitchCommand = new RelayCommand(_ => CreateStitch(), _ => _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null);
+        DeleteStitchCommand = new RelayCommand(_ => DeleteStitch(), _ => _selectedStitch is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -598,6 +636,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             }
         }
         OnPropertyChanged(nameof(SelectedNodeTexset));
+        RefreshStitchState();
         RaiseCommands();
     }
 
@@ -910,7 +949,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
                 emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
-                conversations: new List<Conversation>(Conversations));
+                conversations: new List<Conversation>(Conversations),
+                sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings));
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -941,7 +982,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
                 emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
-                conversations: new List<Conversation>(Conversations));
+                conversations: new List<Conversation>(Conversations),
+                sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings));
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -1109,6 +1152,16 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 rows.Add(new ValidationRow(true, $"{unbound} conversation(s) not bound to an NPC (unreachable in-game)."));
             if (badQ > 0)
                 rows.Add(new ValidationRow(false, $"{badQ} dialogue activate_quest key(s) outside the QuestCatalog."));
+        }
+        if (Siblings.Count > 0 || PrimaryStitches.Count > 0)
+        {
+            rows.Add(new ValidationRow(_stitchDangling == 0, _stitchDangling == 0
+                ? $"{PrimaryStitches.Count} reciprocal world stitch(es) → stitch_helper.gas."
+                : $"{_stitchDangling} stitch(es) have no reciprocal (dangling — neighbour never streams)."));
+            if (_stitchCollisions > 0)
+                rows.Add(new ValidationRow(false, $"{_stitchCollisions} snode guid(s) collide across regions (WorldLayout throws — needs world-unique guids)."));
+            if (_stitchUnreachable > 0)
+                rows.Add(new ValidationRow(true, $"{_stitchUnreachable} region(s) unreachable from the primary via stitches."));
         }
 
         var terrain = FindTank("terrain");
@@ -1485,6 +1538,177 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var k in QuestCatalogKeys.Keys)
             if (args.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0) return true;
         return false;
+    }
+
+    // ── world stitching: multi-region adjacency (LE-9) ─────────
+    private string StitchPrimaryLeaf() => LightSanitize(RegionName) is { Length: > 0 } s ? s : "region_r1";
+
+    private uint PrimarySourceGuid()
+    {
+        if (_primarySourceGuid == 0) _primarySourceGuid = _nextRegionGuid++;
+        return _primarySourceGuid;
+    }
+
+    /// <summary>Rebuilds the primary region's free-door list (stitch endpoints) and refreshes
+    /// diagnostics. Called whenever the region's door graph changes.</summary>
+    public void RefreshStitchState()
+    {
+        PrimaryFreeDoors.Clear();
+        if (_catalog is not null)
+            foreach (var n in _region.Nodes)
+            {
+                var s = _catalog.Resolve(n.MeshGuid);
+                if (s is null) continue;
+                foreach (var d in s.Doors)
+                    if (!n.UsesDoor((int)d.Id))
+                        PrimaryFreeDoors.Add(new StitchDoor(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}"));
+            }
+        RecomputeStitchDiagnostics();
+        RaiseCommands();
+    }
+
+    private void RaiseSiblingDoors()
+    {
+        SiblingFreeDoors.Clear();
+        if (_selectedSibling is not null)
+            foreach (var d in _selectedSibling.FreeDoors) SiblingFreeDoors.Add(d);
+        _selectedSiblingDoor = null;
+        OnPropertyChanged(nameof(SelectedSiblingDoor));
+    }
+
+    private void ImportSibling()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Region nodes (nodes.gas)|nodes.gas;*.gas|All files|*.*",
+            Title = "Import a sibling region's nodes.gas",
+        };
+        if (dlg.ShowDialog() != true) return;
+        string gas;
+        try { gas = System.IO.File.ReadAllText(dlg.FileName); }
+        catch (System.Exception ex) { Status = $"Couldn't read nodes.gas: {ex.Message}"; return; }
+
+        string leaf = LightSanitize(DeriveLeaf(dlg.FileName));
+        if (leaf.Length == 0) leaf = $"region_r{Siblings.Count + 2}";
+        BuilderRegion parsed;
+        try { parsed = NodesGasReader.Read(GasDocument.Parse(gas)); }
+        catch (System.Exception ex) { Status = $"Couldn't parse nodes.gas: {ex.Message}"; return; }
+        if (parsed.Nodes.Count == 0) { Status = "That nodes.gas had no snodes to import."; return; }
+
+        var reff = new StitchRegionRef { LeafName = leaf, SourceGuid = _nextRegionGuid++, NodesGas = gas, IsPrimary = false };
+        foreach (var sn in parsed.Nodes)
+        {
+            reff.SnodeGuids.Add(sn.Guid);
+            var sno = _catalog?.Resolve(sn.MeshGuid);
+            if (sno is not null)
+                foreach (var d in sno.Doors)
+                    if (!sn.UsesDoor((int)d.Id))
+                        reff.FreeDoors.Add(new StitchDoor(sn.Guid, (int)d.Id, _catalog?.NameOf(sn.MeshGuid) ?? $"0x{sn.MeshGuid:X8}"));
+        }
+        Siblings.Add(reff);
+        SelectedSibling = reff;
+        RecomputeStitchDiagnostics();
+        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s).";
+        RaiseCommands();
+    }
+
+    private static string DeriveLeaf(string nodesGasPath)
+    {
+        try
+        {
+            // …/regions/<leaf>/terrain_nodes/nodes.gas → <leaf>
+            var tn = System.IO.Path.GetDirectoryName(nodesGasPath);
+            var region = System.IO.Path.GetDirectoryName(tn);
+            var leaf = System.IO.Path.GetFileName(region);
+            return string.IsNullOrWhiteSpace(leaf) ? "region_r2" : leaf!;
+        }
+        catch { return "region_r2"; }
+    }
+
+    private void RemoveSibling()
+    {
+        if (_selectedSibling is null) return;
+        for (int i = PrimaryStitches.Count - 1; i >= 0; i--)
+            if (PrimaryStitches[i].DestRegion.Equals(_selectedSibling.LeafName, StringComparison.OrdinalIgnoreCase))
+                PrimaryStitches.RemoveAt(i);
+        Siblings.Remove(_selectedSibling);
+        SelectedSibling = null;
+        RecomputeStitchDiagnostics();
+        RaiseCommands();
+    }
+
+    private void CreateStitch()
+    {
+        if (_selectedPrimaryDoor is null || _selectedSibling is null || _selectedSiblingDoor is null) return;
+        uint pair = _nextPairId++;
+        string primLeaf = StitchPrimaryLeaf();
+        // Reciprocal pair sharing one pairId — both sides written atomically at pack time.
+        PrimaryStitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedPrimaryDoor.Snode, LocalDoor = _selectedPrimaryDoor.Door, DestRegion = _selectedSibling.LeafName });
+        _selectedSibling.Stitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedSiblingDoor.Snode, LocalDoor = _selectedSiblingDoor.Door, DestRegion = primLeaf });
+        RecomputeStitchDiagnostics();
+        Status = $"Stitched {primLeaf}·door {_selectedPrimaryDoor.Door} ⇄ {_selectedSibling.LeafName}·door {_selectedSiblingDoor.Door} (pair 0x{pair:X8}).";
+        RaiseCommands();
+    }
+
+    private void DeleteStitch()
+    {
+        if (_selectedStitch is null) return;
+        uint pair = _selectedStitch.PairId;
+        for (int i = PrimaryStitches.Count - 1; i >= 0; i--) if (PrimaryStitches[i].PairId == pair) PrimaryStitches.RemoveAt(i);
+        foreach (var sib in Siblings)
+            for (int i = sib.Stitches.Count - 1; i >= 0; i--) if (sib.Stitches[i].PairId == pair) sib.Stitches.RemoveAt(i);
+        SelectedStitch = null;
+        RecomputeStitchDiagnostics();
+        RaiseCommands();
+    }
+
+    private void RecomputeStitchDiagnostics()
+    {
+        // Snode-guid world-uniqueness (WorldLayout throws on collision).
+        var seen = new Dictionary<uint, int>();
+        foreach (var n in _region.Nodes) seen[n.Guid] = seen.TryGetValue(n.Guid, out var c0) ? c0 + 1 : 1;
+        foreach (var sib in Siblings) foreach (var g in sib.SnodeGuids) seen[g] = seen.TryGetValue(g, out var c1) ? c1 + 1 : 1;
+        _stitchCollisions = 0; foreach (var kv in seen) if (kv.Value > 1) _stitchCollisions++;
+
+        string primLeaf = StitchPrimaryLeaf();
+
+        // Dangling: a stitch whose reciprocal (same pairId, opposite direction) is absent.
+        _stitchDangling = 0;
+        foreach (var ps in PrimaryStitches)
+        {
+            bool recip = false;
+            foreach (var sib in Siblings)
+                if (sib.LeafName.Equals(ps.DestRegion, StringComparison.OrdinalIgnoreCase))
+                    foreach (var ss in sib.Stitches)
+                        if (ss.PairId == ps.PairId && ss.DestRegion.Equals(primLeaf, StringComparison.OrdinalIgnoreCase)) recip = true;
+            if (!recip) _stitchDangling++;
+        }
+
+        // Reachability BFS from the primary over stitch edges.
+        var byLeaf = new Dictionary<string, StitchRegionRef>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sib in Siblings) byLeaf[sib.LeafName] = sib;
+        var reached = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { primLeaf };
+        var queue = new Queue<string>();
+        queue.Enqueue(primLeaf);
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            IEnumerable<RegionStitch> edges = cur.Equals(primLeaf, StringComparison.OrdinalIgnoreCase)
+                ? PrimaryStitches
+                : byLeaf.TryGetValue(cur, out var r) ? r.Stitches : System.Array.Empty<RegionStitch>();
+            foreach (var e in edges) if (reached.Add(e.DestRegion)) queue.Enqueue(e.DestRegion);
+        }
+        _stitchUnreachable = 0;
+        int isolated = 0;
+        foreach (var sib in Siblings)
+        {
+            if (!reached.Contains(sib.LeafName)) _stitchUnreachable++;
+            if (sib.Stitches.Count == 0) isolated++;
+        }
+
+        StitchDiagnostics = PrimaryStitches.Count == 0 && Siblings.Count == 0
+            ? "No stitches — the region is a standalone (isolated) world."
+            : $"{1 + Siblings.Count} region(s) · {PrimaryStitches.Count} stitch(es) · dangling {_stitchDangling} · unreachable {_stitchUnreachable} · isolated {isolated} · guid-collisions {_stitchCollisions}";
     }
 
     private uint NextScid()
@@ -1918,6 +2142,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddDialogueCommand.RaiseCanExecuteChanged();
         DeleteDialogueCommand.RaiseCanExecuteChanged();
         BindConversationCommand.RaiseCanExecuteChanged();
+        ImportSiblingCommand.RaiseCanExecuteChanged();
+        RemoveSiblingCommand.RaiseCanExecuteChanged();
+        CreateStitchCommand.RaiseCanExecuteChanged();
+        DeleteStitchCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

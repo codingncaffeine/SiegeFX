@@ -464,6 +464,58 @@
                             <Button Content="Delete selected conversation" Command="{Binding DeleteConversationCommand}" Margin="0,4,0,0" Padding="8,4"/>
                         </StackPanel>
 
+                        <TextBlock Text="World — multi-region stitching" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,14,0,3"/>
+                        <Border Background="{StaticResource Brush.Surface}" CornerRadius="3" Padding="6,4" Margin="0,0,0,4">
+                            <TextBlock Text="{Binding StitchDiagnostics}" Foreground="{StaticResource Brush.Foreground}"
+                                       FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"/>
+                        </Border>
+                        <Button Content="Import sibling region (nodes.gas)…" Command="{Binding ImportSiblingCommand}" Margin="0,0,0,3" Padding="8,5"
+                                ToolTip="Add a neighbouring region to the world so it can be stitched to this one"/>
+                        <ListBox ItemsSource="{Binding Siblings}" SelectedItem="{Binding SelectedSibling, Mode=TwoWay}"
+                                 MaxHeight="54" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate><DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                </StackPanel>
+                            </DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedSibling, Converter={StaticResource BoolToVis}}" Margin="0,0,0,4">
+                            <Button Content="Remove sibling region" Command="{Binding RemoveSiblingCommand}" Margin="0,0,0,3" Padding="8,4"/>
+                            <TextBlock Text="Pick a free door on each side, then stitch:" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,3,0">
+                                    <TextBlock Text="this region" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                    <ListBox ItemsSource="{Binding PrimaryFreeDoors}" SelectedItem="{Binding SelectedPrimaryDoor, Mode=TwoWay}" MaxHeight="80">
+                                        <ListBox.ItemTemplate><DataTemplate>
+                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                        </DataTemplate></ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="sibling region" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                    <ListBox ItemsSource="{Binding SiblingFreeDoors}" SelectedItem="{Binding SelectedSiblingDoor, Mode=TwoWay}" MaxHeight="80">
+                                        <ListBox.ItemTemplate><DataTemplate>
+                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                        </DataTemplate></ListBox.ItemTemplate>
+                                    </ListBox>
+                                </StackPanel>
+                            </Grid>
+                            <Button Content="Create reciprocal stitch" Command="{Binding CreateStitchCommand}" Margin="0,3,0,0" Padding="8,5"/>
+                        </StackPanel>
+                        <ListBox ItemsSource="{Binding PrimaryStitches}" SelectedItem="{Binding SelectedStitch, Mode=TwoWay}"
+                                 MaxHeight="54" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate><DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                </StackPanel>
+                            </DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <Button Content="Delete selected stitch" Command="{Binding DeleteStitchCommand}" Margin="0,0,0,4" Padding="8,4"/>
+
                         <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"
