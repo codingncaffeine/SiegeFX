@@ -93,12 +93,13 @@ public partial class MainWindow : Window
 
     private void OnViewportMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is IInputElement el)
-        {
-            _viewportDragging = true;
-            _viewportLast = e.GetPosition(el);
-            el.CaptureMouse();
-        }
+        if (sender is not FrameworkElement fe) return;
+        var p = e.GetPosition(fe);
+        if (fe.DataContext is ModelInfoViewerViewModel vm && vm.TrySnapView(p.X, p.Y))
+            return; // clicked the gizmo — snapped the view, don't orbit
+        _viewportDragging = true;
+        _viewportLast = p;
+        fe.CaptureMouse();
     }
 
     private void OnViewportMouseUp(object sender, MouseButtonEventArgs e)

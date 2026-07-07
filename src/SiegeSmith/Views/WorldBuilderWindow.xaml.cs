@@ -25,8 +25,10 @@ public partial class WorldBuilderWindow : Window
 
     private void OnViewportMouseDown(object sender, MouseButtonEventArgs e)
     {
+        var p = e.GetPosition(Viewport);
+        if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
         _dragging = true;
-        _last = e.GetPosition(Viewport);
+        _last = p;
         Viewport.CaptureMouse();
     }
 

@@ -295,16 +295,50 @@ public static class SoftwareRenderer
         }
     }
 
-    /// <summary>Draws a small XYZ orientation triad in the lower-left corner (X red, Y green,
-    /// Z blue) that rotates with the camera, so you can always read which way the view is facing —
-    /// the same "what am I looking at" cue asset viewers show. Overlaid after the scene, ignoring
-    /// depth, at a fixed screen position; only the camera rotation (yaw/pitch) drives it.</summary>
-    private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
+    // ── Orientation gizmo (interactive) ─────────────────────────
+    // A small XYZ triad in the lower-left corner. It rotates with the camera to
+    // show which way the view faces, and its axis tips + centre hub are clickable
+    // hit targets (see HitGizmo) so the view can snap to an axis or reset. Drawing
+    // and hit-testing share GizmoOrigin/GizmoAxisTip so they can never drift apart.
+    public const float GizmoLen = 46f;
+    public const float GizmoMargin = 58f;
+
+    /// <summary>Screen position of the gizmo's centre hub (fixed to the lower-left corner).</summary>
+    public static (float x, float y) GizmoOrigin(int w, int h) => (GizmoMargin, h - GizmoMargin);
+
+    /// <summary>Screen position of a unit axis's tip for the given camera rotation — the same
+    /// projection <see cref="DrawAxisGizmo"/> draws, so hit-testing lands exactly on the dot.</summary>
+    public static (float x, float y) GizmoAxisTip(Vector3 axis, float yaw, float pitch, int w, int h)
     {
-        // Camera direction (center→eye); a pure-rotation view frame from it orients the triad.
         var dir = new Vector3(MathF.Cos(pitch) * MathF.Cos(yaw), MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch));
         var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, new Vector3(0, 0, 1));
-        float len = 24f, ox = 34f, oy = h - 34f;
+        var v = Vector3.TransformNormal(axis, view);
+        var (ox, oy) = GizmoOrigin(w, h);
+        return (ox + v.X * GizmoLen, oy - v.Y * GizmoLen);
+    }
+
+    /// <summary>Hit-tests a viewport click against the gizmo. Returns 0 for the centre hub (reset),
+    /// 1/2/3 for the X/Y/Z axis tips, or -1 for a miss (the caller should orbit instead).</summary>
+    public static int HitGizmo(double sx, double sy, float yaw, float pitch, int w, int h)
+    {
+        var (ox, oy) = GizmoOrigin(w, h);
+        if (Sq(sx - ox) + Sq(sy - oy) <= 18 * 18) return 0;
+        Vector3[] axes = { new(1, 0, 0), new(0, 1, 0), new(0, 0, 1) };
+        for (int i = 0; i < 3; i++)
+        {
+            var (tx, ty) = GizmoAxisTip(axes[i], yaw, pitch, w, h);
+            if (Sq(sx - tx) + Sq(sy - ty) <= 24 * 24) return i + 1;
+        }
+        return -1;
+    }
+
+    private static double Sq(double v) => v * v;
+
+    private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
+    {
+        var dir = new Vector3(MathF.Cos(pitch) * MathF.Cos(yaw), MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch));
+        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, new Vector3(0, 0, 1));
+        var (ox, oy) = GizmoOrigin(w, h);
 
         (Vector3 axis, byte r, byte g, byte b)[] axes =
         {
@@ -315,28 +349,34 @@ public static class SoftwareRenderer
         // Back-to-front: draw the axis pointing away first so the nearer ones overlay it.
         Array.Sort(axes, (p, q) =>
             Vector3.TransformNormal(p.axis, view).Z.CompareTo(Vector3.TransformNormal(q.axis, view).Z));
+        DrawDot(px, w, h, ox, oy, 170, 170, 176, 4); // centre hub (reset target)
         foreach (var (axis, r, g, b) in axes)
         {
             var v = Vector3.TransformNormal(axis, view);
-            float ex = ox + v.X * len, ey = oy - v.Y * len;
-            DrawLineRGB(px, w, h, ox, oy, ex, ey, r, g, b);
-            DrawDot(px, w, h, ex, ey, r, g, b);
+            float ex = ox + v.X * GizmoLen, ey = oy - v.Y * GizmoLen;
+            DrawLineRGB(px, w, h, ox, oy, ex, ey, r, g, b, 2);
+            DrawDot(px, w, h, ex, ey, r, g, b, 6); // clickable tip
         }
     }
 
-    private static void DrawLineRGB(byte[] px, int w, int h, float fx0, float fy0, float fx1, float fy1, byte r, byte g, byte b)
+    private static void DrawLineRGB(byte[] px, int w, int h, float fx0, float fy0, float fx1, float fy1, byte r, byte g, byte b, int thick = 1)
     {
         int x0 = (int)fx0, y0 = (int)fy0, x1 = (int)fx1, y1 = (int)fy1;
         int dx = Math.Abs(x1 - x0), dy = -Math.Abs(y1 - y0);
         int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-        int err = dx + dy;
+        int err = dx + dy, half = thick / 2;
         while (true)
         {
-            if ((uint)x0 < (uint)w && (uint)y0 < (uint)h)
-            {
-                int pi = (y0 * w + x0) * 4;
-                px[pi] = b; px[pi + 1] = g; px[pi + 2] = r; px[pi + 3] = 0xFF;
-            }
+            for (int oy = -half; oy <= half; oy++)
+                for (int ox = -half; ox <= half; ox++)
+                {
+                    int x = x0 + ox, y = y0 + oy;
+                    if ((uint)x < (uint)w && (uint)y < (uint)h)
+                    {
+                        int pi = (y * w + x) * 4;
+                        px[pi] = b; px[pi + 1] = g; px[pi + 2] = r; px[pi + 3] = 0xFF;
+                    }
+                }
             if (x0 == x1 && y0 == y1) break;
             int e2 = 2 * err;
             if (e2 >= dy) { err += dy; x0 += sx; }
@@ -344,13 +384,13 @@ public static class SoftwareRenderer
         }
     }
 
-    private static void DrawDot(byte[] px, int w, int h, float cx, float cy, byte r, byte g, byte b)
+    private static void DrawDot(byte[] px, int w, int h, float cx, float cy, byte r, byte g, byte b, int rad = 2)
     {
-        int x0 = (int)cx, y0 = (int)cy;
-        for (int dyi = -2; dyi <= 2; dyi++)
-            for (int dxi = -2; dxi <= 2; dxi++)
+        int x0 = (int)cx, y0 = (int)cy, rr = rad * rad + 1;
+        for (int dyi = -rad; dyi <= rad; dyi++)
+            for (int dxi = -rad; dxi <= rad; dxi++)
             {
-                if (dxi * dxi + dyi * dyi > 4) continue;
+                if (dxi * dxi + dyi * dyi > rr) continue;
                 int x = x0 + dxi, y = y0 + dyi;
                 if ((uint)x < (uint)w && (uint)y < (uint)h)
                 {

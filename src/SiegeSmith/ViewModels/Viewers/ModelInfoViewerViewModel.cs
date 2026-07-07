@@ -136,6 +136,33 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
         Render();
     }
 
+    /// <summary>Click-to-snap on the corner gizmo: an axis tip snaps the camera to look down that
+    /// axis (clicking the same axis again flips to the opposite side); the centre hub resets to the
+    /// iso view. Returns true when the click hit the gizmo, so the viewport should not orbit.</summary>
+    public bool TrySnapView(double sx, double sy)
+    {
+        int hit = SoftwareRenderer.HitGizmo(sx, sy, _yaw, _pitch, _vw, _vh);
+        if (hit < 0) return false;
+        const float H = MathF.PI / 2f;
+        switch (hit)
+        {
+            case 0: _yaw = 0.7f; _pitch = 0.5f; _pan = default; break;                                    // hub → iso
+            case 1: (_yaw, _pitch) = NearAngle(_yaw, 0f) && NearAngle(_pitch, 0f) ? (MathF.PI, 0f) : (0f, 0f); break; // ±X
+            case 2: (_yaw, _pitch) = NearAngle(_yaw, H) && NearAngle(_pitch, 0f) ? (-H, 0f) : (H, 0f); break;         // ±Y
+            case 3: _pitch = _pitch > 0.9f ? -1.5f : 1.5f; break;                                          // Z top/bottom (keep yaw)
+        }
+        Render();
+        return true;
+    }
+
+    private static bool NearAngle(float a, float b)
+    {
+        float d = a - b;
+        while (d > MathF.PI) d -= 2f * MathF.PI;
+        while (d < -MathF.PI) d += 2f * MathF.PI;
+        return MathF.Abs(d) < 0.16f;
+    }
+
     private void Render()
     {
         if (_verts.Length < 3) return;
