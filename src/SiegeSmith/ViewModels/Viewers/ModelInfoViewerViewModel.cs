@@ -30,7 +30,6 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
     private readonly float _radius;
 
     private float _yaw = 0.7f, _pitch = 0.5f, _dist;
-    private float _modelSpin; // middle-drag: rotate the model about its own vertical axis, camera fixed
     private Vector3 _pan; // right-drag pan offset added to _center
     private int _vw = 800, _vh = 600;
     private bool _wireframe;
@@ -121,7 +120,7 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
     /// on its axis. Yaw only, so it never tilts (unlike left-drag orbit, which also pitches).</summary>
     public void Spin(double dx)
     {
-        _modelSpin += (float)dx * 0.01f; // turntable: the model spins on its axis, the camera holds still
+        _yaw += (float)dx * 0.01f;
         Render();
     }
 
@@ -142,7 +141,6 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
         _pitch = 0.5f;
         _dist = _radius * 2.6f;
         _pan = default;
-        _modelSpin = 0f;
         Render();
     }
 
@@ -176,28 +174,9 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
     private void Render()
     {
         if (_verts.Length < 3) return;
-
-        // Middle-drag turntable: rotate the model about its own vertical axis (through _center),
-        // camera fixed. UVs are unaffected; normals rotate so the lighting sweeps across the model.
-        var verts = _verts;
-        var normals = _normals;
-        if (_modelSpin != 0f)
-        {
-            var m = Matrix4x4.CreateTranslation(-_center)
-                  * Matrix4x4.CreateFromAxisAngle(Vector3.UnitZ, _modelSpin)
-                  * Matrix4x4.CreateTranslation(_center);
-            verts = new Vector3[_verts.Length];
-            normals = new Vector3[_normals.Length];
-            for (int i = 0; i < _verts.Length; i++)
-            {
-                verts[i] = Vector3.Transform(_verts[i], m);
-                normals[i] = Vector3.TransformNormal(_normals[i], m);
-            }
-        }
-
         var bgra = _textured && CanTexture && !_wireframe
-            ? SoftwareRenderer.RenderTextured(verts, normals, _uvs, _triTex, _textures, _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist)
-            : SoftwareRenderer.Render(verts, normals, _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe);
+            ? SoftwareRenderer.RenderTextured(_verts, _normals, _uvs, _triTex, _textures, _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist)
+            : SoftwareRenderer.Render(_verts, _normals, _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
