@@ -149,6 +149,48 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public string MoodStandard { get => _moodStandard; set => SetProperty(ref _moodStandard, value); }
     public string MoodBattle { get => _moodBattle; set => SetProperty(ref _moodBattle, value); }
 
+    // ── effects: emitters, decals, placed sound (LE-7) ──────────
+    private uint _nextEffectScid = 0x03000001;
+    public ObservableCollection<RegionEmitter> Emitters { get; } = new();
+    private RegionEmitter? _selectedEmitter;
+    public RegionEmitter? SelectedEmitter { get => _selectedEmitter; set { if (SetProperty(ref _selectedEmitter, value)) RaiseCommands(); } }
+
+    public ObservableCollection<RegionDecal> Decals { get; } = new();
+    private RegionDecal? _selectedDecal;
+    public RegionDecal? SelectedDecal
+    {
+        get => _selectedDecal;
+        set
+        {
+            if (!SetProperty(ref _selectedDecal, value)) return;
+            OnPropertyChanged(nameof(HasSelectedDecal));
+            OnPropertyChanged(nameof(SelectedDecalTexture));
+            OnPropertyChanged(nameof(SelectedDecalHoriz));
+            OnPropertyChanged(nameof(SelectedDecalVert));
+            RaiseCommands();
+        }
+    }
+    public bool HasSelectedDecal => _selectedDecal is not null;
+    public string SelectedDecalTexture
+    {
+        get => _selectedDecal?.Texture ?? "";
+        set { if (_selectedDecal is not null) _selectedDecal.Texture = value ?? ""; }
+    }
+    public string SelectedDecalHoriz
+    {
+        get => _selectedDecal is null ? "" : _selectedDecal.HorizExtent.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedDecal is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) _selectedDecal.HorizExtent = v; }
+    }
+    public string SelectedDecalVert
+    {
+        get => _selectedDecal is null ? "" : _selectedDecal.VertExtent.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedDecal is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) _selectedDecal.VertExtent = v; }
+    }
+
+    // Placed positional sound ships to objects/sound.gas (retail DS1 only — silent in the SiegeFX test).
+    private string _soundTemplate = "";
+    public string SoundTemplate { get => _soundTemplate; set { if (SetProperty(ref _soundTemplate, value)) RaiseCommands(); } }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -230,6 +272,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand AddPointLightCommand { get; }
     public RelayCommand DeleteLightCommand { get; }
     public RelayCommand ToggleMoodInteriorCommand { get; }
+    public RelayCommand AddFireEmitterCommand { get; }
+    public RelayCommand AddSmokeEmitterCommand { get; }
+    public RelayCommand DeleteEmitterCommand { get; }
+    public RelayCommand AddDecalCommand { get; }
+    public RelayCommand DeleteDecalCommand { get; }
+    public RelayCommand AddSoundCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -244,6 +292,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddPointLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Point), _ => IsReady && _selectedNode is not null);
         DeleteLightCommand = new RelayCommand(_ => DeleteLight(), _ => _selectedLight is not null);
         ToggleMoodInteriorCommand = new RelayCommand(_ => MoodInterior = !MoodInterior);
+        AddFireEmitterCommand = new RelayCommand(_ => AddEmitter(false), _ => IsReady && _selectedNode is not null);
+        AddSmokeEmitterCommand = new RelayCommand(_ => AddEmitter(true), _ => IsReady && _selectedNode is not null);
+        DeleteEmitterCommand = new RelayCommand(_ => DeleteEmitter(), _ => _selectedEmitter is not null);
+        AddDecalCommand = new RelayCommand(_ => AddDecal(), _ => IsReady && _selectedNode is not null);
+        DeleteDecalCommand = new RelayCommand(_ => DeleteDecal(), _ => _selectedDecal is not null);
+        AddSoundCommand = new RelayCommand(_ => AddSound(), _ => IsReady && _selectedNode is not null && !string.IsNullOrWhiteSpace(_soundTemplate));
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -689,7 +743,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(),
                 assetsRoot: _assetsFolder, placements: _objects,
-                lights: new List<AuthoredLight>(Lights), mood: BuildMood());
+                lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
+                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals));
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -717,7 +772,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var nodesGas = NodesGasWriter.Write(_region);
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects,
-                lights: new List<AuthoredLight>(Lights), mood: BuildMood());
+                lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
+                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals));
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -811,6 +867,20 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 moodCheck.HasAudio
                     ? $"Mood '{moodCheck.Name}' — ambient audio will play (map is map_-prefixed)."
                     : "Mood set but has no ambient track — add one for region audio."));
+
+        if (Emitters.Count > 0)
+            rows.Add(new ValidationRow(true, $"{Emitters.Count} particle emitter(s) → emitter.gas (live in SiegeFX)."));
+        if (Decals.Count > 0)
+        {
+            int noTex = 0;
+            foreach (var d in Decals) if (string.IsNullOrWhiteSpace(d.Texture)) noTex++;
+            rows.Add(new ValidationRow(noTex == 0,
+                noTex == 0 ? $"{Decals.Count} decal(s) → decals.gas." : $"{noTex} decal(s) missing a texture name."));
+        }
+        int soundCount = 0;
+        foreach (var o in _objects) if (o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase)) soundCount++;
+        if (soundCount > 0)
+            rows.Add(new ValidationRow(true, $"{soundCount} placed sound(s) → objects/sound.gas (retail DS1 only; silent in the SiegeFX test)."));
 
         var terrain = FindTank("terrain");
         rows.Add(new ValidationRow(terrain is not null,
@@ -1048,6 +1118,63 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         set { if (_selectedLight is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var d = _selectedLight.Direction; d.Z = v; _selectedLight.Direction = d; Render(); } }
     }
 
+    // ── effects: emitters, decals, placed sound (LE-7) ──────────
+    private void AddEmitter(bool smoke)
+    {
+        if (_selectedNode is null) return;
+        var e = new RegionEmitter
+        {
+            Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid,
+            LocalPos = LocalCenter(_selectedNode.Guid), Smoke = smoke,
+        };
+        Emitters.Add(e);
+        SelectedEmitter = e;
+        Render();
+        Status = $"Added a {(smoke ? "smoke" : "fire")} emitter → objects/emitter.gas (plays in SiegeFX).";
+    }
+
+    private void DeleteEmitter()
+    {
+        if (_selectedEmitter is null) return;
+        Emitters.Remove(_selectedEmitter);
+        SelectedEmitter = null;
+        Render();
+    }
+
+    private void AddDecal()
+    {
+        if (_selectedNode is null) return;
+        var d = new RegionDecal
+        {
+            Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid, OriginLocal = LocalCenter(_selectedNode.Guid),
+        };
+        Decals.Add(d);
+        SelectedDecal = d;
+        Status = "Added a decal — set its texture (a .raw basename under Art/Bitmaps/Decals).";
+    }
+
+    private void DeleteDecal()
+    {
+        if (_selectedDecal is null) return;
+        Decals.Remove(_selectedDecal);
+        SelectedDecal = null;
+    }
+
+    private void AddSound()
+    {
+        if (_selectedNode is null || string.IsNullOrWhiteSpace(_soundTemplate)) return;
+        PushUndo();
+        _objects.Add(new PlacedObject
+        {
+            Scid = NextScid(), Template = _soundTemplate.Trim(), NodeGuid = _selectedNode.Guid,
+            LocalPos = LocalCenter(_selectedNode.Guid), File = "sound.gas",
+        });
+        RebuildPlacedRows();
+        Render();
+        Status = $"Added sound emitter '{_soundTemplate.Trim()}' → objects/sound.gas (retail DS1 only — silent in the SiegeFX test).";
+        RaiseCommands();
+    }
+
     private uint NextScid()
     {
         var used = new HashSet<uint>();
@@ -1200,6 +1327,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 pickGuid.Add(o.NodeGuid);
                 pickScid.Add(o.Scid);
             }
+        }
+
+        // Emitters preview as marker cubes — particles don't render in the software renderer.
+        foreach (var em in Emitters)
+        {
+            if (!layout.TryGetTransform(em.NodeGuid, out var enw)) continue;
+            var ew = Matrix4x4.CreateTranslation(em.LocalPos) * enw;
+            AppendMarkerCube(ew, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, em.NodeGuid, 0u, ref min, ref max);
         }
 
         if (verts.Count < 3)
@@ -1437,6 +1572,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddDirectionalLightCommand.RaiseCanExecuteChanged();
         AddPointLightCommand.RaiseCanExecuteChanged();
         DeleteLightCommand.RaiseCanExecuteChanged();
+        AddFireEmitterCommand.RaiseCanExecuteChanged();
+        AddSmokeEmitterCommand.RaiseCanExecuteChanged();
+        DeleteEmitterCommand.RaiseCanExecuteChanged();
+        AddDecalCommand.RaiseCanExecuteChanged();
+        DeleteDecalCommand.RaiseCanExecuteChanged();
+        AddSoundCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

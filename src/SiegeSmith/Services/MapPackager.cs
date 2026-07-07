@@ -32,7 +32,8 @@ public static class MapPackager
     public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir,
         StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null,
         IReadOnlyList<PlacedObject>? placements = null,
-        IReadOnlyList<AuthoredLight>? lights = null, AuthoredMood? mood = null)
+        IReadOnlyList<AuthoredLight>? lights = null, AuthoredMood? mood = null,
+        IReadOnlyList<RegionEmitter>? emitters = null, IReadOnlyList<RegionDecal>? decals = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -89,6 +90,21 @@ public static class MapPackager
             string moodDir = Path.Combine(staging, "world", "global", "moods", map);
             Directory.CreateDirectory(moodDir);
             File.WriteAllText(Path.Combine(moodDir, "moods.gas"), MoodsGasWriter.Write(md));
+        }
+
+        // Particle emitters → objects/emitter.gas (the only per-region live-particle path).
+        if (emitters is { Count: > 0 })
+        {
+            string objDir = Path.Combine(mapDir, "regions", region, "objects");
+            Directory.CreateDirectory(objDir);
+            File.WriteAllText(Path.Combine(objDir, "emitter.gas"), EmitterGasWriter.Write(emitters));
+        }
+        // Decals → decals/decals.gas.
+        if (decals is { Count: > 0 })
+        {
+            string decalDir = Path.Combine(mapDir, "regions", region, "decals");
+            Directory.CreateDirectory(decalDir);
+            File.WriteAllText(Path.Combine(decalDir, "decals.gas"), DecalGasWriter.Write(decals));
         }
 
         Directory.CreateDirectory(outputDir);

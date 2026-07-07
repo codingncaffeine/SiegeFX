@@ -218,6 +218,71 @@
                                      ToolTip="Battle music track"/>
                         </Grid>
 
+                        <TextBlock Text="Effects — emitters · decals · sound (place on selected node)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,12,0,3" TextWrapping="Wrap"/>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="Add fire" Command="{Binding AddFireEmitterCommand}" Margin="0,0,3,0" Padding="6,5"
+                                    ToolTip="Fire particle emitter → emitter.gas (plays in SiegeFX)"/>
+                            <Button Grid.Column="1" Content="Add smoke" Command="{Binding AddSmokeEmitterCommand}" Margin="0,0,3,0" Padding="6,5"
+                                    ToolTip="Smoke particle emitter → emitter.gas (plays in SiegeFX)"/>
+                            <Button Grid.Column="2" Content="Add decal" Command="{Binding AddDecalCommand}" Padding="6,5"
+                                    ToolTip="Ground decal → decals.gas"/>
+                        </Grid>
+                        <ListBox ItemsSource="{Binding Emitters}" SelectedItem="{Binding SelectedEmitter, Mode=TwoWay}"
+                                 MaxHeight="70" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,1">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <Button Content="Delete selected emitter" Command="{Binding DeleteEmitterCommand}" Margin="0,0,0,3" Padding="8,4"/>
+                        <ListBox ItemsSource="{Binding Decals}" SelectedItem="{Binding SelectedDecal, Mode=TwoWay}"
+                                 MaxHeight="70" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,1">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedDecal, Converter={StaticResource BoolToVis}}">
+                            <TextBox Text="{Binding SelectedDecalTexture, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
+                                     ToolTip="Decal texture — .raw basename under Art/Bitmaps/Decals"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="W" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedDecalHoriz, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Horizontal extent (m)"/>
+                                <TextBlock Grid.Column="2" Text="H" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedDecalVert, UpdateSourceTrigger=LostFocus}" ToolTip="Vertical extent (m)"/>
+                            </Grid>
+                            <Button Content="Delete selected decal" Command="{Binding DeleteDecalCommand}" Margin="0,0,0,3" Padding="8,4"/>
+                        </StackPanel>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding SoundTemplate, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,3,0"
+                                     ToolTip="Sound-emitter template name → objects/sound.gas (retail DS1 only; silent in the SiegeFX test)"/>
+                            <Button Grid.Column="1" Content="Add sound" Command="{Binding AddSoundCommand}" Padding="8,5"/>
+                        </Grid>
+
                         <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"
