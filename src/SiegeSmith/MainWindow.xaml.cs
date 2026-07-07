@@ -142,12 +142,29 @@ public partial class MainWindow : Window
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if ((!_viewportDragging && !_viewportPanning && !_viewportSpinning) || sender is not FrameworkElement fe) return;
+        if (sender is not FrameworkElement fe) return;
         var p = e.GetPosition(fe);
-        if (fe.DataContext is ModelInfoViewerViewModel vm)
+        var vm = fe.DataContext as ModelInfoViewerViewModel;
+
+        // Middle held → turntable spin about the vertical axis, driven off the live button state so it
+        // fires even when WPF drops the middle-button down event.
+        if (e.MiddleButton == MouseButtonState.Pressed)
         {
-            if (_viewportSpinning) vm.Spin(p.X - _viewportLast.X);   // turntable spin about the vertical axis
-            else if (_viewportPanning) vm.Pan(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
+            if (!_viewportSpinning) { _viewportSpinning = true; _viewportLast = p; return; }
+            vm?.Spin(p.X - _viewportLast.X);
+            _viewportLast = p;
+            return;
+        }
+        if (_viewportSpinning)
+        {
+            _viewportSpinning = false;
+            if (!_viewportDragging && !_viewportPanning) (sender as IInputElement)?.ReleaseMouseCapture();
+        }
+
+        if (!_viewportDragging && !_viewportPanning) return;
+        if (vm is not null)
+        {
+            if (_viewportPanning) vm.Pan(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
             else vm.Orbit(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
         }
         _viewportLast = p;

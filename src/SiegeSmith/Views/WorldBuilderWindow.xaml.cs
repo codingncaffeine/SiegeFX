@@ -79,14 +79,26 @@ public partial class WorldBuilderWindow : Window
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragging && !_panning && !_spinning && !_movingObject) return;
         var p = e.GetPosition(Viewport);
+
+        // Middle button held → turntable spin about the vertical axis. Driven off the LIVE button
+        // state (not just the middle MouseDown), so it fires even when WPF drops the middle-button
+        // down event — that was why the map wouldn't twist.
+        if (e.MiddleButton == MouseButtonState.Pressed && !_movingObject)
+        {
+            if (!_spinning) { _spinning = true; _last = p; return; } // anchor on first move, no jump
+            _vm.Spin(p.X - _last.X);
+            _last = p;
+            return;
+        }
+        if (_spinning) { _spinning = false; if (!_dragging && !_panning) Viewport.ReleaseMouseCapture(); }
+
+        if (!_dragging && !_panning && !_movingObject) return;
         if (_movingObject)
         {
             if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) _vm.RotateSelectedObject(p.X - _last.X);
             else _vm.MoveSelectedObject(p.X, p.Y);         // slide along the node surface
         }
-        else if (_spinning) _vm.Spin(p.X - _last.X);       // turntable spin about the vertical axis
         else if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
         else _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
         _last = p;
