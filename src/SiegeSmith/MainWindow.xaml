@@ -201,28 +201,53 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                             <TextBlock Text="{Binding Kind}" Foreground="{StaticResource Brush.Accent}" VerticalAlignment="Center"/>
                                             <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                                            <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Margin="16,0,0,0"
+                                                    Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Content="Reset view" Command="{Binding ResetViewCommand}" Margin="8,0,0,0"
+                                                    Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
                                         </StackPanel>
                                     </StackPanel>
-                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                        <ItemsControl ItemsSource="{Binding Sections}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <StackPanel Margin="0,0,0,14">
-                                                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold"
-                                                                   Foreground="{StaticResource Brush.Foreground}" Margin="0,0,0,4"/>
-                                                        <ItemsControl ItemsSource="{Binding Lines}">
-                                                            <ItemsControl.ItemTemplate>
-                                                                <DataTemplate>
-                                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12.5"
-                                                                               Foreground="{StaticResource Brush.Muted}" Margin="8,1,0,1" TextWrapping="Wrap"/>
-                                                                </DataTemplate>
-                                                            </ItemsControl.ItemTemplate>
-                                                        </ItemsControl>
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </ScrollViewer>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" MinWidth="200"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="360" MinWidth="220"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <!-- CPU-rendered orbit preview: drag = orbit, wheel = zoom -->
+                                        <Border Grid.Column="0" Background="#FF141416" ClipToBounds="True" Cursor="SizeAll"
+                                                BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                                Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"
+                                                MouseLeftButtonDown="OnViewportMouseDown" MouseLeftButtonUp="OnViewportMouseUp"
+                                                MouseMove="OnViewportMouseMove" MouseWheel="OnViewportMouseWheel"
+                                                SizeChanged="OnViewportSizeChanged">
+                                            <Image Source="{Binding Image}" Stretch="Fill"/>
+                                        </Border>
+
+                                        <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                                                      Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
+
+                                        <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" Margin="8,0,0,0">
+                                            <ItemsControl ItemsSource="{Binding Sections}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel Margin="0,0,0,14">
+                                                            <TextBlock Text="{Binding Header}" FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource Brush.Foreground}" Margin="0,0,0,4"/>
+                                                            <ItemsControl ItemsSource="{Binding Lines}">
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12.5"
+                                                                                   Foreground="{StaticResource Brush.Muted}" Margin="8,1,0,1" TextWrapping="Wrap"/>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </Grid>
                                 </DockPanel>
                             </DataTemplate>
 
