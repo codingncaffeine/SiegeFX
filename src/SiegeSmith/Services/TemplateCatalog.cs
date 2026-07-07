@@ -21,8 +21,12 @@ public sealed class TemplateCatalog : IDisposable
 {
     private readonly List<TankFile> _tanks = new();
 
-    /// <summary>Placeable prop templates (resolve an aspect model), sorted by name.</summary>
+    /// <summary>Placeable inert prop templates (resolve an aspect model, no chore), sorted by name.</summary>
     public IReadOnlyList<PropTemplate> Props { get; private set; } = Array.Empty<PropTemplate>();
+
+    /// <summary>Spawnable actor templates (aspect model + a chore dictionary), sorted by name. These
+    /// go into <c>objects/actor.gas</c> and animate in-engine; inert props go into non_interactive.gas.</summary>
+    public IReadOnlyList<PropTemplate> Actors { get; private set; } = Array.Empty<PropTemplate>();
 
     public static TemplateCatalog Build(IEnumerable<string> tankPaths)
     {
@@ -36,6 +40,7 @@ public sealed class TemplateCatalog : IDisposable
         // First name wins; DS1 leaf props resolve their model within one tank, so a per-tank store
         // (which can't see a parent that lives in another tank) is accurate for the common case.
         var props = new SortedDictionary<string, PropTemplate>(StringComparer.OrdinalIgnoreCase);
+        var actors = new SortedDictionary<string, PropTemplate>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in tankPaths)
         {
             TankFile file;
@@ -55,13 +60,16 @@ public sealed class TemplateCatalog : IDisposable
                 if (!t.TypeTag.Equals("template", StringComparison.OrdinalIgnoreCase)) continue;
                 var model = store.GetAttribute(t, "aspect", "model");
                 if (string.IsNullOrEmpty(model)) continue;
-                props.TryAdd(t.Name, new PropTemplate(t.Name, model!));
+                // A chore prefix means the template animates — the engine spawns it as an actor
+                // (loaded from actor.gas). Everything else with a mesh is an inert prop.
+                var chore = store.GetAttribute(t, "body", "chore_dictionary", "chore_prefix");
+                var target = string.IsNullOrEmpty(chore) ? props : actors;
+                target.TryAdd(t.Name, new PropTemplate(t.Name, model!));
             }
         }
 
-        var list = new List<PropTemplate>(props.Count);
-        foreach (var p in props.Values) list.Add(p);
-        Props = list;
+        Props = new List<PropTemplate>(props.Values);
+        Actors = new List<PropTemplate>(actors.Values);
     }
 
     public void Dispose()

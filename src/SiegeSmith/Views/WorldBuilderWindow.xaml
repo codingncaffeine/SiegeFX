@@ -58,6 +58,11 @@
                     <!-- Object palette (props placed on nodes) -->
                     <DockPanel Grid.Row="2">
                         <TextBlock DockPanel.Dock="Top" Text="OBJECT PALETTE" Style="{StaticResource Header.Section}"/>
+                        <Button DockPanel.Dock="Top" Content="{Binding PlacingModeLabel}" Command="{Binding TogglePlacingCommand}"
+                                Margin="10,0,10,4" Padding="8,5"
+                                ToolTip="Toggle between inert props (non_interactive.gas) and spawnable actors (actor.gas)"/>
+                        <TextBlock DockPanel.Dock="Top" Margin="10,0,10,6" Text="{Binding PaletteHint}" TextWrapping="Wrap"
+                                   Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
                         <TextBox DockPanel.Dock="Top" Margin="10,0,10,6"
                                  Text="{Binding PropSearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"/>
                         <Button DockPanel.Dock="Top" Content="Place on selected node" Command="{Binding PlaceObjectCommand}"

@@ -100,11 +100,31 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private readonly List<PlacedObject> _objects = new();       // placed game objects (emitted to objects/*.gas)
     private uint _nextScid = 0x01000001;                        // map-scoped SCID allocator (shipped scids are 0x01xxxxxx)
     private readonly List<PropTemplate> _allProps = new();
+    private readonly List<PropTemplate> _allActors = new();      // spawnable NPC/monster templates
     public ObservableCollection<PropTemplate> PropPalette { get; } = new();
     private string _propSearch = "";
     public string PropSearchText { get => _propSearch; set { if (SetProperty(ref _propSearch, value)) RefreshPropPalette(); } }
     private PropTemplate? _selectedProp;
     public PropTemplate? SelectedProp { get => _selectedProp; set { if (SetProperty(ref _selectedProp, value)) RaiseCommands(); } }
+
+    // Toggle: the one palette lists inert props (→ non_interactive.gas) or spawnable actors (→ actor.gas).
+    private bool _placingActors;
+    public bool PlacingActors
+    {
+        get => _placingActors;
+        set
+        {
+            if (!SetProperty(ref _placingActors, value)) return;
+            SelectedProp = null;
+            OnPropertyChanged(nameof(PaletteHint));
+            OnPropertyChanged(nameof(PlacingModeLabel));
+            RefreshPropPalette();
+        }
+    }
+    public string PlacingModeLabel => _placingActors ? "Mode: Actors (NPCs)" : "Mode: Props (scenery)";
+    public string PaletteHint => _placingActors
+        ? "Actors — NPCs & monsters (animate in-engine), placed into actor.gas."
+        : "Props — inert scenery, placed into non_interactive.gas.";
     public ObservableCollection<PlacedObjectRow> PlacedObjects { get; } = new();
     private PlacedObjectRow? _selectedPlacedObject;
     public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) RaiseCommands(); } }
@@ -185,6 +205,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand OpenAssetsFolderCommand { get; }
     public RelayCommand PlaceObjectCommand { get; }
     public RelayCommand DeleteObjectCommand { get; }
+    public RelayCommand TogglePlacingCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -194,6 +215,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
+        TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -234,7 +256,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             _asp = asp;
             _allMeshes.AddRange(cat.Meshes);
             _allProps.AddRange(props.Props);
+            _allActors.AddRange(props.Actors);
             foreach (var p in props.Props) _templateModel[p.Name] = p.Model;
+            foreach (var a in props.Actors) _templateModel[a.Name] = a.Model; // actors preview via the same mesh path
             RefreshPalette();
             RefreshPropPalette();
             foreach (var r in cat.Regions) InstallRegions.Add(r);
@@ -716,11 +740,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
         if (_objects.Count > 0)
         {
-            int badObj = 0;
+            int badObj = 0, actors = 0;
             foreach (var o in _objects)
+            {
                 if (string.IsNullOrEmpty(o.Template) || !guids.Contains(o.NodeGuid)) badObj++;
+                if (o.File.Equals("actor.gas", StringComparison.OrdinalIgnoreCase)) actors++;
+            }
+            int props = _objects.Count - actors;
             rows.Add(new ValidationRow(badObj == 0,
-                badObj == 0 ? $"All {_objects.Count} placed object(s) anchored to a node." : $"{badObj} placed object(s) reference a missing node."));
+                badObj == 0
+                    ? $"All {_objects.Count} placed object(s) anchored — {props} prop(s), {actors} actor(s)."
+                    : $"{badObj} placed object(s) reference a missing node."));
         }
 
         if (graph is not null && _catalog is not null)
@@ -804,7 +834,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         PropPalette.Clear();
         var q = _propSearch?.Trim() ?? "";
         int shown = 0;
-        foreach (var p in _allProps)
+        foreach (var p in _placingActors ? _allActors : _allProps)
         {
             if (q.Length > 0 && p.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
             PropPalette.Add(p);
@@ -812,13 +842,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>Places the selected prop template on the selected node, at the node's local centre.
-    /// It ships into objects/non_interactive.gas and appears when the map is tested/played.</summary>
+    /// <summary>Places the selected template on the selected node, at the node's local centre. Props
+    /// ship into objects/non_interactive.gas; actors into objects/actor.gas (they animate + can fight).
+    /// Both appear in the preview and when the map is tested/played.</summary>
     private void PlaceObject()
     {
         if (_selectedProp is null || _selectedNode is null) return;
         var node = _region.Find(_selectedNode.Guid);
         if (node is null) return;
+        bool actor = _placingActors;
         PushUndo();
         _objects.Add(new PlacedObject
         {
@@ -826,14 +858,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             Template = _selectedProp.Name,
             NodeGuid = node.Guid,
             LocalPos = LocalCenter(node.Guid),
-            File = "non_interactive.gas",
+            File = actor ? "actor.gas" : "non_interactive.gas",
         });
         RebuildPlacedRows();
         var model = _templateModel.TryGetValue(_selectedProp.Name, out var mm) ? mm : "(none)";
         var mesh = _asp?.Resolve(model);
+        var kind = actor ? "actor" : "prop";
         Status = mesh is null
-            ? $"Placed {_selectedProp.Name} — model '{model}' has no .asp; shown as a marker cube."
-            : $"Placed {_selectedProp.Name} — model '{model}' → {mesh.TriangleCount} tris.";
+            ? $"Placed {kind} {_selectedProp.Name} — model '{model}' has no .asp; shown as a marker cube."
+            : $"Placed {kind} {_selectedProp.Name} — model '{model}' → {mesh.TriangleCount} tris.";
         RaiseCommands();
     }
 
@@ -854,7 +887,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         PlacedObjects.Clear();
         foreach (var o in _objects)
-            PlacedObjects.Add(new PlacedObjectRow(o.Scid, o.Template, o.NodeGuid));
+            PlacedObjects.Add(new PlacedObjectRow(o.Scid, o.Template, o.NodeGuid,
+                o.File.Equals("actor.gas", StringComparison.OrdinalIgnoreCase)));
         OnPropertyChanged(nameof(HasObjects));
     }
 
@@ -1282,8 +1316,8 @@ public sealed record ValidationRow(bool Ok, string Text)
 }
 
 /// <summary>A row in the placed-objects list.</summary>
-public sealed record PlacedObjectRow(uint Scid, string Template, uint NodeGuid)
+public sealed record PlacedObjectRow(uint Scid, string Template, uint NodeGuid, bool IsActor = false)
 {
     public string Label => Template;
-    public string Detail => $"0x{Scid:X8} · node 0x{NodeGuid:X8}";
+    public string Detail => $"{(IsActor ? "actor" : "prop")} · 0x{Scid:X8} · node 0x{NodeGuid:X8}";
 }
