@@ -26,6 +26,9 @@ public static class ViewerFactory
             catch (Exception ex) { return new TextViewerViewModel(name, bytes, "GAS parse error — " + ex.Message); }
         }
 
+        if (ext == ".skrit")
+            return new SkritViewerViewModel(name, bytes);
+
         if (ext == ".asp")
         {
             try { return ModelInfoViewerViewModel.FromAsp(name, AspMesh.Load(bytes)); }
