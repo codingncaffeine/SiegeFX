@@ -1940,7 +1940,47 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         catch (Exception ex) { Status = $"Couldn't save .asp: {ex.Message}"; return; }
 
         OnPropertyChanged(nameof(AssetsLabel));
-        Status = $"Imported {baseName}.asp ({kind}) — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}";
+
+        // With an assets folder, also emit a placeable template + register it in the prop palette so the
+        // mesh can be dropped on a node (bundles as world/contentdb/templates/ss_custom.gas; the engine's
+        // map-template fallback resolves it at play time).
+        if (_assetsFolder is not null)
+        {
+            string tplName = "ss_custom_" + baseName;
+            AppendCustomTemplate(tplName, baseName);
+            RegisterCustomProp(tplName, baseName);
+            OnPropertyChanged(nameof(AssetsLabel));
+            Status = $"Imported {baseName}.asp ({kind}) — {res.Faces.Count} tris. Placeable as '{tplName}' in the object palette (previews as a marker; renders in-engine).";
+        }
+        else
+        {
+            Status = $"Imported {baseName}.asp ({kind}) — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}. Set an assets folder to make it placeable.";
+        }
+    }
+
+    /// <summary>Appends a self-contained placeable template (no <c>specializes</c>, so it resolves without
+    /// a parent) into the custom-assets contentdb. Skips if the template is already present.</summary>
+    private void AppendCustomTemplate(string tplName, string model)
+    {
+        if (_assetsFolder is null) return;
+        var dir = System.IO.Path.Combine(_assetsFolder, "world", "contentdb", "templates");
+        System.IO.Directory.CreateDirectory(dir);
+        var file = System.IO.Path.Combine(dir, "ss_custom.gas");
+        string existing = System.IO.File.Exists(file) ? System.IO.File.ReadAllText(file) : "";
+        if (existing.Contains($"n:{tplName}]", StringComparison.OrdinalIgnoreCase)) return;
+        var block = $"[t:template,n:{tplName}]\r\n{{\r\n\tdoc = \"SiegeSmith custom mesh\";\r\n\t[aspect]\r\n\t{{\r\n\t\tmodel = {model};\r\n\t}}\r\n}}\r\n";
+        System.IO.File.AppendAllText(file, block);
+    }
+
+    /// <summary>Adds an imported custom mesh to the prop palette so it can be placed like any stock prop.</summary>
+    private void RegisterCustomProp(string tplName, string model)
+    {
+        if (!_templateModel.ContainsKey(tplName))
+        {
+            _allProps.Add(new PropTemplate(tplName, model));
+            _templateModel[tplName] = model;
+        }
+        RefreshPropPalette();
     }
 
     private void SaveNodes()

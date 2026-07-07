@@ -280,6 +280,11 @@ public sealed class RenderHost : IDisposable
     // template's specializes chain (texture resolution, weapon equip, loot
     // tables, voice cues). Loaded from Logic.dsres at LoadPlayActors.
     private SiegeFX.Core.Assets.TemplateStore? _templateStore;
+    // SS-CUSTOM — custom templates a mod bundled under the map tank's
+    // /world/contentdb/templates (SiegeSmith custom-mesh authoring). Consulted
+    // as a fallback when a placement's template isn't in the stock Logic store,
+    // so a bundled custom mesh + self-contained template resolves and renders.
+    private SiegeFX.Core.Assets.TemplateStore? _mapTemplateStore;
     // Phase 9-SC-7 (Phase A pcontent roller) — resolves drop/equip specs
     // like "#club/2-3" to a concrete weapon template at render time. Built
     // alongside _templateStore. Honors weapon class only; tier/rarity
@@ -5715,6 +5720,14 @@ void main()
         catch (Exception ex) { Console.WriteLine($"  sfx_script load failed: {ex.Message}"); }
 
         var (store, storeDiags)    = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+        // SS-CUSTOM — templates a mod bundled under the map tank's /world/contentdb/templates.
+        try
+        {
+            var (mapStore, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(mapReader);
+            _mapTemplateStore = mapStore;
+            if (mapStore.Count > 0) Console.WriteLine($"  map templates: {mapStore.Count} custom template(s)");
+        }
+        catch (Exception ex) { Console.WriteLine($"  map template load failed: {ex.Message}"); }
         var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
 
         // Phase 21a-2 — when LoadNeighborTerrain stashed a world layout +
@@ -5762,6 +5775,9 @@ void main()
         // interior props (bookshelves, doors) that reference b_t_*.raw bitmaps shipped alongside
         // the terrain SNOs; Objects/Logic still win on basename collisions.
         var resolver = new SiegeFX.Core.Assets.AssetResolver();
+        // SS-CUSTOM — map tank first so a bundled custom mesh/texture (unique name) resolves; the stock
+        // tanks added after still win any basename collision (AssetResolver is last-added-wins).
+        resolver.Add(mapReader, "map");
         if (_regionTerrainTankPath is not null)
         {
             try
@@ -7058,14 +7074,20 @@ void main()
                 foreach (var p in placements)
                 {
                     considered++;
-                    if (!_templateStore!.TryGet(p.TemplateName, out var template))
+                    var ts = _templateStore!;
+                    if (!ts.TryGet(p.TemplateName, out var template))
                     {
-                        missingTemplate++;
-                        skippedNoTemplate.TryGetValue(p.TemplateName, out var n);
-                        skippedNoTemplate[p.TemplateName] = n + 1;
-                        continue;
+                        // SS-CUSTOM — fall back to a map-bundled custom template before giving up.
+                        if (_mapTemplateStore is null || !_mapTemplateStore.TryGet(p.TemplateName, out template))
+                        {
+                            missingTemplate++;
+                            skippedNoTemplate.TryGetValue(p.TemplateName, out var n);
+                            skippedNoTemplate[p.TemplateName] = n + 1;
+                            continue;
+                        }
+                        ts = _mapTemplateStore;
                     }
-                    var modelName = _templateStore.GetAttribute(template, "aspect", "model");
+                    var modelName = ts.GetAttribute(template, "aspect", "model");
                     if (string.IsNullOrEmpty(modelName))
                     {
                         // Many entries in non_interactive.gas / special.gas reference
