@@ -29,6 +29,12 @@ public static class ViewerFactory
         if (ext == ".skrit")
             return new SkritViewerViewModel(name, bytes);
 
+        if (ext == ".wav")
+            return new AudioViewerViewModel(name, bytes, isWav: true);
+
+        if (ext == ".mp3")
+            return new AudioViewerViewModel(name, bytes, isWav: false);
+
         if (ext == ".asp")
         {
             try { return ModelInfoViewerViewModel.FromAsp(name, AspMesh.Load(bytes)); }

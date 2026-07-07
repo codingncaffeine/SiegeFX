@@ -92,11 +92,13 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         get => _currentViewer;
         private set
         {
-            if (SetProperty(ref _currentViewer, value))
-            {
-                OnPropertyChanged(nameof(HasViewer));
-                OnPropertyChanged(nameof(ShowOverview));
-            }
+            if (ReferenceEquals(_currentViewer, value)) return;
+            // Dispose the outgoing viewer so audio players / temp files / native handles release.
+            if (_currentViewer is IDisposable old) old.Dispose();
+            _currentViewer = value;
+            OnPropertyChanged(nameof(CurrentViewer));
+            OnPropertyChanged(nameof(HasViewer));
+            OnPropertyChanged(nameof(ShowOverview));
         }
     }
     public bool HasViewer => _currentViewer is not null;
@@ -331,7 +333,11 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         else Status?.Invoke(message);
     }
 
-    public void Dispose() => _doc.Dispose();
+    public void Dispose()
+    {
+        if (_currentViewer is IDisposable v) v.Dispose();
+        _doc.Dispose();
+    }
 }
 
 /// <summary>A name/value row shown in the Properties inspector.</summary>
