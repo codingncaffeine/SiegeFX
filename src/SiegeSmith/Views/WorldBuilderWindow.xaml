@@ -553,6 +553,8 @@
                             <Button Grid.Column="0" Content="Set assets folder…" Command="{Binding SetAssetsFolderCommand}" Margin="0,0,3,0" Padding="8,5"/>
                             <Button Grid.Column="1" Content="Open" Command="{Binding OpenAssetsFolderCommand}" Padding="8,5"/>
                         </Grid>
+                        <Button Content="Import OBJ → custom .asp mesh…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,0" Padding="8,5"
+                                ToolTip="Convert a Wavefront OBJ to a static DS1 .asp (Y-up→Z-up), verify it against the engine reader, and drop it in art/meshes so it bundles into the map"/>
 
                         <TextBlock Text="Startable map (SiegeFX engine)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>

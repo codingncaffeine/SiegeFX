@@ -450,6 +450,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand RedoCommand { get; }
     public RelayCommand SetAssetsFolderCommand { get; }
     public RelayCommand OpenAssetsFolderCommand { get; }
+    public RelayCommand ImportObjMeshCommand { get; }
     public RelayCommand PlaceObjectCommand { get; }
     public RelayCommand DeleteObjectCommand { get; }
     public RelayCommand TogglePlacingCommand { get; }
@@ -491,6 +492,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         TexturedCommand = new RelayCommand(_ => Textured = !Textured);
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
+        ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
@@ -1826,6 +1828,62 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (_assetsFolder is null) return;
         try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_assetsFolder) { UseShellExecute = true }); }
         catch (Exception ex) { Status = "Couldn't open folder: " + ex.Message; }
+    }
+
+    /// <summary>Imports a Wavefront OBJ, converts it to a static DS1 <c>.asp</c>, round-trips it through
+    /// the engine's own reader (the format has no length fields, so a stride bug only surfaces there),
+    /// and saves it into the custom-assets tree at <c>art/meshes/&lt;name&gt;.asp</c> so it bundles into the
+    /// map and resolves by basename.</summary>
+    private void ImportObjMesh()
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Wavefront OBJ (*.obj)|*.obj|All files|*.*",
+            Title = "Import an OBJ as a custom .asp mesh",
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        string objText;
+        try { objText = System.IO.File.ReadAllText(dlg.FileName); }
+        catch (Exception ex) { Status = $"Couldn't read OBJ: {ex.Message}"; return; }
+
+        var res = ObjImporter.Parse(objText);
+        ObjImporter.FillMissingNormals(res);
+        if (res.Faces.Count == 0) { Status = "That OBJ produced no triangles."; return; }
+
+        byte[] asp;
+        try { asp = AspWriter.WriteStatic(res.Positions, res.Corners, res.Faces, res.TextureNames); }
+        catch (Exception ex) { Status = $"ASP write failed: {ex.Message}"; return; }
+
+        // Reader-as-oracle round-trip: if this throws or mis-counts, the .asp would corrupt in-engine.
+        try
+        {
+            var check = SiegeFX.Core.Assets.AspMesh.Load(asp);
+            if (check.TriangleCount != res.Faces.Count)
+            { Status = $"ASP round-trip mismatch ({check.TriangleCount} vs {res.Faces.Count} tris) — not saved."; return; }
+        }
+        catch (Exception ex) { Status = $"ASP round-trip failed ({ex.Message}) — not saved."; return; }
+
+        string baseName = LightSanitize(System.IO.Path.GetFileNameWithoutExtension(dlg.FileName));
+        if (baseName.Length == 0) baseName = "custom_mesh";
+        string outPath;
+        if (_assetsFolder is not null)
+        {
+            var meshDir = System.IO.Path.Combine(_assetsFolder, "art", "meshes");
+            System.IO.Directory.CreateDirectory(meshDir);
+            outPath = System.IO.Path.Combine(meshDir, baseName + ".asp");
+        }
+        else
+        {
+            var picked = DialogService.SaveFileAs(baseName + ".asp");
+            if (picked is null) return;
+            outPath = picked;
+        }
+        try { System.IO.File.WriteAllBytes(outPath, asp); }
+        catch (Exception ex) { Status = $"Couldn't save .asp: {ex.Message}"; return; }
+
+        OnPropertyChanged(nameof(AssetsLabel));
+        Status = $"Imported {baseName}.asp — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}";
     }
 
     private void SaveNodes()
