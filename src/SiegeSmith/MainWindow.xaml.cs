@@ -25,6 +25,19 @@ public partial class MainWindow : Window
         new WorldBuilderWindow(paths) { Owner = this }.ShowDialog();
     }
 
+    private void OnProjectFiles(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainViewModel vm) return;
+        var folder = vm.ProjectSourceFolder;
+        if (string.IsNullOrEmpty(folder))
+        {
+            MessageBox.Show(this, "Open or create a project first (Project ▸ New / Open Project).",
+                "No project open", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        new ProjectFilesWindow(folder) { Owner = this }.ShowDialog();
+    }
+
     /// <summary>Once the window is up, offer the locate-install prompt if detection came up empty.</summary>
     private void OnLoaded(object sender, RoutedEventArgs e)
     {

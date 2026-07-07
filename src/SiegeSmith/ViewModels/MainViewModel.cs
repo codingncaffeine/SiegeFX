@@ -53,6 +53,7 @@ public sealed class MainViewModel : ObservableObject
     private string? _projectPath;
     public bool HasProject => _project is not null;
     public string ProjectLabel => _project is null ? "No project open" : $"Project: {_project.Name}  ({_project.SourceFolder})";
+    public string? ProjectSourceFolder => _project?.SourceFolder;
 
     public RelayCommand RefreshInstallCommand { get; }
     public RelayCommand OpenTankCommand { get; }

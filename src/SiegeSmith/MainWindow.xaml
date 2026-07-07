@@ -35,6 +35,7 @@
                 <MenuItem Header="_New Project…" Command="{Binding NewProjectCommand}"/>
                 <MenuItem Header="_Open Project…" Command="{Binding OpenProjectCommand}"/>
                 <MenuItem Header="_Save Project" Command="{Binding SaveProjectCommand}"/>
+                <MenuItem Header="Project _Files…" Click="OnProjectFiles"/>
                 <Separator/>
                 <MenuItem Header="_Build &amp; Install to Game" Command="{Binding BuildInstallCommand}"/>
                 <MenuItem Header="_Launch Dungeon Siege" Command="{Binding LaunchGameCommand}"/>
