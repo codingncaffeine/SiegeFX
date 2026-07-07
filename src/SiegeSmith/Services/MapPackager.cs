@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using SiegeFX.Core.Tank;
 
@@ -28,7 +29,7 @@ public static class MapPackager
     /// region path to hand to <see cref="RuntimeLauncher"/>. The map dir is always prefixed <c>map_</c>
     /// so the engine's ambient-audio gate (DeriveMapName) stays enabled.</summary>
     public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir,
-        StartInfo? start = null, SeedActor? actor = null)
+        StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -37,6 +38,13 @@ public static class MapPackager
 
         string staging = Path.Combine(Path.GetTempPath(), "SiegeSmith", "staging", map);
         if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+        Directory.CreateDirectory(staging);
+
+        // Overlay the user's custom-asset tree FIRST (it mirrors tank layout, e.g. art/terrain/...), then
+        // write our authored files on top so a collision always resolves in the region's favour.
+        if (!string.IsNullOrWhiteSpace(assetsRoot) && Directory.Exists(assetsRoot))
+            CopyTree(assetsRoot!, staging);
+
         string nodesDir = Path.Combine(mapDir, "regions", region, "terrain_nodes");
         Directory.CreateDirectory(nodesDir);
         File.WriteAllText(Path.Combine(nodesDir, "nodes.gas"), nodesGas);
@@ -92,6 +100,24 @@ public static class MapPackager
     }
 
     private static string F(float v) => v.ToString("0.0######", CultureInfo.InvariantCulture);
+
+    /// <summary>Mirror-copies a folder tree into <paramref name="dstRoot"/>, preserving relative paths.
+    /// Used to overlay a custom-asset folder (laid out like a tank: art/…, world/…) into the map.</summary>
+    private static void CopyTree(string src, string dstRoot)
+    {
+        foreach (var file in Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories))
+        {
+            var dst = Path.Combine(dstRoot, Path.GetRelativePath(src, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.Copy(file, dst, overwrite: true);
+        }
+    }
+
+    /// <summary>Counts files under a would-be assets root (0 when unset/missing) — for UI feedback.</summary>
+    public static int CountAssets(string? assetsRoot) =>
+        !string.IsNullOrWhiteSpace(assetsRoot) && Directory.Exists(assetsRoot)
+            ? Directory.EnumerateFiles(assetsRoot, "*", SearchOption.AllDirectories).Count()
+            : 0;
 
     /// <summary>Lowercases and keeps only [a-z0-9_], collapsing everything else to '_'. DS1 tank paths
     /// are lowercased and the map/region name becomes part of the in-tank path.</summary>

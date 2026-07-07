@@ -123,6 +123,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _regionName = "custom_r1";
     public string RegionName { get => _regionName; set => SetProperty(ref _regionName, value); }
 
+    // A folder laid out like a tank (art/…, world/…) overlaid into every packaged map, so custom
+    // textures/meshes ship in-engine. Authored region files always win on a path collision.
+    private string? _assetsFolder;
+    public string? AssetsFolder
+    {
+        get => _assetsFolder;
+        private set { if (SetProperty(ref _assetsFolder, value)) OnPropertyChanged(nameof(AssetsLabel)); }
+    }
+    public string AssetsLabel => _assetsFolder is null
+        ? "No custom assets — optional. Add a folder laid out like a tank (art/…) to bundle custom art."
+        : $"Bundling {MapPackager.CountAssets(_assetsFolder):N0} file(s) from {_assetsFolder}";
+
     // A stock actor template harvested from the last shipped region loaded — guaranteed to resolve,
     // so a seeded objects/actor.gas opens the engine's PC-spawn gate for the walkable "Play" test.
     private string? _seedTemplate;
@@ -149,11 +161,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand ValidateCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
+    public RelayCommand SetAssetsFolderCommand { get; }
+    public RelayCommand OpenAssetsFolderCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
         _tankPaths = tankPaths;
         TexturedCommand = new RelayCommand(_ => Textured = !Textured);
+        SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
+        OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -540,7 +556,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         try
         {
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo());
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), assetsRoot: _assetsFolder);
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -567,7 +583,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             var nodesGas = NodesGasWriter.Write(_region);
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor());
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder);
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -689,6 +705,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (Path.GetFileName(p).Contains(substr, StringComparison.OrdinalIgnoreCase))
                 return p;
         return null;
+    }
+
+    private void SetAssetsFolder()
+    {
+        var folder = DialogService.PickFolder("Pick a custom-assets folder (laid out like a tank: art/…, world/…)");
+        if (folder is null) return;
+        AssetsFolder = folder;
+        OpenAssetsFolderCommand.RaiseCanExecuteChanged();
+        Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
+    }
+
+    private void OpenAssetsFolder()
+    {
+        if (_assetsFolder is null) return;
+        try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_assetsFolder) { UseShellExecute = true }); }
+        catch (Exception ex) { Status = "Couldn't open folder: " + ex.Message; }
     }
 
     private void SaveNodes()

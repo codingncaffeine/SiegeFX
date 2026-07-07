@@ -105,6 +105,19 @@
                                 ToolTip="Manually browse to any nodes.gas"/>
                         <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,6,0,3" Padding="8,5"/>
 
+                        <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,12,0,3"/>
+                        <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="10" TextWrapping="Wrap" Margin="0,0,0,3"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="Set assets folder…" Command="{Binding SetAssetsFolderCommand}" Margin="0,0,3,0" Padding="8,5"/>
+                            <Button Grid.Column="1" Content="Open" Command="{Binding OpenAssetsFolderCommand}" Padding="8,5"/>
+                        </Grid>
+
                         <TextBlock Text="Startable map (SiegeFX engine)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <Grid Margin="0,0,0,3">
