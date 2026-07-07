@@ -9,13 +9,42 @@ namespace SiegeSmith.Services;
 /// consecutive vertices per triangle — in Z-up model space, matching DS1's axis convention.</summary>
 public static class SoftwareRenderer
 {
+    /// <summary>A directional light for the preview: a (normalized) world-space direction plus a
+    /// linear RGB colour (0..1) scaled by intensity. Mirrors the engine's directional lights so the
+    /// World Builder can preview the level's mood before launch.</summary>
+    public readonly record struct DirLight(Vector3 Dir, float R, float G, float B, float Intensity);
+
+    // The built-in preview sun, used when no lights are supplied (keeps every other viewer unchanged).
+    private static readonly Vector3 DefaultLightDir = Vector3.Normalize(new Vector3(0.35f, 0.30f, 0.90f));
+
+    /// <summary>Per-channel light factor for a face normal. With no lights, reproduces the built-in
+    /// single-sun shade (<paramref name="ambient"/> + <paramref name="direct"/>·|N·L|) in white so the
+    /// default look is unchanged; with lights, sums each light's |N·L|·intensity·colour.</summary>
+    private static (float r, float g, float b) Lighting(Vector3 fn, DirLight[]? lights, float ambient, float direct)
+    {
+        if (lights is null || lights.Length == 0)
+        {
+            float s = ambient + direct * MathF.Abs(Vector3.Dot(fn, DefaultLightDir));
+            return (s, s, s);
+        }
+        float r = ambient, g = ambient, b = ambient;
+        foreach (var l in lights)
+        {
+            float nl = MathF.Abs(Vector3.Dot(fn, l.Dir)) * l.Intensity * direct;
+            r += nl * l.R; g += nl * l.G; b += nl * l.B;
+        }
+        return (r, g, b);
+    }
+
+    private static byte ClampByte(float v) => (byte)Math.Clamp(v, 0f, 255f);
+
     /// <summary>Renders to a fresh BGRA byte buffer of length <c>width*height*4</c>.</summary>
     public static byte[] Render(
         Vector3[] verts, Vector3[] normals,
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
-        bool wireframe)
+        bool wireframe, DirLight[]? lights = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -35,8 +64,6 @@ public static class SoftwareRenderer
         float far = dist + radius * 6f + 1f;
         var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
-
-        var light = Vector3.Normalize(new Vector3(0.35f, 0.30f, 0.90f));
 
         int n = verts.Length;
         var sx = new float[n]; var sy = new float[n]; var sz = new float[n]; var ok = new bool[n];
@@ -72,8 +99,8 @@ public static class SoftwareRenderer
             var fn = Vector3.Cross(verts[b] - verts[a], verts[c] - verts[a]);
             if (fn.LengthSquared() < 1e-12f) continue;
             fn = Vector3.Normalize(fn);
-            float shade = 0.22f + 0.78f * MathF.Abs(Vector3.Dot(fn, light)); // two-sided
-            byte cr = (byte)(210 * shade), cg = (byte)(202 * shade), cb = (byte)(188 * shade);
+            var (lr, lg, lb) = Lighting(fn, lights, 0.22f, 0.78f); // two-sided
+            byte cr = ClampByte(210 * lr), cg = ClampByte(202 * lg), cb = ClampByte(188 * lb);
 
             RasterTriangle(px, zbuf, width, height,
                 sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
@@ -103,7 +130,7 @@ public static class SoftwareRenderer
         Vector3[] verts, Vector3[] normals, Vector2[] uvs, int[] triTexture, Texture[] textures,
         int width, int height,
         Vector3 center, float radius,
-        float yaw, float pitch, float dist)
+        float yaw, float pitch, float dist, DirLight[]? lights = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -122,8 +149,6 @@ public static class SoftwareRenderer
         float far = dist + radius * 6f + 1f;
         var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
-
-        var light = Vector3.Normalize(new Vector3(0.35f, 0.30f, 0.90f));
 
         int n = verts.Length;
         var sx = new float[n]; var sy = new float[n]; var sz = new float[n];
@@ -155,7 +180,7 @@ public static class SoftwareRenderer
             var fn = Vector3.Cross(verts[b] - verts[a], verts[c] - verts[a]);
             if (fn.LengthSquared() < 1e-12f) continue;
             fn = Vector3.Normalize(fn);
-            float shade = 0.55f + 0.45f * MathF.Abs(Vector3.Dot(fn, light)); // gentle, so the texture reads
+            var (sr, sg, sb) = Lighting(fn, lights, 0.55f, 0.45f); // gentle, so the texture reads
 
             int ti = t < triTexture.Length ? triTexture[t] : -1;
             var tex = ti >= 0 && ti < textures.Length ? textures[ti] : default;
@@ -165,11 +190,11 @@ public static class SoftwareRenderer
                     sx[a], sy[a], sz[a], iw[a], uw[a], vw[a],
                     sx[b], sy[b], sz[b], iw[b], uw[b], vw[b],
                     sx[c], sy[c], sz[c], iw[c], uw[c], vw[c],
-                    tex, shade);
+                    tex, sr, sg, sb);
             else
                 RasterTriangle(px, zbuf, width, height,
                     sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
-                    (byte)(190 * shade), (byte)(182 * shade), (byte)(170 * shade));
+                    ClampByte(190 * sr), ClampByte(182 * sg), ClampByte(170 * sb));
         }
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
@@ -179,7 +204,7 @@ public static class SoftwareRenderer
         float x0, float y0, float d0, float iw0, float uw0, float vw0,
         float x1, float y1, float d1, float iw1, float uw1, float vw1,
         float x2, float y2, float d2, float iw2, float uw2, float vw2,
-        Texture tex, float shade)
+        Texture tex, float sr, float sg, float sb)
     {
         float area = Edge(x0, y0, x1, y1, x2, y2);
         if (MathF.Abs(area) < 1e-6f) return;
@@ -215,9 +240,9 @@ public static class SoftwareRenderer
 
                 z[zi] = depth;
                 int pi = zi * 4;
-                px[pi]     = (byte)(tex.Bgra[si]     * shade);
-                px[pi + 1] = (byte)(tex.Bgra[si + 1] * shade);
-                px[pi + 2] = (byte)(tex.Bgra[si + 2] * shade);
+                px[pi]     = ClampByte(tex.Bgra[si]     * sb); // B
+                px[pi + 1] = ClampByte(tex.Bgra[si + 1] * sg); // G
+                px[pi + 2] = ClampByte(tex.Bgra[si + 2] * sr); // R
                 px[pi + 3] = 0xFF;
             }
         }
