@@ -28,11 +28,8 @@ public static class SoftwareRenderer
         radius = MathF.Max(radius, 0.001f);
         dist = MathF.Max(dist, radius * 0.2f);
 
-        var eye = center + dist * new Vector3(
-            MathF.Cos(pitch) * MathF.Cos(yaw),
-            MathF.Cos(pitch) * MathF.Sin(yaw),
-            MathF.Sin(pitch));
-        var view = Matrix4x4.CreateLookAt(eye, center, new Vector3(0, 0, 1));
+        var eye = center + dist * CamDir(yaw, pitch);
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
@@ -118,11 +115,8 @@ public static class SoftwareRenderer
         radius = MathF.Max(radius, 0.001f);
         dist = MathF.Max(dist, radius * 0.2f);
 
-        var eye = center + dist * new Vector3(
-            MathF.Cos(pitch) * MathF.Cos(yaw),
-            MathF.Cos(pitch) * MathF.Sin(yaw),
-            MathF.Sin(pitch));
-        var view = Matrix4x4.CreateLookAt(eye, center, new Vector3(0, 0, 1));
+        var eye = center + dist * CamDir(yaw, pitch);
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
@@ -293,6 +287,24 @@ public static class SoftwareRenderer
             if (e2 >= dy) { err += dy; x0 += sx; }
             if (e2 <= dx) { err += dx; y0 += sy; }
         }
+    }
+
+    // ── Camera basis (shared by the scene and the gizmo) ────────
+    /// <summary>Direction from the look-at centre toward the eye, for the orbit angles.</summary>
+    private static Vector3 CamDir(float yaw, float pitch) =>
+        new(MathF.Cos(pitch) * MathF.Cos(yaw), MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch));
+
+    /// <summary>The camera up vector after a roll of <paramref name="roll"/> radians about the
+    /// view axis (middle-drag "twist"). Degenerates gracefully at the poles (top/bottom views).</summary>
+    private static Vector3 RolledUp(Vector3 dir, float roll)
+    {
+        var fwd = -dir;                       // eye looks from center+dist*dir toward center
+        var right = Vector3.Cross(fwd, new Vector3(0, 0, 1));
+        if (right.LengthSquared() < 1e-6f)    // looking straight up/down — pick a stable seam
+            right = Vector3.Cross(fwd, new Vector3(0, 1, 0));
+        right = Vector3.Normalize(right);
+        var up0 = Vector3.Normalize(Vector3.Cross(right, fwd));
+        return up0 * MathF.Cos(roll) + right * MathF.Sin(roll);
     }
 
     // ── Orientation gizmo (interactive) ─────────────────────────
