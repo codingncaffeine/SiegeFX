@@ -251,16 +251,38 @@
                                 </DockPanel>
                             </DataTemplate>
 
-                            <!-- Gas (structured block/attribute tree + raw toggle) -->
+                            <!-- Gas (tree / raw / editable, live-validated) -->
                             <DataTemplate DataType="{x:Type viewers:GasViewerViewModel}">
                                 <DockPanel Margin="16">
                                     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                                         <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
                                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                             <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"/>
-                                            <Button Content="{Binding ToggleLabel}" Command="{Binding ToggleViewCommand}" Margin="16,0,0,0"/>
+                                            <Button Content="Tree" Command="{Binding ShowTreeCommand}" Margin="16,0,0,0" Padding="10,3"/>
+                                            <Button Content="Raw"  Command="{Binding ShowRawCommand}"  Margin="6,0,0,0" Padding="10,3"/>
+                                            <Button Content="Edit" Command="{Binding EditCommand}"     Margin="6,0,0,0" Padding="10,3"/>
                                         </StackPanel>
                                     </StackPanel>
+
+                                    <!-- Edit toolbar: validation status + save (edit mode only) -->
+                                    <DockPanel DockPanel.Dock="Bottom" Margin="0,8,0,0"
+                                               Visibility="{Binding ShowEdit, Converter={StaticResource BoolToVis}}">
+                                        <Button DockPanel.Dock="Right" Content="Save as…" Command="{Binding SaveAsCommand}"/>
+                                        <Border VerticalAlignment="Center" Padding="8,3" CornerRadius="3" Margin="0,0,10,0">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="#33D8A657"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding EditValid}" Value="False">
+                                                            <Setter Property="Background" Value="#55C0392B"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <TextBlock Text="{Binding EditStatus}" Foreground="{StaticResource Brush.Foreground}" TextWrapping="Wrap"/>
+                                        </Border>
+                                    </DockPanel>
+
                                     <Border BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
                                         <Grid>
                                             <TreeView ItemsSource="{Binding Roots}" Background="{StaticResource Brush.Panel}"
@@ -295,6 +317,13 @@
                                                      BorderThickness="0" Padding="8"
                                                      Visibility="{Binding ShowRaw, Converter={StaticResource BoolToVis}}"
                                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+
+                                            <TextBox Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged, Delay=200}"
+                                                     AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="12.5"
+                                                     Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
+                                                     BorderThickness="0" Padding="8"
+                                                     Visibility="{Binding ShowEdit, Converter={StaticResource BoolToVis}}"
+                                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
                                         </Grid>
                                     </Border>
                                 </DockPanel>
@@ -307,6 +336,10 @@
                                         <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
                                         <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="0,6,0,0"/>
                                     </StackPanel>
+                                    <Border DockPanel.Dock="Top" Background="#55C0392B" Padding="8,5" Margin="0,0,0,8" CornerRadius="3"
+                                            Visibility="{Binding HasError, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding Error}" Foreground="{StaticResource Brush.Foreground}" TextWrapping="Wrap"/>
+                                    </Border>
                                     <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
                                              Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
                                              BorderThickness="1" BorderBrush="{StaticResource Brush.Border}" Padding="8"

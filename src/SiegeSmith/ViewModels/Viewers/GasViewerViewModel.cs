@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Text;
 using SiegeFX.Core.Assets;
 using SiegeSmith.Mvvm;
@@ -7,9 +9,12 @@ using SiegeSmith.Services;
 
 namespace SiegeSmith.ViewModels.Viewers;
 
-/// <summary>Structured viewer for GAS documents: parses the file into its block/attribute tree
-/// and also keeps the raw text for a toggle. The constructor throws on a parse error so the
-/// <see cref="ViewerFactory"/> can fall back to the plain-text reader.</summary>
+public enum GasViewMode { Tree, Raw, Edit }
+
+/// <summary>Viewer/editor for GAS documents. Three modes: a structured block/attribute tree, the
+/// raw text, and an editable pane with live validation (re-parsed through the engine on every
+/// keystroke) and save-to-file. The constructor throws on a parse error so the
+/// <see cref="ViewerFactory"/> can fall back to the plain-text reader with the error shown.</summary>
 public sealed class GasViewerViewModel : ObservableObject
 {
     public string Name { get; }
@@ -17,33 +22,85 @@ public sealed class GasViewerViewModel : ObservableObject
     public ObservableCollection<GasTreeNode> Roots { get; } = new();
     public string RawText { get; }
 
-    private bool _showRaw;
-    public bool ShowRaw
+    private GasViewMode _mode = GasViewMode.Tree;
+    public GasViewMode Mode
     {
-        get => _showRaw;
-        set { if (SetProperty(ref _showRaw, value)) { OnPropertyChanged(nameof(ShowTree)); OnPropertyChanged(nameof(ToggleLabel)); } }
+        get => _mode;
+        set { if (SetProperty(ref _mode, value)) { OnPropertyChanged(nameof(ShowTree)); OnPropertyChanged(nameof(ShowRaw)); OnPropertyChanged(nameof(ShowEdit)); } }
     }
-    public bool ShowTree => !_showRaw;
-    public string ToggleLabel => _showRaw ? "Show tree" : "Show raw";
-    public RelayCommand ToggleViewCommand { get; }
+    public bool ShowTree => _mode == GasViewMode.Tree;
+    public bool ShowRaw => _mode == GasViewMode.Raw;
+    public bool ShowEdit => _mode == GasViewMode.Edit;
+
+    private string _editText;
+    public string EditText
+    {
+        get => _editText;
+        set { if (SetProperty(ref _editText, value)) ValidateEdit(); }
+    }
+
+    private string _editStatus = "";
+    public string EditStatus { get => _editStatus; private set => SetProperty(ref _editStatus, value); }
+
+    private bool _editValid = true;
+    public bool EditValid { get => _editValid; private set => SetProperty(ref _editValid, value); }
+
+    public RelayCommand ShowTreeCommand { get; }
+    public RelayCommand ShowRawCommand { get; }
+    public RelayCommand EditCommand { get; }
+    public RelayCommand SaveAsCommand { get; }
 
     public GasViewerViewModel(string name, byte[] bytes)
     {
         Name = name;
         RawText = new UTF8Encoding(false, false).GetString(bytes);
+        _editText = RawText;
 
         var doc = GasDocument.Load(bytes); // throws on parse error
         foreach (var n in doc.Roots)
         {
             var node = Build(n);
-            node.IsExpanded = true; // expand the top level for orientation
+            node.IsExpanded = true;
             Roots.Add(node);
         }
-
         int blocks = 0, attrs = 0;
         Count(Roots, ref blocks, ref attrs);
         Info = $"{Format.Bytes(bytes.Length)}  ·  {blocks} block(s), {attrs} attribute(s)";
-        ToggleViewCommand = new RelayCommand(_ => ShowRaw = !ShowRaw);
+
+        ShowTreeCommand = new RelayCommand(_ => Mode = GasViewMode.Tree);
+        ShowRawCommand = new RelayCommand(_ => Mode = GasViewMode.Raw);
+        EditCommand = new RelayCommand(_ => { EditText = RawText; Mode = GasViewMode.Edit; });
+        SaveAsCommand = new RelayCommand(_ => SaveAs());
+        ValidateEdit();
+    }
+
+    private void ValidateEdit()
+    {
+        var (ok, msg) = GasValidator.Validate(_editText);
+        EditValid = ok;
+        EditStatus = ok ? msg : "Error: " + msg;
+    }
+
+    private void SaveAs()
+    {
+        var (ok, msg) = GasValidator.Validate(_editText);
+        if (!ok)
+        {
+            EditValid = false;
+            EditStatus = "Not saved — fix the error first: " + msg;
+            return;
+        }
+        var dest = DialogService.SaveFileAs(Name);
+        if (dest is null) return;
+        try
+        {
+            File.WriteAllText(dest, _editText);
+            EditStatus = $"Saved to {dest}";
+        }
+        catch (Exception ex)
+        {
+            EditStatus = "Save failed: " + ex.Message;
+        }
     }
 
     private static GasTreeNode Build(GasNode node)

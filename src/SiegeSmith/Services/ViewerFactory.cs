@@ -23,7 +23,7 @@ public static class ViewerFactory
         if (ext == ".gas")
         {
             try { return new GasViewerViewModel(name, bytes); }
-            catch { /* malformed gas — fall through to the text reader */ }
+            catch (Exception ex) { return new TextViewerViewModel(name, bytes, "GAS parse error — " + ex.Message); }
         }
 
         if (ext == ".asp")
