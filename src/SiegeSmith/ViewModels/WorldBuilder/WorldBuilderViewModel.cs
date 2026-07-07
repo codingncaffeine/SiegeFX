@@ -122,6 +122,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _regionName = "custom_r1";
     public string RegionName { get => _regionName; set => SetProperty(ref _regionName, value); }
 
+    // A stock actor template harvested from the last shipped region loaded — guaranteed to resolve,
+    // so a seeded objects/actor.gas opens the engine's PC-spawn gate for the walkable "Play" test.
+    private string? _seedTemplate;
+    public ObservableCollection<ValidationRow> ValidationRows { get; } = new();
+
     // ── commands ────────────────────────────────────────────────
     public RelayCommand PlaceAnchorCommand { get; }
     public RelayCommand ConnectCommand { get; }
@@ -133,12 +138,16 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand WireframeCommand { get; }
     public RelayCommand TexturedCommand { get; }
     public RelayCommand TestInEngineCommand { get; }
+    public RelayCommand PlayInEngineCommand { get; }
+    public RelayCommand ValidateCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
         _tankPaths = tankPaths;
         TexturedCommand = new RelayCommand(_ => Textured = !Textured);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
+        PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
+        ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
             _ => IsReady && IsEmpty && _selectedMesh is not null);
         ConnectCommand = new RelayCommand(_ => Connect(),
@@ -382,8 +391,34 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         var bytes = _catalog?.ReadRegionNodes(entry);
         if (bytes is null) { Status = $"Couldn't read region {entry.Display}."; return; }
-        try { ApplyImportedRegion(NodesGasReader.Read(GasDocument.Load(bytes)), entry.Display); }
+        try
+        {
+            ApplyImportedRegion(NodesGasReader.Read(GasDocument.Load(bytes)), entry.Display);
+            _seedTemplate = HarvestSeedTemplate(entry); // a real actor template so Play can spawn a PC
+        }
         catch (Exception ex) { Status = "Load failed: " + ex.Message; }
+    }
+
+    /// <summary>Reads the shipped region's objects/actor.gas and returns the first actor template name,
+    /// which is guaranteed to resolve in Logic/Objects — a safe seed for the walkable Play test.</summary>
+    private string? HarvestSeedTemplate(RegionEntry entry)
+    {
+        var bytes = _catalog?.ReadRegionSibling(entry, "objects/actor.gas");
+        if (bytes is null) return null;
+        try
+        {
+            foreach (var root in GasDocument.Load(bytes).Roots)
+            {
+                int t = root.Header.IndexOf("t:", StringComparison.OrdinalIgnoreCase);
+                if (t < 0) continue;
+                int start = t + 2;
+                int comma = root.Header.IndexOf(',', start);
+                string name = (comma < 0 ? root.Header[start..] : root.Header[start..comma]).Trim();
+                if (name.Length > 0) return name;
+            }
+        }
+        catch { /* fall through */ }
+        return null;
     }
 
     /// <summary>Manual fallback: open any nodes.gas the user points us at.</summary>
@@ -435,7 +470,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex) { Status = "Region won't load (nodes.gas invalid): " + ex.Message; return; }
 
-        var terrain = FindTerrainTank();
+        var terrain = FindTank("terrain");
         if (terrain is null) { Status = "Couldn't find Terrain.dsres among the install tanks."; return; }
 
         var runtime = RuntimeLauncher.FindRuntime();
@@ -444,17 +479,153 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         try
         {
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir);
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo());
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
         catch (Exception ex) { Status = "Test-in-engine failed: " + ex.Message; }
     }
 
-    private string? FindTerrainTank()
+    /// <summary>Packs the region as a full playable scene (start position + one seed actor) and
+    /// launches --play-region so the user can walk it as a PC. Gated on a green validation pass.</summary>
+    private void PlayInEngine()
+    {
+        if (IsEmpty) { Status = "Place at least one node first."; return; }
+        var checks = RunChecks(play: true);
+        ValidationRows.Clear();
+        foreach (var r in checks) ValidationRows.Add(r);
+        foreach (var r in checks)
+            if (!r.Ok) { Status = "Can't play yet — " + r.Text; return; }
+
+        var terrain = FindTank("terrain"); var logic = FindTank("logic"); var objects = FindTank("objects");
+        var runtime = RuntimeLauncher.FindRuntime();
+        if (terrain is null || logic is null || objects is null || runtime is null)
+        { Status = "Missing a required tank or the engine — see the checklist."; return; }
+
+        try
+        {
+            var nodesGas = NodesGasWriter.Write(_region);
+            var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor());
+            RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
+            Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
+        }
+        catch (Exception ex) { Status = "Play-in-engine failed: " + ex.Message; }
+    }
+
+    /// <summary>Runs the pre-launch checklist and shows it in the validation panel.</summary>
+    private void Validate()
+    {
+        var checks = RunChecks(play: true);
+        ValidationRows.Clear();
+        foreach (var r in checks) ValidationRows.Add(r);
+        int bad = 0;
+        foreach (var r in checks) if (!r.Ok) bad++;
+        Status = bad == 0
+            ? $"Region valid — {NodeCount} node(s), ready to launch."
+            : $"Region has {bad} problem(s) — see the checklist below.";
+    }
+
+    /// <summary>The pre-launch checks: everything the engine needs to load and (optionally) play the
+    /// region, each as a pass/fail row. Turns the engine's silent load failures into a red/green list.</summary>
+    private List<ValidationRow> RunChecks(bool play)
+    {
+        var rows = new List<ValidationRow>();
+        if (IsEmpty) { rows.Add(new ValidationRow(false, "Region is empty — place at least one node.")); return rows; }
+
+        RegionGraph? graph = null;
+        try
+        {
+            graph = RegionGraph.FromDocument(GasDocument.Parse(NodesGasWriter.Write(_region)));
+            rows.Add(new ValidationRow(true, "nodes.gas parses cleanly."));
+        }
+        catch (Exception ex) { rows.Add(new ValidationRow(false, "nodes.gas invalid: " + ex.Message)); return rows; }
+
+        var anchor = _region.Find(_region.TargetGuid);
+        rows.Add(new ValidationRow(anchor is not null,
+            anchor is not null ? $"Anchor node 0x{_region.TargetGuid:X8} present." : "No anchor node set."));
+
+        int missMesh = 0;
+        foreach (var n in _region.Nodes) if (_catalog?.Resolve(n.MeshGuid) is null) missMesh++;
+        rows.Add(new ValidationRow(missMesh == 0,
+            missMesh == 0 ? $"All {_region.Nodes.Count} node meshes resolve." : $"{missMesh} node(s) reference a missing mesh."));
+
+        var guids = new HashSet<uint>();
+        foreach (var n in _region.Nodes) guids.Add(n.Guid);
+        int badDoor = 0;
+        foreach (var n in _region.Nodes) foreach (var d in n.Doors) if (!guids.Contains(d.FarGuid)) badDoor++;
+        rows.Add(new ValidationRow(badDoor == 0,
+            badDoor == 0 ? "All door links reference existing nodes." : $"{badDoor} door link(s) point to a missing node."));
+
+        if (graph is not null && _catalog is not null)
+        {
+            try
+            {
+                var layout = RegionLayout.Build(graph, g => _catalog.Resolve(g));
+                int noXform = 0;
+                foreach (var n in _region.Nodes) if (!layout.TryGetTransform(n.Guid, out _)) noXform++;
+                rows.Add(new ValidationRow(noXform == 0,
+                    noXform == 0 ? "Layout solves for every node." : $"{noXform} node(s) not placed by the layout solver (disconnected?)."));
+            }
+            catch (Exception ex) { rows.Add(new ValidationRow(false, "Layout solve failed: " + ex.Message)); }
+        }
+
+        var terrain = FindTank("terrain");
+        rows.Add(new ValidationRow(terrain is not null,
+            terrain is not null ? "Terrain.dsres found." : "Terrain.dsres not found in the install tanks."));
+
+        var runtime = RuntimeLauncher.FindRuntime();
+        rows.Add(new ValidationRow(runtime is not null,
+            runtime is not null ? "SiegeFX.Runtime found." : "SiegeFX.Runtime not built — build the engine (Release)."));
+
+        if (play)
+        {
+            rows.Add(new ValidationRow(FindTank("logic") is not null,
+                FindTank("logic") is not null ? "Logic.dsres found." : "Logic.dsres not found."));
+            rows.Add(new ValidationRow(FindTank("objects") is not null,
+                FindTank("objects") is not null ? "Objects.dsres found." : "Objects.dsres not found."));
+            rows.Add(new ValidationRow(_seedTemplate is not null,
+                _seedTemplate is not null
+                    ? $"Seed actor '{_seedTemplate}' ready (a PC will spawn)."
+                    : "No seed actor — load a shipped region first so the engine spawns a PC."));
+        }
+        return rows;
+    }
+
+    /// <summary>The PC drop point: the anchor node's local X,Z centre (from its SNO corners), anchored
+    /// to the anchor guid. Y is nav-snapped by the engine at load.</summary>
+    private MapPackager.StartInfo? BuildStartInfo()
+    {
+        uint g = _region.TargetGuid != 0 ? _region.TargetGuid : (_region.Nodes.Count > 0 ? _region.Nodes[0].Guid : 0);
+        if (g == 0) return null;
+        var node = _region.Find(g);
+        var sno = node is not null ? _catalog?.Resolve(node.MeshGuid) : null;
+        float x = 0f, z = 0f;
+        if (sno is not null && sno.Corners.Length > 0)
+        {
+            float minx = float.MaxValue, maxx = float.MinValue, minz = float.MaxValue, maxz = float.MinValue;
+            foreach (var c in sno.Corners)
+            {
+                var p = c.Position;
+                if (p.X < minx) minx = p.X; if (p.X > maxx) maxx = p.X;
+                if (p.Z < minz) minz = p.Z; if (p.Z > maxz) maxz = p.Z;
+            }
+            x = (minx + maxx) * 0.5f; z = (minz + maxz) * 0.5f;
+        }
+        return new MapPackager.StartInfo(g, x, z, "default", $"{MapName} start");
+    }
+
+    private MapPackager.SeedActor? BuildSeedActor()
+    {
+        if (string.IsNullOrWhiteSpace(_seedTemplate)) return null;
+        if (BuildStartInfo() is not { } s) return null;
+        return new MapPackager.SeedActor(_seedTemplate!, 0x00020001, s.NodeGuid, s.X, s.Z);
+    }
+
+    private string? FindTank(string substr)
     {
         foreach (var p in _tankPaths)
-            if (Path.GetFileName(p).Contains("terrain", StringComparison.OrdinalIgnoreCase))
+            if (Path.GetFileName(p).Contains(substr, StringComparison.OrdinalIgnoreCase))
                 return p;
         return null;
     }
@@ -656,6 +827,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SaveNodesCommand.RaiseCanExecuteChanged();
         ImportNodesCommand.RaiseCanExecuteChanged();
         TestInEngineCommand.RaiseCanExecuteChanged();
+        PlayInEngineCommand.RaiseCanExecuteChanged();
+        ValidateCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()
@@ -682,4 +855,10 @@ public sealed record DoorRow(int Id, bool IsFree, string? Target)
 public sealed record NodeDoorRow(uint NodeGuid, int DoorId, string Mesh)
 {
     public string Label => $"{Mesh}  ·  door {DoorId}";
+}
+
+/// <summary>One pre-launch check result: a green tick or red cross with an explanation.</summary>
+public sealed record ValidationRow(bool Ok, string Text)
+{
+    public string Glyph => Ok ? "✓" : "✕";
 }

@@ -109,6 +109,23 @@ public sealed class SnoCatalog : IDisposable
         return null;
     }
 
+    /// <summary>Reads another file in the same region folder as <paramref name="entry"/>, e.g.
+    /// <c>"objects/actor.gas"</c> — the region root is the parent of <c>terrain_nodes/</c>.
+    /// Returns null when the region or sibling is absent.</summary>
+    public byte[]? ReadRegionSibling(RegionEntry entry, string siblingRelative)
+    {
+        foreach (var r in _regions)
+            if (r.Entry.Equals(entry))
+            {
+                int idx = r.Path.LastIndexOf("/terrain_nodes/", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) return null;
+                string sibling = r.Path[..idx] + "/" + siblingRelative.TrimStart('/');
+                try { return r.Reader.ExtractToMemory(sibling); }
+                catch { return null; }
+            }
+        return null;
+    }
+
     private void IndexMeshFileGas(TankReader reader, string path)
     {
         byte[] bytes;

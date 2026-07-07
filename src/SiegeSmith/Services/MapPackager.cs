@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text;
 using SiegeFX.Core.Tank;
@@ -13,21 +15,44 @@ public static class MapPackager
 {
     public readonly record struct Packaged(string MapTankPath, string RegionPath, string MapName, string RegionName);
 
+    /// <summary>The PC drop point: a node-local X,Z (Y is nav-snapped at load) anchored to a real
+    /// snode <paramref name="NodeGuid"/> in the region.</summary>
+    public readonly record struct StartInfo(uint NodeGuid, float X, float Z, string Group, string ScreenName);
+
+    /// <summary>One seed actor so LoadPlayActors runs the PC spawn (it skips it when no actor spawns).
+    /// <paramref name="Template"/> must be a stock template that resolves in Logic/Objects.</summary>
+    public readonly record struct SeedActor(string Template, uint Scid, uint NodeGuid, float X, float Z);
+
     /// <summary>Writes <paramref name="nodesGas"/> under the required path tree and packs it into
     /// <c>map_&lt;map&gt;.dsmap</c> in <paramref name="outputDir"/>. Returns the tank path and the in-tank
     /// region path to hand to <see cref="RuntimeLauncher"/>. The map dir is always prefixed <c>map_</c>
     /// so the engine's ambient-audio gate (DeriveMapName) stays enabled.</summary>
-    public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir)
+    public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir,
+        StartInfo? start = null, SeedActor? actor = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
         string regionPath = $"/world/maps/{map}/regions/{region}";
+        string mapDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "staging", map, "world", "maps", map);
 
         string staging = Path.Combine(Path.GetTempPath(), "SiegeSmith", "staging", map);
         if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
-        string nodesDir = Path.Combine(staging, "world", "maps", map, "regions", region, "terrain_nodes");
+        string nodesDir = Path.Combine(mapDir, "regions", region, "terrain_nodes");
         Directory.CreateDirectory(nodesDir);
         File.WriteAllText(Path.Combine(nodesDir, "nodes.gas"), nodesGas);
+
+        if (start is { NodeGuid: not 0 } s)
+        {
+            string infoDir = Path.Combine(mapDir, "info");
+            Directory.CreateDirectory(infoDir);
+            File.WriteAllText(Path.Combine(infoDir, "start_positions.gas"), BuildStartPositions(s));
+        }
+        if (actor is { NodeGuid: not 0 } a && !string.IsNullOrWhiteSpace(a.Template))
+        {
+            string objDir = Path.Combine(mapDir, "regions", region, "objects");
+            Directory.CreateDirectory(objDir);
+            File.WriteAllText(Path.Combine(objDir, "actor.gas"), BuildActor(a));
+        }
 
         Directory.CreateDirectory(outputDir);
         string mapTank = Path.Combine(outputDir, map + ".dsmap");
@@ -37,6 +62,36 @@ public static class MapPackager
 
         return new Packaged(mapTank, regionPath, map, region);
     }
+
+    /// <summary>Emits the map-scoped start_positions.gas the engine reads (StartPositionsStore):
+    /// one default start_group with a single start_position anchored to a real snode guid.</summary>
+    private static string BuildStartPositions(StartInfo s)
+    {
+        string grp = string.IsNullOrWhiteSpace(s.Group) ? "default" : s.Group;
+        string name = string.IsNullOrWhiteSpace(s.ScreenName) ? "Custom Start" : s.ScreenName;
+        return
+            "[start_positions]\r\n{\r\n" +
+            $"\t[t:start_group,n:{grp}]\r\n\t{{\r\n" +
+            "\t\tdefault = true;\r\n" +
+            $"\t\tscreen_name = \"{name}\";\r\n" +
+            "\t\t[start_position]\r\n\t\t{\r\n" +
+            $"\t\t\tid = 1;\r\n\t\t\tposition = {F(s.X)},0,{F(s.Z)},0x{s.NodeGuid:X8};\r\n" +
+            "\t\t}\r\n\t}\r\n}\r\n";
+    }
+
+    /// <summary>Emits an objects/actor.gas with one stock actor placement so LoadPlayActors runs the
+    /// PC spawn (which it skips when zero actors spawn). Anchored to the start node.</summary>
+    private static string BuildActor(SeedActor a)
+    {
+        return
+            $"[t:{a.Template},n:0x{a.Scid:X8}]\r\n{{\r\n" +
+            "\t[placement]\r\n\t{\r\n" +
+            $"\t\tposition = {F(a.X)},0,{F(a.Z)},0x{a.NodeGuid:X8};\r\n" +
+            "\t\torientation = 0,0,0,1;\r\n" +
+            "\t}\r\n}\r\n";
+    }
+
+    private static string F(float v) => v.ToString("0.0######", CultureInfo.InvariantCulture);
 
     /// <summary>Lowercases and keeps only [a-z0-9_], collapsing everything else to '_'. DS1 tank paths
     /// are lowercased and the map/region name becomes part of the in-tank path.</summary>

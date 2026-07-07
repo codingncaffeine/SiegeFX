@@ -113,6 +113,38 @@
                         </Grid>
                         <Button Content="Test terrain in engine ▶" Command="{Binding TestInEngineCommand}" Padding="8,5"
                                 ToolTip="Pack this region into a .dsmap and launch SiegeFX to walk its terrain"/>
+                        <Grid Margin="0,3,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="Validate" Command="{Binding ValidateCommand}" Margin="0,0,3,0" Padding="8,5"
+                                    ToolTip="Run the pre-launch checklist"/>
+                            <Button Grid.Column="1" Content="Play in engine ▶" Command="{Binding PlayInEngineCommand}" Margin="3,0,0,0" Padding="8,5"
+                                    ToolTip="Pack a playable map (start point + seed actor) and launch SiegeFX to walk it as a character"/>
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding ValidationRows}" Margin="0,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="0,1">
+                                        <TextBlock Text="{Binding Glyph}" FontFamily="Consolas" FontWeight="Bold" Width="16">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Setter Property="Foreground" Value="#FF28C840"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Ok}" Value="False">
+                                                            <Setter Property="Foreground" Value="{StaticResource Brush.Accent}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="11"
+                                                   Foreground="{StaticResource Brush.Foreground}" Width="250"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
                     </StackPanel>
 
                     <ListBox DockPanel.Dock="Bottom" MaxHeight="160" ItemsSource="{Binding SourceDoors}"
