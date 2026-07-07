@@ -5125,15 +5125,18 @@ void main()
         using var terrainTank = TankFile.Open(terrainTankPath);
         var terrainReader = new TankReader(terrainTank);
 
-        var meshIndex = SnoMeshIndex.Build(terrainReader);
+        // SS-CUSTOM — index the map tank too so a mod's bundled custom .sno tiles resolve; terrain last
+        // keeps stock authoritative on any collision (multi-tank index is last-wins, inert for stock maps).
+        var meshIndex = SnoMeshIndex.Build(mapReader, terrainReader);
         var modelCache = new Dictionary<uint, SnoModel?>();
         SnoModel? ResolveModel(uint meshGuid)
         {
             if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
             SnoModel? sno = null;
-            if (meshIndex.TryResolve(meshGuid, out var path))
+            var snoBytes = meshIndex.LoadSnoBytes(meshGuid);
+            if (snoBytes is not null)
             {
-                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                try { sno = SnoModel.Load(snoBytes); }
                 catch { sno = null; }
             }
             modelCache[meshGuid] = sno;
@@ -5256,7 +5259,8 @@ void main()
         var terrainReader = new TankReader(terrainTank);
 
         var graph = RegionGraph.Load(mapReader.ExtractToMemory(normalized + "/terrain_nodes/nodes.gas"));
-        var meshIndex = SnoMeshIndex.Build(terrainReader);
+        // SS-CUSTOM — map tank indexed too so bundled custom .sno tiles resolve; terrain last stays authoritative.
+        var meshIndex = SnoMeshIndex.Build(mapReader, terrainReader);
 
         // Two caches: SnoModel (Core-side) per mesh_guid and SnoMesh (GL-side) per mesh_guid.
         // The model cache lets RegionLayout.Build read door transforms; the mesh cache lets
@@ -5266,9 +5270,10 @@ void main()
         {
             if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
             SnoModel? sno = null;
-            if (meshIndex.TryResolve(meshGuid, out var path))
+            var snoBytes = meshIndex.LoadSnoBytes(meshGuid);
+            if (snoBytes is not null)
             {
-                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                try { sno = SnoModel.Load(snoBytes); }
                 catch { sno = null; }
             }
             modelCache[meshGuid] = sno;
@@ -5455,15 +5460,17 @@ void main()
         // SNO resolver shared across all the parses we're about to do, so
         // a SNO referenced by both player and neighbors only loads once.
         // Also reused below for WorldLayout.Build's door composition.
-        var meshIndex = SnoMeshIndex.Build(terrainReader);
+        // SS-CUSTOM — map tank indexed too so bundled custom .sno tiles resolve; terrain last stays authoritative.
+        var meshIndex = SnoMeshIndex.Build(mapReader, terrainReader);
         var modelCache = new Dictionary<uint, SnoModel?>();
         SnoModel? ResolveModel(uint meshGuid)
         {
             if (modelCache.TryGetValue(meshGuid, out var cached)) return cached;
             SnoModel? sno = null;
-            if (meshIndex.TryResolve(meshGuid, out var path))
+            var snoBytes = meshIndex.LoadSnoBytes(meshGuid);
+            if (snoBytes is not null)
             {
-                try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+                try { sno = SnoModel.Load(snoBytes); }
                 catch { sno = null; }
             }
             modelCache[meshGuid] = sno;
@@ -6216,15 +6223,20 @@ void main()
             {
                 using var terrainTank = TankFile.Open(_regionTerrainTankPath);
                 var terrainReader = new TankReader(terrainTank);
-                var meshIdx = SnoMeshIndex.Build(terrainReader);
+                // SS-CUSTOM — index the map tank too so bundled custom .sno tiles contribute walkable nav.
+                using var navMapTank = _regionMapTankPath is not null ? TankFile.Open(_regionMapTankPath) : null;
+                var meshIdx = navMapTank is not null
+                    ? SnoMeshIndex.Build(new TankReader(navMapTank), terrainReader)
+                    : SnoMeshIndex.Build(terrainReader);
                 var navCache = new Dictionary<uint, SnoModel?>();
                 SnoModel? ResolveNav(uint meshGuid)
                 {
                     if (navCache.TryGetValue(meshGuid, out var hit)) return hit;
                     SnoModel? m = null;
-                    if (meshIdx.TryResolve(meshGuid, out var p))
+                    var b = meshIdx.LoadSnoBytes(meshGuid);
+                    if (b is not null)
                     {
-                        try { m = SnoModel.Load(terrainReader.ExtractToMemory(p)); }
+                        try { m = SnoModel.Load(b); }
                         catch { m = null; }
                     }
                     navCache[meshGuid] = m;
@@ -10064,15 +10076,20 @@ void main()
         {
             using var terrainTank = TankFile.Open(_regionTerrainTankPath);
             var terrainReader = new TankReader(terrainTank);
-            var meshIdx = SnoMeshIndex.Build(terrainReader);
+            // SS-CUSTOM — index the map tank too so bundled custom .sno tiles contribute walkable nav on rebuild.
+            using var navMapTank = _regionMapTankPath is not null ? TankFile.Open(_regionMapTankPath) : null;
+            var meshIdx = navMapTank is not null
+                ? SnoMeshIndex.Build(new TankReader(navMapTank), terrainReader)
+                : SnoMeshIndex.Build(terrainReader);
             var navCache = new Dictionary<uint, SnoModel?>();
             SnoModel? ResolveNav(uint meshGuid)
             {
                 if (navCache.TryGetValue(meshGuid, out var hit)) return hit;
                 SnoModel? m = null;
-                if (meshIdx.TryResolve(meshGuid, out var p))
+                var b = meshIdx.LoadSnoBytes(meshGuid);
+                if (b is not null)
                 {
-                    try { m = SnoModel.Load(terrainReader.ExtractToMemory(p)); }
+                    try { m = SnoModel.Load(b); }
                     catch { m = null; }
                 }
                 navCache[meshGuid] = m;

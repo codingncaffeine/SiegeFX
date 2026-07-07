@@ -15,64 +15,96 @@ namespace SiegeFX.Core.Assets;
 public sealed class SnoMeshIndex
 {
     private readonly Dictionary<uint, string> _guidToBareName;
-    private readonly Dictionary<string, string> _bareToFullPath;
+    private readonly Dictionary<string, (TankReader Reader, string Path)> _bareToAsset;
 
     public int GuidCount => _guidToBareName.Count;
-    public int SnoCount  => _bareToFullPath.Count;
+    public int SnoCount  => _bareToAsset.Count;
 
     private SnoMeshIndex(
         Dictionary<uint, string> guidToBareName,
-        Dictionary<string, string> bareToFullPath)
+        Dictionary<string, (TankReader, string)> bareToAsset)
     {
         _guidToBareName = guidToBareName;
-        _bareToFullPath = bareToFullPath;
+        _bareToAsset = bareToAsset;
     }
 
     public bool TryResolve(uint meshGuid, [MaybeNullWhen(false)] out string tankPath)
     {
         if (_guidToBareName.TryGetValue(meshGuid, out var bare) &&
-            _bareToFullPath.TryGetValue(bare, out var full))
+            _bareToAsset.TryGetValue(bare, out var asset))
         {
-            tankPath = full;
+            tankPath = asset.Path;
             return true;
         }
         tankPath = null;
         return false;
     }
 
+    /// <summary>Resolves a mesh_guid to the tank that actually holds its .sno plus the path within it.
+    /// Needed when the index spans several tanks (e.g. stock Terrain.dsres plus a mod map that bundles
+    /// custom tiles) so the caller extracts the bytes from the right tank.</summary>
+    public bool TryResolveAsset(uint meshGuid, [MaybeNullWhen(false)] out TankReader reader, [MaybeNullWhen(false)] out string tankPath)
+    {
+        if (_guidToBareName.TryGetValue(meshGuid, out var bare) &&
+            _bareToAsset.TryGetValue(bare, out var asset))
+        {
+            reader = asset.Reader;
+            tankPath = asset.Path;
+            return true;
+        }
+        reader = null;
+        tankPath = null;
+        return false;
+    }
+
+    /// <summary>Convenience for the common resolve-then-extract: returns the .sno bytes for a mesh_guid
+    /// from whichever indexed tank owns it, or null if unresolved.</summary>
+    public byte[]? LoadSnoBytes(uint meshGuid)
+        => TryResolveAsset(meshGuid, out var reader, out var path) ? reader.ExtractToMemory(path) : null;
+
     /// <summary>Scans <paramref name="tank"/> for siege-node index files and .sno entries,
     /// returning a combined mesh-guid resolver. Missing entries (guid has no matching
     /// .sno, or vice versa) are not an error — callers decide how to handle them.</summary>
-    public static SnoMeshIndex Build(TankReader tank)
+    public static SnoMeshIndex Build(TankReader tank) => Build(new[] { tank });
+
+    /// <summary>Builds a resolver spanning several tanks. Tanks are indexed in order, so a later tank
+    /// wins bare-name / guid collisions — pass stock terrain last to keep it authoritative while an
+    /// earlier mod tank contributes only its unique custom tiles. Inert for tanks with no siege-node
+    /// index or .sno files (e.g. a stock map tank), so adding one never changes stock resolution.</summary>
+    public static SnoMeshIndex Build(params TankReader[] tanks)
     {
         var guidToBare = new Dictionary<uint, string>();
-        var bareToFull = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var bareToAsset = new Dictionary<string, (TankReader, string)>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var path in tank.ListFiles())
+        foreach (var tank in tanks)
         {
-            if (path.EndsWith(".sno", StringComparison.OrdinalIgnoreCase))
+            if (tank is null) continue;
+            foreach (var path in tank.ListFiles())
             {
-                // Last-wins on bare-name collisions. Fuzz across both retail maps shows no
-                // placement regression; reversing this policy (first-wins via TryAdd) caused
-                // 3,877 previously-resolved door edges to drop out, so the later-listed .sno
-                // is the canonical siege-node asset for some mesh_guids in Terrain.dsres.
-                bareToFull[BareName(path)] = path;
-                continue;
+                if (path.EndsWith(".sno", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Last-wins on bare-name collisions. Fuzz across both retail maps shows no
+                    // placement regression; reversing this policy (first-wins via TryAdd) caused
+                    // 3,877 previously-resolved door edges to drop out, so the later-listed .sno
+                    // is the canonical siege-node asset for some mesh_guids in Terrain.dsres.
+                    bareToAsset[BareName(path)] = (tank, path);
+                    continue;
+                }
+
+                // The index sits in any .gas file under /world/global/siege_nodes/. DS1 uses a
+                // mix of names — `misc_<set>.gas`, `generic.gas`, per-level `misc_*_NN.gas` —
+                // and any of them can hold `[mesh_file*]` blocks. Other .gas files in these
+                // folders (naming_key, etc.) simply have no matching header and get ignored.
+                if (!path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!path.Contains("/siege_nodes/", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var bytes = tank.ExtractToMemory(path);
+                var doc = GasDocument.Load(bytes);
+                IndexGasDoc(doc, guidToBare);
             }
-
-            // The index sits in any .gas file under /world/global/siege_nodes/. DS1 uses a
-            // mix of names — `misc_<set>.gas`, `generic.gas`, per-level `misc_*_NN.gas` —
-            // and any of them can hold `[mesh_file*]` blocks. Other .gas files in these
-            // folders (naming_key, etc.) simply have no matching header and get ignored.
-            if (!path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!path.Contains("/siege_nodes/", StringComparison.OrdinalIgnoreCase)) continue;
-
-            var bytes = tank.ExtractToMemory(path);
-            var doc = GasDocument.Load(bytes);
-            IndexGasDoc(doc, guidToBare);
         }
 
-        return new SnoMeshIndex(guidToBare, bareToFull);
+        return new SnoMeshIndex(guidToBare, bareToAsset);
     }
 
     private static void IndexGasDoc(GasDocument doc, Dictionary<uint, string> guidToBare)
