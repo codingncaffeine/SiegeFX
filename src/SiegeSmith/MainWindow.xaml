@@ -241,7 +241,10 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                             <TextBlock Text="{Binding Kind}" Foreground="{StaticResource Brush.Accent}" VerticalAlignment="Center"/>
                                             <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="12,0,0,0" VerticalAlignment="Center"/>
-                                            <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Margin="16,0,0,0"
+                                            <Button Content="{Binding TexturedLabel}" Command="{Binding TexturedCommand}" Margin="16,0,0,0"
+                                                    ToolTip="Toggle in-game textures vs. flat shading"
+                                                    Visibility="{Binding CanTexture, Converter={StaticResource BoolToVis}}"/>
+                                            <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Margin="8,0,0,0"
                                                     Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>
                                             <Button Content="Reset view" Command="{Binding ResetViewCommand}" Margin="8,0,0,0"
                                                     Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"/>

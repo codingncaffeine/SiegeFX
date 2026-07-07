@@ -20,8 +20,14 @@ namespace SiegeSmith.ViewModels;
 public sealed class TankExplorerViewModel : ObservableObject, IDisposable
 {
     private readonly TankDocument _doc;
+    private readonly IReadOnlyList<string> _installTankPaths;
     private readonly List<TankNodeViewModel> _allFiles = new();
     private readonly Dictionary<string, TankNodeViewModel> _dirs = new(StringComparer.OrdinalIgnoreCase);
+
+    // Lazily built the first time a 3D asset is previewed: indexes .raw across the open tank plus
+    // the install's tanks so meshes/nodes can be shown textured. Owned here; disposed with the VM.
+    private TextureResolver? _textures;
+    private bool _texturesTried;
 
     /// <summary>Well-known asset homes in a DS1 tank's virtual filesystem. A category button
     /// appears only when at least one of its candidate paths exists in the open tank.</summary>
@@ -55,9 +61,10 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
     /// <summary>Raised with a short message for the shell status bar.</summary>
     public event Action<string>? Status;
 
-    public TankExplorerViewModel(TankDocument doc)
+    public TankExplorerViewModel(TankDocument doc, IReadOnlyList<string>? installTankPaths = null)
     {
         _doc = doc;
+        _installTankPaths = installTankPaths ?? Array.Empty<string>();
         BuildTree();
         ExtractSelectedCommand = new RelayCommand(_ => ExtractSelected(), _ => HasSelectedFile);
         ExtractTreeCommand = new RelayCommand(_ => ExtractTree());
@@ -130,7 +137,9 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
             try
             {
                 var bytes = _doc.Reader.ExtractToMemory(file.FullPath);
-                CurrentViewer = ViewerFactory.Create(file.Name, bytes);
+                var ext = Path.GetExtension(file.Name).ToLowerInvariant();
+                var textures = ext is ".asp" or ".sno" ? EnsureTextures() : null;
+                CurrentViewer = ViewerFactory.Create(file.Name, bytes, textures);
             }
             catch (Exception ex)
             {
@@ -142,6 +151,26 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         {
             CurrentViewer = null;
         }
+    }
+
+    /// <summary>Builds (once) the texture resolver used to show 3D assets as they look in-game:
+    /// the open tank's own .raw files plus every install tank. Built lazily on first model preview,
+    /// so browsing non-3D files costs nothing. Null only if construction fails entirely.</summary>
+    private TextureResolver? EnsureTextures()
+    {
+        if (_texturesTried) return _textures;
+        _texturesTried = true;
+        try
+        {
+            var r = new TextureResolver();
+            r.AddReader(_doc.Reader);
+            foreach (var p in _installTankPaths)
+                if (!string.Equals(p, _doc.Path, StringComparison.OrdinalIgnoreCase))
+                    r.AddTankPath(p);
+            _textures = r;
+        }
+        catch { _textures = null; }
+        return _textures;
     }
 
     // ── asset-category quick-jump ───────────────────────────────
@@ -414,6 +443,7 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         if (_currentViewer is IDisposable v) v.Dispose();
+        _textures?.Dispose();
         _doc.Dispose();
     }
 }

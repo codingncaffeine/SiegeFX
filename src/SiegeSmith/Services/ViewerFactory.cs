@@ -10,7 +10,7 @@ namespace SiegeSmith.Services;
 /// so the shell can template it by concrete view-model type.</summary>
 public static class ViewerFactory
 {
-    public static object Create(string name, byte[] bytes)
+    public static object Create(string name, byte[] bytes, TextureResolver? textures = null)
     {
         var ext = Path.GetExtension(name).ToLowerInvariant();
 
@@ -37,13 +37,13 @@ public static class ViewerFactory
 
         if (ext == ".asp")
         {
-            try { return ModelInfoViewerViewModel.FromAsp(name, AspMesh.Load(bytes)); }
+            try { return ModelInfoViewerViewModel.FromAsp(name, AspMesh.Load(bytes), textures); }
             catch { /* fall through to hex */ }
         }
 
         if (ext == ".sno")
         {
-            try { return ModelInfoViewerViewModel.FromSno(name, SnoModel.Load(bytes)); }
+            try { return ModelInfoViewerViewModel.FromSno(name, SnoModel.Load(bytes), textures); }
             catch { /* fall through to hex */ }
         }
 

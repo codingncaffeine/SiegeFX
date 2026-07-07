@@ -85,6 +85,148 @@ public static class SoftwareRenderer
         return px;
     }
 
+    /// <summary>A decoded texture ready for sampling: BGRA8888, row 0 at top (DirectX/DS1 origin,
+    /// so UV v=0 maps to the top row — no flip needed).</summary>
+    public readonly struct Texture
+    {
+        public readonly byte[] Bgra;
+        public readonly int W;
+        public readonly int H;
+        public Texture(byte[] bgra, int w, int h) { Bgra = bgra; W = w; H = h; }
+        public bool Valid => Bgra is { Length: > 0 } && W > 0 && H > 0 && Bgra.Length >= W * H * 4;
+    }
+
+    /// <summary>Like <see cref="Render"/> but samples a texture per triangle instead of flat-shading,
+    /// so the preview matches how the asset looks in-game. <paramref name="uvs"/> is parallel to
+    /// <paramref name="verts"/> (one UV per corner); <paramref name="triTexture"/> is one entry per
+    /// triangle indexing <paramref name="textures"/> (-1, or an invalid texture, flat-shades that
+    /// triangle so a missing texture degrades gracefully). UV interpolation is perspective-correct.</summary>
+    public static byte[] RenderTextured(
+        Vector3[] verts, Vector3[] normals, Vector2[] uvs, int[] triTexture, Texture[] textures,
+        int width, int height,
+        Vector3 center, float radius,
+        float yaw, float pitch, float dist)
+    {
+        width = Math.Max(1, width);
+        height = Math.Max(1, height);
+        var px = new byte[width * height * 4];
+        FillBackground(px);
+        if (verts.Length < 3) return px;
+
+        pitch = Math.Clamp(pitch, -1.50f, 1.50f);
+        radius = MathF.Max(radius, 0.001f);
+        dist = MathF.Max(dist, radius * 0.2f);
+
+        var eye = center + dist * new Vector3(
+            MathF.Cos(pitch) * MathF.Cos(yaw),
+            MathF.Cos(pitch) * MathF.Sin(yaw),
+            MathF.Sin(pitch));
+        var view = Matrix4x4.CreateLookAt(eye, center, new Vector3(0, 0, 1));
+        float aspect = width / (float)height;
+        float near = MathF.Max(0.01f, radius * 0.05f);
+        float far = dist + radius * 6f + 1f;
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var vp = view * proj;
+
+        var light = Vector3.Normalize(new Vector3(0.35f, 0.30f, 0.90f));
+
+        int n = verts.Length;
+        var sx = new float[n]; var sy = new float[n]; var sz = new float[n];
+        var iw = new float[n]; var uw = new float[n]; var vw = new float[n]; var ok = new bool[n];
+        for (int i = 0; i < n; i++)
+        {
+            var clip = Vector4.Transform(new Vector4(verts[i], 1f), vp);
+            if (clip.W <= 1e-4f) { ok[i] = false; continue; }
+            var vv = Vector4.Transform(new Vector4(verts[i], 1f), view);
+            float inv = 1f / clip.W;
+            sx[i] = (clip.X * inv * 0.5f + 0.5f) * width;
+            sy[i] = (1f - (clip.Y * inv * 0.5f + 0.5f)) * height;
+            sz[i] = -vv.Z;
+            iw[i] = inv;
+            uw[i] = uvs[i].X * inv;
+            vw[i] = uvs[i].Y * inv;
+            ok[i] = true;
+        }
+
+        var zbuf = new float[width * height];
+        Array.Fill(zbuf, float.MaxValue);
+
+        int triCount = n / 3;
+        for (int t = 0; t < triCount; t++)
+        {
+            int a = 3 * t, b = 3 * t + 1, c = 3 * t + 2;
+            if (!ok[a] || !ok[b] || !ok[c]) continue;
+
+            var fn = Vector3.Cross(verts[b] - verts[a], verts[c] - verts[a]);
+            if (fn.LengthSquared() < 1e-12f) continue;
+            fn = Vector3.Normalize(fn);
+            float shade = 0.55f + 0.45f * MathF.Abs(Vector3.Dot(fn, light)); // gentle, so the texture reads
+
+            int ti = t < triTexture.Length ? triTexture[t] : -1;
+            var tex = ti >= 0 && ti < textures.Length ? textures[ti] : default;
+
+            if (tex.Valid)
+                RasterTriangleTextured(px, zbuf, width, height,
+                    sx[a], sy[a], sz[a], iw[a], uw[a], vw[a],
+                    sx[b], sy[b], sz[b], iw[b], uw[b], vw[b],
+                    sx[c], sy[c], sz[c], iw[c], uw[c], vw[c],
+                    tex, shade);
+            else
+                RasterTriangle(px, zbuf, width, height,
+                    sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
+                    (byte)(190 * shade), (byte)(182 * shade), (byte)(170 * shade));
+        }
+        return px;
+    }
+
+    private static void RasterTriangleTextured(byte[] px, float[] z, int w, int h,
+        float x0, float y0, float d0, float iw0, float uw0, float vw0,
+        float x1, float y1, float d1, float iw1, float uw1, float vw1,
+        float x2, float y2, float d2, float iw2, float uw2, float vw2,
+        Texture tex, float shade)
+    {
+        float area = Edge(x0, y0, x1, y1, x2, y2);
+        if (MathF.Abs(area) < 1e-6f) return;
+        float inv = 1f / area;
+
+        int minX = Math.Max(0, (int)MathF.Floor(Math.Min(x0, Math.Min(x1, x2))));
+        int maxX = Math.Min(w - 1, (int)MathF.Ceiling(Math.Max(x0, Math.Max(x1, x2))));
+        int minY = Math.Max(0, (int)MathF.Floor(Math.Min(y0, Math.Min(y1, y2))));
+        int maxY = Math.Min(h - 1, (int)MathF.Ceiling(Math.Max(y0, Math.Max(y1, y2))));
+
+        for (int py = minY; py <= maxY; py++)
+        {
+            for (int pxi = minX; pxi <= maxX; pxi++)
+            {
+                float fx = pxi + 0.5f, fy = py + 0.5f;
+                float w0 = Edge(x1, y1, x2, y2, fx, fy) * inv;
+                float w1 = Edge(x2, y2, x0, y0, fx, fy) * inv;
+                float w2 = Edge(x0, y0, x1, y1, fx, fy) * inv;
+                if (w0 < 0f || w1 < 0f || w2 < 0f) continue;
+
+                float depth = w0 * d0 + w1 * d1 + w2 * d2;
+                int zi = py * w + pxi;
+                if (depth >= z[zi]) continue;
+
+                float iwp = w0 * iw0 + w1 * iw1 + w2 * iw2;
+                if (iwp <= 1e-8f) continue;
+                float u = (w0 * uw0 + w1 * uw1 + w2 * uw2) / iwp;
+                float v = (w0 * vw0 + w1 * vw1 + w2 * vw2) / iwp;
+
+                int tx = (int)MathF.Floor(u * tex.W); tx = ((tx % tex.W) + tex.W) % tex.W;
+                int ty = (int)MathF.Floor(v * tex.H); ty = ((ty % tex.H) + tex.H) % tex.H;
+                int si = (ty * tex.W + tx) * 4;
+
+                z[zi] = depth;
+                int pi = zi * 4;
+                px[pi]     = (byte)(tex.Bgra[si]     * shade);
+                px[pi + 1] = (byte)(tex.Bgra[si + 1] * shade);
+                px[pi + 2] = (byte)(tex.Bgra[si + 2] * shade);
+                px[pi + 3] = 0xFF;
+            }
+        }
+    }
+
     private static void FillBackground(byte[] px)
     {
         for (int i = 0; i < px.Length; i += 4)

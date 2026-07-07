@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Threading.Tasks;
@@ -237,7 +238,9 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             var doc = TankDocument.Open(path);
-            var explorer = new TankExplorerViewModel(doc);
+            var installTanks = new List<string>(Tanks.Count);
+            foreach (var t in Tanks) installTanks.Add(t.FullPath);
+            var explorer = new TankExplorerViewModel(doc, installTanks);
             explorer.Status += s => StatusText = s;
             Explorer?.Dispose();
             Explorer = explorer;
