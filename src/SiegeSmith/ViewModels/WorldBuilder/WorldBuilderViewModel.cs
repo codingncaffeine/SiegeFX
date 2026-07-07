@@ -95,6 +95,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     // ── object placement (props / pickups / actors) ────────────
     private TemplateCatalog? _props;
+    private AspCatalog? _asp;                                    // resolves template model → .asp for preview
+    private readonly Dictionary<string, string> _templateModel = new(StringComparer.OrdinalIgnoreCase); // template → aspect model
     private readonly List<PlacedObject> _objects = new();       // placed game objects (emitted to objects/*.gas)
     private uint _nextScid = 0x01000001;                        // map-scoped SCID allocator (shipped scids are 0x01xxxxxx)
     private readonly List<PropTemplate> _allProps = new();
@@ -215,19 +217,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var (cat, tex, props) = await Task.Run(() =>
+            var (cat, tex, props, asp) = await Task.Run(() =>
             {
                 var c = SnoCatalog.Build(tankPaths);
                 var t = new TextureResolver();
                 foreach (var p in tankPaths) t.AddTankPath(p);
                 var pr = TemplateCatalog.Build(tankPaths);
-                return (c, t, pr);
+                var a = AspCatalog.Build(tankPaths);
+                return (c, t, pr, a);
             });
             _catalog = cat;
             _textures = tex;
             _props = props;
+            _asp = asp;
             _allMeshes.AddRange(cat.Meshes);
             _allProps.AddRange(props.Props);
+            foreach (var p in props.Props) _templateModel[p.Name] = p.Model;
             RefreshPalette();
             RefreshPropPalette();
             foreach (var r in cat.Regions) InstallRegions.Add(r);
@@ -952,6 +957,46 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             }
         }
 
+        // Placed objects — render each prop's .asp mesh at its composed world transform. Same Z-up
+        // convention as terrain, so no bind-pose flip: world = R(orient) · T(localPos) · nodeWorld.
+        foreach (var o in _objects)
+        {
+            if (!layout.TryGetTransform(o.NodeGuid, out var nodeWorld)) continue;
+            if (!_templateModel.TryGetValue(o.Template, out var model)) continue;
+            var mesh = _asp?.Resolve(model);
+            if (mesh is null || mesh.TriangleIndices.Length < 3) continue;
+
+            var world = Matrix4x4.CreateFromQuaternion(o.Orientation)
+                      * Matrix4x4.CreateTranslation(o.LocalPos)
+                      * nodeWorld;
+
+            int mtc = mesh.TriangleIndices.Length / 3;
+            var subsetTex = new int[mtc];
+            System.Array.Fill(subsetTex, -1);
+            foreach (var sub in mesh.Subsets)
+            {
+                int slot = (sub.TextureIndex >= 0 && sub.TextureIndex < mesh.TextureNames.Count)
+                    ? ResolveSlot(mesh.TextureNames[sub.TextureIndex], "", texSlot, texList) : -1;
+                int end = Math.Min(mtc, sub.FirstTriangle + sub.TriangleCount);
+                for (int t = Math.Max(0, sub.FirstTriangle); t < end; t++) subsetTex[t] = slot;
+            }
+            for (int t = 0; t < mtc; t++)
+            {
+                for (int e = 0; e < 3; e++)
+                {
+                    var corner = mesh.Corners[mesh.TriangleIndices[t * 3 + e]];
+                    var p = Vector3.Transform(mesh.Positions[corner.VertexIndex], world);
+                    verts.Add(p);
+                    normals.Add(Vector3.TransformNormal(corner.Normal, world));
+                    uvs.Add(corner.Uv);
+                    min = Vector3.Min(min, p);
+                    max = Vector3.Max(max, p);
+                }
+                triTex.Add(subsetTex[t]);
+                pickGuid.Add(o.NodeGuid);
+            }
+        }
+
         if (verts.Count < 3) { Image = null; _pickVerts = System.Array.Empty<Vector3>(); _pickGuid = System.Array.Empty<uint>(); return; }
 
         _center = (min + max) * 0.5f;
@@ -1107,6 +1152,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         _catalog?.Dispose();
         _textures?.Dispose();
         _props?.Dispose();
+        _asp?.Dispose();
     }
 }
 
