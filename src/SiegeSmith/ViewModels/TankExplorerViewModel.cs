@@ -1,9 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using SiegeFX.Core.Assets;
 using SiegeSmith.Mvvm;
 using SiegeSmith.Services;
 
@@ -42,6 +47,10 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
 
     public RelayCommand ExtractSelectedCommand { get; }
     public RelayCommand ExtractTreeCommand { get; }
+    public RelayCommand OpenExternallyCommand { get; }
+    public RelayCommand ExportPngCommand { get; }
+    public RelayCommand CopyPathCommand { get; }
+    public RelayCommand CopyCrcCommand { get; }
 
     /// <summary>Raised with a short message for the shell status bar.</summary>
     public event Action<string>? Status;
@@ -52,6 +61,10 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         BuildTree();
         ExtractSelectedCommand = new RelayCommand(_ => ExtractSelected(), _ => HasSelectedFile);
         ExtractTreeCommand = new RelayCommand(_ => ExtractTree());
+        OpenExternallyCommand = new RelayCommand(_ => OpenExternally(), _ => HasSelectedFile);
+        ExportPngCommand = new RelayCommand(_ => ExportPng(), _ => IsTextureSelected);
+        CopyPathCommand = new RelayCommand(_ => CopyText(SelectedNode?.FullPath), _ => SelectedNode is not null);
+        CopyCrcCommand = new RelayCommand(_ => CopyText(SelectedNode?.Entry is { } e ? $"0x{e.Crc32:X8}" : null), _ => HasSelectedFile);
         Categories = CategoryDefs
             .Where(d => d.Paths.Any(_dirs.ContainsKey))
             .Select(d => new AssetCategory(d.Label, new RelayCommand(_ => JumpTo(d.Paths))))
@@ -68,6 +81,8 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
     }
 
     public bool HasSelectedFile => SelectedNode is { IsDirectory: false };
+    private bool IsTextureSelected => SelectedNode is { IsDirectory: false } f &&
+        f.Name.EndsWith(".raw", StringComparison.OrdinalIgnoreCase);
     public string SelectionTitle => SelectedNode?.Name ?? _doc.Name;
     public string SelectionSubtitle => SelectedNode?.FullPath ?? _doc.Path;
 
@@ -81,6 +96,10 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         else ShowFileProperties(SelectedNode);
         UpdateViewer();
         ExtractSelectedCommand.RaiseCanExecuteChanged();
+        OpenExternallyCommand.RaiseCanExecuteChanged();
+        ExportPngCommand.RaiseCanExecuteChanged();
+        CopyPathCommand.RaiseCanExecuteChanged();
+        CopyCrcCommand.RaiseCanExecuteChanged();
     }
 
     // ── preview viewer ──────────────────────────────────────────
@@ -323,6 +342,49 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex) { Report($"Extract failed: {ex.Message}"); }
         });
+    }
+
+    private void OpenExternally()
+    {
+        if (SelectedNode is not { IsDirectory: false } file) return;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "open");
+            Directory.CreateDirectory(dir);
+            var dest = Path.Combine(dir, file.Name);
+            _doc.Extract(file.FullPath, dest);
+            Process.Start(new ProcessStartInfo(dest) { UseShellExecute = true });
+            Status?.Invoke($"Opened {file.Name} in its default app");
+        }
+        catch (Exception ex) { Status?.Invoke($"Open externally failed: {ex.Message}"); }
+    }
+
+    private void ExportPng()
+    {
+        if (SelectedNode is not { IsDirectory: false } file) return;
+        var dest = DialogService.SaveFileAs(Path.GetFileNameWithoutExtension(file.Name) + ".png");
+        if (dest is null) return;
+        try
+        {
+            var img = RawImage.Load(_doc.Reader.ExtractToMemory(file.FullPath));
+            int w = img.GetSurfaceWidth(0), h = img.GetSurfaceHeight(0), stride = w * 4;
+            var slice = new byte[stride * h];
+            Buffer.BlockCopy(img.Pixels, img.GetSurfaceOffset(0), slice, 0, slice.Length);
+            var bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, slice, stride);
+            var enc = new PngBitmapEncoder();
+            enc.Frames.Add(BitmapFrame.Create(bmp));
+            using var fs = File.Create(dest);
+            enc.Save(fs);
+            Status?.Invoke($"Exported {file.Name} to {dest}");
+        }
+        catch (Exception ex) { Status?.Invoke($"Export failed: {ex.Message}"); }
+    }
+
+    private void CopyText(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        try { Clipboard.SetText(text); Status?.Invoke("Copied to clipboard"); }
+        catch (Exception ex) { Status?.Invoke($"Copy failed: {ex.Message}"); }
     }
 
     /// <summary>Marshals a status message back to the UI thread (extraction runs off-thread).</summary>

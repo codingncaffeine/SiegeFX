@@ -94,9 +94,29 @@
                         <!-- VFS tree -->
                         <TreeView ItemsSource="{Binding Explorer.Roots}"
                                   SelectedItemChanged="OnTreeSelectedItemChanged"
+                                  PreviewMouseRightButtonDown="OnTreePreviewRightDown"
                                   VirtualizingStackPanel.IsVirtualizing="True"
                                   VirtualizingStackPanel.VirtualizationMode="Recycling"
                                   Visibility="{Binding Explorer.HasSearch, Converter={StaticResource InverseBoolToVis}}">
+                            <TreeView.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="Preview" IsEnabled="False"/>
+                                    <Separator/>
+                                    <MenuItem Header="Extract file…"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.ExtractSelectedCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Extract folder / tank…"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.ExtractTreeCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Export as PNG…"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.ExportPngCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Open externally"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.OpenExternallyCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <Separator/>
+                                    <MenuItem Header="Copy path"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.CopyPathCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                    <MenuItem Header="Copy CRC32"
+                                              Command="{Binding PlacementTarget.DataContext.Explorer.CopyCrcCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
+                                </ContextMenu>
+                            </TreeView.ContextMenu>
                             <TreeView.ItemContainerStyle>
                                 <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>

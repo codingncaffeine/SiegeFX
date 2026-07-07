@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using SiegeSmith.ViewModels;
 using SiegeSmith.ViewModels.Viewers;
 
@@ -35,6 +36,14 @@ public partial class MainWindow : Window
     {
         if (DataContext is MainViewModel { Explorer: { } explorer })
             explorer.SelectedNode = e.NewValue as TankNodeViewModel;
+    }
+
+    /// <summary>Right-clicking selects the node under the cursor first, so the context menu acts on
+    /// the clicked item rather than the previously selected one.</summary>
+    private void OnTreePreviewRightDown(object sender, MouseButtonEventArgs e)
+    {
+        for (var d = e.OriginalSource as DependencyObject; d is not null; d = VisualTreeHelper.GetParent(d))
+            if (d is TreeViewItem item) { item.IsSelected = true; break; }
     }
 
     // ── model preview: drag to orbit, wheel to zoom ──────────────
