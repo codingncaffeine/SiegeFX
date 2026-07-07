@@ -1,0 +1,63 @@
+<Window x:Class="SiegeSmith.BuildTankWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:SiegeSmith.ViewModels"
+        Title="Build Tank from Folder"
+        Width="620" Height="470" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Brush.Window}"
+        FontFamily="Segoe UI" FontSize="13" TextOptions.TextFormattingMode="Display">
+    <Window.DataContext>
+        <vm:BuildTankViewModel/>
+    </Window.DataContext>
+
+    <DockPanel Margin="18">
+        <TextBlock DockPanel.Dock="Top" Text="Build Tank from Folder" FontSize="20" FontWeight="Light"
+                   Foreground="{StaticResource Brush.Accent}" Margin="0,0,0,4"/>
+        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="{StaticResource Brush.Muted}" Margin="0,0,0,16"
+                   Text="Packs every file in a folder into a Dungeon Siege tank (.dsres / .dsmap / .dsmod). Resource paths mirror each file's location under the source folder. Priority is User, the load-order tier mods use to override base content."/>
+
+        <!-- Bottom bar: status + actions -->
+        <Grid DockPanel.Dock="Bottom" Margin="0,16,0,0">
+            <TextBlock Text="{Binding Status}" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"
+                       VerticalAlignment="Center" HorizontalAlignment="Left" Margin="0,0,190,0"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Build" Command="{Binding BuildCommand}" Padding="18,5" Margin="0,0,8,0"/>
+                <Button Content="Close" Click="OnClose" Padding="18,5"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- Form -->
+        <Grid VerticalAlignment="Top">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Source folder" VerticalAlignment="Center" Margin="0,6,12,6" Foreground="{StaticResource Brush.Muted}"/>
+            <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding SourceFolder}" Margin="0,6" VerticalAlignment="Center"/>
+            <Button    Grid.Row="0" Grid.Column="2" Content="Browse…" Command="{Binding BrowseSourceCommand}" Margin="8,6,0,6"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Output tank" VerticalAlignment="Center" Margin="0,6,12,6" Foreground="{StaticResource Brush.Muted}"/>
+            <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding OutputPath}" Margin="0,6" VerticalAlignment="Center"/>
+            <Button    Grid.Row="1" Grid.Column="2" Content="Browse…" Command="{Binding BrowseOutputCommand}" Margin="8,6,0,6"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="Title" VerticalAlignment="Center" Margin="0,6,12,6" Foreground="{StaticResource Brush.Muted}"/>
+            <TextBox   Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding TankTitle}" Margin="0,6"/>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="Author" VerticalAlignment="Center" Margin="0,6,12,6" Foreground="{StaticResource Brush.Muted}"/>
+            <TextBox   Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding TankAuthor}" Margin="0,6"/>
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="Description" VerticalAlignment="Top" Margin="0,6,12,6" Foreground="{StaticResource Brush.Muted}"/>
+            <TextBox   Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Description}" Margin="0,6" MinHeight="60"
+                       AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+        </Grid>
+    </DockPanel>
+</Window>

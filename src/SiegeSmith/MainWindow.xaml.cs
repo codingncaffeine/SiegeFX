@@ -11,6 +11,9 @@ public partial class MainWindow : Window
 {
     public MainWindow() => InitializeComponent();
 
+    private void OnBuildTank(object sender, RoutedEventArgs e) =>
+        new BuildTankWindow { Owner = this }.ShowDialog();
+
     /// <summary>Once the window is up, offer the locate-install prompt if detection came up empty.</summary>
     private void OnLoaded(object sender, RoutedEventArgs e)
     {

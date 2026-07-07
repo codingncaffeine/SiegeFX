@@ -33,4 +33,17 @@ public static class DialogService
         var dlg = new OpenFolderDialog { Title = title };
         return dlg.ShowDialog() == true ? dlg.FolderName : null;
     }
+
+    public static string? SaveTankFile(string suggestedTitle)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title = "Save tank as",
+            FileName = string.IsNullOrWhiteSpace(suggestedTitle) ? "mod" : suggestedTitle,
+            DefaultExt = ".dsres",
+            Filter = "Resource tank (*.dsres)|*.dsres|Map tank (*.dsmap)|*.dsmap|Mod tank (*.dsmod)|*.dsmod",
+            OverwritePrompt = true,
+        };
+        return dlg.ShowDialog() == true ? dlg.FileName : null;
+    }
 }

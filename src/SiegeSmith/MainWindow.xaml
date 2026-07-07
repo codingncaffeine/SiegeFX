@@ -27,6 +27,8 @@
             <MenuItem Header="_Tools">
                 <MenuItem Header="_Extract Selected File…" Command="{Binding Explorer.ExtractSelectedCommand}"/>
                 <MenuItem Header="Extract _Folder / Tank…" Command="{Binding Explorer.ExtractTreeCommand}"/>
+                <Separator/>
+                <MenuItem Header="_Build Tank from Folder…" Click="OnBuildTank"/>
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About SiegeSmith" IsEnabled="False"/>
