@@ -470,6 +470,60 @@
                             <TextBlock Text="{Binding StitchDiagnostics}" Foreground="{StaticResource Brush.Foreground}"
                                        FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"/>
                         </Border>
+                        <!-- World-graph canvas: regions as boxes, stitches as edges (dashed red = dangling) -->
+                        <Border Background="{StaticResource Brush.Surface}" CornerRadius="3" Height="205" Margin="0,0,0,6" ClipToBounds="True">
+                            <Grid>
+                                <ItemsControl ItemsSource="{Binding WorldGraphEdges}">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate><DataTemplate>
+                                        <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}" StrokeThickness="2">
+                                            <Line.Style>
+                                                <Style TargetType="Line">
+                                                    <Setter Property="Stroke" Value="{StaticResource Brush.Muted}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Dangling}" Value="True">
+                                                            <Setter Property="Stroke" Value="{StaticResource Brush.Accent}"/>
+                                                            <Setter Property="StrokeDashArray" Value="3 2"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Line.Style>
+                                        </Line>
+                                    </DataTemplate></ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <ItemsControl ItemsSource="{Binding WorldGraphNodes}">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                            <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate><DataTemplate>
+                                        <Border Width="104" Height="36" CornerRadius="3" BorderThickness="1" Padding="4,2">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Setter Property="Background" Value="{StaticResource Brush.Panel}"/>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Primary}" Value="True">
+                                                            <Setter Property="BorderBrush" Value="{StaticResource Brush.Accent}"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Reachable}" Value="False">
+                                                            <Setter Property="BorderBrush" Value="{StaticResource Brush.Accent}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <StackPanel VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Name}" Foreground="{StaticResource Brush.Foreground}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                                <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontSize="9"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate></ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                        </Border>
                         <Button Content="Import sibling region (nodes.gas)…" Command="{Binding ImportSiblingCommand}" Margin="0,0,0,3" Padding="8,5"
                                 ToolTip="Add a neighbouring region to the world so it can be stitched to this one"/>
                         <ListBox ItemsSource="{Binding Siblings}" SelectedItem="{Binding SelectedSibling, Mode=TwoWay}"

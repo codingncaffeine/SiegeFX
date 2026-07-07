@@ -355,6 +355,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _stitchDiagnostics = "No stitches — the region is a standalone (isolated) world.";
     public string StitchDiagnostics { get => _stitchDiagnostics; private set => SetProperty(ref _stitchDiagnostics, value); }
 
+    // Graphical world map: region boxes + stitch edges, laid out primary-centre with siblings on a ring.
+    public ObservableCollection<WorldGraphNode> WorldGraphNodes { get; } = new();
+    public ObservableCollection<WorldGraphEdge> WorldGraphEdges { get; } = new();
+
     // ── nav flags & validation (LE-10) ─────────────────────────
     public ObservableCollection<LogicalFlag> LogicalFlags { get; } = new();
     private LogicalFlag? _selectedFlag;
@@ -1763,6 +1767,48 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         StitchDiagnostics = PrimaryStitches.Count == 0 && Siblings.Count == 0
             ? "No stitches — the region is a standalone (isolated) world."
             : $"{1 + Siblings.Count} region(s) · {PrimaryStitches.Count} stitch(es) · dangling {_stitchDangling} · unreachable {_stitchUnreachable} · isolated {isolated} · guid-collisions {_stitchCollisions}";
+
+        RebuildWorldGraph(reached: reached, byLeaf: byLeaf);
+    }
+
+    /// <summary>Lays out the world graph: the primary region pinned at the canvas centre and each
+    /// sibling on a ring around it, with one line per stitch pair (dangling pairs flagged). A schematic
+    /// node-link view of the stitch topology — reachability and reciprocity at a glance.</summary>
+    private void RebuildWorldGraph(HashSet<string> reached, Dictionary<string, StitchRegionRef> byLeaf)
+    {
+        WorldGraphNodes.Clear();
+        WorldGraphEdges.Clear();
+        string primLeaf = StitchPrimaryLeaf();
+
+        const double cx = 150, cy = 100, ring = 74, halfW = 52, halfH = 18;
+        var pos = new Dictionary<string, (double x, double y)>(StringComparer.OrdinalIgnoreCase)
+        {
+            [primLeaf] = (cx - halfW, cy - halfH),
+        };
+        int n = Siblings.Count;
+        for (int i = 0; i < n; i++)
+        {
+            double ang = 2 * Math.PI * i / Math.Max(1, n) - Math.PI / 2;
+            pos[Siblings[i].LeafName] = (cx + ring * Math.Cos(ang) - halfW, cy + ring * Math.Sin(ang) - halfH);
+        }
+
+        // Edges first so nodes paint over them. One visible line per primary-side stitch.
+        foreach (var ps in PrimaryStitches)
+        {
+            if (!pos.TryGetValue(ps.DestRegion, out var dp)) continue;
+            var sp = pos[primLeaf];
+            bool recip = false;
+            if (byLeaf.TryGetValue(ps.DestRegion, out var dr))
+                foreach (var ss in dr.Stitches) if (ss.PairId == ps.PairId) { recip = true; break; }
+            WorldGraphEdges.Add(new WorldGraphEdge(sp.x + halfW, sp.y + halfH, dp.x + halfW, dp.y + halfH, !recip));
+        }
+
+        WorldGraphNodes.Add(new WorldGraphNode(primLeaf, $"{_region.Nodes.Count} snode(s)", pos[primLeaf].x, pos[primLeaf].y, true, true));
+        foreach (var sib in Siblings)
+        {
+            var p = pos[sib.LeafName];
+            WorldGraphNodes.Add(new WorldGraphNode(sib.LeafName, $"{sib.SnodeGuids.Count} snode(s)", p.x, p.y, false, reached.Contains(sib.LeafName)));
+        }
     }
 
     // ── nav flags (LE-10) ──────────────────────────────────────
@@ -2323,3 +2369,15 @@ public sealed record PlacedObjectRow(uint Scid, string Template, uint NodeGuid, 
     public string Label => Template;
     public string Detail => $"{(IsActor ? "actor" : "prop")} · 0x{Scid:X8} · node 0x{NodeGuid:X8}";
 }
+
+/// <summary>A region box in the world-graph canvas. <see cref="X"/>/<see cref="Y"/> is its top-left on
+/// the canvas; colour is driven by <see cref="Primary"/> / <see cref="Reachable"/>.</summary>
+public sealed record WorldGraphNode(string Name, string Detail, double X, double Y, bool Primary, bool Reachable)
+{
+    public double CenterX => X + 55;
+    public double CenterY => Y + 20;
+}
+
+/// <summary>A stitch edge in the world-graph canvas (region centre → region centre). Dangling edges
+/// (no reciprocal) render in the warning colour.</summary>
+public sealed record WorldGraphEdge(double X1, double Y1, double X2, double Y2, bool Dangling);
