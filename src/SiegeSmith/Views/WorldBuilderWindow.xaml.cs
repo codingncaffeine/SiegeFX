@@ -13,7 +13,7 @@ public partial class WorldBuilderWindow : Window
     private readonly WorldBuilderViewModel _vm;
     private bool _dragging;
     private bool _panning;
-    private bool _rolling;
+    private bool _spinning;
     private Point _last;
 
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
@@ -56,7 +56,7 @@ public partial class WorldBuilderWindow : Window
     private void OnViewportMiddleDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Middle) return;
-        _rolling = true;
+        _spinning = true;
         _last = e.GetPosition(Viewport);
         Viewport.CaptureMouse();
     }
@@ -64,15 +64,15 @@ public partial class WorldBuilderWindow : Window
     private void OnViewportMiddleUp(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Middle) return;
-        _rolling = false;
+        _spinning = false;
         if (!_dragging && !_panning) Viewport.ReleaseMouseCapture();
     }
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragging && !_panning && !_rolling) return;
+        if (!_dragging && !_panning && !_spinning) return;
         var p = e.GetPosition(Viewport);
-        if (_rolling) _vm.Roll(p.X - _last.X);
+        if (_spinning) _vm.Spin(p.X - _last.X);            // turntable spin about the vertical axis
         else if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
         else _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
         _last = p;

@@ -14,7 +14,7 @@ public static class SoftwareRenderer
         Vector3[] verts, Vector3[] normals,
         int width, int height,
         Vector3 center, float radius,
-        float yaw, float pitch, float dist, float roll,
+        float yaw, float pitch, float dist,
         bool wireframe)
     {
         width = Math.Max(1, width);
@@ -29,7 +29,7 @@ public static class SoftwareRenderer
         dist = MathF.Max(dist, radius * 0.2f);
 
         var eye = center + dist * CamDir(yaw, pitch);
-        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), roll));
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
@@ -79,7 +79,7 @@ public static class SoftwareRenderer
                 sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
                 cr, cg, cb);
         }
-        DrawAxisGizmo(px, width, height, yaw, pitch, roll);
+        DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
 
@@ -103,7 +103,7 @@ public static class SoftwareRenderer
         Vector3[] verts, Vector3[] normals, Vector2[] uvs, int[] triTexture, Texture[] textures,
         int width, int height,
         Vector3 center, float radius,
-        float yaw, float pitch, float dist, float roll)
+        float yaw, float pitch, float dist)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -116,7 +116,7 @@ public static class SoftwareRenderer
         dist = MathF.Max(dist, radius * 0.2f);
 
         var eye = center + dist * CamDir(yaw, pitch);
-        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), roll));
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
@@ -171,7 +171,7 @@ public static class SoftwareRenderer
                     sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
                     (byte)(190 * shade), (byte)(182 * shade), (byte)(170 * shade));
         }
-        DrawAxisGizmo(px, width, height, yaw, pitch, roll);
+        DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
 
@@ -320,10 +320,10 @@ public static class SoftwareRenderer
 
     /// <summary>Screen position of a unit axis's tip for the given camera rotation — the same
     /// projection <see cref="DrawAxisGizmo"/> draws, so hit-testing lands exactly on the dot.</summary>
-    public static (float x, float y) GizmoAxisTip(Vector3 axis, float yaw, float pitch, float roll, int w, int h)
+    public static (float x, float y) GizmoAxisTip(Vector3 axis, float yaw, float pitch, int w, int h)
     {
         var dir = CamDir(yaw, pitch);
-        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, RolledUp(dir, roll));
+        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, RolledUp(dir, 0f));
         var v = Vector3.TransformNormal(axis, view);
         var (ox, oy) = GizmoOrigin(w, h);
         return (ox + v.X * GizmoLen, oy - v.Y * GizmoLen);
@@ -331,14 +331,14 @@ public static class SoftwareRenderer
 
     /// <summary>Hit-tests a viewport click against the gizmo. Returns 0 for the centre hub (reset),
     /// 1/2/3 for the X/Y/Z axis tips, or -1 for a miss (the caller should orbit instead).</summary>
-    public static int HitGizmo(double sx, double sy, float yaw, float pitch, float roll, int w, int h)
+    public static int HitGizmo(double sx, double sy, float yaw, float pitch, int w, int h)
     {
         var (ox, oy) = GizmoOrigin(w, h);
         if (Sq(sx - ox) + Sq(sy - oy) <= 18 * 18) return 0;
         Vector3[] axes = { new(1, 0, 0), new(0, 1, 0), new(0, 0, 1) };
         for (int i = 0; i < 3; i++)
         {
-            var (tx, ty) = GizmoAxisTip(axes[i], yaw, pitch, roll, w, h);
+            var (tx, ty) = GizmoAxisTip(axes[i], yaw, pitch, w, h);
             if (Sq(sx - tx) + Sq(sy - ty) <= 24 * 24) return i + 1;
         }
         return -1;
@@ -351,7 +351,7 @@ public static class SoftwareRenderer
     /// <paramref name="verts"/> is flattened (3 per triangle, world space); <paramref name="triId"/>
     /// is one id per triangle (e.g. a node GUID). Depth-sorted so the front-most surface wins.</summary>
     public static uint PickTriangle(Vector3[] verts, uint[] triId, int width, int height,
-        Vector3 center, float radius, float yaw, float pitch, float dist, float roll, double sx, double sy)
+        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -362,7 +362,7 @@ public static class SoftwareRenderer
         dist = MathF.Max(dist, radius * 0.2f);
 
         var eye = center + dist * CamDir(yaw, pitch);
-        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), roll));
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
@@ -403,10 +403,10 @@ public static class SoftwareRenderer
         return best;
     }
 
-    private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch, float roll)
+    private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
     {
         var dir = CamDir(yaw, pitch);
-        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, RolledUp(dir, roll));
+        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, RolledUp(dir, 0f));
         var (ox, oy) = GizmoOrigin(w, h);
 
         (Vector3 axis, byte r, byte g, byte b)[] axes =

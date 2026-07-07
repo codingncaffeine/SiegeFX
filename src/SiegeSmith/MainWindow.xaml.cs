@@ -90,7 +90,7 @@ public partial class MainWindow : Window
     private Point _viewportLast;
     private bool _viewportDragging;
     private bool _viewportPanning;
-    private bool _viewportRolling;
+    private bool _viewportSpinning;
 
     private void OnViewportMouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -128,7 +128,7 @@ public partial class MainWindow : Window
     private void OnViewportMiddleDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Middle || sender is not IInputElement el) return;
-        _viewportRolling = true;
+        _viewportSpinning = true;
         _viewportLast = e.GetPosition(el);
         el.CaptureMouse();
     }
@@ -136,17 +136,17 @@ public partial class MainWindow : Window
     private void OnViewportMiddleUp(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Middle) return;
-        _viewportRolling = false;
+        _viewportSpinning = false;
         if (!_viewportDragging && !_viewportPanning) (sender as IInputElement)?.ReleaseMouseCapture();
     }
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if ((!_viewportDragging && !_viewportPanning && !_viewportRolling) || sender is not FrameworkElement fe) return;
+        if ((!_viewportDragging && !_viewportPanning && !_viewportSpinning) || sender is not FrameworkElement fe) return;
         var p = e.GetPosition(fe);
         if (fe.DataContext is ModelInfoViewerViewModel vm)
         {
-            if (_viewportRolling) vm.Roll(p.X - _viewportLast.X);
+            if (_viewportSpinning) vm.Spin(p.X - _viewportLast.X);   // turntable spin about the vertical axis
             else if (_viewportPanning) vm.Pan(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
             else vm.Orbit(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
         }
