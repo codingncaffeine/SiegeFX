@@ -27,6 +27,7 @@ public partial class WorldBuilderWindow : Window
     {
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
+        _vm.TryPick(p.X, p.Y);                 // click-to-select the node under the cursor (drag still orbits)
         _dragging = true;
         _last = p;
         Viewport.CaptureMouse();

@@ -346,6 +346,63 @@ public static class SoftwareRenderer
 
     private static double Sq(double v) => v * v;
 
+    /// <summary>Picks the id of the nearest triangle under a screen point, or 0 for a miss. Uses the
+    /// same projection as <see cref="Render"/> so a click lands exactly where the triangle is drawn.
+    /// <paramref name="verts"/> is flattened (3 per triangle, world space); <paramref name="triId"/>
+    /// is one id per triangle (e.g. a node GUID). Depth-sorted so the front-most surface wins.</summary>
+    public static uint PickTriangle(Vector3[] verts, uint[] triId, int width, int height,
+        Vector3 center, float radius, float yaw, float pitch, float dist, float roll, double sx, double sy)
+    {
+        width = Math.Max(1, width);
+        height = Math.Max(1, height);
+        if (verts.Length < 3) return 0;
+
+        pitch = Math.Clamp(pitch, -1.50f, 1.50f);
+        radius = MathF.Max(radius, 0.001f);
+        dist = MathF.Max(dist, radius * 0.2f);
+
+        var eye = center + dist * CamDir(yaw, pitch);
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), roll));
+        float aspect = width / (float)height;
+        float near = MathF.Max(0.01f, radius * 0.05f);
+        float far = dist + radius * 6f + 1f;
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var vp = view * proj;
+
+        int triCount = verts.Length / 3;
+        uint best = 0;
+        float bestDepth = float.MaxValue;
+        Span<float> px = stackalloc float[3], py = stackalloc float[3], pz = stackalloc float[3];
+        for (int t = 0; t < triCount; t++)
+        {
+            bool ok = true;
+            for (int j = 0; j < 3; j++)
+            {
+                var v = verts[3 * t + j];
+                var clip = Vector4.Transform(new Vector4(v, 1f), vp);
+                if (clip.W <= 1e-4f) { ok = false; break; }
+                var vv = Vector4.Transform(new Vector4(v, 1f), view);
+                float inv = 1f / clip.W;
+                px[j] = (clip.X * inv * 0.5f + 0.5f) * width;
+                py[j] = (1f - (clip.Y * inv * 0.5f + 0.5f)) * height;
+                pz[j] = -vv.Z;
+            }
+            if (!ok) continue;
+
+            float area = Edge(px[0], py[0], px[1], py[1], px[2], py[2]);
+            if (MathF.Abs(area) < 1e-6f) continue;
+            float invA = 1f / area;
+            float w0 = Edge(px[1], py[1], px[2], py[2], (float)sx, (float)sy) * invA;
+            float w1 = Edge(px[2], py[2], px[0], py[0], (float)sx, (float)sy) * invA;
+            float w2 = Edge(px[0], py[0], px[1], py[1], (float)sx, (float)sy) * invA;
+            if (w0 < 0f || w1 < 0f || w2 < 0f) continue; // two-sided, matching the rasteriser
+
+            float depth = w0 * pz[0] + w1 * pz[1] + w2 * pz[2];
+            if (depth < bestDepth && t < triId.Length) { bestDepth = depth; best = triId[t]; }
+        }
+        return best;
+    }
+
     private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
     {
         var dir = new Vector3(MathF.Cos(pitch) * MathF.Cos(yaw), MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch));

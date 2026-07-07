@@ -100,6 +100,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private float _yaw = 0.7f, _pitch = 0.5f, _dist;
     private Vector3 _center;
     private Vector3 _pan; // right-drag pan offset added to the framed centre
+    private Vector3[] _pickVerts = System.Array.Empty<Vector3>(); // world-space tris (3/verts) for click-picking
+    private uint[] _pickGuid = System.Array.Empty<uint>();         // node GUID per pick triangle
     private float _radius = 1f;
     private int _vw = 800, _vh = 600;
     private bool _wireframe;
@@ -436,6 +438,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var normals = new List<Vector3>();
         var uvs = new List<Vector2>();
         var triTex = new List<int>();
+        var pickGuid = new List<uint>(); // node GUID per triangle, for click-picking
         var texList = new List<SoftwareRenderer.Texture>();
         var texSlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); // dedup textures across nodes/surfaces
         var min = new Vector3(float.MaxValue);
@@ -463,15 +466,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     min = Vector3.Min(min, Vector3.Min(p0, Vector3.Min(p1, p2)));
                     max = Vector3.Max(max, Vector3.Max(p0, Vector3.Max(p1, p2)));
                     triTex.Add(slot);
+                    pickGuid.Add(node.Guid);
                 }
             }
         }
 
-        if (verts.Count < 3) { Image = null; return; }
+        if (verts.Count < 3) { Image = null; _pickVerts = System.Array.Empty<Vector3>(); _pickGuid = System.Array.Empty<uint>(); return; }
 
         _center = (min + max) * 0.5f;
         _radius = MathF.Max((max - min).Length() * 0.5f, 0.001f);
         if (_dist <= 0f) _dist = _radius * 2.6f;
+        _pickVerts = verts.ToArray();
+        _pickGuid = pickGuid.ToArray();
 
         bool useTex = _textured && !_wireframe && texList.Count > 0
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
@@ -569,6 +575,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             case 3: _pitch = _pitch > 0.9f ? -1.5f : 1.5f; break;                                          // Z top/bottom (keep yaw)
         }
         Render();
+        return true;
+    }
+
+    /// <summary>Selects the node whose terrain is under the given viewport point, if any. Returns
+    /// true when a node was hit (the caller may still start an orbit from there).</summary>
+    public bool TryPick(double sx, double sy)
+    {
+        if (_pickVerts.Length < 3) return false;
+        uint guid = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, 0f, sx, sy);
+        if (guid == 0) return false;
+        if (_selectedNode?.Guid != guid) SelectNode(guid);
         return true;
     }
 
