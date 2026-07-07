@@ -610,6 +610,45 @@
                         <Button Content="Import mesh (OBJ / glTF) → custom .asp…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,0" Padding="8,5"
                                 ToolTip="Convert a Wavefront OBJ or glTF 2.0 model to a static DS1 .asp (Y-up→Z-up), verify it against the engine reader, and drop it in art/meshes so it bundles into the map"/>
 
+                        <TextBlock Text="Custom terrain tile (.sno)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,12,0,3"/>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding TileName, UpdateSourceTrigger=PropertyChanged}"
+                                     Margin="0,0,3,0" ToolTip="Tile name — saved as art/terrain/ss_custom/&lt;name&gt;.sno"/>
+                            <ComboBox Grid.Column="1" Width="80" ItemsSource="{Binding TileKinds}" SelectedItem="{Binding TileKind, Mode=TwoWay}"
+                                      ToolTip="Flat floor or a ramp"/>
+                        </Grid>
+                        <TextBox Text="{Binding TileTexture, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
+                                 ToolTip="Terrain texture set name (resolved as &lt;name&gt;.raw at render — use a shipped texset for an immediate look)"/>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Margin="0,0,3,0">
+                                <TextBlock Text="Size" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                <TextBox Text="{Binding TileSize, UpdateSourceTrigger=LostFocus}" ToolTip="Tile side length in world units"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="0,0,3,0">
+                                <TextBlock Text="Subdiv" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                <TextBox Text="{Binding TileSubdiv, UpdateSourceTrigger=LostFocus}" ToolTip="Grid subdivisions per side"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="2" Visibility="{Binding TileIsRamp, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Rise" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                <TextBox Text="{Binding TileRise, UpdateSourceTrigger=LostFocus}" ToolTip="Height the ramp climbs across the tile"/>
+                            </StackPanel>
+                        </Grid>
+                        <CheckBox Content="Walkable (generate nav floor + BSP)" IsChecked="{Binding TileWalkable, Mode=TwoWay}"
+                                  Foreground="{StaticResource Brush.Foreground}" Margin="0,0,0,3"
+                                  ToolTip="On: slope-classify triangles, flood-fill floor groupings, and build a nav BSP. Off: cosmetic geometry only."/>
+                        <Button Content="Generate custom terrain tile → .sno" Command="{Binding GenerateTerrainTileCommand}" Padding="8,5"
+                                ToolTip="Write a v7.0 .sno (verified against the engine reader) plus a [mesh_file] index entry into the custom assets, so the engine can resolve and load it"/>
+
                         <TextBlock Text="Startable map (SiegeFX engine)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <Grid Margin="0,0,0,3">

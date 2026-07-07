@@ -426,6 +426,25 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ? "No custom assets — optional. Add a folder laid out like a tank (art/…) to bundle custom art."
         : $"Bundling {MapPackager.CountAssets(_assetsFolder):N0} file(s) from {_assetsFolder}";
 
+    // --- Custom terrain tile authoring (LE-12) ---
+    private string _tileName = "ss_tile";
+    public string TileName { get => _tileName; set => SetProperty(ref _tileName, value); }
+    private string _tileTexture = "t_grs01_grass";
+    public string TileTexture { get => _tileTexture; set => SetProperty(ref _tileTexture, value); }
+    public string[] TileKinds { get; } = { "Flat", "Ramp" };
+    private string _tileKind = "Flat";
+    public string TileKind { get => _tileKind; set { if (SetProperty(ref _tileKind, value)) OnPropertyChanged(nameof(TileIsRamp)); } }
+    public bool TileIsRamp => _tileKind == "Ramp";
+    private double _tileSize = 8;
+    public double TileSize { get => _tileSize; set => SetProperty(ref _tileSize, value); }
+    private int _tileSubdiv = 4;
+    public int TileSubdiv { get => _tileSubdiv; set => SetProperty(ref _tileSubdiv, value); }
+    private double _tileRise = 2;
+    public double TileRise { get => _tileRise; set => SetProperty(ref _tileRise, value); }
+    private bool _tileWalkable = true;
+    public bool TileWalkable { get => _tileWalkable; set => SetProperty(ref _tileWalkable, value); }
+    private uint _nextTerrainGuid = 0xC0000001;
+
     // A stock actor template harvested from the last shipped region loaded — guaranteed to resolve,
     // so a seeded objects/actor.gas opens the engine's PC-spawn gate for the walkable "Play" test.
     private string? _seedTemplate;
@@ -455,6 +474,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand SetAssetsFolderCommand { get; }
     public RelayCommand OpenAssetsFolderCommand { get; }
     public RelayCommand ImportObjMeshCommand { get; }
+    public RelayCommand GenerateTerrainTileCommand { get; }
     public RelayCommand PlaceObjectCommand { get; }
     public RelayCommand DeleteObjectCommand { get; }
     public RelayCommand TogglePlacingCommand { get; }
@@ -497,6 +517,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
+        GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
@@ -1956,6 +1977,81 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             Status = $"Imported {baseName}.asp ({kind}) — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}. Set an assets folder to make it placeable.";
         }
+    }
+
+    /// <summary>Generates a parametric custom terrain tile (flat or ramp), runs it through the nav generator
+    /// when walkable, verifies it round-trips through the engine's SnoModel reader, then saves the .sno plus a
+    /// [mesh_file] index entry so the engine's SnoMeshIndex can resolve its mesh_guid.</summary>
+    private void GenerateTerrainTile()
+    {
+        if (_assetsFolder is null)
+        { Status = "Set an assets folder first — the .sno and its index bundle into the mod."; return; }
+
+        string name = LightSanitize(_tileName);
+        if (name.Length == 0) name = "ss_tile";
+        string tex = LightSanitize(_tileTexture);
+        if (tex.Length == 0) tex = "custom_terrain";
+
+        float size = (float)Math.Clamp(_tileSize, 1, 128);
+        int sub = Math.Clamp(_tileSubdiv, 1, 64);
+
+        List<SnoWriter.Vertex> verts;
+        List<SnoWriter.Tri> tris;
+        if (TileIsRamp) (verts, tris) = SnoWriter.BuildRampTile(size, size, sub, (float)_tileRise);
+        else (verts, tris) = SnoWriter.BuildFlatTile(size, size, sub);
+
+        var groupings = _tileWalkable ? SnoNavGen.Build(verts, tris) : null;
+        byte[] sno;
+        try { sno = SnoWriter.Write(verts, tris, tex, groupings: groupings); }
+        catch (Exception ex) { Status = $"SNO write failed: {ex.Message}"; return; }
+
+        // Reader-as-oracle round-trip: a stride slip would silently corrupt this length-less format.
+        SiegeFX.Core.Assets.SnoModel check;
+        try { check = SiegeFX.Core.Assets.SnoModel.Load(sno); }
+        catch (Exception ex) { Status = $"SNO round-trip failed ({ex.Message}) — not saved."; return; }
+        if (check.TotalTriangleCount != tris.Count)
+        { Status = $"SNO round-trip mismatch ({check.TotalTriangleCount} vs {tris.Count} tris) — not saved."; return; }
+
+        uint guid = _nextTerrainGuid++;
+        var snoDir = System.IO.Path.Combine(_assetsFolder, "art", "terrain", "ss_custom");
+        System.IO.Directory.CreateDirectory(snoDir);
+        var snoPath = System.IO.Path.Combine(snoDir, name + ".sno");
+        try { System.IO.File.WriteAllBytes(snoPath, sno); }
+        catch (Exception ex) { Status = $"Couldn't save .sno: {ex.Message}"; return; }
+        AppendMeshFileIndex(name, guid);
+
+        OnPropertyChanged(nameof(AssetsLabel));
+        int floors = check.LogicalGroupings.Count(g => g.Kind == SiegeFX.Core.Assets.SnoModel.FloorKind.Floor);
+        Status = $"Generated {name}.sno ({TileKind.ToLowerInvariant()}, {tris.Count} tris, " +
+                 $"{(_tileWalkable ? $"{floors} floor grouping(s)" : "cosmetic")}) guid=0x{guid:X8}. " +
+                 $"Round-trip OK → {snoPath}";
+    }
+
+    /// <summary>Rewrites the custom siege-node index (<c>world/global/siege_nodes/ss_custom/misc_ss_custom.gas</c>)
+    /// with every generated tile's <c>[mesh_file*]</c> entry, matching DS1's exact shape so SnoMeshIndex maps
+    /// mesh_guid → bare .sno name.</summary>
+    private void AppendMeshFileIndex(string filename, uint guid)
+    {
+        if (_assetsFolder is null) return;
+        var dir = System.IO.Path.Combine(_assetsFolder, "world", "global", "siege_nodes", "ss_custom");
+        System.IO.Directory.CreateDirectory(dir);
+        var file = System.IO.Path.Combine(dir, "misc_ss_custom.gas");
+
+        var entries = new List<(string Name, string Guid)>();
+        if (System.IO.File.Exists(file))
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                System.IO.File.ReadAllText(file), @"filename\s*=\s*([^;]+);\s*guid\s*=\s*(0x[0-9A-Fa-f]+)"))
+                entries.Add((m.Groups[1].Value.Trim(), m.Groups[2].Value.Trim()));
+
+        if (!entries.Any(e => e.Name.Equals(filename, StringComparison.OrdinalIgnoreCase)))
+            entries.Add((filename, $"0x{guid:X8}"));
+
+        var sb = new System.Text.StringBuilder();
+        sb.Append("[t:siege_nodes,n:*]\r\n{\r\n");
+        foreach (var e in entries)
+            sb.Append($"\t[mesh_file*] {{ filename={e.Name}; guid={e.Guid}; }}\r\n");
+        sb.Append("}\r\n");
+        System.IO.File.WriteAllText(file, sb.ToString());
     }
 
     /// <summary>Appends a self-contained placeable template (no <c>specializes</c>, so it resolves without
