@@ -2,18 +2,21 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ══════════ Palette ══════════
-         Dark studio surfaces with a warm forge-bronze accent (the "smith" in
-         SiegeSmith). Kept as Color + Brush pairs so gradients/animations can
-         reuse the raw colors later. -->
-    <Color x:Key="Color.Window">#FF1E1E1E</Color>
-    <Color x:Key="Color.Panel">#FF252526</Color>
-    <Color x:Key="Color.Surface">#FF2D2D30</Color>
-    <Color x:Key="Color.SurfaceHover">#FF3A3D41</Color>
-    <Color x:Key="Color.Border">#FF3F3F46</Color>
-    <Color x:Key="Color.Foreground">#FFE6E6E6</Color>
-    <Color x:Key="Color.Muted">#FF9B9B9B</Color>
-    <Color x:Key="Color.Accent">#FFD8A657</Color>
-    <Color x:Key="Color.Selection">#FF094771</Color>
+         Adopts the Emutastic dark theme — near-black surfaces + red accent
+         (#E03535) — the shared studio identity and the reference for all new
+         UI. SiegeSmith's Brush.* keys and the Emutastic *Brush names below both
+         resolve to this one palette, so existing XAML keeps working and new
+         features can use either vocabulary. -->
+    <Color x:Key="Color.Window">#FF0F0F10</Color>
+    <Color x:Key="Color.Panel">#FF181819</Color>
+    <Color x:Key="Color.Surface">#FF1F1F21</Color>
+    <Color x:Key="Color.SurfaceHover">#FF272729</Color>
+    <Color x:Key="Color.Border">#FF2A2A2D</Color>
+    <Color x:Key="Color.Foreground">#FFF0F0F0</Color>
+    <Color x:Key="Color.Muted">#FF8A8A90</Color>
+    <Color x:Key="Color.Accent">#FFE03535</Color>
+    <Color x:Key="Color.AccentHover">#FFEB5555</Color>
+    <Color x:Key="Color.Selection">#FFE03535</Color>
 
     <SolidColorBrush x:Key="Brush.Window"       Color="{StaticResource Color.Window}"/>
     <SolidColorBrush x:Key="Brush.Panel"        Color="{StaticResource Color.Panel}"/>
@@ -23,7 +26,19 @@
     <SolidColorBrush x:Key="Brush.Foreground"   Color="{StaticResource Color.Foreground}"/>
     <SolidColorBrush x:Key="Brush.Muted"        Color="{StaticResource Color.Muted}"/>
     <SolidColorBrush x:Key="Brush.Accent"       Color="{StaticResource Color.Accent}"/>
+    <SolidColorBrush x:Key="Brush.AccentHover"  Color="{StaticResource Color.AccentHover}"/>
     <SolidColorBrush x:Key="Brush.Selection"    Color="{StaticResource Color.Selection}"/>
+
+    <!-- Emutastic token vocabulary (aliases to the same palette) — the reference names for new UI -->
+    <SolidColorBrush x:Key="BgPrimaryBrush"     Color="{StaticResource Color.Window}"/>
+    <SolidColorBrush x:Key="BgSecondaryBrush"   Color="{StaticResource Color.Panel}"/>
+    <SolidColorBrush x:Key="BgTertiaryBrush"    Color="{StaticResource Color.Surface}"/>
+    <SolidColorBrush x:Key="BgQuaternaryBrush"  Color="{StaticResource Color.SurfaceHover}"/>
+    <SolidColorBrush x:Key="BorderNormalBrush"  Color="{StaticResource Color.Border}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush"   Color="{StaticResource Color.Foreground}"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="{StaticResource Color.Muted}"/>
+    <SolidColorBrush x:Key="AccentBrush"        Color="{StaticResource Color.Accent}"/>
+    <SolidColorBrush x:Key="AccentHoverBrush"   Color="{StaticResource Color.AccentHover}"/>
 
     <!-- ══════════ Text ══════════ -->
     <Style TargetType="TextBlock">
@@ -265,6 +280,175 @@
     </Style>
     <Style TargetType="TreeViewItem">
         <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+    </Style>
+
+    <!-- ══════════ ComboBox (Emutastic-styled) ══════════
+         Default WPF ComboBox draws the light system theme; this re-skins the
+         box, the drop arrow, the popup, and the items to the dark palette. -->
+    <ControlTemplate x:Key="Combo.Toggle" TargetType="ToggleButton">
+        <Border x:Name="bd" Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+                BorderThickness="1" CornerRadius="4">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="22"/>
+                </Grid.ColumnDefinitions>
+                <ContentPresenter Grid.Column="0" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                <Path Grid.Column="1" Data="M0,0 L4,5 L8,0" Stroke="{StaticResource Brush.Muted}" StrokeThickness="1.5"
+                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Grid>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.SurfaceHover}"/>
+            </Trigger>
+            <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="bd" Property="BorderBrush" Value="{StaticResource Brush.Accent}"/>
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.SurfaceHover}"/>
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{StaticResource Brush.Accent}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="Background" Value="{StaticResource Brush.Surface}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource Brush.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Height" Value="28"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Grid>
+                        <ToggleButton Template="{StaticResource Combo.Toggle}"
+                                      IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                      Focusable="False"/>
+                        <ContentPresenter IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
+                                          ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                          Margin="10,0,26,0" VerticalAlignment="Center" HorizontalAlignment="Left"/>
+                        <Popup Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True"
+                               Focusable="False" PopupAnimation="Slide">
+                            <Grid MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                  SnapsToDevicePixels="True">
+                                <Border Background="{StaticResource Brush.Surface}" BorderBrush="{StaticResource Brush.Border}"
+                                        BorderThickness="1" CornerRadius="4" Margin="0,2,0,0">
+                                    <ScrollViewer Margin="3">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Grid>
+                        </Popup>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ══════════ ScrollBar (Emutastic-styled) ══════════
+         Thin rounded thumb, no arrow buttons, subtle track. Styles the bar
+         only (not ScrollViewer), so existing scroll behaviour is preserved. -->
+    <SolidColorBrush x:Key="Brush.ScrollThumb"      Color="#FF484849"/>
+    <SolidColorBrush x:Key="Brush.ScrollThumbHover" Color="#FF666668"/>
+    <SolidColorBrush x:Key="Brush.ScrollThumbDrag"  Color="#FF888889"/>
+    <SolidColorBrush x:Key="Brush.ScrollTrack"      Color="#FF222224"/>
+
+    <Style x:Key="Scroll.Thumb" TargetType="{x:Type Thumb}">
+        <Setter Property="Background" Value="{StaticResource Brush.ScrollThumb}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Thumb}">
+                    <Border Background="{TemplateBinding Background}" CornerRadius="4" Margin="3,2" Cursor="Hand"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource Brush.ScrollThumbHover}"/>
+            </Trigger>
+            <Trigger Property="IsDragging" Value="True">
+                <Setter Property="Background" Value="{StaticResource Brush.ScrollThumbDrag}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="{x:Type ScrollBar}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Width" Value="10"/>
+        <Setter Property="MinWidth" Value="10"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type ScrollBar}">
+                    <Grid Background="Transparent">
+                        <Border Background="{StaticResource Brush.ScrollTrack}" CornerRadius="4" Margin="3,2"/>
+                        <Track x:Name="PART_Track" IsDirectionReversed="True">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageUpCommand" Background="Transparent" BorderThickness="0"
+                                              Focusable="False" IsTabStop="False" Height="0"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Command="ScrollBar.PageDownCommand" Background="Transparent" BorderThickness="0"
+                                              Focusable="False" IsTabStop="False" Height="0"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource Scroll.Thumb}" MinHeight="32"/>
+                            </Track.Thumb>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Height" Value="10"/>
+                <Setter Property="MinHeight" Value="10"/>
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="{x:Type ScrollBar}">
+                            <Grid Background="Transparent">
+                                <Border Background="{StaticResource Brush.ScrollTrack}" CornerRadius="4" Margin="2,3"/>
+                                <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                    <Track.DecreaseRepeatButton>
+                                        <RepeatButton Command="ScrollBar.PageLeftCommand" Background="Transparent" BorderThickness="0"
+                                                      Focusable="False" IsTabStop="False" Width="0"/>
+                                    </Track.DecreaseRepeatButton>
+                                    <Track.IncreaseRepeatButton>
+                                        <RepeatButton Command="ScrollBar.PageRightCommand" Background="Transparent" BorderThickness="0"
+                                                      Focusable="False" IsTabStop="False" Width="0"/>
+                                    </Track.IncreaseRepeatButton>
+                                    <Track.Thumb>
+                                        <Thumb Style="{StaticResource Scroll.Thumb}" MinWidth="24"/>
+                                    </Track.Thumb>
+                                </Track>
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>
