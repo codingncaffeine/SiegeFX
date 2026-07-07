@@ -403,6 +403,69 @@ public static class SoftwareRenderer
         return best;
     }
 
+    /// <summary>Like <see cref="PickTriangle"/> but returns the WORLD-space hit point on the nearest
+    /// triangle whose id equals <paramref name="wantId"/> (0 = any). Drops a placed object onto its
+    /// own node's surface: pass the node guid as wantId so the object slides along that node.</summary>
+    public static bool PickPoint(Vector3[] verts, uint[] triId, uint wantId, int width, int height,
+        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy, out Vector3 hit)
+    {
+        hit = default;
+        width = Math.Max(1, width);
+        height = Math.Max(1, height);
+        if (verts.Length < 3) return false;
+
+        pitch = Math.Clamp(pitch, -1.50f, 1.50f);
+        radius = MathF.Max(radius, 0.001f);
+        dist = MathF.Max(dist, radius * 0.2f);
+
+        var eye = center + dist * CamDir(yaw, pitch);
+        var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
+        float aspect = width / (float)height;
+        float near = MathF.Max(0.01f, radius * 0.05f);
+        float far = dist + radius * 6f + 1f;
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var vp = view * proj;
+
+        int triCount = verts.Length / 3;
+        float bestDepth = float.MaxValue;
+        bool found = false;
+        Span<float> px = stackalloc float[3], py = stackalloc float[3], pz = stackalloc float[3];
+        for (int t = 0; t < triCount; t++)
+        {
+            if (wantId != 0 && (t >= triId.Length || triId[t] != wantId)) continue;
+            bool ok = true;
+            for (int j = 0; j < 3; j++)
+            {
+                var v = verts[3 * t + j];
+                var clip = Vector4.Transform(new Vector4(v, 1f), vp);
+                if (clip.W <= 1e-4f) { ok = false; break; }
+                var vv = Vector4.Transform(new Vector4(v, 1f), view);
+                float inv = 1f / clip.W;
+                px[j] = (clip.X * inv * 0.5f + 0.5f) * width;
+                py[j] = (1f - (clip.Y * inv * 0.5f + 0.5f)) * height;
+                pz[j] = -vv.Z;
+            }
+            if (!ok) continue;
+
+            float area = Edge(px[0], py[0], px[1], py[1], px[2], py[2]);
+            if (MathF.Abs(area) < 1e-6f) continue;
+            float invA = 1f / area;
+            float w0 = Edge(px[1], py[1], px[2], py[2], (float)sx, (float)sy) * invA;
+            float w1 = Edge(px[2], py[2], px[0], py[0], (float)sx, (float)sy) * invA;
+            float w2 = Edge(px[0], py[0], px[1], py[1], (float)sx, (float)sy) * invA;
+            if (w0 < 0f || w1 < 0f || w2 < 0f) continue;
+
+            float depth = w0 * pz[0] + w1 * pz[1] + w2 * pz[2];
+            if (depth < bestDepth)
+            {
+                bestDepth = depth;
+                hit = w0 * verts[3 * t] + w1 * verts[3 * t + 1] + w2 * verts[3 * t + 2];
+                found = true;
+            }
+        }
+        return found;
+    }
+
     private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
     {
         var dir = CamDir(yaw, pitch);

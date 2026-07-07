@@ -121,6 +121,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private Vector3 _pan; // right-drag pan offset added to the framed centre
     private Vector3[] _pickVerts = System.Array.Empty<Vector3>(); // world-space tris (3/verts) for click-picking
     private uint[] _pickGuid = System.Array.Empty<uint>();         // node GUID per pick triangle
+    private uint[] _pickScid = System.Array.Empty<uint>();         // placed-object SCID per pick triangle (0 = terrain)
+    private readonly Dictionary<uint, Matrix4x4> _nodeWorld = new(); // node GUID → world transform, for object drag
     private float _radius = 1f;
     private int _vw = 800, _vh = 600;
     private bool _wireframe;
@@ -925,6 +927,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var uvs = new List<Vector2>();
         var triTex = new List<int>();
         var pickGuid = new List<uint>(); // node GUID per triangle, for click-picking
+        var pickScid = new List<uint>(); // placed-object SCID per triangle (0 = terrain), for object grabbing
+        _nodeWorld.Clear();
         var texList = new List<SoftwareRenderer.Texture>();
         var texSlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); // dedup textures across nodes/surfaces
         var min = new Vector3(float.MaxValue);
@@ -933,6 +937,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var node in _region.Nodes)
         {
             if (!layout.TryGetTransform(node.Guid, out var world)) continue;
+            _nodeWorld[node.Guid] = world;
             var sno = _catalog.Resolve(node.MeshGuid);
             if (sno is null) continue;
             foreach (var s in sno.Surfaces)
@@ -953,6 +958,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     max = Vector3.Max(max, Vector3.Max(p0, Vector3.Max(p1, p2)));
                     triTex.Add(slot);
                     pickGuid.Add(node.Guid);
+                    pickScid.Add(0u);
                 }
             }
         }
@@ -994,16 +1000,25 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 }
                 triTex.Add(subsetTex[t]);
                 pickGuid.Add(o.NodeGuid);
+                pickScid.Add(o.Scid);
             }
         }
 
-        if (verts.Count < 3) { Image = null; _pickVerts = System.Array.Empty<Vector3>(); _pickGuid = System.Array.Empty<uint>(); return; }
+        if (verts.Count < 3)
+        {
+            Image = null;
+            _pickVerts = System.Array.Empty<Vector3>();
+            _pickGuid = System.Array.Empty<uint>();
+            _pickScid = System.Array.Empty<uint>();
+            return;
+        }
 
         _center = (min + max) * 0.5f;
         _radius = MathF.Max((max - min).Length() * 0.5f, 0.001f);
         if (_dist <= 0f) _dist = _radius * 2.6f;
         _pickVerts = verts.ToArray();
         _pickGuid = pickGuid.ToArray();
+        _pickScid = pickScid.ToArray();
 
         bool useTex = _textured && !_wireframe && texList.Count > 0
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
@@ -1122,6 +1137,44 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (guid == 0) return false;
         if (_selectedNode?.Guid != guid) SelectNode(guid);
         return true;
+    }
+
+    /// <summary>Grabs the placed object under the cursor (selecting it) so a drag moves it. Returns
+    /// true when an object was hit — the caller should move (or Shift-rotate) instead of orbiting.</summary>
+    public bool TryGrabObject(double sx, double sy)
+    {
+        if (_pickVerts.Length < 3 || _objects.Count == 0) return false;
+        uint scid = SoftwareRenderer.PickTriangle(_pickVerts, _pickScid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy);
+        if (scid == 0) return false;
+        foreach (var r in PlacedObjects)
+            if (r.Scid == scid) { SelectedPlacedObject = r; break; }
+        PushUndo(); // one undo entry per grab covers the whole move/rotate gesture
+        return true;
+    }
+
+    /// <summary>Slides the selected object along its node's surface to follow the cursor.</summary>
+    public void MoveSelectedObject(double sx, double sy)
+    {
+        if (_selectedPlacedObject is null) return;
+        var o = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
+        if (o is null) return;
+        if (!_nodeWorld.TryGetValue(o.NodeGuid, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
+        if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, o.NodeGuid, _vw, _vh,
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit)) return;
+        o.LocalPos = Vector3.Transform(worldHit, inv);
+        Render();
+    }
+
+    /// <summary>Spins the selected object about its vertical axis (yaw). Shift-drag while moving.</summary>
+    public void RotateSelectedObject(double dx)
+    {
+        if (_selectedPlacedObject is null) return;
+        var o = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
+        if (o is null) return;
+        o.Orientation = Quaternion.Normalize(
+            Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), (float)dx * 0.02f) * o.Orientation);
+        Render();
     }
 
     private static bool NearAngle(float a, float b)

@@ -14,6 +14,7 @@ public partial class WorldBuilderWindow : Window
     private bool _dragging;
     private bool _panning;
     private bool _spinning;
+    private bool _movingObject;
     private Point _last;
 
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
@@ -28,6 +29,13 @@ public partial class WorldBuilderWindow : Window
     {
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
+        if (_vm.TryGrabObject(p.X, p.Y))       // grabbed a placed object — drag moves it (Shift-drag rotates)
+        {
+            _movingObject = true;
+            _last = p;
+            Viewport.CaptureMouse();
+            return;
+        }
         _vm.TryPick(p.X, p.Y);                 // click-to-select the node under the cursor (drag still orbits)
         _dragging = true;
         _last = p;
@@ -37,6 +45,7 @@ public partial class WorldBuilderWindow : Window
     private void OnViewportMouseUp(object sender, MouseButtonEventArgs e)
     {
         _dragging = false;
+        _movingObject = false;
         if (!_panning) Viewport.ReleaseMouseCapture();
     }
 
@@ -70,9 +79,14 @@ public partial class WorldBuilderWindow : Window
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragging && !_panning && !_spinning) return;
+        if (!_dragging && !_panning && !_spinning && !_movingObject) return;
         var p = e.GetPosition(Viewport);
-        if (_spinning) _vm.Spin(p.X - _last.X);            // turntable spin about the vertical axis
+        if (_movingObject)
+        {
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) _vm.RotateSelectedObject(p.X - _last.X);
+            else _vm.MoveSelectedObject(p.X, p.Y);         // slide along the node surface
+        }
+        else if (_spinning) _vm.Spin(p.X - _last.X);       // turntable spin about the vertical axis
         else if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
         else _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
         _last = p;
