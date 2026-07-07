@@ -5,6 +5,10 @@
         Width="1220" Height="800" WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.Window}"
         FontFamily="Segoe UI" FontSize="13" TextOptions.TextFormattingMode="Display">
+    <Window.InputBindings>
+        <KeyBinding Key="Z" Modifiers="Control" Command="{Binding UndoCommand}"/>
+        <KeyBinding Key="Y" Modifiers="Control" Command="{Binding RedoCommand}"/>
+    </Window.InputBindings>
     <DockPanel>
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem><TextBlock Text="{Binding Status}"/></StatusBarItem>
@@ -58,7 +62,9 @@
                     <Button Content="{Binding TexturedLabel}" Command="{Binding TexturedCommand}" Padding="10,3" Margin="0,0,6,0"
                             ToolTip="Toggle in-game textures vs. flat shading"/>
                     <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Padding="10,3" Margin="0,0,6,0"/>
-                    <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,3"/>
+                    <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,3" Margin="0,0,6,0"/>
+                    <Button Content="↶ Undo" Command="{Binding UndoCommand}" Padding="10,3" Margin="0,0,6,0" ToolTip="Undo (Ctrl+Z)"/>
+                    <Button Content="↷ Redo" Command="{Binding RedoCommand}" Padding="10,3" ToolTip="Redo (Ctrl+Y)"/>
                 </StackPanel>
 
                 <TextBlock Text="Pick a node mesh on the left, then Place as anchor to begin your world. Drag to orbit · right-drag to pan · wheel to zoom."

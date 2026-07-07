@@ -84,6 +84,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var n = _region.Find(_selectedNode.Guid);
             var v = value ?? "";
             if (n is null || n.TexsetAbbr == v) return;
+            PushUndo();
             n.TexsetAbbr = v;
             Render();
             Status = $"Texset for {_catalog?.NameOf(n.MeshGuid)} → '{v}'.";
@@ -127,6 +128,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string? _seedTemplate;
     public ObservableCollection<ValidationRow> ValidationRows { get; } = new();
 
+    // ── undo / redo (nodes.gas snapshots) ───────────────────────
+    // Each edit snapshots the region as nodes.gas text before mutating; nodes, doors, texsets and the
+    // anchor all round-trip through that text, so restoring a snapshot restores the whole region.
+    private readonly Stack<string> _undo = new();
+    private readonly Stack<string> _redo = new();
+
     // ── commands ────────────────────────────────────────────────
     public RelayCommand PlaceAnchorCommand { get; }
     public RelayCommand ConnectCommand { get; }
@@ -140,6 +147,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand TestInEngineCommand { get; }
     public RelayCommand PlayInEngineCommand { get; }
     public RelayCommand ValidateCommand { get; }
+    public RelayCommand UndoCommand { get; }
+    public RelayCommand RedoCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -148,6 +157,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
+        UndoCommand = new RelayCommand(_ => Undo(), _ => _undo.Count > 0);
+        RedoCommand = new RelayCommand(_ => Redo(), _ => _redo.Count > 0);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
             _ => IsReady && IsEmpty && _selectedMesh is not null);
         ConnectCommand = new RelayCommand(_ => Connect(),
@@ -277,6 +288,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void PlaceAnchor()
     {
         if (_selectedMesh is null) return;
+        PushUndo();
         var guid = NextGuid();
         var node = new BuilderNode { Guid = guid, MeshGuid = _selectedMesh.MeshGuid };
         _region.Nodes.Add(node);
@@ -296,6 +308,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         int tgtDoor = _selectedTargetDoor.Id;
         if (src.UsesDoor(srcDoor)) { Status = $"Door {srcDoor} on the selected node is already connected."; return; }
 
+        PushUndo();
         var guid = NextGuid();
         var newNode = new BuilderNode { Guid = guid, MeshGuid = _selectedMesh.MeshGuid };
         src.Doors.Add(new BuilderDoor(srcDoor, guid, tgtDoor));          // reciprocal edges
@@ -320,6 +333,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (a.UsesDoor(aDoor)) { Status = $"Door {aDoor} on the selected node is already connected."; return; }
         if (b.UsesDoor(bDoor)) { Status = $"Door {bDoor} on {_selectedOtherDoor.Mesh} is already connected."; return; }
 
+        PushUndo();
         a.Doors.Add(new BuilderDoor(aDoor, b.Guid, bDoor));   // reciprocal edge closes the loop
         b.Doors.Add(new BuilderDoor(bDoor, a.Guid, aDoor));
         AfterModelChanged($"Linked {_catalog?.NameOf(a.MeshGuid)} door {aDoor} ↔ {_selectedOtherDoor.Mesh} door {bDoor} (loop closed).");
@@ -329,6 +343,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void DeleteSelectedNode()
     {
         if (_selectedNode is null) return;
+        PushUndo();
         uint g = _selectedNode.Guid;
         _region.Nodes.RemoveAll(n => n.Guid == g);
         foreach (var n in _region.Nodes)
@@ -434,7 +449,16 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void ApplyImportedRegion(BuilderRegion region, string label)
     {
         if (region.Nodes.Count == 0) { Status = "No snodes found in that region."; return; }
+        PushUndo();
+        ReplaceRegion(region);
+        _dist = 0f; // reframe the camera onto the loaded region
+        AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.");
+    }
 
+    /// <summary>Swaps the whole region contents in place (nodes, doors, anchor) and resets guid state.
+    /// Pushes no undo entry and sets no status — callers decide those.</summary>
+    private void ReplaceRegion(BuilderRegion region)
+    {
         _region.Nodes.Clear();
         _region.Nodes.AddRange(region.Nodes);
         _region.TargetGuid = region.TargetGuid;
@@ -451,8 +475,45 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         _selectedNode = null;
         OnPropertyChanged(nameof(SelectedNode));
         SourceDoors.Clear();
-        _dist = 0f; // reframe the camera onto the loaded region
-        AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.");
+    }
+
+    // ── undo / redo ─────────────────────────────────────────────
+    private string Snapshot() => IsEmpty ? "" : NodesGasWriter.Write(_region);
+
+    private void PushUndo()
+    {
+        _undo.Push(Snapshot());
+        _redo.Clear();
+        RaiseUndoRedo();
+    }
+
+    private void Undo()
+    {
+        if (_undo.Count == 0) return;
+        _redo.Push(Snapshot());
+        LoadSnapshot(_undo.Pop(), "Undid last change.");
+        RaiseUndoRedo();
+    }
+
+    private void Redo()
+    {
+        if (_redo.Count == 0) return;
+        _undo.Push(Snapshot());
+        LoadSnapshot(_redo.Pop(), "Redid change.");
+        RaiseUndoRedo();
+    }
+
+    private void LoadSnapshot(string snap, string status)
+    {
+        var region = snap.Length > 0 ? NodesGasReader.Read(GasDocument.Parse(snap)) : new BuilderRegion();
+        ReplaceRegion(region);
+        AfterModelChanged(status);
+    }
+
+    private void RaiseUndoRedo()
+    {
+        UndoCommand.RaiseCanExecuteChanged();
+        RedoCommand.RaiseCanExecuteChanged();
     }
 
     /// <summary>Packs the current region into a startable .dsmap and launches the SiegeFX engine to
