@@ -19,6 +19,7 @@ namespace SiegeSmith.ViewModels.WorldBuilder;
 public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 {
     private SnoCatalog? _catalog;
+    private TextureResolver? _textures;
     private readonly BuilderRegion _region = new();
     private readonly HashSet<uint> _usedGuids = new();
     private uint _nextGuid = 0x00010001;
@@ -72,6 +73,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private bool _wireframe;
     public string WireframeLabel => _wireframe ? "Solid" : "Wireframe";
 
+    private bool _textured = true; // default to the in-game look; effective only when textures resolve
+    public bool Textured
+    {
+        get => _textured;
+        set { if (SetProperty(ref _textured, value)) { OnPropertyChanged(nameof(TexturedLabel)); Render(); } }
+    }
+    public string TexturedLabel => _textured ? "Flat" : "Textured"; // name the action, matching Wireframe
+
     // ── commands ────────────────────────────────────────────────
     public RelayCommand PlaceAnchorCommand { get; }
     public RelayCommand ConnectCommand { get; }
@@ -79,9 +88,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand SaveNodesCommand { get; }
     public RelayCommand ResetViewCommand { get; }
     public RelayCommand WireframeCommand { get; }
+    public RelayCommand TexturedCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
+        TexturedCommand = new RelayCommand(_ => Textured = !Textured);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
             _ => IsReady && IsEmpty && _selectedMesh is not null);
         ConnectCommand = new RelayCommand(_ => Connect(),
@@ -99,8 +110,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var cat = await Task.Run(() => SnoCatalog.Build(tankPaths));
+            var (cat, tex) = await Task.Run(() =>
+            {
+                var c = SnoCatalog.Build(tankPaths);
+                var t = new TextureResolver();
+                foreach (var p in tankPaths) t.AddTankPath(p);
+                return (c, t);
+            });
             _catalog = cat;
+            _textures = tex;
             _allMeshes.AddRange(cat.Meshes);
             RefreshPalette();
             IsLoading = false;
@@ -286,6 +304,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
         var verts = new List<Vector3>();
         var normals = new List<Vector3>();
+        var uvs = new List<Vector2>();
+        var triTex = new List<int>();
+        var texList = new List<SoftwareRenderer.Texture>();
+        var texSlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); // dedup textures across nodes/surfaces
         var min = new Vector3(float.MaxValue);
         var max = new Vector3(float.MinValue);
 
@@ -295,17 +317,24 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var sno = _catalog.Resolve(node.MeshGuid);
             if (sno is null) continue;
             foreach (var s in sno.Surfaces)
-                foreach (var local in s.TriangleIndices)
+            {
+                int slot = ResolveSlot(s.TextureName, texSlot, texList);
+                var idx = s.TriangleIndices;
+                for (int k = 0; k + 2 < idx.Length; k += 3)
                 {
-                    int gi = (int)s.StartCorner + local;
-                    if ((uint)gi >= (uint)sno.Corners.Length) continue;
-                    var c = sno.Corners[gi];
-                    var p = Vector3.Transform(c.Position, world);
-                    verts.Add(p);
-                    normals.Add(Vector3.TransformNormal(c.Normal, world));
-                    min = Vector3.Min(min, p);
-                    max = Vector3.Max(max, p);
+                    int g0 = (int)s.StartCorner + idx[k];
+                    int g1 = (int)s.StartCorner + idx[k + 1];
+                    int g2 = (int)s.StartCorner + idx[k + 2];
+                    if ((uint)g0 >= (uint)sno.Corners.Length || (uint)g1 >= (uint)sno.Corners.Length || (uint)g2 >= (uint)sno.Corners.Length)
+                        continue;
+                    var p0 = AddCorner(sno.Corners[g0], world, verts, normals, uvs);
+                    var p1 = AddCorner(sno.Corners[g1], world, verts, normals, uvs);
+                    var p2 = AddCorner(sno.Corners[g2], world, verts, normals, uvs);
+                    min = Vector3.Min(min, Vector3.Min(p0, Vector3.Min(p1, p2)));
+                    max = Vector3.Max(max, Vector3.Max(p0, Vector3.Max(p1, p2)));
+                    triTex.Add(slot);
                 }
+            }
         }
 
         if (verts.Count < 3) { Image = null; return; }
@@ -314,11 +343,42 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         _radius = MathF.Max((max - min).Length() * 0.5f, 0.001f);
         if (_dist <= 0f) _dist = _radius * 2.6f;
 
-        var bgra = SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-            _center, _radius, _yaw, _pitch, _dist, _wireframe);
+        bool useTex = _textured && !_wireframe && texList.Count > 0
+                      && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
+        var bgra = useTex
+            ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
+                _vw, _vh, _center, _radius, _yaw, _pitch, _dist)
+            : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
+                _center, _radius, _yaw, _pitch, _dist, _wireframe);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
+    }
+
+    /// <summary>Resolves a surface's texture to a slot in <paramref name="texList"/>, deduping by
+    /// name and caching misses as -1 (flat-shaded). Returns -1 when no resolver or no texture.</summary>
+    private int ResolveSlot(string textureName, Dictionary<string, int> texSlot, List<SoftwareRenderer.Texture> texList)
+    {
+        if (_textures is null || string.IsNullOrEmpty(textureName)) return -1;
+        if (texSlot.TryGetValue(textureName, out var slot)) return slot;
+        slot = -1;
+        if (_textures.Resolve(textureName) is { } tv && tv.Valid)
+        {
+            slot = texList.Count;
+            texList.Add(tv);
+        }
+        texSlot[textureName] = slot;
+        return slot;
+    }
+
+    private static Vector3 AddCorner(in SnoModel.Corner c, in Matrix4x4 world,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs)
+    {
+        var p = Vector3.Transform(c.Position, world);
+        verts.Add(p);
+        normals.Add(Vector3.TransformNormal(c.Normal, world));
+        uvs.Add(c.Uv);
+        return p;
     }
 
     // ── camera (driven by the view's mouse handlers) ────────────
@@ -356,7 +416,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SaveNodesCommand.RaiseCanExecuteChanged();
     }
 
-    public void Dispose() => _catalog?.Dispose();
+    public void Dispose()
+    {
+        _catalog?.Dispose();
+        _textures?.Dispose();
+    }
 }
 
 /// <summary>A row in the placed-node list.</summary>

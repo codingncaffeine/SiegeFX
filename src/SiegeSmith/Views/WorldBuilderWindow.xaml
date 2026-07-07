@@ -54,6 +54,8 @@
                 </Border>
 
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="12">
+                    <Button Content="{Binding TexturedLabel}" Command="{Binding TexturedCommand}" Padding="10,3" Margin="0,0,6,0"
+                            ToolTip="Toggle in-game textures vs. flat shading"/>
                     <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Padding="10,3" Margin="0,0,6,0"/>
                     <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,3"/>
                 </StackPanel>
