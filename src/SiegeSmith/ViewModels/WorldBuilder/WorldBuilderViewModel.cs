@@ -374,7 +374,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (sno is null) continue;
             foreach (var s in sno.Surfaces)
             {
-                int slot = ResolveSlot(s.TextureName, texSlot, texList);
+                int slot = ResolveSlot(s.TextureName, node.TexsetAbbr, texSlot, texList);
                 var idx = s.TriangleIndices;
                 for (int k = 0; k + 2 < idx.Length; k += 3)
                 {
@@ -411,19 +411,23 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         Image = bmp;
     }
 
-    /// <summary>Resolves a surface's texture to a slot in <paramref name="texList"/>, deduping by
-    /// name and caching misses as -1 (flat-shaded). Returns -1 when no resolver or no texture.</summary>
-    private int ResolveSlot(string textureName, Dictionary<string, int> texSlot, List<SoftwareRenderer.Texture> texList)
+    /// <summary>Resolves a surface's texture to a slot in <paramref name="texList"/>, first rebinding
+    /// the node's texset (so <c>_xxx_</c> placeholder surfaces — the "white squares" — resolve), then
+    /// deduping by the resolved name and caching misses as -1 (flat-shaded). Deduping on the resolved
+    /// name (not the raw surface name) keeps two nodes that share a mesh but use different texsets from
+    /// colliding on one slot. Returns -1 when no resolver or no texture.</summary>
+    private int ResolveSlot(string textureName, string texsetAbbr, Dictionary<string, int> texSlot, List<SoftwareRenderer.Texture> texList)
     {
         if (_textures is null || string.IsNullOrEmpty(textureName)) return -1;
-        if (texSlot.TryGetValue(textureName, out var slot)) return slot;
+        string resolved = TextureResolver.ApplyTexset(textureName, texsetAbbr);
+        if (texSlot.TryGetValue(resolved, out var slot)) return slot;
         slot = -1;
-        if (_textures.Resolve(textureName) is { } tv && tv.Valid)
+        if (_textures.Resolve(resolved) is { } tv && tv.Valid)
         {
             slot = texList.Count;
             texList.Add(tv);
         }
-        texSlot[textureName] = slot;
+        texSlot[resolved] = slot;
         return slot;
     }
 

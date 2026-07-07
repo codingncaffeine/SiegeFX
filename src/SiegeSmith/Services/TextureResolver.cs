@@ -66,6 +66,18 @@ public sealed class TextureResolver : IDisposable
         return tex;
     }
 
+    /// <summary>Applies DS1's terrain texset substitution: a surface name's <c>_xxx_</c> placeholder
+    /// is rebound to the node's texset abbreviation (e.g. <c>t_xxx_wall</c> + <c>grs01</c> →
+    /// <c>t_grs01_wall</c>). Mirrors the engine's terrain texture resolution (RenderHost.ResolveTexName)
+    /// so the World Builder preview matches in-game; names without the placeholder pass through
+    /// unchanged, and an empty abbreviation leaves the placeholder in place (it simply won't resolve).</summary>
+    public static string ApplyTexset(string raw, string texsetAbbr)
+    {
+        if (string.IsNullOrEmpty(texsetAbbr) || string.IsNullOrEmpty(raw)) return raw;
+        int i = raw.IndexOf("_xxx_", StringComparison.OrdinalIgnoreCase);
+        return i < 0 ? raw : string.Concat(raw.AsSpan(0, i + 1), texsetAbbr, raw.AsSpan(i + 4));
+    }
+
     private static string BareName(string path)
     {
         int slash = path.LastIndexOfAny(new[] { '/', '\\' });
