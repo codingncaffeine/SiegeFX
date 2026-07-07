@@ -47,6 +47,22 @@ public static class ViewerFactory
             catch { /* fall through to hex */ }
         }
 
+        if (ext == ".prs")
+        {
+            try { return new PrsAnimationViewerViewModel(name, PrsAnimation.Load(bytes)); }
+            catch { /* fall through to hex */ }
+        }
+
+        if (ext == ".flm")
+        {
+            try
+            {
+                var frames = FlmAnimation.LoadFrames(bytes);
+                if (frames.Length > 0) return new FlmAnimationViewerViewModel(name, frames);
+            }
+            catch { /* fall through to hex */ }
+        }
+
         return LooksLikeText(bytes)
             ? new TextViewerViewModel(name, bytes)
             : new HexViewerViewModel(name, bytes);

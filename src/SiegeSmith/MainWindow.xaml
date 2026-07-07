@@ -435,6 +435,67 @@
                                 </DockPanel>
                             </DataTemplate>
 
+                            <!-- PRS skeletal animation (structural inspector) -->
+                            <DataTemplate DataType="{x:Type viewers:PrsAnimationViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="0,6,0,0"/>
+                                    </StackPanel>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <ItemsControl ItemsSource="{Binding Sections}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Margin="0,0,0,14">
+                                                        <TextBlock Text="{Binding Header}" FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource Brush.Foreground}" Margin="0,0,0,4"/>
+                                                        <ItemsControl ItemsSource="{Binding Lines}">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12.5"
+                                                                               Foreground="{StaticResource Brush.Muted}" Margin="8,1,0,1" TextWrapping="Wrap"/>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </DockPanel>
+                            </DataTemplate>
+
+                            <!-- FLM animated cursor (filmstrip + play/loop) -->
+                            <DataTemplate DataType="{x:Type viewers:FlmAnimationViewerViewModel}">
+                                <DockPanel Margin="16">
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                        <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                            <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"/>
+                                            <Button Content="{Binding PlayLabel}" Command="{Binding PlayCommand}" Padding="12,3" Margin="16,0,0,0"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <ScrollViewer DockPanel.Dock="Bottom" HorizontalScrollBarVisibility="Auto"
+                                                  VerticalScrollBarVisibility="Disabled" MaxHeight="82" Margin="0,10,0,0">
+                                        <ItemsControl ItemsSource="{Binding Frames}">
+                                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" Margin="2" Background="#FF141416">
+                                                        <Image Source="{Binding}" Width="48" Height="48" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                    <Border Background="#FF141416" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                                        <Image Source="{Binding CurrentFrame}" Width="256" Height="256"
+                                               RenderOptions.BitmapScalingMode="NearestNeighbor"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                </DockPanel>
+                            </DataTemplate>
+
                             <!-- Audio (.wav via SoundPlayer + waveform; .mp3 via MediaPlayer) -->
                             <DataTemplate DataType="{x:Type viewers:AudioViewerViewModel}">
                                 <DockPanel Margin="16">
