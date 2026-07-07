@@ -387,6 +387,22 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         catch (Exception ex) { Status?.Invoke($"Copy failed: {ex.Message}"); }
     }
 
+    /// <summary>Extracts the selected file to a temp path for a drag-out-to-Windows gesture and
+    /// returns that path (or null if no file is selected / extraction fails).</summary>
+    public string? PrepareDragOut()
+    {
+        if (SelectedNode is not { IsDirectory: false } file) return null;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "drag");
+            Directory.CreateDirectory(dir);
+            var dest = Path.Combine(dir, file.Name);
+            _doc.Extract(file.FullPath, dest);
+            return dest;
+        }
+        catch (Exception ex) { Status?.Invoke($"Drag failed: {ex.Message}"); return null; }
+    }
+
     /// <summary>Marshals a status message back to the UI thread (extraction runs off-thread).</summary>
     private void Report(string message)
     {

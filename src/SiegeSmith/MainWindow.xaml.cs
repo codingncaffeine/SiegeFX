@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
@@ -44,6 +45,32 @@ public partial class MainWindow : Window
     {
         for (var d = e.OriginalSource as DependencyObject; d is not null; d = VisualTreeHelper.GetParent(d))
             if (d is TreeViewItem item) { item.IsSelected = true; break; }
+    }
+
+    // ── drag a tank file out to Windows (extract-on-drag) ────────
+    private Point _dragStart;
+    private bool _maybeDrag;
+
+    private void OnTreePreviewLeftDown(object sender, MouseButtonEventArgs e)
+    {
+        _dragStart = e.GetPosition(null);
+        _maybeDrag = true;
+    }
+
+    private void OnTreeMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_maybeDrag) return;
+        if (e.LeftButton != MouseButtonState.Pressed) { _maybeDrag = false; return; }
+        var pos = e.GetPosition(null);
+        if (Math.Abs(pos.X - _dragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(pos.Y - _dragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+        _maybeDrag = false;
+        if (DataContext is not MainViewModel { Explorer: { } explorer }) return;
+        var path = explorer.PrepareDragOut();
+        if (path is null) return;
+        var data = new DataObject(DataFormats.FileDrop, new[] { path });
+        DragDrop.DoDragDrop((DependencyObject)sender, data, DragDropEffects.Copy);
     }
 
     // ── model preview: drag to orbit, wheel to zoom ──────────────

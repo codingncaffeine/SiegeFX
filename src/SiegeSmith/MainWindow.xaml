@@ -96,6 +96,8 @@
                         <TreeView ItemsSource="{Binding Explorer.Roots}"
                                   SelectedItemChanged="OnTreeSelectedItemChanged"
                                   PreviewMouseRightButtonDown="OnTreePreviewRightDown"
+                                  PreviewMouseLeftButtonDown="OnTreePreviewLeftDown"
+                                  MouseMove="OnTreeMouseMove"
                                   VirtualizingStackPanel.IsVirtualizing="True"
                                   VirtualizingStackPanel.VirtualizationMode="Recycling"
                                   Visibility="{Binding Explorer.HasSearch, Converter={StaticResource InverseBoolToVis}}">
