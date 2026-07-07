@@ -283,6 +283,187 @@
                             <Button Grid.Column="1" Content="Add sound" Command="{Binding AddSoundCommand}" Padding="8,5"/>
                         </Grid>
 
+                        <TextBlock Text="Logic — triggers · commands · conversations (place on selected node)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,14,0,3" TextWrapping="Wrap"/>
+
+                        <!-- Triggers -->
+                        <Button Content="Add trigger volume" Command="{Binding AddTriggerCommand}" Margin="0,0,0,3" Padding="8,5"
+                                ToolTip="Trigger → objects/special.gas (condition → action DSL)"/>
+                        <ListBox ItemsSource="{Binding Triggers}" SelectedItem="{Binding SelectedTrigger, Mode=TwoWay}"
+                                 MaxHeight="70" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,1">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedTrigger, Converter={StaticResource BoolToVis}}"
+                                    Margin="8,0,0,4">
+                            <TextBox Text="{Binding SelectedTrigger.Template, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
+                                     ToolTip="Trigger template (must resolve, e.g. trigger_generic) — a typo silently never fires"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button Grid.Column="0" Content="Add row" Command="{Binding AddTriggerRowCommand}" Margin="0,0,3,0" Padding="6,4"/>
+                                <Button Grid.Column="1" Content="Delete row" Command="{Binding DeleteTriggerRowCommand}" Padding="6,4"/>
+                            </Grid>
+                            <ListBox ItemsSource="{Binding SelectedTrigger.Rows}" SelectedItem="{Binding SelectedTriggerRow, Mode=TwoWay}"
+                                     MaxHeight="54" Margin="0,0,0,3">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="11">
+                                            <Run Text="row · "/><Run Text="{Binding Conditions.Count, Mode=OneWay}"/><Run Text=" cond → "/><Run Text="{Binding Actions.Count, Mode=OneWay}"/><Run Text=" act"/>
+                                        </TextBlock>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel Visibility="{Binding HasSelectedTriggerRow, Converter={StaticResource BoolToVis}}" Margin="8,0,0,0">
+                                <WrapPanel Margin="0,0,0,3">
+                                    <CheckBox Content="single_shot" IsChecked="{Binding SelectedTriggerRow.SingleShot}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                    <CheckBox Content="start_active" IsChecked="{Binding SelectedTriggerRow.StartActive}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                    <CheckBox Content="flip_flop" IsChecked="{Binding SelectedTriggerRow.FlipFlop}" Foreground="{StaticResource Brush.Muted}"
+                                              ToolTip="Parsed but inert in SiegeFX (author-only)"/>
+                                </WrapPanel>
+                                <TextBox Text="{Binding SelectedTriggerRow.OccupantsGroup, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,4"
+                                         ToolTip="occupants_group (optional)"/>
+
+                                <TextBlock Text="Conditions (ANDed)" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2"/>
+                                <Grid Margin="0,0,0,3">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0" Content="+ cond" Command="{Binding AddConditionCommand}" Margin="0,0,3,0" Padding="4,3"/>
+                                    <Button Grid.Column="1" Content="− cond" Command="{Binding DeleteConditionCommand}" Padding="4,3"/>
+                                </Grid>
+                                <ListBox ItemsSource="{Binding SelectedTriggerRow.Conditions}" SelectedItem="{Binding SelectedCondition, Mode=TwoWay}"
+                                         MaxHeight="50" Margin="0,0,0,3">
+                                    <ListBox.ItemTemplate><DataTemplate>
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                    </DataTemplate></ListBox.ItemTemplate>
+                                </ListBox>
+                                <StackPanel Visibility="{Binding HasSelectedCondition, Converter={StaticResource BoolToVis}}" Margin="0,0,0,4">
+                                    <ComboBox ItemsSource="{Binding ConditionVerbs}" SelectedItem="{Binding CondVerb}" Margin="0,0,0,3"/>
+                                    <TextBox Text="{Binding CondArgs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3" ToolTip="Argument list, e.g. &quot;we_entered_world&quot; or 4.0"/>
+                                    <WrapPanel>
+                                        <CheckBox Content="when_false" IsChecked="{Binding CondWhenFalse}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                        <TextBlock Text="grp" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" FontSize="10" Margin="0,0,3,0"/>
+                                        <TextBox Text="{Binding CondGroup, UpdateSourceTrigger=LostFocus}" Width="30" Margin="0,0,8,0"/>
+                                        <TextBlock Text="delay" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" FontSize="10" Margin="0,0,3,0"/>
+                                        <TextBox Text="{Binding CondDelay, UpdateSourceTrigger=LostFocus}" Width="40"/>
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <TextBlock Text="Actions (sequential)" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2"/>
+                                <Grid Margin="0,0,0,3">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0" Content="+ act" Command="{Binding AddActionCommand}" Margin="0,0,3,0" Padding="4,3"/>
+                                    <Button Grid.Column="1" Content="− act" Command="{Binding DeleteActionCommand}" Padding="4,3"/>
+                                </Grid>
+                                <ListBox ItemsSource="{Binding SelectedTriggerRow.Actions}" SelectedItem="{Binding SelectedAction, Mode=TwoWay}"
+                                         MaxHeight="50" Margin="0,0,0,3">
+                                    <ListBox.ItemTemplate><DataTemplate>
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                    </DataTemplate></ListBox.ItemTemplate>
+                                </ListBox>
+                                <StackPanel Visibility="{Binding HasSelectedAction, Converter={StaticResource BoolToVis}}">
+                                    <ComboBox ItemsSource="{Binding ActionVerbs}" SelectedItem="{Binding ActVerb}" Margin="0,0,0,3"/>
+                                    <TextBox Text="{Binding ActArgs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3" ToolTip="Argument list, e.g. &quot;my_msg&quot;,0x01000001"/>
+                                    <WrapPanel>
+                                        <TextBlock Text="grp" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" FontSize="10" Margin="0,0,3,0"/>
+                                        <TextBox Text="{Binding ActGroup, UpdateSourceTrigger=LostFocus}" Width="30" Margin="0,0,8,0"/>
+                                        <TextBlock Text="delay" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" FontSize="10" Margin="0,0,3,0"/>
+                                        <TextBox Text="{Binding ActDelay, UpdateSourceTrigger=LostFocus}" Width="40"/>
+                                    </WrapPanel>
+                                </StackPanel>
+                            </StackPanel>
+                            <Button Content="Delete selected trigger" Command="{Binding DeleteTriggerCommand}" Margin="0,4,0,0" Padding="8,4"/>
+                        </StackPanel>
+
+                        <!-- Commands / NIS -->
+                        <Button Content="Add command / NIS gizmo" Command="{Binding AddCommandCommand}" Margin="0,4,0,3" Padding="8,5"
+                                ToolTip="cmd_* gizmo → objects/command.gas (AI orders, NIS cinematics)"/>
+                        <ListBox ItemsSource="{Binding Commands}" SelectedItem="{Binding SelectedCommand, Mode=TwoWay}"
+                                 MaxHeight="54" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate><DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                </StackPanel>
+                            </DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedCommand, Converter={StaticResource BoolToVis}}" Margin="8,0,0,4">
+                            <ComboBox ItemsSource="{Binding CommandKinds}" SelectedItem="{Binding CmdKindSel}" Margin="0,0,0,3"/>
+                            <TextBox Text="{Binding CmdNextScid, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3" ToolTip="next_scid — chains the next NIS/command step (0x…)"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Text="{Binding CmdTarget1, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="target1 (0x…)"/>
+                                <TextBox Grid.Column="1" Text="{Binding CmdTarget2, UpdateSourceTrigger=LostFocus}" ToolTip="target2 (0x…)"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Text="{Binding CmdClientScid, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="client_scid (0x…)"/>
+                                <TextBox Grid.Column="1" Text="{Binding CmdDuration, UpdateSourceTrigger=LostFocus}" ToolTip="duration (s)"/>
+                            </Grid>
+                            <TextBox Text="{Binding CmdOrder, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3" ToolTip="order (optional)"/>
+                            <Button Content="Delete selected command" Command="{Binding DeleteCommandCommand}" Padding="8,4"/>
+                        </StackPanel>
+
+                        <!-- Conversations -->
+                        <Button Content="Add conversation" Command="{Binding AddConversationCommand}" Margin="0,4,0,3" Padding="8,5"
+                                ToolTip="Conversation → conversations/conversations.gas; bind to a placed NPC"/>
+                        <ListBox ItemsSource="{Binding Conversations}" SelectedItem="{Binding SelectedConversation, Mode=TwoWay}"
+                                 MaxHeight="54" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate><DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                </StackPanel>
+                            </DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedConversation, Converter={StaticResource BoolToVis}}" Margin="8,0,0,4">
+                            <TextBox Text="{Binding SelectedConversationKey, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
+                                     ToolTip="Conversation key (conversation_ prefix added automatically)"/>
+                            <Button Content="Bind to selected placed actor" Command="{Binding BindConversationCommand}" Margin="0,0,0,3" Padding="8,4"
+                                    ToolTip="Wires this conversation into the actor selected in PLACED OBJECTS"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <Button Grid.Column="0" Content="Add line" Command="{Binding AddDialogueCommand}" Margin="0,0,3,0" Padding="6,4"/>
+                                <Button Grid.Column="1" Content="Delete line" Command="{Binding DeleteDialogueCommand}" Padding="6,4"/>
+                            </Grid>
+                            <ListBox ItemsSource="{Binding SelectedConversation.Nodes}" SelectedItem="{Binding SelectedDialogue, Mode=TwoWay}"
+                                     MaxHeight="70" Margin="0,0,0,3">
+                                <ListBox.ItemTemplate><DataTemplate>
+                                    <StackPanel Margin="0,1">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                    </StackPanel>
+                                </DataTemplate></ListBox.ItemTemplate>
+                            </ListBox>
+                            <StackPanel Visibility="{Binding HasSelectedDialogue, Converter={StaticResource BoolToVis}}">
+                                <Grid Margin="0,0,0,3">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="order" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding SelectedDialogue.Order, UpdateSourceTrigger=LostFocus}"/>
+                                </Grid>
+                                <TextBox Text="{Binding SelectedDialogue.ScreenText, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
+                                         TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="54" ToolTip="On-screen line"/>
+                                <TextBox Text="{Binding SelectedDialogue.Sample, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3" ToolTip="VO sample basename (optional)"/>
+                                <Grid Margin="0,0,0,3">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                    <ComboBox Grid.Column="0" ItemsSource="{Binding DialogueChoices}" SelectedItem="{Binding SelectedDialogue.Choice}" Margin="0,0,3,0" ToolTip="choice"/>
+                                    <ComboBox Grid.Column="1" IsEditable="True" ItemsSource="{Binding QuestKeys}" Text="{Binding SelectedDialogue.ActivateQuest, UpdateSourceTrigger=LostFocus}" ToolTip="activate_quest (QuestCatalog key)"/>
+                                </Grid>
+                                <WrapPanel>
+                                    <CheckBox Content="quest_dialog" IsChecked="{Binding SelectedDialogue.QuestDialog}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                    <CheckBox Content="nis" IsChecked="{Binding SelectedDialogue.Nis}" Foreground="{StaticResource Brush.Foreground}"/>
+                                </WrapPanel>
+                            </StackPanel>
+                            <Button Content="Delete selected conversation" Command="{Binding DeleteConversationCommand}" Margin="0,4,0,0" Padding="8,4"/>
+                        </StackPanel>
+
                         <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"

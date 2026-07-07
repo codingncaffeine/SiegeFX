@@ -31,8 +31,10 @@ public sealed class PlacedObject
 /// quaternion in System.Numerics order (no swizzle).</summary>
 public static class PlacementWriter
 {
-    /// <summary>Emits one objects/*.gas body for a set of placements that share a file.</summary>
-    public static string WriteFile(IEnumerable<PlacedObject> objs)
+    /// <summary>Emits one objects/*.gas body for a set of placements that share a file. Any placement
+    /// whose SCID is in <paramref name="convBindings"/> gets a <c>[conversation][conversations]</c> block
+    /// wiring the actor to its conversation key (LE-8 NPC binding).</summary>
+    public static string WriteFile(IEnumerable<PlacedObject> objs, IReadOnlyDictionary<uint, string>? convBindings = null)
     {
         var sb = new StringBuilder();
         foreach (var o in objs)
@@ -45,13 +47,21 @@ public static class PlacementWriter
             sb.Append("\t\tposition = ")
               .Append(F(o.LocalPos.X)).Append(',').Append(F(o.LocalPos.Y)).Append(',').Append(F(o.LocalPos.Z))
               .Append(",0x").Append(o.NodeGuid.ToString("X8")).Append(";\r\n");
-            sb.Append("\t}\r\n}\r\n");
+            sb.Append("\t}\r\n");
+            if (convBindings is not null && convBindings.TryGetValue(o.Scid, out var convKey) && !string.IsNullOrWhiteSpace(convKey))
+            {
+                sb.Append("\t[conversation]\r\n\t{\r\n\t\t[conversations]\r\n\t\t{\r\n");
+                sb.Append("\t\t\t* = ").Append(convKey).Append(";\r\n");
+                sb.Append("\t\t}\r\n\t}\r\n");
+            }
+            sb.Append("}\r\n");
         }
         return sb.ToString();
     }
 
     /// <summary>Groups placements by their target file → (relative path under the region, gas body).</summary>
-    public static IEnumerable<(string RelPath, string Gas)> WriteByFile(IEnumerable<PlacedObject> objs)
+    public static IEnumerable<(string RelPath, string Gas)> WriteByFile(IEnumerable<PlacedObject> objs,
+        IReadOnlyDictionary<uint, string>? convBindings = null)
     {
         var byFile = new Dictionary<string, List<PlacedObject>>(System.StringComparer.OrdinalIgnoreCase);
         foreach (var o in objs)
@@ -60,7 +70,7 @@ public static class PlacementWriter
             list.Add(o);
         }
         foreach (var (file, list) in byFile)
-            yield return ("objects/" + file, WriteFile(list));
+            yield return ("objects/" + file, WriteFile(list, convBindings));
     }
 
     private static string F(float v) => v.ToString("0.0######", CultureInfo.InvariantCulture);

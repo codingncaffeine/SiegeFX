@@ -191,6 +191,140 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _soundTemplate = "";
     public string SoundTemplate { get => _soundTemplate; set { if (SetProperty(ref _soundTemplate, value)) RaiseCommands(); } }
 
+    // ── logic: triggers, commands, conversations, quests (LE-8) ──
+    private uint _nextLogicScid = 0x04000001;
+    public string[] ConditionVerbs => RegionTrigger.Conditions;
+    public string[] ActionVerbs => RegionTrigger.Actions;
+    public string[] QuestKeys => QuestCatalogKeys.Keys;
+    public string[] DialogueChoices => DialogueLine.Choices;
+    public CmdKind[] CommandKinds { get; } = (CmdKind[])System.Enum.GetValues(typeof(CmdKind));
+
+    public ObservableCollection<RegionTrigger> Triggers { get; } = new();
+    private RegionTrigger? _selectedTrigger;
+    public RegionTrigger? SelectedTrigger
+    {
+        get => _selectedTrigger;
+        set
+        {
+            if (!SetProperty(ref _selectedTrigger, value)) return;
+            SelectedTriggerRow = value is { Rows.Count: > 0 } ? value.Rows[0] : null;
+            OnPropertyChanged(nameof(HasSelectedTrigger));
+            RaiseCommands();
+        }
+    }
+    public bool HasSelectedTrigger => _selectedTrigger is not null;
+
+    private TriggerRow? _selectedTriggerRow;
+    public TriggerRow? SelectedTriggerRow
+    {
+        get => _selectedTriggerRow;
+        set
+        {
+            if (!SetProperty(ref _selectedTriggerRow, value)) return;
+            SelectedCondition = value is { Conditions.Count: > 0 } ? value.Conditions[0] : null;
+            SelectedAction = value is { Actions.Count: > 0 } ? value.Actions[0] : null;
+            OnPropertyChanged(nameof(HasSelectedTriggerRow));
+            RaiseCommands();
+        }
+    }
+    public bool HasSelectedTriggerRow => _selectedTriggerRow is not null;
+
+    private TriggerCall? _selectedCondition;
+    public TriggerCall? SelectedCondition
+    {
+        get => _selectedCondition;
+        set { if (SetProperty(ref _selectedCondition, value)) { OnPropertyChanged(nameof(HasSelectedCondition)); RaiseCallProps("Cond"); RaiseCommands(); } }
+    }
+    public bool HasSelectedCondition => _selectedCondition is not null;
+    public string CondVerb { get => _selectedCondition?.Verb ?? ""; set { if (_selectedCondition is not null) _selectedCondition.Verb = value ?? ""; } }
+    public string CondArgs { get => _selectedCondition?.Args ?? ""; set { if (_selectedCondition is not null) _selectedCondition.Args = value ?? ""; } }
+    public bool CondWhenFalse { get => _selectedCondition?.WhenFalse ?? false; set { if (_selectedCondition is not null) _selectedCondition.WhenFalse = value; } }
+    public string CondGroup { get => _selectedCondition?.Group?.ToString() ?? ""; set { if (_selectedCondition is not null) _selectedCondition.Group = int.TryParse(value, out var g) ? g : null; } }
+    public string CondDelay { get => _selectedCondition?.Delay?.ToString(CultureInfo.InvariantCulture) ?? ""; set { if (_selectedCondition is not null) _selectedCondition.Delay = float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : null; } }
+
+    private TriggerCall? _selectedAction;
+    public TriggerCall? SelectedAction
+    {
+        get => _selectedAction;
+        set { if (SetProperty(ref _selectedAction, value)) { OnPropertyChanged(nameof(HasSelectedAction)); RaiseCallProps("Act"); RaiseCommands(); } }
+    }
+    public bool HasSelectedAction => _selectedAction is not null;
+    public string ActVerb { get => _selectedAction?.Verb ?? ""; set { if (_selectedAction is not null) _selectedAction.Verb = value ?? ""; } }
+    public string ActArgs { get => _selectedAction?.Args ?? ""; set { if (_selectedAction is not null) _selectedAction.Args = value ?? ""; } }
+    public string ActGroup { get => _selectedAction?.Group?.ToString() ?? ""; set { if (_selectedAction is not null) _selectedAction.Group = int.TryParse(value, out var g) ? g : null; } }
+    public string ActDelay { get => _selectedAction?.Delay?.ToString(CultureInfo.InvariantCulture) ?? ""; set { if (_selectedAction is not null) _selectedAction.Delay = float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : null; } }
+
+    private void RaiseCallProps(string prefix)
+    {
+        OnPropertyChanged(prefix + "Verb");
+        OnPropertyChanged(prefix + "Args");
+        OnPropertyChanged(prefix + "Group");
+        OnPropertyChanged(prefix + "Delay");
+        if (prefix == "Cond") OnPropertyChanged(nameof(CondWhenFalse));
+    }
+
+    public ObservableCollection<CommandPlacement> Commands { get; } = new();
+    private CommandPlacement? _selectedCommand;
+    public CommandPlacement? SelectedCommand
+    {
+        get => _selectedCommand;
+        set
+        {
+            if (!SetProperty(ref _selectedCommand, value)) return;
+            OnPropertyChanged(nameof(HasSelectedCommand));
+            OnPropertyChanged(nameof(CmdKindSel));
+            OnPropertyChanged(nameof(CmdNextScid));
+            OnPropertyChanged(nameof(CmdTarget1));
+            OnPropertyChanged(nameof(CmdTarget2));
+            OnPropertyChanged(nameof(CmdClientScid));
+            OnPropertyChanged(nameof(CmdDuration));
+            OnPropertyChanged(nameof(CmdOrder));
+            RaiseCommands();
+        }
+    }
+    public bool HasSelectedCommand => _selectedCommand is not null;
+    public CmdKind CmdKindSel { get => _selectedCommand?.Kind ?? CmdKind.AiPatrol; set { if (_selectedCommand is not null) _selectedCommand.Kind = value; } }
+    public string CmdNextScid { get => Hex(_selectedCommand?.NextScid); set { if (_selectedCommand is not null) _selectedCommand.NextScid = ParseHex(value); } }
+    public string CmdTarget1 { get => Hex(_selectedCommand?.Target1); set { if (_selectedCommand is not null) _selectedCommand.Target1 = ParseHex(value); } }
+    public string CmdTarget2 { get => Hex(_selectedCommand?.Target2); set { if (_selectedCommand is not null) _selectedCommand.Target2 = ParseHex(value); } }
+    public string CmdClientScid { get => Hex(_selectedCommand?.ClientScid); set { if (_selectedCommand is not null) _selectedCommand.ClientScid = ParseHex(value); } }
+    public string CmdDuration { get => _selectedCommand?.Duration?.ToString(CultureInfo.InvariantCulture) ?? ""; set { if (_selectedCommand is not null) _selectedCommand.Duration = float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : null; } }
+    public string CmdOrder { get => _selectedCommand?.Order ?? ""; set { if (_selectedCommand is not null) _selectedCommand.Order = value ?? ""; } }
+
+    private static string Hex(uint? v) => v is uint u ? $"0x{u:X8}" : "";
+    private static uint? ParseHex(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        s = s.Trim();
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
+        return uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v) ? v : null;
+    }
+
+    public ObservableCollection<Conversation> Conversations { get; } = new();
+    private Conversation? _selectedConversation;
+    public Conversation? SelectedConversation
+    {
+        get => _selectedConversation;
+        set
+        {
+            if (!SetProperty(ref _selectedConversation, value)) return;
+            SelectedDialogue = value is { Nodes.Count: > 0 } ? value.Nodes[0] : null;
+            OnPropertyChanged(nameof(HasSelectedConversation));
+            OnPropertyChanged(nameof(SelectedConversationKey));
+            RaiseCommands();
+        }
+    }
+    public bool HasSelectedConversation => _selectedConversation is not null;
+    public string SelectedConversationKey
+    {
+        get => _selectedConversation?.Key ?? "";
+        set { if (_selectedConversation is not null) _selectedConversation.Key = value ?? ""; }
+    }
+
+    private DialogueLine? _selectedDialogue;
+    public DialogueLine? SelectedDialogue { get => _selectedDialogue; set { if (SetProperty(ref _selectedDialogue, value)) { OnPropertyChanged(nameof(HasSelectedDialogue)); RaiseCommands(); } } }
+    public bool HasSelectedDialogue => _selectedDialogue is not null;
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -278,6 +412,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand AddDecalCommand { get; }
     public RelayCommand DeleteDecalCommand { get; }
     public RelayCommand AddSoundCommand { get; }
+    public RelayCommand AddTriggerCommand { get; }
+    public RelayCommand DeleteTriggerCommand { get; }
+    public RelayCommand AddTriggerRowCommand { get; }
+    public RelayCommand DeleteTriggerRowCommand { get; }
+    public RelayCommand AddConditionCommand { get; }
+    public RelayCommand DeleteConditionCommand { get; }
+    public RelayCommand AddActionCommand { get; }
+    public RelayCommand DeleteActionCommand { get; }
+    public RelayCommand AddCommandCommand { get; }
+    public RelayCommand DeleteCommandCommand { get; }
+    public RelayCommand AddConversationCommand { get; }
+    public RelayCommand DeleteConversationCommand { get; }
+    public RelayCommand AddDialogueCommand { get; }
+    public RelayCommand DeleteDialogueCommand { get; }
+    public RelayCommand BindConversationCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -298,6 +447,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddDecalCommand = new RelayCommand(_ => AddDecal(), _ => IsReady && _selectedNode is not null);
         DeleteDecalCommand = new RelayCommand(_ => DeleteDecal(), _ => _selectedDecal is not null);
         AddSoundCommand = new RelayCommand(_ => AddSound(), _ => IsReady && _selectedNode is not null && !string.IsNullOrWhiteSpace(_soundTemplate));
+        AddTriggerCommand = new RelayCommand(_ => AddTrigger(), _ => IsReady && _selectedNode is not null);
+        DeleteTriggerCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { Triggers.Remove(_selectedTrigger); SelectedTrigger = null; Render(); } }, _ => _selectedTrigger is not null);
+        AddTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { var r = NewTriggerRow(); _selectedTrigger.Rows.Add(r); SelectedTriggerRow = r; } }, _ => _selectedTrigger is not null);
+        DeleteTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null && _selectedTriggerRow is not null) { _selectedTrigger.Rows.Remove(_selectedTriggerRow); SelectedTriggerRow = _selectedTrigger.Rows.Count > 0 ? _selectedTrigger.Rows[0] : null; } }, _ => _selectedTriggerRow is not null);
+        AddConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { var c = new TriggerCall { Verb = RegionTrigger.Conditions[0] }; _selectedTriggerRow.Conditions.Add(c); SelectedCondition = c; } }, _ => _selectedTriggerRow is not null);
+        DeleteConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedCondition is not null) { _selectedTriggerRow.Conditions.Remove(_selectedCondition); SelectedCondition = _selectedTriggerRow.Conditions.Count > 0 ? _selectedTriggerRow.Conditions[0] : null; } }, _ => _selectedCondition is not null);
+        AddActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { var a = new TriggerCall { Verb = RegionTrigger.Actions[0] }; _selectedTriggerRow.Actions.Add(a); SelectedAction = a; } }, _ => _selectedTriggerRow is not null);
+        DeleteActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedAction is not null) { _selectedTriggerRow.Actions.Remove(_selectedAction); SelectedAction = _selectedTriggerRow.Actions.Count > 0 ? _selectedTriggerRow.Actions[0] : null; } }, _ => _selectedAction is not null);
+        AddCommandCommand = new RelayCommand(_ => AddCommand(), _ => IsReady && _selectedNode is not null);
+        DeleteCommandCommand = new RelayCommand(_ => { if (_selectedCommand is not null) { Commands.Remove(_selectedCommand); SelectedCommand = null; Render(); } }, _ => _selectedCommand is not null);
+        AddConversationCommand = new RelayCommand(_ => AddConversation(), _ => IsReady);
+        DeleteConversationCommand = new RelayCommand(_ => { if (_selectedConversation is not null) { Conversations.Remove(_selectedConversation); SelectedConversation = null; } }, _ => _selectedConversation is not null);
+        AddDialogueCommand = new RelayCommand(_ => AddDialogue(), _ => _selectedConversation is not null);
+        DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
+        BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null && _selectedPlacedObject is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -744,7 +908,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(),
                 assetsRoot: _assetsFolder, placements: _objects,
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
-                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals));
+                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
+                triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
+                conversations: new List<Conversation>(Conversations));
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -773,7 +939,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects,
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
-                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals));
+                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
+                triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
+                conversations: new List<Conversation>(Conversations));
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -881,6 +1049,67 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var o in _objects) if (o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase)) soundCount++;
         if (soundCount > 0)
             rows.Add(new ValidationRow(true, $"{soundCount} placed sound(s) → objects/sound.gas (retail DS1 only; silent in the SiegeFX test)."));
+
+        if (Triggers.Count > 0)
+        {
+            int emptyRows = 0, unknownVerbs = 0, badQuest = 0;
+            foreach (var t in Triggers)
+                foreach (var r in t.Rows)
+                {
+                    bool hasCond = false, hasAct = false;
+                    foreach (var c in r.Conditions)
+                        if (!string.IsNullOrWhiteSpace(c.Verb))
+                        { hasCond = true; if (System.Array.IndexOf(RegionTrigger.Conditions, c.Verb) < 0) unknownVerbs++; }
+                    foreach (var a in r.Actions)
+                        if (!string.IsNullOrWhiteSpace(a.Verb))
+                        {
+                            hasAct = true;
+                            if (System.Array.IndexOf(RegionTrigger.Actions, a.Verb) < 0) unknownVerbs++;
+                            if (a.Verb == "change_quest_state" && !ArgsReferenceQuest(a.Args)) badQuest++;
+                        }
+                    if (!hasCond || !hasAct) emptyRows++;
+                }
+            rows.Add(new ValidationRow(emptyRows == 0, emptyRows == 0
+                ? $"{Triggers.Count} trigger(s) → special.gas."
+                : $"{emptyRows} trigger row(s) missing a condition or action (never fire)."));
+            if (unknownVerbs > 0)
+                rows.Add(new ValidationRow(false, $"{unknownVerbs} trigger verb(s) outside the live DSL — author-only (no-op in SiegeFX)."));
+            if (badQuest > 0)
+                rows.Add(new ValidationRow(false, $"{badQuest} change_quest_state action(s) name a key outside the QuestCatalog (bare state, no journal)."));
+        }
+        if (Commands.Count > 0)
+        {
+            int unresolved = 0;
+            foreach (var c in Commands)
+            {
+                if (c.NextScid is uint n && !ResolvesScid(n)) unresolved++;
+                if (c.Target1 is uint t1 && !ResolvesScid(t1)) unresolved++;
+                if (c.Target2 is uint t2 && !ResolvesScid(t2)) unresolved++;
+                if (c.ClientScid is uint cs && !ResolvesScid(cs)) unresolved++;
+            }
+            rows.Add(new ValidationRow(unresolved == 0, unresolved == 0
+                ? $"{Commands.Count} command/NIS gizmo(s) → command.gas."
+                : $"{unresolved} command SCID link(s) don't resolve in this region."));
+        }
+        if (Conversations.Count > 0)
+        {
+            int unbound = 0, badBind = 0, badQ = 0;
+            foreach (var cv in Conversations)
+            {
+                if (cv.BoundActorScid == 0) unbound++;
+                else if (!ResolvesScid(cv.BoundActorScid)) badBind++;
+                foreach (var n in cv.Nodes)
+                    if (!string.IsNullOrWhiteSpace(n.ActivateQuest)
+                        && System.Array.IndexOf(QuestCatalogKeys.Keys, n.ActivateQuest.Trim()) < 0) badQ++;
+            }
+            rows.Add(new ValidationRow(badBind == 0, badBind == 0
+                ? $"{Conversations.Count} conversation(s) → conversations.gas."
+                : $"{badBind} conversation(s) bound to a missing actor SCID."));
+            if (unbound > 0)
+                rows.Add(new ValidationRow(true, $"{unbound} conversation(s) not bound to an NPC (unreachable in-game)."));
+            if (badQ > 0)
+                rows.Add(new ValidationRow(false, $"{badQ} dialogue activate_quest key(s) outside the QuestCatalog."));
+        }
 
         var terrain = FindTank("terrain");
         rows.Add(new ValidationRow(terrain is not null,
@@ -1175,6 +1404,89 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         RaiseCommands();
     }
 
+    // ── logic: triggers, commands, conversations, quests (LE-8) ──
+    private static TriggerRow NewTriggerRow() => new()
+    {
+        Conditions = { new TriggerCall { Verb = "receive_world_message", Args = "\"we_entered_world\"" } },
+        Actions = { new TriggerCall { Verb = "send_world_message", Args = "" } },
+    };
+
+    private void AddTrigger()
+    {
+        if (_selectedNode is null) return;
+        var t = new RegionTrigger
+        {
+            Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
+        };
+        t.Rows.Add(NewTriggerRow());
+        Triggers.Add(t);
+        SelectedTrigger = t;
+        Render();
+        Status = "Added a trigger — edit its condition → action row(s). Boot rows should use receive_world_message(\"we_entered_world\").";
+    }
+
+    private void AddCommand()
+    {
+        if (_selectedNode is null) return;
+        var c = new CommandPlacement
+        {
+            Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
+        };
+        Commands.Add(c);
+        SelectedCommand = c;
+        Render();
+        Status = "Added a command gizmo → objects/command.gas. Chain NIS steps with next_scid; target actors by SCID.";
+    }
+
+    private void AddConversation()
+    {
+        var c = new Conversation { Key = $"custom_{Conversations.Count + 1}" };
+        c.Nodes.Add(new DialogueLine { Order = 1, ScreenText = "Hello, traveler." });
+        Conversations.Add(c);
+        SelectedConversation = c;
+        Status = "Added a conversation. Bind it to a placed actor, then add dialogue lines.";
+    }
+
+    private void AddDialogue()
+    {
+        if (_selectedConversation is null) return;
+        int order = _selectedConversation.Nodes.Count + 1;
+        var n = new DialogueLine { Order = order, ScreenText = "" };
+        _selectedConversation.Nodes.Add(n);
+        SelectedDialogue = n;
+    }
+
+    private void BindConversation()
+    {
+        if (_selectedConversation is null || _selectedPlacedObject is null) return;
+        if (!_selectedPlacedObject.IsActor)
+        {
+            Status = "Select a placed ACTOR (not a prop) to bind a conversation to.";
+            return;
+        }
+        _selectedConversation.BoundActorScid = _selectedPlacedObject.Scid;
+        OnPropertyChanged(nameof(Conversations));
+        Status = $"Bound {_selectedConversation.FullKey} to actor 0x{_selectedPlacedObject.Scid:X8}.";
+    }
+
+    /// <summary>Every SCID referenced by a trigger/command/conversation, mapped to whether it resolves
+    /// to a placed object/trigger/command in this region — the copy/paste/delete integrity check.</summary>
+    private bool ResolvesScid(uint scid)
+    {
+        if (scid == 0) return true;
+        foreach (var o in _objects) if (o.Scid == scid) return true;
+        foreach (var t in Triggers) if (t.Scid == scid) return true;
+        foreach (var c in Commands) if (c.Scid == scid) return true;
+        return false;
+    }
+
+    private static bool ArgsReferenceQuest(string args)
+    {
+        foreach (var k in QuestCatalogKeys.Keys)
+            if (args.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
+    }
+
     private uint NextScid()
     {
         var used = new HashSet<uint>();
@@ -1335,6 +1647,19 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (!layout.TryGetTransform(em.NodeGuid, out var enw)) continue;
             var ew = Matrix4x4.CreateTranslation(em.LocalPos) * enw;
             AppendMarkerCube(ew, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, em.NodeGuid, 0u, ref min, ref max);
+        }
+        // Triggers & command gizmos preview as marker cubes too (no mesh of their own).
+        foreach (var tg in Triggers)
+        {
+            if (!layout.TryGetTransform(tg.NodeGuid, out var tnw)) continue;
+            var tw = Matrix4x4.CreateTranslation(tg.LocalPos) * tnw;
+            AppendMarkerCube(tw, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, tg.NodeGuid, 0u, ref min, ref max);
+        }
+        foreach (var cm in Commands)
+        {
+            if (!layout.TryGetTransform(cm.NodeGuid, out var cnw)) continue;
+            var cw = Matrix4x4.CreateTranslation(cm.LocalPos) * cnw;
+            AppendMarkerCube(cw, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, cm.NodeGuid, 0u, ref min, ref max);
         }
 
         if (verts.Count < 3)
@@ -1578,6 +1903,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AddDecalCommand.RaiseCanExecuteChanged();
         DeleteDecalCommand.RaiseCanExecuteChanged();
         AddSoundCommand.RaiseCanExecuteChanged();
+        AddTriggerCommand.RaiseCanExecuteChanged();
+        DeleteTriggerCommand.RaiseCanExecuteChanged();
+        AddTriggerRowCommand.RaiseCanExecuteChanged();
+        DeleteTriggerRowCommand.RaiseCanExecuteChanged();
+        AddConditionCommand.RaiseCanExecuteChanged();
+        DeleteConditionCommand.RaiseCanExecuteChanged();
+        AddActionCommand.RaiseCanExecuteChanged();
+        DeleteActionCommand.RaiseCanExecuteChanged();
+        AddCommandCommand.RaiseCanExecuteChanged();
+        DeleteCommandCommand.RaiseCanExecuteChanged();
+        AddConversationCommand.RaiseCanExecuteChanged();
+        DeleteConversationCommand.RaiseCanExecuteChanged();
+        AddDialogueCommand.RaiseCanExecuteChanged();
+        DeleteDialogueCommand.RaiseCanExecuteChanged();
+        BindConversationCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

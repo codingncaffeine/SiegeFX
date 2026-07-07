@@ -33,7 +33,9 @@ public static class MapPackager
         StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null,
         IReadOnlyList<PlacedObject>? placements = null,
         IReadOnlyList<AuthoredLight>? lights = null, AuthoredMood? mood = null,
-        IReadOnlyList<RegionEmitter>? emitters = null, IReadOnlyList<RegionDecal>? decals = null)
+        IReadOnlyList<RegionEmitter>? emitters = null, IReadOnlyList<RegionDecal>? decals = null,
+        IReadOnlyList<RegionTrigger>? triggers = null, IReadOnlyList<CommandPlacement>? commands = null,
+        IReadOnlyList<Conversation>? conversations = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -69,7 +71,14 @@ public static class MapPackager
                 Scid = a.Scid, Template = a.Template, NodeGuid = a.NodeGuid,
                 LocalPos = new Vector3(a.X, 0f, a.Z), Orientation = Quaternion.Identity, File = "actor.gas",
             });
-        foreach (var (rel, gas) in PlacementWriter.WriteByFile(objs))
+        // Actor↔conversation bindings: a conversation bound to a placed actor injects the
+        // [conversation][conversations] block into that actor's placement.
+        Dictionary<uint, string>? convBindings = null;
+        if (conversations is not null)
+            foreach (var c in conversations)
+                if (c.BoundActorScid != 0)
+                    (convBindings ??= new Dictionary<uint, string>())[c.BoundActorScid] = c.FullKey;
+        foreach (var (rel, gas) in PlacementWriter.WriteByFile(objs, convBindings))
         {
             string full = Path.Combine(mapDir, "regions", region, rel.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
@@ -105,6 +114,24 @@ public static class MapPackager
             string decalDir = Path.Combine(mapDir, "regions", region, "decals");
             Directory.CreateDirectory(decalDir);
             File.WriteAllText(Path.Combine(decalDir, "decals.gas"), DecalGasWriter.Write(decals));
+        }
+
+        // Trigger volumes → objects/special.gas; command/NIS gizmos → objects/command.gas.
+        if (triggers is { Count: > 0 } || commands is { Count: > 0 })
+        {
+            string objDir = Path.Combine(mapDir, "regions", region, "objects");
+            Directory.CreateDirectory(objDir);
+            if (triggers is { Count: > 0 })
+                File.WriteAllText(Path.Combine(objDir, "special.gas"), TriggerGasWriter.Write(triggers));
+            if (commands is { Count: > 0 })
+                File.WriteAllText(Path.Combine(objDir, "command.gas"), CommandGasWriter.Write(commands));
+        }
+        // Conversations → conversations/conversations.gas.
+        if (conversations is { Count: > 0 })
+        {
+            string convDir = Path.Combine(mapDir, "regions", region, "conversations");
+            Directory.CreateDirectory(convDir);
+            File.WriteAllText(Path.Combine(convDir, "conversations.gas"), ConversationGasWriter.Write(conversations));
         }
 
         Directory.CreateDirectory(outputDir);
