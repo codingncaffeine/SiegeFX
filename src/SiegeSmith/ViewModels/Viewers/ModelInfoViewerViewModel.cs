@@ -59,7 +59,8 @@ public sealed class ModelInfoViewerViewModel : ObservableObject
         get => _textured;
         set { if (SetProperty(ref _textured, value)) { OnPropertyChanged(nameof(TexturedLabel)); Render(); } }
     }
-    public string TexturedLabel => _textured ? "Textured" : "Flat";
+    // Name the action (what the click switches to), matching the sibling Wireframe button.
+    public string TexturedLabel => _textured ? "Flat" : "Textured";
 
     public RelayCommand ResetViewCommand { get; }
     public RelayCommand WireframeCommand { get; }
