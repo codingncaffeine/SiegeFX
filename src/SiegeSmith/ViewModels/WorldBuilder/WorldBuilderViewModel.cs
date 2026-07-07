@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Numerics;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -91,6 +93,20 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ── object placement (props / pickups / actors) ────────────
+    private TemplateCatalog? _props;
+    private readonly List<PlacedObject> _objects = new();       // placed game objects (emitted to objects/*.gas)
+    private uint _nextScid = 0x01000001;                        // map-scoped SCID allocator (shipped scids are 0x01xxxxxx)
+    private readonly List<PropTemplate> _allProps = new();
+    public ObservableCollection<PropTemplate> PropPalette { get; } = new();
+    private string _propSearch = "";
+    public string PropSearchText { get => _propSearch; set { if (SetProperty(ref _propSearch, value)) RefreshPropPalette(); } }
+    private PropTemplate? _selectedProp;
+    public PropTemplate? SelectedProp { get => _selectedProp; set { if (SetProperty(ref _selectedProp, value)) RaiseCommands(); } }
+    public ObservableCollection<PlacedObjectRow> PlacedObjects { get; } = new();
+    private PlacedObjectRow? _selectedPlacedObject;
+    public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) RaiseCommands(); } }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -163,6 +179,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand RedoCommand { get; }
     public RelayCommand SetAssetsFolderCommand { get; }
     public RelayCommand OpenAssetsFolderCommand { get; }
+    public RelayCommand PlaceObjectCommand { get; }
+    public RelayCommand DeleteObjectCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -170,6 +188,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         TexturedCommand = new RelayCommand(_ => Textured = !Textured);
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
+        PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
+        DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -195,17 +215,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         try
         {
-            var (cat, tex) = await Task.Run(() =>
+            var (cat, tex, props) = await Task.Run(() =>
             {
                 var c = SnoCatalog.Build(tankPaths);
                 var t = new TextureResolver();
                 foreach (var p in tankPaths) t.AddTankPath(p);
-                return (c, t);
+                var pr = TemplateCatalog.Build(tankPaths);
+                return (c, t, pr);
             });
             _catalog = cat;
             _textures = tex;
+            _props = props;
             _allMeshes.AddRange(cat.Meshes);
+            _allProps.AddRange(props.Props);
             RefreshPalette();
+            RefreshPropPalette();
             foreach (var r in cat.Regions) InstallRegions.Add(r);
             IsLoading = false;
             Status = _allMeshes.Count > 0
@@ -494,7 +518,50 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     }
 
     // ── undo / redo ─────────────────────────────────────────────
-    private string Snapshot() => IsEmpty ? "" : NodesGasWriter.Write(_region);
+    private const string SnapSep = "\nOBJECTS\n"; // separates the nodes.gas half from the placed-objects half
+    private string Snapshot() => (IsEmpty ? "" : NodesGasWriter.Write(_region)) + SnapSep + SerializeObjects();
+
+    private string SerializeObjects()
+    {
+        var sb = new StringBuilder();
+        foreach (var o in _objects)
+            sb.Append(o.Scid.ToString("X8")).Append('\t').Append(o.Template).Append('\t')
+              .Append(o.NodeGuid.ToString("X8")).Append('\t')
+              .Append(o.LocalPos.X.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.LocalPos.Y.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.LocalPos.Z.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.Orientation.X.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.Orientation.Y.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.Orientation.Z.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.Orientation.W.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.File).Append('\n');
+        return sb.ToString();
+    }
+
+    private void DeserializeObjects(string blob)
+    {
+        _objects.Clear();
+        _selectedPlacedObject = null;
+        OnPropertyChanged(nameof(SelectedPlacedObject));
+        foreach (var line in blob.Split('\n'))
+        {
+            if (line.Length == 0) continue;
+            var f = line.Split('\t');
+            if (f.Length < 11) continue;
+            _objects.Add(new PlacedObject
+            {
+                Scid = ParseHexU(f[0]), Template = f[1], NodeGuid = ParseHexU(f[2]),
+                LocalPos = new Vector3(PF(f[3]), PF(f[4]), PF(f[5])),
+                Orientation = new Quaternion(PF(f[6]), PF(f[7]), PF(f[8]), PF(f[9])),
+                File = f[10],
+            });
+        }
+    }
+
+    private static uint ParseHexU(string s) =>
+        uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v) ? v : 0;
+    private static float PF(string s) =>
+        float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0f;
 
     private void PushUndo()
     {
@@ -521,8 +588,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private void LoadSnapshot(string snap, string status)
     {
-        var region = snap.Length > 0 ? NodesGasReader.Read(GasDocument.Parse(snap)) : new BuilderRegion();
+        int sep = snap.IndexOf(SnapSep, StringComparison.Ordinal);
+        string nodesPart = sep < 0 ? snap : snap[..sep];
+        string objPart = sep < 0 ? "" : snap[(sep + SnapSep.Length)..];
+        var region = nodesPart.Length > 0 ? NodesGasReader.Read(GasDocument.Parse(nodesPart)) : new BuilderRegion();
         ReplaceRegion(region);
+        DeserializeObjects(objPart);
+        RebuildPlacedRows();
         AfterModelChanged(status);
     }
 
@@ -556,7 +628,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         try
         {
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), assetsRoot: _assetsFolder);
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(),
+                assetsRoot: _assetsFolder, placements: _objects);
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -583,7 +656,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             var nodesGas = NodesGasWriter.Write(_region);
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder);
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects);
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -633,6 +706,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var n in _region.Nodes) foreach (var d in n.Doors) if (!guids.Contains(d.FarGuid)) badDoor++;
         rows.Add(new ValidationRow(badDoor == 0,
             badDoor == 0 ? "All door links reference existing nodes." : $"{badDoor} door link(s) point to a missing node."));
+
+        if (_objects.Count > 0)
+        {
+            int badObj = 0;
+            foreach (var o in _objects)
+                if (string.IsNullOrEmpty(o.Template) || !guids.Contains(o.NodeGuid)) badObj++;
+            rows.Add(new ValidationRow(badObj == 0,
+                badObj == 0 ? $"All {_objects.Count} placed object(s) anchored to a node." : $"{badObj} placed object(s) reference a missing node."));
+        }
 
         if (graph is not null && _catalog is not null)
         {
@@ -705,6 +787,92 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (Path.GetFileName(p).Contains(substr, StringComparison.OrdinalIgnoreCase))
                 return p;
         return null;
+    }
+
+    // ── object placement ────────────────────────────────────────
+    private const int MaxPropResults = 400;
+
+    private void RefreshPropPalette()
+    {
+        PropPalette.Clear();
+        var q = _propSearch?.Trim() ?? "";
+        int shown = 0;
+        foreach (var p in _allProps)
+        {
+            if (q.Length > 0 && p.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            PropPalette.Add(p);
+            if (++shown >= MaxPropResults) break;
+        }
+    }
+
+    /// <summary>Places the selected prop template on the selected node, at the node's local centre.
+    /// It ships into objects/non_interactive.gas and appears when the map is tested/played.</summary>
+    private void PlaceObject()
+    {
+        if (_selectedProp is null || _selectedNode is null) return;
+        var node = _region.Find(_selectedNode.Guid);
+        if (node is null) return;
+        PushUndo();
+        _objects.Add(new PlacedObject
+        {
+            Scid = NextScid(),
+            Template = _selectedProp.Name,
+            NodeGuid = node.Guid,
+            LocalPos = LocalCenter(node.Guid),
+            File = "non_interactive.gas",
+        });
+        RebuildPlacedRows();
+        Status = $"Placed {_selectedProp.Name} on node 0x{node.Guid:X8}.";
+        RaiseCommands();
+    }
+
+    private void DeleteObject()
+    {
+        if (_selectedPlacedObject is null) return;
+        PushUndo();
+        uint scid = _selectedPlacedObject.Scid;
+        _objects.RemoveAll(o => o.Scid == scid);
+        _selectedPlacedObject = null;
+        OnPropertyChanged(nameof(SelectedPlacedObject));
+        RebuildPlacedRows();
+        Status = $"Deleted object 0x{scid:X8}.";
+        RaiseCommands();
+    }
+
+    private void RebuildPlacedRows()
+    {
+        PlacedObjects.Clear();
+        foreach (var o in _objects)
+            PlacedObjects.Add(new PlacedObjectRow(o.Scid, o.Template, o.NodeGuid));
+        OnPropertyChanged(nameof(HasObjects));
+    }
+
+    public bool HasObjects => _objects.Count > 0;
+
+    private uint NextScid()
+    {
+        var used = new HashSet<uint>();
+        foreach (var o in _objects) used.Add(o.Scid);
+        uint s;
+        do { s = _nextScid++; } while (s == 0 || used.Contains(s));
+        return s;
+    }
+
+    /// <summary>The node's local-space XZ centre (from its SNO corner bounds), Y=0 — a sensible default
+    /// drop point on the node floor, the same basis start positions and actors use.</summary>
+    private Vector3 LocalCenter(uint guid)
+    {
+        var node = _region.Find(guid);
+        var sno = node is not null ? _catalog?.Resolve(node.MeshGuid) : null;
+        if (sno is null || sno.Corners.Length == 0) return default;
+        float minx = float.MaxValue, maxx = float.MinValue, minz = float.MaxValue, maxz = float.MinValue;
+        foreach (var c in sno.Corners)
+        {
+            var p = c.Position;
+            if (p.X < minx) minx = p.X; if (p.X > maxx) maxx = p.X;
+            if (p.Z < minz) minz = p.Z; if (p.Z > maxz) maxz = p.Z;
+        }
+        return new Vector3((minx + maxx) * 0.5f, 0f, (minz + maxz) * 0.5f);
     }
 
     private void SetAssetsFolder()
@@ -930,12 +1098,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         TestInEngineCommand.RaiseCanExecuteChanged();
         PlayInEngineCommand.RaiseCanExecuteChanged();
         ValidateCommand.RaiseCanExecuteChanged();
+        PlaceObjectCommand.RaiseCanExecuteChanged();
+        DeleteObjectCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()
     {
         _catalog?.Dispose();
         _textures?.Dispose();
+        _props?.Dispose();
     }
 }
 
@@ -962,4 +1133,11 @@ public sealed record NodeDoorRow(uint NodeGuid, int DoorId, string Mesh)
 public sealed record ValidationRow(bool Ok, string Text)
 {
     public string Glyph => Ok ? "✓" : "✕";
+}
+
+/// <summary>A row in the placed-objects list.</summary>
+public sealed record PlacedObjectRow(uint Scid, string Template, uint NodeGuid)
+{
+    public string Label => Template;
+    public string Detail => $"0x{Scid:X8} · node 0x{NodeGuid:X8}";
 }

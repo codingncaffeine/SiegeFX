@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Numerics;
 using System.Text;
 using SiegeFX.Core.Tank;
 
@@ -29,7 +30,8 @@ public static class MapPackager
     /// region path to hand to <see cref="RuntimeLauncher"/>. The map dir is always prefixed <c>map_</c>
     /// so the engine's ambient-audio gate (DeriveMapName) stays enabled.</summary>
     public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir,
-        StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null)
+        StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null,
+        IReadOnlyList<PlacedObject>? placements = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -55,11 +57,21 @@ public static class MapPackager
             Directory.CreateDirectory(infoDir);
             File.WriteAllText(Path.Combine(infoDir, "start_positions.gas"), BuildStartPositions(s));
         }
+        // Every placed object (props + the seed actor) is written through the one placement writer,
+        // grouped into its objects/<file>.gas bucket.
+        var objs = new List<PlacedObject>();
+        if (placements is not null) objs.AddRange(placements);
         if (actor is { NodeGuid: not 0 } a && !string.IsNullOrWhiteSpace(a.Template))
+            objs.Add(new PlacedObject
+            {
+                Scid = a.Scid, Template = a.Template, NodeGuid = a.NodeGuid,
+                LocalPos = new Vector3(a.X, 0f, a.Z), Orientation = Quaternion.Identity, File = "actor.gas",
+            });
+        foreach (var (rel, gas) in PlacementWriter.WriteByFile(objs))
         {
-            string objDir = Path.Combine(mapDir, "regions", region, "objects");
-            Directory.CreateDirectory(objDir);
-            File.WriteAllText(Path.Combine(objDir, "actor.gas"), BuildActor(a));
+            string full = Path.Combine(mapDir, "regions", region, rel.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllText(full, gas);
         }
 
         Directory.CreateDirectory(outputDir);
@@ -85,18 +97,6 @@ public static class MapPackager
             "\t\t[start_position]\r\n\t\t{\r\n" +
             $"\t\t\tid = 1;\r\n\t\t\tposition = {F(s.X)},0,{F(s.Z)},0x{s.NodeGuid:X8};\r\n" +
             "\t\t}\r\n\t}\r\n}\r\n";
-    }
-
-    /// <summary>Emits an objects/actor.gas with one stock actor placement so LoadPlayActors runs the
-    /// PC spawn (which it skips when zero actors spawn). Anchored to the start node.</summary>
-    private static string BuildActor(SeedActor a)
-    {
-        return
-            $"[t:{a.Template},n:0x{a.Scid:X8}]\r\n{{\r\n" +
-            "\t[placement]\r\n\t{\r\n" +
-            $"\t\tposition = {F(a.X)},0,{F(a.Z)},0x{a.NodeGuid:X8};\r\n" +
-            "\t\torientation = 0,0,0,1;\r\n" +
-            "\t}\r\n}\r\n";
     }
 
     private static string F(float v) => v.ToString("0.0######", CultureInfo.InvariantCulture);

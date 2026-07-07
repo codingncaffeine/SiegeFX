@@ -26,24 +26,65 @@
             <!-- ░░ Node palette ░░ -->
             <Border Grid.Column="0" Background="{StaticResource Brush.Panel}"
                     BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,1,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="NODE PALETTE" Style="{StaticResource Header.Section}"/>
-                    <TextBox DockPanel.Dock="Top" Margin="10,0,10,8"
-                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"/>
-                    <ListBox DockPanel.Dock="Bottom" MaxHeight="150" ItemsSource="{Binding TargetDoors}"
-                             SelectedItem="{Binding SelectedTargetDoor, Mode=TwoWay}">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate><TextBlock Text="{Binding Label}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                    <TextBlock DockPanel.Dock="Bottom" Text="DOORS ON PALETTE MESH" Style="{StaticResource Header.Section}"/>
-                    <ListBox ItemsSource="{Binding Palette}" SelectedItem="{Binding SelectedMesh, Mode=TwoWay}"
-                             VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate><TextBlock Text="{Binding Name}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                </DockPanel>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Terrain-node palette -->
+                    <DockPanel Grid.Row="0">
+                        <TextBlock DockPanel.Dock="Top" Text="NODE PALETTE" Style="{StaticResource Header.Section}"/>
+                        <TextBox DockPanel.Dock="Top" Margin="10,0,10,8"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"/>
+                        <ListBox DockPanel.Dock="Bottom" MaxHeight="120" ItemsSource="{Binding TargetDoors}"
+                                 SelectedItem="{Binding SelectedTargetDoor, Mode=TwoWay}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding Label}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock DockPanel.Dock="Bottom" Text="DOORS ON PALETTE MESH" Style="{StaticResource Header.Section}"/>
+                        <ListBox ItemsSource="{Binding Palette}" SelectedItem="{Binding SelectedMesh, Mode=TwoWay}"
+                                 VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding Name}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+
+                    <!-- Object palette (props placed on nodes) -->
+                    <DockPanel Grid.Row="2">
+                        <TextBlock DockPanel.Dock="Top" Text="OBJECT PALETTE" Style="{StaticResource Header.Section}"/>
+                        <TextBox DockPanel.Dock="Top" Margin="10,0,10,6"
+                                 Text="{Binding PropSearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"/>
+                        <Button DockPanel.Dock="Top" Content="Place on selected node" Command="{Binding PlaceObjectCommand}"
+                                Margin="10,0,10,6" Padding="8,5"
+                                ToolTip="Drop the selected object template onto the selected terrain node"/>
+                        <Button DockPanel.Dock="Bottom" Content="Delete selected object" Command="{Binding DeleteObjectCommand}"
+                                Margin="10,6,10,10" Padding="8,5"/>
+                        <ListBox DockPanel.Dock="Bottom" MaxHeight="130" ItemsSource="{Binding PlacedObjects}"
+                                 SelectedItem="{Binding SelectedPlacedObject, Mode=TwoWay}">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,2">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="11"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <TextBlock DockPanel.Dock="Bottom" Text="PLACED OBJECTS" Style="{StaticResource Header.Section}"/>
+                        <ListBox ItemsSource="{Binding PropPalette}" SelectedItem="{Binding SelectedProp, Mode=TwoWay}"
+                                 VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding Name}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                </Grid>
             </Border>
 
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
