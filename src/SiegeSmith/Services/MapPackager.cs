@@ -31,7 +31,8 @@ public static class MapPackager
     /// so the engine's ambient-audio gate (DeriveMapName) stays enabled.</summary>
     public static Packaged PackStartableMap(string nodesGas, string mapName, string regionName, string outputDir,
         StartInfo? start = null, SeedActor? actor = null, string? assetsRoot = null,
-        IReadOnlyList<PlacedObject>? placements = null)
+        IReadOnlyList<PlacedObject>? placements = null,
+        IReadOnlyList<AuthoredLight>? lights = null, AuthoredMood? mood = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -72,6 +73,22 @@ public static class MapPackager
             string full = Path.Combine(mapDir, "regions", region, rel.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
             File.WriteAllText(full, gas);
+        }
+
+        // Region lights → regions/<region>/lights/lights.gas (directional lights reach the renderer).
+        if (lights is { Count: > 0 })
+        {
+            string lightsDir = Path.Combine(mapDir, "regions", region, "lights");
+            Directory.CreateDirectory(lightsDir);
+            File.WriteAllText(Path.Combine(lightsDir, "lights.gas"), LightsGasWriter.Write(lights));
+        }
+
+        // Mood audio is MAP-GLOBAL: /world/global/moods/<map>/moods.gas, not under the region tree.
+        if (mood is { } md && !string.IsNullOrWhiteSpace(md.Name) && md.HasAudio)
+        {
+            string moodDir = Path.Combine(staging, "world", "global", "moods", map);
+            Directory.CreateDirectory(moodDir);
+            File.WriteAllText(Path.Combine(moodDir, "moods.gas"), MoodsGasWriter.Write(md));
         }
 
         Directory.CreateDirectory(outputDir);

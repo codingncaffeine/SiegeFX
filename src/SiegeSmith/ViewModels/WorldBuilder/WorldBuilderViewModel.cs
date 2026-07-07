@@ -129,6 +129,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private PlacedObjectRow? _selectedPlacedObject;
     public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) RaiseCommands(); } }
 
+    // ── lighting & mood (LE-6) ──────────────────────────────────
+    public ObservableCollection<AuthoredLight> Lights { get; } = new();
+    private uint _nextLightScid = 0x02000001;
+    private AuthoredLight? _selectedLight;
+    public AuthoredLight? SelectedLight
+    {
+        get => _selectedLight;
+        set { if (SetProperty(ref _selectedLight, value)) { RaiseLightProps(); RaiseCommands(); } }
+    }
+    public bool HasSelectedLight => _selectedLight is not null;
+    public bool SelectedLightIsDirectional => _selectedLight?.Kind == AuthoredLightKind.Directional;
+
+    private bool _moodInterior;
+    public bool MoodInterior { get => _moodInterior; set { if (SetProperty(ref _moodInterior, value)) OnPropertyChanged(nameof(MoodInteriorLabel)); } }
+    public string MoodInteriorLabel => _moodInterior ? "Interior (reverb): on" : "Interior (reverb): off";
+    private string _moodAmbient = "", _moodStandard = "", _moodBattle = "";
+    public string MoodAmbient { get => _moodAmbient; set => SetProperty(ref _moodAmbient, value); }
+    public string MoodStandard { get => _moodStandard; set => SetProperty(ref _moodStandard, value); }
+    public string MoodBattle { get => _moodBattle; set => SetProperty(ref _moodBattle, value); }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -206,6 +226,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand PlaceObjectCommand { get; }
     public RelayCommand DeleteObjectCommand { get; }
     public RelayCommand TogglePlacingCommand { get; }
+    public RelayCommand AddDirectionalLightCommand { get; }
+    public RelayCommand AddPointLightCommand { get; }
+    public RelayCommand DeleteLightCommand { get; }
+    public RelayCommand ToggleMoodInteriorCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -216,6 +240,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
+        AddDirectionalLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Directional), _ => IsReady);
+        AddPointLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Point), _ => IsReady && _selectedNode is not null);
+        DeleteLightCommand = new RelayCommand(_ => DeleteLight(), _ => _selectedLight is not null);
+        ToggleMoodInteriorCommand = new RelayCommand(_ => MoodInterior = !MoodInterior);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -660,7 +688,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(),
-                assetsRoot: _assetsFolder, placements: _objects);
+                assetsRoot: _assetsFolder, placements: _objects,
+                lights: new List<AuthoredLight>(Lights), mood: BuildMood());
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -687,7 +716,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             var nodesGas = NodesGasWriter.Write(_region);
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
-            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects);
+            var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects,
+                lights: new List<AuthoredLight>(Lights), mood: BuildMood());
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
@@ -765,6 +795,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex) { rows.Add(new ValidationRow(false, "Layout solve failed: " + ex.Message)); }
         }
+
+        if (Lights.Count > 0)
+        {
+            int dir = 0;
+            foreach (var l in Lights) if (l.Kind == AuthoredLightKind.Directional && l.AffectsActors) dir++;
+            int authorOnly = Lights.Count - dir;
+            rows.Add(new ValidationRow(true,
+                $"{Lights.Count} light(s) — {Math.Min(dir, 4)} directional reach the engine"
+                + (authorOnly > 0 ? $", {authorOnly} author-only (no in-engine illumination)." : ".")));
+        }
+        var moodCheck = BuildMood();
+        if (moodCheck is not null)
+            rows.Add(new ValidationRow(moodCheck.HasAudio,
+                moodCheck.HasAudio
+                    ? $"Mood '{moodCheck.Name}' — ambient audio will play (map is map_-prefixed)."
+                    : "Mood set but has no ambient track — add one for region audio."));
 
         var terrain = FindTank("terrain");
         rows.Add(new ValidationRow(terrain is not null,
@@ -893,6 +939,114 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     }
 
     public bool HasObjects => _objects.Count > 0;
+
+    // ── lighting & mood (LE-6) ──────────────────────────────────
+    private void AddLight(AuthoredLightKind kind)
+    {
+        var l = new AuthoredLight { Kind = kind, Scid = _nextLightScid++ };
+        if (kind == AuthoredLightKind.Point && _selectedNode is not null)
+        {
+            l.NodeGuid = _selectedNode.Guid;
+            l.Position = LocalCenter(_selectedNode.Guid);
+        }
+        Lights.Add(l);
+        SelectedLight = l;
+        Render();
+        Status = kind == AuthoredLightKind.Point
+            ? "Added a point light — ships to lights.gas, but SiegeFX renders no point-light illumination."
+            : "Added a directional light — edit colour / intensity / direction; the preview updates live.";
+    }
+
+    private void DeleteLight()
+    {
+        if (_selectedLight is null) return;
+        Lights.Remove(_selectedLight);
+        SelectedLight = null;
+        Render();
+    }
+
+    /// <summary>Authored directional lights (affects_actors) as renderer lights, capped at the engine's 4.</summary>
+    private SoftwareRenderer.DirLight[]? BuildPreviewLights()
+    {
+        List<SoftwareRenderer.DirLight>? dl = null;
+        foreach (var l in Lights)
+        {
+            if (l.Kind != AuthoredLightKind.Directional || !l.AffectsActors) continue;
+            if (l.Direction.LengthSquared() < 1e-6f) continue;
+            var dir = Vector3.Normalize(l.Direction);
+            float r = ((l.Color >> 16) & 0xFF) / 255f, g = ((l.Color >> 8) & 0xFF) / 255f, b = (l.Color & 0xFF) / 255f;
+            (dl ??= new()).Add(new SoftwareRenderer.DirLight(dir, r, g, b, l.Intensity));
+            if (dl.Count >= 4) break;
+        }
+        return dl?.ToArray();
+    }
+
+    private AuthoredMood? BuildMood()
+    {
+        if (!_moodInterior && string.IsNullOrWhiteSpace(_moodAmbient)
+            && string.IsNullOrWhiteSpace(_moodStandard) && string.IsNullOrWhiteSpace(_moodBattle))
+            return null;
+        return new AuthoredMood
+        {
+            Name = $"map_{LightSanitize(MapName)}_{LightSanitize(RegionName)}_1",
+            Interior = _moodInterior,
+            Ambient = _moodAmbient, Standard = _moodStandard, Battle = _moodBattle,
+        };
+    }
+
+    private static string LightSanitize(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "custom";
+        var sb = new StringBuilder(raw.Length);
+        foreach (char c in raw.Trim().ToLowerInvariant())
+            sb.Append(c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_' ? c : '_');
+        var s = sb.ToString().Trim('_');
+        return s.Length == 0 ? "custom" : s;
+    }
+
+    private void RaiseLightProps()
+    {
+        OnPropertyChanged(nameof(HasSelectedLight));
+        OnPropertyChanged(nameof(SelectedLightIsDirectional));
+        OnPropertyChanged(nameof(SelectedLightColorHex));
+        OnPropertyChanged(nameof(SelectedLightIntensity));
+        OnPropertyChanged(nameof(SelectedLightDirX));
+        OnPropertyChanged(nameof(SelectedLightDirY));
+        OnPropertyChanged(nameof(SelectedLightDirZ));
+    }
+
+    public string SelectedLightColorHex
+    {
+        get => _selectedLight is null ? "" : _selectedLight.Color.ToString("X8");
+        set
+        {
+            if (_selectedLight is null) return;
+            var t = (value ?? "").Trim();
+            if (t.StartsWith("0x") || t.StartsWith("0X")) t = t.Substring(2);
+            t = t.TrimStart('#');
+            if (uint.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var c)) { _selectedLight.Color = c; Render(); }
+        }
+    }
+    public string SelectedLightIntensity
+    {
+        get => _selectedLight is null ? "" : _selectedLight.Intensity.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedLight is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _selectedLight.Intensity = v; Render(); } }
+    }
+    public string SelectedLightDirX
+    {
+        get => _selectedLight is null ? "" : _selectedLight.Direction.X.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedLight is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var d = _selectedLight.Direction; d.X = v; _selectedLight.Direction = d; Render(); } }
+    }
+    public string SelectedLightDirY
+    {
+        get => _selectedLight is null ? "" : _selectedLight.Direction.Y.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedLight is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var d = _selectedLight.Direction; d.Y = v; _selectedLight.Direction = d; Render(); } }
+    }
+    public string SelectedLightDirZ
+    {
+        get => _selectedLight is null ? "" : _selectedLight.Direction.Z.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedLight is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var d = _selectedLight.Direction; d.Z = v; _selectedLight.Direction = d; Render(); } }
+    }
 
     private uint NextScid()
     {
@@ -1066,11 +1220,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
         bool useTex = _textured && !_wireframe && texList.Count > 0
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
+        var lights = BuildPreviewLights(); // authored directional lights → the software renderer
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -1279,6 +1434,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ValidateCommand.RaiseCanExecuteChanged();
         PlaceObjectCommand.RaiseCanExecuteChanged();
         DeleteObjectCommand.RaiseCanExecuteChanged();
+        AddDirectionalLightCommand.RaiseCanExecuteChanged();
+        AddPointLightCommand.RaiseCanExecuteChanged();
+        DeleteLightCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

@@ -152,6 +152,72 @@
                                 ToolTip="Manually browse to any nodes.gas"/>
                         <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,6,0,3" Padding="8,5"/>
 
+                        <TextBlock Text="Lighting &amp; mood" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,12,0,3"/>
+                        <Grid Margin="0,0,0,3">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="Add sun" Command="{Binding AddDirectionalLightCommand}" Margin="0,0,3,0" Padding="8,5"
+                                    ToolTip="Add a directional light — reaches the engine renderer and the preview"/>
+                            <Button Grid.Column="1" Content="Add point" Command="{Binding AddPointLightCommand}" Margin="3,0,0,0" Padding="8,5"
+                                    ToolTip="Add a point light on the selected node (author-only — SiegeFX renders no point-light illumination)"/>
+                        </Grid>
+                        <ListBox ItemsSource="{Binding Lights}" SelectedItem="{Binding SelectedLight, Mode=TwoWay}"
+                                 MaxHeight="90" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,1">
+                                        <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                        <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedLight, Converter={StaticResource BoolToVis}}">
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="ARGB" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedLightColorHex, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
+                                         FontFamily="Consolas" ToolTip="Light colour as 0xAARRGGBB (alpha ignored)"/>
+                                <TextBlock Grid.Column="2" Text="Int" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedLightIntensity, UpdateSourceTrigger=LostFocus}" ToolTip="Intensity"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3" Visibility="{Binding SelectedLightIsDirectional, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Dir" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedLightDirX, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="Direction X (world)"/>
+                                <TextBox Grid.Column="2" Text="{Binding SelectedLightDirY, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="Direction Y (world)"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedLightDirZ, UpdateSourceTrigger=LostFocus}" ToolTip="Direction Z (world, up)"/>
+                            </Grid>
+                            <Button Content="Delete selected light" Command="{Binding DeleteLightCommand}" Margin="0,0,0,3" Padding="8,4"/>
+                        </StackPanel>
+                        <Button Content="{Binding MoodInteriorLabel}" Command="{Binding ToggleMoodInteriorCommand}" Margin="0,3,0,3" Padding="8,4"
+                                ToolTip="Interior mood flag (reverb)"/>
+                        <TextBox Text="{Binding MoodAmbient, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
+                                 ToolTip="Ambient music track (basename, e.g. m_amb_town) — plays as region audio"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Text="{Binding MoodStandard, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,3,0"
+                                     ToolTip="Standard music track"/>
+                            <TextBox Grid.Column="1" Text="{Binding MoodBattle, UpdateSourceTrigger=PropertyChanged}" Margin="3,0,0,0"
+                                     ToolTip="Battle music track"/>
+                        </Grid>
+
                         <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"
