@@ -81,6 +81,51 @@ public sealed class RenderHost : IDisposable
     // off the launch region path.
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.MoodSetting>? _moodStore;
     private string? _moodMapName;
+
+    // SC-WEATHER-C — mood-driven weather state (fog/rain/snow/wind/lightning).
+    // Fed by region-default mood applies + mood_change trigger actions; read
+    // by the mesh pass (fog), particle system (precipitation), and the flash
+    // overlay. Trigger requests land in _requestedMoodName and are applied by
+    // TickWeather so seam flip-flop settles to the last stable request instead
+    // of being dropped by the log debounce.
+    private readonly WeatherSystem _weather = new();
+    private string? _requestedMoodName;
+    private readonly HashSet<string> _moodMissWarned = new(StringComparer.OrdinalIgnoreCase);
+    private bool _thunderClipTried;
+    private bool _thunderClipReady;
+
+    // SC-WEATHER-F — placed region sound emitters (emt_sound / emt_sound_act
+    // gizmos from objects/emitter.gas). Events resolve through sounddb.gas
+    // [global_voice] (loaded once at audio init) and optionally an SED; clips
+    // register lazily on first fire so registration order doesn't matter.
+    // emt_sound_act toggles on we_req_activate / we_req_deactivate — fh_r1's
+    // rain loops (0x01C00B24 / 0x01C00B18, event amb_rain_01) are the canary:
+    // the same triggers that mood_change() the storm also switch the rain bed.
+    private sealed class SoundEmitterState
+    {
+        public uint Scid;
+        public Vector3 Pos;
+        public string EventName = "";
+        // Event's sample names (random pick per fire). Resolved lazily on
+        // first tick — emitter placements register BEFORE the audio init
+        // loads sounddb.gas in the region playline.
+        public string[] Samples = Array.Empty<string>();
+        public bool SamplesResolved;
+        public bool Loop;            // continual_loop — positional looping source
+        public bool Repeats;         // repeat / repeat_rate window re-fires
+        public float RepeatRate, MaxRepeatRate;
+        public float MinDist = 6f, MaxDist = 40f;
+        public bool IsAct;
+        public bool Active;          // emt_sound: always; act: start_on_creation / messages
+        public bool LoopStarted;
+        public bool FiredOnce;       // one-shot emitters fire once per activation edge
+        public float NextFireIn;
+    }
+    private readonly List<SoundEmitterState> _soundEmitters = new();
+    private readonly Dictionary<uint, SoundEmitterState> _soundEmittersByScid = new();
+    private IReadOnlyDictionary<string, IReadOnlyList<string>>? _soundDbEvents;
+    private readonly Dictionary<string, string?> _emitterClipCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Random _emitterRng = new();
     private string? _activeBedRegion;
     // Phase 21d-2a-xii — DS1 sound effect descriptors. Loaded once at audio
     // init from Sound.dsres; consulted by TryRegisterSfx so every wired clip
@@ -1438,6 +1483,22 @@ public sealed class RenderHost : IDisposable
                 g.NextSpawnIn = 0f;
                 Console.WriteLine($"[generator] 0x{g.Scid:X8} message-activated");
             }
+            // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
+            // activate the amb_rain_01 loops alongside their mood_change).
+            if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
+            {
+                semOn.Active = true;
+                semOn.FiredOnce = false;
+                if (semOn.Repeats) semOn.NextFireIn = 0f;
+                Console.WriteLine($"[emitter] 0x{toScid:X8} '{semOn.EventName}' activated");
+            }
+        }
+        // SC-WEATHER-F — emt_sound_act turns OFF (loop stops on the next tick).
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
+            _soundEmittersByScid.TryGetValue(toScid, out var semOff) && semOff.Active)
+        {
+            semOff.Active = false;
+            Console.WriteLine($"[emitter] 0x{toScid:X8} '{semOff.EventName}' deactivated");
         }
     }
 
@@ -1460,6 +1521,11 @@ public sealed class RenderHost : IDisposable
         // Time-window debounce: ignore mood_change requests within
         // 500ms of the last one, regardless of name. Keeps the most
         // recent transition winning while killing the spam.
+        // SC-WEATHER-C — the request itself is never dropped: latest wins,
+        // TickWeather applies it once the name settles. The debounce below
+        // only gates the console line.
+        _requestedMoodName = moodName;
+
         long now = Environment.TickCount64;
         if (now - _lastMoodChangeTickMs < MoodChangeDebounceMs &&
             !string.Equals(_lastLoggedMoodChange, moodName, StringComparison.OrdinalIgnoreCase))
@@ -1474,6 +1540,68 @@ public sealed class RenderHost : IDisposable
         _lastLoggedMoodChange = moodName;
         _lastMoodChangeTickMs = now;
         Console.WriteLine($"[trigger] mood_change → '{moodName}'");
+    }
+
+    /// <summary>SC-WEATHER-C — per-frame weather pump. Applies the most recent
+    /// mood_change request (full mood: music + ambient bed + weather, matching
+    /// what a region-entry default apply does), advances the weather state
+    /// machine, and fires queued thunder claps. DS1 routes mood_change through
+    /// the same Mood manager as region defaults, so both paths converge here
+    /// on ApplyMoodSoundscape + WeatherSystem.ApplyMood.</summary>
+    private void TickWeather(float dt)
+    {
+        if (_requestedMoodName is not null && _moodStore is not null &&
+            !string.Equals(_requestedMoodName, _weather.ActiveMoodName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (_moodStore.TryGetValue(_requestedMoodName, out var mood))
+            {
+                ApplyMoodSoundscape(mood);
+                _weather.ApplyMood(mood);
+                Console.WriteLine($"[weather] mood '{mood.Name}' applied — " +
+                    $"rain={(mood.Rain?.Density ?? 0):0.#}/s snow={(mood.Snow?.Density ?? 0):0.#}/s " +
+                    $"fog={(mood.Fog is null ? "off" : $"{mood.Fog.NearDist:0.#}-{mood.Fog.FarDist:0.#}m")} " +
+                    $"lightning={(mood.Rain?.Lightning == true ? "authored" : "auto")} tt={mood.TransitionTime:0.#}s");
+            }
+            else if (_moodMissWarned.Add(_requestedMoodName))
+            {
+                Console.Error.WriteLine($"[weather] mood_change '{_requestedMoodName}' not in mood store — ignored");
+            }
+            _requestedMoodName = null;
+        }
+
+        _weather.Tick(dt);
+
+        int claps = _weather.ConsumeThunderClaps();
+        if (claps > 0 && EnsureThunderClip() && _audio is not null)
+            for (int i = 0; i < claps; i++) _audio.Play(AmbThunderClip, 0.9f);
+    }
+
+    /// <summary>Mood → audio-side apply shared by region-entry defaults and
+    /// mood_change triggers: swap the looping ambient bed (empty track =
+    /// intentional silence, clears the loop — rain-zone moods author "" and
+    /// let the region's emt_sound_act rain loops own the soundscape) and kick
+    /// standard/battle music via ApplyMoodMusic.</summary>
+    private void ApplyMoodSoundscape(SiegeFX.Core.Assets.MoodSetting mood)
+    {
+        if (_audio is not null)
+            _audio.SetAmbientBed(string.IsNullOrEmpty(mood.AmbientTrack) ? null : mood.AmbientTrack);
+        ApplyMoodMusic(mood);
+    }
+
+    private const string AmbThunderClip = "amb_thunder";
+
+    /// <summary>Lazy one-shot registration of the thunder clap. sounddb.gas
+    /// maps amb_thunder → s_e_ambient_thunder; no shipped region places a
+    /// thunder emitter, so (like retail) the engine owns the lightning→thunder
+    /// pairing.</summary>
+    private bool EnsureThunderClip()
+    {
+        if (_thunderClipTried) return _thunderClipReady;
+        _thunderClipTried = true;
+        if (_playSoundTank is null) return false;
+        var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+        _thunderClipReady = TryRegisterSfx(reader, AmbThunderClip, "/sound/effects/s_e_ambient_thunder.wav");
+        return _thunderClipReady;
     }
 
     internal void OnTriggerCallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin)
@@ -2893,11 +3021,14 @@ uniform mat4 uViewProj;
 uniform mat4 uModel;
 out vec3 vNormal;
 out vec2 vUv;
+out vec3 vWorldPos;
 void main()
 {
-    gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
+    vec4 wp = uModel * vec4(aPos, 1.0);
+    gl_Position = uViewProj * wp;
     vNormal = mat3(uModel) * aNormal;
     vUv = aUv;
+    vWorldPos = wp.xyz;
 }";
 
     // Skinning vertex shader. Same per-vertex output contract as MeshVertexSource (vNormal,
@@ -2919,6 +3050,7 @@ uniform mat4 uModel;
 uniform mat4 uBones[64];
 out vec3 vNormal;
 out vec2 vUv;
+out vec3 vWorldPos;
 void main()
 {
     mat4 skin = aWeights.x * uBones[aBones.x]
@@ -2926,7 +3058,9 @@ void main()
               + aWeights.z * uBones[aBones.z]
               + aWeights.w * uBones[aBones.w];
     vec4 sp = skin * vec4(aPos, 1.0);
-    gl_Position = uViewProj * uModel * sp;
+    vec4 wp = uModel * sp;
+    gl_Position = uViewProj * wp;
+    vWorldPos = wp.xyz;
     // DS1 rigs are rigid (rotation + translation, no non-uniform scale), so mat3(skin) is
     // the correct normal transform. Don't rewrite this as a transpose-inverse: it would be
     // slower, identical for these inputs, and would mask corruption if a future skin ever did
@@ -2951,7 +3085,19 @@ void main()
     private const string MeshFragmentSource = @"#version 330 core
 in  vec3 vNormal;
 in  vec2 vUv;
+in  vec3 vWorldPos;
 out vec4 FragColor;
+// SC-WEATHER-D — DS1 mood fog. Linear camera-distance fog (D3DFOG_LINEAR
+// equivalence: every shipped mood authors fog_near_dist/fog_far_dist; the
+// fog_density key only applies to D3D's exponential modes, which no mood
+// uses, so it is ignored here just as retail's linear mode ignores it).
+// Color/dists come from the active mood, lerped by WeatherSystem during
+// mood transitions; heavy rain (>200/s) pre-darkens uFogColor to 85%.
+uniform int   uFogOn;
+uniform float uFogNear;
+uniform float uFogFar;
+uniform vec3  uFogColor;
+uniform vec3  uCameraPos;
 uniform sampler2D uAlbedo;
 uniform int       uHasTexture;
 // Phase 21d-2a-v debug — when set, replaces the no-texture fallback color
@@ -3084,7 +3230,13 @@ void main()
     if (uSubsetTintActive != 0) {
         FragColor = uSubsetTint;
     } else {
-        FragColor = vec4(sampled.rgb * lighting, 1.0);
+        vec3 lit = sampled.rgb * lighting;
+        if (uFogOn != 0) {
+            float fogD = distance(vWorldPos, uCameraPos);
+            float fogF = clamp((fogD - uFogNear) / max(uFogFar - uFogNear, 0.001), 0.0, 1.0);
+            lit = mix(lit, uFogColor, fogF);
+        }
+        FragColor = vec4(lit, 1.0);
     }
 }";
 
@@ -5914,6 +6066,11 @@ void main()
             // doorway, dark/light columns from the same template family.
             legacyParticleCount += RegisterLegacyParticleEmitters(placements);
 
+            // SC-WEATHER-F — placed sound emitters (rain loops, crickets,
+            // waterfalls, tavern hubbub). Trigger-toggled ones wait for
+            // we_req_activate; the rest start with the region.
+            RegisterSoundEmitters(placements);
+
             // SC-DECALS — accumulate this region's projected decals (the char on the
             // burnt farmhouse doors, blood, ground scorch, drop shadows, dirt, straw,
             // rugs). Node transforms resolve against _regionLayout, same as above.
@@ -6172,6 +6329,15 @@ void main()
                                           $"{regBeds} distinct ambient bed clip(s) registered " +
                                           $"(map='{_moodMapName ?? "<unknown>"}')");
                         foreach (var d in moodDiags) Console.Error.WriteLine($"  mood: {d}");
+
+                        // SC-WEATHER-F — the [global_voice] event table that
+                        // region sound emitters reference (amb_rain_01 →
+                        // s_e_ambient_rain1 etc.). Clips register lazily on
+                        // first fire, so only the table loads here.
+                        var (sdbEvents, sdbDiags) = SiegeFX.Core.Assets.SoundDb.LoadGlobalVoice(logicReader);
+                        _soundDbEvents = sdbEvents;
+                        Console.WriteLine($"  audio: sounddb [global_voice] — {sdbEvents.Count} events");
+                        foreach (var d in sdbDiags) Console.Error.WriteLine($"  sounddb: {d}");
                     }
                     catch (Exception mex)
                     {
@@ -7160,7 +7326,7 @@ void main()
                         entry.untextured + (tex is null ? 1 : 0),
                         texName ?? entry.texName);
 
-                    var defaultSkrit = _templateStore.GetAttribute(template, "body", "chore_dictionary", "chore_default", "skrit");
+                    var defaultSkrit = _templateStore!.GetAttribute(template, "body", "chore_dictionary", "chore_default", "skrit");
                     TryParseRotateSkrit(defaultSkrit, out var spinAxis, out var spinRad);
 
                     // Phase 17-SC-K / 21-SC-BARREL-C — breakability lives in
@@ -8218,6 +8384,17 @@ void main()
         _compassHidden = !_compassHidden;
         _audio?.Play(SfxGuiInventory);
         return true;
+    }
+
+    /// <summary>SC-WEATHER-E — full-screen lightning wash. Intensity is the
+    /// WeatherSystem strike envelope; capped alpha keeps the HUD legible
+    /// through the flash while the fog-color boost (ApplyLightingUniforms)
+    /// does the heavy lifting of lighting the world itself.</summary>
+    private void DrawWeatherFlash(int viewportW, int viewportH)
+    {
+        if (_weather.FlashIntensity <= 0f || _barRenderer is null) return;
+        var wash = new Vector4(1f, 1f, 1f, _weather.FlashIntensity * 0.40f);
+        _barRenderer.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, wash);
     }
 
     private void DrawNisLetterbox(int viewportW, int viewportH)
@@ -9327,6 +9504,32 @@ void main()
         shader.SetFloat("uAmbient", _ambientLevel);
         shader.SetVec3Array("uDirDir",   _dirLightDirs.AsSpan(0, _dirLightCount));
         shader.SetVec3Array("uDirColor", _dirLightColors.AsSpan(0, _dirLightCount));
+        // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
+        // so both world shaders (static + skinned) stay in sync with the
+        // weather state without a separate dirty-tracking pass. Lightning
+        // flash brightens the fog itself (the sky "lights up" and the fog
+        // wall reads white for the strike frames) — cheap and reads right.
+        bool fogOn = _weather.FogActive && _weather.FogFar > _weather.FogNear;
+        shader.SetInt("uFogOn", fogOn ? 1 : 0);
+        if (fogOn)
+        {
+            shader.SetFloat("uFogNear", _weather.FogNear);
+            shader.SetFloat("uFogFar", _weather.FogFar);
+            var fc = FogColorWithFlash();
+            shader.SetVec3("uFogColor", fc);
+            shader.SetVec3("uCameraPos", _camera.Position);
+        }
+    }
+
+    /// <summary>Active fog color with the lightning flash folded in — the
+    /// flash pushes the fog toward white, which is what sells the strike
+    /// against a fully fogged horizon.</summary>
+    private Vector3 FogColorWithFlash()
+    {
+        var fc = _weather.FogColor;
+        if (_weather.FlashIntensity > 0f)
+            fc = Vector3.Lerp(fc, Vector3.One, _weather.FlashIntensity * 0.8f);
+        return fc;
     }
 
     private AspMesh? GetOrLoadPropAsp(string modelName)
@@ -9838,6 +10041,200 @@ void main()
         }
         return registered;
     }
+
+    /// <summary>SC-WEATHER-F — register each emt_sound / emt_sound_act
+    /// placement's [sound_emitter(_act)] block as a runtime sound emitter.
+    /// Event names resolve through sounddb.gas [global_voice] at fire time;
+    /// hour-gated emitters (crickets' start_hour/stop_hour, time_chunk) are
+    /// registered but never fire until a world-clock slice exists — logged so
+    /// the gap is visible. Returns how many emitters were registered.</summary>
+    private int RegisterSoundEmitters(IReadOnlyList<SiegeFX.Core.Assets.ActorInstance> placements)
+    {
+        if (_regionLayout is null) return 0;
+        int registered = 0;
+        foreach (var inst in placements)
+        {
+            bool isAct = inst.TemplateName.Equals("emt_sound_act", StringComparison.OrdinalIgnoreCase);
+            bool isPlain = inst.TemplateName.Equals("emt_sound", StringComparison.OrdinalIgnoreCase);
+            if (!isAct && !isPlain) continue;
+            var block = SiegeFX.Core.Assets.TemplateStore.FindChild(
+                inst.Node, isAct ? "sound_emitter_act" : "sound_emitter");
+            if (block is null)
+            {
+                Console.WriteLine($"  emitter: [{inst.TemplateName} 0x{inst.Scid:x8}] has no sound block — skipped");
+                continue;
+            }
+
+            string eventName = "";
+            bool continualLoop = false, startOnCreation = true, repeatFlag = false;
+            float repeatRate = 0f, maxRepeatRate = 0f;
+            float minDist = 6f, maxDist = 40f;
+            bool hourGated = false;
+            foreach (var attr in block.Attributes)
+            {
+                var v = attr.Value ?? "";
+                if (AttrEq(attr.Name, "event_sound")) eventName = v.Trim().Trim('"');
+                else if (AttrEq(attr.Name, "continual_loop")) continualLoop = ParseGasBool(v);
+                else if (AttrEq(attr.Name, "start_on_creation")) startOnCreation = ParseGasBool(v);
+                else if (AttrEq(attr.Name, "repeat")) repeatFlag = ParseGasBool(v);
+                else if (AttrEq(attr.Name, "repeat_rate")) repeatRate = ReadFloatValue(v, 0f);
+                else if (AttrEq(attr.Name, "max_repeat_rate")) maxRepeatRate = ReadFloatValue(v, 0f);
+                else if (AttrEq(attr.Name, "min_dist")) minDist = ReadFloatValue(v, 6f);
+                else if (AttrEq(attr.Name, "max_dist")) maxDist = ReadFloatValue(v, 40f);
+                else if (AttrEq(attr.Name, "start_hour") || AttrEq(attr.Name, "stop_hour")
+                         || AttrEq(attr.Name, "time_chunk")) hourGated = true;
+            }
+            if (string.IsNullOrEmpty(eventName)) continue;
+            if (hourGated)
+            {
+                // The crickets/night-bird family. DS1 gates these on the game
+                // clock (start_hour/stop_hour/time_chunk); SiegeFX has no
+                // world clock yet, so they'd otherwise chirp 24/7. Park them.
+                Console.WriteLine($"  emitter: 0x{inst.Scid:x8} '{eventName}' hour-gated — parked (no world clock yet)");
+                continue;
+            }
+
+            var local = Matrix4x4.CreateFromQuaternion(inst.Placement.Orientation) *
+                        Matrix4x4.CreateTranslation(inst.Placement.LocalPosition);
+            var world = _regionLayout.TryGetTransform(inst.Placement.NodeGuid, out var nw) ? local * nw : local;
+
+            var st = new SoundEmitterState
+            {
+                Scid = inst.Scid,
+                Pos = world.Translation,
+                EventName = eventName,
+                Loop = continualLoop,
+                Repeats = repeatFlag || repeatRate > 0f || maxRepeatRate > 0f,
+                RepeatRate = repeatRate,
+                MaxRepeatRate = MathF.Max(maxRepeatRate, repeatRate),
+                MinDist = minDist,
+                MaxDist = maxDist,
+                IsAct = isAct,
+                Active = isPlain || startOnCreation,
+            };
+            st.NextFireIn = st.Repeats ? SampleRepeatWindow(st) : 0f;
+            _soundEmitters.Add(st);
+            _soundEmittersByScid[inst.Scid] = st;
+            Console.WriteLine($"  emitter: 0x{inst.Scid:x8} '{eventName}' " +
+                              $"{(st.Loop ? "loop" : st.Repeats ? $"repeat {st.RepeatRate:0.#}-{st.MaxRepeatRate:0.#}s" : "one-shot")}" +
+                              $"{(st.IsAct ? (st.Active ? " (act, on)" : " (act, waiting)") : "")}");
+            registered++;
+        }
+        return registered;
+    }
+
+    private static bool AttrEq(string a, string b) => a.Trim().Equals(b, StringComparison.OrdinalIgnoreCase);
+
+    private static bool ParseGasBool(string v)
+    {
+        var t = v.Trim().ToLowerInvariant();
+        return t is "true" or "yes" or "1";
+    }
+
+    private static float ReadFloatValue(string v, float fallback)
+    {
+        var t = v.Trim();
+        if (t.EndsWith("f", StringComparison.OrdinalIgnoreCase)) t = t[..^1];
+        return float.TryParse(t, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : fallback;
+    }
+
+    private float SampleRepeatWindow(SoundEmitterState st) =>
+        st.RepeatRate + (float)_emitterRng.NextDouble() * MathF.Max(0f, st.MaxRepeatRate - st.RepeatRate);
+
+    /// <summary>Resolve a sounddb sample name to a registered audio clip id.
+    /// The name may be a plain wav basename or an SED key (with or without
+    /// the _SED suffix); SEDs can alias a different wav (sound_effect_file)
+    /// and override falloff distances. Registration happens on first use and
+    /// is cached (including failures, as null).</summary>
+    private string? ResolveEmitterClip(string sample, ref float minDist, ref float maxDist)
+    {
+        // SED override dists apply even on a cache hit.
+        var key = sample.EndsWith("_SED", StringComparison.OrdinalIgnoreCase) ? sample[..^4] : sample;
+        SiegeFX.Core.Assets.SedDescriptor? sed = null;
+        if (_sedStore is not null && _sedStore.TryGetValue(key, out var s)) sed = s;
+        if (sed is not null)
+        {
+            if (sed.MinOverrideDist > 0f) minDist = sed.MinOverrideDist;
+            if (sed.MaxOverrideDist > 0f) maxDist = sed.MaxOverrideDist;
+        }
+
+        if (_emitterClipCache.TryGetValue(sample, out var cached)) return cached;
+
+        string wav = sed is not null && sed.SoundEffectFile.Length > 0 ? sed.SoundEffectFile : key;
+        string? clip = null;
+        if (_playSoundTank is not null)
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
+            var wavPath = $"/sound/effects/{wav}.wav";
+            if (TryRegisterSfx(reader, wav, wavPath)) clip = wav;
+        }
+        if (clip is null)
+            Console.Error.WriteLine($"  emitter: sample '{sample}' → wav '{wav}' failed to register");
+        _emitterClipCache[sample] = clip;
+        return clip;
+    }
+
+    /// <summary>SC-WEATHER-F — per-frame emitter pump: start/stop positional
+    /// loops to match Active state, count down repeat windows, fire one-shots
+    /// on their activation edge.</summary>
+    private void TickSoundEmitters(float dt)
+    {
+        if (_audio is null || _soundEmitters.Count == 0) return;
+        foreach (var st in _soundEmitters)
+        {
+            if (!st.SamplesResolved)
+            {
+                if (_soundDbEvents is null) continue;   // sounddb not loaded yet
+                st.SamplesResolved = true;
+                if (_soundDbEvents.TryGetValue(st.EventName, out var list) && list.Count > 0)
+                    st.Samples = list.ToArray();
+                else
+                {
+                    Console.WriteLine($"  emitter: 0x{st.Scid:x8} event '{st.EventName}' not in sounddb [global_voice] — silent");
+                    st.Active = false;
+                    continue;
+                }
+            }
+            if (st.Samples.Length == 0) continue;
+            if (!st.Active)
+            {
+                if (st.LoopStarted) { _audio.StopLoop(st.Scid); st.LoopStarted = false; }
+                st.FiredOnce = false;
+                continue;
+            }
+            if (st.Loop)
+            {
+                if (st.LoopStarted) continue;
+                float mn = st.MinDist, mx = st.MaxDist;
+                var clip = ResolveEmitterClip(PickSample(st), ref mn, ref mx);
+                if (clip is null) { st.Active = false; continue; }
+                _audio.StartLoopAt(st.Scid, clip, st.Pos, 0.8f, mn, mx);
+                st.LoopStarted = true;
+            }
+            else if (st.Repeats)
+            {
+                st.NextFireIn -= dt;
+                if (st.NextFireIn > 0f) continue;
+                float mn = st.MinDist, mx = st.MaxDist;
+                var clip = ResolveEmitterClip(PickSample(st), ref mn, ref mx);
+                if (clip is null) { st.Active = false; continue; }
+                _audio.PlayAt(clip, st.Pos, 1f, mn, mx);
+                st.NextFireIn = SampleRepeatWindow(st);
+            }
+            else if (!st.FiredOnce)
+            {
+                float mn = st.MinDist, mx = st.MaxDist;
+                var clip = ResolveEmitterClip(PickSample(st), ref mn, ref mx);
+                if (clip is null) { st.Active = false; continue; }
+                _audio.PlayAt(clip, st.Pos, 1f, mn, mx);
+                st.FiredOnce = true;
+            }
+        }
+    }
+
+    private string PickSample(SoundEmitterState st) =>
+        st.Samples.Length == 1 ? st.Samples[0] : st.Samples[_emitterRng.Next(st.Samples.Length)];
 
     /// <summary>SC-DECALS — parse a region's decals/decals.gas and append one world
     /// quad per decal to <paramref name="outQuads"/>. decal_origin is node-local and
@@ -16150,6 +16547,12 @@ void main()
         // the bed is silent — fh_r1 has no bed but ships standard_track
         // = s_m_Farmhouse_01 which is the music the player should hear.
         ApplyMoodMusic(mood);
+        // SC-WEATHER-C — region default also drives the weather (fog is
+        // authored on every shipped mood, so entering a region always sets
+        // the atmosphere). A pending trigger request is superseded: region
+        // entry re-baselines the mood exactly like retail's focus-GO swap.
+        _weather.ApplyMood(mood);
+        _requestedMoodName = null;
     }
 
     /// <summary>Phase 22-SC-MUSIC-C/D — translate the active mood into a
@@ -17189,6 +17592,18 @@ void main()
                 f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, (float)dt, 18f, f.Carry);
             }
         }
+        // SC-WEATHER-E — pump mood precipitation in a disc over the player.
+        // Uses wall dt (presentation, like music): rain keeps falling through
+        // pause. Rates come pre-drifted from WeatherSystem; wind shears the
+        // fall vectors. Floor = the player's ground Y — DS1 rain draws in a
+        // cylinder around the camera focus without geometry collision.
+        if (_particles is not null && (_weather.RainRate > 0.5f || _weather.SnowRate > 0.5f))
+        {
+            var wxFocus = _player?.CurrentTransform.Translation ?? _camera.Position;
+            float wxFloor = _player is not null ? wxFocus.Y : wxFocus.Y - 8f;
+            _particles.MaintainWeather((float)dt, _weather.RainRate, _weather.SnowRate,
+                _weather.WindVector, wxFocus, wxFloor);
+        }
         _particles?.Tick((float)dt);
         // Phase 22-SC-MUSIC-A/B — refill the music streaming queue every
         // frame. Cheap when nothing's playing (one OpenAL state read);
@@ -17215,6 +17630,14 @@ void main()
         // _actors; bails on the first hostile so worst-case is
         // population-bounded but typically O(few).
         TickCombatMusic((float)dt);
+        // SC-WEATHER-C — apply pending mood_change requests + advance the
+        // weather state machine (fog/rain/snow/wind lerps, drift, lightning
+        // schedule, thunder cues). Uses wall dt like the music ticks — DS1
+        // weather is presentation, not simulation.
+        TickWeather((float)dt);
+        // SC-WEATHER-F — placed sound emitters (loops track Active state,
+        // repeat windows count down, one-shots fire on activation edges).
+        TickSoundEmitters((float)dt);
         // Phase 21-SC-BARREL-C — integrate frag debris (gravity + ground
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
@@ -17337,6 +17760,20 @@ void main()
                     duration: 0.45f,      // was 0.70 — fade before drifting too high
                     count: batch);
             }
+        }
+        // SC-WEATHER-D — with mood fog active, the void beyond loaded nodes
+        // clears to the fog color (retail's linear fog fades the world edge
+        // into the same tone, so unloaded space must match or the horizon
+        // shows a hard silhouette line). Flash folded in so lightning also
+        // lights the sky, not just geometry. No fog → the original dark clear.
+        if (_weather.FogActive && _weather.FogFar > _weather.FogNear)
+        {
+            var cc = FogColorWithFlash();
+            _gl.ClearColor(cc.X, cc.Y, cc.Z, 1f);
+        }
+        else
+        {
+            _gl.ClearColor(0.08f, 0.09f, 0.11f, 1f);
         }
         _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
 
@@ -18506,6 +18943,10 @@ void main()
             DrawQuestTracker(size.X, size.Y);
             // SC-COMPASS — hidden during cinematics like the rest of the HUD.
             if (_nisPhase == NisPhase.Off) DrawCompass(size.X, size.Y);
+            // SC-WEATHER-E — lightning screen flash washes the frame for the
+            // strike envelope (~0.45s double pulse). Drawn over the HUD: a
+            // real strike whites out everything, and the wash is brief.
+            DrawWeatherFlash(size.X, size.Y);
             DrawNisLetterbox(size.X, size.Y);
             DrawSubtitles(size.X, size.Y);
 
@@ -19191,6 +19632,11 @@ void main()
         _staticProps.Clear();
         _doorProps.Clear();
         _flameSources.Clear();
+        // SC-WEATHER-F — sound emitters are per-region-load; stop any live
+        // positional loops before dropping the state that tracks them.
+        _audio?.StopAllLoops();
+        _soundEmitters.Clear();
+        _soundEmittersByScid.Clear();
         foreach (var tex in _aspTextureCache.Values) tex?.Dispose();
         _aspTextureCache.Clear();
         // Phase 24-MAINMENU step 1+2-FOLD — splash texture cache. Six
@@ -19454,6 +19900,10 @@ void main()
         _activeMood = null;
         _activeBedRegion = null;
         _currentMusicTrack = "";
+        // SC-WEATHER-C — weather is pure runtime state (like music): reset and
+        // let the region re-apply below rebuild it from the region's mood.
+        _weather.Reset();
+        _requestedMoodName = null;
         ApplyAmbientForRegion(_regionPath);
 
         // Index live actors by scid so the patch loop is O(N+M) not O(N*M).

@@ -757,6 +757,7 @@ static int DispatchRegion(string[] a)
         "spawn-probe" => CmdRegionSpawnProbe(a[1..]),
         "spawn"       => CmdRegionSpawn(a[1..]),
         "prop-textures" => CmdRegionPropTextures(a[1..]),
+        "sound-emitters" => CmdRegionSoundEmitters(a[1..]),
         "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
         "loot-distribution" => CmdRegionLootDistribution(a[1..]),
         "mob-loot" => CmdRegionMobLoot(a[1..]),
@@ -4946,6 +4947,138 @@ static bool TryResolveAnyStance(AssetResolver resolver, string prefix, int[] sta
 // table sorted by miss count so we can see which templates' textures we
 // can't find — same logic that lights up the in-game --diag summary, but
 // runnable in CI / SSH without bringing up a window.
+// SC-WEATHER-F — audit every placed emt_sound / emt_sound_act against the
+// sounddb [global_voice] event table, SED aliases, and the shipped wavs.
+// Receipts (map_world, 2026-07-07): fh_r1 places 26 emt_sound + 9
+// emt_sound_act; the two trigger-toggled amb_rain_01 loops are 0x01C00B24 /
+// 0x01C00B18 (event → s_e_ambient_rain1.wav).
+static int CmdRegionSoundEmitters(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region sound-emitters <map-tank> <logic-tank> <sound-tank> <region-path|all>");
+        return 1;
+    }
+    using var mapTank   = TankFile.Open(a[0]);
+    using var logicTank = TankFile.Open(a[1]);
+    using var soundTank = TankFile.Open(a[2]);
+    var mapReader   = new TankReader(mapTank);
+    var logicReader = new TankReader(logicTank);
+    var soundReader = new TankReader(soundTank);
+
+    var (events, evDiags) = SiegeFX.Core.Assets.SoundDb.LoadGlobalVoice(logicReader);
+    foreach (var d in evDiags) Console.Error.WriteLine($"  diag: {d}");
+    var (seds, _) = SiegeFX.Core.Assets.SedStore.Load(soundReader);
+    Console.WriteLine($"sounddb [global_voice]: {events.Count} events; SEDs: {seds.Count}");
+
+    bool all = a[3].Equals("all", StringComparison.OrdinalIgnoreCase);
+    var regionPaths = new List<string>();
+    if (all)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"auditing {regionPaths.Count} regions...");
+    }
+    else regionPaths.Add(a[3]);
+
+    int total = 0, actCount = 0, loops = 0, repeats = 0, oneShots = 0, hourGated = 0;
+    int eventMisses = 0, wavMisses = 0;
+    var missedEvents = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var eventTally = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var rp in regionPaths)
+    {
+        var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "emitter.gas");
+        foreach (var inst in placements)
+        {
+            bool isAct = inst.TemplateName.Equals("emt_sound_act", StringComparison.OrdinalIgnoreCase);
+            bool isPlain = inst.TemplateName.Equals("emt_sound", StringComparison.OrdinalIgnoreCase);
+            if (!isAct && !isPlain) continue;
+            var block = SiegeFX.Core.Assets.TemplateStore.FindChild(
+                inst.Node, isAct ? "sound_emitter_act" : "sound_emitter");
+            if (block is null) continue;
+
+            string ev = "";
+            bool loop = false, rep = false, hg = false;
+            float rr = 0f, mrr = 0f;
+            foreach (var attr in block.Attributes)
+            {
+                var n = attr.Name.Trim();
+                var v = (attr.Value ?? "").Trim().Trim('"');
+                if (n.Equals("event_sound", StringComparison.OrdinalIgnoreCase)) ev = v;
+                else if (n.Equals("continual_loop", StringComparison.OrdinalIgnoreCase)) loop = v.Equals("true", StringComparison.OrdinalIgnoreCase);
+                else if (n.Equals("repeat", StringComparison.OrdinalIgnoreCase)) rep = v.Equals("true", StringComparison.OrdinalIgnoreCase);
+                else if (n.Equals("repeat_rate", StringComparison.OrdinalIgnoreCase)) float.TryParse(v.TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out rr);
+                else if (n.Equals("max_repeat_rate", StringComparison.OrdinalIgnoreCase)) float.TryParse(v.TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out mrr);
+                else if (n.Equals("start_hour", StringComparison.OrdinalIgnoreCase)
+                      || n.Equals("stop_hour", StringComparison.OrdinalIgnoreCase)
+                      || n.Equals("time_chunk", StringComparison.OrdinalIgnoreCase)) hg = true;
+            }
+            if (ev.Length == 0) continue;
+            total++;
+            if (isAct) actCount++;
+            if (loop) loops++;
+            else if (rep || rr > 0f || mrr > 0f) repeats++;
+            else oneShots++;
+            if (hg) hourGated++;
+            eventTally.TryGetValue(ev, out var tc); eventTally[ev] = tc + 1;
+
+            string kind = loop ? "loop" : (rep || rr > 0f || mrr > 0f) ? $"repeat {rr:0.#}-{Math.Max(mrr, rr):0.#}s" : "one-shot";
+            if (!events.TryGetValue(ev, out var samples) || samples.Count == 0)
+            {
+                eventMisses++;
+                missedEvents.TryGetValue(ev, out var c); missedEvents[ev] = c + 1;
+                if (!all) Console.WriteLine($"  0x{inst.Scid:x8} {inst.TemplateName,-14} '{ev}' — NOT IN [global_voice]");
+                continue;
+            }
+            var wavNames = new List<string>();
+            bool wavOk = true;
+            foreach (var sample in samples)
+            {
+                var key = sample.EndsWith("_SED", StringComparison.OrdinalIgnoreCase) ? sample[..^4] : sample;
+                var wav = seds.TryGetValue(key, out var sed) && sed.SoundEffectFile.Length > 0
+                    ? sed.SoundEffectFile : key;
+                wavNames.Add(wav);
+                if (!soundReader.TryGetFile($"/sound/effects/{wav}.wav", out _)) { wavOk = false; wavMisses++; }
+            }
+            if (!all)
+                Console.WriteLine($"  0x{inst.Scid:x8} {inst.TemplateName,-14} '{ev}' → [{string.Join(",", wavNames)}] " +
+                                  $"{kind}{(hg ? " HOUR-GATED" : "")}{(wavOk ? "" : " WAV-MISSING")}");
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"  emitters: {total} ({actCount} act, {total - actCount} plain) — " +
+                      $"{loops} loops, {repeats} repeating, {oneShots} one-shot, {hourGated} hour-gated");
+    Console.WriteLine($"  event misses: {eventMisses}, wav misses: {wavMisses}");
+    foreach (var (ev, c) in missedEvents) Console.WriteLine($"    missing event: {ev} ×{c}");
+    if (all)
+    {
+        Console.WriteLine($"  distinct events: {eventTally.Count}; top usage:");
+        foreach (var (ev, c) in eventTally.OrderByDescending(kv => kv.Value).Take(15))
+            Console.WriteLine($"    {ev,-32} ×{c}");
+    }
+    // Shipped-data baseline: exactly one placement (map_world) authors
+    // 'env_rats_sqeakskitter' — a typo for env_rats_squeakskitter (35 correct
+    // placements). It's silent in retail DS1 too, so it doesn't fail the audit.
+    bool onlyKnownTypo = eventMisses == 1
+        && missedEvents.Count == 1
+        && missedEvents.ContainsKey("env_rats_sqeakskitter");
+    if (onlyKnownTypo)
+        Console.WriteLine("  (the single miss is the known shipped typo — silent in retail too; PASS)");
+    return (wavMisses == 0 && (eventMisses == 0 || onlyKnownTypo)) ? 0 : 2;
+}
+
 static int CmdRegionPropTextures(string[] a)
 {
     if (a.Length < 4)
@@ -8453,12 +8586,92 @@ static int CmdAudioCoverage(string[] a)
 
 static int DispatchMood(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx mood list <Logic.dsres> [--map=NAME] [--with-bed] [--regions]"); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx mood list|weather <Logic.dsres> [--map=NAME] [--with-bed] [--regions]"); return 1; }
     return a[0].ToLowerInvariant() switch
     {
-        "list" => CmdMoodList(a[1..]),
-        _      => UnknownCommand("mood " + a[0]),
+        "list"    => CmdMoodList(a[1..]),
+        "weather" => CmdMoodWeather(a[1..]),
+        _         => UnknownCommand("mood " + a[0]),
     };
+}
+
+// SC-WEATHER-B — weather audit over parsed moods. Receipts (map_world, verified
+// against raw gas text 2026-07-07): 232 moods, 232 [fog], 9 [rain] (a 10th, in
+// map_world_bt_r1_2, ships commented out — "Rain near the beach got vetoed"),
+// 18 [snow], 42 [wind], 46 [sun] (colon-shorthand keys), exactly 1 authored
+// lightning (map_world_fh_r1_3, the opening-farmlands storm). Rain density
+// 30–225/s, snow 75–500/s.
+static int CmdMoodWeather(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx mood weather <Logic.dsres> [--map=NAME] [--all]");
+        return 1;
+    }
+    string? logicPath = null;
+    string? mapFilter = null;
+    bool showAll = false;
+    foreach (var arg in a)
+    {
+        if (arg.StartsWith("--map=", StringComparison.OrdinalIgnoreCase))
+            mapFilter = arg["--map=".Length..].Trim().ToLowerInvariant();
+        else if (arg.Equals("--all", StringComparison.OrdinalIgnoreCase))
+            showAll = true;
+        else if (arg.StartsWith("--", StringComparison.Ordinal))
+            throw new FormatException($"unknown flag '{arg}'");
+        else
+        {
+            if (logicPath is not null) throw new FormatException("only one Logic.dsres path expected");
+            logicPath = arg;
+        }
+    }
+    if (logicPath is null) { Console.Error.WriteLine("missing <Logic.dsres>"); return 1; }
+
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(logicPath);
+    var reader = new SiegeFX.Core.Tank.TankReader(tank);
+    var (moods, diags) = SiegeFX.Core.Assets.MoodStore.Load(reader);
+    foreach (var d in diags) Console.Error.WriteLine($"  diag: {d}");
+
+    bool InMap(string key) =>
+        mapFilter is null || key.StartsWith($"map_{mapFilter}_", StringComparison.OrdinalIgnoreCase);
+
+    var picked = moods.Values.Where(m => InMap(m.Name)).OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    Console.WriteLine($"mood weather: {Path.GetFileName(logicPath)}" +
+                      (mapFilter is null ? "" : $" (map={mapFilter})"));
+    Console.WriteLine($"  moods: {picked.Count}");
+    Console.WriteLine($"  fog:   {picked.Count(m => m.Fog is not null)}");
+    Console.WriteLine($"  rain:  {picked.Count(m => m.Rain is not null)} " +
+                      $"(authored lightning: {picked.Count(m => m.Rain?.Lightning == true)})");
+    Console.WriteLine($"  snow:  {picked.Count(m => m.Snow is not null)}");
+    Console.WriteLine($"  wind:  {picked.Count(m => m.Wind is not null)}");
+    Console.WriteLine($"  sun:   {picked.Count(m => m.Sun.Count > 0)}");
+    Console.WriteLine($"  interior: {picked.Count(m => m.Interior)}");
+    Console.WriteLine($"  reverb (non-generic room_type): " +
+                      $"{picked.Count(m => !string.IsNullOrEmpty(m.RoomType) && !m.RoomType.Equals("rt_generic", StringComparison.OrdinalIgnoreCase))}");
+
+    var rains = picked.Where(m => m.Rain is not null).Select(m => m.Rain!.Density).ToList();
+    var snows = picked.Where(m => m.Snow is not null).Select(m => m.Snow!.Density).ToList();
+    if (rains.Count > 0) Console.WriteLine($"  rain density range: {rains.Min():0.#}–{rains.Max():0.#}/s");
+    if (snows.Count > 0) Console.WriteLine($"  snow density range: {snows.Min():0.#}–{snows.Max():0.#}/s");
+
+    Console.WriteLine();
+    Console.WriteLine("  mood                                      tt     weather                          fog(near-far, color)          wind");
+    foreach (var m in picked)
+    {
+        bool hasWeather = m.Rain is not null || m.Snow is not null;
+        if (!showAll && !hasWeather) continue;
+        string weather =
+            m.Rain is not null ? $"rain {m.Rain.Density:0.#}/s{(m.Rain.Lightning ? " +LIGHTNING" : "")}"
+          : m.Snow is not null ? $"snow {m.Snow.Density:0.#}/s"
+          : "-";
+        string fogStr = m.Fog is null ? "-" :
+            $"{m.Fog.NearDist:0.#}-{m.Fog.FarDist:0.#}m 0x{m.Fog.Color:X8}";
+        string windStr = m.Wind is null ? "-" :
+            $"{m.Wind.Velocity:0.##}m/s @{m.Wind.Direction:0.##}rad";
+        Console.WriteLine($"    {m.Name,-40}  {m.TransitionTime,4:0.#}s  {weather,-30}  {fogStr,-28}  {windStr}" +
+                          (m.Interior ? "  [interior]" : ""));
+    }
+    return 0;
 }
 
 static int CmdMoodList(string[] a)

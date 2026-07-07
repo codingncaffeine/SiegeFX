@@ -42,6 +42,12 @@ public sealed class SedDescriptor
     /// no cap was authored (commented-out or absent). Not yet enforced
     /// by the runtime; recorded for a future per-clip voice-count slice.</summary>
     public int MaxSimultaneousSamples { get; init; } = -1;
+    /// <summary>SC-WEATHER-F — SED falloff override (meters): distance where
+    /// attenuation starts. Per the SU sounds doc these BEAT the min_dist /
+    /// max_dist authored on a sound emitter. -1 = not authored.</summary>
+    public float MinOverrideDist { get; init; } = -1f;
+    /// <summary>Falloff-end override (sound reaches zero). -1 = not authored.</summary>
+    public float MaxOverrideDist { get; init; } = -1f;
 }
 
 /// <summary>
@@ -109,6 +115,7 @@ public static class SedStore
         string soundFile = "";
         float minRate = 1.0f, maxRate = 1.0f;
         int maxSimul = -1;
+        float minDist = -1f, maxDist = -1f;
 
         foreach (var attr in node.Attributes)
         {
@@ -127,6 +134,14 @@ public static class SedStore
             {
                 if (int.TryParse(val.Trim(), out var v)) maxSimul = v;
             }
+            else if (NameEq(attr.Name, "min_override_dist"))
+            {
+                if (TryParseFloat(val, out var v)) minDist = v;
+            }
+            else if (NameEq(attr.Name, "max_override_dist"))
+            {
+                if (TryParseFloat(val, out var v)) maxDist = v;
+            }
         }
 
         if (string.IsNullOrEmpty(soundFile)) return; // descriptor with no payload
@@ -143,6 +158,8 @@ public static class SedStore
             MinPlaybackRate = minRate,
             MaxPlaybackRate = maxRate,
             MaxSimultaneousSamples = maxSimul,
+            MinOverrideDist = minDist,
+            MaxOverrideDist = maxDist,
         };
     }
 

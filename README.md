@@ -2,7 +2,7 @@
 
 ![SiegeFX](siegeFX_logo.png)
 
-An open-source, clean-room reimplementation of **Dungeon Siege** (Gas Powered Games, 2002) in C# / .NET 8 — loading the original game's data files directly rather than redistributing any of them.
+An open-source, clean-room reimplementation of **Dungeon Siege** (Gas Powered Games, 2002) in C# / .NET 11 — loading the original game's data files directly rather than redistributing any of them.
 
 > **SiegeFX requires the original game data.** It ships no copyrighted assets. You must own a copy of Dungeon Siege (GOG, Steam, or original discs) to use it.
 
@@ -24,8 +24,9 @@ Most of the groundwork is other people's — see [Credits & prior art](#credits-
 - **Party & companions** — conversation-driven recruitment; followers that fight with their own gear and trail you through six authentic DS1 formations; a per-companion character sheet (paper doll + backpack) and the Field Commands panel for orders and formation.
 - **Combat & spells** — melee, ranged, and spellcasting enemies with template-driven spawners, pack alerts, and patrol routes; the full authored spell universe firing its own DS1 sfx effects.
 - **Presentation & UX** — a DS1-faithful character creator, scripted intro cinematics (a non-interactive-sequence engine + storyteller narration), a rotating compass, a quest journal and HUD tracker, an in-game options menu, in-world vendors, clickable doors, breakable props with authored loot, lossless quicksave/quickload, and streaming mood-driven music.
+- **Weather & atmosphere** — the full mood system: per-location scripted rain and snow (the opening-farmland storm, the Glacern blizzards) with authored densities that drift like retail, linear mood fog on every region, wind-sheared precipitation, lightning with thunder, and the placed sound-emitter layer (trigger-activated rain loops, wind beds, waterwheels).
 
-**Under construction:** the end-to-end campaign, weather, level-up feedback, and combat balance.
+**Under construction:** the end-to-end campaign, time-of-day (mood `[sun]` tables + hour-gated cricket emitters are parsed but parked), level-up feedback, and combat balance.
 
 The full per-phase development log, roadmap, and what's queued live on the [**wiki**](https://github.com/codingncaffeine/SiegeFX/wiki) — start at [Status](https://github.com/codingncaffeine/SiegeFX/wiki/Status), [Architecture](https://github.com/codingncaffeine/SiegeFX/wiki/Architecture), [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Building-and-Running), or [Engine Quirks and Stumbles](https://github.com/codingncaffeine/SiegeFX/wiki/Engine-Quirks-and-Stumbles).
 

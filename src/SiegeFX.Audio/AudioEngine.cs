@@ -47,6 +47,11 @@ public sealed unsafe class AudioEngine : IDisposable
     // (e.g. quickload that reloads the same region) from clipping the loop.
     uint _ambientSource;
     string? _ambientCurrentClip;
+    // SC-WEATHER-F — positional looping emitters (DS1 emt_sound_act rain
+    // loops, always-on emt_sound loops). Each gets its own dedicated AL
+    // source outside the round-robin pool (a loop evicted mid-playback by
+    // an SFX rotation would audibly cut). Keyed by the emitter's SCID.
+    readonly Dictionary<uint, uint> _loopSources = new();
     bool _disposed;
 
     AudioEngine(AL al, ALContext alc, Device* device, Context* context, uint[] sources, uint ambientSource)
@@ -356,6 +361,69 @@ public sealed unsafe class AudioEngine : IDisposable
         _ambientCurrentClip = clipId;
     }
 
+    /// <summary>SC-WEATHER-F — start (or retarget) a positional looping
+    /// source for a placed sound emitter. Idempotent per key: re-calling
+    /// with the same clip leaves the loop running; a different clip swaps
+    /// it. Falloff follows the emitter's authored min_dist/max_dist
+    /// (defaults match <see cref="PlayAt"/>'s house values).</summary>
+    public void StartLoopAt(uint key, string clipId, Vector3 worldPos, float gain = 0.8f,
+                            float refDistance = 6f, float maxDistance = 40f)
+    {
+        if (_disposed) return;
+        if (!_bufferByClip.TryGetValue(clipId, out var buf))
+        {
+            Console.Error.WriteLine($"  audio: loop clip '{clipId}' not registered — emitter 0x{key:X8} silent");
+            return;
+        }
+        if (!_loopSources.TryGetValue(key, out var src))
+        {
+            uint s = 0;
+            _al.GenSources(1, &s);
+            _loopSources[key] = src = s;
+        }
+        else
+        {
+            // Same clip already looping on this key — leave it running.
+            _al.GetSourceProperty(src, GetSourceInteger.Buffer, out int cur);
+            _al.GetSourceProperty(src, GetSourceInteger.SourceState, out int state);
+            if (cur == (int)buf && state == (int)SourceState.Playing) return;
+            _al.SourceStop(src);
+        }
+        _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
+        _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(clipId));
+        _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
+        _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
+        _al.SetSourceProperty(src, SourceFloat.MaxDistance, maxDistance);
+        _al.SetSourceProperty(src, SourceFloat.RolloffFactor, 1.0f);
+        _al.SetSourceProperty(src, SourceVector3.Position, worldPos.X, worldPos.Y, worldPos.Z);
+        _al.SetSourceProperty(src, SourceBoolean.Looping, true);
+        _al.SourcePlay(src);
+    }
+
+    /// <summary>Stop one emitter loop (we_req_deactivate). The AL source is
+    /// kept for reuse — emitters toggle repeatedly (fh_r1's rain loops).</summary>
+    public void StopLoop(uint key)
+    {
+        if (_disposed) return;
+        if (_loopSources.TryGetValue(key, out var src))
+            _al.SourceStop(src);
+    }
+
+    /// <summary>Stop every emitter loop and release the sources (region
+    /// unload / new game).</summary>
+    public void StopAllLoops()
+    {
+        if (_disposed) return;
+        foreach (var src in _loopSources.Values)
+        {
+            _al.SourceStop(src);
+            uint s = src;
+            _al.DeleteSources(1, &s);
+        }
+        _loopSources.Clear();
+    }
+
     /// <summary>Phase 21d-2a-xii — register the per-fire pitch range for
     /// a clip from its DS1 SED descriptor. Idempotent — a second call
     /// replaces the previous range. Pass <paramref name="min"/> ==
@@ -421,6 +489,15 @@ public sealed unsafe class AudioEngine : IDisposable
                 _al.DeleteSources(1, &amb);
                 _ambientSource = 0;
             }
+
+            // SC-WEATHER-F — release emitter loop sources.
+            foreach (var src in _loopSources.Values)
+            {
+                _al.SourceStop(src);
+                var s = src;
+                _al.DeleteSources(1, &s);
+            }
+            _loopSources.Clear();
 
             foreach (var buf in _bufferByClip.Values)
             {

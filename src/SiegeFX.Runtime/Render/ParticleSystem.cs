@@ -269,6 +269,98 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private readonly List<ChargeP> _charges = new(32);
     private readonly List<SpellProjectile> _projectiles = new(32);
 
+    // SC-WEATHER-E — mood-driven precipitation. Rain drops render as
+    // velocity-aligned ribbon streaks (a billboard dot doesn't read as rain);
+    // snow rides the standard billboard list via MaintainWeather. Densities
+    // are authored drops/flakes-per-second (mood [rain]/[snow] blocks,
+    // shipped 30–225 rain / 75–500 snow); alive-count caps keep a blizzard
+    // from unbounded growth when the fall time is long.
+    private struct RainDropP
+    {
+        public Vector3 Position, Velocity;
+        public float GroundY;
+    }
+    private readonly List<RainDropP> _rainDrops = new(512);
+    private struct SnowFlakeP
+    {
+        public Vector3 Position, Velocity;
+        public float Life, TotalLife, Size, GroundY;
+        public byte Stuck;   // 1 = landed; holds position, fades out
+    }
+    private readonly List<SnowFlakeP> _snowFlakes = new(1024);
+    private float _rainCarry, _snowCarry;
+    private readonly Random _wxRng = new();
+    private const int MaxRainDrops = 900;
+    private const int MaxSnowFlakes = 3200;
+
+    /// <summary>SC-WEATHER-E — steady-state weather emitter, called once per
+    /// frame while a mood authors precipitation. <paramref name="rainPerSec"/>
+    /// and <paramref name="snowPerSec"/> are the authored densities (already
+    /// drift-adjusted by WeatherSystem); <paramref name="wind"/> is the mood
+    /// wind vector (shears rain, drifts snow); spawn volume is a disc over
+    /// <paramref name="focus"/> (the player), and everything dies at
+    /// <paramref name="floorY"/> — DS1 rain doesn't collide with geometry,
+    /// it draws in a cylinder around the camera focus exactly like this.</summary>
+    public void MaintainWeather(float dt, float rainPerSec, float snowPerSec,
+        Vector3 wind, Vector3 focus, float floorY)
+    {
+        if (rainPerSec > 0f)
+        {
+            _rainCarry += rainPerSec * dt;
+            int n = (int)_rainCarry;
+            _rainCarry -= n;
+            for (int i = 0; i < n && _rainDrops.Count < MaxRainDrops; i++)
+            {
+                var (dx, dz) = RandomInDisc(22f);
+                _rainDrops.Add(new RainDropP
+                {
+                    Position = new Vector3(focus.X + dx, focus.Y + 10f + (float)_wxRng.NextDouble() * 4f, focus.Z + dz),
+                    // Heavy vertical speed + a wind shear: retail streaks lean
+                    // with the storm but stay predominantly vertical.
+                    Velocity = wind * 1.5f + new Vector3(0f, -15f - (float)_wxRng.NextDouble() * 4f, 0f),
+                    GroundY = floorY,
+                });
+            }
+        }
+        else _rainCarry = 0f;
+
+        if (snowPerSec > 0f)
+        {
+            _snowCarry += snowPerSec * dt;
+            int n = (int)_snowCarry;
+            _snowCarry -= n;
+            for (int i = 0; i < n && _snowFlakes.Count < MaxSnowFlakes; i++)
+            {
+                var (dx, dz) = RandomInDisc(20f);
+                float fall = 0.9f + (float)_wxRng.NextDouble() * 0.8f;
+                float spawnH = 7f + (float)_wxRng.NextDouble() * 4f;
+                _snowFlakes.Add(new SnowFlakeP
+                {
+                    Position = new Vector3(focus.X + dx, focus.Y + spawnH, focus.Z + dz),
+                    Velocity = wind + new Vector3(
+                        ((float)_wxRng.NextDouble() - 0.5f) * 0.7f,
+                        -fall,
+                        ((float)_wxRng.NextDouble() - 0.5f) * 0.7f),
+                    // Life covers the fall plus a short linger on the ground
+                    // (landed flakes hold + fade — a cheap dusting read).
+                    Life = (focus.Y + spawnH - floorY) / fall + 1.5f,
+                    TotalLife = (focus.Y + spawnH - floorY) / fall + 1.5f,
+                    Size = 0.03f + (float)_wxRng.NextDouble() * 0.03f,
+                    GroundY = floorY,
+                });
+            }
+        }
+        else _snowCarry = 0f;
+    }
+
+    private (float dx, float dz) RandomInDisc(float radius)
+    {
+        // Uniform disc sample (sqrt-radius) so density doesn't bunch center.
+        float r = radius * MathF.Sqrt((float)_wxRng.NextDouble());
+        float a = (float)_wxRng.NextDouble() * MathF.Tau;
+        return (MathF.Cos(a) * r, MathF.Sin(a) * r);
+    }
+
     private const int InstanceFloats = 12; // pos(3) + scale(1) + color(4) + texSlotF(1) + lifeFrac(1) + reserved(2)
     private float[] _instanceBuffer = new float[2048 * InstanceFloats];
 
@@ -1269,6 +1361,36 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (b.Life <= 0f) { _bolts.RemoveAt(i); continue; }
             _bolts[i] = b;
         }
+        // SC-WEATHER-E — integrate precipitation. Rain dies at the floor
+        // (no bounce; DS1 rain has no impact splash we can source, noted
+        // as a possible polish item). Snow sticks at the floor and rides
+        // its remaining Life out as a fading ground dusting.
+        for (int i = _rainDrops.Count - 1; i >= 0; i--)
+        {
+            var r = _rainDrops[i];
+            r.Position += r.Velocity * dt;
+            if (r.Position.Y <= r.GroundY) { _rainDrops.RemoveAt(i); continue; }
+            _rainDrops[i] = r;
+        }
+        for (int i = _snowFlakes.Count - 1; i >= 0; i--)
+        {
+            var s = _snowFlakes[i];
+            s.Life -= dt;
+            if (s.Life <= 0f) { _snowFlakes.RemoveAt(i); continue; }
+            if (s.Stuck == 0)
+            {
+                s.Position += s.Velocity * dt;
+                if (s.Position.Y <= s.GroundY)
+                {
+                    s.Position.Y = s.GroundY + 0.01f;
+                    s.Stuck = 1;
+                    // Landed: cap the linger so a long-fall flake doesn't
+                    // sit on the ground for its whole unspent fall budget.
+                    s.Life = MathF.Min(s.Life, 1.5f);
+                }
+            }
+            _snowFlakes[i] = s;
+        }
         // Phase 21-SC-SPELL-VISUAL-A — advance cylinder lifetimes; the
         // emit pass reads Elapsed for fade-in/out + spin animation.
         for (int i = _cylinders.Count - 1; i >= 0; i--)
@@ -1472,7 +1594,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             && _projectiles.Count == 0 && _cylinders.Count == 0
             && _srayRays.Count == 0 && _flurry.Count == 0
             && _spes.Count == 0 && _sparkles.Count == 0 && _charges.Count == 0
-            && _polyShards.Count == 0 && _sphereMeshes.Count == 0) return;
+            && _polyShards.Count == 0 && _sphereMeshes.Count == 0
+            && _rainDrops.Count == 0 && _snowFlakes.Count == 0) return;
 
         // Phase 23d-2e — every ribbon-drawn primitive appends its slice to
         // _ribbonRanges with the texture slot it draws with (250+ = pure
@@ -1490,6 +1613,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         }
         EmitSrayQuads(cameraPos);
         AddRibbonRange(ref rangeStart, 2); // sparkle01 — soft additive streak read
+        // SC-WEATHER-E — rain streaks ride the ribbon path (velocity-aligned
+        // thin quads, pure vertex color slot).
+        EmitRainQuads(cameraPos);
+        AddRibbonRange(ref rangeStart, 250);
         EmitPolyShards();
         EmitSphereMeshes();
         AddRibbonRange(ref rangeStart, 250);
@@ -1500,7 +1627,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         if (_ribbonVertCount > 0) DrawRibbons(view, proj);
 
         int totalInstances = _particles.Count + _flurry.Count
-                           + _spes.Count + _sparkles.Count + _charges.Count;
+                           + _spes.Count + _sparkles.Count + _charges.Count
+                           + _snowFlakes.Count;
         if (totalInstances == 0) return;
 
         // Rebuild instance buffer.
@@ -1623,6 +1751,32 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 size = 0.08f;
             }
             FillInstance(cursor, pos, size, new Vector4(s.Color.X, s.Color.Y, s.Color.Z, s.Color.W * alpha), s.Tex);
+        }
+
+        // SC-WEATHER-E — snow flakes: soft white billboards (sparkle slot,
+        // alpha blend). Airborne flakes ride at steady alpha; landed flakes
+        // fade out over their remaining linger.
+        for (int i = 0; i < _snowFlakes.Count; i++, cursor++)
+        {
+            var s = _snowFlakes[i];
+            float alpha = 0.85f;
+            float age = s.TotalLife - s.Life;
+            if (age < 0.4f) alpha *= age / 0.4f;                       // spawn fade-in
+            if (s.Stuck == 1) alpha *= Math.Clamp(s.Life / 1.5f, 0f, 1f); // ground fade
+            else if (s.Life < 0.6f) alpha *= s.Life / 0.6f;            // altitude expiry
+            int o = cursor * InstanceFloats;
+            _instanceBuffer[o + 0] = s.Position.X;
+            _instanceBuffer[o + 1] = s.Position.Y;
+            _instanceBuffer[o + 2] = s.Position.Z;
+            _instanceBuffer[o + 3] = s.Size;
+            _instanceBuffer[o + 4] = 0.95f;
+            _instanceBuffer[o + 5] = 0.96f;
+            _instanceBuffer[o + 6] = 1.0f;
+            _instanceBuffer[o + 7] = alpha;
+            _instanceBuffer[o + 8] = 2f;   // sparkle texture slot
+            _instanceBuffer[o + 9] = 0f;   // alpha blend, not additive
+            _instanceBuffer[o + 10] = 0f;
+            _instanceBuffer[o + 11] = 0f;
         }
 
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vboInstance);
@@ -1865,6 +2019,41 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             EmitRibbonVert(bR, 1f, 0f, c0);
             EmitRibbonVert(tR, 1f, 1f, c1);
             EmitRibbonVert(tL, 0f, 1f, c1);
+        }
+    }
+
+    /// <summary>SC-WEATHER-E — one thin velocity-aligned quad per rain drop.
+    /// The streak trails the drop's head along its (wind-sheared) velocity;
+    /// the head vertex is brighter than the tail so the eye reads downward
+    /// motion even in a still frame. Pure vertex color (slot 250), alpha
+    /// blend via the shared ribbon pass.</summary>
+    void EmitRainQuads(Vector3 cameraPos)
+    {
+        if (_rainDrops.Count == 0) return;
+        EnsureRibbonCapacity(_ribbonVertCount + _rainDrops.Count * 6);
+        var cHead = new Vector4(0.72f, 0.78f, 0.90f, 0.34f);
+        var cTail = new Vector4(0.72f, 0.78f, 0.90f, 0.05f);
+        const float streakLen = 0.55f;
+        const float halfWidth = 0.012f;
+        for (int i = 0; i < _rainDrops.Count; i++)
+        {
+            var r = _rainDrops[i];
+            var dir = Vector3.Normalize(r.Velocity);
+            var head = r.Position;
+            var tail = head - dir * streakLen;
+            var toCam = cameraPos - head;
+            var perp = Vector3.Cross(dir, toCam);
+            if (perp.LengthSquared() < 0.0001f) perp = Vector3.UnitX;
+            perp = Vector3.Normalize(perp) * halfWidth;
+
+            var hL = head + perp; var hR = head - perp;
+            var tL = tail + perp; var tR = tail - perp;
+            EmitRibbonVert(hL, 0f, 0f, cHead);
+            EmitRibbonVert(hR, 1f, 0f, cHead);
+            EmitRibbonVert(tL, 0f, 1f, cTail);
+            EmitRibbonVert(hR, 1f, 0f, cHead);
+            EmitRibbonVert(tR, 1f, 1f, cTail);
+            EmitRibbonVert(tL, 0f, 1f, cTail);
         }
     }
 
