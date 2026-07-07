@@ -829,7 +829,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             File = "non_interactive.gas",
         });
         RebuildPlacedRows();
-        Status = $"Placed {_selectedProp.Name} on node 0x{node.Guid:X8}.";
+        var model = _templateModel.TryGetValue(_selectedProp.Name, out var mm) ? mm : "(none)";
+        var mesh = _asp?.Resolve(model);
+        Status = mesh is null
+            ? $"Placed {_selectedProp.Name} — model '{model}' has no .asp; shown as a marker cube."
+            : $"Placed {_selectedProp.Name} — model '{model}' → {mesh.TriangleCount} tris.";
         RaiseCommands();
     }
 
@@ -968,13 +972,19 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var o in _objects)
         {
             if (!layout.TryGetTransform(o.NodeGuid, out var nodeWorld)) continue;
-            if (!_templateModel.TryGetValue(o.Template, out var model)) continue;
-            var mesh = _asp?.Resolve(model);
-            if (mesh is null || mesh.TriangleIndices.Length < 3) continue;
 
             var world = Matrix4x4.CreateFromQuaternion(o.Orientation)
                       * Matrix4x4.CreateTranslation(o.LocalPos)
                       * nodeWorld;
+
+            AspMesh? mesh = _templateModel.TryGetValue(o.Template, out var model) ? _asp?.Resolve(model) : null;
+            if (mesh is null || mesh.TriangleIndices.Length < 3)
+            {
+                // No mesh resolved — draw a marker cube so the placement is always visible + grabbable.
+                AppendMarkerCube(world, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid,
+                    o.NodeGuid, o.Scid, ref min, ref max);
+                continue;
+            }
 
             int mtc = mesh.TriangleIndices.Length / 3;
             var subsetTex = new int[mtc];
@@ -1060,6 +1070,43 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         normals.Add(Vector3.TransformNormal(c.Normal, world));
         uvs.Add(c.Uv);
         return p;
+    }
+
+    private static float MarkerSize(float radius) => MathF.Max(radius * 0.03f, 0.3f);
+
+    private static readonly Vector3[] CubeCorners =
+    {
+        new(-1,-1,-1), new(1,-1,-1), new(1,1,-1), new(-1,1,-1),
+        new(-1,-1, 1), new(1,-1, 1), new(1,1, 1), new(-1,1, 1),
+    };
+    private static readonly int[] CubeTris =
+    {
+        0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
+        3,2,6, 3,6,7,  1,5,6, 1,6,2,  0,3,7, 0,7,4,
+    };
+
+    /// <summary>Appends a small flat-shaded cube at <paramref name="world"/>'s origin as a placeholder
+    /// for a placed object whose mesh didn't resolve — so it's still visible and grabbable.</summary>
+    private static void AppendMarkerCube(Matrix4x4 world, float size,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<uint> pickGuid, List<uint> pickScid, uint nodeGuid, uint scid,
+        ref Vector3 min, ref Vector3 max)
+    {
+        for (int i = 0; i < CubeTris.Length; i += 3)
+        {
+            for (int e = 0; e < 3; e++)
+            {
+                var p = Vector3.Transform(CubeCorners[CubeTris[i + e]] * size, world);
+                verts.Add(p);
+                normals.Add(Vector3.Zero);
+                uvs.Add(Vector2.Zero);
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+            }
+            triTex.Add(-1);
+            pickGuid.Add(nodeGuid);
+            pickScid.Add(scid);
+        }
     }
 
     // ── camera (driven by the view's mouse handlers) ────────────
