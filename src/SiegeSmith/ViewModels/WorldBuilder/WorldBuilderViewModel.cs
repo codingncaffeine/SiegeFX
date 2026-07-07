@@ -86,6 +86,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand ConnectCommand { get; }
     public RelayCommand DeleteNodeCommand { get; }
     public RelayCommand SaveNodesCommand { get; }
+    public RelayCommand ImportNodesCommand { get; }
     public RelayCommand ResetViewCommand { get; }
     public RelayCommand WireframeCommand { get; }
     public RelayCommand TexturedCommand { get; }
@@ -100,6 +101,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                  && _selectedMesh is not null && _selectedTargetDoor is not null);
         DeleteNodeCommand = new RelayCommand(_ => DeleteSelectedNode(), _ => _selectedNode is not null);
         SaveNodesCommand = new RelayCommand(_ => SaveNodes(), _ => !IsEmpty);
+        ImportNodesCommand = new RelayCommand(_ => ImportNodes(), _ => IsReady);
         ResetViewCommand = new RelayCommand(_ => ResetView());
         WireframeCommand = new RelayCommand(_ => { _wireframe = !_wireframe; OnPropertyChanged(nameof(WireframeLabel)); Render(); });
 
@@ -278,6 +280,38 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         return g;
     }
 
+    private void ImportNodes()
+    {
+        if (!IsReady) return;
+        var path = DialogService.OpenFile("Open a region's nodes.gas", "GAS files (*.gas)|*.gas|All files (*.*)|*.*");
+        if (path is null) return;
+        try
+        {
+            var region = NodesGasReader.Read(GasDocument.Load(File.ReadAllBytes(path)));
+            if (region.Nodes.Count == 0) { Status = "No snodes found in that file."; return; }
+
+            _region.Nodes.Clear();
+            _region.Nodes.AddRange(region.Nodes);
+            _region.TargetGuid = region.TargetGuid;
+
+            _usedGuids.Clear();
+            uint maxGuid = 0;
+            foreach (var n in _region.Nodes)
+            {
+                _usedGuids.Add(n.Guid);
+                if (n.Guid > maxGuid) maxGuid = n.Guid;
+            }
+            _nextGuid = maxGuid == 0 ? 0x00010001 : maxGuid + 1;
+
+            _selectedNode = null;
+            OnPropertyChanged(nameof(SelectedNode));
+            SourceDoors.Clear();
+            _dist = 0f; // reframe the camera onto the imported region
+            AfterModelChanged($"Imported {_region.Nodes.Count} node(s) from {Path.GetFileName(path)}.");
+        }
+        catch (Exception ex) { Status = "Import failed: " + ex.Message; }
+    }
+
     private void SaveNodes()
     {
         if (IsEmpty) return;
@@ -414,6 +448,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ConnectCommand.RaiseCanExecuteChanged();
         DeleteNodeCommand.RaiseCanExecuteChanged();
         SaveNodesCommand.RaiseCanExecuteChanged();
+        ImportNodesCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

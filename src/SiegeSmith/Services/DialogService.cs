@@ -58,6 +58,19 @@ public static class DialogService
         return dlg.ShowDialog() == true ? dlg.FileName : null;
     }
 
+    /// <summary>Generic open-file picker. <paramref name="filter"/> is a standard WPF dialog filter
+    /// (e.g. "GAS files (*.gas)|*.gas|All files (*.*)|*.*").</summary>
+    public static string? OpenFile(string title, string filter)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = title,
+            Filter = filter,
+            CheckFileExists = true,
+        };
+        return dlg.ShowDialog() == true ? dlg.FileName : null;
+    }
+
     public static string? SaveProjectFile(string name)
     {
         var dlg = new SaveFileDialog

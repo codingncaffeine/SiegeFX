@@ -83,7 +83,9 @@
                         <Button Content="Place as anchor" Command="{Binding PlaceAnchorCommand}" Margin="0,3" Padding="8,5"/>
                         <Button Content="Connect to selected door" Command="{Binding ConnectCommand}" Margin="0,3" Padding="8,5"/>
                         <Button Content="Delete selected node" Command="{Binding DeleteNodeCommand}" Margin="0,3" Padding="8,5"/>
-                        <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,10,0,3" Padding="8,5"/>
+                        <Button Content="Open nodes.gas…" Command="{Binding ImportNodesCommand}" Margin="0,10,0,3" Padding="8,5"
+                                ToolTip="Load an existing region's nodes.gas back in to edit it"/>
+                        <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,3" Padding="8,5"/>
                     </StackPanel>
 
                     <ListBox DockPanel.Dock="Bottom" MaxHeight="160" ItemsSource="{Binding SourceDoors}"
