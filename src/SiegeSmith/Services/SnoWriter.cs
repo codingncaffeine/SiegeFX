@@ -35,21 +35,45 @@ public static class SnoWriter
     /// and the perimeter hot-spot corner indices are authored.</summary>
     public readonly record struct DoorDef(uint Id, Vector3 Translation, uint[] HotSpots);
 
-    /// <summary>Serializes a tile. When <paramref name="walkable"/> is set, a single <see cref="SnoModel.FloorKind.Floor"/>
-    /// logical grouping is emitted over every triangle (with a single-leaf BSP) so the engine's nav builder
-    /// treats the tile as walkable. Otherwise no grouping is written (geometry-only / cosmetic tile).</summary>
+    /// <summary>A nav face in SNO-local space (positions, not indices) — the shape the engine's NavMesh
+    /// builder consumes.</summary>
+    public readonly record struct NavFace(Vector3 A, Vector3 B, Vector3 C, Vector3 Normal);
+
+    /// <summary>Author-side mirror of <see cref="SnoModel.BspNode"/>: a median-split BVH node whose leaves
+    /// carry triangle indices into the parent grouping's <see cref="GroupingDef.Faces"/>.</summary>
+    public sealed class BspNodeDef
+    {
+        public Vector3 Min, Max;
+        public bool IsLeaf;
+        public ushort[] TriIndices = Array.Empty<ushort>();
+        public BspNodeDef[] Children = Array.Empty<BspNodeDef>();
+    }
+
+    /// <summary>A pre-classified nav grouping (produced by <see cref="SnoNavGen"/>): one connected walkable
+    /// (or water/ignored) region with its faces and a BSP over them.</summary>
+    public sealed class GroupingDef
+    {
+        public byte Id;
+        public SnoModel.FloorKind Kind = SnoModel.FloorKind.Floor;
+        public Vector3 Min, Max;
+        public IReadOnlyList<NavFace> Faces = Array.Empty<NavFace>();
+        public BspNodeDef Bsp = new() { IsLeaf = true };
+    }
+
+    /// <summary>Serializes a tile with an explicit set of nav <paramref name="groupings"/> (from
+    /// <see cref="SnoNavGen"/>). Pass an empty/null list for a geometry-only (cosmetic) tile.</summary>
     public static byte[] Write(
         IReadOnlyList<Vertex> vertices,
         IReadOnlyList<Tri> tris,
         string textureName,
         IReadOnlyList<DoorDef>? doors = null,
-        bool walkable = false)
+        IReadOnlyList<GroupingDef>? groupings = null)
     {
         doors ??= Array.Empty<DoorDef>();
         if (string.IsNullOrEmpty(textureName)) textureName = "custom";
         if (vertices.Count > ushort.MaxValue)
             throw new ArgumentException($"SNO surface indices are 16-bit; {vertices.Count} vertices exceeds {ushort.MaxValue}");
-        if (walkable && tris.Count > ushort.MaxValue)
+        if (tris.Count > ushort.MaxValue)
             throw new ArgumentException($"SNO BSP triangle indices are 16-bit; {tris.Count} triangles exceeds {ushort.MaxValue}");
 
         Vector3 min = new(float.MaxValue), max = new(float.MinValue);
@@ -111,39 +135,39 @@ public static class SnoWriter
         }
 
         // --- Logical groupings / nav ---
-        if (walkable && tris.Count > 0)
+        groupings ??= Array.Empty<GroupingDef>();
+        w.Write((uint)groupings.Count);
+        foreach (var g in groupings)
         {
-            w.Write(1u);                    // grouping count
-            w.Write((byte)1);               // id
-            WriteVec3(w, min);
-            WriteVec3(w, max);
-            w.Write((uint)SnoModel.FloorKind.Floor);
+            w.Write(g.Id);
+            WriteVec3(w, g.Min);
+            WriteVec3(w, g.Max);
+            w.Write((uint)g.Kind);
             w.Write(0u);                    // general_connection_section count
             w.Write(0u);                    // nodal_array count
-            w.Write((uint)tris.Count);      // nav face count
-            foreach (var t in tris)
+            w.Write((uint)g.Faces.Count);   // nav face count
+            foreach (var f in g.Faces)
             {
-                var a = vertices[t.A].Position;
-                var b = vertices[t.B].Position;
-                var c = vertices[t.C].Position;
-                WriteVec3(w, a); WriteVec3(w, b); WriteVec3(w, c);
-                WriteVec3(w, TriNormal(a, b, c));
+                WriteVec3(w, f.A); WriteVec3(w, f.B); WriteVec3(w, f.C); WriteVec3(w, f.Normal);
             }
-            // Single-leaf BSP over all nav faces.
-            WriteVec3(w, min);
-            WriteVec3(w, max);
-            w.Write((byte)1);               // is_leaf
-            w.Write((ushort)tris.Count);    // triangle_count
-            for (int i = 0; i < tris.Count; i++) w.Write((ushort)i);
-            w.Write((byte)0);               // child count
-        }
-        else
-        {
-            w.Write(0u);                    // grouping count (geometry-only)
+            WriteBsp(w, g.Bsp);
         }
 
         w.Flush();
         return ms.ToArray();
+    }
+
+    private static void WriteBsp(BinaryWriter w, BspNodeDef node)
+    {
+        WriteVec3(w, node.Min);
+        WriteVec3(w, node.Max);
+        w.Write((byte)(node.IsLeaf ? 1 : 0));
+        var tris = node.TriIndices ?? Array.Empty<ushort>();
+        w.Write((ushort)tris.Length);
+        foreach (var t in tris) w.Write(t);
+        var kids = node.Children ?? Array.Empty<BspNodeDef>();
+        w.Write((byte)kids.Length);
+        foreach (var c in kids) WriteBsp(w, c);
     }
 
     /// <summary>Generates a flat, walkable square tile: a <paramref name="res"/>×<paramref name="res"/> grid
@@ -176,6 +200,49 @@ public static class SnoWriter
         return (verts, tris);
     }
 
+    /// <summary>Generates a ramp tile: the flat grid tilted so Y rises linearly by <paramref name="riseY"/>
+    /// across Z. Corner normals are the analytic tilted normal so lighting and slope classification are
+    /// correct. A gentle ramp classifies as Floor; too steep a rise falls out of the walkable band.</summary>
+    public static (List<Vertex> Verts, List<Tri> Tris) BuildRampTile(float sizeX, float sizeZ, int res, float riseY, float uvTiles = 1f)
+    {
+        res = Math.Max(1, res);
+        // Tangent along +Z is (0, riseY/sizeZ, 1); normal = normalize(0, sizeZ, -riseY) keeps +Y up.
+        var normal = Vector3.Normalize(new Vector3(0f, sizeZ, -riseY));
+        var verts = new List<Vertex>((res + 1) * (res + 1));
+        float x0 = -sizeX * 0.5f, z0 = -sizeZ * 0.5f;
+        for (int j = 0; j <= res; j++)
+            for (int i = 0; i <= res; i++)
+            {
+                float fx = (float)i / res, fz = (float)j / res;
+                var pos = new Vector3(x0 + fx * sizeX, riseY * fz, z0 + fz * sizeZ);
+                verts.Add(Vertex.White(pos, normal, new Vector2(fx * uvTiles, fz * uvTiles)));
+            }
+        int Idx(int i, int j) => j * (res + 1) + i;
+        var tris = new List<Tri>(res * res * 2);
+        for (int j = 0; j < res; j++)
+            for (int i = 0; i < res; i++)
+            {
+                int a = Idx(i + 1, j + 1), b = Idx(i + 1, j), c = Idx(i, j), d = Idx(i, j + 1);
+                tris.Add(new Tri(a, b, c));
+                tris.Add(new Tri(a, c, d));
+            }
+        return (verts, tris);
+    }
+
+    /// <summary>Edge doors on the four sides of a centred square tile (index N,E,S,W bits in
+    /// <paramref name="sides"/>), each with an identity rotation and the mid-edge translation. Door ids start
+    /// at 1. Path shapes (corner/T/cross) are just which sides carry a door.</summary>
+    public static List<DoorDef> EdgeDoors(float sizeX, float sizeZ, bool north, bool east, bool south, bool west)
+    {
+        var doors = new List<DoorDef>();
+        uint id = 1;
+        if (north) doors.Add(new DoorDef(id++, new Vector3(0, 0, sizeZ * 0.5f), Array.Empty<uint>()));
+        if (east) doors.Add(new DoorDef(id++, new Vector3(sizeX * 0.5f, 0, 0), Array.Empty<uint>()));
+        if (south) doors.Add(new DoorDef(id++, new Vector3(0, 0, -sizeZ * 0.5f), Array.Empty<uint>()));
+        if (west) doors.Add(new DoorDef(id++, new Vector3(-sizeX * 0.5f, 0, 0), Array.Empty<uint>()));
+        return doors;
+    }
+
     private static void WriteVec2(BinaryWriter w, Vector2 v) { w.Write(v.X); w.Write(v.Y); }
     private static void WriteVec3(BinaryWriter w, Vector3 v) { w.Write(v.X); w.Write(v.Y); w.Write(v.Z); }
 
@@ -190,7 +257,7 @@ public static class SnoWriter
         w.Write((byte)0);
     }
 
-    private static Vector3 TriNormal(Vector3 a, Vector3 b, Vector3 c)
+    internal static Vector3 TriNormal(Vector3 a, Vector3 b, Vector3 c)
     {
         var n = Vector3.Cross(b - a, c - a);
         return n.LengthSquared() > 1e-12f ? Vector3.Normalize(n) : Vector3.UnitY;
