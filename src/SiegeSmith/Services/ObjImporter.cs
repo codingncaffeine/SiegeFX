@@ -19,6 +19,12 @@ public static class ObjImporter
         public List<AspFace> Faces = new();
         public List<string> TextureNames = new();
         public int SkippedFaces;
+
+        /// <summary>Skeleton for a rigged import (glTF skin). Null for a static mesh. When set,
+        /// <see cref="Skins"/> is parallel to <see cref="Corners"/> and the caller writes a skinned ASP.</summary>
+        public List<AspBone>? Bones;
+        public List<AspSkin>? Skins;
+        public bool IsSkinned => Bones is { Count: > 0 } && Skins is { Count: > 0 };
     }
 
     public static Result Parse(string objText)

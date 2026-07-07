@@ -52,8 +52,16 @@ public static class GltfImporter
             return s;
         }
 
+        // A rig, if any: the first glTF skin becomes the ASP skeleton (parent-first ordered).
+        var skeleton = BuildSkeleton(root, accessors, bufferViews, buffers);
+        if (skeleton is not null)
+        {
+            r.Bones = skeleton.Bones;
+            r.Skins = new List<AspSkin>();
+        }
+
         // Walk the default scene so each mesh inherits its node's world transform.
-        foreach (var (nodeMesh, world) in EnumerateMeshNodes(root))
+        foreach (var (nodeMesh, world, skinIndex) in EnumerateMeshNodes(root))
         {
             if (meshes.ValueKind != JsonValueKind.Array || nodeMesh >= meshes.GetArrayLength()) continue;
             var mesh = meshes[nodeMesh];
@@ -75,6 +83,15 @@ public static class GltfImporter
                     : SequentialIndices(positions.Length);
                 int material = LocalMaterial(prim.TryGetProperty("material", out var mm) ? mm.GetInt32() : -1);
 
+                // Skin attributes — only meaningful when this node is skinned and we built a skeleton.
+                int[]? joints = null; Vector4[]? weights = null;
+                if (r.Skins is not null && skinIndex >= 0
+                    && attrs.TryGetProperty("JOINTS_0", out var jAcc) && attrs.TryGetProperty("WEIGHTS_0", out var wAcc))
+                {
+                    joints = ReadJoints4(jAcc.GetInt32(), accessors, bufferViews, buffers);
+                    weights = ReadVec4Accessor(wAcc.GetInt32(), accessors, bufferViews, buffers);
+                }
+
                 int baseCorner = r.Corners.Count;
                 for (int v = 0; v < positions.Length; v++)
                 {
@@ -92,6 +109,23 @@ public static class GltfImporter
                     }
                     var uv = uvs is not null && v < uvs.Length ? new Vector2(uvs[v].X, 1f - uvs[v].Y) : Vector2.Zero;
                     r.Corners.Add(AspCorner.White(vi, nrm, uv));
+
+                    // Keep skins parallel to corners: real weights when present, else bound fully to bone 0.
+                    if (r.Skins is not null)
+                    {
+                        if (joints is not null && weights is not null && v < weights.Length)
+                        {
+                            byte b0 = MapJoint(skeleton!, joints[v * 4 + 0]);
+                            byte b1 = MapJoint(skeleton!, joints[v * 4 + 1]);
+                            byte b2 = MapJoint(skeleton!, joints[v * 4 + 2]);
+                            byte b3 = MapJoint(skeleton!, joints[v * 4 + 3]);
+                            r.Skins.Add(new AspSkin(weights[v], b0, b1, b2, b3));
+                        }
+                        else
+                        {
+                            r.Skins.Add(new AspSkin(new Vector4(1, 0, 0, 0), 0, 0, 0, 0));
+                        }
+                    }
                 }
 
                 for (int t = 0; t + 2 < indices.Length; t += 3)
@@ -226,9 +260,10 @@ public static class GltfImporter
         return a;
     }
 
-    /// <summary>Yields (meshIndex, worldMatrix) for every node that references a mesh, composing the
-    /// scene → node transform chain. Falls back to walking all nodes if no scene is declared.</summary>
-    private static IEnumerable<(int Mesh, Matrix4x4 World)> EnumerateMeshNodes(JsonElement root)
+    /// <summary>Yields (meshIndex, worldMatrix, skinIndex) for every node that references a mesh,
+    /// composing the scene → node transform chain. skinIndex is -1 for an unskinned node. Falls back to
+    /// walking all nodes if no scene is declared.</summary>
+    private static IEnumerable<(int Mesh, Matrix4x4 World, int Skin)> EnumerateMeshNodes(JsonElement root)
     {
         if (!root.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
             yield break;
@@ -249,7 +284,7 @@ public static class GltfImporter
 
         var stack = new Stack<(int Node, Matrix4x4 Parent)>();
         for (int i = roots.Length - 1; i >= 0; i--) stack.Push((roots[i], Matrix4x4.Identity));
-        var results = new List<(int, Matrix4x4)>();
+        var results = new List<(int, Matrix4x4, int)>();
         var guard = new HashSet<int>();
         while (stack.Count > 0)
         {
@@ -258,7 +293,11 @@ public static class GltfImporter
             var node = nodes[ni];
             var local = LocalTransform(node);
             var world = local * parent;
-            if (node.TryGetProperty("mesh", out var m)) results.Add((m.GetInt32(), world));
+            if (node.TryGetProperty("mesh", out var m))
+            {
+                int skin = node.TryGetProperty("skin", out var sk) ? sk.GetInt32() : -1;
+                results.Add((m.GetInt32(), world, skin));
+            }
             if (node.TryGetProperty("children", out var ch))
                 foreach (var c in ch.EnumerateArray()) stack.Push((c.GetInt32(), world));
         }
@@ -316,5 +355,106 @@ public static class GltfImporter
             sb.Append(c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_' ? c : '_');
         var t = sb.ToString().Trim('_');
         return t.Length == 0 ? "custom" : t;
+    }
+
+    private sealed class Skeleton
+    {
+        public List<AspBone> Bones = new();
+        public Dictionary<int, int> JointToBone = new(); // glTF joint-array index → ASP bone index
+    }
+
+    /// <summary>Builds the ASP skeleton from the first glTF skin: each joint's parent-space bind pose
+    /// (its node's local TRS) and its parent, topologically ordered parent-first (the ASP reader composes
+    /// and inverts the world bind and requires parents precede children).</summary>
+    private static Skeleton? BuildSkeleton(JsonElement root, JsonElement accessors, JsonElement bufferViews, List<byte[]> buffers)
+    {
+        if (!root.TryGetProperty("skins", out var skins) || skins.GetArrayLength() == 0) return null;
+        if (!root.TryGetProperty("nodes", out var nodes)) return null;
+        var skin = skins[0];
+        if (!skin.TryGetProperty("joints", out var jointsEl)) return null;
+        var joints = new List<int>();
+        foreach (var j in jointsEl.EnumerateArray()) joints.Add(j.GetInt32());
+        if (joints.Count == 0 || joints.Count > 255) return null; // WCRN bone index is one byte
+
+        // node → parent node, from every node's children list.
+        var parentOf = new Dictionary<int, int>();
+        for (int ni = 0; ni < nodes.GetArrayLength(); ni++)
+            if (nodes[ni].TryGetProperty("children", out var ch))
+                foreach (var c in ch.EnumerateArray()) parentOf[c.GetInt32()] = ni;
+
+        var nodeToJoint = new Dictionary<int, int>();
+        for (int j = 0; j < joints.Count; j++) nodeToJoint[joints[j]] = j;
+        var parentJoint = new int[joints.Count];
+        for (int j = 0; j < joints.Count; j++)
+            parentJoint[j] = parentOf.TryGetValue(joints[j], out var pn) && nodeToJoint.TryGetValue(pn, out var pj) ? pj : -1;
+
+        // Topo-sort parent-first.
+        var order = new List<int>();
+        var placed = new bool[joints.Count];
+        int guard = 0;
+        while (order.Count < joints.Count && guard++ <= joints.Count + 1)
+            for (int j = 0; j < joints.Count; j++)
+                if (!placed[j] && (parentJoint[j] < 0 || placed[parentJoint[j]])) { placed[j] = true; order.Add(j); }
+        for (int j = 0; j < joints.Count; j++) if (!placed[j]) order.Add(j); // leftover cycle → append as roots
+
+        var sk = new Skeleton();
+        var oldToNew = new int[joints.Count];
+        for (int newIdx = 0; newIdx < order.Count; newIdx++) oldToNew[order[newIdx]] = newIdx;
+        foreach (var oldJ in order)
+        {
+            var node = nodes[joints[oldJ]];
+            Matrix4x4.Decompose(LocalTransform(node), out _, out var rot, out var trans);
+            int parent = parentJoint[oldJ] < 0 ? -1 : oldToNew[parentJoint[oldJ]];
+            string name = node.TryGetProperty("name", out var nm) && !string.IsNullOrWhiteSpace(nm.GetString())
+                ? Sanitize(nm.GetString()!) : $"bone{oldJ}";
+            sk.Bones.Add(new AspBone(name, parent, rot, trans));
+        }
+        for (int j = 0; j < joints.Count; j++) sk.JointToBone[j] = oldToNew[j];
+        return sk;
+    }
+
+    private static byte MapJoint(Skeleton sk, int gltfJointArrayIdx)
+        => (byte)(sk.JointToBone.TryGetValue(gltfJointArrayIdx, out var b) && b is >= 0 and < 256 ? b : 0);
+
+    private static Vector4[] ReadVec4Accessor(int idx, JsonElement accessors, JsonElement bufferViews, List<byte[]> buffers)
+    {
+        var v = Resolve(idx, accessors, bufferViews, buffers, out int count, out int compType, out _);
+        int elemSize = compType switch { 5126 => 16, 5121 => 4, 5123 => 8, _ => 16 };
+        int stride = v.Stride == 0 ? elemSize : v.Stride;
+        var result = new Vector4[count];
+        for (int i = 0; i < count; i++)
+        {
+            int o = v.Offset + i * stride;
+            result[i] = compType switch
+            {
+                5121 => new Vector4(v.Buffer[o] / 255f, v.Buffer[o + 1] / 255f, v.Buffer[o + 2] / 255f, v.Buffer[o + 3] / 255f),
+                5123 => new Vector4(
+                    BinaryPrimitives.ReadUInt16LittleEndian(v.Buffer.AsSpan(o)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(v.Buffer.AsSpan(o + 2)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(v.Buffer.AsSpan(o + 4)) / 65535f,
+                    BinaryPrimitives.ReadUInt16LittleEndian(v.Buffer.AsSpan(o + 6)) / 65535f),
+                _ => new Vector4(
+                    BinaryPrimitives.ReadSingleLittleEndian(v.Buffer.AsSpan(o)),
+                    BinaryPrimitives.ReadSingleLittleEndian(v.Buffer.AsSpan(o + 4)),
+                    BinaryPrimitives.ReadSingleLittleEndian(v.Buffer.AsSpan(o + 8)),
+                    BinaryPrimitives.ReadSingleLittleEndian(v.Buffer.AsSpan(o + 12))),
+            };
+        }
+        return result;
+    }
+
+    private static int[] ReadJoints4(int idx, JsonElement accessors, JsonElement bufferViews, List<byte[]> buffers)
+    {
+        var v = Resolve(idx, accessors, bufferViews, buffers, out int count, out int compType, out _);
+        int elemSize = compType == 5121 ? 4 : 8; // VEC4 of u8 or u16
+        int stride = v.Stride == 0 ? elemSize : v.Stride;
+        var result = new int[count * 4];
+        for (int i = 0; i < count; i++)
+        {
+            int o = v.Offset + i * stride;
+            for (int k = 0; k < 4; k++)
+                result[i * 4 + k] = compType == 5121 ? v.Buffer[o + k] : BinaryPrimitives.ReadUInt16LittleEndian(v.Buffer.AsSpan(o + k * 2));
+        }
+        return result;
     }
 }

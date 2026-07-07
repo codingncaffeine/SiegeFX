@@ -1902,7 +1902,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (res.Faces.Count == 0) { Status = "That mesh produced no triangles."; return; }
 
         byte[] asp;
-        try { asp = AspWriter.WriteStatic(res.Positions, res.Corners, res.Faces, res.TextureNames); }
+        try
+        {
+            asp = res.IsSkinned
+                ? AspWriter.WriteSkinned(res.Positions, res.Corners, res.Faces, res.TextureNames, res.Bones!, res.Skins!)
+                : AspWriter.WriteStatic(res.Positions, res.Corners, res.Faces, res.TextureNames);
+        }
         catch (Exception ex) { Status = $"ASP write failed: {ex.Message}"; return; }
 
         // Reader-as-oracle round-trip: if this throws or mis-counts, the .asp would corrupt in-engine.
@@ -1913,6 +1918,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             { Status = $"ASP round-trip mismatch ({check.TriangleCount} vs {res.Faces.Count} tris) — not saved."; return; }
         }
         catch (Exception ex) { Status = $"ASP round-trip failed ({ex.Message}) — not saved."; return; }
+
+        string kind = res.IsSkinned ? $"skinned ({res.Bones!.Count} bones)" : "static";
 
         string baseName = LightSanitize(System.IO.Path.GetFileNameWithoutExtension(dlg.FileName));
         if (baseName.Length == 0) baseName = "custom_mesh";
@@ -1933,7 +1940,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         catch (Exception ex) { Status = $"Couldn't save .asp: {ex.Message}"; return; }
 
         OnPropertyChanged(nameof(AssetsLabel));
-        Status = $"Imported {baseName}.asp — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}";
+        Status = $"Imported {baseName}.asp ({kind}) — {res.Positions.Count} verts, {res.Faces.Count} tris, texset '{res.TextureNames[0]}'. Round-trip OK → {outPath}";
     }
 
     private void SaveNodes()
