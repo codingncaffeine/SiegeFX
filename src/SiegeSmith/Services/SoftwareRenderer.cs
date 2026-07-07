@@ -82,6 +82,7 @@ public static class SoftwareRenderer
                 sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
                 cr, cg, cb);
         }
+        DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
 
@@ -176,6 +177,7 @@ public static class SoftwareRenderer
                     sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
                     (byte)(190 * shade), (byte)(182 * shade), (byte)(170 * shade));
         }
+        DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
 
@@ -284,12 +286,77 @@ public static class SoftwareRenderer
             if ((uint)x0 < (uint)w && (uint)y0 < (uint)h)
             {
                 int pi = (y0 * w + x0) * 4;
-                px[pi] = 0x57; px[pi + 1] = 0xA6; px[pi + 2] = 0xD8; px[pi + 3] = 0xFF; // BGRA ≈ bronze #D8A657
+                px[pi] = 0x35; px[pi + 1] = 0x35; px[pi + 2] = 0xE0; px[pi + 3] = 0xFF; // BGRA ≈ accent #E03535
             }
             if (x0 == x1 && y0 == y1) break;
             int e2 = 2 * err;
             if (e2 >= dy) { err += dy; x0 += sx; }
             if (e2 <= dx) { err += dx; y0 += sy; }
         }
+    }
+
+    /// <summary>Draws a small XYZ orientation triad in the lower-left corner (X red, Y green,
+    /// Z blue) that rotates with the camera, so you can always read which way the view is facing —
+    /// the same "what am I looking at" cue asset viewers show. Overlaid after the scene, ignoring
+    /// depth, at a fixed screen position; only the camera rotation (yaw/pitch) drives it.</summary>
+    private static void DrawAxisGizmo(byte[] px, int w, int h, float yaw, float pitch)
+    {
+        // Camera direction (center→eye); a pure-rotation view frame from it orients the triad.
+        var dir = new Vector3(MathF.Cos(pitch) * MathF.Cos(yaw), MathF.Cos(pitch) * MathF.Sin(yaw), MathF.Sin(pitch));
+        var view = Matrix4x4.CreateLookAt(dir, Vector3.Zero, new Vector3(0, 0, 1));
+        float len = 24f, ox = 34f, oy = h - 34f;
+
+        (Vector3 axis, byte r, byte g, byte b)[] axes =
+        {
+            (new Vector3(1, 0, 0), 230, 80, 80),   // X — red
+            (new Vector3(0, 1, 0), 90, 200, 90),   // Y — green
+            (new Vector3(0, 0, 1), 100, 150, 235), // Z — blue (up in DS1)
+        };
+        // Back-to-front: draw the axis pointing away first so the nearer ones overlay it.
+        Array.Sort(axes, (p, q) =>
+            Vector3.TransformNormal(p.axis, view).Z.CompareTo(Vector3.TransformNormal(q.axis, view).Z));
+        foreach (var (axis, r, g, b) in axes)
+        {
+            var v = Vector3.TransformNormal(axis, view);
+            float ex = ox + v.X * len, ey = oy - v.Y * len;
+            DrawLineRGB(px, w, h, ox, oy, ex, ey, r, g, b);
+            DrawDot(px, w, h, ex, ey, r, g, b);
+        }
+    }
+
+    private static void DrawLineRGB(byte[] px, int w, int h, float fx0, float fy0, float fx1, float fy1, byte r, byte g, byte b)
+    {
+        int x0 = (int)fx0, y0 = (int)fy0, x1 = (int)fx1, y1 = (int)fy1;
+        int dx = Math.Abs(x1 - x0), dy = -Math.Abs(y1 - y0);
+        int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        while (true)
+        {
+            if ((uint)x0 < (uint)w && (uint)y0 < (uint)h)
+            {
+                int pi = (y0 * w + x0) * 4;
+                px[pi] = b; px[pi + 1] = g; px[pi + 2] = r; px[pi + 3] = 0xFF;
+            }
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    }
+
+    private static void DrawDot(byte[] px, int w, int h, float cx, float cy, byte r, byte g, byte b)
+    {
+        int x0 = (int)cx, y0 = (int)cy;
+        for (int dyi = -2; dyi <= 2; dyi++)
+            for (int dxi = -2; dxi <= 2; dxi++)
+            {
+                if (dxi * dxi + dyi * dyi > 4) continue;
+                int x = x0 + dxi, y = y0 + dyi;
+                if ((uint)x < (uint)w && (uint)y < (uint)h)
+                {
+                    int pi = (y * w + x) * 4;
+                    px[pi] = b; px[pi + 1] = g; px[pi + 2] = r; px[pi + 3] = 0xFF;
+                }
+            }
     }
 }

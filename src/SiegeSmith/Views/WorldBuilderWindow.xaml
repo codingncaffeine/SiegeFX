@@ -48,6 +48,7 @@
             <Grid Grid.Column="2">
                 <Border x:Name="Viewport" Background="#FF141416" ClipToBounds="True" Cursor="SizeAll"
                         MouseLeftButtonDown="OnViewportMouseDown" MouseLeftButtonUp="OnViewportMouseUp"
+                        MouseRightButtonDown="OnViewportRightDown" MouseRightButtonUp="OnViewportRightUp"
                         MouseMove="OnViewportMouseMove" MouseWheel="OnViewportMouseWheel"
                         SizeChanged="OnViewportSizeChanged">
                     <Image Source="{Binding Image}" Stretch="Fill"/>
@@ -60,7 +61,7 @@
                     <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,3"/>
                 </StackPanel>
 
-                <TextBlock Text="Pick a node mesh on the left, then Place as anchor to begin your world. Drag to orbit · wheel to zoom."
+                <TextBlock Text="Pick a node mesh on the left, then Place as anchor to begin your world. Drag to orbit · right-drag to pan · wheel to zoom."
                            Foreground="{StaticResource Brush.Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
                            TextWrapping="Wrap" MaxWidth="380" TextAlignment="Center"
                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVis}}"/>

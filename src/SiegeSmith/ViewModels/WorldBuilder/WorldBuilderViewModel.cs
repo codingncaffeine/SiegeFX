@@ -77,6 +77,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private float _yaw = 0.7f, _pitch = 0.5f, _dist;
     private Vector3 _center;
+    private Vector3 _pan; // right-drag pan offset added to the framed centre
     private float _radius = 1f;
     private int _vw = 800, _vh = 600;
     private bool _wireframe;
@@ -402,9 +403,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center, _radius, _yaw, _pitch, _dist)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center, _radius, _yaw, _pitch, _dist, _wireframe);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -457,9 +458,20 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         Render();
     }
 
+    /// <summary>Right-drag pan: slides the framed centre in the camera's screen plane.</summary>
+    public void Pan(double dx, double dy)
+    {
+        var dir = new Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch));
+        var right = Vector3.Normalize(Vector3.Cross(new Vector3(0, 0, 1), dir));
+        var up = Vector3.Normalize(Vector3.Cross(dir, right));
+        float s = MathF.Max(_dist, _radius) * 0.0016f;
+        _pan += right * (float)(-dx) * s + up * (float)dy * s;
+        Render();
+    }
+
     public void ResetView()
     {
-        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f;
+        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f; _pan = default;
         Render();
     }
 

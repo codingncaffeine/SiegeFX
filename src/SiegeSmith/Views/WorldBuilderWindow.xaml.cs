@@ -12,6 +12,7 @@ public partial class WorldBuilderWindow : Window
 {
     private readonly WorldBuilderViewModel _vm;
     private bool _dragging;
+    private bool _panning;
     private Point _last;
 
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
@@ -32,14 +33,28 @@ public partial class WorldBuilderWindow : Window
     private void OnViewportMouseUp(object sender, MouseButtonEventArgs e)
     {
         _dragging = false;
-        Viewport.ReleaseMouseCapture();
+        if (!_panning) Viewport.ReleaseMouseCapture();
+    }
+
+    private void OnViewportRightDown(object sender, MouseButtonEventArgs e)
+    {
+        _panning = true;
+        _last = e.GetPosition(Viewport);
+        Viewport.CaptureMouse();
+    }
+
+    private void OnViewportRightUp(object sender, MouseButtonEventArgs e)
+    {
+        _panning = false;
+        if (!_dragging) Viewport.ReleaseMouseCapture();
     }
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragging) return;
+        if (!_dragging && !_panning) return;
         var p = e.GetPosition(Viewport);
-        _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
+        if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
+        else _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
         _last = p;
     }
 

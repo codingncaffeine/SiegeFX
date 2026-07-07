@@ -86,9 +86,10 @@ public partial class MainWindow : Window
         DragDrop.DoDragDrop((DependencyObject)sender, data, DragDropEffects.Copy);
     }
 
-    // ── model preview: drag to orbit, wheel to zoom ──────────────
+    // ── model preview: left-drag to orbit, right-drag to pan, wheel to zoom ──
     private Point _viewportLast;
     private bool _viewportDragging;
+    private bool _viewportPanning;
 
     private void OnViewportMouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -103,15 +104,34 @@ public partial class MainWindow : Window
     private void OnViewportMouseUp(object sender, MouseButtonEventArgs e)
     {
         _viewportDragging = false;
-        (sender as IInputElement)?.ReleaseMouseCapture();
+        if (!_viewportPanning) (sender as IInputElement)?.ReleaseMouseCapture();
+    }
+
+    private void OnViewportRightDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is IInputElement el)
+        {
+            _viewportPanning = true;
+            _viewportLast = e.GetPosition(el);
+            el.CaptureMouse();
+        }
+    }
+
+    private void OnViewportRightUp(object sender, MouseButtonEventArgs e)
+    {
+        _viewportPanning = false;
+        if (!_viewportDragging) (sender as IInputElement)?.ReleaseMouseCapture();
     }
 
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_viewportDragging || sender is not FrameworkElement fe) return;
+        if ((!_viewportDragging && !_viewportPanning) || sender is not FrameworkElement fe) return;
         var p = e.GetPosition(fe);
         if (fe.DataContext is ModelInfoViewerViewModel vm)
-            vm.Orbit(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
+        {
+            if (_viewportPanning) vm.Pan(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
+            else vm.Orbit(p.X - _viewportLast.X, p.Y - _viewportLast.Y);
+        }
         _viewportLast = p;
     }
 
