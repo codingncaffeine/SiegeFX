@@ -37,7 +37,8 @@ public static class MapPackager
         IReadOnlyList<RegionTrigger>? triggers = null, IReadOnlyList<CommandPlacement>? commands = null,
         IReadOnlyList<Conversation>? conversations = null,
         uint sourceGuid = 0, IReadOnlyList<RegionStitch>? stitches = null,
-        IReadOnlyList<StitchRegionRef>? siblings = null)
+        IReadOnlyList<StitchRegionRef>? siblings = null,
+        IReadOnlyList<LogicalFlag>? logicalFlags = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -143,6 +144,13 @@ public static class MapPackager
             string edDir = Path.Combine(mapDir, "regions", region, "editor");
             Directory.CreateDirectory(edDir);
             File.WriteAllText(Path.Combine(edDir, "stitch_helper.gas"), StitchHelperWriter.Write(sourceGuid, region, stitches));
+        }
+        // Nav flags (optional) → <region>/editor/logical_flags.gas (editor/ sibling of terrain_nodes).
+        if (logicalFlags is { Count: > 0 })
+        {
+            string edDir = Path.Combine(mapDir, "regions", region, "editor");
+            Directory.CreateDirectory(edDir);
+            File.WriteAllText(Path.Combine(edDir, "logical_flags.gas"), LogicalFlagsWriter.Write(logicalFlags));
         }
         if (siblings is { Count: > 0 })
         {

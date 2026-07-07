@@ -516,6 +516,31 @@
                         </ListBox>
                         <Button Content="Delete selected stitch" Command="{Binding DeleteStitchCommand}" Margin="0,0,0,4" Padding="8,4"/>
 
+                        <TextBlock Text="Nav flags (optional — passability per node)" Foreground="{StaticResource Brush.Muted}"
+                                   FontSize="11" Margin="0,14,0,3" TextWrapping="Wrap"/>
+                        <Button Content="Add nav flag for selected node" Command="{Binding AddNavFlagCommand}" Margin="0,0,0,3" Padding="8,5"
+                                ToolTip="logical_flags.gas — toggles passability of an already-walkable node grouping (walkable geometry is baked in the SNO art)"/>
+                        <ListBox ItemsSource="{Binding LogicalFlags}" SelectedItem="{Binding SelectedFlag, Mode=TwoWay}"
+                                 MaxHeight="70" Margin="0,0,0,3">
+                            <ListBox.ItemTemplate><DataTemplate>
+                                <StackPanel Margin="0,1">
+                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="11"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10"/>
+                                </StackPanel>
+                            </DataTemplate></ListBox.ItemTemplate>
+                        </ListBox>
+                        <StackPanel Visibility="{Binding HasSelectedFlag, Converter={StaticResource BoolToVis}}" Margin="8,0,0,4">
+                            <WrapPanel Margin="0,0,0,3">
+                                <CheckBox Content="human_player" IsChecked="{Binding FlagHuman}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                <CheckBox Content="computer_player" IsChecked="{Binding FlagComputer}" Foreground="{StaticResource Brush.Foreground}" Margin="0,0,8,0"/>
+                                <CheckBox Content="water" IsChecked="{Binding FlagWater}" Foreground="{StaticResource Brush.Muted}"
+                                          ToolTip="Impassable to stock actors"/>
+                            </WrapPanel>
+                            <TextBox Text="{Binding FlagSurfaceTag, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
+                                     ToolTip="Inert surface tag, e.g. lf_dirt / lf_grass (footstep audio)"/>
+                            <Button Content="Delete selected nav flag" Command="{Binding DeleteNavFlagCommand}" Padding="8,4"/>
+                        </StackPanel>
+
                         <TextBlock Text="Custom assets (bundled into the map)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
                         <TextBlock Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"

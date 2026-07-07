@@ -355,6 +355,27 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _stitchDiagnostics = "No stitches — the region is a standalone (isolated) world.";
     public string StitchDiagnostics { get => _stitchDiagnostics; private set => SetProperty(ref _stitchDiagnostics, value); }
 
+    // ── nav flags & validation (LE-10) ─────────────────────────
+    public ObservableCollection<LogicalFlag> LogicalFlags { get; } = new();
+    private LogicalFlag? _selectedFlag;
+    public LogicalFlag? SelectedFlag
+    {
+        get => _selectedFlag;
+        set { if (SetProperty(ref _selectedFlag, value)) { OnPropertyChanged(nameof(HasSelectedFlag)); RaiseFlagProps(); RaiseCommands(); } }
+    }
+    public bool HasSelectedFlag => _selectedFlag is not null;
+    public bool FlagHuman { get => _selectedFlag?.HumanPlayer ?? false; set { if (_selectedFlag is not null) _selectedFlag.HumanPlayer = value; } }
+    public bool FlagComputer { get => _selectedFlag?.ComputerPlayer ?? false; set { if (_selectedFlag is not null) _selectedFlag.ComputerPlayer = value; } }
+    public bool FlagWater { get => _selectedFlag?.Water ?? false; set { if (_selectedFlag is not null) _selectedFlag.Water = value; } }
+    public string FlagSurfaceTag { get => _selectedFlag?.SurfaceTag ?? ""; set { if (_selectedFlag is not null) _selectedFlag.SurfaceTag = value ?? ""; } }
+    private void RaiseFlagProps()
+    {
+        OnPropertyChanged(nameof(FlagHuman));
+        OnPropertyChanged(nameof(FlagComputer));
+        OnPropertyChanged(nameof(FlagWater));
+        OnPropertyChanged(nameof(FlagSurfaceTag));
+    }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -461,6 +482,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand RemoveSiblingCommand { get; }
     public RelayCommand CreateStitchCommand { get; }
     public RelayCommand DeleteStitchCommand { get; }
+    public RelayCommand AddNavFlagCommand { get; }
+    public RelayCommand DeleteNavFlagCommand { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -500,6 +523,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         RemoveSiblingCommand = new RelayCommand(_ => RemoveSibling(), _ => _selectedSibling is not null);
         CreateStitchCommand = new RelayCommand(_ => CreateStitch(), _ => _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null);
         DeleteStitchCommand = new RelayCommand(_ => DeleteStitch(), _ => _selectedStitch is not null);
+        AddNavFlagCommand = new RelayCommand(_ => AddNavFlag(), _ => IsReady && _selectedNode is not null);
+        DeleteNavFlagCommand = new RelayCommand(_ => { if (_selectedFlag is not null) { LogicalFlags.Remove(_selectedFlag); SelectedFlag = null; } }, _ => _selectedFlag is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -951,7 +976,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
-                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings));
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                logicalFlags: new List<LogicalFlag>(LogicalFlags));
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -984,8 +1010,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
-                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings));
-            RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath);
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                logicalFlags: new List<LogicalFlag>(LogicalFlags));
+            RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
+                onEarlyExit: (code, err) => System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    Status = $"Engine exited with code {code} — {FirstLine(err)}";
+                    ValidationRows.Add(new ValidationRow(false, $"Runtime exited {code}: {FirstLine(err)}"));
+                }));
             Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
         }
         catch (Exception ex) { Status = "Play-in-engine failed: " + ex.Message; }
@@ -1162,6 +1194,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 rows.Add(new ValidationRow(false, $"{_stitchCollisions} snode guid(s) collide across regions (WorldLayout throws — needs world-unique guids)."));
             if (_stitchUnreachable > 0)
                 rows.Add(new ValidationRow(true, $"{_stitchUnreachable} region(s) unreachable from the primary via stitches."));
+        }
+
+        // Within-region snode-guid uniqueness — WorldLayout throws on a collision even single-region.
+        var guidSeen = new HashSet<uint>();
+        int dupGuids = 0;
+        foreach (var n in _region.Nodes) if (!guidSeen.Add(n.Guid)) dupGuids++;
+        if (dupGuids > 0)
+            rows.Add(new ValidationRow(false, $"{dupGuids} duplicate snode guid(s) in this region (WorldLayout throws)."));
+
+        if (LogicalFlags.Count > 0)
+        {
+            int blocked = 0, water = 0;
+            foreach (var f in LogicalFlags)
+            {
+                if (!f.HumanPlayer && !f.ComputerPlayer) blocked++;
+                if (f.Water) water++;
+            }
+            rows.Add(new ValidationRow(true, $"{LogicalFlags.Count} nav flag(s) → logical_flags.gas."));
+            if (blocked > 0) rows.Add(new ValidationRow(true, $"{blocked} grouping(s) blocked to all players (walls?)."));
+            if (water > 0) rows.Add(new ValidationRow(true, $"{water} water grouping(s) — impassable to stock actors."));
         }
 
         var terrain = FindTank("terrain");
@@ -1711,6 +1763,29 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             : $"{1 + Siblings.Count} region(s) · {PrimaryStitches.Count} stitch(es) · dangling {_stitchDangling} · unreachable {_stitchUnreachable} · isolated {isolated} · guid-collisions {_stitchCollisions}";
     }
 
+    // ── nav flags (LE-10) ──────────────────────────────────────
+    private void AddNavFlag()
+    {
+        if (_selectedNode is null) return;
+        foreach (var f in LogicalFlags)
+            if (f.SnodeGuid == _selectedNode.Guid && f.Lnode == 0) { SelectedFlag = f; Status = "This node already has a nav flag (lnode 0)."; return; }
+        var flag = new LogicalFlag { SnodeGuid = _selectedNode.Guid, Lnode = 0 };
+        LogicalFlags.Add(flag);
+        SelectedFlag = flag;
+        Status = "Added a nav flag for the selected node — toggle human/computer passability (unset both = a wall).";
+        RaiseCommands();
+    }
+
+    private static string FirstLine(string s)
+    {
+        foreach (var line in s.Split('\n'))
+        {
+            var t = line.Trim();
+            if (t.Length > 0) return t.Length > 160 ? t[..160] : t;
+        }
+        return "(no error output)";
+    }
+
     private uint NextScid()
     {
         var used = new HashSet<uint>();
@@ -2146,6 +2221,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         RemoveSiblingCommand.RaiseCanExecuteChanged();
         CreateStitchCommand.RaiseCanExecuteChanged();
         DeleteStitchCommand.RaiseCanExecuteChanged();
+        AddNavFlagCommand.RaiseCanExecuteChanged();
+        DeleteNavFlagCommand.RaiseCanExecuteChanged();
     }
 
     public void Dispose()

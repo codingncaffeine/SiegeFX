@@ -40,25 +40,48 @@ public static class RuntimeLauncher
         return Start(runtime, args);
     }
 
-    /// <summary>Launches the full playable scene (needs a seed actor + start position in the map).</summary>
+    /// <summary>Launches the full playable scene (needs a seed actor + start position in the map).
+    /// When <paramref name="onEarlyExit"/> is set, the engine's stderr is captured and — if the process
+    /// exits non-zero (a load failure rather than the user closing the window) — reported with its tail,
+    /// so the test loop surfaces engine errors instead of failing silently.</summary>
     public static Process LaunchPlayRegion(string runtime, string mapTank, string terrainTank,
-        string logicTank, string objectsTank, string regionPath, bool noVideo = true)
+        string logicTank, string objectsTank, string regionPath, bool noVideo = true,
+        Action<int, string>? onEarlyExit = null)
     {
         var args = new List<string> { "--play-region", mapTank, terrainTank, logicTank, objectsTank, regionPath };
         if (noVideo) args.Add("--noVideo");
-        return Start(runtime, args);
+        return Start(runtime, args, onEarlyExit);
     }
 
-    private static Process Start(string runtime, List<string> args)
+    private static Process Start(string runtime, List<string> args, Action<int, string>? onEarlyExit = null)
     {
         var isDll = runtime.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
         var psi = new ProcessStartInfo(isDll ? "dotnet" : runtime)
         {
             UseShellExecute = false,
             WorkingDirectory = Path.GetDirectoryName(runtime) ?? Environment.CurrentDirectory,
+            RedirectStandardError = onEarlyExit is not null,
         };
         if (isDll) psi.ArgumentList.Add(runtime);
         foreach (var a in args) psi.ArgumentList.Add(a); // ArgumentList quotes each arg, so paths with spaces are safe
-        return Process.Start(psi) ?? throw new InvalidOperationException("Failed to start SiegeFX.Runtime.");
+
+        var proc = new Process { StartInfo = psi, EnableRaisingEvents = onEarlyExit is not null };
+        if (onEarlyExit is not null)
+        {
+            var err = new System.Text.StringBuilder();
+            proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) err.AppendLine(e.Data); };
+            proc.Exited += (_, _) =>
+            {
+                if (proc.ExitCode != 0)
+                {
+                    var text = err.ToString();
+                    var tail = text.Length > 1200 ? text[^1200..] : text;
+                    onEarlyExit(proc.ExitCode, tail.Trim());
+                }
+            };
+        }
+        if (!proc.Start()) throw new InvalidOperationException("Failed to start SiegeFX.Runtime.");
+        if (onEarlyExit is not null) proc.BeginErrorReadLine();
+        return proc;
     }
 }
