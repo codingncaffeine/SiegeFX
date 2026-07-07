@@ -1,15 +1,17 @@
 using System;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Threading.Tasks;
 using System.Windows;
+using SiegeFX.Core.Tank;
 using SiegeSmith.Mvvm;
 using SiegeSmith.Services;
 
 namespace SiegeSmith.ViewModels;
 
 /// <summary>Root view-model for the SiegeSmith shell. Owns install discovery (remembered path →
-/// registry → common paths → user prompt), the open-tank lifecycle, and the top-level command
-/// surface. The <see cref="Explorer"/> is created when a tank is opened.</summary>
+/// registry → common paths → user prompt), the open-tank lifecycle, mod-project management, and
+/// the top-level command surface.</summary>
 public sealed class MainViewModel : ObservableObject
 {
     private readonly AppSettings _settings = AppSettings.Load();
@@ -46,10 +48,21 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasTank => Explorer is not null;
 
+    // ── mod project ─────────────────────────────────────────────
+    private ModProject? _project;
+    private string? _projectPath;
+    public bool HasProject => _project is not null;
+    public string ProjectLabel => _project is null ? "No project open" : $"Project: {_project.Name}  ({_project.SourceFolder})";
+
     public RelayCommand RefreshInstallCommand { get; }
     public RelayCommand OpenTankCommand { get; }
     public RelayCommand CloseTankCommand { get; }
     public RelayCommand ExitCommand { get; }
+    public RelayCommand NewProjectCommand { get; }
+    public RelayCommand OpenProjectCommand { get; }
+    public RelayCommand SaveProjectCommand { get; }
+    public RelayCommand BuildInstallCommand { get; }
+    public RelayCommand LaunchGameCommand { get; }
 
     public MainViewModel()
     {
@@ -57,19 +70,22 @@ public sealed class MainViewModel : ObservableObject
         OpenTankCommand = new RelayCommand(() => { var p = DialogService.OpenTankFile(); if (p is not null) OpenTank(p); });
         CloseTankCommand = new RelayCommand(CloseTank, () => HasTank);
         ExitCommand = new RelayCommand(() => Application.Current?.Shutdown());
+        NewProjectCommand = new RelayCommand(_ => NewProject());
+        OpenProjectCommand = new RelayCommand(_ => OpenProject());
+        SaveProjectCommand = new RelayCommand(_ => SaveProject(), _ => HasProject);
+        BuildInstallCommand = new RelayCommand(_ => BuildInstall(), _ => HasProject && InstallPath is not null);
+        LaunchGameCommand = new RelayCommand(_ => LaunchGame(), _ => InstallPath is not null);
         DetectInstall();
     }
 
     /// <summary>Silent detection used at startup and by File ▸ Refresh Install.</summary>
     public void DetectInstall()
     {
-        // Remembered path wins if it still looks valid.
         if (_settings.InstallPath is { } saved && DsInstallLocator.IsInstall(saved))
         {
             SetInstall(saved, remember: false);
             return;
         }
-        // Otherwise probe env var, registry (GOG / retail / Steam), then common paths.
         var found = DsInstallLocator.Locate();
         if (found is not null)
         {
@@ -83,7 +99,6 @@ public sealed class MainViewModel : ObservableObject
 
     private void RefreshInstall()
     {
-        // A manual refresh re-checks everything and, if still missing, offers the picker.
         _settings.InstallPath = null;
         DetectInstall();
         PromptForInstallIfMissing();
@@ -104,8 +119,7 @@ public sealed class MainViewModel : ObservableObject
     }
 
     /// <summary>Called once the window is shown: if no install was found, ask the user to point
-    /// us at one and remember their choice. Kept out of the constructor so the modal dialog
-    /// appears over a visible window rather than during XAML load.</summary>
+    /// us at one and remember their choice.</summary>
     public void PromptForInstallIfMissing()
     {
         if (InstallPath is not null) return;
@@ -135,6 +149,86 @@ public sealed class MainViewModel : ObservableObject
                 "Dungeon Siege installation.\n\nYou can try again from File ▸ Refresh Install.",
                 "Not a Dungeon Siege install", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    // ── project commands ────────────────────────────────────────
+    private void SetProject(ModProject project, string path)
+    {
+        _project = project;
+        _projectPath = path;
+        OnPropertyChanged(nameof(HasProject));
+        OnPropertyChanged(nameof(ProjectLabel));
+    }
+
+    private void NewProject()
+    {
+        var folder = DialogService.PickFolder("Select the mod's source folder (loose files)");
+        if (folder is null) return;
+        var name = Path.GetFileName(folder.TrimEnd('\\', '/'));
+        var project = new ModProject { Name = string.IsNullOrWhiteSpace(name) ? "MyMod" : name, SourceFolder = folder };
+        var savePath = DialogService.SaveProjectFile(project.Name);
+        if (savePath is null) return;
+        try
+        {
+            project.Save(savePath);
+            SetProject(project, savePath);
+            StatusText = $"Created project {project.Name}";
+        }
+        catch (Exception ex) { StatusText = "Couldn't save project: " + ex.Message; }
+    }
+
+    private void OpenProject()
+    {
+        var path = DialogService.OpenProjectFile();
+        if (path is null) return;
+        try
+        {
+            var project = ModProject.Load(path);
+            SetProject(project, path);
+            StatusText = $"Opened project {project.Name} ({project.SourceFolder})";
+        }
+        catch (Exception ex) { StatusText = "Couldn't open project: " + ex.Message; }
+    }
+
+    private void SaveProject()
+    {
+        if (_project is null || _projectPath is null) return;
+        try { _project.Save(_projectPath); StatusText = $"Saved project {_project.Name}"; }
+        catch (Exception ex) { StatusText = "Save failed: " + ex.Message; }
+    }
+
+    private async void BuildInstall()
+    {
+        if (_project is null) { StatusText = "Open or create a project first."; return; }
+        if (InstallPath is null) { StatusText = "No Dungeon Siege install — set one via File ▸ Refresh Install."; return; }
+        if (!Directory.Exists(_project.SourceFolder)) { StatusText = "The project's source folder doesn't exist."; return; }
+
+        var dest = Path.Combine(InstallPath, "Resources", _project.Name + ".dsres");
+        var confirm = MessageBox.Show(
+            $"Build the project and install it as:\n\n{dest}\n\nThis writes into your Dungeon Siege Resources folder " +
+            "(delete the file to uninstall). Continue?",
+            "Build & Install Mod", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.OK) return;
+
+        var project = _project;
+        var when = DateTime.UtcNow;
+        StatusText = "Building & installing…";
+        try
+        {
+            var (files, bytes) = await Task.Run(() => TankBuilder.BuildFromFolder(
+                project.SourceFolder, dest, project.Name, project.Author, project.Description, TankPriority.User, when));
+            StatusText = $"Installed {project.Name}.dsres — {files:N0} file(s), {Format.Bytes(bytes)}. Launch to test.";
+        }
+        catch (Exception ex) { StatusText = "Build & install failed: " + ex.Message; }
+    }
+
+    private void LaunchGame()
+    {
+        if (InstallPath is null) { StatusText = "No Dungeon Siege installation detected."; return; }
+        var exe = GameLauncher.FindExecutable(InstallPath);
+        if (exe is null) { StatusText = "Couldn't find the Dungeon Siege executable in the install folder."; return; }
+        try { GameLauncher.Launch(exe); StatusText = $"Launched {Path.GetFileName(exe)}"; }
+        catch (Exception ex) { StatusText = "Launch failed: " + ex.Message; }
     }
 
     private void OpenTank(string path)

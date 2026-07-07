@@ -46,4 +46,28 @@ public static class DialogService
         };
         return dlg.ShowDialog() == true ? dlg.FileName : null;
     }
+
+    public static string? OpenProjectFile()
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "Open SiegeSmith project",
+            Filter = "SiegeSmith project (*.ssproj)|*.ssproj|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        return dlg.ShowDialog() == true ? dlg.FileName : null;
+    }
+
+    public static string? SaveProjectFile(string name)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title = "Save SiegeSmith project",
+            FileName = string.IsNullOrWhiteSpace(name) ? "mod" : name,
+            DefaultExt = ".ssproj",
+            Filter = "SiegeSmith project (*.ssproj)|*.ssproj",
+            OverwritePrompt = true,
+        };
+        return dlg.ShowDialog() == true ? dlg.FileName : null;
+    }
 }

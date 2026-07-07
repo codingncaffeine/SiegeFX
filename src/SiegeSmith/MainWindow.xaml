@@ -30,6 +30,14 @@
                 <Separator/>
                 <MenuItem Header="_Build Tank from Folder…" Click="OnBuildTank"/>
             </MenuItem>
+            <MenuItem Header="_Project">
+                <MenuItem Header="_New Project…" Command="{Binding NewProjectCommand}"/>
+                <MenuItem Header="_Open Project…" Command="{Binding OpenProjectCommand}"/>
+                <MenuItem Header="_Save Project" Command="{Binding SaveProjectCommand}"/>
+                <Separator/>
+                <MenuItem Header="_Build &amp; Install to Game" Command="{Binding BuildInstallCommand}"/>
+                <MenuItem Header="_Launch Dungeon Siege" Command="{Binding LaunchGameCommand}"/>
+            </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About SiegeSmith" IsEnabled="False"/>
             </MenuItem>
