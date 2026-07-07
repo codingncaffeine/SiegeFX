@@ -38,6 +38,9 @@
                 <MenuItem Header="_Build &amp; Install to Game" Command="{Binding BuildInstallCommand}"/>
                 <MenuItem Header="_Launch Dungeon Siege" Command="{Binding LaunchGameCommand}"/>
             </MenuItem>
+            <MenuItem Header="_World">
+                <MenuItem Header="Open _World Builder…" Click="OnWorldBuilder"/>
+            </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About SiegeSmith" IsEnabled="False"/>
             </MenuItem>

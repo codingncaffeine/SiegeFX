@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -13,6 +14,14 @@ public partial class MainWindow : Window
 
     private void OnBuildTank(object sender, RoutedEventArgs e) =>
         new BuildTankWindow { Owner = this }.ShowDialog();
+
+    private void OnWorldBuilder(object sender, RoutedEventArgs e)
+    {
+        var paths = new List<string>();
+        if (DataContext is MainViewModel vm)
+            foreach (var t in vm.Tanks) paths.Add(t.FullPath);
+        new WorldBuilderWindow(paths) { Owner = this }.ShowDialog();
+    }
 
     /// <summary>Once the window is up, offer the locate-install prompt if detection came up empty.</summary>
     private void OnLoaded(object sender, RoutedEventArgs e)
