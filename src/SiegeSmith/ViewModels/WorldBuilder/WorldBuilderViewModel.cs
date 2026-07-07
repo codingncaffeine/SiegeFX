@@ -98,7 +98,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private BitmapSource? _image;
     public BitmapSource? Image { get => _image; private set => SetProperty(ref _image, value); }
 
-    private float _yaw = 0.7f, _pitch = 0.5f, _dist;
+    private float _yaw = 0.7f, _pitch = 0.5f, _dist, _roll;
     private Vector3 _center;
     private Vector3 _pan; // right-drag pan offset added to the framed centre
     private Vector3[] _pickVerts = System.Array.Empty<Vector3>(); // world-space tris (3/verts) for click-picking
@@ -796,9 +796,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, _roll)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _roll, _wireframe);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -868,7 +868,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     public void ResetView()
     {
-        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f; _pan = default;
+        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f; _pan = default; _roll = 0f;
+        Render();
+    }
+
+    /// <summary>Middle-drag twist: rolls the camera about the view axis (the gizmo twists with it).</summary>
+    public void Roll(double dx)
+    {
+        _roll += (float)dx * 0.01f;
         Render();
     }
 
@@ -877,8 +884,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     /// iso view. Returns true when the click hit the gizmo, so the viewport should not orbit.</summary>
     public bool TrySnapView(double sx, double sy)
     {
-        int hit = SoftwareRenderer.HitGizmo(sx, sy, _yaw, _pitch, _vw, _vh);
+        int hit = SoftwareRenderer.HitGizmo(sx, sy, _yaw, _pitch, _roll, _vw, _vh);
         if (hit < 0) return false;
+        _roll = 0f; // snapping to an axis or the hub clears any twist
         const float H = MathF.PI / 2f;
         switch (hit)
         {
@@ -897,7 +905,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         if (_pickVerts.Length < 3) return false;
         uint guid = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
-            _center + _pan, _radius, _yaw, _pitch, _dist, 0f, sx, sy);
+            _center + _pan, _radius, _yaw, _pitch, _dist, _roll, sx, sy);
         if (guid == 0) return false;
         if (_selectedNode?.Guid != guid) SelectNode(guid);
         return true;

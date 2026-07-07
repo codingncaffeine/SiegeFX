@@ -263,6 +263,7 @@
                                                 Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}"
                                                 MouseLeftButtonDown="OnViewportMouseDown" MouseLeftButtonUp="OnViewportMouseUp"
                                                 MouseRightButtonDown="OnViewportRightDown" MouseRightButtonUp="OnViewportRightUp"
+                                                MouseDown="OnViewportMiddleDown" MouseUp="OnViewportMiddleUp"
                                                 MouseMove="OnViewportMouseMove" MouseWheel="OnViewportMouseWheel"
                                                 SizeChanged="OnViewportSizeChanged">
                                             <Image Source="{Binding Image}" Stretch="Fill"/>

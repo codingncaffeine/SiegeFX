@@ -13,6 +13,7 @@ public partial class WorldBuilderWindow : Window
     private readonly WorldBuilderViewModel _vm;
     private bool _dragging;
     private bool _panning;
+    private bool _rolling;
     private Point _last;
 
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
@@ -52,11 +53,27 @@ public partial class WorldBuilderWindow : Window
         if (!_dragging) Viewport.ReleaseMouseCapture();
     }
 
+    private void OnViewportMiddleDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle) return;
+        _rolling = true;
+        _last = e.GetPosition(Viewport);
+        Viewport.CaptureMouse();
+    }
+
+    private void OnViewportMiddleUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Middle) return;
+        _rolling = false;
+        if (!_dragging && !_panning) Viewport.ReleaseMouseCapture();
+    }
+
     private void OnViewportMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_dragging && !_panning) return;
+        if (!_dragging && !_panning && !_rolling) return;
         var p = e.GetPosition(Viewport);
-        if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
+        if (_rolling) _vm.Roll(p.X - _last.X);
+        else if (_panning) _vm.Pan(p.X - _last.X, p.Y - _last.Y);
         else _vm.Orbit(p.X - _last.X, p.Y - _last.Y);
         _last = p;
     }

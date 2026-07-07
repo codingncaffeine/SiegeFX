@@ -53,6 +53,7 @@
                 <Border x:Name="Viewport" Background="#FF141416" ClipToBounds="True" Cursor="SizeAll"
                         MouseLeftButtonDown="OnViewportMouseDown" MouseLeftButtonUp="OnViewportMouseUp"
                         MouseRightButtonDown="OnViewportRightDown" MouseRightButtonUp="OnViewportRightUp"
+                        MouseDown="OnViewportMiddleDown" MouseUp="OnViewportMiddleUp"
                         MouseMove="OnViewportMouseMove" MouseWheel="OnViewportMouseWheel"
                         SizeChanged="OnViewportSizeChanged">
                     <Image Source="{Binding Image}" Stretch="Fill"/>
