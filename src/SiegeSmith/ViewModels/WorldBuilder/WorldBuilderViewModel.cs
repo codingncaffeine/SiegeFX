@@ -137,6 +137,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public BitmapSource? Image { get => _image; private set => SetProperty(ref _image, value); }
 
     private float _yaw = 0.7f, _pitch = 0.5f, _dist;
+    private float _modelSpin; // middle-drag: rotate the map about its own vertical axis, camera fixed
     private Vector3 _center;
     private Vector3 _pan; // right-drag pan offset added to the framed centre
     private Vector3[] _pickVerts = System.Array.Empty<Vector3>(); // world-space tris (3/verts) for click-picking
@@ -967,6 +968,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var pickGuid = new List<uint>(); // node GUID per triangle, for click-picking
         var pickScid = new List<uint>(); // placed-object SCID per triangle (0 = terrain), for object grabbing
         _nodeWorld.Clear();
+
+        // Middle-drag turntable: spin the whole map about its own vertical axis (through the framed
+        // centre), leaving the camera fixed. Folded into each node's world transform so terrain, props
+        // and actors rotate together and the pick buffers/node-world cache stay consistent.
+        var spinM = _modelSpin == 0f
+            ? Matrix4x4.Identity
+            : Matrix4x4.CreateTranslation(-_center) * Matrix4x4.CreateFromAxisAngle(Vector3.UnitZ, _modelSpin)
+              * Matrix4x4.CreateTranslation(_center);
         var texList = new List<SoftwareRenderer.Texture>();
         var texSlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); // dedup textures across nodes/surfaces
         var min = new Vector3(float.MaxValue);
@@ -975,6 +984,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var node in _region.Nodes)
         {
             if (!layout.TryGetTransform(node.Guid, out var world)) continue;
+            world *= spinM; // turntable
             _nodeWorld[node.Guid] = world;
             var sno = _catalog.Resolve(node.MeshGuid);
             if (sno is null) continue;
@@ -1009,7 +1019,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
             var world = Matrix4x4.CreateFromQuaternion(o.Orientation)
                       * Matrix4x4.CreateTranslation(o.LocalPos)
-                      * nodeWorld;
+                      * nodeWorld * spinM; // turntable — objects spin with the map
 
             AspMesh? mesh = _templateModel.TryGetValue(o.Template, out var model) ? _asp?.Resolve(model) : null;
             if (mesh is null || mesh.TriangleIndices.Length < 3)
@@ -1177,7 +1187,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     public void ResetView()
     {
-        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f; _pan = default;
+        _yaw = 0.7f; _pitch = 0.5f; _dist = _radius * 2.6f; _pan = default; _modelSpin = 0f;
         Render();
     }
 
@@ -1185,7 +1195,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     /// on its axis. Yaw only, so it never tilts (unlike left-drag orbit, which also pitches).</summary>
     public void Spin(double dx)
     {
-        _yaw += (float)dx * 0.01f;
+        _modelSpin += (float)dx * 0.01f; // turntable: the map rotates on its base, the camera holds still
         Render();
     }
 
