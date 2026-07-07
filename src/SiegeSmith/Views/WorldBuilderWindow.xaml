@@ -83,6 +83,8 @@
                     <StackPanel DockPanel.Dock="Bottom" Margin="10,8,10,10">
                         <Button Content="Place as anchor" Command="{Binding PlaceAnchorCommand}" Margin="0,3" Padding="8,5"/>
                         <Button Content="Connect to selected door" Command="{Binding ConnectCommand}" Margin="0,3" Padding="8,5"/>
+                        <Button Content="Link to selected door (close loop)" Command="{Binding LinkExistingCommand}" Margin="0,3" Padding="8,5"
+                                ToolTip="Link the selected node's free door to a free door on another placed node — closes a loop without adding a node"/>
                         <Button Content="Delete selected node" Command="{Binding DeleteNodeCommand}" Margin="0,3" Padding="8,5"/>
                         <TextBlock Text="Load a region from the game" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3"/>
@@ -114,6 +116,14 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <TextBlock DockPanel.Dock="Bottom" Text="DOORS ON SELECTED NODE" Style="{StaticResource Header.Section}"/>
+
+                    <ListBox DockPanel.Dock="Bottom" MaxHeight="140" ItemsSource="{Binding OtherFreeDoors}"
+                             SelectedItem="{Binding SelectedOtherDoor, Mode=TwoWay}">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate><TextBlock Text="{Binding Label}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock DockPanel.Dock="Bottom" Text="FREE DOORS ON OTHER NODES (LINK TARGET)" Style="{StaticResource Header.Section}"/>
 
                     <ListBox ItemsSource="{Binding Nodes}" SelectedItem="{Binding SelectedNode, Mode=TwoWay}">
                         <ListBox.ItemTemplate>

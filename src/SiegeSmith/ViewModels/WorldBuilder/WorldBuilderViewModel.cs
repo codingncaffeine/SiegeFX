@@ -68,6 +68,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private DoorRow? _selectedSourceDoor;
     public DoorRow? SelectedSourceDoor { get => _selectedSourceDoor; set { if (SetProperty(ref _selectedSourceDoor, value)) RaiseCommands(); } }
 
+    // Free doors on OTHER placed nodes — pick one to link the selected node's free door to (close a loop).
+    public ObservableCollection<NodeDoorRow> OtherFreeDoors { get; } = new();
+    private NodeDoorRow? _selectedOtherDoor;
+    public NodeDoorRow? SelectedOtherDoor { get => _selectedOtherDoor; set { if (SetProperty(ref _selectedOtherDoor, value)) RaiseCommands(); } }
+
     public int NodeCount => _region.Nodes.Count;
     public bool IsEmpty => _region.Nodes.Count == 0;
 
@@ -94,6 +99,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     // ── commands ────────────────────────────────────────────────
     public RelayCommand PlaceAnchorCommand { get; }
     public RelayCommand ConnectCommand { get; }
+    public RelayCommand LinkExistingCommand { get; }
     public RelayCommand DeleteNodeCommand { get; }
     public RelayCommand SaveNodesCommand { get; }
     public RelayCommand ImportNodesCommand { get; }
@@ -109,6 +115,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ConnectCommand = new RelayCommand(_ => Connect(),
             _ => IsReady && !IsEmpty && _selectedNode is not null && _selectedSourceDoor is { IsFree: true }
                  && _selectedMesh is not null && _selectedTargetDoor is not null);
+        LinkExistingCommand = new RelayCommand(_ => LinkExisting(),
+            _ => IsReady && _selectedNode is not null && _selectedSourceDoor is { IsFree: true } && _selectedOtherDoor is not null);
         DeleteNodeCommand = new RelayCommand(_ => DeleteSelectedNode(), _ => _selectedNode is not null);
         SaveNodesCommand = new RelayCommand(_ => SaveNodes(), _ => !IsEmpty);
         ImportNodesCommand = new RelayCommand(_ => ImportNodes(), _ => IsReady);
@@ -206,6 +214,23 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     if (dr.IsFree) { SelectedSourceDoor = dr; break; }
             }
         }
+
+        // Free doors on every OTHER placed node — link targets for closing a loop.
+        OtherFreeDoors.Clear();
+        _selectedOtherDoor = null;
+        OnPropertyChanged(nameof(SelectedOtherDoor));
+        if (_catalog is not null && _selectedNode is not null)
+        {
+            foreach (var n in _region.Nodes)
+            {
+                if (n.Guid == _selectedNode.Guid) continue;
+                var s = _catalog.Resolve(n.MeshGuid);
+                if (s is null) continue;
+                foreach (var d in s.Doors)
+                    if (!n.UsesDoor((int)d.Id))
+                        OtherFreeDoors.Add(new NodeDoorRow(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}"));
+            }
+        }
         RaiseCommands();
     }
 
@@ -240,6 +265,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         _usedGuids.Add(guid);
         AfterModelChanged($"Connected {_catalog?.NameOf(newNode.MeshGuid)} (door {srcDoor} ↔ {tgtDoor}).");
         SelectNode(guid);
+    }
+
+    /// <summary>Connects two ALREADY-PLACED nodes through a pair of free doors, closing a loop.
+    /// Only the door adjacency is recorded — both nodes keep the positions they were composed at —
+    /// so a ring of nodes can meet without adding geometry. Both doors must currently be free.</summary>
+    private void LinkExisting()
+    {
+        if (_selectedNode is null || _selectedSourceDoor is null || _selectedOtherDoor is null) return;
+        var a = _region.Find(_selectedNode.Guid);
+        var b = _region.Find(_selectedOtherDoor.NodeGuid);
+        if (a is null || b is null || a.Guid == b.Guid) return;
+
+        int aDoor = _selectedSourceDoor.Id, bDoor = _selectedOtherDoor.DoorId;
+        if (a.UsesDoor(aDoor)) { Status = $"Door {aDoor} on the selected node is already connected."; return; }
+        if (b.UsesDoor(bDoor)) { Status = $"Door {bDoor} on {_selectedOtherDoor.Mesh} is already connected."; return; }
+
+        a.Doors.Add(new BuilderDoor(aDoor, b.Guid, bDoor));   // reciprocal edge closes the loop
+        b.Doors.Add(new BuilderDoor(bDoor, a.Guid, aDoor));
+        AfterModelChanged($"Linked {_catalog?.NameOf(a.MeshGuid)} door {aDoor} ↔ {_selectedOtherDoor.Mesh} door {bDoor} (loop closed).");
+        SelectNode(a.Guid);
     }
 
     private void DeleteSelectedNode()
@@ -510,6 +555,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         PlaceAnchorCommand.RaiseCanExecuteChanged();
         ConnectCommand.RaiseCanExecuteChanged();
+        LinkExistingCommand.RaiseCanExecuteChanged();
         DeleteNodeCommand.RaiseCanExecuteChanged();
         SaveNodesCommand.RaiseCanExecuteChanged();
         ImportNodesCommand.RaiseCanExecuteChanged();
@@ -533,4 +579,10 @@ public sealed record NodeRow(uint Guid, string Mesh, int DoorCount, bool IsAncho
 public sealed record DoorRow(int Id, bool IsFree, string? Target)
 {
     public string Label => IsFree ? $"door {Id}  ·  free" : $"door {Id}  {Target}";
+}
+
+/// <summary>A free door on another placed node — a candidate to link the selected node's door to.</summary>
+public sealed record NodeDoorRow(uint NodeGuid, int DoorId, string Mesh)
+{
+    public string Label => $"{Mesh}  ·  door {DoorId}";
 }
