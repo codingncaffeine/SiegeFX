@@ -1884,18 +1884,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
-            Filter = "Wavefront OBJ (*.obj)|*.obj|All files|*.*",
-            Title = "Import an OBJ as a custom .asp mesh",
+            Filter = "Mesh (*.obj;*.gltf;*.glb)|*.obj;*.gltf;*.glb|Wavefront OBJ (*.obj)|*.obj|glTF 2.0 (*.gltf;*.glb)|*.gltf;*.glb|All files|*.*",
+            Title = "Import a mesh (OBJ or glTF) as a custom .asp",
         };
         if (dlg.ShowDialog() != true) return;
 
-        string objText;
-        try { objText = System.IO.File.ReadAllText(dlg.FileName); }
-        catch (Exception ex) { Status = $"Couldn't read OBJ: {ex.Message}"; return; }
-
-        var res = ObjImporter.Parse(objText);
+        ObjImporter.Result res;
+        try
+        {
+            var ext = System.IO.Path.GetExtension(dlg.FileName).ToLowerInvariant();
+            res = ext is ".gltf" or ".glb"
+                ? GltfImporter.Parse(System.IO.File.ReadAllBytes(dlg.FileName), System.IO.Path.GetDirectoryName(dlg.FileName))
+                : ObjImporter.Parse(System.IO.File.ReadAllText(dlg.FileName));
+        }
+        catch (Exception ex) { Status = $"Couldn't parse mesh: {ex.Message}"; return; }
         ObjImporter.FillMissingNormals(res);
-        if (res.Faces.Count == 0) { Status = "That OBJ produced no triangles."; return; }
+        if (res.Faces.Count == 0) { Status = "That mesh produced no triangles."; return; }
 
         byte[] asp;
         try { asp = AspWriter.WriteStatic(res.Positions, res.Corners, res.Faces, res.TextureNames); }
