@@ -46,6 +46,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private SnoMeshEntry? _selectedMesh;
     public SnoMeshEntry? SelectedMesh { get => _selectedMesh; set { if (SetProperty(ref _selectedMesh, value)) OnMeshSelected(); } }
 
+    // ── installed regions (open by name, no path hunting) ───────
+    public ObservableCollection<RegionEntry> InstallRegions { get; } = new();
+    private RegionEntry? _selectedInstallRegion;
+    public RegionEntry? SelectedInstallRegion
+    {
+        get => _selectedInstallRegion;
+        set { if (SetProperty(ref _selectedInstallRegion, value) && value is not null) LoadInstallRegion(value); }
+    }
+
     public ObservableCollection<DoorRow> TargetDoors { get; } = new();
     private DoorRow? _selectedTargetDoor;
     public DoorRow? SelectedTargetDoor { get => _selectedTargetDoor; set { if (SetProperty(ref _selectedTargetDoor, value)) RaiseCommands(); } }
@@ -123,9 +132,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             _textures = tex;
             _allMeshes.AddRange(cat.Meshes);
             RefreshPalette();
+            foreach (var r in cat.Regions) InstallRegions.Add(r);
             IsLoading = false;
             Status = _allMeshes.Count > 0
-                ? $"{_allMeshes.Count:N0} node meshes loaded. Pick one and Place as anchor to start your world."
+                ? $"{_allMeshes.Count:N0} node meshes · {InstallRegions.Count:N0} shipped regions. Place a node to start, or load a region to edit."
                 : "No SNO meshes found in the install tanks — check the Dungeon Siege install path.";
             RaiseCommands();
         }
@@ -280,36 +290,47 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         return g;
     }
 
+    /// <summary>Loads a region the tool discovered in the install, by name — no path hunting.</summary>
+    private void LoadInstallRegion(RegionEntry entry)
+    {
+        var bytes = _catalog?.ReadRegionNodes(entry);
+        if (bytes is null) { Status = $"Couldn't read region {entry.Display}."; return; }
+        try { ApplyImportedRegion(NodesGasReader.Read(GasDocument.Load(bytes)), entry.Display); }
+        catch (Exception ex) { Status = "Load failed: " + ex.Message; }
+    }
+
+    /// <summary>Manual fallback: open any nodes.gas the user points us at.</summary>
     private void ImportNodes()
     {
         if (!IsReady) return;
         var path = DialogService.OpenFile("Open a region's nodes.gas", "GAS files (*.gas)|*.gas|All files (*.*)|*.*");
         if (path is null) return;
-        try
-        {
-            var region = NodesGasReader.Read(GasDocument.Load(File.ReadAllBytes(path)));
-            if (region.Nodes.Count == 0) { Status = "No snodes found in that file."; return; }
-
-            _region.Nodes.Clear();
-            _region.Nodes.AddRange(region.Nodes);
-            _region.TargetGuid = region.TargetGuid;
-
-            _usedGuids.Clear();
-            uint maxGuid = 0;
-            foreach (var n in _region.Nodes)
-            {
-                _usedGuids.Add(n.Guid);
-                if (n.Guid > maxGuid) maxGuid = n.Guid;
-            }
-            _nextGuid = maxGuid == 0 ? 0x00010001 : maxGuid + 1;
-
-            _selectedNode = null;
-            OnPropertyChanged(nameof(SelectedNode));
-            SourceDoors.Clear();
-            _dist = 0f; // reframe the camera onto the imported region
-            AfterModelChanged($"Imported {_region.Nodes.Count} node(s) from {Path.GetFileName(path)}.");
-        }
+        try { ApplyImportedRegion(NodesGasReader.Read(GasDocument.Load(File.ReadAllBytes(path))), Path.GetFileName(path)); }
         catch (Exception ex) { Status = "Import failed: " + ex.Message; }
+    }
+
+    private void ApplyImportedRegion(BuilderRegion region, string label)
+    {
+        if (region.Nodes.Count == 0) { Status = "No snodes found in that region."; return; }
+
+        _region.Nodes.Clear();
+        _region.Nodes.AddRange(region.Nodes);
+        _region.TargetGuid = region.TargetGuid;
+
+        _usedGuids.Clear();
+        uint maxGuid = 0;
+        foreach (var n in _region.Nodes)
+        {
+            _usedGuids.Add(n.Guid);
+            if (n.Guid > maxGuid) maxGuid = n.Guid;
+        }
+        _nextGuid = maxGuid == 0 ? 0x00010001 : maxGuid + 1;
+
+        _selectedNode = null;
+        OnPropertyChanged(nameof(SelectedNode));
+        SourceDoors.Clear();
+        _dist = 0f; // reframe the camera onto the loaded region
+        AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.");
     }
 
     private void SaveNodes()

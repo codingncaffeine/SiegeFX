@@ -9,6 +9,14 @@ namespace SiegeSmith.Services;
 /// <summary>An SNO mesh available in the World Builder's node palette.</summary>
 public sealed record SnoMeshEntry(uint MeshGuid, string Name);
 
+/// <summary>A shipped region discovered in the install (its <c>terrain_nodes/nodes.gas</c>), offered
+/// in the World Builder so a user can open a region by name instead of hunting for the file — the
+/// tool already knows where the game lives.</summary>
+public sealed record RegionEntry(string Region, string Map)
+{
+    public string Display => Map.Length > 0 ? $"{Map} / {Region}" : Region;
+}
+
 /// <summary>Catalogue of terrain SNO meshes discovered across a Dungeon Siege install's tanks.
 /// Builds the palette (mesh_guid → friendly name, only for meshes whose .sno is actually present)
 /// and lazily resolves + caches a parsed <see cref="SnoModel"/> per mesh_guid for preview and
@@ -24,8 +32,10 @@ public sealed class SnoCatalog : IDisposable
     private readonly Dictionary<string, (TankReader Reader, string Path)> _bareToSno =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, SnoModel?> _snoCache = new();
+    private readonly List<(RegionEntry Entry, TankReader Reader, string Path)> _regions = new();
 
     public IReadOnlyList<SnoMeshEntry> Meshes { get; private set; } = Array.Empty<SnoMeshEntry>();
+    public IReadOnlyList<RegionEntry> Regions { get; private set; } = Array.Empty<RegionEntry>();
 
     /// <summary>Opens every tank in <paramref name="tankPaths"/> and builds the catalogue.
     /// Safe to call on a background thread — no WPF types touched.</summary>
@@ -52,6 +62,8 @@ public sealed class SnoCatalog : IDisposable
             {
                 if (f.EndsWith(".sno", StringComparison.OrdinalIgnoreCase))
                     _bareToSno[BareName(f)] = (reader, f);
+                else if (f.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase))
+                    IndexRegion(reader, f);
                 else if (f.EndsWith(".gas", StringComparison.OrdinalIgnoreCase) &&
                          f.Contains("/siege_nodes/", StringComparison.OrdinalIgnoreCase))
                     IndexMeshFileGas(reader, f);
@@ -64,6 +76,37 @@ public sealed class SnoCatalog : IDisposable
                 list.Add(new SnoMeshEntry(guid, bare));
         list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
         Meshes = list;
+
+        _regions.Sort((a, b) => string.Compare(a.Entry.Display, b.Entry.Display, StringComparison.OrdinalIgnoreCase));
+        var regs = new List<RegionEntry>(_regions.Count);
+        foreach (var r in _regions) regs.Add(r.Entry);
+        Regions = regs;
+    }
+
+    private void IndexRegion(TankReader reader, string path)
+    {
+        // path: …/world/maps/<map>/regions/<region>/terrain_nodes/nodes.gas
+        var parts = path.Split('/');
+        string map = "", region = "";
+        for (int i = 0; i + 1 < parts.Length; i++)
+        {
+            if (parts[i].Equals("maps", StringComparison.OrdinalIgnoreCase)) map = parts[i + 1];
+            else if (parts[i].Equals("regions", StringComparison.OrdinalIgnoreCase)) region = parts[i + 1];
+        }
+        if (region.Length == 0) region = path;
+        _regions.Add((new RegionEntry(region, map), reader, path));
+    }
+
+    /// <summary>Extracts the raw nodes.gas bytes for a discovered region, or null on failure.</summary>
+    public byte[]? ReadRegionNodes(RegionEntry entry)
+    {
+        foreach (var r in _regions)
+            if (r.Entry.Equals(entry))
+            {
+                try { return r.Reader.ExtractToMemory(r.Path); }
+                catch { return null; }
+            }
+        return null;
     }
 
     private void IndexMeshFileGas(TankReader reader, string path)
