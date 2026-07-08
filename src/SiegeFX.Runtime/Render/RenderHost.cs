@@ -6050,6 +6050,27 @@ void main()
         var emitterPlacementCount = 0;
         var legacyParticleCount = 0;
         var decalQuads = new List<DecalRenderer.DecalQuad>();
+        // SC-DECAL-DRAPE — SNO resolver so ground decals conform to the terrain
+        // instead of bridging its dips as rigid quads. Map tank indexed first so
+        // bundled custom tiles resolve; terrain last = stock authoritative (same
+        // convention as the nav build below).
+        TankFile? drapeTerrainTank = null;
+        SnoMeshIndex? drapeIndex = null;
+        var drapeSnoCache = new Dictionary<uint, SnoModel?>();
+        if (_regionTerrainTankPath is not null)
+        {
+            try
+            {
+                drapeTerrainTank = TankFile.Open(_regionTerrainTankPath);
+                drapeIndex = SnoMeshIndex.Build(mapReader, new TankReader(drapeTerrainTank));
+            }
+            catch
+            {
+                drapeTerrainTank?.Dispose();
+                drapeTerrainTank = null;
+                drapeIndex = null;
+            }
+        }
         foreach (var rp in triggerRegions)
         {
             var (placements, diags) =
@@ -6074,8 +6095,33 @@ void main()
             // SC-DECALS — accumulate this region's projected decals (the char on the
             // burnt farmhouse doors, blood, ground scorch, drop shadows, dirt, straw,
             // rugs). Node transforms resolve against _regionLayout, same as above.
-            RegisterRegionDecals(mapReader, rp, decalQuads);
+            RegionGraph? drapeGraph = null;
+            foreach (var (gp, g, _) in _worldRegionGraphs)
+                if (string.Equals(gp.TrimEnd('/'), rp.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+                { drapeGraph = g; break; }
+            Func<uint, SnoModel?>? resolveNodeSno = null;
+            if (drapeGraph is not null && drapeIndex is not null)
+            {
+                var graphLocal = drapeGraph;
+                var indexLocal = drapeIndex;
+                resolveNodeSno = guid =>
+                {
+                    if (!graphLocal.TryGetNode(guid, out var gnode)) return null;
+                    if (drapeSnoCache.TryGetValue(gnode.MeshGuid, out var hit)) return hit;
+                    SnoModel? m = null;
+                    var b = indexLocal.LoadSnoBytes(gnode.MeshGuid);
+                    if (b is not null)
+                    {
+                        try { m = SnoModel.Load(b); }
+                        catch { m = null; }
+                    }
+                    drapeSnoCache[gnode.MeshGuid] = m;
+                    return m;
+                };
+            }
+            RegisterRegionDecals(mapReader, rp, decalQuads, resolveNodeSno);
         }
+        drapeTerrainTank?.Dispose();
         // The decal texture loader (LoadDecalTexture) resolves .raw files through
         // _playResolver, so the field must be live BEFORE the decal build below.
         // It was previously assigned further down (post-decals), leaving SetDecals to
@@ -10243,7 +10289,8 @@ void main()
     /// The orientation basis supplies the in-plane axes; the quad spans ±horizontal/2
     /// and ±vertical/2 metres about the origin.</summary>
     private void RegisterRegionDecals(TankReader mapReader, string regionPath,
-                                      List<DecalRenderer.DecalQuad> outQuads)
+                                      List<DecalRenderer.DecalQuad> outQuads,
+                                      Func<uint, SnoModel?>? resolveNodeSno = null)
     {
         var rname = System.IO.Path.GetFileName(regionPath.TrimEnd('/'));
         var path = regionPath.TrimEnd('/') + "/decals/decals.gas";
@@ -10284,6 +10331,45 @@ void main()
             var center = Vector3.Transform(d.LocalOrigin, nw) + normal * decalPush;
             var axisH  = Vector3.TransformNormal(d.AxisH, nw) * (d.HorizontalMeters * 0.5f);
             var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
+
+            // SC-DECAL-DRAPE — DS1 decals are PROJECTED onto the receiving
+            // geometry; a rigid quad bridges every dip in uneven terrain and
+            // reads as a flat patch of land hovering over the hollow (the
+            // intro-pan regression). Ground decals (near-horizontal, node
+            // resolved, SNO available) are subdivided into ~1m grid cells with
+            // every grid corner snapped to the anchor node's surface height at
+            // that spot. Wall/door decals (chars) keep the flat quad — their
+            // receivers are planar. Corners with no surface underneath (decal
+            // spilling past the node edge) keep the plane height.
+            var sno = ok && MathF.Abs(normal.Y) > 0.7f ? resolveNodeSno?.Invoke(d.NodeGuid) : null;
+            if (sno is not null)
+            {
+                int nx = Math.Clamp((int)MathF.Ceiling(d.HorizontalMeters), 1, 8);
+                int ny = Math.Clamp((int)MathF.Ceiling(d.VerticalMeters), 1, 8);
+                var hLocal = d.AxisH * (d.HorizontalMeters * 0.5f);
+                var vLocal = d.AxisV * (d.VerticalMeters * 0.5f);
+                var corners = new Vector3[nx + 1, ny + 1];
+                for (int i = 0; i <= nx; i++)
+                for (int j = 0; j <= ny; j++)
+                {
+                    float u = i / (float)nx * 2f - 1f;
+                    float v = j / (float)ny * 2f - 1f;
+                    var pl = d.LocalOrigin + hLocal * u + vLocal * v;
+                    if (TrySampleSnoHeight(sno, pl, out var ySnap)) pl.Y = ySnap + 0.02f;
+                    corners[i, j] = Vector3.Transform(pl, nw) + normal * decalPush;
+                }
+                for (int i = 0; i < nx; i++)
+                for (int j = 0; j < ny; j++)
+                {
+                    var cell = new DecalRenderer.DecalQuad(
+                        corners[i, j], corners[i + 1, j], corners[i + 1, j + 1], corners[i, j + 1],
+                        d.TextureName,
+                        i / (float)nx, j / (float)ny, (i + 1) / (float)nx, (j + 1) / (float)ny);
+                    outQuads.Add(cell);
+                }
+                continue;
+            }
+
             var quad = new DecalRenderer.DecalQuad(
                 center - axisH - axisV, center + axisH - axisV,
                 center + axisH + axisV, center - axisH + axisV, d.TextureName);
@@ -10309,6 +10395,40 @@ void main()
                               $"normal=({firstCharNormal.X:F2},{firstCharNormal.Y:F2},{firstCharNormal.Z:F2}) " +
                               $"push={decalPush:F2}m");
         }
+    }
+
+    /// <summary>SC-DECAL-DRAPE — surface height of <paramref name="sno"/> at the
+    /// node-local XZ of <paramref name="p"/>: interpolated Y of the triangle whose
+    /// XZ footprint contains the point, picking the candidate nearest the decal
+    /// plane (multi-story tiles have floors above/below). False when nothing lies
+    /// within 2m vertically — the caller keeps the flat-plane height.</summary>
+    private static bool TrySampleSnoHeight(SnoModel sno, Vector3 p, out float y)
+    {
+        y = p.Y;
+        float bestDelta = 2.0f;
+        bool found = false;
+        foreach (var surf in sno.Surfaces)
+        {
+            var tris = surf.TriangleIndices;
+            for (int t = 0; t + 2 < tris.Length; t += 3)
+            {
+                var a = sno.Corners[surf.StartCorner + tris[t]].Position;
+                var b = sno.Corners[surf.StartCorner + tris[t + 1]].Position;
+                var c = sno.Corners[surf.StartCorner + tris[t + 2]].Position;
+                float d00x = b.X - a.X, d00z = b.Z - a.Z;
+                float d01x = c.X - a.X, d01z = c.Z - a.Z;
+                float det = d00x * d01z - d01x * d00z;
+                if (MathF.Abs(det) < 1e-9f) continue;   // vertical/degenerate in XZ
+                float px = p.X - a.X, pz = p.Z - a.Z;
+                float u = (px * d01z - d01x * pz) / det;
+                float v = (d00x * pz - px * d00z) / det;
+                if (u < -0.001f || v < -0.001f || u + v > 1.001f) continue;
+                float ty = a.Y + u * (b.Y - a.Y) + v * (c.Y - a.Y);
+                float delta = MathF.Abs(ty - p.Y);
+                if (delta < bestDelta) { bestDelta = delta; y = ty; found = true; }
+            }
+        }
+        return found;
     }
 
     /// <summary>SC-DECALS — load a decal texture (Art/Bitmaps/Decals/&lt;name&gt;.raw)

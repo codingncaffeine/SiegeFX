@@ -14,7 +14,11 @@ namespace SiegeFX.Runtime.Render;
 /// doors — the door mesh/texture are clean; DS1 projects b_d_burnt-wood-a over them.</summary>
 public sealed class DecalRenderer : IDisposable
 {
-    public readonly record struct DecalQuad(Vector3 P0, Vector3 P1, Vector3 P2, Vector3 P3, string Texture);
+    /// <summary>One textured decal quad. The optional UV rect lets a draped
+    /// (terrain-conforming) decal split into grid cells that each carry their
+    /// slice of the texture; plain flat decals keep the full 0..1 default.</summary>
+    public readonly record struct DecalQuad(Vector3 P0, Vector3 P1, Vector3 P2, Vector3 P3, string Texture,
+                                            float U0 = 0f, float V0 = 0f, float U1 = 1f, float V1 = 1f);
 
     private const string VertexSrc = @"#version 330 core
 layout(location=0) in vec3 aPos;
@@ -88,12 +92,12 @@ void main() {
             foreach (var qi in byTex[name])
             {
                 var q = quads[qi];
-                Append(verts, q.P0, 0f, 0f);
-                Append(verts, q.P1, 1f, 0f);
-                Append(verts, q.P2, 1f, 1f);
-                Append(verts, q.P0, 0f, 0f);
-                Append(verts, q.P2, 1f, 1f);
-                Append(verts, q.P3, 0f, 1f);
+                Append(verts, q.P0, q.U0, q.V0);
+                Append(verts, q.P1, q.U1, q.V0);
+                Append(verts, q.P2, q.U1, q.V1);
+                Append(verts, q.P0, q.U0, q.V0);
+                Append(verts, q.P2, q.U1, q.V1);
+                Append(verts, q.P3, q.U0, q.V1);
                 vertCursor += 6;
                 DecalCount++;
             }
