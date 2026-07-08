@@ -3063,7 +3063,12 @@ void main()
     vec4 sp = skin * vec4(aPos, 1.0);
     vec4 wp = uModel * sp;
     gl_Position = uViewProj * wp;
-    vWorldPos = wp.xyz;
+    // SC-WEATHER-FOG-FIX — sp.w equals the vertex's bone-weight sum, and DS1
+    // rigs ship verts whose weights don't sum to exactly 1. gl_Position is
+    // homogeneous so that never mattered, but a world POSITION must be
+    // dehomogenized or those verts get a scaled distance and fog paints
+    // grey patches onto nearby skinned actors (the intro dog's back).
+    vWorldPos = abs(wp.w) > 0.0001 ? wp.xyz / wp.w : wp.xyz;
     // DS1 rigs are rigid (rotation + translation, no non-uniform scale), so mat3(skin) is
     // the correct normal transform. Don't rewrite this as a transpose-inverse: it would be
     // slower, identical for these inputs, and would mask corruption if a future skin ever did
