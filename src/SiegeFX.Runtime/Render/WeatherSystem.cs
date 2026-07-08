@@ -112,6 +112,12 @@ public sealed class WeatherSystem
             Snow: mood.Snow?.Density ?? 0f,
             WindVel: mood.Wind?.Velocity ?? 0f,
             WindDir: mood.Wind?.Direction ?? _from.WindDir);
+        // Fog turning ON from a fog-less state (boot → first region) must not
+        // lerp its distances up from 0 — that reads as a dark fog wall racing
+        // out from the camera. Seed the from-state with the target fog so the
+        // atmosphere is simply there on arrival (only mood→mood changes blend).
+        if (!_from.FogOn && _to.FogOn)
+            _from = _from with { FogNear = _to.FogNear, FogFar = _to.FogFar, FogColor = _to.FogColor };
         _transitionLen = MathF.Max(0f, mood.TransitionTime);
         _transitionT = 0f;
         Interior = mood.Interior;
