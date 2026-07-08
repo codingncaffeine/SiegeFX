@@ -126,6 +126,9 @@ public sealed class RenderHost : IDisposable
     private IReadOnlyDictionary<string, IReadOnlyList<string>>? _soundDbEvents;
     private readonly Dictionary<string, string?> _emitterClipCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Random _emitterRng = new();
+
+    // SC-DECAL-DIAG — F6 live toggle for the whole decal layer (dev knob).
+    private bool _decalsVisible = true;
     private string? _activeBedRegion;
     // Phase 21d-2a-xii — DS1 sound effect descriptors. Loaded once at audio
     // init from Sound.dsres; consulted by TryRegisterSfx so every wired clip
@@ -3650,6 +3653,14 @@ void main()
                 // CaptureSave still produces a file but ApplySave's region
                 // check would refuse it on the next F9 anyway.
                 else if (key == Key.F5) DoQuickSave();
+                // SC-DECAL-DIAG — live decal-layer toggle (dev knob; strip
+                // before v1.0). Confirms/clears decals for any "floating
+                // flat image" report in one keypress, no rebuild.
+                else if (key == Key.F6)
+                {
+                    _decalsVisible = !_decalsVisible;
+                    Console.WriteLine($"[decals] layer {(_decalsVisible ? "ON" : "OFF")} (F6)");
+                }
                 // Phase 17-SC-E — debug particle receipt. F11 spawns a
                 // burst of fire + smoke + sparks at the player's feet so
                 // the standalone backend has a visible test before the
@@ -10317,6 +10328,11 @@ void main()
                        System.Globalization.NumberStyles.Float,
                        System.Globalization.CultureInfo.InvariantCulture, out decalPush);
         int resolved = 0, fallback = 0, charCount = 0;
+        // SC-DECAL-DIAG — drape engagement accounting: a silent fall-through to
+        // flat quads (resolver missing, node graph miss, SNO unresolved) is
+        // exactly the failure mode that keeps ground decals hovering, so the
+        // per-region summary names it instead of hiding it.
+        int draped = 0, flatWall = 0, flatNoResolver = 0, flatNoSno = 0;
         DecalRenderer.DecalQuad? firstChar = null;
         Vector3 firstCharNormal = Vector3.Zero;
         foreach (var d in store.Decals)
@@ -10341,9 +10357,14 @@ void main()
             // that spot. Wall/door decals (chars) keep the flat quad — their
             // receivers are planar. Corners with no surface underneath (decal
             // spilling past the node edge) keep the plane height.
-            var sno = ok && MathF.Abs(normal.Y) > 0.7f ? resolveNodeSno?.Invoke(d.NodeGuid) : null;
+            bool isGround = ok && MathF.Abs(normal.Y) > 0.7f;
+            var sno = isGround ? resolveNodeSno?.Invoke(d.NodeGuid) : null;
+            if (!isGround) flatWall++;
+            else if (resolveNodeSno is null) flatNoResolver++;
+            else if (sno is null) flatNoSno++;
             if (sno is not null)
             {
+                draped++;
                 int nx = Math.Clamp((int)MathF.Ceiling(d.HorizontalMeters), 1, 8);
                 int ny = Math.Clamp((int)MathF.Ceiling(d.VerticalMeters), 1, 8);
                 var hLocal = d.AxisH * (d.HorizontalMeters * 0.5f);
@@ -10386,7 +10407,8 @@ void main()
         // (orientation collapsed the quad edge-on), pinpoints a placement bug vs a
         // render bug. Compare the world-center against the "legacy emitter" fire pos.
         Console.WriteLine($"  [decals] {rname}: parsed {store.Decals.Count} " +
-                          $"(node-resolved {resolved}, identity-fallback {fallback}); char(burnt-wood)={charCount}");
+                          $"(node-resolved {resolved}, identity-fallback {fallback}); char(burnt-wood)={charCount}; " +
+                          $"draped={draped} flat: wall/steep={flatWall} NO-RESOLVER={flatNoResolver} NO-SNO={flatNoSno}");
         if (firstChar is { } fc)
         {
             var c = (fc.P0 + fc.P2) * 0.5f;
@@ -18742,7 +18764,9 @@ void main()
         // blood, ground scorch, drop shadows) over the finished world geometry, before
         // particles + HUD. Depth-tested against terrain + props; manages + restores its
         // own blend/depth-write/polygon-offset state.
-        _decalRenderer?.Draw(vp);
+        // SC-DECAL-DIAG — F6 toggles the whole decal layer live (dev knob; strip
+        // before v1.0). One keypress answers "is that floating thing a decal?".
+        if (_decalsVisible) _decalRenderer?.Draw(vp);
 
         // Phase 17-SC-E — billboard particles. Sit above the world scene
         // (depth-tested against actors + props) but below the HUD ortho
