@@ -10252,13 +10252,19 @@ void main()
         try { bytes = mapReader.ExtractToMemory(path); }
         catch (Exception ex) { Console.WriteLine($"  [decals] {rname}: extract failed: {ex.Message}"); return; }
         var store = SiegeFX.Core.Assets.DecalStore.Load(bytes);
-        // decal_origin is node-local (needs the node transform for its world position),
-        // but decal_orientation is WORLD-space (absolute). Applying the node's rotation
-        // to the axes as well double-rotates them and tilts every quad off its target
-        // surface — that was the char "not lying flat" on the barn doors. So the axes are
-        // used as-authored; only the origin gets the node transform. SIEGEFX_DECAL_PUSH
-        // nudges the quad along its facing normal (metres, +/-) to seat it on the door
-        // face if it floats a little proud of / behind it — dial it live, no rebuild.
+        // SC-DECAL-FRAME (regression fix) — decal_orientation is NODE-LOCAL,
+        // like decal_origin: both rotate through the anchor node's world
+        // transform. The earlier "world-space axes" change skipped the node
+        // rotation; on rotated nodes that keeps a decal's tilt magnitude but
+        // swings its tilt DIRECTION off the surface — sloped-ground decals
+        // (desert b_d_dirt-a, forest b_d_for01) tilted against their slopes
+        // and lifted corners out of the terrain ("hovering ground"). Measured
+        // over all 718 shipped decals vs the nearest SNO face normal
+        // (`siegefx region decal-audit ... all`): cols(H,V,N) + node-local =
+        // 567 aligned / 38 misaligned, vs 506/69 for world-frame axes and
+        // ~370/205 for the original row-major read. Column-major read stays
+        // (that half of the earlier fix was right). SIEGEFX_DECAL_PUSH nudges
+        // each quad along its facing normal (metres, +/-) to seat it.
         float decalPush = 0f;
         float.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_DECAL_PUSH"),
                        System.Globalization.NumberStyles.Float,
@@ -10272,10 +10278,12 @@ void main()
             bool ok = _regionLayout is not null && _regionLayout.TryGetTransform(d.NodeGuid, out m);
             Matrix4x4 nw = ok ? m : Matrix4x4.Identity;
             if (ok) resolved++; else fallback++;
-            var normal = d.Normal.LengthSquared() > 1e-8f ? Vector3.Normalize(d.Normal) : Vector3.UnitY;
+            var localNormal = d.Normal.LengthSquared() > 1e-8f ? Vector3.Normalize(d.Normal) : Vector3.UnitY;
+            var normal = Vector3.TransformNormal(localNormal, nw);
+            if (normal.LengthSquared() > 1e-8f) normal = Vector3.Normalize(normal);
             var center = Vector3.Transform(d.LocalOrigin, nw) + normal * decalPush;
-            var axisH  = d.AxisH * (d.HorizontalMeters * 0.5f);
-            var axisV  = d.AxisV * (d.VerticalMeters * 0.5f);
+            var axisH  = Vector3.TransformNormal(d.AxisH, nw) * (d.HorizontalMeters * 0.5f);
+            var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
             var quad = new DecalRenderer.DecalQuad(
                 center - axisH - axisV, center + axisH - axisV,
                 center + axisH + axisV, center - axisH + axisV, d.TextureName);

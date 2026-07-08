@@ -758,6 +758,7 @@ static int DispatchRegion(string[] a)
         "spawn"       => CmdRegionSpawn(a[1..]),
         "prop-textures" => CmdRegionPropTextures(a[1..]),
         "sound-emitters" => CmdRegionSoundEmitters(a[1..]),
+        "decal-audit" => CmdRegionDecalAudit(a[1..]),
         "breakable-audit" => CmdRegionBreakableAudit(a[1..]),
         "loot-distribution" => CmdRegionLootDistribution(a[1..]),
         "mob-loot" => CmdRegionMobLoot(a[1..]),
@@ -5077,6 +5078,281 @@ static int CmdRegionSoundEmitters(string[] a)
     if (onlyKnownTypo)
         Console.WriteLine("  (the single miss is the known shipped typo — silent in retail too; PASS)");
     return (wavMisses == 0 && (eventMisses == 0 || onlyKnownTypo)) ? 0 : 2;
+}
+
+// SC-DECAL-REGRESSION — measure every decals.gas orientation matrix under the
+// competing interpretations that produced the "hovering ground" regression:
+//   read:      row-major rows=(N,H,V) [original c1bc4a8]  vs
+//              column-major cols=(H,V,N) [418a9be]        vs
+//              the N-last permutations of each
+//   transform: axes rotated by the anchor node's world transform [original]
+//              vs axes used as-authored [936c129 "world-space"]
+// Majorness is decided transform-independently: the CORRECT read yields an
+// orthonormal (H,V,N) triad per decal (H⊥V, unit lengths). The transform
+// question is decided by tilt bimodality: ground decals (shadows/dirt/rugs)
+// must be horizontal AND the barn-door chars vertical under the same rule.
+static int CmdRegionDecalAudit(string[] a)
+{
+    if (a.Length < 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region decal-audit <map-tank> <terrain-tank> <region-path|all>");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    bool all = a[2].Equals("all", StringComparison.OrdinalIgnoreCase);
+    var regionPaths = new List<string>();
+    if (all)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in mapReader.ListFiles())
+        {
+            if (!path.EndsWith("/decals/decals.gas", StringComparison.OrdinalIgnoreCase)) continue;
+            var rp = path[..^"/decals/decals.gas".Length];
+            if (seen.Add(rp)) regionPaths.Add(rp);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"auditing {regionPaths.Count} regions with decals...");
+    }
+    else regionPaths.Add(a[2].TrimEnd('/'));
+
+    // reads: 0 = rows (N,H,V)   [c1bc4a8]
+    //        1 = cols (H,V,N)   [418a9be / current]
+    //        2 = rows (H,V,N)
+    //        3 = cols (N,H,V)
+    string[] readNames = { "rows N,H,V", "cols H,V,N", "rows H,V,N", "cols N,H,V" };
+    var orthoErr = new double[4];
+    // per (read, transform 0=node-rotated 1=as-authored): [horizontal, vertical, oblique]
+    var tilt = new int[4, 2, 3];
+    int totalDecals = 0, nonFinite = 0;
+    var anchors = new List<string>();
+    // Under the CURRENT shipped interpretation (cols H,V,N, as-authored):
+    // every non-horizontal decal, so the hovering population is nameable.
+    var suspects = new List<string>();
+    // GROUND TRUTH — per (read, frame 0=node-local 1=world): decals whose
+    // plane normal matches the nearest SNO face normal at the decal origin.
+    // decal_origin is node-local, so the SNO comparison happens in node space:
+    // node-local axes compare raw; world axes compare against the face normal
+    // rotated into world by the node transform. Buckets: aligned ≤10°,
+    // loose ≤26°, misaligned.
+    var align = new int[4, 2, 3];
+    int alignSamples = 0;
+
+    foreach (var rp in regionPaths)
+    {
+        var decPath = rp + "/decals/decals.gas";
+        if (!mapReader.TryGetFile(decPath, out _)) { if (!all) Console.WriteLine("  no decals.gas"); continue; }
+        SiegeFX.Core.Assets.GasDocument doc;
+        try { doc = SiegeFX.Core.Assets.GasDocument.Load(mapReader.ExtractToMemory(decPath)); }
+        catch { continue; }
+
+        RegionLayout? layout = null;
+        RegionGraph? graphRef = null;
+        try
+        {
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+            graphRef = graph;
+            layout = RegionLayout.Build(graph, Resolve);
+        }
+        catch { /* transforms fall back to identity */ }
+
+        void Walk(SiegeFX.Core.Assets.GasNode node)
+        {
+            var hdr = node.Header.Trim().TrimStart('[').TrimEnd(']');
+            bool isDecal = hdr.Split(',').Any(p =>
+            {
+                var t = p.Trim();
+                return t.StartsWith("t:", StringComparison.OrdinalIgnoreCase) &&
+                       t[2..].Trim().Equals("decal", StringComparison.OrdinalIgnoreCase);
+            });
+            if (isDecal)
+            {
+                string? ori = null, org = null, tex = null;
+                foreach (var at in node.Attributes)
+                {
+                    if (at.Name.Equals("decal_orientation", StringComparison.OrdinalIgnoreCase)) ori = at.Value;
+                    else if (at.Name.Equals("decal_origin", StringComparison.OrdinalIgnoreCase)) org = at.Value;
+                    else if (at.Name.Equals("texture", StringComparison.OrdinalIgnoreCase)) tex = at.Value;
+                }
+                if (ori is not null && org is not null && tex is not null)
+                {
+                    var parts = ori.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    var op = org.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 9 && op.Length >= 4)
+                    {
+                        var o = new float[9];
+                        bool okF = true;
+                        for (int i = 0; i < 9; i++)
+                            okF &= float.TryParse(parts[i].TrimEnd(';'), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out o[i]);
+                        var guidS = op[3].Trim().TrimEnd(';');
+                        if (guidS.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) guidS = guidS[2..];
+                        uint.TryParse(guidS, System.Globalization.NumberStyles.HexNumber,
+                            System.Globalization.CultureInfo.InvariantCulture, out var nodeGuid);
+                        if (okF)
+                        {
+                            totalDecals++;
+                            var texName = tex.Trim().TrimEnd(';').Trim();
+                            int slash = texName.LastIndexOfAny(new[] { '\\', '/' });
+                            if (slash >= 0) texName = texName[(slash + 1)..];
+                            int dot = texName.IndexOf('.');
+                            if (dot >= 0) texName = texName[..dot];
+
+                            Matrix4x4 nw = Matrix4x4.Identity;
+                            if (layout is null || !layout.TryGetTransform(nodeGuid, out nw))
+                                nw = Matrix4x4.Identity;
+
+                            // Ground truth: the SNO face nearest the (node-local)
+                            // decal origin. Take the best-aligned of the 6 nearest
+                            // face candidates so a decal at a floor/wall junction
+                            // scores against its own surface.
+                            var localOrigin = new Vector3(
+                                float.Parse(op[0].TrimEnd(';'), System.Globalization.CultureInfo.InvariantCulture),
+                                float.Parse(op[1].TrimEnd(';'), System.Globalization.CultureInfo.InvariantCulture),
+                                float.Parse(op[2].TrimEnd(';'), System.Globalization.CultureInfo.InvariantCulture));
+                            var nearFaces = new List<(float dist, Vector3 n)>();
+                            if (graphRef is not null && graphRef.TryGetNode(nodeGuid, out var gnode))
+                            {
+                                var sno = Resolve(gnode.MeshGuid);
+                                if (sno is not null)
+                                {
+                                    foreach (var surf in sno.Surfaces)
+                                    {
+                                        var tris = surf.TriangleIndices;
+                                        for (int t = 0; t + 2 < tris.Length; t += 3)
+                                        {
+                                            var pa = sno.Corners[surf.StartCorner + tris[t]].Position;
+                                            var pb = sno.Corners[surf.StartCorner + tris[t + 1]].Position;
+                                            var pc = sno.Corners[surf.StartCorner + tris[t + 2]].Position;
+                                            var centroid = (pa + pb + pc) / 3f;
+                                            float dist = Vector3.DistanceSquared(centroid, localOrigin);
+                                            if (dist > 9f) continue;   // 3m radius
+                                            var fn = Vector3.Cross(pb - pa, pc - pa);
+                                            if (fn.LengthSquared() < 1e-10f) continue;
+                                            nearFaces.Add((dist, Vector3.Normalize(fn)));
+                                        }
+                                    }
+                                    nearFaces.Sort((x, y) => x.dist.CompareTo(y.dist));
+                                    if (nearFaces.Count > 6) nearFaces.RemoveRange(6, nearFaces.Count - 6);
+                                }
+                            }
+                            if (nearFaces.Count > 0) alignSamples++;
+
+                            for (int read = 0; read < 4; read++)
+                            {
+                                (Vector3 H, Vector3 V) = read switch
+                                {
+                                    0 => (new Vector3(o[3], o[4], o[5]), new Vector3(o[6], o[7], o[8])),
+                                    1 => (new Vector3(o[0], o[3], o[6]), new Vector3(o[1], o[4], o[7])),
+                                    2 => (new Vector3(o[0], o[1], o[2]), new Vector3(o[3], o[4], o[5])),
+                                    _ => (new Vector3(o[1], o[4], o[7]), new Vector3(o[2], o[5], o[8])),
+                                };
+                                float oe = Math.Abs(Vector3.Dot(H, V))
+                                         + Math.Abs(H.Length() - 1f)
+                                         + Math.Abs(V.Length() - 1f);
+                                if (float.IsFinite(oe)) orthoErr[read] += oe;
+                                else if (read == 0) nonFinite++;
+                                // Surface alignment in NODE space: frame 0 treats
+                                // the authored axes as node-local (raw vs raw);
+                                // frame 1 treats them as world (rotate the face
+                                // normal up into world before comparing).
+                                if (nearFaces.Count > 0)
+                                {
+                                    var nLocal = Vector3.Cross(H, V);
+                                    if (nLocal.LengthSquared() > 1e-10f)
+                                    {
+                                        nLocal = Vector3.Normalize(nLocal);
+                                        for (int frame = 0; frame < 2; frame++)
+                                        {
+                                            float best = 0f;
+                                            foreach (var (_, fn) in nearFaces)
+                                            {
+                                                var fcmp = frame == 0 ? fn : Vector3.Normalize(Vector3.TransformNormal(fn, nw));
+                                                best = MathF.Max(best, MathF.Abs(Vector3.Dot(nLocal, fcmp)));
+                                            }
+                                            int b = best > 0.985f ? 0 : best > 0.9f ? 1 : 2;
+                                            align[read, frame, b]++;
+                                        }
+                                    }
+                                }
+
+                                for (int xf = 0; xf < 2; xf++)
+                                {
+                                    var Ht = xf == 0 ? Vector3.TransformNormal(H, nw) : H;
+                                    var Vt = xf == 0 ? Vector3.TransformNormal(V, nw) : V;
+                                    var n = Vector3.Cross(Ht, Vt);
+                                    if (n.LengthSquared() < 1e-10f) continue;
+                                    n = Vector3.Normalize(n);
+                                    float ay = MathF.Abs(n.Y);
+                                    int bucket = ay > 0.94f ? 0 : ay < 0.34f ? 1 : 2;
+                                    tilt[read, xf, bucket]++;
+                                    if ((texName.Contains("burnt", StringComparison.OrdinalIgnoreCase)
+                                         || texName.Contains("rug", StringComparison.OrdinalIgnoreCase)
+                                         || texName.Contains("shadow", StringComparison.OrdinalIgnoreCase))
+                                        && anchors.Count < 400)
+                                        anchors.Add($"{texName,-24} read={readNames[read],-10} xf={(xf == 0 ? "node" : "raw ")} |n.Y|={ay:F2}");
+                                    if (read == 1 && xf == 1 && bucket != 0 && suspects.Count < 200)
+                                    {
+                                        var rname = System.IO.Path.GetFileName(rp);
+                                        suspects.Add($"{rname,-14} {texName,-28} |n.Y|={ay:F2} {(bucket == 1 ? "VERTICAL" : "OBLIQUE")}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            foreach (var c in node.Children) Walk(c);
+        }
+        foreach (var root in doc.Roots) Walk(root);
+    }
+
+    Console.WriteLine($"decals measured: {totalDecals} (non-finite orientation values: {nonFinite})");
+    Console.WriteLine();
+    Console.WriteLine("orthonormality error per read (lower = correct matrix majorness; non-finite skipped):");
+    for (int r = 0; r < 4; r++)
+        Console.WriteLine($"  {readNames[r],-12} mean err = {(totalDecals > 0 ? orthoErr[r] / totalDecals : 0):F4}");
+    Console.WriteLine();
+    Console.WriteLine("plane tilt by (read, transform): horizontal / vertical / OBLIQUE");
+    for (int r = 0; r < 4; r++)
+        for (int xf = 0; xf < 2; xf++)
+            Console.WriteLine($"  {readNames[r],-12} {(xf == 0 ? "node-rotated" : "as-authored ")}  " +
+                              $"H={tilt[r, xf, 0],5}  V={tilt[r, xf, 1],5}  oblique={tilt[r, xf, 2],5}");
+    Console.WriteLine();
+    Console.WriteLine($"GROUND TRUTH — plane vs nearest SNO face normal ({alignSamples} decals with geometry):");
+    Console.WriteLine("  (read, frame): aligned<=10deg / loose<=26deg / MISALIGNED — correct combo maximizes aligned");
+    for (int r = 0; r < 4; r++)
+        for (int f = 0; f < 2; f++)
+            Console.WriteLine($"  {readNames[r],-12} {(f == 0 ? "node-local" : "world     ")}  " +
+                              $"aligned={align[r, f, 0],5}  loose={align[r, f, 1],5}  MISALIGNED={align[r, f, 2],5}");
+    Console.WriteLine();
+    Console.WriteLine($"non-horizontal decals under the CURRENT interpretation (cols H,V,N as-authored) — {suspects.Count}:");
+    foreach (var s in suspects) Console.WriteLine("  " + s);
+    if (!all)
+    {
+        Console.WriteLine();
+        Console.WriteLine("known-anchor decals (chars must be V≈vertical, rugs/shadows H≈1.00):");
+        foreach (var s in anchors) Console.WriteLine("  " + s);
+    }
+    return 0;
 }
 
 static int CmdRegionPropTextures(string[] a)
