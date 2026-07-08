@@ -20,6 +20,13 @@ public sealed class DecalRenderer : IDisposable
     public readonly record struct DecalQuad(Vector3 P0, Vector3 P1, Vector3 P2, Vector3 P3, string Texture,
                                             float U0 = 0f, float V0 = 0f, float U1 = 1f, float V1 = 1f);
 
+    /// <summary>SC-DECAL-PROJECT — one projected decal triangle with free-form
+    /// per-vertex UVs. Wall decals clip the receiving geometry (tilted barn
+    /// doors, wall pieces) against the projector box and emit the clipped
+    /// triangles here; UVs come from the projection axes.</summary>
+    public readonly record struct DecalTri(Vector3 P0, Vector3 P1, Vector3 P2,
+                                           Vector2 Uv0, Vector2 Uv1, Vector2 Uv2, string Texture);
+
     private const string VertexSrc = @"#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec2 aUv;
@@ -62,6 +69,10 @@ void main() {
     /// skipped), and uploads one interleaved pos(3)+uv(2) VBO. Previously-owned
     /// textures + batches are freed first, so this doubles as the per-region reset.</summary>
     public void SetDecals(IReadOnlyList<DecalQuad> quads, Func<string, GlTexture?> textureLoader)
+        => SetDecals(quads, Array.Empty<DecalTri>(), textureLoader);
+
+    public void SetDecals(IReadOnlyList<DecalQuad> quads, IReadOnlyList<DecalTri> tris,
+                          Func<string, GlTexture?> textureLoader)
     {
         if (_disposed) return;
         foreach (var t in _ownedTextures) t.Dispose();
@@ -69,19 +80,22 @@ void main() {
         _batches.Clear();
         DecalCount = 0;
 
-        // Group quad indices by texture, preserving first-seen order for stable batches.
+        // Group quad + tri indices by texture, preserving first-seen order for
+        // stable batches. Tri indices ride the same lists offset by quads.Count.
         var byTex = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
         var order = new List<string>();
-        for (int i = 0; i < quads.Count; i++)
+        void Tally(string name, int idx)
         {
-            var name = quads[i].Texture;
             if (!byTex.TryGetValue(name, out var idxs)) { idxs = new List<int>(); byTex[name] = idxs; order.Add(name); }
-            idxs.Add(i);
+            idxs.Add(idx);
         }
+        for (int i = 0; i < quads.Count; i++) Tally(quads[i].Texture, i);
+        for (int i = 0; i < tris.Count; i++) Tally(tris[i].Texture, quads.Count + i);
 
-        // 6 verts/quad, 5 floats/vert (pos.xyz, uv.xy). Two tris (P0,P1,P2)+(P0,P2,P3);
-        // culling is disabled at draw so winding doesn't matter (decals are two-sided).
-        var verts = new List<float>(quads.Count * 30);
+        // 6 verts/quad or 3/tri, 5 floats/vert (pos.xyz, uv.xy). Quads emit two
+        // tris (P0,P1,P2)+(P0,P2,P3); culling is disabled at draw so winding
+        // doesn't matter (decals are two-sided).
+        var verts = new List<float>(quads.Count * 30 + tris.Count * 15);
         int vertCursor = 0;
         foreach (var name in order)
         {
@@ -89,16 +103,27 @@ void main() {
             if (tex is null) continue;
             _ownedTextures.Add(tex);
             int first = vertCursor;
-            foreach (var qi in byTex[name])
+            foreach (var idx in byTex[name])
             {
-                var q = quads[qi];
-                Append(verts, q.P0, q.U0, q.V0);
-                Append(verts, q.P1, q.U1, q.V0);
-                Append(verts, q.P2, q.U1, q.V1);
-                Append(verts, q.P0, q.U0, q.V0);
-                Append(verts, q.P2, q.U1, q.V1);
-                Append(verts, q.P3, q.U0, q.V1);
-                vertCursor += 6;
+                if (idx < quads.Count)
+                {
+                    var q = quads[idx];
+                    Append(verts, q.P0, q.U0, q.V0);
+                    Append(verts, q.P1, q.U1, q.V0);
+                    Append(verts, q.P2, q.U1, q.V1);
+                    Append(verts, q.P0, q.U0, q.V0);
+                    Append(verts, q.P2, q.U1, q.V1);
+                    Append(verts, q.P3, q.U0, q.V1);
+                    vertCursor += 6;
+                }
+                else
+                {
+                    var t = tris[idx - quads.Count];
+                    Append(verts, t.P0, t.Uv0.X, t.Uv0.Y);
+                    Append(verts, t.P1, t.Uv1.X, t.Uv1.Y);
+                    Append(verts, t.P2, t.Uv2.X, t.Uv2.Y);
+                    vertCursor += 3;
+                }
                 DecalCount++;
             }
             if (vertCursor > first) _batches.Add(new Batch(tex, first, (uint)(vertCursor - first)));

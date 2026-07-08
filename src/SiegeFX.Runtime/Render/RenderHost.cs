@@ -2205,6 +2205,10 @@ public sealed class RenderHost : IDisposable
         public GlTexture? Texture;
         public Matrix4x4 World;
         public string Template = "";
+        // SC-DECAL-PROJECT — CPU-side mesh for decal projection onto props
+        // (the broken barn doors receive the char decals). The ASP cache keeps
+        // these alive regardless, so the reference adds no memory.
+        public AspMesh? Asp;
         // Phase 17-SC-I-2 — DS1's chore_default = rotatex?rpm=N skrit drives the
         // mill waterwheel + a few other rotating props. Rather than running
         // skrit per static prop (props aren't actors), we recognise the pattern
@@ -6077,6 +6081,7 @@ void main()
         // the nav build below).
         TankFile? drapeTerrainTank = null;
         Func<Vector3, float?>? sampleWorldHeight = null;
+        Func<Vector3, float, List<(Vector3 A, Vector3 B, Vector3 C)>>? collectWorldTris = null;
         if (_regionTerrainTankPath is not null && _regionLayout is not null)
         {
             try
@@ -6107,6 +6112,57 @@ void main()
                 }
                 if (drapeNodes.Count > 0)
                 {
+                    // SC-DECAL-PROJECT — world-triangle collector for WALL
+                    // decals: every SNO + static-prop triangle within reach of
+                    // the projector, in world space. Prop geometry matters —
+                    // the barn chars project onto the BROKEN DOOR meshes
+                    // (tilted leaves, one pushed in / one pushed out), not the
+                    // wall plane. Evaluated lazily at decal-build time, which
+                    // runs after LoadStaticProps so _staticProps is populated.
+                    collectWorldTris = (centerW, radius) =>
+                    {
+                        var list = new List<(Vector3 A, Vector3 B, Vector3 C)>();
+                        float r2 = radius * radius;
+                        foreach (var (inv, xf, sno) in drapeNodes)
+                        {
+                            var lc = Vector3.Transform(centerW, inv);
+                            if (lc.X < sno.MinBounds.X - radius || lc.X > sno.MaxBounds.X + radius ||
+                                lc.Y < sno.MinBounds.Y - radius || lc.Y > sno.MaxBounds.Y + radius ||
+                                lc.Z < sno.MinBounds.Z - radius || lc.Z > sno.MaxBounds.Z + radius) continue;
+                            foreach (var surf in sno.Surfaces)
+                            {
+                                var tris = surf.TriangleIndices;
+                                for (int t = 0; t + 2 < tris.Length; t += 3)
+                                {
+                                    var a = sno.Corners[surf.StartCorner + tris[t]].Position;
+                                    var b = sno.Corners[surf.StartCorner + tris[t + 1]].Position;
+                                    var c = sno.Corners[surf.StartCorner + tris[t + 2]].Position;
+                                    if (Vector3.DistanceSquared((a + b + c) / 3f, lc) > r2) continue;
+                                    list.Add((Vector3.Transform(a, xf),
+                                              Vector3.Transform(b, xf),
+                                              Vector3.Transform(c, xf)));
+                                }
+                            }
+                        }
+                        foreach (var prop in _staticProps)
+                        {
+                            if (prop.Asp is null) continue;
+                            var ext = (prop.Mesh.Max - prop.Mesh.Min).Length() * 0.5f + radius;
+                            if (Vector3.DistanceSquared(prop.World.Translation, centerW) > ext * ext) continue;
+                            var asp = prop.Asp;
+                            var idx = asp.TriangleIndices;
+                            for (int t = 0; t + 2 < idx.Length; t += 3)
+                            {
+                                var a = Vector3.Transform(asp.Positions[asp.Corners[idx[t]].VertexIndex], prop.World);
+                                var b = Vector3.Transform(asp.Positions[asp.Corners[idx[t + 1]].VertexIndex], prop.World);
+                                var c = Vector3.Transform(asp.Positions[asp.Corners[idx[t + 2]].VertexIndex], prop.World);
+                                if (Vector3.DistanceSquared((a + b + c) / 3f, centerW) > r2) continue;
+                                list.Add((a, b, c));
+                            }
+                        }
+                        return list;
+                    };
+
                     sampleWorldHeight = worldPos =>
                     {
                         float bestDelta = 2.0f;
@@ -6157,26 +6213,15 @@ void main()
             // we_req_activate; the rest start with the region.
             RegisterSoundEmitters(placements);
 
-            // SC-DECALS — accumulate this region's projected decals (the char on the
-            // burnt farmhouse doors, blood, ground scorch, drop shadows, dirt, straw,
-            // rugs). Node transforms resolve against _regionLayout, same as above.
-            RegisterRegionDecals(mapReader, rp, decalQuads, sampleWorldHeight);
+            // SC-DECALS — decal registration moved AFTER LoadStaticProps (the
+            // wall-decal projection needs prop geometry: the barn chars land on
+            // the broken door meshes). See the decal build further down.
         }
-        drapeTerrainTank?.Dispose();
         // The decal texture loader (LoadDecalTexture) resolves .raw files through
         // _playResolver, so the field must be live BEFORE the decal build below.
         // It was previously assigned further down (post-decals), leaving SetDecals to
         // resolve against a null resolver and silently drop every quad (decals: 0).
         _playResolver = resolver;
-        // SC-DECALS — build the region's decal layer as one texture-batched VBO,
-        // drawn over the world each frame in OnRender.
-        if (decalQuads.Count > 0)
-        {
-            _decalRenderer ??= new DecalRenderer(_gl);
-            _decalRenderer.SetDecals(decalQuads, LoadDecalTexture);
-            Console.WriteLine($"  decals: {_decalRenderer.DecalCount} projected quads " +
-                              $"from {decalQuads.Count} placements");
-        }
         Console.WriteLine($"  triggers: {_triggerRuntime.Instances.Count} active matrices " +
                           $"from {triggerPlacementCount} special.gas + " +
                           $"{emitterPlacementCount} emitter.gas placements " +
@@ -6753,6 +6798,21 @@ void main()
         LoadGenerators(allLoaded);
         LoadCommands(allLoaded);
         AssignPatrolRoutes();
+
+        // SC-DECALS — build the region's decal layer. Runs AFTER the static
+        // props so wall-decal projection can clip against prop geometry (the
+        // barn chars land on the broken door meshes, tilted as authored).
+        var decalTris = new List<DecalRenderer.DecalTri>();
+        foreach (var rp in triggerRegions)
+            RegisterRegionDecals(mapReader, rp, decalQuads, decalTris, sampleWorldHeight, collectWorldTris);
+        drapeTerrainTank?.Dispose();
+        if (decalQuads.Count > 0 || decalTris.Count > 0)
+        {
+            _decalRenderer ??= new DecalRenderer(_gl);
+            _decalRenderer.SetDecals(decalQuads, decalTris, LoadDecalTexture);
+            Console.WriteLine($"  decals: {_decalRenderer.DecalCount} pieces " +
+                              $"({decalQuads.Count} quads + {decalTris.Count} projected tris)");
+        }
 
         // Phase 20a (follow-up) — print every talkable NPC's name + world
         // position so the visual walkthrough doesn't require hunting the
@@ -7491,6 +7551,7 @@ void main()
                         Mesh          = glMesh,
                         Texture       = tex,
                         World         = world,
+                        Asp           = asp,
                         Template      = p.TemplateName,
                         SpinAxis      = spinAxis,
                         SpinRadPerSec = spinRad,
@@ -10331,7 +10392,9 @@ void main()
     /// and ±vertical/2 metres about the origin.</summary>
     private void RegisterRegionDecals(TankReader mapReader, string regionPath,
                                       List<DecalRenderer.DecalQuad> outQuads,
-                                      Func<Vector3, float?>? sampleWorldHeight = null)
+                                      List<DecalRenderer.DecalTri> outTris,
+                                      Func<Vector3, float?>? sampleWorldHeight = null,
+                                      Func<Vector3, float, List<(Vector3 A, Vector3 B, Vector3 C)>>? collectWorldTris = null)
     {
         var rname = System.IO.Path.GetFileName(regionPath.TrimEnd('/'));
         var path = regionPath.TrimEnd('/') + "/decals/decals.gas";
@@ -10362,7 +10425,7 @@ void main()
         // flat quads (resolver missing, node graph miss, SNO unresolved) is
         // exactly the failure mode that keeps ground decals hovering, so the
         // per-region summary names it instead of hiding it.
-        int draped = 0, flatWall = 0, flatNoResolver = 0, flatNoSno = 0;
+        int draped = 0, flatWall = 0, flatNoResolver = 0, flatNoSno = 0, seatedWall = 0;
         DecalRenderer.DecalQuad? firstChar = null;
         Vector3 firstCharNormal = Vector3.Zero;
         foreach (var d in store.Decals)
@@ -10429,6 +10492,62 @@ void main()
                 continue;
             }
 
+            // SC-DECAL-PROJECT — wall decals are true projections: clip every
+            // receiving triangle (terrain SNO + static props — the broken barn
+            // doors!) against the projector box, texture the clipped geometry
+            // by the projection axes, and nudge it toward the projector so the
+            // polygon offset wins the depth test. This is what puts the char
+            // ON the tilted door leaves instead of a flat quad floating at the
+            // projector plane (or, worse, seated on the interior behind the
+            // doorway). Back-facing receivers (interior surfaces seen through
+            // the opening) are rejected. If nothing survives the clip, the
+            // flat quad below is the fallback.
+            if (!isGround && ok && collectWorldTris is not null)
+            {
+                var hn = axisH.LengthSquared() > 1e-10f ? Vector3.Normalize(axisH) : Vector3.UnitX;
+                var vn = axisV.LengthSquared() > 1e-10f ? Vector3.Normalize(axisV) : Vector3.UnitY;
+                float halfH = d.HorizontalMeters * 0.5f;
+                float halfV = d.VerticalMeters * 0.5f;
+                float dMax = MathF.Max(d.FarPlane, 0.5f) + 0.25f;
+                float reach = MathF.Sqrt(halfH * halfH + halfV * halfV) + dMax;
+                int before = outTris.Count;
+                foreach (var (ta, tb, tc) in collectWorldTris(center, reach))
+                {
+                    // Receiver must face the projector (projector looks along
+                    // +normal; CCW front faces point back at it).
+                    var faceN = Vector3.Cross(tb - ta, tc - ta);
+                    if (Vector3.Dot(faceN, normal) >= -1e-6f) continue;
+
+                    _decalClipScratch.Clear();
+                    _decalClipScratch.Add(ta); _decalClipScratch.Add(tb); _decalClipScratch.Add(tc);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => Vector3.Dot(p - center, hn) - halfH);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => -Vector3.Dot(p - center, hn) - halfH);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => Vector3.Dot(p - center, vn) - halfV);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => -Vector3.Dot(p - center, vn) - halfV);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => Vector3.Dot(p - center, normal) - dMax);
+                    ClipPolyAgainstPlane(_decalClipScratch, p => -Vector3.Dot(p - center, normal) - 0.25f);
+                    if (_decalClipScratch.Count < 3) continue;
+
+                    Vector2 Uv(Vector3 p) => new(
+                        Vector3.Dot(p - center, hn) / (halfH * 2f) + 0.5f,
+                        Vector3.Dot(p - center, vn) / (halfV * 2f) + 0.5f);
+                    var lift = -normal * 0.015f;
+                    for (int k = 1; k + 1 < _decalClipScratch.Count; k++)
+                    {
+                        outTris.Add(new DecalRenderer.DecalTri(
+                            _decalClipScratch[0] + lift, _decalClipScratch[k] + lift, _decalClipScratch[k + 1] + lift,
+                            Uv(_decalClipScratch[0]), Uv(_decalClipScratch[k]), Uv(_decalClipScratch[k + 1]),
+                            d.TextureName));
+                    }
+                }
+                if (outTris.Count > before)
+                {
+                    seatedWall++;
+                    if (d.TextureName.Contains("burnt", StringComparison.OrdinalIgnoreCase)) charCount++;
+                    continue;
+                }
+            }
+
             var quad = new DecalRenderer.DecalQuad(
                 center - axisH - axisV, center + axisH - axisV,
                 center + axisH + axisV, center - axisH + axisV, d.TextureName);
@@ -10446,7 +10565,8 @@ void main()
         // render bug. Compare the world-center against the "legacy emitter" fire pos.
         Console.WriteLine($"  [decals] {rname}: parsed {store.Decals.Count} " +
                           $"(node-resolved {resolved}, identity-fallback {fallback}); char(burnt-wood)={charCount}; " +
-                          $"draped={draped} flat: wall/steep={flatWall} NO-RESOLVER={flatNoResolver} NO-SNO={flatNoSno}");
+                          $"draped={draped} wall/steep={flatWall} (projected {seatedWall}) " +
+                          $"NO-RESOLVER={flatNoResolver} NO-SNO={flatNoSno}");
         if (firstChar is { } fc)
         {
             var c = (fc.P0 + fc.P2) * 0.5f;
@@ -10455,6 +10575,35 @@ void main()
                               $"normal=({firstCharNormal.X:F2},{firstCharNormal.Y:F2},{firstCharNormal.Z:F2}) " +
                               $"push={decalPush:F2}m");
         }
+    }
+
+    // SC-DECAL-PROJECT — Sutherland–Hodgman scratch list (decal build is
+    // single-threaded load-time work, so one shared list is fine).
+    private readonly List<Vector3> _decalClipScratch = new(16);
+    private readonly List<Vector3> _decalClipScratch2 = new(16);
+
+    /// <summary>SC-DECAL-PROJECT — clip a convex polygon in place against the
+    /// half-space <c>f(p) &lt;= 0</c>. Standard Sutherland–Hodgman with linear
+    /// interpolation on the crossing edges.</summary>
+    private void ClipPolyAgainstPlane(List<Vector3> poly, Func<Vector3, float> f)
+    {
+        if (poly.Count == 0) return;
+        _decalClipScratch2.Clear();
+        for (int i = 0; i < poly.Count; i++)
+        {
+            var a = poly[i];
+            var b = poly[(i + 1) % poly.Count];
+            float fa = f(a), fb = f(b);
+            bool ina = fa <= 0f, inb = fb <= 0f;
+            if (ina) _decalClipScratch2.Add(a);
+            if (ina != inb)
+            {
+                float t = fa / (fa - fb);
+                _decalClipScratch2.Add(a + (b - a) * t);
+            }
+        }
+        poly.Clear();
+        poly.AddRange(_decalClipScratch2);
     }
 
     /// <summary>SC-DECAL-DRAPE — surface height of <paramref name="sno"/> at the
