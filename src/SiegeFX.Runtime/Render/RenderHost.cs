@@ -6061,25 +6061,74 @@ void main()
         var emitterPlacementCount = 0;
         var legacyParticleCount = 0;
         var decalQuads = new List<DecalRenderer.DecalQuad>();
-        // SC-DECAL-DRAPE — SNO resolver so ground decals conform to the terrain
-        // instead of bridging its dips as rigid quads. Map tank indexed first so
-        // bundled custom tiles resolve; terrain last = stock authoritative (same
-        // convention as the nav build below).
+        // SC-DECAL-DRAPE — world-space surface sampler so ground decals conform
+        // to the terrain instead of bridging its dips as rigid quads. Decals are
+        // BIGGER than terrain nodes (fh_r1's tree shades are 6×7m over a grid of
+        // 4m tiles), so sampling only the anchor node's SNO leaves most corners
+        // hanging at the authored projector height (~1m up, per the shipped
+        // near/far planes) — the sampler therefore spans EVERY loaded node,
+        // bounds-filtered per query. Map tank indexed first so bundled custom
+        // tiles resolve; terrain last = stock authoritative (same convention as
+        // the nav build below).
         TankFile? drapeTerrainTank = null;
-        SnoMeshIndex? drapeIndex = null;
-        var drapeSnoCache = new Dictionary<uint, SnoModel?>();
-        if (_regionTerrainTankPath is not null)
+        Func<Vector3, float?>? sampleWorldHeight = null;
+        if (_regionTerrainTankPath is not null && _regionLayout is not null)
         {
             try
             {
                 drapeTerrainTank = TankFile.Open(_regionTerrainTankPath);
-                drapeIndex = SnoMeshIndex.Build(mapReader, new TankReader(drapeTerrainTank));
+                var drapeIndex = SnoMeshIndex.Build(mapReader, new TankReader(drapeTerrainTank));
+                var drapeSnoCache = new Dictionary<uint, SnoModel?>();
+                var drapeNodes = new List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno)>();
+                foreach (var (_, g, _) in _worldRegionGraphs)
+                {
+                    foreach (var n in g.Nodes)
+                    {
+                        if (!_regionLayout.TryGetTransform(n.Guid, out var xf)) continue;
+                        if (!drapeSnoCache.TryGetValue(n.MeshGuid, out var sno))
+                        {
+                            sno = null;
+                            var b = drapeIndex.LoadSnoBytes(n.MeshGuid);
+                            if (b is not null)
+                            {
+                                try { sno = SnoModel.Load(b); }
+                                catch { sno = null; }
+                            }
+                            drapeSnoCache[n.MeshGuid] = sno;
+                        }
+                        if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
+                        drapeNodes.Add((inv, xf, sno));
+                    }
+                }
+                if (drapeNodes.Count > 0)
+                {
+                    sampleWorldHeight = worldPos =>
+                    {
+                        float bestDelta = 2.0f;
+                        float bestY = 0f;
+                        bool found = false;
+                        foreach (var (inv, xf, sno) in drapeNodes)
+                        {
+                            var lp = Vector3.Transform(worldPos, inv);
+                            if (lp.X < sno.MinBounds.X - 0.25f || lp.X > sno.MaxBounds.X + 0.25f ||
+                                lp.Z < sno.MinBounds.Z - 0.25f || lp.Z > sno.MaxBounds.Z + 0.25f ||
+                                lp.Y < sno.MinBounds.Y - 3f || lp.Y > sno.MaxBounds.Y + 3f) continue;
+                            if (!TrySampleSnoHeight(sno, lp, out var ly)) continue;
+                            // Node transforms are rigid, so converting the sampled
+                            // local point back through xf gives the world height.
+                            float wy = Vector3.Transform(new Vector3(lp.X, ly, lp.Z), xf).Y;
+                            float delta = MathF.Abs(wy - worldPos.Y);
+                            if (delta < bestDelta) { bestDelta = delta; bestY = wy; found = true; }
+                        }
+                        return found ? bestY : null;
+                    };
+                    Console.WriteLine($"  [decals] drape sampler: {drapeNodes.Count} node SNOs across {_worldRegionGraphs.Count} region(s)");
+                }
             }
-            catch
+            catch (Exception ex)
             {
-                drapeTerrainTank?.Dispose();
-                drapeTerrainTank = null;
-                drapeIndex = null;
+                Console.Error.WriteLine($"  [decals] drape sampler build failed: {ex.Message}");
+                sampleWorldHeight = null;
             }
         }
         foreach (var rp in triggerRegions)
@@ -6106,31 +6155,7 @@ void main()
             // SC-DECALS — accumulate this region's projected decals (the char on the
             // burnt farmhouse doors, blood, ground scorch, drop shadows, dirt, straw,
             // rugs). Node transforms resolve against _regionLayout, same as above.
-            RegionGraph? drapeGraph = null;
-            foreach (var (gp, g, _) in _worldRegionGraphs)
-                if (string.Equals(gp.TrimEnd('/'), rp.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
-                { drapeGraph = g; break; }
-            Func<uint, SnoModel?>? resolveNodeSno = null;
-            if (drapeGraph is not null && drapeIndex is not null)
-            {
-                var graphLocal = drapeGraph;
-                var indexLocal = drapeIndex;
-                resolveNodeSno = guid =>
-                {
-                    if (!graphLocal.TryGetNode(guid, out var gnode)) return null;
-                    if (drapeSnoCache.TryGetValue(gnode.MeshGuid, out var hit)) return hit;
-                    SnoModel? m = null;
-                    var b = indexLocal.LoadSnoBytes(gnode.MeshGuid);
-                    if (b is not null)
-                    {
-                        try { m = SnoModel.Load(b); }
-                        catch { m = null; }
-                    }
-                    drapeSnoCache[gnode.MeshGuid] = m;
-                    return m;
-                };
-            }
-            RegisterRegionDecals(mapReader, rp, decalQuads, resolveNodeSno);
+            RegisterRegionDecals(mapReader, rp, decalQuads, sampleWorldHeight);
         }
         drapeTerrainTank?.Dispose();
         // The decal texture loader (LoadDecalTexture) resolves .raw files through
@@ -10301,7 +10326,7 @@ void main()
     /// and ±vertical/2 metres about the origin.</summary>
     private void RegisterRegionDecals(TankReader mapReader, string regionPath,
                                       List<DecalRenderer.DecalQuad> outQuads,
-                                      Func<uint, SnoModel?>? resolveNodeSno = null)
+                                      Func<Vector3, float?>? sampleWorldHeight = null)
     {
         var rname = System.IO.Path.GetFileName(regionPath.TrimEnd('/'));
         var path = regionPath.TrimEnd('/') + "/decals/decals.gas";
@@ -10349,36 +10374,44 @@ void main()
             var axisV  = Vector3.TransformNormal(d.AxisV, nw) * (d.VerticalMeters * 0.5f);
 
             // SC-DECAL-DRAPE — DS1 decals are PROJECTED onto the receiving
-            // geometry; a rigid quad bridges every dip in uneven terrain and
-            // reads as a flat patch of land hovering over the hollow (the
-            // intro-pan regression). Ground decals (near-horizontal, node
-            // resolved, SNO available) are subdivided into ~1m grid cells with
-            // every grid corner snapped to the anchor node's surface height at
-            // that spot. Wall/door decals (chars) keep the flat quad — their
-            // receivers are planar. Corners with no surface underneath (decal
-            // spilling past the node edge) keep the plane height.
+            // geometry: the authored origin is the PROJECTOR (shipped data puts
+            // it ~1m above the surface, near/far 0.1–1.1 reaching down), so a
+            // rigid quad at the origin plane hovers in the air AND bridges
+            // terrain dips. Ground decals subdivide into ~1m grid cells with
+            // every corner snapped to the world-space surface height at that
+            // spot — the sampler spans all loaded nodes because decals are
+            // larger than individual terrain tiles. Wall/door decals (chars)
+            // keep the flat quad (planar receivers). Corners with no surface
+            // in reach keep the projector-plane height.
             bool isGround = ok && MathF.Abs(normal.Y) > 0.7f;
-            var sno = isGround ? resolveNodeSno?.Invoke(d.NodeGuid) : null;
             if (!isGround) flatWall++;
-            else if (resolveNodeSno is null) flatNoResolver++;
-            else if (sno is null) flatNoSno++;
-            if (sno is not null)
+            else if (sampleWorldHeight is null) flatNoResolver++;
+            if (isGround && sampleWorldHeight is not null)
             {
-                draped++;
                 int nx = Math.Clamp((int)MathF.Ceiling(d.HorizontalMeters), 1, 8);
                 int ny = Math.Clamp((int)MathF.Ceiling(d.VerticalMeters), 1, 8);
                 var hLocal = d.AxisH * (d.HorizontalMeters * 0.5f);
                 var vLocal = d.AxisV * (d.VerticalMeters * 0.5f);
                 var corners = new Vector3[nx + 1, ny + 1];
+                int snapped = 0;
                 for (int i = 0; i <= nx; i++)
                 for (int j = 0; j <= ny; j++)
                 {
                     float u = i / (float)nx * 2f - 1f;
                     float v = j / (float)ny * 2f - 1f;
                     var pl = d.LocalOrigin + hLocal * u + vLocal * v;
-                    if (TrySampleSnoHeight(sno, pl, out var ySnap)) pl.Y = ySnap + 0.02f;
-                    corners[i, j] = Vector3.Transform(pl, nw) + normal * decalPush;
+                    var w = Vector3.Transform(pl, nw);
+                    // The projector sits above the receiver: bias the query
+                    // toward the ground (the down-pointing projection axis) so
+                    // the search window covers origin → far_plane below, with
+                    // slack for terrain bumps.
+                    var down = normal.Y <= 0f ? normal : -normal;
+                    var probe = w + down * MathF.Max(d.FarPlane * 0.5f, 0.5f);
+                    var hSnap = sampleWorldHeight(probe);
+                    if (hSnap.HasValue) { w.Y = hSnap.Value + 0.02f; snapped++; }
+                    corners[i, j] = w + normal * decalPush;
                 }
+                if (snapped > 0) draped++; else flatNoSno++;
                 for (int i = 0; i < nx; i++)
                 for (int j = 0; j < ny; j++)
                 {
