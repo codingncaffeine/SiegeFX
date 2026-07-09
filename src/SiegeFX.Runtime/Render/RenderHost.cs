@@ -216,6 +216,26 @@ public sealed class RenderHost : IDisposable
         public float Cooldown;
     }
     private readonly List<AutoTrapState> _autoTraps = new();
+
+    // ALPHA-2D — life/mana shrines. Invisible point gizmos whose [fountain]
+    // heals (heal_life picks HP vs mana, heal_amount 1.0 = to full) and whose
+    // [respawn_shrine] revives dead party members, both on we_req_activate
+    // (fired by the authored trigger boxes around the shrine). The
+    // [effect_manager_server] visual loop plays its effect scripts through
+    // the SFX runtime. respawn_statue itself is MP-only (is_single_player=
+    // false) and never spawns in SP.
+    private sealed class ShrineState
+    {
+        public uint Scid;
+        public Vector3 Position;
+        public bool HealLife = true;
+        public float HealAmount = 1f;       // fraction of max
+        public string EffectName = "", RepEffectName = "";
+        public float RepeatRate = 5.5f;
+        public bool EffectActive;
+        public float RepTimer;
+    }
+    private readonly Dictionary<uint, ShrineState> _shrinesByScid = new();
     private readonly List<ElevatorRuntime> _elevators = new();
     private readonly Dictionary<uint, ElevatorRuntime> _elevatorsByScid = new();
     // Car-node transform overrides consumed by EffectiveNavLayout() so nav
@@ -1664,6 +1684,9 @@ public sealed class RenderHost : IDisposable
             // ALPHA-2C — wait_for_activate chests open on message.
             if (_chestsByScid.TryGetValue(toScid, out var chestGo))
                 OpenChest(chestGo);
+            // ALPHA-2D — shrines heal/revive + start their visual loop.
+            if (_shrinesByScid.TryGetValue(toScid, out var shrineOn))
+                ActivateShrine(shrineOn, activate: true);
             // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
             // activate the amb_rain_01 loops alongside their mood_change).
             if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
@@ -1686,6 +1709,10 @@ public sealed class RenderHost : IDisposable
         if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
             _logicGizmos.TryGetValue(toScid, out var lgOff))
             DispatchLogicGizmo(lgOff, activate: false);
+        // ALPHA-2D — shrine visual loop stops on deactivate.
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
+            _shrinesByScid.TryGetValue(toScid, out var shrineOff))
+            ActivateShrine(shrineOff, activate: false);
     }
 
     /// <summary>ALPHA-2A — one logic-gizmo activation. Chains are authored
@@ -7104,6 +7131,7 @@ void main()
         LoadCommands(allLoaded);
         LoadLogicGizmos(allLoaded);
         LoadAutoTraps(allLoaded);
+        LoadShrines(allLoaded);
         AssignPatrolRoutes();
 
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
@@ -7334,6 +7362,7 @@ void main()
         LoadCommands(newlyLoaded);
         LoadLogicGizmos(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
+        LoadShrines(newlyLoaded);
         AssignPatrolRoutes();
     }
 
@@ -10689,6 +10718,7 @@ void main()
         }
 
         TickAutoTraps(dt);
+        TickShrines(dt);
 
         for (int i = _elevatorDelayedFades.Count - 1; i >= 0; i--)
         {
@@ -10981,6 +11011,133 @@ void main()
             if (t.AmmoLeft > 0) t.AmmoLeft--;
             FireTrapEffect(t.Template, t.Position);
         }
+    }
+
+    /// <summary>ALPHA-2D — shrine activation: heal/restore the party (full,
+    /// per heal_life), revive dead party members nearby (25% life — INFERRED
+    /// revive fraction, no authored source), start the visual loop.</summary>
+    private void ActivateShrine(ShrineState sh, bool activate)
+    {
+        if (!activate)
+        {
+            sh.EffectActive = false;
+            return;
+        }
+        const float ShrineRadius = 8f; // bounding_volume_scale 4 on a point gizmo — generous
+        float r2 = ShrineRadius * ShrineRadius;
+        int healed = 0, revived = 0;
+        void Touch(ActorRenderState? m)
+        {
+            if (m is null) return;
+            var d = m.CurrentTransform.Translation - sh.Position;
+            if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 4f) return;
+            var combat = m.Actor.Combat;
+            if (m.IsDead || combat.IsDead)
+            {
+                // Revive: DS1's ghost-walk isn't implemented; the shrine
+                // itself brings the member back at quarter life (INFERRED).
+                var stats = m.Actor.Stats;
+                combat.RestoreFromSave(MathF.Max(1f, stats.MaxLife * 0.25f), combat.CurrentMana, dead: false);
+                m.IsDead = false;
+                m.Hidden = false;
+                m.Actor.Host.OverrideAnimIndex(-1, 0f);
+                if (m.IsPartyMember && !ReferenceEquals(m, _player))
+                {
+                    var baseStats = m.Actor.Stats;
+                    var combatStats = InjectFollowerWeapon(m.Actor.Template, baseStats) ?? baseStats;
+                    RebuildFollowerBrain(m, combatStats, remesh: true);
+                }
+                revived++;
+                return;
+            }
+            if (sh.HealLife)
+            {
+                float before = combat.CurrentLife;
+                combat.Heal(m.Actor.Stats.MaxLife * sh.HealAmount);
+                if (combat.CurrentLife > before) healed++;
+            }
+            else
+            {
+                float before = combat.CurrentMana;
+                combat.RestoreMana(m.Actor.Stats.MaxMana * sh.HealAmount);
+                if (combat.CurrentMana > before) healed++;
+            }
+        }
+        Touch(_player);
+        foreach (var m in _party) if (m.PartyIndex != 0) Touch(m);
+
+        if (!sh.EffectActive)
+        {
+            sh.EffectActive = true;
+            sh.RepTimer = 0f;
+            if (sh.EffectName.Length > 0) OnTriggerCallSfxScript(sh.EffectName, null, sh.Position);
+        }
+        if (healed + revived > 0)
+            Console.WriteLine($"[shrine] 0x{sh.Scid:X8} {(sh.HealLife ? "life" : "mana")}: " +
+                              $"{healed} restored, {revived} revived");
+    }
+
+    private void TickShrines(float dt)
+    {
+        if (dt <= 0f) return;
+        foreach (var sh in _shrinesByScid.Values)
+        {
+            if (!sh.EffectActive || sh.RepEffectName.Length == 0) continue;
+            sh.RepTimer -= dt;
+            if (sh.RepTimer > 0f) continue;
+            sh.RepTimer = MathF.Max(1f, sh.RepeatRate);
+            OnTriggerCallSfxScript(sh.RepEffectName, null, sh.Position);
+        }
+    }
+
+    /// <summary>Register the region's shrines (template chain carries a
+    /// [fountain] block — life_shrine / mana_shrine point gizmos).</summary>
+    private void LoadShrines(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _templateStore is null || _regionLayout is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            foreach (var file in mapReader.ListFiles())
+            {
+                if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
+                    !file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+                var fileName = file[objPrefix.Length..];
+                if (fileName.Contains('/')) continue;
+                var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp.TrimEnd('/'), fileName);
+                foreach (var p in placements)
+                {
+                    if (_shrinesByScid.ContainsKey(p.Scid)) continue;
+                    if (!_templateStore.TryGet(p.TemplateName, out var tpl)) continue;
+                    var fountain = _templateStore.GetSection(tpl!, "fountain");
+                    if (fountain is null) continue;
+                    var world = p.Placement.LocalPosition;
+                    if (_regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                        world = Vector3.Transform(p.Placement.LocalPosition, nodeWorld);
+                    var sh = new ShrineState { Scid = p.Scid, Position = world };
+                    var hl = _templateStore.GetAttribute(tpl!, "fountain", "heal_life");
+                    sh.HealLife = hl is null || hl.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+                    var ha = _templateStore.GetAttribute(tpl!, "fountain", "heal_amount");
+                    if (ha is not null && float.TryParse(ha.Trim().TrimEnd('f', 'F'),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var hav) && hav > 0f)
+                        sh.HealAmount = hav;
+                    sh.EffectName = _templateStore.GetAttribute(tpl!, "effect_manager_server", "effect_name")?.Trim().Trim('"') ?? "";
+                    sh.RepEffectName = _templateStore.GetAttribute(tpl!, "effect_manager_server", "rep_effect_name")?.Trim().Trim('"') ?? "";
+                    var rr = _templateStore.GetAttribute(tpl!, "effect_manager_server", "repeat_rate");
+                    if (rr is not null && float.TryParse(rr.Trim().TrimEnd('f', 'F'),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var rrv) && rrv > 0f)
+                        sh.RepeatRate = rrv;
+                    _shrinesByScid[p.Scid] = sh;
+                    added++;
+                }
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  shrines: {added} registered ({_shrinesByScid.Count} total)");
     }
 
     /// <summary>Register the region's placed trp_* auto-traps (objects/trap.gas
@@ -21121,6 +21278,8 @@ void main()
         _chestsByScid.Clear();
         _pendingChestUse = null;
         _autoTraps.Clear();
+        // ALPHA-2D — shrines re-register with their regions.
+        _shrinesByScid.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();

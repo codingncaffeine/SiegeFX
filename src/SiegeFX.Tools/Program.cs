@@ -1380,6 +1380,8 @@ static int CmdWorldCampaignAudit(string[] a)
         "trapped",                                                  // ALPHA-2C container traps (delayed_pcontent roll)
         "trp_firetrap",                                             // ALPHA-2C placed auto-traps (trap_auto chain)
         "gold",                                                     // ALPHA-2C world gold = currency pickup (mesh table)
+        "fountain", "effect_manager_server",                        // ALPHA-2D life/mana shrines heal+revive+fx loop
+        "respawn_shrine",                                           // ALPHA-2D (statue is MP-only; SP shrines revive via fountain gizmos)
         "door_basic",                                               // SC-DOORS (base_door chain drives behavior)
         "gui",                                                      // equip_slot etc. (PcontentResolver reads it)
         "potion", "spell", "spell_default", "spell_status_effect",  // pickup/spell data read by item + spell systems
