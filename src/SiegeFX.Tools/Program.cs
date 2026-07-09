@@ -776,8 +776,100 @@ static int DispatchRegion(string[] a)
         "gen-audit"   => CmdRegionGenAudit(a[1..]),
         "cmd-audit"   => CmdRegionCmdAudit(a[1..]),
         "elevators"   => CmdRegionElevators(a[1..]),
+        "logic-gizmos" => CmdRegionLogicGizmos(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
+}
+
+// ALPHA-2A — dump every set_bool / check_bool / generic_accumtrigger /
+// msg_switch placement with its parsed config, and cross-check the message
+// graph: every send_to_scid should resolve to SOME placement in the map
+// (trigger, gizmo, emitter, door — anything addressable). Dangling targets
+// are authored dead ends (informational); a check_bool with no
+// bool_variable is a hard FAIL.
+static int CmdRegionLogicGizmos(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region logic-gizmos <map-tank> <logic-tank> <region-path|all>");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var logicTank = TankFile.Open(a[1]);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(new TankReader(logicTank));
+
+    var regionPaths = new List<string>();
+    if (string.Equals(a[2], "all", StringComparison.OrdinalIgnoreCase))
+    {
+        foreach (var p in mapReader.ListFiles())
+            if (p.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase))
+                regionPaths.Add(p[..^"/terrain_nodes/nodes.gas".Length]);
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    else
+    {
+        var rp = a[2].Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        regionPaths.Add(rp.TrimEnd('/'));
+    }
+
+    // All addressable scids map-wide, for send_to resolution.
+    var allScids = new HashSet<uint>();
+    foreach (var rp in regionPaths)
+    {
+        var objPrefix = rp + "/objects/";
+        foreach (var file in mapReader.ListFiles())
+        {
+            if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
+                !file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+            var fileName = file[objPrefix.Length..];
+            if (fileName.Contains('/')) continue;
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, fileName);
+            foreach (var p in placements) allScids.Add(p.Scid);
+        }
+    }
+
+    int total = 0, dangling = 0, hardFails = 0;
+    var kindCounts = new SortedDictionary<string, int>();
+    var boolNames = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var rp in regionPaths)
+    {
+        var defs = SiegeFX.Core.Assets.LogicGizmoStore.Load(mapReader, rp, store);
+        if (defs.Count == 0) continue;
+        var shortName = rp[(rp.LastIndexOf('/') + 1)..];
+        foreach (var d in defs)
+        {
+            total++;
+            kindCounts.TryGetValue(d.Kind.ToString(), out var kc);
+            kindCounts[d.Kind.ToString()] = kc + 1;
+            if (d.BoolVariable.Length > 0) boolNames.Add(d.BoolVariable);
+            string flag = "";
+            if (d.Kind is SiegeFX.Core.Assets.LogicGizmoKind.SetBool or SiegeFX.Core.Assets.LogicGizmoKind.CheckBool
+                && d.BoolVariable.Length == 0)
+            {
+                flag = "  ** NO bool_variable **";
+                hardFails++;
+            }
+            if (d.SendToScid != 0 && !allScids.Contains(d.SendToScid))
+            {
+                flag += "  [send_to dangling]";
+                dangling++;
+            }
+            Console.WriteLine($"  {shortName,-14} 0x{d.Scid:X8} {d.Kind,-10} " +
+                (d.BoolVariable.Length > 0 ? $"bool='{d.BoolVariable}' " : "") +
+                (d.NumTilSend > 0 ? $"n={d.NumTilSend} " : "") +
+                (d.SendToScid != 0 ? $"-> 0x{d.SendToScid:X8}" : "") +
+                (d.MessageIfTrue.Length > 0 && d.MessageIfTrue != "we_req_activate" ? $" true='{d.MessageIfTrue}'" : "") +
+                (d.MessageIfFalse.Length > 0 ? $" false='{d.MessageIfFalse}'" : "") +
+                flag);
+        }
+    }
+    Console.WriteLine();
+    Console.WriteLine($"logic gizmos: {total} across {regionPaths.Count} region(s) — " +
+                      string.Join(", ", kindCounts.Select(kv => $"{kv.Value} {kv.Key}")) +
+                      $"; {boolNames.Count} distinct bool(s), {dangling} dangling send_to, {hardFails} hard failure(s)");
+    return hardFails == 0 ? 0 : 4;
 }
 
 // SC-ELEVATOR — parse every elevator gizmo (objects/elevator.gas) in one region
@@ -1282,6 +1374,8 @@ static int CmdWorldCampaignAudit(string[] a)
         "fader",                                                    // interface_fade chapter title (known-parked)
         "water_effects",                                            // TSD water animation
         "sound_emitter", "sound_emitter_act",                       // SC-WEATHER emitters ([emt_sound*] templates' section name)
+        "set_bool", "check_bool", "generic_accumtrigger",           // ALPHA-2A logic gizmos
+        "msg_switch",                                               // ALPHA-2A (light toggle; visual rides point lights)
         "door_basic",                                               // SC-DOORS (base_door chain drives behavior)
         "gui",                                                      // equip_slot etc. (PcontentResolver reads it)
         "potion", "spell", "spell_default", "spell_status_effect",  // pickup/spell data read by item + spell systems

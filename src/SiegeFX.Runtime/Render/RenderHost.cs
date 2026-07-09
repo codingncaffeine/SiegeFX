@@ -223,6 +223,22 @@ public sealed class RenderHost : IDisposable
     // ("...,in,4.5" = fire 4.5s after departure).
     private readonly List<(float FireIn, string[] Args)> _elevatorDelayedFades = new();
 
+    // ALPHA-2A — message-driven logic gizmos (set_bool / check_bool /
+    // generic_accumtrigger / msg_switch) + the WORLD-scoped named booleans
+    // they read and write. The bools cross regions (bt_r1 checks flags that
+    // path2sd_a sets) so they persist across streaming; they reset only on
+    // full region reload / new game and belong in the save file.
+    private sealed class LogicGizmoState
+    {
+        public required SiegeFX.Core.Assets.LogicGizmoDef Def;
+        public int Count;          // Accumulate progress
+        public bool Fired;         // Accumulate one-shot latch
+        public bool SwitchOn;      // MsgSwitch toggle state
+    }
+    private readonly Dictionary<uint, LogicGizmoState> _logicGizmos = new();
+    private readonly Dictionary<string, bool> _worldBools = new(StringComparer.OrdinalIgnoreCase);
+    private int _logicGizmoChainDepth; // authored chains are shallow; cycles must not hang us
+
     // SC-FLAME-TINT — one warm flame colour shared by every fire in the world so
     // they read consistently: the farmhouse blaze (RegisterLegacyParticleEmitters)
     // and the torch/sconce props (MaintainFire loop). Golden yellow-orange to match
@@ -1524,6 +1540,10 @@ public sealed class RenderHost : IDisposable
             // we_req_activate at the gizmo from both lever states).
             if (_elevatorsByScid.TryGetValue(toScid, out var elv))
                 StartElevatorRide(elv);
+            // ALPHA-2A — logic gizmos (set_bool / check_bool / accumulate /
+            // msg_switch) respond to activation messages at their scid.
+            if (_logicGizmos.TryGetValue(toScid, out var lg))
+                DispatchLogicGizmo(lg, activate: true);
             // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
             // activate the amb_rain_01 loops alongside their mood_change).
             if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
@@ -1541,6 +1561,96 @@ public sealed class RenderHost : IDisposable
             semOff.Active = false;
             Console.WriteLine($"[emitter] 0x{toScid:X8} '{semOff.EventName}' deactivated");
         }
+        // ALPHA-2A — set_bool flips FALSE on deactivate (symmetric with
+        // activate; harmless for the other kinds which ignore deactivate).
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
+            _logicGizmos.TryGetValue(toScid, out var lgOff))
+            DispatchLogicGizmo(lgOff, activate: false);
+    }
+
+    /// <summary>ALPHA-2A — one logic-gizmo activation. Chains are authored
+    /// (accumulate → quest trigger → set_bool); the depth guard keeps a
+    /// hypothetical cycle from hanging the frame.</summary>
+    private void DispatchLogicGizmo(LogicGizmoState lg, bool activate)
+    {
+        if (_logicGizmoChainDepth > 32)
+        {
+            Console.Error.WriteLine($"[logic] 0x{lg.Def.Scid:X8} chain depth cap hit — dropping dispatch");
+            return;
+        }
+        _logicGizmoChainDepth++;
+        try
+        {
+            var d = lg.Def;
+            switch (d.Kind)
+            {
+                case SiegeFX.Core.Assets.LogicGizmoKind.SetBool:
+                    if (d.BoolVariable.Length == 0) break;
+                    _worldBools[d.BoolVariable] = activate;
+                    Console.WriteLine($"[logic] set_bool 0x{d.Scid:X8}: '{d.BoolVariable}' = {activate}");
+                    break;
+                case SiegeFX.Core.Assets.LogicGizmoKind.CheckBool:
+                {
+                    if (!activate) break;
+                    bool v = d.BoolVariable.Length > 0 && _worldBools.TryGetValue(d.BoolVariable, out var b) && b;
+                    var msg = v ? d.MessageIfTrue : d.MessageIfFalse;
+                    Console.WriteLine($"[logic] check_bool 0x{d.Scid:X8}: '{d.BoolVariable}' = {v}" +
+                        (msg.Length > 0 ? $" -> '{msg}' to 0x{d.SendToScid:X8}" : " -> no message"));
+                    if (msg.Length > 0 && d.SendToScid != 0 && d.SendToScid != d.Scid)
+                        PostTriggerWorldMessage(msg, d.Scid, d.SendToScid);
+                    break;
+                }
+                case SiegeFX.Core.Assets.LogicGizmoKind.Accumulate:
+                {
+                    if (!activate || lg.Fired) break;
+                    lg.Count++;
+                    Console.WriteLine($"[logic] accumulate 0x{d.Scid:X8}: {lg.Count}/{d.NumTilSend}");
+                    if (lg.Count >= d.NumTilSend && d.NumTilSend > 0)
+                    {
+                        lg.Fired = true;
+                        if (d.SendToScid != 0 && d.SendToScid != d.Scid)
+                            PostTriggerWorldMessage("we_req_activate", d.Scid, d.SendToScid);
+                    }
+                    break;
+                }
+                case SiegeFX.Core.Assets.LogicGizmoKind.MsgSwitch:
+                {
+                    if (!activate) break;
+                    lg.SwitchOn = !lg.SwitchOn;
+                    // Shipped msg_switch instances (lightable lamps) author no
+                    // routing; the visible effect is the point light, which is
+                    // still stubbed — state tracked so lights snap on when
+                    // that system lands. Routed variants forward alternately.
+                    Console.WriteLine($"[logic] msg_switch 0x{d.Scid:X8}: {(lg.SwitchOn ? "on" : "off")}");
+                    if (d.SendToScid != 0 && d.SendToScid != d.Scid)
+                        PostTriggerWorldMessage(lg.SwitchOn ? "we_req_activate" : "we_req_deactivate", d.Scid, d.SendToScid);
+                    break;
+                }
+            }
+        }
+        finally { _logicGizmoChainDepth--; }
+    }
+
+    /// <summary>ALPHA-2A — parse + register the logic gizmos of the given
+    /// regions. Idempotent per scid (streaming re-entry safe); world bools
+    /// intentionally NOT touched here — they're session state.</summary>
+    private void LoadLogicGizmos(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var defs = SiegeFX.Core.Assets.LogicGizmoStore.Load(mapReader, rp, _templateStore);
+            foreach (var d in defs)
+            {
+                if (_logicGizmos.ContainsKey(d.Scid)) continue;
+                _logicGizmos[d.Scid] = new LogicGizmoState { Def = d };
+                added++;
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  logic gizmos: {added} registered ({_logicGizmos.Count} total)");
     }
 
     private string? _lastLoggedMoodChange;
@@ -6862,6 +6972,7 @@ void main()
         LoadWorldInventory(allLoaded);
         LoadGenerators(allLoaded);
         LoadCommands(allLoaded);
+        LoadLogicGizmos(allLoaded);
         AssignPatrolRoutes();
 
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
@@ -7090,6 +7201,7 @@ void main()
         LoadWorldInventory(newlyLoaded);
         LoadGenerators(newlyLoaded);
         LoadCommands(newlyLoaded);
+        LoadLogicGizmos(newlyLoaded);
         AssignPatrolRoutes();
     }
 
@@ -20554,6 +20666,11 @@ void main()
         _elevatorsByScid.Clear();
         _elevatorNodeOverrides.Clear();
         _elevatorDelayedFades.Clear();
+        // ALPHA-2A — logic gizmos re-register with their regions; the world
+        // bools are SESSION state and reset only here (full reload/new game;
+        // save restore repopulates them — ALPHA-2G).
+        _logicGizmos.Clear();
+        _worldBools.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();
