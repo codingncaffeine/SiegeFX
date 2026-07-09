@@ -1178,8 +1178,306 @@ static int DispatchWorld(string[] a)
         "layout" => CmdWorldLayout(a[1..]),
         "path"   => CmdWorldPath(a[1..]),
         "follow" => CmdWorldFollow(a[1..]),
+        "campaign-audit" => CmdWorldCampaignAudit(a[1..]),
         _        => UnknownCommand("world " + a[0]),
     };
+}
+
+// ALPHA-1 — campaign completability sweep. The elevator lesson generalized:
+// enumerate every placed template's component sections (instance blocks +
+// full specializes chain) across ALL regions, diff against the set the
+// engine actually consumes, and rank what's left by placement count and by
+// how early the campaign hits it (BFS depth over the stitch graph from the
+// root region ≈ walk order — DS1's world is near-linear). Also aggregates
+// trigger condition/action verbs against TriggerRuntime's dispatched sets.
+// Informational exit 0; the ranked tables ARE the deliverable.
+static int CmdWorldCampaignAudit(string[] a)
+{
+    string root = "fh_r1";
+    var extra = new List<string>();
+    foreach (var arg in a)
+    {
+        if (arg.StartsWith("--root=", StringComparison.OrdinalIgnoreCase)) root = arg["--root=".Length..];
+        else extra.Add(arg);
+    }
+    if (extra.Count != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx world campaign-audit <map-tank> <logic-tank> [--root=fh_r1]");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(extra[0]);
+    var mapReader = new TankReader(mapTank);
+    using var logicTank = TankFile.Open(extra[1]);
+    var logicReader = new TankReader(logicTank);
+    var (store, storeDiags) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    Console.WriteLine($"templates: {store.Count} loaded ({storeDiags.Count} diagnostics)");
+
+    // ---- region list + stitch adjacency → BFS depth from root ----
+    var regionPaths = new List<string>();
+    foreach (var p in mapReader.ListFiles())
+        if (p.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase))
+            regionPaths.Add(p[..^"/terrain_nodes/nodes.gas".Length]);
+    regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    static string ShortName(string rp) => rp[(rp.LastIndexOf('/') + 1)..];
+
+    var adjacency = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var rp in regionPaths)
+    {
+        var name = ShortName(rp);
+        if (!adjacency.TryGetValue(name, out var set)) adjacency[name] = set = new(StringComparer.OrdinalIgnoreCase);
+        var sp = rp + "/editor/stitch_helper.gas";
+        if (!mapReader.TryGetFile(sp, out _)) continue;
+        try
+        {
+            var stitches = SiegeFX.Core.Assets.RegionStitchHelper.Load(mapReader.ExtractToMemory(sp));
+            foreach (var dest in stitches.ByDestination.Keys) set.Add(dest);
+        }
+        catch { /* stitch parse failure = isolated region; BFS flags it */ }
+    }
+    var depth = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { [root] = 0 };
+    var bfs = new Queue<string>();
+    bfs.Enqueue(root);
+    while (bfs.Count > 0)
+    {
+        var cur = bfs.Dequeue();
+        if (!adjacency.TryGetValue(cur, out var outs)) continue;
+        foreach (var nxt in outs)
+        {
+            if (depth.ContainsKey(nxt)) continue;
+            depth[nxt] = depth[cur] + 1;
+            bfs.Enqueue(nxt);
+        }
+    }
+    int Depth(string rp) => depth.TryGetValue(ShortName(rp), out var d) ? d : int.MaxValue;
+    regionPaths.Sort((x, y) =>
+    {
+        int c = Depth(x).CompareTo(Depth(y));
+        return c != 0 ? c : string.Compare(x, y, StringComparison.OrdinalIgnoreCase);
+    });
+    int unreachable = regionPaths.Count(rp => Depth(rp) == int.MaxValue);
+    Console.WriteLine($"regions: {regionPaths.Count} ({regionPaths.Count - unreachable} reachable from '{root}' via stitches, {unreachable} unreachable)");
+
+    // ---- component sections the engine consumes today (curated; see the
+    //      subsystem tag on each). Anything NOT here lands in the ranked
+    //      UNHANDLED table below — exactly how elevator.gas would have
+    //      surfaced before SC-ELEVATOR. Instance-authoring blocks and pure
+    //      data-holders (no runtime behavior expected) count as handled.
+    var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "placement", "common", "gizmo", "template",                 // authoring scaffolding
+        "aspect", "body", "chore_dictionary",                       // render + anim
+        "physics",                                                  // breakables (break_particulate)
+        "on_off_lever",                                             // SC-ELEVATOR levers
+        "store", "store_pcontent",                                  // Phase 25 vendors
+        "inventory", "equipment", "other", "pcontent",              // items/equip/drops
+        "conversation", "conversations",                            // dialogue
+        "actor", "skills",                                          // stats
+        "mind", "attack", "defend", "magic",                        // brains + combat + spells
+        "instance_triggers", "trigger_instance",                    // trigger runtime
+        "tip",                                                      // tutorial tips (known-parked: Language.dll strings)
+        "light_enable", "light_flicker",                            // torch flames (point light known-stubbed)
+        "emt_sound", "emt_sound_act",                               // SC-WEATHER emitters
+        "generator", "generator_in_object",                         // spawners
+        "fader",                                                    // interface_fade chapter title (known-parked)
+        "water_effects",                                            // TSD water animation
+        "sound_emitter", "sound_emitter_act",                       // SC-WEATHER emitters ([emt_sound*] templates' section name)
+        "door_basic",                                               // SC-DOORS (base_door chain drives behavior)
+        "gui",                                                      // equip_slot etc. (PcontentResolver reads it)
+        "potion", "spell", "spell_default", "spell_status_effect",  // pickup/spell data read by item + spell systems
+        "spell_instant_hit",
+    };
+
+    // Benign-but-unconsumed: dev scaffolding, cosmetic effect managers, and
+    // sections whose gameplay-relevant fields are read via other components.
+    // Printed in their own table so they stay visible without drowning the
+    // real blockers. Reason strings keep the triage honest.
+    var benign = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["follower"] = "movement speeds read via ActorStats; formation AI is engine-side",
+        ["dev_path_point"] = "editor breadcrumbs, no retail runtime behavior",
+        ["guts_manager"] = "gore detail component (cosmetic)",
+        ["light_flicker_lightweight"] = "cosmetic light flicker variant",
+        ["light_colorwave"] = "cosmetic light color animation",
+        ["generic_emitter"] = "prop sfx-script emitters (tree sway etc.) — cosmetic",
+        ["generic_emitter_act"] = "activated prop sfx-script emitters — cosmetic",
+        ["fire_emitter"] = "fire prop emitters (torch flames handled via AP_light)",
+        ["fire_emitter_act"] = "activated fire/mist emitters — cosmetic",
+        ["particle_emitter"] = "cosmetic particle emitters",
+        ["particle_emitter_act"] = "cosmetic particle emitters (activated)",
+        ["glow_emitter"] = "cosmetic glow emitters",
+        ["glow_emitter_act"] = "cosmetic glow emitters (activated)",
+        ["spark_emitter"] = "cosmetic spark emitters",
+        ["go_emitter"] = "spawns cosmetic GOs (activated)",
+        ["effect_manager"] = "scripted effect visuals (corpim torture fx etc.)",
+        ["camera_quake"] = "camera shake gizmo — cosmetic",
+        ["camera_stomp"] = "camera shake on actor stomp — cosmetic",
+        ["enchantment_manager"] = "buff visual manager — cosmetic layer",
+        ["nodal_tex_anim"] = "terrain texture animation (chains) — cosmetic",
+        ["on_client"] = "client-side wrapper on trap/fx components",
+        ["play_chapter_sound"] = "chapter sting audio — presentation",
+        ["interface_fade"] = "chapter title card — known-parked (intro slice)",
+        ["activate_chapter"] = "chapter progression marker — verify journal impact in Piece 2",
+        ["clone_preloader"] = "asset preloader for the Gom fight — perf hint only",
+        ["party"] = "MP guard group templates",
+        ["check_level"] = "MP-only level gate",
+        ["chipper"] = "one-off ambient (dm_r8)",
+        ["minigun_magic"] = "one-off turret fx (gi_r4) — verify in Piece 2",
+    };
+    // Header FAMILIES handled by prefix (elevator_2s_1c_1n etc.).
+    static bool HandledFamily(string h) =>
+        h.StartsWith("elevator_", StringComparison.OrdinalIgnoreCase) ||
+        h.StartsWith("generator_", StringComparison.OrdinalIgnoreCase) ||
+        h.StartsWith("cmd_", StringComparison.OrdinalIgnoreCase) ||
+        h.StartsWith("dsfx_", StringComparison.OrdinalIgnoreCase);
+
+    var dispatchedConditions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "actor_within_sphere", "go_within_sphere", "party_member_within_sphere",
+        "party_member_within_bounding_box", "party_member_within_node",
+        "party_member_entered_trigger_group", "party_member_left_trigger_group",
+        "receive_world_message",
+    };
+    var dispatchedActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "send_world_message", "mood_change", "set_interest_radius",
+        "fade_node", "fade_nodes", "fade_nodes_global",
+        "change_quest_state", "call_sfx_script",
+    };
+
+    // ---- the sweep ----
+    var benignHits = new Dictionary<string, (int Count, int FirstDepth, string FirstRegion, string ExampleTemplate)>(StringComparer.OrdinalIgnoreCase);
+    var sectionHits = new Dictionary<string, (int Count, int FirstDepth, string FirstRegion, string ExampleTemplate)>(StringComparer.OrdinalIgnoreCase);
+    var missingTemplates = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var verbHits = new Dictionary<string, (int Count, int FirstDepth, string FirstRegion, bool IsCondition)>(StringComparer.OrdinalIgnoreCase);
+    var chainSectionCache = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    int totalPlacements = 0, filesScanned = 0;
+
+    foreach (var rp in regionPaths)
+    {
+        var shortName = ShortName(rp);
+        int d = Depth(rp) == int.MaxValue ? 999 : Depth(rp);
+        var objPrefix = rp + "/objects/";
+        foreach (var file in mapReader.ListFiles())
+        {
+            if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+            var fileName = file[objPrefix.Length..];
+            if (fileName.Contains('/')) continue;
+            filesScanned++;
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, fileName);
+            foreach (var p in placements)
+            {
+                totalPlacements++;
+                void HitSection(string header)
+                {
+                    if (handled.Contains(header) || HandledFamily(header)) return;
+                    var bucket = benign.ContainsKey(header) ? benignHits : sectionHits;
+                    if (bucket.TryGetValue(header, out var e))
+                        bucket[header] = (e.Count + 1, Math.Min(e.FirstDepth, d), e.FirstDepth <= d ? e.FirstRegion : shortName, e.ExampleTemplate);
+                    else
+                        bucket[header] = (1, d, shortName, p.TemplateName);
+                }
+
+                // Instance component blocks + trigger verbs.
+                foreach (var c in p.Node.Children)
+                {
+                    HitSection(c.Header);
+                    if (string.Equals(c.Header, "common", StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (var it in c.Children)
+                        {
+                            if (!string.Equals(it.Header, "instance_triggers", StringComparison.OrdinalIgnoreCase)) continue;
+                            foreach (var row in it.Children)
+                            foreach (var attr in row.Attributes)
+                            {
+                                bool isCond = attr.Name.StartsWith("condition", StringComparison.OrdinalIgnoreCase);
+                                bool isAct = attr.Name.StartsWith("action", StringComparison.OrdinalIgnoreCase);
+                                if (!isCond && !isAct) continue;
+                                var v = attr.Value.TrimStart();
+                                // when_false / delay() wrappers precede the verb in
+                                // authored text; TriggerRuntime's parser strips them.
+                                if (v.StartsWith("when_false", StringComparison.OrdinalIgnoreCase))
+                                    v = v["when_false".Length..].TrimStart();
+                                int paren = v.IndexOf('(');
+                                var verb = (paren > 0 ? v[..paren] : v).Trim().Trim('"');
+                                if (verb.Length == 0) continue;
+                                bool dispatched = isCond ? dispatchedConditions.Contains(verb) : dispatchedActions.Contains(verb);
+                                if (dispatched) continue;
+                                if (verbHits.TryGetValue(verb, out var e))
+                                    verbHits[verb] = (e.Count + 1, Math.Min(e.FirstDepth, d), e.FirstDepth <= d ? e.FirstRegion : shortName, isCond);
+                                else
+                                    verbHits[verb] = (1, d, shortName, isCond);
+                            }
+                        }
+                    }
+                }
+
+                // Template chain sections (cached per template).
+                if (!chainSectionCache.TryGetValue(p.TemplateName, out var chainSections))
+                {
+                    chainSections = new List<string>();
+                    if (store.TryGet(p.TemplateName, out var tpl))
+                    {
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        for (var t = tpl; t is not null; t = t.Specializes)
+                            foreach (var c in t.Node.Children)
+                                if (seen.Add(c.Header)) chainSections.Add(c.Header);
+                    }
+                    else
+                    {
+                        chainSections.Add("!missing-template");
+                    }
+                    chainSectionCache[p.TemplateName] = chainSections;
+                }
+                foreach (var h in chainSections)
+                {
+                    if (h == "!missing-template")
+                    {
+                        missingTemplates.TryGetValue(p.TemplateName, out var n);
+                        missingTemplates[p.TemplateName] = n + 1;
+                        continue;
+                    }
+                    HitSection(h);
+                }
+            }
+        }
+    }
+
+    Console.WriteLine($"scanned: {filesScanned} object file(s), {totalPlacements:N0} placement(s)");
+    Console.WriteLine();
+    Console.WriteLine("UNHANDLED component sections (ranked by placement count; depth = stitch-BFS hops from root ≈ campaign order):");
+    Console.WriteLine("  count  depth  first-region     section                        example-template");
+    foreach (var kv in sectionHits.OrderByDescending(kv => kv.Value.Count))
+        Console.WriteLine($"  {kv.Value.Count,5}  {kv.Value.FirstDepth,5}  {kv.Value.FirstRegion,-15}  {kv.Key,-29}  {kv.Value.ExampleTemplate}");
+    if (sectionHits.Count == 0) Console.WriteLine("  (none — every placed component section has an engine consumer)");
+
+    Console.WriteLine();
+    Console.WriteLine("benign / consumed-elsewhere sections (triaged, kept visible):");
+    foreach (var kv in benignHits.OrderByDescending(kv => kv.Value.Count))
+        Console.WriteLine($"  {kv.Value.Count,5}  {kv.Value.FirstDepth,5}  {kv.Value.FirstRegion,-15}  {kv.Key,-29}  {benign[kv.Key]}");
+
+    Console.WriteLine();
+    Console.WriteLine("UNDISPATCHED trigger verbs (parsed but no TriggerRuntime handler):");
+    Console.WriteLine("  count  depth  first-region     kind       verb");
+    foreach (var kv in verbHits.OrderByDescending(kv => kv.Value.Count))
+        Console.WriteLine($"  {kv.Value.Count,5}  {kv.Value.FirstDepth,5}  {kv.Value.FirstRegion,-15}  {(kv.Value.IsCondition ? "condition" : "action"),-9}  {kv.Key}");
+    if (verbHits.Count == 0) Console.WriteLine("  (none — every authored verb dispatches)");
+
+    if (missingTemplates.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"missing templates ({missingTemplates.Count} distinct):");
+        foreach (var kv in missingTemplates.OrderByDescending(kv => kv.Value).Take(20))
+            Console.WriteLine($"  {kv.Value,5}x  {kv.Key}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("campaign order (stitch-BFS depth : regions):");
+    foreach (var g in regionPaths.GroupBy(Depth).OrderBy(g => g.Key))
+        Console.WriteLine($"  {(g.Key == int.MaxValue ? "unreached" : g.Key.ToString()),9} : {string.Join(", ", g.Select(ShortName))}");
+
+    return 0;
 }
 
 static int DispatchSkrit(string[] a)

@@ -175,6 +175,7 @@ echo  102. SC-FADE-NODES-LNODE          - Spawn at fh_r1 farmhouse basement stai
 echo  103. Phase 26 - PARTY RECRUIT     - Recruit Gyorn at Stonebridge (bt_r1): RMB him, click Accept; he follows + fights
 echo  104. SC-WEATHER                   - Mood weather audit (CLI, self-verifying) + fh_r1 storm eyes-test (rain/fog/lightning/thunder + rain loops)
 echo  105. SC-ELEVATOR                  - Ride the farmhouse grate lift (hc_r1): lever call, 5s descent with rider carry, fades, nav rebuild
+echo  106. ALPHA-1 CAMPAIGN AUDIT       - Completability sweep: unhandled components + undispatched trigger verbs across all 81 regions (CLI, self-verifying)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -286,6 +287,7 @@ if /i "%CHOICE%"=="102" goto T102
 if /i "%CHOICE%"=="103" goto T103
 if /i "%CHOICE%"=="104" goto T104
 if /i "%CHOICE%"=="105" goto T105
+if /i "%CHOICE%"=="106" goto T106
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2445,6 +2447,25 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set "SIEGEFX_DEBUG_SPAWN="
 set "SIEGEFX_DEBUG_LOG_FILE="
 echo Log written to: %TEMP%\siegefx_diag\test105.log
+echo.
+pause
+goto MENU
+
+:T106
+echo.
+echo --- ALPHA-1: campaign completability sweep (CLI, self-verifying) ---
+echo [Sweeps ALL 81 regions in stitch-BFS campaign order: every placed
+echo  template's component sections (instance + specializes chain) diffed
+echo  against the engine-handled set, plus trigger condition/action verbs
+echo  diffed against TriggerRuntime's dispatched sets. The UNHANDLED table
+echo  is the alpha blocker list (the elevator gap surfaced exactly this
+echo  way); the benign table keeps triaged cosmetics visible. Also runs
+echo  the per-region nav component histogram (read with care: single-
+echo  region scope over-reports splits that cross-region stitches join).]
+echo.
+"%TOOL%" world campaign-audit "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres"
+echo.
+"%TOOL%" region nav-components "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" all --top=5
 echo.
 pause
 goto MENU
