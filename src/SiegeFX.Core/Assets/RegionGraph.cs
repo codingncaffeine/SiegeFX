@@ -174,6 +174,54 @@ public sealed class RegionGraph
         return new RegionGraph(entries[0].Graph.TargetNodeGuid, combined);
     }
 
+    /// <summary>SC-ELEVATOR — return a copy of <paramref name="graph"/> with
+    /// extra door links merged onto the named snodes (same immutable-node
+    /// rebuild the cross-region combiner uses). Elevator cars need this: the
+    /// car's static nodes.gas doors describe only its authored parking spot,
+    /// so when it sits at its OTHER stop the nav door-seam stitcher has no
+    /// link to pair the car floor with the stop's connect node. Callers pass
+    /// the pairing for the car's current stop each nav (re)build.</summary>
+    public static RegionGraph WithExtraDoors(
+        RegionGraph graph, IReadOnlyDictionary<uint, List<DoorLink>> extraDoorsBySnode)
+    {
+        if (extraDoorsBySnode.Count == 0) return graph;
+        var combined = new List<NodeInstance>(graph.Nodes.Count);
+        int injected = 0;
+        foreach (var node in graph.Nodes)
+        {
+            if (!extraDoorsBySnode.TryGetValue(node.Guid, out var extra) || extra.Count == 0)
+            {
+                combined.Add(node);
+                continue;
+            }
+            var mergedDoors = new List<DoorLink>(node.Doors.Count + extra.Count);
+            mergedDoors.AddRange(node.Doors);
+            foreach (var link in extra)
+            {
+                if (mergedDoors.Contains(link)) continue; // static edge already covers it
+                mergedDoors.Add(link);
+                injected++;
+            }
+            combined.Add(new NodeInstance
+            {
+                Guid = node.Guid,
+                MeshGuid = node.MeshGuid,
+                TexsetAbbr = node.TexsetAbbr,
+                BoundsCamera = node.BoundsCamera,
+                CameraFade = node.CameraFade,
+                OccludesCamera = node.OccludesCamera,
+                OccludesLight = node.OccludesLight,
+                NodeSection = node.NodeSection,
+                NodeLevel = node.NodeLevel,
+                NodeObject = node.NodeObject,
+                Doors = mergedDoors,
+            });
+        }
+        if (injected > 0)
+            System.Console.WriteLine($"  elevator doors: {injected} dynamic link(s) injected");
+        return new RegionGraph(graph.TargetNodeGuid, combined);
+    }
+
     public static RegionGraph FromDocument(GasDocument doc)
     {
         GasNode? root = null;

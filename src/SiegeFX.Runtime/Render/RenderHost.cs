@@ -6624,7 +6624,10 @@ void main()
                     navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
                 }
                 // SC-ELEVATOR — bake elevator cars at their current stop
-                // (LoadElevators has already run for this scope).
+                // (LoadElevators has already run for this scope) and inject
+                // each car's current-stop door pairing so the seam stitcher
+                // welds the car floor to its stop.
+                navGraph = InjectElevatorDoorLinks(navGraph);
                 navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, EffectiveNavLayout(), ResolveNav);
                 // Phase 24-NAV-LOGICAL-FLAGS — bind region's gas-authored
                 // per-(snode,lnode) flag table (lf_human_player /
@@ -10124,6 +10127,36 @@ void main()
         return false;
     }
 
+    /// <summary>Inject each elevator's CURRENT-stop door pairing into the nav
+    /// graph (both sides) so the door-seam stitcher wires the car floor to
+    /// the stop's connect node. The car's static nodes.gas doors describe
+    /// only its authored spot — without this the car arrives at its other
+    /// stop as a disconnected nav island and the rider can't walk off.</summary>
+    private SiegeFX.Core.Assets.RegionGraph InjectElevatorDoorLinks(SiegeFX.Core.Assets.RegionGraph navGraph)
+    {
+        if (_elevators.Count == 0) return navGraph;
+        var extra = new Dictionary<uint, List<SiegeFX.Core.Assets.RegionGraph.DoorLink>>();
+        void Add(uint snode, SiegeFX.Core.Assets.RegionGraph.DoorLink link)
+        {
+            if (!extra.TryGetValue(snode, out var list)) extra[snode] = list = new();
+            list.Add(link);
+        }
+        foreach (var el in _elevators)
+        {
+            var d = el.Def;
+            // AtStop is the departure stop while moving and flips at arrival
+            // BEFORE the arrival rebuild — so this is always the stop whose
+            // pairing the current/incoming mesh should carry.
+            int stop = el.AtStop;
+            uint connect = stop == 1 ? d.Connect1Guid : d.Connect2Guid;
+            int connectDoor = stop == 1 ? d.Connect1DoorId : d.Connect2DoorId;
+            int carDoor = stop == 1 ? d.CarDoor1Id : d.CarDoor2Id;
+            Add(d.CarNodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(carDoor, connect, connectDoor));
+            Add(connect, new SiegeFX.Core.Assets.RegionGraph.DoorLink(connectDoor, d.CarNodeGuid, carDoor));
+        }
+        return SiegeFX.Core.Assets.RegionGraph.WithExtraDoors(navGraph, extra);
+    }
+
     /// <summary>Parse + place every elevator in <paramref name="regionPaths"/>.
     /// Must run BEFORE the nav build for the same scope so the stop-1 snap is
     /// baked into the walkable mesh (both call sites honor this).</summary>
@@ -11387,7 +11420,9 @@ void main()
                 return null;
             }
 
-            // SC-ELEVATOR — car nodes bake at their current stop, not the BFS pose.
+            // SC-ELEVATOR — car nodes bake at their current stop (not the BFS
+            // pose) and carry their current-stop door pairing for the stitcher.
+            navGraph = InjectElevatorDoorLinks(navGraph);
             var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, EffectiveNavLayout(), ResolveNav);
             // A fresh mesh starts with every triangle visible; live fade state
             // (fade-group hides, single-node fades, camera_fade) must carry
