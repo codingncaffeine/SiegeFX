@@ -1431,12 +1431,16 @@ static int CmdWorldCampaignAudit(string[] a)
         "party_member_within_bounding_box", "party_member_within_node",
         "party_member_entered_trigger_group", "party_member_left_trigger_group",
         "receive_world_message",
+        // ALPHA-2B
+        "actor_within_bounding_box", "go_within_bounding_box", "has_go_in_inventory",
     };
     var dispatchedActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         "send_world_message", "mood_change", "set_interest_radius",
         "fade_node", "fade_nodes", "fade_nodes_global",
         "change_quest_state", "call_sfx_script",
+        // ALPHA-2B
+        "set_camera_fade_node", "set_bounds_camera_node", "change_actor_life",
     };
 
     // ---- the sweep ----
@@ -5335,13 +5339,18 @@ static int CmdRegionTriggers(string[] a)
         "actor_within_sphere" or "go_within_sphere" or "party_member_within_sphere" or
         "party_member_within_bounding_box" or "party_member_within_node" or
         "party_member_entered_trigger_group" or "party_member_left_trigger_group" or
-        "receive_world_message" => true,
+        "receive_world_message" or
+        // ALPHA-2B
+        "actor_within_bounding_box" or "go_within_bounding_box" or "has_go_in_inventory" => true,
         _ => false,
     };
     static bool IsActionDispatched(string verb) => verb.ToLowerInvariant() switch
     {
         "send_world_message" or "mood_change" or "set_interest_radius" or
-        "fade_node" or "fade_nodes" or "fade_nodes_global" => true,
+        "fade_node" or "fade_nodes" or "fade_nodes_global" or
+        "change_quest_state" or "call_sfx_script" or
+        // ALPHA-2B
+        "set_camera_fade_node" or "set_bounds_camera_node" or "change_actor_life" => true,
         _ => false,
     };
 }

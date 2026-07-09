@@ -1038,6 +1038,104 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    /// <summary>ALPHA-2B — go_within_bounding_box: any live game object in
+    /// the box, optionally filtered by scid / template name. GOs ≈ actors
+    /// (incl. player + party) for our purposes; static props can't move into
+    /// a volume so they'd only ever match at author time.</summary>
+    internal bool AnyGoWithinAabbForTriggers(Vector3 center, float hx, float hy, float hz, uint scidFilter, string templateFilter)
+    {
+        bool Match(uint scid, string template, Vector3 pos, bool dead)
+        {
+            if (dead) return false;
+            if (scidFilter != 0 && scid != scidFilter) return false;
+            if (templateFilter.Length > 0 && !template.Equals(templateFilter, StringComparison.OrdinalIgnoreCase)) return false;
+            var d = pos - center;
+            return MathF.Abs(d.X) <= hx && MathF.Abs(d.Y) <= hy && MathF.Abs(d.Z) <= hz;
+        }
+        foreach (var s in _actors)
+            if (Match(s.Actor.Instance.Scid, s.Actor.Template.Name, s.CurrentTransform.Translation, s.IsDead))
+                return true;
+        if (_player is not null &&
+            Match(_player.Actor.Instance.Scid, _player.Actor.Template.Name, _player.CurrentTransform.Translation, _player.IsDead))
+            return true;
+        return false;
+    }
+
+    /// <summary>ALPHA-2B — has_go_in_inventory: does ANY party member carry
+    /// an item of this template (ds_r1's quest-artifact gate)? Checks bag
+    /// inventories; equipped gear rides the same LootEntry lists via the
+    /// paperdoll so quest artifacts (non-equippable) are fully covered.</summary>
+    internal bool PartyHasItemTemplateForTriggers(string templateName)
+    {
+        if (templateName.Length == 0) return false;
+        int members = Math.Max(1, _party.Count);
+        for (int i = 0; i < members; i++)
+        {
+            var inv = GetMemberInventory(i);
+            for (int j = 0; j < inv.Count; j++)
+                if (inv[j].Reference.Equals(templateName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+        }
+        return false;
+    }
+
+    /// <summary>ALPHA-2B — set_camera_fade_node / set_bounds_camera_node:
+    /// flip a specific snode's camera flag at runtime (sd_r1 authors 121
+    /// camera-fade flips for its building cutaways). bounds_camera is
+    /// recorded for the future auto-tilt camera system (polish backlog) and
+    /// logged so its absence is visible rather than silent.</summary>
+    internal void OnTriggerSetCameraNodeFlag(string verb, uint nodeGuid, bool on)
+    {
+        if (verb.Equals("set_camera_fade_node", StringComparison.OrdinalIgnoreCase))
+        {
+            for (int i = 0; i < _regionInstances.Count; i++)
+            {
+                if (_regionInstances[i].SnodeGuid != nodeGuid) continue;
+                _regionInstances[i] = _regionInstances[i] with { CameraFade = on };
+                Console.WriteLine($"[camera] fade-node 0x{nodeGuid:X8} -> {(on ? "on" : "off")}");
+                return;
+            }
+            Console.WriteLine($"[camera] fade-node 0x{nodeGuid:X8} not streamed — ignored");
+            return;
+        }
+        _boundsCameraOverrides[nodeGuid] = on;
+        if (_boundsCameraWarned.Add(nodeGuid))
+            Console.WriteLine($"[camera] bounds-node 0x{nodeGuid:X8} -> {(on ? "on" : "off")} (recorded; auto-tilt camera pending)");
+    }
+    private readonly Dictionary<uint, bool> _boundsCameraOverrides = new();
+    private readonly HashSet<uint> _boundsCameraWarned = new();
+
+    /// <summary>ALPHA-2B — change_actor_life(newLife, scid): shipped uses are
+    /// scripted kills (0f). Lowering life routes through ApplyDamage so the
+    /// standard death funnel (chore, sfx, loot, quest credit) fires; raising
+    /// life is unauthored in SP and logged if ever hit.</summary>
+    internal void OnTriggerChangeActorLife(uint scid, float newLife)
+    {
+        if (scid == 0)
+        {
+            // dm_r8 authors one (0f, 0x0) row — target resolution unknown
+            // until that set piece gets eyes; loud so it can't hide.
+            Console.WriteLine("[trigger] change_actor_life target 0x0 — unresolved authored form, ignored");
+            return;
+        }
+        foreach (var s in _actors)
+        {
+            if (s.Actor.Instance.Scid != scid) continue;
+            var combat = s.Actor.Combat;
+            if (newLife < combat.CurrentLife)
+            {
+                float dealt = combat.ApplyDamage(combat.CurrentLife - newLife);
+                Console.WriteLine($"[trigger] change_actor_life 0x{scid:X8}: -{dealt:F0} -> {combat.CurrentLife:F0}");
+            }
+            else if (newLife > combat.CurrentLife)
+            {
+                Console.WriteLine($"[trigger] change_actor_life 0x{scid:X8}: heal path unauthored in SP — ignored");
+            }
+            return;
+        }
+        Console.WriteLine($"[trigger] change_actor_life 0x{scid:X8}: actor not found");
+    }
+
     /// <summary>Phase 26a — register the player as party member 0 once it
     /// spawns. Idempotent; safe to call from every spawn path.</summary>
     private void EnsurePlayerInParty()

@@ -80,6 +80,39 @@ internal sealed class RenderHostTriggerContext : TriggerContext
         return _host.PlayerWithinNodeGroup(regionGuid, nodeSection, nodeLevel, nodeObject);
     }
 
+    // ALPHA-2B — the six previously-undispatched authored verbs.
+    public override bool AnyActorWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint exceptScid)
+    {
+        foreach (var (scid, pos) in _host.EnumerateActorPositionsForTriggers())
+        {
+            if (scid == exceptScid) continue;
+            var d = pos - center;
+            if (MathF.Abs(d.X) <= halfX && MathF.Abs(d.Y) <= halfY && MathF.Abs(d.Z) <= halfZ)
+                return true;
+        }
+        return false;
+    }
+
+    public override bool AnyGoWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter)
+    {
+        return _host.AnyGoWithinAabbForTriggers(center, halfX, halfY, halfZ, scidFilter, templateFilter);
+    }
+
+    public override bool PartyHasItemTemplate(string templateName)
+    {
+        return _host.PartyHasItemTemplateForTriggers(templateName);
+    }
+
+    public override void SetCameraNodeFlag(string verb, uint nodeGuid, bool on)
+    {
+        _host.OnTriggerSetCameraNodeFlag(verb, nodeGuid, on);
+    }
+
+    public override void ChangeActorLife(uint scid, float newLife)
+    {
+        _host.OnTriggerChangeActorLife(scid, newLife);
+    }
+
     public override void ChangeQuestState(IReadOnlyList<string> args)
     {
         _host.OnTriggerChangeQuestState(args);

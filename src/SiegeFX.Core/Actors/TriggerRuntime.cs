@@ -307,6 +307,35 @@ public sealed class TriggerRuntime
             }
             case "party_member_within_node":
                 return EvaluateWithinNode(cond, ctx);
+            // ALPHA-2B — AABB variant of actor_within_sphere (dm_r8 uses it
+            // to sense a scripted actor at a spot).
+            case "actor_within_bounding_box":
+            {
+                if (!TryFloatArg(cond, 0, out var bx)) return false;
+                if (!TryFloatArg(cond, 1, out var by)) return false;
+                if (!TryFloatArg(cond, 2, out var bz)) return false;
+                return ctx.AnyActorWithinAabb(trig.Position, bx, by, bz, exceptScid: trig.Scid);
+            }
+            // ALPHA-2B — any game object in the box, optionally filtered by
+            // scid (arg 3, 0 = any) and template name (arg 4, "" = any).
+            // cr_r1's pressure-plate volumes ship (box, 0x0, "", mode).
+            case "go_within_bounding_box":
+            {
+                if (!TryFloatArg(cond, 0, out var gx)) return false;
+                if (!TryFloatArg(cond, 1, out var gy)) return false;
+                if (!TryFloatArg(cond, 2, out var gz)) return false;
+                uint scidFilter = cond.Args.Count > 3 ? ParseScid(cond.Args[3]) : 0;
+                string nameFilter = cond.Args.Count > 4 ? cond.Args[4].Trim('"') : "";
+                return ctx.AnyGoWithinAabb(trig.Position, gx, gy, gz, scidFilter, nameFilter);
+            }
+            // ALPHA-2B — item-gated trigger: has_go_in_inventory("any", scid,
+            // template). Shipped form checks the whole party for a quest item
+            // (ds_r1's azunite_scholar_artifact_01).
+            case "has_go_in_inventory":
+            {
+                if (cond.Args.Count < 3) return false;
+                return ctx.PartyHasItemTemplate(cond.Args[2].Trim('"'));
+            }
             case "party_member_entered_trigger_group":
             {
                 if (cond.Args.Count == 0) return false;
@@ -379,6 +408,27 @@ public sealed class TriggerRuntime
                 IReadOnlyList<string>? scriptArgs =
                     act.Args.Count > 1 ? act.Args.Skip(1).ToList() : null;
                 ctx.CallSfxScript(scriptName, scriptArgs, trig.Position);
+                return;
+            }
+            // ALPHA-2B — runtime camera-flag flips on a specific snode:
+            // set_camera_fade_node(guid, 0|1) / set_bounds_camera_node(guid, 0|1).
+            // sd_r1 authors 121 of the former for its building cutaways.
+            case "set_camera_fade_node":
+            case "set_bounds_camera_node":
+            {
+                if (act.Args.Count < 2) return;
+                uint node = ParseScid(act.Args[0]);
+                bool on = act.Args[1].Trim().TrimEnd('f', 'F') != "0";
+                if (node != 0) ctx.SetCameraNodeFlag(act.Verb, node, on);
+                return;
+            }
+            // ALPHA-2B — change_actor_life(newLife, targetScid). Shipped
+            // uses are scripted kills (0f).
+            case "change_actor_life":
+            {
+                if (act.Args.Count < 2) return;
+                if (!TryFloatArg(act, 0, out var newLife)) return;
+                ctx.ChangeActorLife(ParseScid(act.Args[1]), newLife);
                 return;
             }
         }
@@ -578,6 +628,12 @@ public class TriggerContext
     public virtual bool AnyActorWithinSphere(Vector3 center, float radius, uint exceptScid) => false;
     public virtual bool PartyMemberWithinSphere(Vector3 center, float radius) => false;
     public virtual bool PartyMemberWithinAabb(Vector3 center, float halfX, float halfY, float halfZ) => false;
+    // ALPHA-2B — non-party volume checks + item gate + camera-flag / life actions.
+    public virtual bool AnyActorWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint exceptScid) => false;
+    public virtual bool AnyGoWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter) => false;
+    public virtual bool PartyHasItemTemplate(string templateName) => false;
+    public virtual void SetCameraNodeFlag(string verb, uint nodeGuid, bool on) { }
+    public virtual void ChangeActorLife(uint scid, float newLife) { }
     /// <summary>DS1 semantics: is any party member currently standing in a
     /// terrain node of the region identified by <paramref name="regionGuid"/>
     /// whose fade-group keys match (with -1 wildcards)?</summary>
