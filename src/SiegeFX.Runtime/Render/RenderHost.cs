@@ -202,6 +202,20 @@ public sealed class RenderHost : IDisposable
     // alongside _staticProps on region teardown.
     private readonly List<StaticPropInstance> _leverProps = new();
     private StaticPropInstance? _pendingLeverUse;
+    // ALPHA-2C — chests (click-to-open loot containers) + placed auto-traps.
+    private readonly List<StaticPropInstance> _chestProps = new();
+    private readonly Dictionary<uint, StaticPropInstance> _chestsByScid = new();
+    private StaticPropInstance? _pendingChestUse;
+    private sealed class AutoTrapState
+    {
+        public uint Scid;
+        public Vector3 Position;
+        public string Template = "";
+        public int AmmoLeft = -1;       // -1 = unlimited
+        public float ReloadDuration = 2f;
+        public float Cooldown;
+    }
+    private readonly List<AutoTrapState> _autoTraps = new();
     private readonly List<ElevatorRuntime> _elevators = new();
     private readonly Dictionary<uint, ElevatorRuntime> _elevatorsByScid = new();
     // Car-node transform overrides consumed by EffectiveNavLayout() so nav
@@ -846,6 +860,11 @@ public sealed class RenderHost : IDisposable
         public float RestPitch;
         public readonly List<SiegeFX.Core.Actors.LootEntry> Items;
         public LootThrow? Throw;
+        /// <summary>ALPHA-2C — template used for the ground mesh when the
+        /// entries themselves aren't resolvable item templates (world-placed
+        /// gold carries a synthetic "lo-hi" gold entry but should render the
+        /// authored coin mesh). Empty = resolve from Items as usual.</summary>
+        public string DisplayOverride = "";
         /// <summary>SC-WORLD-INVENTORY-PLACED — true for piles that were spawned
         /// from a region's <c>objects/inventory.gas</c> (loose world items the
         /// player walks over to pick up). Used to skip these piles in save
@@ -1642,6 +1661,9 @@ public sealed class RenderHost : IDisposable
             // msg_switch) respond to activation messages at their scid.
             if (_logicGizmos.TryGetValue(toScid, out var lg))
                 DispatchLogicGizmo(lg, activate: true);
+            // ALPHA-2C — wait_for_activate chests open on message.
+            if (_chestsByScid.TryGetValue(toScid, out var chestGo))
+                OpenChest(chestGo);
             // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
             // activate the amb_rain_01 loops alongside their mood_change).
             if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
@@ -2501,6 +2523,16 @@ public sealed class RenderHost : IDisposable
         public uint   LeverOnScid, LeverOffScid;
         public string LeverOnMessage  = "we_req_activate";
         public string LeverOffMessage = "we_req_activate";
+
+        // ALPHA-2C — chests/lockers (base_chest chain) open on use instead of
+        // shattering: click within use range rolls the container's pcontent
+        // (LogPropLootDrop) and fires its [trapped] trap if authored. The
+        // use_toggle variant waits for a we_req_activate instead of a click.
+        // Lid animation (chore_open) is a noted gap — loot function first.
+        public bool  IsChest;
+        public bool  ChestOpened;
+        public bool  ChestWaitsForActivate;
+        public float ChestUseRange = 2f;
 
         // SC-FADE-GROUPS — authored anchor snode from the placement's
         // node-relative position. When that snode fades out (cutaway,
@@ -7071,6 +7103,7 @@ void main()
         LoadGenerators(allLoaded);
         LoadCommands(allLoaded);
         LoadLogicGizmos(allLoaded);
+        LoadAutoTraps(allLoaded);
         AssignPatrolRoutes();
 
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
@@ -7300,6 +7333,7 @@ void main()
         LoadGenerators(newlyLoaded);
         LoadCommands(newlyLoaded);
         LoadLogicGizmos(newlyLoaded);
+        LoadAutoTraps(newlyLoaded);
         AssignPatrolRoutes();
     }
 
@@ -7814,6 +7848,31 @@ void main()
                         }
                     }
 
+                    // ALPHA-2C — chests open on use; never classify them as
+                    // breakables even though the container chain is smashable
+                    // (retail lockers open, they don't shatter).
+                    bool isChest = false, chestWaits = false;
+                    float chestUseRange = 2f;
+                    for (var t = template; t is not null; t = t.Specializes)
+                    {
+                        if (string.Equals(t.Name, "base_chest", StringComparison.OrdinalIgnoreCase)) { isChest = true; break; }
+                        if (string.Equals(t.Name, "base_chest_use_toggle", StringComparison.OrdinalIgnoreCase)) { isChest = true; chestWaits = true; break; }
+                    }
+                    if (isChest)
+                    {
+                        isBreakable = false;
+                        var cur = ts.GetAttribute(template!, "aspect", "use_range");
+                        if (cur is not null && float.TryParse(cur.Trim().TrimEnd('f', 'F'),
+                            System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var curv) && curv > 0f)
+                            chestUseRange = curv;
+                        // wait_for_activate can also be authored on the base_chest
+                        // section of the ordinary variant.
+                        var wfa = ts.GetAttribute(template!, "base_chest", "wait_for_activate");
+                        if (wfa is not null && (wfa.Trim().Equals("true", StringComparison.OrdinalIgnoreCase) || wfa.Trim() == "1"))
+                            chestWaits = true;
+                    }
+
                     // SC-DOORS-HINGE-AXIS — classify wall vs bulkhead/flip door
                     // from the mesh extents. Wall doors are thin along Y (leaf
                     // stands in X-Z, height along Z); bulkhead/storm doors are
@@ -7897,6 +7956,9 @@ void main()
                         LeverOffScid    = levOffScid,
                         LeverOnMessage  = levOnMsg,
                         LeverOffMessage = levOffMsg,
+                        IsChest         = isChest,
+                        ChestWaitsForActivate = chestWaits,
+                        ChestUseRange   = chestUseRange,
                         NodeGuid      = p.Placement.NodeGuid,
                         Scid          = p.Scid,
                         RegionPath    = rp,
@@ -7904,6 +7966,11 @@ void main()
                     };
                     _staticProps.Add(inst);
                     if (isDoor) _doorProps.Add(inst);
+                    if (isChest)
+                    {
+                        _chestProps.Add(inst);
+                        if (chestWaits) _chestsByScid[inst.Scid] = inst;
+                    }
                     if (isLever)
                     {
                         _leverProps.Add(inst);
@@ -8051,14 +8118,35 @@ void main()
                 // picked it up.
                 if (_consumedInventoryScids is not null &&
                     _consumedInventoryScids.Contains(p.Scid)) continue;
-                var pile = new LootPile(world,
-                    new List<SiegeFX.Core.Actors.LootEntry>
+                // ALPHA-2C — world-placed gold is CURRENCY, not an item: the
+                // [gold] template section is just a coin-mesh-by-amount table.
+                // Amount = instance [aspect]gold_value (bc_r1 authors 3/5/...)
+                // falling back to the template chain (gold.gas ships 8).
+                // Encoded as the standard synthetic gold entry so LootPileNow
+                // credits coin instead of stuffing a ghost "gold" item.
+                var entry = new SiegeFX.Core.Actors.LootEntry("", p.TemplateName);
+                if (_templateStore.TryGet(p.TemplateName, out var invTpl) &&
+                    _templateStore.GetSection(invTpl!, "gold") is not null)
+                {
+                    string? gv = null;
+                    foreach (var c in p.Node.Children)
                     {
-                        new SiegeFX.Core.Actors.LootEntry("", p.TemplateName),
-                    })
+                        if (!string.Equals(c.Header, "aspect", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var attr in c.Attributes)
+                            if (string.Equals(attr.Name, "gold_value", StringComparison.OrdinalIgnoreCase)) { gv = attr.Value; break; }
+                        break;
+                    }
+                    gv ??= _templateStore.GetAttribute(invTpl!, "aspect", "gold_value");
+                    int amount = int.TryParse(gv?.Trim(), System.Globalization.NumberStyles.Integer,
+                        System.Globalization.CultureInfo.InvariantCulture, out var g) && g > 0 ? g : 8;
+                    entry = new SiegeFX.Core.Actors.LootEntry("gold", $"{amount}-{amount}");
+                }
+                var pile = new LootPile(world,
+                    new List<SiegeFX.Core.Actors.LootEntry> { entry })
                 {
                     IsWorldInventory = true,
                     SourceScid       = p.Scid,
+                    DisplayOverride  = entry.IsGold ? p.TemplateName : "",
                 };
                 _lootPiles.Add(pile);
                 spawned++;
@@ -10582,6 +10670,26 @@ void main()
             }
         }
 
+        // ALPHA-2C — pending chest walk-up (same shape as levers).
+        if (_pendingChestUse is { } chest)
+        {
+            if (chest.IsDestroyed || chest.ChestOpened) _pendingChestUse = null;
+            else if (_player is not null && !_player.IsDead)
+            {
+                var pp = _player.CurrentTransform.Translation;
+                var cp = chest.World.Translation;
+                float dx = pp.X - cp.X, dz = pp.Z - cp.Z;
+                if (dx * dx + dz * dz <= chest.ChestUseRange * chest.ChestUseRange &&
+                    MathF.Abs(pp.Y - cp.Y) <= 2.5f)
+                {
+                    _pendingChestUse = null;
+                    OpenChest(chest);
+                }
+            }
+        }
+
+        TickAutoTraps(dt);
+
         for (int i = _elevatorDelayedFades.Count - 1; i >= 0; i--)
         {
             var (fireIn, args) = _elevatorDelayedFades[i];
@@ -10715,6 +10823,221 @@ void main()
         var scid = lever.LeverOn ? lever.LeverOnScid : lever.LeverOffScid;
         Console.WriteLine($"[lever] 0x{lever.Scid:X8} pulled -> {(lever.LeverOn ? "on" : "off")}: '{msg}' -> 0x{scid:X8}");
         if (scid != 0) PostTriggerWorldMessage(msg, lever.Scid, scid);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // ALPHA-2C — chests, container traps, placed auto-traps.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>Click near an unopened chest queues a walk-up-and-open
+    /// (pending until the player is inside use range, like levers). The
+    /// use_toggle variant only opens via we_req_activate.</summary>
+    private void RequestChestUseNear(Vector3 worldPoint)
+    {
+        if (_chestProps.Count == 0) return;
+        StaticPropInstance? best = null;
+        float bestD2 = 2.0f * 2.0f;
+        foreach (var c in _chestProps)
+        {
+            if (c.IsDestroyed || c.ChestOpened || c.ChestWaitsForActivate) continue;
+            var cp = c.World.Translation;
+            float dx = cp.X - worldPoint.X, dz = cp.Z - worldPoint.Z;
+            if (MathF.Abs(cp.Y - worldPoint.Y) > 3f) continue;
+            float dd = dx * dx + dz * dz;
+            if (dd < bestD2) { bestD2 = dd; best = c; }
+        }
+        _pendingChestUse = best;
+    }
+
+    /// <summary>Open a chest: roll its pcontent (loot + gold via
+    /// LogPropLootDrop, which also fires any [trapped] trap) exactly once.
+    /// Lid chore_open animation is a known gap — noted, function first.</summary>
+    private void OpenChest(StaticPropInstance chest)
+    {
+        if (chest.ChestOpened || chest.IsDestroyed) return;
+        chest.ChestOpened = true;
+        Console.WriteLine($"[chest] 0x{chest.Scid:X8} {chest.Template} opened");
+        LogPropLootDrop(chest);
+        _audio?.PlayAt(SfxGuiInventory, chest.World.Translation);
+    }
+
+    /// <summary>[trapped] { trap = trp_generator_* } — the generator's
+    /// [inventory][delayed_pcontent] rolls a chance-gated trap effect
+    /// (trp_explosion / trp_fireball / trp_flame / ...) whose payload is an
+    /// effect_script our SFX runtime already executes. Damage numbers are
+    /// NOT authored on the effect templates (retail computes them engine
+    /// -side); magnitude×4 within radius is an INFERRED placeholder flagged
+    /// for the DS1 side-by-side pass.</summary>
+    private void FireContainerTrap(StaticPropInstance prop)
+    {
+        if (_templateStore is null) return;
+        if (!_templateStore.TryGet(prop.Template, out var tpl)) return;
+        var trapGenName = _templateStore.GetAttribute(tpl!, "trapped", "trap")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(trapGenName)) return;
+        if (!_templateStore.TryGet(trapGenName, out var trapGen))
+        {
+            Console.WriteLine($"[trap] generator template '{trapGenName}' missing");
+            return;
+        }
+
+        // delayed_pcontent: [oneof*] { [all*] { chance = 0.15; il_main = trp_x; } }
+        var dp = _templateStore.GetSection(trapGen!, "inventory", "delayed_pcontent");
+        if (dp is null) return;
+        float chance = 1f;
+        string effectTemplate = "";
+        void Walk(SiegeFX.Core.Assets.GasNode n)
+        {
+            foreach (var a in n.Attributes)
+            {
+                if (a.Name.Equals("chance", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var c)) chance = c;
+                if (a.Name.Equals("il_main", StringComparison.OrdinalIgnoreCase))
+                    effectTemplate = a.Value.Trim().Trim('"');
+            }
+            foreach (var ch in n.Children) Walk(ch);
+        }
+        Walk(dp);
+        if (effectTemplate.Length == 0) return;
+
+        var origin = prop.World.Translation;
+        int seed = unchecked(BitConverter.SingleToInt32Bits(origin.X) * 31 ^
+                             BitConverter.SingleToInt32Bits(origin.Z) * 17 ^ (int)prop.Scid);
+        if (new Random(seed).NextDouble() > chance) return; // not trapped this time
+
+        FireTrapEffect(effectTemplate, origin);
+    }
+
+    /// <summary>Fire one trap-effect template at a position: play its
+    /// effect_script through the SFX runtime and apply the (inferred)
+    /// radius damage to party members.</summary>
+    private void FireTrapEffect(string effectTemplate, Vector3 origin)
+    {
+        if (_templateStore is null || !_templateStore.TryGet(effectTemplate, out var trp)) return;
+
+        string script = "";
+        float magnitude = 2f, radius = 2.5f;
+        foreach (var section in new[] { "trp_explosion", "trp_trackball", "trp_particle", "trp_launch", "trp_firetrap" })
+        {
+            var s = _templateStore.GetSection(trp!, section);
+            if (s is null) continue;
+            foreach (var a in s.Attributes)
+            {
+                if (a.Name.Equals("effect_script", StringComparison.OrdinalIgnoreCase)) script = a.Value.Trim().Trim('"');
+                if (a.Name.Equals("magnitude", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var m)) magnitude = m;
+                if (a.Name.Equals("radius", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var r)) radius = r;
+            }
+            break;
+        }
+        if (script.Length == 0)
+        {
+            // trp_firetrap's own section is empty — the flame jet is the
+            // shipped flame_trap script.
+            script = "flame_trap";
+        }
+
+        Console.WriteLine($"[trap] {effectTemplate} fires at ({origin.X:F1},{origin.Y:F1},{origin.Z:F1}) " +
+                          $"script='{script}' r={radius:F1} (damage INFERRED mag×4)");
+        OnTriggerCallSfxScript(script, null, origin);
+
+        float dmg = MathF.Max(1f, magnitude * 4f); // INFERRED — no authored source; flag for side-by-side
+        float r2 = radius * radius;
+        void Hurt(ActorRenderState? m)
+        {
+            if (m is null || m.IsDead) return;
+            var d = m.CurrentTransform.Translation - origin;
+            if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 2.5f) return;
+            float dealt = m.Actor.Combat.ApplyDamage(dmg);
+            if (dealt > 0f)
+                AddFloatingText($"-{dealt:F0}", m.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+                                new Vector4(1f, 0.35f, 0.2f, 1f));
+        }
+        Hurt(_player);
+        foreach (var m in _party) if (m.PartyIndex != 0) Hurt(m);
+    }
+
+    /// <summary>Placed auto-traps (trp_firetrap floor jets in the crypts):
+    /// party member within range → fire, consume ammo, reload.</summary>
+    private void TickAutoTraps(float dt)
+    {
+        if (_autoTraps.Count == 0 || dt <= 0f) return;
+        const float TriggerRange = 1.6f; // jet footprint — INFERRED, tune at cr_r1 eyes test
+        foreach (var t in _autoTraps)
+        {
+            if (t.AmmoLeft == 0) continue;
+            if (t.Cooldown > 0f) { t.Cooldown -= dt; continue; }
+            bool tripped = false;
+            foreach (var pos in PartyMemberPositionsForTriggers())
+            {
+                var d = pos - t.Position;
+                if (d.X * d.X + d.Z * d.Z <= TriggerRange * TriggerRange && MathF.Abs(d.Y) < 2f) { tripped = true; break; }
+            }
+            if (!tripped) continue;
+            t.Cooldown = MathF.Max(0.5f, t.ReloadDuration);
+            if (t.AmmoLeft > 0) t.AmmoLeft--;
+            FireTrapEffect(t.Template, t.Position);
+        }
+    }
+
+    /// <summary>Register the region's placed trp_* auto-traps (objects/trap.gas
+    /// plus any authored elsewhere — chain gate is the trap_auto family).</summary>
+    private void LoadAutoTraps(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _templateStore is null || _regionLayout is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            foreach (var file in mapReader.ListFiles())
+            {
+                if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
+                    !file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+                var fileName = file[objPrefix.Length..];
+                if (fileName.Contains('/')) continue;
+                var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp.TrimEnd('/'), fileName);
+                foreach (var p in placements)
+                {
+                    if (!_templateStore.TryGet(p.TemplateName, out var tpl)) continue;
+                    bool auto = false;
+                    for (var t = tpl; t is not null; t = t.Specializes)
+                        if (string.Equals(t.Name, "trap_auto", StringComparison.OrdinalIgnoreCase)) { auto = true; break; }
+                    if (!auto) continue;
+                    if (_autoTraps.Any(x => x.Scid == p.Scid)) continue;
+                    var world = p.Placement.LocalPosition;
+                    if (_regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                        world = Vector3.Transform(p.Placement.LocalPosition, nodeWorld);
+                    int ammo = -1; float reload = 2f;
+                    foreach (var c in p.Node.Children)
+                    {
+                        if (!c.Header.StartsWith("trp_", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var a in c.Attributes)
+                        {
+                            if (a.Name.Equals("ammo_count", StringComparison.OrdinalIgnoreCase) &&
+                                int.TryParse(a.Value.Trim(), out var av)) ammo = av;
+                            if (a.Name.Equals("reload_duration", StringComparison.OrdinalIgnoreCase) &&
+                                float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out var rv)) reload = rv;
+                        }
+                    }
+                    _autoTraps.Add(new AutoTrapState
+                    {
+                        Scid = p.Scid,
+                        Position = world,
+                        Template = p.TemplateName,
+                        AmmoLeft = ammo,
+                        ReloadDuration = reload,
+                    });
+                    added++;
+                }
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  auto-traps: {added} armed ({_autoTraps.Count} total)");
     }
 
     // SC-DOORS-OPEN — a left-click that lands on/near a door opens it (DS1
@@ -14322,6 +14645,8 @@ void main()
         // SC-ELEVATOR — clicking on/near a lever queues a walk-up-and-pull;
         // a click that lands away from every lever clears any pending pull.
         RequestLeverUseNear(hit);
+        // ALPHA-2C — same walk-up pattern for chests.
+        RequestChestUseNear(hit);
         _playerFollower.SetTarget(hit);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
@@ -18419,6 +18744,10 @@ void main()
     private void LogPropLootDrop(StaticPropInstance prop)
     {
         if (_templateStore is null) return;
+        // ALPHA-2C — a [trapped] container springs its trap whenever it's
+        // disturbed (chest opened OR crate/barrel shattered) — before the
+        // loot roll so an empty crate still bites.
+        FireContainerTrap(prop);
         if (!_templateStore.TryGet(prop.Template, out var template)) return;
         var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, template);
         if (table.IsEmpty) return;
@@ -18565,6 +18894,23 @@ void main()
     private bool LootPileNow(LootPile pile, int pileIndex)
     {
         if (pile.Throw is not null) return false;
+
+        // ALPHA-2C — piles can carry synthetic gold entries (world-placed
+        // gold coins). Credit as currency; never let them reach inventory.
+        long pileGold = 0;
+        for (int gi = pile.Items.Count - 1; gi >= 0; gi--)
+        {
+            if (!pile.Items[gi].IsGold) continue;
+            var (lo, hi) = pile.Items[gi].GoldRange();
+            pileGold += hi > lo ? (lo + hi) / 2 : Math.Max(0, lo);
+            pile.Items.RemoveAt(gi);
+        }
+        if (pileGold > 0)
+        {
+            _progression?.CreditGold(pileGold);
+            AddFloatingText($"+{pileGold} gold", pile.Position + new Vector3(0f, 1.2f, 0f),
+                            new Vector4(1.00f, 0.92f, 0.40f, 1f));
+        }
 
         // Phase 21-SC-SCROLL-F-2 — handle scroll items first so they
         // route to spellbook Placed[] instead of the flat inventory.
@@ -19596,11 +19942,12 @@ void main()
                 // the unrollable spec. First resolvable wins; fall through to
                 // the cube only if every entry misses.
                 ItemMesh? itemMesh = null;
-                for (var i = 0; i < pile.Items.Count; i++)
-                {
+                // ALPHA-2C — DisplayOverride wins (world gold renders the
+                // authored coin mesh; its entry is a synthetic amount).
+                if (pile.DisplayOverride.Length > 0)
+                    itemMesh = TryGetItemMesh(pile.DisplayOverride);
+                for (var i = 0; itemMesh is null && i < pile.Items.Count; i++)
                     itemMesh = TryGetItemMesh(pile.Items[i].Reference);
-                    if (itemMesh is not null) break;
-                }
 
                 if (itemMesh is not null)
                 {
@@ -20769,6 +21116,11 @@ void main()
         // save restore repopulates them — ALPHA-2G).
         _logicGizmos.Clear();
         _worldBools.Clear();
+        // ALPHA-2C — chests + auto-traps are per-region-load state.
+        _chestProps.Clear();
+        _chestsByScid.Clear();
+        _pendingChestUse = null;
+        _autoTraps.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();

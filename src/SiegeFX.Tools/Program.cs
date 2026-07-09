@@ -1376,6 +1376,10 @@ static int CmdWorldCampaignAudit(string[] a)
         "sound_emitter", "sound_emitter_act",                       // SC-WEATHER emitters ([emt_sound*] templates' section name)
         "set_bool", "check_bool", "generic_accumtrigger",           // ALPHA-2A logic gizmos
         "msg_switch",                                               // ALPHA-2A (light toggle; visual rides point lights)
+        "base_chest",                                               // ALPHA-2C chests open+loot on use
+        "trapped",                                                  // ALPHA-2C container traps (delayed_pcontent roll)
+        "trp_firetrap",                                             // ALPHA-2C placed auto-traps (trap_auto chain)
+        "gold",                                                     // ALPHA-2C world gold = currency pickup (mesh table)
         "door_basic",                                               // SC-DOORS (base_door chain drives behavior)
         "gui",                                                      // equip_slot etc. (PcontentResolver reads it)
         "potion", "spell", "spell_default", "spell_status_effect",  // pickup/spell data read by item + spell systems
