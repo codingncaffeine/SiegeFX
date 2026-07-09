@@ -236,6 +236,30 @@ public sealed class RenderHost : IDisposable
         public float RepTimer;
     }
     private readonly Dictionary<uint, ShrineState> _shrinesByScid = new();
+
+    // ALPHA-2E — progression doors + locked usables + message-broken rubble
+    // + invisible path blockers.
+    private readonly Dictionary<uint, StaticPropInstance> _doorsByScid = new();
+    private readonly Dictionary<uint, StaticPropInstance> _breakingByScid = new();
+    private sealed class LockedUsableState
+    {
+        public required StaticPropInstance Prop;
+        public string KeyTemplate = "";
+        public uint MessageScid;
+        public float UseRange = 1.2f;   // base_usable authored default
+        public string ScreenName = "";
+        public bool Unlocked;
+    }
+    private readonly List<LockedUsableState> _lockedUsables = new();
+    private LockedUsableState? _pendingLockedUse;
+    private sealed class BlockingGizmoState
+    {
+        public uint Scid;
+        public Vector3 Position;
+        public float Radius = 2.5f;   // bounding_volume_scale 5 point gizmo
+        public bool Active = true;    // placed = blocking until deactivated
+    }
+    private readonly List<BlockingGizmoState> _blockingGizmos = new();
     private readonly List<ElevatorRuntime> _elevators = new();
     private readonly Dictionary<uint, ElevatorRuntime> _elevatorsByScid = new();
     // Car-node transform overrides consumed by EffectiveNavLayout() so nav
@@ -1687,6 +1711,13 @@ public sealed class RenderHost : IDisposable
             // ALPHA-2D — shrines heal/revive + start their visual loop.
             if (_shrinesByScid.TryGetValue(toScid, out var shrineOn))
                 ActivateShrine(shrineOn, activate: true);
+            // ALPHA-2E — scripted doors open, rubble breaks, blockers arm.
+            if (_doorsByScid.TryGetValue(toScid, out var msgDoor) && msgDoor.DoorUseToggle)
+                ToggleDoorByMessage(msgDoor);
+            if (_breakingByScid.TryGetValue(toScid, out var rubble))
+                BreakBlockingProp(rubble);
+            foreach (var b in _blockingGizmos)
+                if (b.Scid == toScid) SetBlockingGizmo(b, active: true);
             // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
             // activate the amb_rain_01 loops alongside their mood_change).
             if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
@@ -1713,6 +1744,10 @@ public sealed class RenderHost : IDisposable
         if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
             _shrinesByScid.TryGetValue(toScid, out var shrineOff))
             ActivateShrine(shrineOff, activate: false);
+        // ALPHA-2E — blockers clear on deactivate (path opens).
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase))
+            foreach (var b in _blockingGizmos)
+                if (b.Scid == toScid) SetBlockingGizmo(b, active: false);
     }
 
     /// <summary>ALPHA-2A — one logic-gizmo activation. Chains are authored
@@ -2560,6 +2595,20 @@ public sealed class RenderHost : IDisposable
         public bool  ChestOpened;
         public bool  ChestWaitsForActivate;
         public float ChestUseRange = 2f;
+
+        // ALPHA-2E — scripted progression doors. use_toggle doors (the stuck
+        // dwarven gate) refuse clicks — [messages][locked] screen_text floats
+        // instead — and open only when a quest trigger posts we_req_activate
+        // at their scid; oneshot keeps them open. msg_scid_opening posts a
+        // message whenever the door opens (door → trigger chains).
+        public bool   DoorUseToggle;
+        public bool   DoorOneShot;
+        public string DoorLockedText = "";
+        public uint   DoorMsgScidOpening;
+
+        // ALPHA-2E — message-broken blockers ([breaking_object] rubble):
+        // invincible to damage, removed (fragged) by a quest message.
+        public bool IsBreakingObject;
 
         // SC-FADE-GROUPS — authored anchor snode from the placement's
         // node-relative position. When that snode fades out (cutaway,
@@ -7132,6 +7181,7 @@ void main()
         LoadLogicGizmos(allLoaded);
         LoadAutoTraps(allLoaded);
         LoadShrines(allLoaded);
+        LoadBlockingGizmos(allLoaded);
         AssignPatrolRoutes();
 
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
@@ -7363,6 +7413,7 @@ void main()
         LoadLogicGizmos(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
         LoadShrines(newlyLoaded);
+        LoadBlockingGizmos(newlyLoaded);
         AssignPatrolRoutes();
     }
 
@@ -7877,6 +7928,31 @@ void main()
                         }
                     }
 
+                    // ALPHA-2E — scripted-door flags. use_toggle/oneshot ride
+                    // [door_basic] on the template chain; msg_scid_opening is
+                    // authored per instance (gd_a_r1's dungeon doors chain
+                    // their opening into trigger scids); the stuck-door text
+                    // lives in [messages][locked].
+                    bool doorUseToggle = false, doorOneShot = false;
+                    string doorLockedText = "";
+                    uint doorMsgOpening = 0;
+                    if (isDoor)
+                    {
+                        static bool GasTrue(string? v) =>
+                            v is not null && (v.Trim().Equals("true", StringComparison.OrdinalIgnoreCase) || v.Trim() == "1");
+                        doorUseToggle = GasTrue(ts.GetAttribute(template!, "door_basic", "use_toggle"));
+                        doorOneShot = GasTrue(ts.GetAttribute(template!, "door_basic", "oneshot"));
+                        doorLockedText = (ts.GetAttribute(template!, "messages", "locked", "screen_text") ?? "").Trim().Trim('"');
+                        foreach (var c in p.Node.Children)
+                        {
+                            if (!string.Equals(c.Header, "door_basic", StringComparison.OrdinalIgnoreCase)) continue;
+                            foreach (var attr in c.Attributes)
+                                if (string.Equals(attr.Name, "msg_scid_opening", StringComparison.OrdinalIgnoreCase))
+                                    doorMsgOpening = ParseHexScid(attr.Value);
+                            break;
+                        }
+                    }
+
                     // ALPHA-2C — chests open on use; never classify them as
                     // breakables even though the container chain is smashable
                     // (retail lockers open, they don't shatter).
@@ -7901,6 +7977,11 @@ void main()
                         if (wfa is not null && (wfa.Trim().Equals("true", StringComparison.OrdinalIgnoreCase) || wfa.Trim() == "1"))
                             chestWaits = true;
                     }
+
+                    // ALPHA-2E — [breaking_object] blockers: rubble that
+                    // quest messages remove. They ship is_invincible so the
+                    // normal breakable path already refuses damage.
+                    bool isBreakingObject = ts.GetSection(template!, "breaking_object") is not null;
 
                     // SC-DOORS-HINGE-AXIS — classify wall vs bulkhead/flip door
                     // from the mesh extents. Wall doors are thin along Y (leaf
@@ -7988,17 +8069,50 @@ void main()
                         IsChest         = isChest,
                         ChestWaitsForActivate = chestWaits,
                         ChestUseRange   = chestUseRange,
+                        DoorUseToggle   = doorUseToggle,
+                        DoorOneShot     = doorOneShot,
+                        DoorLockedText  = doorLockedText,
+                        DoorMsgScidOpening = doorMsgOpening,
+                        IsBreakingObject = isBreakingObject,
                         NodeGuid      = p.Placement.NodeGuid,
                         Scid          = p.Scid,
                         RegionPath    = rp,
                         CenterY       = world.Translation.Y,
                     };
                     _staticProps.Add(inst);
-                    if (isDoor) _doorProps.Add(inst);
+                    if (isDoor)
+                    {
+                        _doorProps.Add(inst);
+                        if (inst.Scid != 0) _doorsByScid[inst.Scid] = inst;
+                    }
+                    if (isBreakingObject && inst.Scid != 0) _breakingByScid[inst.Scid] = inst;
                     if (isChest)
                     {
                         _chestProps.Add(inst);
                         if (chestWaits) _chestsByScid[inst.Scid] = inst;
+                    }
+                    // ALPHA-2E — locked usables (the Star Device): [locked]
+                    // authors key_template + message_scid per instance.
+                    foreach (var c in p.Node.Children)
+                    {
+                        if (!string.Equals(c.Header, "locked", StringComparison.OrdinalIgnoreCase)) continue;
+                        var lu = new LockedUsableState { Prop = inst };
+                        foreach (var attr in c.Attributes)
+                        {
+                            if (string.Equals(attr.Name, "key_template", StringComparison.OrdinalIgnoreCase))
+                                lu.KeyTemplate = attr.Value.Trim().Trim('"');
+                            else if (string.Equals(attr.Name, "message_scid", StringComparison.OrdinalIgnoreCase))
+                                lu.MessageScid = ParseHexScid(attr.Value);
+                        }
+                        var lur = ts.GetAttribute(template!, "aspect", "use_range");
+                        if (lur is not null && float.TryParse(lur.Trim().TrimEnd('f', 'F'),
+                            System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var lurv) && lurv > 0f)
+                            lu.UseRange = lurv;
+                        lu.ScreenName = (ts.GetAttribute(template!, "common", "screen_name") ?? inst.Template).Trim().Trim('"');
+                        _lockedUsables.Add(lu);
+                        Console.WriteLine($"[locked] 0x{inst.Scid:X8} '{lu.ScreenName}' key='{lu.KeyTemplate}' -> 0x{lu.MessageScid:X8}");
+                        break;
                     }
                     if (isLever)
                     {
@@ -10388,6 +10502,14 @@ void main()
                 triangles += marked;
             }
         }
+        // ALPHA-2E — invisible blocking_object gizmos mark their footprint
+        // while active (does_block_path point gizmos; no prop to measure).
+        foreach (var b in _blockingGizmos)
+        {
+            if (!b.Active) continue;
+            int marked = _navMesh.MarkObstacle(b.Position.X, b.Position.Z, b.Radius);
+            if (marked > 0) { obstacles++; triangles += marked; }
+        }
         if (obstacles > 0)
             Console.WriteLine($"  nav obstacles: {obstacles} props blocked {triangles} triangles");
     }
@@ -10695,6 +10817,24 @@ void main()
                 {
                     _pendingLeverUse = null;
                     PullLever(lever);
+                }
+            }
+        }
+
+        // ALPHA-2E — pending locked-usable walk-up.
+        if (_pendingLockedUse is { } locked)
+        {
+            if (locked.Unlocked || locked.Prop.IsDestroyed) _pendingLockedUse = null;
+            else if (_player is not null && !_player.IsDead)
+            {
+                var pp = _player.CurrentTransform.Translation;
+                var lp = locked.Prop.World.Translation;
+                float dx = pp.X - lp.X, dz = pp.Z - lp.Z;
+                float range = MathF.Max(1.2f, locked.UseRange);
+                if (dx * dx + dz * dz <= range * range && MathF.Abs(pp.Y - lp.Y) <= 3f)
+                {
+                    _pendingLockedUse = null;
+                    UseLockedUsable(locked);
                 }
             }
         }
@@ -11217,6 +11357,17 @@ void main()
         }
         if (best is null) return;
 
+        // ALPHA-2E — use_toggle doors are scripted gates: clicking shows the
+        // authored stuck/locked line; only a quest message opens them.
+        if (best.DoorUseToggle)
+        {
+            var line = best.DoorLockedText.Length > 0 ? best.DoorLockedText : "It won't budge.";
+            AddFloatingText(line, best.World.Translation + new Vector3(0f, 2.0f, 0f),
+                            new Vector4(0.95f, 0.92f, 0.75f, 1f));
+            Console.WriteLine($"[door] 0x{best.Scid:X8} use_toggle refused click: \"{line}\"");
+            return;
+        }
+
         if (best.DoorIsFlip)
         {
             // Bulkhead/storm doors come as a pair that opens together — open
@@ -11241,7 +11392,144 @@ void main()
         best.DoorTargetOpen = true;
         best.DoorSwingSign = ComputeDoorSwingSign(best);
         _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
+        NotifyDoorOpened(best);
         LogDoorDiag(best);
+    }
+
+    /// <summary>ALPHA-2E — door → trigger chaining: a door authoring
+    /// msg_scid_opening posts we_req_activate there whenever it opens
+    /// (message name inferred; gd_a_r1's dungeon doors are the receipt).</summary>
+    private void NotifyDoorOpened(StaticPropInstance door)
+    {
+        if (door.DoorMsgScidOpening == 0) return;
+        PostTriggerWorldMessage("we_req_activate", door.Scid, door.DoorMsgScidOpening);
+    }
+
+    /// <summary>ALPHA-2E — quest message opens/toggles a scripted door.</summary>
+    private void ToggleDoorByMessage(StaticPropInstance door)
+    {
+        if (door.IsDestroyed) return;
+        bool opening = !door.DoorTargetOpen;
+        if (!opening && door.DoorOneShot) return; // oneshot gates stay open
+        door.DoorTargetOpen = opening;
+        if (opening)
+        {
+            door.DoorSwingSign = door.DoorIsFlip ? ComputeFlipSwingSign(door) : ComputeDoorSwingSign(door);
+            _audio?.PlayAt(SfxDoorOpen, door.World.Translation);
+            NotifyDoorOpened(door);
+        }
+        Console.WriteLine($"[door] 0x{door.Scid:X8} {(opening ? "opened" : "closed")} by message");
+    }
+
+    /// <summary>ALPHA-2E — message-broken rubble/blockers: frag the prop and
+    /// re-bake nav so the path actually opens.</summary>
+    private void BreakBlockingProp(StaticPropInstance prop)
+    {
+        if (prop.IsDestroyed) return;
+        prop.IsDestroyed = true;
+        SpawnPropDebris(prop);
+        LogPropLootDrop(prop);
+        Console.WriteLine($"[breaking_object] 0x{prop.Scid:X8} {prop.Template} removed by message");
+        var nav = RebuildNavMesh();
+        if (nav is not null)
+        {
+            _navMesh = nav;
+            MarkAllObstacles();
+            if (_player is not null && _playerFollower is not null)
+            {
+                var pos = _playerFollower.Position;
+                var speed = _playerFollower.Speed;
+                _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
+                { Traversal = SiegeFX.Core.Nav.NavTraversal.Player, DiagnosticLogging = true };
+            }
+        }
+    }
+
+    /// <summary>ALPHA-2E — click near a locked usable (Star Device) queues a
+    /// walk-up-and-use; using it with the key in any party bag unlocks and
+    /// fires its message chain, without the key it reports locked.</summary>
+    private void RequestLockedUseNear(Vector3 worldPoint)
+    {
+        if (_lockedUsables.Count == 0) return;
+        LockedUsableState? best = null;
+        float bestD2 = 2.0f * 2.0f;
+        foreach (var lu in _lockedUsables)
+        {
+            if (lu.Unlocked || lu.Prop.IsDestroyed) continue;
+            var lp = lu.Prop.World.Translation;
+            float dx = lp.X - worldPoint.X, dz = lp.Z - worldPoint.Z;
+            if (MathF.Abs(lp.Y - worldPoint.Y) > 4f) continue;
+            float dd = dx * dx + dz * dz;
+            if (dd < bestD2) { bestD2 = dd; best = lu; }
+        }
+        _pendingLockedUse = best;
+    }
+
+    private void UseLockedUsable(LockedUsableState lu)
+    {
+        if (lu.Unlocked) return;
+        bool hasKey = lu.KeyTemplate.Length == 0 || PartyHasItemTemplateForTriggers(lu.KeyTemplate);
+        var pos = lu.Prop.World.Translation;
+        if (!hasKey)
+        {
+            AddFloatingText("Locked.", pos + new Vector3(0f, 1.8f, 0f),
+                            new Vector4(0.95f, 0.92f, 0.75f, 1f));
+            Console.WriteLine($"[locked] 0x{lu.Prop.Scid:X8} '{lu.ScreenName}' needs '{lu.KeyTemplate}'");
+            return;
+        }
+        lu.Unlocked = true;
+        AddFloatingText($"{lu.ScreenName} unlocked", pos + new Vector3(0f, 1.8f, 0f),
+                        new Vector4(0.65f, 0.95f, 0.65f, 1f));
+        Console.WriteLine($"[locked] 0x{lu.Prop.Scid:X8} '{lu.ScreenName}' unlocked -> 0x{lu.MessageScid:X8}");
+        if (lu.MessageScid != 0) PostTriggerWorldMessage("we_req_activate", lu.Prop.Scid, lu.MessageScid);
+    }
+
+    /// <summary>ALPHA-2E — invisible does_block_path gizmos (blocking_object
+    /// in special.gas). Placed = blocking; quest messages toggle. Nav marks
+    /// ride MarkAllObstacles; deactivation re-bakes so the path opens.</summary>
+    private void LoadBlockingGizmos(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _templateStore is null || _regionLayout is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            foreach (var file in mapReader.ListFiles())
+            {
+                if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
+                    !file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+                var fileName = file[objPrefix.Length..];
+                if (fileName.Contains('/')) continue;
+                var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp.TrimEnd('/'), fileName);
+                foreach (var p in placements)
+                {
+                    if (!_templateStore.TryGet(p.TemplateName, out var tpl)) continue;
+                    if (_templateStore.GetSection(tpl!, "generic_objblock") is null) continue;
+                    if (_blockingGizmos.Any(b => b.Scid == p.Scid)) continue;
+                    var world = p.Placement.LocalPosition;
+                    if (_regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                        world = Vector3.Transform(p.Placement.LocalPosition, nodeWorld);
+                    _blockingGizmos.Add(new BlockingGizmoState { Scid = p.Scid, Position = world });
+                    added++;
+                }
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  blocking gizmos: {added} registered ({_blockingGizmos.Count} total)");
+    }
+
+    private void SetBlockingGizmo(BlockingGizmoState b, bool active)
+    {
+        if (b.Active == active) return;
+        b.Active = active;
+        Console.WriteLine($"[blocker] 0x{b.Scid:X8} {(active ? "blocking" : "cleared")}");
+        var nav = RebuildNavMesh();
+        if (nav is not null)
+        {
+            _navMesh = nav;
+            MarkAllObstacles();
+        }
     }
 
     // SC-DOORS-HINGE-AXIS diag: log the door template, local mesh bounds, and
@@ -14804,6 +15092,8 @@ void main()
         RequestLeverUseNear(hit);
         // ALPHA-2C — same walk-up pattern for chests.
         RequestChestUseNear(hit);
+        // ALPHA-2E — and for locked usables (Star Device).
+        RequestLockedUseNear(hit);
         _playerFollower.SetTarget(hit);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
@@ -21280,6 +21570,12 @@ void main()
         _autoTraps.Clear();
         // ALPHA-2D — shrines re-register with their regions.
         _shrinesByScid.Clear();
+        // ALPHA-2E — scripted doors / locked usables / blockers.
+        _doorsByScid.Clear();
+        _breakingByScid.Clear();
+        _lockedUsables.Clear();
+        _pendingLockedUse = null;
+        _blockingGizmos.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();

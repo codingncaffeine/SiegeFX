@@ -1382,6 +1382,10 @@ static int CmdWorldCampaignAudit(string[] a)
         "gold",                                                     // ALPHA-2C world gold = currency pickup (mesh table)
         "fountain", "effect_manager_server",                        // ALPHA-2D life/mana shrines heal+revive+fx loop
         "respawn_shrine",                                           // ALPHA-2D (statue is MP-only; SP shrines revive via fountain gizmos)
+        "messages",                                                 // ALPHA-2E stuck-door locked text ([messages][locked])
+        "locked",                                                   // ALPHA-2E key_template+message_scid usables (Star Device)
+        "breaking_object",                                          // ALPHA-2E message-broken rubble blockers
+        "generic_objblock",                                         // ALPHA-2E invisible path blockers (msg-toggled)
         "door_basic",                                               // SC-DOORS (base_door chain drives behavior)
         "gui",                                                      // equip_slot etc. (PcontentResolver reads it)
         "potion", "spell", "spell_default", "spell_status_effect",  // pickup/spell data read by item + spell systems
