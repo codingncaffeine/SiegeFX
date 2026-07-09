@@ -193,6 +193,36 @@ public sealed class RenderHost : IDisposable
     private readonly List<FlameSource> _flameSources = new();
     private sealed class FlameSource { public Vector3 Pos; public float Carry; }
 
+    // SC-ELEVATOR — levers ([on_off_lever] component) + elevator gizmos from
+    // objects/elevator.gas. Levers are static props promoted to clickable:
+    // a click walks the player into use range and toggles, posting the
+    // authored on/off message at the on/off scid. Elevator gizmos listen for
+    // we_req_activate and ride their CAR NODE (a real terrain snode) between
+    // two door-aligned stops, carrying whoever stands on it. All cleared
+    // alongside _staticProps on region teardown.
+    private readonly List<StaticPropInstance> _leverProps = new();
+    private StaticPropInstance? _pendingLeverUse;
+    private readonly List<ElevatorRuntime> _elevators = new();
+    private readonly Dictionary<uint, ElevatorRuntime> _elevatorsByScid = new();
+    // Car-node transform overrides consumed by EffectiveNavLayout() so nav
+    // (re)builds bake the car's CURRENT stop, not the door-graph BFS pose.
+    private readonly Dictionary<uint, Matrix4x4> _elevatorNodeOverrides = new();
+    private sealed class ElevatorRuntime
+    {
+        public required SiegeFX.Core.Assets.ElevatorDef Def;
+        public Matrix4x4 Stop1, Stop2;
+        public int AtStop = 1;         // stop the car occupies / departed from
+        public int TargetStop = 1;
+        public bool Moving;
+        public float T;                // ride progress 0..1
+        public int CarInstanceIdx = -1;
+        public Vector3 PrevCarPos;
+        public readonly List<ActorRenderState> Riders = new();
+    }
+    // Delayed fade tuples from movingN_actioninfo's optional 6th field
+    // ("...,in,4.5" = fire 4.5s after departure).
+    private readonly List<(float FireIn, string[] Args)> _elevatorDelayedFades = new();
+
     // SC-FLAME-TINT — one warm flame colour shared by every fire in the world so
     // they read consistently: the farmhouse blaze (RegisterLegacyParticleEmitters)
     // and the torch/sconce props (MaintainFire loop). Golden yellow-orange to match
@@ -1082,9 +1112,13 @@ public sealed class RenderHost : IDisposable
     // Build/replace a follower's combat brain from the given stats, reusing the
     // existing wander follower so position/heading stay continuous. Used at
     // recruit and again when a weapon is equipped/removed on their paperdoll.
-    private void RebuildFollowerBrain(ActorRenderState npc, SiegeFX.Core.Actors.ActorStats combatStats)
+    private void RebuildFollowerBrain(ActorRenderState npc, SiegeFX.Core.Actors.ActorStats combatStats, bool remesh = false)
     {
-        var wander = npc.Brain?.Wander;
+        // SC-ELEVATOR — remesh forces a fresh ActorFollower on the CURRENT
+        // _navMesh at the actor's current position: an elevator rider's old
+        // follower still references the pre-ride mesh (car at the departure
+        // stop) and would clamp/stall the moment it tried to walk off.
+        var wander = remesh ? null : npc.Brain?.Wander;
         if (wander is null && _navMesh is not null)
         {
             var pos0 = npc.CurrentTransform.Translation;
@@ -1486,6 +1520,10 @@ public sealed class RenderHost : IDisposable
                 g.NextSpawnIn = 0f;
                 Console.WriteLine($"[generator] 0x{g.Scid:X8} message-activated");
             }
+            // SC-ELEVATOR — call the lift (the shipped elevator levers post
+            // we_req_activate at the gizmo from both lever states).
+            if (_elevatorsByScid.TryGetValue(toScid, out var elv))
+                StartElevatorRide(elv);
             // SC-WEATHER-F — emt_sound_act turns ON (fh_r1's storm boxes
             // activate the amb_rain_01 loops alongside their mood_change).
             if (_soundEmittersByScid.TryGetValue(toScid, out var semOn) && !semOn.Active)
@@ -2243,6 +2281,18 @@ public sealed class RenderHost : IDisposable
         // Y (flipping the outer edge up) instead of Z, and they come in a pair
         // that opens together. Detected at spawn from the mesh extents.
         public bool  DoorIsFlip;
+
+        // SC-ELEVATOR — [on_off_lever] component (authored per instance on the
+        // farm-lift levers; template fallback also read). Clicking within
+        // LeverUseRange toggles LeverOn and posts the matching message at the
+        // matching scid — the shipped elevator levers author we_req_activate
+        // at the elevator gizmo from BOTH states (a call button in effect).
+        public bool   IsLever;
+        public bool   LeverOn;
+        public float  LeverUseRange = 2f;
+        public uint   LeverOnScid, LeverOffScid;
+        public string LeverOnMessage  = "we_req_activate";
+        public string LeverOffMessage = "we_req_activate";
 
         // SC-FADE-GROUPS — authored anchor snode from the placement's
         // node-relative position. When that snode fades out (cutaway,
@@ -6510,6 +6560,16 @@ void main()
             }
         }
 
+        // SC-ELEVATOR — parse + place elevators for the full loaded scope
+        // BEFORE the nav build below so each car node bakes at its stop-1
+        // pose (EffectiveNavLayout carries the overrides into the build).
+        {
+            var elevatorScope = new List<string> { regionPath };
+            foreach (var (path, _, _) in _worldRegionGraphs)
+                if (path != regionPath) elevatorScope.Add(path);
+            LoadElevators(elevatorScope);
+        }
+
         // Phase 11d — build a region-scope nav mesh once and hand a follower to every
         // actor that spawns over a walkable triangle. We reuse the terrain tank already
         // opened at LoadRegion time but re-resolve SNOs into our own cache to keep the
@@ -6563,7 +6623,9 @@ void main()
                 {
                     navGraph = RegionGraph.Load(mapReader.ExtractToMemory(regionPath + "/terrain_nodes/nodes.gas"));
                 }
-                navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+                // SC-ELEVATOR — bake elevator cars at their current stop
+                // (LoadElevators has already run for this scope).
+                navMesh = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, EffectiveNavLayout(), ResolveNav);
                 // Phase 24-NAV-LOGICAL-FLAGS — bind region's gas-authored
                 // per-(snode,lnode) flag table (lf_human_player /
                 // lf_computer_player / surface tags). Loaded permissively
@@ -6958,6 +7020,13 @@ void main()
                 }
             }
         }
+
+        // SC-ELEVATOR — place elevators BEFORE the nav rebuild so their
+        // stop-1 snaps bake into the fresh mesh. Full loaded scope, not just
+        // newlyLoaded: an elevator parsed earlier but deferred because its
+        // connect node hadn't streamed yet retries now (placed ones skip via
+        // _elevatorsByScid).
+        LoadElevators(_worldRegionGraphs.Select(t => t.Path));
 
         // Rebuild the nav mesh against the full unified scope so newly-loaded
         // floor tris weld to the original ring. Existing NPC followers keep
@@ -7546,6 +7615,54 @@ void main()
                         doorIsFlip = zsp <= ysp && zsp <= xsp;
                     }
 
+                    // SC-ELEVATOR — lever detection. The [on_off_lever]
+                    // component is authored on the INSTANCE for every shipped
+                    // elevator lever (hc_r1's lever_glb_01 / lever_on_off_01);
+                    // template chain is the fallback. A lever posts its
+                    // on/off message at its on/off scid when used.
+                    bool isLever = false;
+                    uint levOnScid = 0, levOffScid = 0;
+                    string levOnMsg = "we_req_activate", levOffMsg = "we_req_activate";
+                    float levUseRange = 2f;
+                    {
+                        SiegeFX.Core.Assets.GasNode? onOff = null;
+                        foreach (var c in p.Node.Children)
+                            if (string.Equals(c.Header, "on_off_lever", StringComparison.OrdinalIgnoreCase)) { onOff = c; break; }
+                        string? Inst(string name)
+                        {
+                            if (onOff is null) return null;
+                            foreach (var a in onOff.Attributes)
+                                if (string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase)) return a.Value;
+                            return null;
+                        }
+                        string? levAttr(string name) =>
+                            Inst(name) ?? ts.GetAttribute(template!, "on_off_lever", name);
+                        var onScidS  = levAttr("on_scid");
+                        var offScidS = levAttr("off_scid");
+                        if (onOff is not null || onScidS is not null || offScidS is not null)
+                        {
+                            isLever = true;
+                            levOnScid  = ParseHexScid(onScidS);
+                            levOffScid = ParseHexScid(offScidS);
+                            levOnMsg   = TrimGasString(levAttr("on_message"))  is { Length: > 0 } om ? om : "we_req_activate";
+                            levOffMsg  = TrimGasString(levAttr("off_message")) is { Length: > 0 } fm ? fm : "we_req_activate";
+                            // use_range: instance [aspect] override first, then template.
+                            string? ur = null;
+                            foreach (var c in p.Node.Children)
+                            {
+                                if (!string.Equals(c.Header, "aspect", StringComparison.OrdinalIgnoreCase)) continue;
+                                foreach (var a in c.Attributes)
+                                    if (string.Equals(a.Name, "use_range", StringComparison.OrdinalIgnoreCase)) { ur = a.Value; break; }
+                                break;
+                            }
+                            ur ??= ts.GetAttribute(template!, "aspect", "use_range");
+                            if (ur is not null && float.TryParse(ur.Trim().TrimEnd('f', 'F'),
+                                System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out var urv) && urv > 0f)
+                                levUseRange = urv;
+                        }
+                    }
+
                     var inst = new StaticPropInstance
                     {
                         Mesh          = glMesh,
@@ -7561,6 +7678,12 @@ void main()
                         IsDoor        = isDoor,
                         DoorIsFlip    = doorIsFlip,
                         DoorUseRange  = useRange,
+                        IsLever         = isLever,
+                        LeverUseRange   = levUseRange,
+                        LeverOnScid     = levOnScid,
+                        LeverOffScid    = levOffScid,
+                        LeverOnMessage  = levOnMsg,
+                        LeverOffMessage = levOffMsg,
                         NodeGuid      = p.Placement.NodeGuid,
                         Scid          = p.Scid,
                         RegionPath    = rp,
@@ -7568,6 +7691,13 @@ void main()
                     };
                     _staticProps.Add(inst);
                     if (isDoor) _doorProps.Add(inst);
+                    if (isLever)
+                    {
+                        _leverProps.Add(inst);
+                        Console.WriteLine($"[lever] 0x{inst.Scid:X8} {inst.Template} " +
+                            $"on=0x{levOnScid:X8}/'{levOnMsg}' off=0x{levOffScid:X8}/'{levOffMsg}' " +
+                            $"range={levUseRange:F1} at ({world.Translation.X:F1},{world.Translation.Y:F1},{world.Translation.Z:F1})");
+                    }
 
                     // SC-TORCH-FLAME — light props socket their flame at each
                     // AP_light attach bone. Capture each socket's world
@@ -7989,9 +8119,10 @@ void main()
     // chain starts at cmd_enter_nis 0x01C0078E, activated by the same
     // trigger that runs the mood/speech choreography. Camera poses are
     // node-anchored positions + quaternions composed with the anchor
-    // node's world rotation. Esc skips to the leave pan (v1 of DS1's
-    // silent fast-forward — the trigger-side delayed actions keep their
-    // own clocks either way).
+    // node's world rotation. Esc skips to the leave pan and fast-forwards
+    // the trigger-side delayed queue (FastForwardIntroSkip) so choreography
+    // scheduled behind delay(N) settles instantly instead of firing over
+    // restored gameplay.
     // ────────────────────────────────────────────────────────────────────
     private sealed class NisCommand
     {
@@ -9052,6 +9183,16 @@ void main()
         // after the player skips (see _introNisSkipped). StopIntroChoreography only
         // stops the beat that's already playing; this stops the ones still scheduled.
         _introNisSkipped = true;
+        // Drain the trigger-side delayed queue before settling state below. The intro
+        // trigger schedules its fade-to-black mood chain (+36.6..42.5s) and the Norick
+        // activation (+85s) behind delay(N); left armed they fire over live gameplay —
+        // the "random blackness sweeps across the screen" report. Dispatching them now
+        // (oldest first) lands the world on the chain's final state: normal fog, intro
+        // vista nodes faded out. Runs with _introNisSkipped already up so a drained
+        // we_req_talk_begin can't restart narration, and before the player/Norick/hoe
+        // settles so those overwrite anything the drained messages kick off.
+        if (_triggerRuntime is not null && _triggerCtx is not null)
+            _triggerRuntime.FastForwardDelayed(_triggerCtx);
         // Player: land him where the scripted run would have ended (the bridge). Fall
         // back to Norick's bridge spot if the run never started.
         var end = ResolvePlayerRunEndpoint();
@@ -9936,6 +10077,401 @@ void main()
             else
                 prop.DoorOpenFrac = MathF.Max(0f, prop.DoorOpenFrac - CloseRate * dt);
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // SC-ELEVATOR — DS1 elevators are moving SIEGE NODES (see ElevatorStore).
+    // LoadElevators parses each region's objects/elevator.gas, computes the
+    // car node's two stop poses via the same door alignment the layout BFS
+    // uses, snaps the car to stop 1 (the BFS parks it wherever its first
+    // static door edge landed — the farm grate sat 2u down its shaft, which
+    // is why its wall lever looked like it floated), and registers the gizmo
+    // scids. A lever's we_req_activate starts the ride; the car pose lerps
+    // over the authored duration, riders standing on the car translate with
+    // it, and arrival re-bakes the nav mesh so the car floor welds into the
+    // arrival stop by plain vertex welding.
+    // ────────────────────────────────────────────────────────────────────
+
+    private static string TrimGasString(string? v) => v?.Trim().Trim('"') ?? "";
+
+    private static uint ParseHexScid(string? v)
+    {
+        if (v is null) return 0;
+        var s = v.Trim().Trim('"');
+        if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
+        return uint.TryParse(s, System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture, out var u) ? u : 0;
+    }
+
+    /// <summary>Layout used for nav-mesh builds: the unified region layout
+    /// with elevator car nodes overridden to their CURRENT stop, so the
+    /// walkable mesh always reflects where the platform actually is.</summary>
+    private SiegeFX.Core.Assets.RegionLayout EffectiveNavLayout()
+    {
+        if (_regionLayout is null) throw new InvalidOperationException("no region layout");
+        if (_elevatorNodeOverrides.Count == 0) return _regionLayout;
+        var dict = new Dictionary<uint, Matrix4x4>(_regionLayout.Transforms.Count);
+        foreach (var kv in _regionLayout.Transforms) dict[kv.Key] = kv.Value;
+        foreach (var kv in _elevatorNodeOverrides) dict[kv.Key] = kv.Value;
+        return SiegeFX.Core.Assets.RegionLayout.FromTransforms(_regionLayout.AnchorGuid, dict);
+    }
+
+    private bool TryGetNodeMeshGuid(uint nodeGuid, out uint meshGuid)
+    {
+        foreach (var (_, graph, _) in _worldRegionGraphs)
+            if (graph.TryGetNode(nodeGuid, out var node)) { meshGuid = node.MeshGuid; return true; }
+        meshGuid = 0;
+        return false;
+    }
+
+    /// <summary>Parse + place every elevator in <paramref name="regionPaths"/>.
+    /// Must run BEFORE the nav build for the same scope so the stop-1 snap is
+    /// baked into the walkable mesh (both call sites honor this).</summary>
+    private void LoadElevators(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _regionLayout is null || _regionTerrainTankPath is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        var defs = new List<SiegeFX.Core.Assets.ElevatorDef>();
+        foreach (var rp in regionPaths)
+        {
+            var (d, diags) = SiegeFX.Core.Assets.ElevatorStore.Load(mapReader, rp);
+            foreach (var dg in diags) Console.WriteLine("  " + dg);
+            defs.AddRange(d);
+        }
+        if (defs.Count == 0) return;
+
+        using var terrainTank = TankFile.Open(_regionTerrainTankPath);
+        var terrainReader = new TankReader(terrainTank);
+        var meshIdx = SnoMeshIndex.Build(mapReader, terrainReader);
+        var snoCache = new Dictionary<uint, SnoModel?>();
+        SnoModel? Resolve(uint g)
+        {
+            if (snoCache.TryGetValue(g, out var hit)) return hit;
+            SnoModel? m = null;
+            var b = meshIdx.LoadSnoBytes(g);
+            if (b is not null) { try { m = SnoModel.Load(b); } catch { m = null; } }
+            snoCache[g] = m;
+            return m;
+        }
+
+        int placed = 0, skipped = 0;
+        foreach (var def in defs)
+        {
+            if (_elevatorsByScid.ContainsKey(def.Scid)) continue; // streamed twice
+            if (!TryGetNodeMeshGuid(def.CarNodeGuid, out var carMesh) ||
+                !TryGetNodeMeshGuid(def.Connect1Guid, out var c1Mesh) ||
+                !TryGetNodeMeshGuid(def.Connect2Guid, out var c2Mesh))
+            {
+                // Connect/car node lives in a region that isn't streamed in yet
+                // — routine at the edge of the load ring; retried on next
+                // stream because _elevatorsByScid has no entry.
+                skipped++;
+                continue;
+            }
+            var carSno = Resolve(carMesh);
+            var c1Sno = Resolve(c1Mesh);
+            var c2Sno = Resolve(c2Mesh);
+            if (carSno is null || c1Sno is null || c2Sno is null)
+            {
+                Console.WriteLine($"[elevator] 0x{def.Scid:X8} SNO unresolved — skipped");
+                skipped++;
+                continue;
+            }
+            if (!_regionLayout.TryGetTransform(def.Connect1Guid, out var w1) ||
+                !_regionLayout.TryGetTransform(def.Connect2Guid, out var w2))
+            {
+                skipped++;
+                continue;
+            }
+            if (!SiegeFX.Core.Assets.RegionLayout.TryAlignThroughDoor(
+                    c1Sno, w1, def.Connect1DoorId, carSno, def.CarDoor1Id, out var stop1) ||
+                !SiegeFX.Core.Assets.RegionLayout.TryAlignThroughDoor(
+                    c2Sno, w2, def.Connect2DoorId, carSno, def.CarDoor2Id, out var stop2))
+            {
+                Console.WriteLine($"[elevator] 0x{def.Scid:X8} door alignment failed " +
+                    $"(doors {def.Connect1DoorId}/{def.CarDoor1Id} + {def.Connect2DoorId}/{def.CarDoor2Id}) — skipped");
+                skipped++;
+                continue;
+            }
+
+            var rt = new ElevatorRuntime { Def = def, Stop1 = stop1, Stop2 = stop2, PrevCarPos = stop1.Translation };
+            _elevators.Add(rt);
+            _elevatorsByScid[def.Scid] = rt;
+            if (def.Level2Scid != 0) _elevatorsByScid.TryAdd(def.Level2Scid, rt);
+            _elevatorNodeOverrides[def.CarNodeGuid] = stop1;
+            UpdateElevatorCarInstance(rt, stop1);
+            placed++;
+            var t1 = stop1.Translation; var t2 = stop2.Translation;
+            Console.WriteLine($"[elevator] 0x{def.Scid:X8} {def.TemplateName} car=0x{def.CarNodeGuid:X8} " +
+                $"stop1=({t1.X:F1},{t1.Y:F1},{t1.Z:F1}) stop2=({t2.X:F1},{t2.Y:F1},{t2.Z:F1}) " +
+                $"dur={def.DurationSeconds:F1}s — parked at stop1");
+        }
+        if (placed > 0 || skipped > 0)
+            Console.WriteLine($"  elevators: {placed} placed, {skipped} deferred/skipped");
+    }
+
+    /// <summary>Write <paramref name="pose"/> into the car node's render
+    /// instance (found by snode guid, index cached). AABB recomputed so
+    /// culling follows the platform.</summary>
+    private void UpdateElevatorCarInstance(ElevatorRuntime el, Matrix4x4 pose)
+    {
+        int idx = el.CarInstanceIdx;
+        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != el.Def.CarNodeGuid)
+        {
+            idx = -1;
+            for (int i = 0; i < _regionInstances.Count; i++)
+                if (_regionInstances[i].SnodeGuid == el.Def.CarNodeGuid) { idx = i; break; }
+            el.CarInstanceIdx = idx;
+        }
+        if (idx < 0) return; // car mesh not streamed — the ride still runs data-side
+        var inst = _regionInstances[idx];
+        var (mn, mx) = TransformAabb(inst.Mesh.Min, inst.Mesh.Max, pose);
+        _regionInstances[idx] = inst with { World = pose, WorldAabbMin = mn, WorldAabbMax = mx };
+    }
+
+    /// <summary>Riders = player/party members standing on the car when it
+    /// departs — nav-triangle snode match first (exact), AABB fallback for
+    /// anyone whose follower is mid-air/off-mesh.</summary>
+    private void CaptureElevatorRiders(ElevatorRuntime el)
+    {
+        el.Riders.Clear();
+        var carGuid = el.Def.CarNodeGuid;
+        bool OnCar(SiegeFX.Core.Nav.NavFollower? f, Vector3 pos)
+        {
+            if (f is not null && _navMesh is not null)
+            {
+                int tri = f.CurrentTriangle;
+                if (tri >= 0 && tri < _navMesh.SourceSnodeGuid.Length &&
+                    _navMesh.SourceSnodeGuid[tri] == carGuid)
+                    return true;
+            }
+            int idx = el.CarInstanceIdx;
+            if (idx >= 0 && idx < _regionInstances.Count)
+            {
+                var inst = _regionInstances[idx];
+                if (pos.X >= inst.WorldAabbMin.X - 0.2f && pos.X <= inst.WorldAabbMax.X + 0.2f &&
+                    pos.Z >= inst.WorldAabbMin.Z - 0.2f && pos.Z <= inst.WorldAabbMax.Z + 0.2f &&
+                    pos.Y >= inst.WorldAabbMin.Y - 1.0f && pos.Y <= inst.WorldAabbMax.Y + 2.5f)
+                    return true;
+            }
+            return false;
+        }
+        if (_player is not null && !_player.IsDead &&
+            OnCar(_playerFollower, _player.CurrentTransform.Translation))
+            el.Riders.Add(_player);
+        foreach (var m in _party)
+        {
+            if (m.PartyIndex == 0 || m.IsDead) continue;
+            if (OnCar(m.Brain?.Wander?.Follower, m.CurrentTransform.Translation))
+                el.Riders.Add(m);
+        }
+    }
+
+    /// <summary>we_req_activate at an elevator gizmo scid — start the ride
+    /// toward the other stop. Fires the departing side's actioninfo fades
+    /// (delays baked per tuple) and its moving message (the farm lift points
+    /// this at its winch sound emitter).</summary>
+    private void StartElevatorRide(ElevatorRuntime el)
+    {
+        if (el.Moving) return;
+        el.TargetStop = el.AtStop == 1 ? 2 : 1;
+        el.Moving = true;
+        el.T = 0f;
+        el.PrevCarPos = (el.AtStop == 1 ? el.Stop1 : el.Stop2).Translation;
+        CaptureElevatorRiders(el);
+        var def = el.Def;
+        bool departing1 = el.AtStop == 1;
+        var info = departing1 ? def.Moving1ActionInfo : def.Moving2ActionInfo;
+        var msg = departing1 ? def.Moving1Message : def.Moving2Message;
+        var msgScid = departing1 ? def.Moving1Scid : def.Moving2Scid;
+        if (info.Length > 0) ApplyElevatorActionInfo(info);
+        if (msgScid != 0 && msgScid != def.Scid) PostTriggerWorldMessage(msg, def.Scid, msgScid);
+        Console.WriteLine($"[elevator] 0x{def.Scid:X8} departing stop{el.AtStop} -> stop{el.TargetStop} " +
+            $"({def.DurationSeconds:F1}s, {el.Riders.Count} rider(s))");
+    }
+
+    /// <summary>movingN_actioninfo — semicolon-joined fade_nodes tuples
+    /// "region,section,level,object,mode[,delaySeconds]" routed through the
+    /// same handler trigger fade_nodes actions use.</summary>
+    private void ApplyElevatorActionInfo(string info)
+    {
+        foreach (var piece in info.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = piece.Split(',', StringSplitOptions.TrimEntries);
+            if (parts.Length < 5)
+            {
+                Console.WriteLine($"[elevator] malformed actioninfo tuple '{piece}' — ignored");
+                continue;
+            }
+            var args = new[] { parts[0], parts[1], parts[2], parts[3], parts[4] };
+            float delay = 0f;
+            if (parts.Length >= 6)
+                float.TryParse(parts[5].TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out delay);
+            if (delay > 0f) _elevatorDelayedFades.Add((delay, args));
+            else OnTriggerFadeNodes("fade_nodes", args);
+        }
+    }
+
+    /// <summary>Per-frame elevator pump: pending lever walk-up, delayed
+    /// actioninfo fades, and the ride itself (car pose + rider carry +
+    /// arrival nav re-bake).</summary>
+    private void TickElevators(float dt)
+    {
+        if (dt <= 0f) return;
+
+        if (_pendingLeverUse is { } lever)
+        {
+            if (lever.IsDestroyed) _pendingLeverUse = null;
+            else if (_player is not null && !_player.IsDead)
+            {
+                var pp = _player.CurrentTransform.Translation;
+                var lp = lever.World.Translation;
+                float dx = pp.X - lp.X, dz = pp.Z - lp.Z;
+                // XZ range only + generous vertical: the farm lever mounts on
+                // the shaft wall ~chest height above the grate lip.
+                if (dx * dx + dz * dz <= lever.LeverUseRange * lever.LeverUseRange &&
+                    MathF.Abs(pp.Y - lp.Y) <= 3.5f)
+                {
+                    _pendingLeverUse = null;
+                    PullLever(lever);
+                }
+            }
+        }
+
+        for (int i = _elevatorDelayedFades.Count - 1; i >= 0; i--)
+        {
+            var (fireIn, args) = _elevatorDelayedFades[i];
+            fireIn -= dt;
+            if (fireIn <= 0f)
+            {
+                _elevatorDelayedFades.RemoveAt(i);
+                OnTriggerFadeNodes("fade_nodes", args);
+            }
+            else _elevatorDelayedFades[i] = (fireIn, args);
+        }
+
+        foreach (var el in _elevators)
+        {
+            if (!el.Moving) continue;
+            el.T += dt / MathF.Max(0.25f, el.Def.DurationSeconds);
+            float k = Math.Clamp(el.T, 0f, 1f);
+            k = k * k * (3f - 2f * k); // ease both ends — reads as a winched platform
+            var from = el.AtStop == 1 ? el.Stop1 : el.Stop2;
+            var to = el.TargetStop == 2 ? el.Stop2 : el.Stop1;
+            var pose = LerpPose(from, to, k);
+            UpdateElevatorCarInstance(el, pose);
+
+            var delta = pose.Translation - el.PrevCarPos;
+            el.PrevCarPos = pose.Translation;
+            if (delta != Vector3.Zero)
+            {
+                foreach (var r in el.Riders)
+                {
+                    if (r.IsDead) continue;
+                    var t = r.CurrentTransform;
+                    t.Translation += delta;
+                    r.CurrentTransform = t;
+                    if (ReferenceEquals(r, _player))
+                    {
+                        // Follower rides along; interp buffers re-seed so the
+                        // draw doesn't rubber-band against the fixed-tick lerp.
+                        _playerFollower?.Teleport(t.Translation);
+                        _playerRenderInit = false;
+                    }
+                    else
+                    {
+                        r.Brain?.Wander?.Follower.Teleport(t.Translation);
+                        r.PartyRenderInit = false;
+                    }
+                }
+            }
+
+            if (el.T >= 1f)
+            {
+                el.Moving = false;
+                el.AtStop = el.TargetStop;
+                var final = el.AtStop == 1 ? el.Stop1 : el.Stop2;
+                UpdateElevatorCarInstance(el, final);
+                _elevatorNodeOverrides[el.Def.CarNodeGuid] = final;
+                // Re-bake nav so the car floor welds into the arrival stop and
+                // riders can walk off. Same swap pattern as region streaming.
+                var nav = RebuildNavMesh();
+                if (nav is not null)
+                {
+                    _navMesh = nav;
+                    MarkAllObstacles();
+                    if (_player is not null && _playerFollower is not null)
+                    {
+                        var pos = _player.CurrentTransform.Translation;
+                        var speed = _playerFollower.Speed;
+                        _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
+                        {
+                            Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            DiagnosticLogging = true,
+                        };
+                    }
+                    // Party riders get a fresh follower on the new mesh at
+                    // their ridden position (their old follower still holds
+                    // the pre-ride mesh — see RebuildFollowerBrain remesh).
+                    foreach (var r in el.Riders)
+                    {
+                        if (ReferenceEquals(r, _player) || !r.IsPartyMember || r.IsDead) continue;
+                        var baseStats = r.Actor.Stats;
+                        var combatStats = InjectFollowerWeapon(r.Actor.Template, baseStats) ?? baseStats;
+                        RebuildFollowerBrain(r, combatStats, remesh: true);
+                    }
+                }
+                el.Riders.Clear();
+                Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
+            }
+        }
+    }
+
+    private static Matrix4x4 LerpPose(Matrix4x4 a, Matrix4x4 b, float k)
+    {
+        if (Matrix4x4.Decompose(a, out var sa, out var qa, out var ta) &&
+            Matrix4x4.Decompose(b, out var sb, out var qb, out var tb))
+        {
+            return Matrix4x4.CreateScale(Vector3.Lerp(sa, sb, k)) *
+                   Matrix4x4.CreateFromQuaternion(Quaternion.Slerp(qa, qb, k)) *
+                   Matrix4x4.CreateTranslation(Vector3.Lerp(ta, tb, k));
+        }
+        var m = k < 0.5f ? a : b;
+        m.Translation = Vector3.Lerp(a.Translation, b.Translation, k);
+        return m;
+    }
+
+    /// <summary>LMB near a lever = walk up and pull. The click also sets the
+    /// walk target (caller), so the player approaches naturally; the pull
+    /// fires from TickElevators the moment they're inside use range. A click
+    /// that lands nowhere near any lever clears the pending use.</summary>
+    private void RequestLeverUseNear(Vector3 worldPoint)
+    {
+        if (_leverProps.Count == 0) return;
+        StaticPropInstance? best = null;
+        float bestD2 = 2.0f * 2.0f;
+        foreach (var l in _leverProps)
+        {
+            if (l.IsDestroyed) continue;
+            var lp = l.World.Translation;
+            float dx = lp.X - worldPoint.X, dz = lp.Z - worldPoint.Z;
+            // Loose vertical gate — the click Y is the floor under the cursor,
+            // the lever origin sits wall-mounted above it.
+            if (MathF.Abs(lp.Y - worldPoint.Y) > 6f) continue;
+            float dd = dx * dx + dz * dz;
+            if (dd < bestD2) { bestD2 = dd; best = l; }
+        }
+        _pendingLeverUse = best;
+    }
+
+    private void PullLever(StaticPropInstance lever)
+    {
+        lever.LeverOn = !lever.LeverOn;
+        var msg = lever.LeverOn ? lever.LeverOnMessage : lever.LeverOffMessage;
+        var scid = lever.LeverOn ? lever.LeverOnScid : lever.LeverOffScid;
+        Console.WriteLine($"[lever] 0x{lever.Scid:X8} pulled -> {(lever.LeverOn ? "on" : "off")}: '{msg}' -> 0x{scid:X8}");
+        if (scid != 0) PostTriggerWorldMessage(msg, lever.Scid, scid);
     }
 
     // SC-DOORS-OPEN — a left-click that lands on/near a door opens it (DS1
@@ -10851,7 +11387,8 @@ void main()
                 return null;
             }
 
-            var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, _regionLayout, ResolveNav);
+            // SC-ELEVATOR — car nodes bake at their current stop, not the BFS pose.
+            var nav = SiegeFX.Core.Nav.NavMesh.BuildForRegion(navGraph, EffectiveNavLayout(), ResolveNav);
             // A fresh mesh starts with every triangle visible; live fade state
             // (fade-group hides, single-node fades, camera_fade) must carry
             // over or the pathfinder briefly routes across hidden upper floors
@@ -13537,6 +14074,9 @@ void main()
         // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
         // still walks to the click point, so you approach and pass through).
         OpenDoorNear(hit);
+        // SC-ELEVATOR — clicking on/near a lever queues a walk-up-and-pull;
+        // a click that lands away from every lever clears any pending pull.
+        RequestLeverUseNear(hit);
         _playerFollower.SetTarget(hit);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
@@ -17980,6 +18520,7 @@ void main()
         // pose then lasts until lifetime expires.
         TickFragDebris(simDt);
         TickDoors(simDt);
+        TickElevators(simDt);
         // SC-REGION-LAYER-HIDE — sticky underground/surface mode.
         // While underground, all upper-layer terrain / props / actors
         // are dropped from render (matches DS1 — upper world is just
@@ -19971,6 +20512,13 @@ void main()
         _staticProps.Clear();
         _doorProps.Clear();
         _flameSources.Clear();
+        // SC-ELEVATOR — elevators + levers are per-region-load state.
+        _leverProps.Clear();
+        _pendingLeverUse = null;
+        _elevators.Clear();
+        _elevatorsByScid.Clear();
+        _elevatorNodeOverrides.Clear();
+        _elevatorDelayedFades.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();

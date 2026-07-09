@@ -775,8 +775,130 @@ static int DispatchRegion(string[] a)
         "triggers"    => CmdRegionTriggers(a[1..]),
         "gen-audit"   => CmdRegionGenAudit(a[1..]),
         "cmd-audit"   => CmdRegionCmdAudit(a[1..]),
+        "elevators"   => CmdRegionElevators(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
+}
+
+// SC-ELEVATOR — parse every elevator gizmo (objects/elevator.gas) in one region
+// or all, resolve the car node + both stop poses via door alignment against the
+// region's own layout, and report. Connect/car nodes living in a NEIGHBOR
+// region resolve at runtime through the unified layout — the CLI counts them
+// as cross-region (informational), not failures. Hard FAIL = a door id missing
+// from its SNO or a degenerate door transform: authored data the engine could
+// never place. Exit 0 when no hard failures.
+static int CmdRegionElevators(string[] a)
+{
+    if (a.Length != 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region elevators <map-tank> <terrain-tank> <region-path|all>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    var regionPaths = new List<string>();
+    if (string.Equals(a[2], "all", StringComparison.OrdinalIgnoreCase))
+    {
+        foreach (var p in mapReader.ListFiles())
+            if (p.EndsWith("/objects/elevator.gas", StringComparison.OrdinalIgnoreCase))
+                regionPaths.Add(p[..^"/objects/elevator.gas".Length]);
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    else
+    {
+        var rp = a[2].Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        regionPaths.Add(rp.TrimEnd('/'));
+    }
+
+    int totalDefs = 0, aligned = 0, crossRegion = 0, hardFails = 0, regionsWith = 0;
+    foreach (var rp in regionPaths)
+    {
+        var (defs, diags) = SiegeFX.Core.Assets.ElevatorStore.Load(mapReader, rp);
+        foreach (var d in diags) Console.WriteLine("  " + d);
+        if (defs.Count == 0) continue;
+        regionsWith++;
+        totalDefs += defs.Count;
+
+        SiegeFX.Core.Assets.RegionGraph? graph = null;
+        SiegeFX.Core.Assets.RegionLayout? layout = null;
+        try
+        {
+            graph = SiegeFX.Core.Assets.RegionGraph.Load(
+                mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+            layout = SiegeFX.Core.Assets.RegionLayout.Build(graph, Resolve);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  {rp}: nodes.gas load failed ({ex.Message})");
+        }
+
+        var shortName = rp[(rp.LastIndexOf('/') + 1)..];
+        foreach (var def in defs)
+        {
+            bool StopInfo(uint connectGuid, int connectDoor, int carDoor, out string desc)
+            {
+                desc = "";
+                if (graph is null || layout is null) { desc = "region graph unavailable"; return false; }
+                if (!graph.TryGetNode(def.CarNodeGuid, out var carNode) ||
+                    !graph.TryGetNode(connectGuid, out var connNode))
+                {
+                    desc = "cross-region node (resolves at runtime via unified layout)";
+                    crossRegion++;
+                    return true;
+                }
+                var carSno = Resolve(carNode.MeshGuid);
+                var connSno = Resolve(connNode.MeshGuid);
+                if (carSno is null || connSno is null) { desc = "SNO missing from Terrain tank"; return false; }
+                if (!layout.TryGetTransform(connectGuid, out var wConn))
+                {
+                    desc = "connect node unplaced by door graph";
+                    return false;
+                }
+                if (!SiegeFX.Core.Assets.RegionLayout.TryAlignThroughDoor(
+                        connSno, wConn, connectDoor, carSno, carDoor, out var w))
+                {
+                    desc = $"door alignment FAILED (connect door {connectDoor} / car door {carDoor})";
+                    return false;
+                }
+                var t = w.Translation;
+                desc = $"({t.X:F1},{t.Y:F1},{t.Z:F1})";
+                return true;
+            }
+
+            bool ok1 = StopInfo(def.Connect1Guid, def.Connect1DoorId, def.CarDoor1Id, out var s1);
+            bool ok2 = StopInfo(def.Connect2Guid, def.Connect2DoorId, def.CarDoor2Id, out var s2);
+            if (ok1 && ok2 && !s1.Contains("cross-region") && !s2.Contains("cross-region")) aligned++;
+            if (!ok1 || !ok2) hardFails++;
+            Console.WriteLine($"  {shortName,-14} 0x{def.Scid:X8} {def.TemplateName,-20} car=0x{def.CarNodeGuid:X8} " +
+                $"dur={def.DurationSeconds,4:F1}s stop1={s1} stop2={s2}" +
+                (def.Moving1ActionInfo.Length > 0 ? " [fades]" : ""));
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"elevators: {totalDefs} gizmo(s) across {regionsWith} region(s) — " +
+                      $"{aligned} fully aligned in-region, {crossRegion} stop(s) cross-region (runtime-resolved), " +
+                      $"{hardFails} hard failure(s)");
+    return hardFails == 0 ? 0 : 4;
 }
 
 // SC-MOB-COMMANDS audit — inventory every scripted AI command (command.gas) across
@@ -5155,6 +5277,7 @@ static int CmdRegionDecalAudit(string[] a)
     // loose ≤26°, misaligned.
     var align = new int[4, 2, 3];
     int alignSamples = 0;
+    var drapeReport = new List<string>();
 
     foreach (var rp in regionPaths)
     {
@@ -5256,6 +5379,59 @@ static int CmdRegionDecalAudit(string[] a)
                             }
                             if (nearFaces.Count > 0) alignSamples++;
 
+                            // DRAPE SIM — mirror the runtime's ground gate (cols
+                            // H,V,N node-local, |n.Y|>0.7) and measure the true
+                            // distance from the decal plane to the surface in its
+                            // XZ column, flagging anything the runtime's ±2m snap
+                            // window can't reach (those still float post-drape).
+                            {
+                                var Hc = new Vector3(o[0], o[3], o[6]);
+                                var Vc = new Vector3(o[1], o[4], o[7]);
+                                var nC = Vector3.Cross(Hc, Vc);
+                                if (nC.LengthSquared() > 1e-10f && MathF.Abs(Vector3.Normalize(nC).Y) > 0.7f
+                                    && graphRef is not null && graphRef.TryGetNode(nodeGuid, out var gnode2))
+                                {
+                                    var sno2 = Resolve(gnode2.MeshGuid);
+                                    if (sno2 is null)
+                                    {
+                                        drapeReport.Add($"{System.IO.Path.GetFileName(rp),-14} {texName,-26} NO-SNO (mesh 0x{gnode2.MeshGuid:X8})");
+                                    }
+                                    else
+                                    {
+                                        float bestAny = float.MaxValue;
+                                        bool anyHit = false;
+                                        foreach (var surf in sno2.Surfaces)
+                                        {
+                                            var tris2 = surf.TriangleIndices;
+                                            for (int t = 0; t + 2 < tris2.Length; t += 3)
+                                            {
+                                                var a2 = sno2.Corners[surf.StartCorner + tris2[t]].Position;
+                                                var b2 = sno2.Corners[surf.StartCorner + tris2[t + 1]].Position;
+                                                var c2 = sno2.Corners[surf.StartCorner + tris2[t + 2]].Position;
+                                                float e00x = b2.X - a2.X, e00z = b2.Z - a2.Z;
+                                                float e01x = c2.X - a2.X, e01z = c2.Z - a2.Z;
+                                                float det2 = e00x * e01z - e01x * e00z;
+                                                if (MathF.Abs(det2) < 1e-9f) continue;
+                                                float px = localOrigin.X - a2.X, pz = localOrigin.Z - a2.Z;
+                                                float uu = (px * e01z - e01x * pz) / det2;
+                                                float vv = (e00x * pz - px * e00z) / det2;
+                                                if (uu < -0.001f || vv < -0.001f || uu + vv > 1.001f) continue;
+                                                float ty = a2.Y + uu * (b2.Y - a2.Y) + vv * (c2.Y - a2.Y);
+                                                anyHit = true;
+                                                float delta = localOrigin.Y - ty;   // + = plane above surface
+                                                if (MathF.Abs(delta) < MathF.Abs(bestAny)) bestAny = delta;
+                                            }
+                                        }
+                                        if (!anyHit)
+                                            drapeReport.Add($"{System.IO.Path.GetFileName(rp),-14} {texName,-26} NO-SURFACE-IN-COLUMN");
+                                        else if (MathF.Abs(bestAny) > 2.0f)
+                                            drapeReport.Add($"{System.IO.Path.GetFileName(rp),-14} {texName,-26} nearest-surface={bestAny,6:F2}m  BEYOND-2M-WINDOW");
+                                        else if (!all || MathF.Abs(bestAny) > 0.25f)
+                                            drapeReport.Add($"{System.IO.Path.GetFileName(rp),-14} {texName,-26} nearest-surface={bestAny,6:F2}m (snaps)");
+                                    }
+                                }
+                            }
+
                             for (int read = 0; read < 4; read++)
                             {
                                 (Vector3 H, Vector3 V) = read switch
@@ -5346,6 +5522,11 @@ static int CmdRegionDecalAudit(string[] a)
     Console.WriteLine();
     Console.WriteLine($"non-horizontal decals under the CURRENT interpretation (cols H,V,N as-authored) — {suspects.Count}:");
     foreach (var s in suspects) Console.WriteLine("  " + s);
+    Console.WriteLine();
+    Console.WriteLine($"DRAPE SIMULATION (runtime rules: cols H,V,N node-local, ground=|n.Y|>0.7) — {drapeReport.Count} ground decals:");
+    Console.WriteLine("  hover = plane-origin height above the surface directly below each decal center;");
+    Console.WriteLine("  'beyond2m' = outside the runtime's ±2m snap window = STILL FLOATS after drape");
+    foreach (var s in drapeReport) Console.WriteLine("  " + s);
     if (!all)
     {
         Console.WriteLine();

@@ -263,6 +263,22 @@ public sealed class TriggerRuntime
         else _delayed.Add(new DelayedAction(trig, act, _now + totalDelay));
     }
 
+    /// <summary>Dispatch every pending delayed action NOW, in scheduled order, and
+    /// clear the queue. Skipping a cinematic means jumping to its outcome: the fh_r1
+    /// intro trigger schedules its fade-to-black mood chain behind delay(36.6..42.5),
+    /// and leaving that armed after an Esc-skip plays a full-screen blackout over
+    /// live gameplay half a minute later. Scheduled order matters — the last
+    /// mood_change in the timeline is the restore the world must settle on.</summary>
+    public void FastForwardDelayed(TriggerContext ctx)
+    {
+        if (_delayed.Count == 0) return;
+        var pending = _delayed.ToArray();
+        _delayed.Clear();
+        Array.Sort(pending, (a, b) => a.FireAt.CompareTo(b.FireAt));
+        foreach (var d in pending)
+            Dispatch(d.Trigger, d.Action, ctx, deferred: true);
+    }
+
     bool EvaluateCondition(TriggerInstance trig, TriggerCall cond, TriggerContext ctx, ref TriggerRowState state)
     {
         switch (cond.Verb.ToLowerInvariant())

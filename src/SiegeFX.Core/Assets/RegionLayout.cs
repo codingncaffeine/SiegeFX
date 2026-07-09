@@ -138,6 +138,28 @@ public sealed class RegionLayout
         return null;
     }
 
+    /// <summary>SC-ELEVATOR — public door-alignment for callers that place a
+    /// node OUTSIDE the BFS walk. Computes the world transform of
+    /// <paramref name="farSno"/> when its door <paramref name="farDoorId"/>
+    /// mates with <paramref name="anchorSno"/>'s door
+    /// <paramref name="anchorDoorId"/>, the anchor standing at
+    /// <paramref name="wAnchor"/>. This is exactly how an elevator car's stop
+    /// pose is defined: elevator_door_levelN mated to the connect node's
+    /// connect_door_levelN. False when either door id is missing from its SNO
+    /// or the far door transform is degenerate.</summary>
+    public static bool TryAlignThroughDoor(
+        SnoModel anchorSno, Matrix4x4 wAnchor, int anchorDoorId,
+        SnoModel farSno, int farDoorId, out Matrix4x4 wFar)
+    {
+        wFar = Matrix4x4.Identity;
+        var anchorDoor = FindDoor(anchorSno, anchorDoorId);
+        var farDoor = FindDoor(farSno, farDoorId);
+        if (anchorDoor is null || farDoor is null) return false;
+        if (!Matrix4x4.Invert(farDoor.Value, out var invFar)) return false;
+        wFar = ComposeNeighborTransform(wAnchor, anchorDoor.Value, invFar);
+        return true;
+    }
+
     /// <summary>Converts the on-disk 4x3 door frame (row-major 3x3 rotation + translation)
     /// into a 4x4 affine matrix in System.Numerics row-vector convention. DS1 axis swaps
     /// happen at render time, not here.</summary>

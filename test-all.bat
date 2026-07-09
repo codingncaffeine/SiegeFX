@@ -174,6 +174,7 @@ echo  101. SC-HUD-OVERHEAD-BARS         - Floating HP/MP bars above every combat
 echo  102. SC-FADE-NODES-LNODE          - Spawn at fh_r1 farmhouse basement stairs (SIEGEFX_DEBUG_SPAWN=70,-4,-65); walk down + test dungeon reveal + click-pick
 echo  103. Phase 26 - PARTY RECRUIT     - Recruit Gyorn at Stonebridge (bt_r1): RMB him, click Accept; he follows + fights
 echo  104. SC-WEATHER                   - Mood weather audit (CLI, self-verifying) + fh_r1 storm eyes-test (rain/fog/lightning/thunder + rain loops)
+echo  105. SC-ELEVATOR                  - Ride the farmhouse grate lift (hc_r1): lever call, 5s descent with rider carry, fades, nav rebuild
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -284,6 +285,7 @@ if /i "%CHOICE%"=="101" goto T101
 if /i "%CHOICE%"=="102" goto T102
 if /i "%CHOICE%"=="103" goto T103
 if /i "%CHOICE%"=="104" goto T104
+if /i "%CHOICE%"=="105" goto T105
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2411,6 +2413,38 @@ echo  - Console shows [weather] mood ... applied lines on each zone cross.]
 echo [SNOW check (optional): --play-region nt_r1 or ac_r1 = alpine snowfall.]
 echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+echo.
+pause
+goto MENU
+
+:T105
+echo.
+echo --- SC-ELEVATOR: farmhouse grate lift ride (hc_r1, closest lift to spawn) ---
+echo [Same basement house as the stair/cutaway tests - besides the stairs it
+echo  has a METAL GRATE floor section that is a working lift now. Spawn =
+echo  top of its shaft (world ~76,-4,-72; hc_r1 streams as fh_r1 neighbor).
+echo  SC-ELEVATOR is LIVE: 216 lift gizmos across 32 regions parse and
+echo  door-align (CLI receipt: siegefx region elevators ... all = 0 fails).
+echo.
+echo  EYES TEST - the full ride loop:
+echo  - Console at load: [elevator] 0x06A00036 ... parked at stop1 and two
+echo    [lever] registration lines.
+echo  - Grate platform sits flush at the TOP of the shaft; the wall lever
+echo    should read as mounted, not floating (report if still floating).
+echo  - CLICK the lever: player walks over + pulls ([lever] pulled line),
+echo    grate descends ~12u over 5s WITH you standing on it; the authored
+echo    cutaway fades swap surface/basement sections mid-ride.
+echo  - At the bottom: walk OFF onto the cellar floor (nav rebuilds on
+echo    arrival - console prints a nav mesh rebuild line).
+echo  - Pull the basement lever to ride back UP; fades reverse on arrival.
+echo  - Recruits standing on the grate ride along with you.]
+echo.
+set "SIEGEFX_DEBUG_SPAWN=76,-4,-72"
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test105.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
+set "SIEGEFX_DEBUG_SPAWN="
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test105.log
 echo.
 pause
 goto MENU
