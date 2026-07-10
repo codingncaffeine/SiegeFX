@@ -25,6 +25,10 @@ public sealed class PlacedObject
     public float ScaleMult = 1f;   // [aspect] scale_multiplier (visual size)
     public float LifeOverride;     // [aspect] life + max_life; 0 = template's
     public string LootDrop = "";   // [inventory][pcontent][oneof] il_main — guaranteed drop/contents
+    // ED-11 — [mind] initial_command: the first cmd_ai_patrol SCID of this
+    // actor's patrol chain. 0 = no patrol. The engine walks next_scid links
+    // from here and hands the route to the actor's brain at spawn.
+    public uint InitialCommand;
 
     public bool HasOverrides =>
         LifeOverride > 0f || !string.IsNullOrWhiteSpace(LootDrop)
@@ -35,6 +39,7 @@ public sealed class PlacedObject
         Scid = Scid, Template = Template, NodeGuid = NodeGuid,
         LocalPos = LocalPos, Orientation = Orientation, File = File,
         ScaleMult = ScaleMult, LifeOverride = LifeOverride, LootDrop = LootDrop,
+        InitialCommand = InitialCommand,
     };
 }
 
@@ -74,6 +79,14 @@ public static class PlacementWriter
                     sb.Append("\t\tlife = ").Append(F(o.LifeOverride)).Append(";\r\n");
                     sb.Append("\t\tmax_life = ").Append(F(o.LifeOverride)).Append(";\r\n");
                 }
+                sb.Append("\t}\r\n");
+            }
+            if (o.InitialCommand != 0)
+            {
+                // ED-11 — the engine's patrol assigner reads instance-level
+                // [mind] initial_command and walks the next_scid chain.
+                sb.Append("\t[mind]\r\n\t{\r\n");
+                sb.Append("\t\tinitial_command = 0x").Append(o.InitialCommand.ToString("X8")).Append(";\r\n");
                 sb.Append("\t}\r\n");
             }
             if (!string.IsNullOrWhiteSpace(o.LootDrop))

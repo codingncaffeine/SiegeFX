@@ -253,6 +253,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ObjLife));
         OnPropertyChanged(nameof(ObjScale));
         OnPropertyChanged(nameof(ObjLoot));
+        OnPropertyChanged(nameof(SelObjIsActor)); // ED-11 — patrol toggle enablement
     }
 
     // ── lighting & mood (LE-6) ──────────────────────────────────
@@ -2211,9 +2212,101 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     /// <summary>Routes a brush click/drag step to whichever brush is active.</summary>
     public bool TryBrush(double sx, double sy) =>
-        _paintMode ? TryPaint(sx, sy) : _scatterMode && TryScatter(sx, sy);
+        _paintMode ? TryPaint(sx, sy)
+        : _patrolMode ? TryPatrolPoint(sx, sy)
+        : _scatterMode && TryScatter(sx, sy);
 
-    public bool HasBrush => _paintMode || _scatterMode;
+    public bool HasBrush => _paintMode || _scatterMode || _patrolMode;
+
+    // ═══ ED-11 — patrol route editor ══════════════════════════════════
+    // With an ACTOR selected, patrol mode turns clicks into a chain of
+    // cmd_ai_patrol waypoints (linked via next_scid). Unticking closes the
+    // loop and writes [mind] initial_command on the actor's placement —
+    // exactly the retail mechanism the engine's patrol assigner walks.
+
+    private bool _patrolMode;
+    private PlacedObject? _patrolActor;
+    private uint _patrolFirst, _patrolPrev;
+    private int _patrolCount;
+
+    public bool SelObjIsActor =>
+        SelObj() is { } o && o.File.Equals("actor.gas", StringComparison.OrdinalIgnoreCase);
+
+    public bool PatrolMode
+    {
+        get => _patrolMode;
+        set
+        {
+            if (!SetProperty(ref _patrolMode, value)) return;
+            if (value)
+            {
+                if (SelObj() is not { } o || !o.File.Equals("actor.gas", StringComparison.OrdinalIgnoreCase))
+                {
+                    _patrolMode = false;
+                    OnPropertyChanged(nameof(PatrolMode));
+                    Status = "Patrol: select a placed ACTOR first — patrol routes belong to actors.";
+                    return;
+                }
+                if (_paintMode) PaintMode = false;
+                if (_scatterMode) ScatterMode = false;
+                _patrolActor = o;
+                _patrolFirst = _patrolPrev = 0;
+                _patrolCount = 0;
+                PushUndo(); // the whole route (waypoints + actor hookup) = one undo
+                Status = $"Patrol for {o.Template}: click terrain to drop waypoints in order; untick to close the loop and hand it over.";
+            }
+            else EndPatrol();
+        }
+    }
+
+    private bool TryPatrolPoint(double sx, double sy)
+    {
+        if (!_patrolMode) return false;
+        if (_pickVerts.Length < 3) return true;
+        uint g = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
+        if (g == 0) return true; // off the terrain — ignore quietly
+        if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, g, _vw, _vh,
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var hit, _ortho)) return true;
+        if (!_nodeWorld.TryGetValue(g, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return true;
+
+        var cmd = new CommandPlacement
+        {
+            Scid = _nextLogicScid++, Kind = CmdKind.AiPatrol,
+            NodeGuid = g, LocalPos = Vector3.Transform(hit, inv),
+        };
+        if (_patrolPrev != 0)
+        {
+            foreach (var c in Commands) if (c.Scid == _patrolPrev) { c.NextScid = cmd.Scid; break; }
+        }
+        else _patrolFirst = cmd.Scid;
+        Commands.Add(cmd);
+        _patrolPrev = cmd.Scid;
+        _patrolCount++;
+        Render();
+        Status = $"Patrol waypoint {_patrolCount} placed — keep clicking; untick 'Draw patrol route' to finish.";
+        return true;
+    }
+
+    private void EndPatrol()
+    {
+        if (_patrolActor is { } actor && _patrolFirst != 0)
+        {
+            if (_patrolCount >= 2)
+                foreach (var c in Commands)
+                    if (c.Scid == _patrolPrev) { c.NextScid = _patrolFirst; break; } // DS1 patrols cycle
+            actor.InitialCommand = _patrolFirst;
+            Render();
+            Status = $"Patrol route with {_patrolCount} waypoint(s) assigned to {actor.Template} — it walks the loop in Play. (Ctrl+Z removes the whole route.)";
+        }
+        else if (_patrolActor is not null)
+        {
+            Status = "Patrol cancelled — no waypoints were placed.";
+        }
+        _patrolActor = null;
+        _patrolFirst = _patrolPrev = 0;
+        _patrolCount = 0;
+    }
 
     private bool TryScatter(double sx, double sy)
     {
@@ -2537,6 +2630,28 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         Quad(0, 2, 6, 4); Quad(1, 5, 7, 3);
     }
 
+    /// <summary>ED-11 — translucent connector line (patrol/command chains):
+    /// a thin vertical ribbon between two world points, alpha-blended.</summary>
+    private static void AppendLineBlend(Vector3 a, Vector3 b, int rgb, byte alpha,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    {
+        var lift = new Vector3(0, 0, 0.15f);
+        var up = new Vector3(0, 0, 0.05f);
+        a += lift; b += lift;
+        int packed = (alpha << 24) | (rgb & 0xFFFFFF);
+        void Tri(Vector3 p0, Vector3 p1, Vector3 p2)
+        {
+            verts.Add(p0); verts.Add(p1); verts.Add(p2);
+            normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ);
+            uvs.Add(default); uvs.Add(default); uvs.Add(default);
+            triTex.Add(-1); triColor.Add(packed);
+            pickGuid.Add(0u); pickScid.Add(0u);
+        }
+        Tri(a - up, b - up, b + up);
+        Tri(a - up, b + up, a + up);
+    }
+
     /// <summary>ED-9 — translucent horizontal disc (light radii).</summary>
     private static void AppendDiscBlend(Vector3 center, float radius, int rgb, byte alpha,
         List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
@@ -2808,9 +2923,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
               .Append(o.Orientation.Z.ToString(CultureInfo.InvariantCulture)).Append('\t')
               .Append(o.Orientation.W.ToString(CultureInfo.InvariantCulture)).Append('\t')
               .Append(o.File).Append('\t')
-              // ED-4b — instance overrides ride the same undo snapshot.
+              // ED-4b/ED-11 — instance overrides + patrol ride the undo snapshot.
               .Append(o.ScaleMult.ToString(CultureInfo.InvariantCulture)).Append('\t')
               .Append(o.LifeOverride.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.InitialCommand.ToString("X8")).Append('\t')
               .Append(o.LootDrop).Append('\n');
         return sb.ToString();
     }
@@ -2831,10 +2947,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 LocalPos = new Vector3(PF(f[3]), PF(f[4]), PF(f[5])),
                 Orientation = new Quaternion(PF(f[6]), PF(f[7]), PF(f[8]), PF(f[9])),
                 File = f[10],
-                // ED-4b columns — absent in pre-override snapshots, so default.
+                // ED-4b/ED-11 columns — absent in older snapshots, so default.
                 ScaleMult = f.Length > 11 && PF(f[11]) > 0f ? PF(f[11]) : 1f,
                 LifeOverride = f.Length > 12 ? PF(f[12]) : 0f,
-                LootDrop = f.Length > 13 ? f[13] : "",
+                InitialCommand = f.Length > 14 ? ParseHexU(f[13]) : 0,
+                LootDrop = f.Length > 14 ? f[14] : (f.Length > 13 ? f[13] : ""),
             });
         }
     }
@@ -4383,8 +4500,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 if (pl.Kind == AuthoredLightKind.Point)
                     Marker(pl.NodeGuid, pl.Position, pl.Scid, MarkerLight, pl);
         if (GroupVisible("Commands"))
+        {
             foreach (var cm in Commands)
                 Marker(cm.NodeGuid, cm.LocalPos, cm.Scid, MarkerCommand, cm);
+            // ED-11 — next_scid links draw as translucent ribbons, so patrol
+            // routes and NIS chains read as PATHS in the viewport.
+            foreach (var cm in Commands)
+            {
+                if (cm.NextScid is not { } nxt || nxt == 0) continue;
+                CommandPlacement? to = null;
+                foreach (var c2 in Commands) if (c2.Scid == nxt) { to = c2; break; }
+                if (to is null) continue;
+                if (!layout.TryGetTransform(cm.NodeGuid, out var caw) || !layout.TryGetTransform(to.NodeGuid, out var cbw)) continue;
+                AppendLineBlend(Vector3.Transform(cm.LocalPos, caw), Vector3.Transform(to.LocalPos, cbw),
+                    MarkerCommand, 0x70, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+            }
+        }
 
         // GAME-1 — decals preview as REAL textured quads on the surface
         // (world-absolute basis per the decal contract; origin node-local).

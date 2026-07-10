@@ -846,6 +846,10 @@
                                         <TextBox Grid.Column="1" Text="{Binding ObjLoot, UpdateSourceTrigger=LostFocus}"
                                                  ToolTip="Guaranteed item template (e.g. potion_health_small) — dropped on death for actors, found inside for chests/barrels. Adds to the template's own loot roll."/>
                                     </Grid>
+                                    <!-- ED-11 — patrol route (actors only) -->
+                                    <CheckBox Content="🚶 Draw patrol route (click terrain)" IsChecked="{Binding PatrolMode, Mode=TwoWay}"
+                                              IsEnabled="{Binding SelObjIsActor}" Margin="0,2,0,4"
+                                              ToolTip="Actors only: tick, then click waypoints on the terrain in order. Unticking closes the loop and assigns it — the actor walks the route in Play. The blue ribbons in the viewport ARE the route; Ctrl+Z removes the whole thing."/>
                                     <Button Content="Delete object" Command="{Binding DeleteObjectCommand}" Padding="8,4"/>
                                 </StackPanel>
 
