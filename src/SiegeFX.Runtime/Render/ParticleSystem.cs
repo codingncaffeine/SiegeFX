@@ -1897,40 +1897,69 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             // subd-ratio, floored by 2^minsubd — 4u bolts land at the
             // pre-23d 24 segments when unauthored. Revisit against DS1
             // side-by-side capture.
+            // SU 212 Lightning is RECURSIVE MIDPOINT DISPLACEMENT, not uniform
+            // per-vertex noise. subd/minsubd are subdivision LEVELS (minsubd =
+            // floor, subd = added density); longer bolts get a level or two more
+            // so detail stays proportional. 2^levels segments; cap at 6 (=64
+            // segments, the scratch size).
             float subd    = b.Subd    > 0f ? b.Subd    : 0.4f;
             float minsubd = b.MinSubd > 0f ? b.MinSubd : 2.0f;
-            int segMin = 1 << (int)Math.Clamp(minsubd, 1f, 6f);
-            int segments = Math.Clamp((int)(len * 6f * (subd / 0.4f)), segMin, 64);
+            int levels = (int)Math.Clamp(minsubd + len * 0.35f * (subd / 0.4f), 2f, 6f);
 
-            // Phase 23d-2a — displacement is a signed [min, max] stray
-            // range per SU 212 (zap ships -0.15..0.15). Legacy 0/0 keeps
-            // the length-relative default.
+            // Displacement is the TOP-LEVEL perpendicular stray range
+            // (mindisplace..maxdisplace, e.g. chain_lightning's ±0.1). It HALVES
+            // each subdivision level — that halving is what yields a taut, thin
+            // bolt with a few sharp kinks instead of the old fuzzy band. When
+            // unauthored, a small length-relative default keeps it tight.
             bool hasRange = b.Displace > 0.001f || b.MinDisplace < -0.001f;
-            float dMin = hasRange ? b.MinDisplace : -MathF.Min(len * 0.08f, 0.35f) * 0.5f;
-            float dMax = hasRange ? b.Displace    :  MathF.Min(len * 0.08f, 0.35f) * 0.5f;
-            // Wire-thin world-space half-width. ~2 pixels at chase-cam range.
-            float thickness = 0.022f;
+            float dMin = hasRange ? b.MinDisplace : -MathF.Min(len * 0.05f, 0.22f);
+            float dMax = hasRange ? b.Displace    :  MathF.Min(len * 0.05f, 0.22f);
+
+            // Orthonormal perpendicular basis to the bolt direction (world-up
+            // `side` alone isn't perpendicular once the bolt tilts).
+            var perpA = side;
+            var perpB = Vector3.Cross(fwd, side);
+            perpB = perpB.LengthSquared() < 1e-6f ? Vector3.UnitY : Vector3.Normalize(perpB);
+
+            // Thin, roughly screen-constant half-width: scale with camera
+            // distance so the bolt stays a ~1.5px wire near or far instead of
+            // ballooning into a tube up close. DS1's bolts are wire-thin.
+            float distMid = Vector3.Distance(cameraPos, (b.Source + b.Target) * 0.5f);
+            float thickness = Math.Clamp(distMid * 0.0011f, 0.008f, 0.045f);
+
             float lifeAlpha = MathF.Max(0.25f, 1f - frac);
             var core = b.Color;
-            core.X = MathF.Min(1f, core.X * 0.4f + 0.6f);
-            core.Y = MathF.Min(1f, core.Y * 0.4f + 0.6f);
-            core.Z = MathF.Min(1f, core.Z * 0.4f + 0.6f);
+            // Bright core that KEEPS the authored hue — the old +0.6 floor washed
+            // every bolt to near-white regardless of color0.
+            core.X = MathF.Min(1f, core.X * 0.6f + 0.35f);
+            core.Y = MathF.Min(1f, core.Y * 0.6f + 0.35f);
+            core.Z = MathF.Min(1f, core.Z * 0.6f + 0.35f);
             core.W = lifeAlpha;
 
-            // Pass 1: jittered polyline points along the bolt. Displacement
-            // draws uniformly from the signed [dMin, dMax] range on both
-            // perpendicular axes (SU 212's mindisplace/maxdisplace).
+            // Pass 1: recursive midpoint displacement. Begin with [source,target]
+            // and subdivide `levels` times; each new midpoint strays perpendicular
+            // by a random [dMin,dMax] offset whose amplitude halves each level.
             var pts = _boltPathScratch;
-            for (int s = 0; s <= segments; s++)
+            pts[0] = b.Source;
+            pts[1] = b.Target;
+            int n = 1;              // current segment count
+            float ampScale = 1f;
+            for (int lvl = 0; lvl < levels; lvl++)
             {
-                float t = (float)s / segments;
-                rng = rng * 1664525u + 1013904223u;
-                float jx = dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin);
-                rng = rng * 1664525u + 1013904223u;
-                float jy = dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin);
-                if (s == 0 || s == segments) { jx = 0f; jy = 0f; }
-                pts[s] = b.Source + dir * t + side * jx + up * jy;
+                for (int i = n; i >= 1; i--) pts[2 * i] = pts[i];   // spread to even slots
+                for (int i = 0; i < n; i++)
+                {
+                    var mid = (pts[2 * i] + pts[2 * i + 2]) * 0.5f;
+                    rng = rng * 1664525u + 1013904223u;
+                    float rx = (dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin)) * ampScale;
+                    rng = rng * 1664525u + 1013904223u;
+                    float ry = (dMin + ((rng & 0xFFFF) / 65535f) * (dMax - dMin)) * ampScale;
+                    pts[2 * i + 1] = mid + perpA * rx + perpB * ry;
+                }
+                n *= 2;
+                ampScale *= 0.5f;
             }
+            int segments = n;
 
             // Pass 2: shared per-junction perpendicular = neighbor-averaged
             // tangent crossed with view-direction-to-camera at this point.
