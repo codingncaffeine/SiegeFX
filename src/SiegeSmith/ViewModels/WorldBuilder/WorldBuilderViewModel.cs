@@ -655,6 +655,130 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand AddQuestCommand { get; }
     public RelayCommand DeleteQuestCommand { get; }
     public RelayCommand ImportAudioCommand { get; }
+    /// <summary>ED-2 — F: frame the selection. Pans the orbit target onto the
+    /// selected piece and pulls the camera in, Unity/Unreal-style.</summary>
+    public RelayCommand FocusSelectedCommand { get; }
+
+    private void FocusSelected()
+    {
+        Vector3? target = null;
+        if (_selectedPlacedObject is not null
+            && _objects.Find(x => x.Scid == _selectedPlacedObject.Scid) is { } o
+            && _nodeWorld.TryGetValue(o.NodeGuid, out var ow))
+            target = Vector3.Transform(o.LocalPos, ow);
+        else if (_selectedEmitter is { } em && _nodeWorld.TryGetValue(em.NodeGuid, out var ew))
+            target = Vector3.Transform(em.LocalPos, ew);
+        else if (_selectedDecal is { } dc && _nodeWorld.TryGetValue(dc.NodeGuid, out var dw))
+            target = Vector3.Transform(dc.OriginLocal, dw);
+        else if (_selectedLight is { Kind: AuthoredLightKind.Point } pl && _nodeWorld.TryGetValue(pl.NodeGuid, out var lw))
+            target = Vector3.Transform(pl.Position, lw);
+        else if (_selectedTrigger is { } tg && _nodeWorld.TryGetValue(tg.NodeGuid, out var tw))
+            target = Vector3.Transform(tg.LocalPos, tw);
+        else if (_selectedCommand is { } cm && _nodeWorld.TryGetValue(cm.NodeGuid, out var cw))
+            target = Vector3.Transform(cm.LocalPos, cw);
+        else if (_selectedNode is not null && _nodeWorld.TryGetValue(_selectedNode.Guid, out var nw))
+            target = nw.Translation;
+        if (target is null) { Status = "Select something to focus (F)."; return; }
+        _pan = target.Value - _center;
+        _dist = MathF.Max(MathF.Min(_dist, _radius * 0.5f), 6f);
+        Render();
+    }
+
+    /// <summary>ED-1a — Ctrl+D: duplicate whatever is selected (object,
+    /// emitter, decal, point light, trigger, command) with a fresh SCID and
+    /// a small offset so the copy is immediately visible and grabbable.</summary>
+    public RelayCommand DuplicateCommand { get; }
+
+    private static readonly Vector3 DupOffset = new(0.6f, 0.6f, 0f);
+
+    private void DuplicateSelected()
+    {
+        if (_selectedPlacedObject is not null)
+        {
+            var src = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
+            if (src is null) return;
+            PushUndo();
+            var copy = new PlacedObject
+            {
+                Scid = _nextScid++, Template = src.Template, NodeGuid = src.NodeGuid,
+                LocalPos = src.LocalPos + DupOffset, Orientation = src.Orientation, File = src.File,
+            };
+            _objects.Add(copy);
+            RebuildPlacedRows();
+            foreach (var r in PlacedObjects) if (r.Scid == copy.Scid) { SelectedPlacedObject = r; break; }
+            Render();
+            Status = $"Duplicated {src.Template}.";
+            return;
+        }
+        if (_selectedEmitter is { } em)
+        {
+            PushUndo();
+            var copy = new RegionEmitter
+            {
+                Scid = _nextEffectScid++, Template = em.Template, NodeGuid = em.NodeGuid,
+                LocalPos = em.LocalPos + DupOffset, Smoke = em.Smoke,
+                Count = em.Count, Fade = em.Fade, ParticleSize = em.ParticleSize, Growth = em.Growth,
+            };
+            Emitters.Add(copy);
+            SelectMarker(copy);
+            Status = "Duplicated emitter.";
+            return;
+        }
+        if (_selectedDecal is { } dc)
+        {
+            PushUndo();
+            var copy = new RegionDecal
+            {
+                Scid = _nextEffectScid++, NodeGuid = dc.NodeGuid, OriginLocal = dc.OriginLocal + DupOffset,
+                Normal = dc.Normal, AxisH = dc.AxisH, AxisV = dc.AxisV,
+                HorizExtent = dc.HorizExtent, VertExtent = dc.VertExtent, Texture = dc.Texture,
+            };
+            Decals.Add(copy);
+            SelectMarker(copy);
+            Status = "Duplicated decal.";
+            return;
+        }
+        if (_selectedLight is { Kind: AuthoredLightKind.Point } pl)
+        {
+            PushUndo();
+            var copy = new AuthoredLight
+            {
+                Scid = _nextLightScid++, Kind = AuthoredLightKind.Point, NodeGuid = pl.NodeGuid,
+                Position = pl.Position + DupOffset, Color = pl.Color, Intensity = pl.Intensity,
+                InnerRadius = pl.InnerRadius, OuterRadius = pl.OuterRadius,
+                DrawShadow = pl.DrawShadow, AffectsActors = pl.AffectsActors,
+                AffectsItems = pl.AffectsItems, AffectsTerrain = pl.AffectsTerrain,
+            };
+            Lights.Add(copy);
+            SelectMarker(copy);
+            Status = "Duplicated point light.";
+            return;
+        }
+        if (_selectedTrigger is { } tg)
+        {
+            PushUndo();
+            var copy = new RegionTrigger { Scid = _nextLogicScid++, Template = tg.Template, NodeGuid = tg.NodeGuid, LocalPos = tg.LocalPos + DupOffset };
+            Triggers.Add(copy);
+            SelectMarker(copy);
+            Status = "Duplicated trigger (rows start empty — copy conditions as needed).";
+            return;
+        }
+        if (_selectedCommand is { } cm)
+        {
+            PushUndo();
+            var copy = new CommandPlacement
+            {
+                Scid = _nextLogicScid++, Kind = cm.Kind, NodeGuid = cm.NodeGuid, LocalPos = cm.LocalPos + DupOffset,
+                NextScid = cm.NextScid, Target1 = cm.Target1, Target2 = cm.Target2,
+                ClientScid = cm.ClientScid, Duration = cm.Duration, Order = cm.Order,
+            };
+            Commands.Add(copy);
+            SelectMarker(copy);
+            Status = "Duplicated command.";
+            return;
+        }
+        Status = "Select an object, emitter, decal, point light, trigger, or command to duplicate (Ctrl+D).";
+    }
 
     // GAME-4 — map-local quests (journal entries of the custom game).
     public ObservableCollection<MapQuest> MapQuests { get; } = new();
@@ -799,6 +923,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
         CreateTemplateCommand = new RelayCommand(_ => CreateTemplate(), _ => _assetsFolder is not null);
         ImportAudioCommand = new RelayCommand(_ => ImportAudio(), _ => _assetsFolder is not null);
+        DuplicateCommand = new RelayCommand(_ => DuplicateSelected());
+        FocusSelectedCommand = new RelayCommand(_ => FocusSelected());
         AddQuestCommand = new RelayCommand(_ =>
         {
             var q = new MapQuest { Key = $"quest_custom_{MapQuests.Count + 1:00}" };

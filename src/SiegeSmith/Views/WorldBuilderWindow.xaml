@@ -10,6 +10,8 @@
         <KeyBinding Key="Z" Modifiers="Control" Command="{Binding UndoCommand}"/>
         <KeyBinding Key="Y" Modifiers="Control" Command="{Binding RedoCommand}"/>
         <KeyBinding Key="Delete" Command="{Binding DeleteSelectedAnyCommand}"/>
+        <KeyBinding Key="D" Modifiers="Control" Command="{Binding DuplicateCommand}"/>
+        <KeyBinding Key="F" Command="{Binding FocusSelectedCommand}"/>
     </Window.InputBindings>
 
     <Grid>
