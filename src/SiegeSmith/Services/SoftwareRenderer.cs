@@ -63,13 +63,100 @@ public static class SoftwareRenderer
         }
     }
 
+    /// <summary>A soft round particle: world position + world radius, drawn as
+    /// a screen-space splat with quadratic radial falloff — z-tested against
+    /// the scene, no z-write. <paramref name="Additive"/> brightens (fire glow);
+    /// otherwise the splat alpha-blends (smoke). This is what makes emitter
+    /// particles read as puffs of fire and smoke instead of polygons: geometry
+    /// can only ever have hard edges in a triangle rasterizer.</summary>
+    public readonly record struct Splat(Vector3 Center, float Radius, byte R, byte G, byte B, float Alpha, bool Additive);
+
+    private static void DrawSplats(byte[] px, float[] zbuf, int width, int height,
+        in Matrix4x4 view, in Matrix4x4 proj, IReadOnlyList<Splat> splats, Fog? fog)
+    {
+        if (splats.Count == 0) return;
+
+        // Project every splat first, then paint far→near so overlapping
+        // alpha layers stack correctly.
+        var order = new List<(float Depth, float Cx, float Cy, float Rpx, Splat S)>(splats.Count);
+        foreach (var s in splats)
+        {
+            var vv = Vector4.Transform(new Vector4(s.Center, 1f), view);
+            float depth = -vv.Z;
+            if (depth <= 0.01f) continue;
+            var clip = Vector4.Transform(vv, proj);
+            if (clip.W <= 1e-4f) continue;
+            float inv = 1f / clip.W;
+            float cx = (clip.X * inv * 0.5f + 0.5f) * width;
+            float cy = (1f - (clip.Y * inv * 0.5f + 0.5f)) * height;
+            // World radius → pixels via the projection's x scale (works for
+            // both perspective, where clip.W = depth, and ortho, where W = 1).
+            float rpx = s.Radius * proj.M11 * inv * 0.5f * width;
+            if (rpx < 0.75f) rpx = 0.75f;
+            if (rpx > 600f) continue; // degenerate close-up — skip rather than fill the frame
+            if (cx + rpx < 0 || cx - rpx >= width || cy + rpx < 0 || cy - rpx >= height) continue;
+            order.Add((depth, cx, cy, rpx, s));
+        }
+        order.Sort((a, b) => b.Depth.CompareTo(a.Depth));
+
+        foreach (var (depth, cx, cy, rpx, s) in order)
+        {
+            float a0 = s.Alpha;
+            byte cr = s.R, cg = s.G, cb = s.B;
+            if (fog is { } f)
+            {
+                // Fog the splat by ITS OWN depth (the post-pass fog only knows
+                // the geometry behind it): tint toward the fog colour and thin out.
+                float t = Math.Clamp((depth - f.Near) / MathF.Max(f.Far - f.Near, 0.001f), 0f, 1f);
+                cr = (byte)(cr + (int)((f.R - cr) * t));
+                cg = (byte)(cg + (int)((f.G - cg) * t));
+                cb = (byte)(cb + (int)((f.B - cb) * t));
+                a0 *= 1f - t * 0.85f;
+            }
+            if (a0 <= 0.004f) continue;
+
+            int x0 = Math.Max(0, (int)(cx - rpx)), x1 = Math.Min(width - 1, (int)(cx + rpx) + 1);
+            int y0 = Math.Max(0, (int)(cy - rpx)), y1 = Math.Min(height - 1, (int)(cy + rpx) + 1);
+            float invR2 = 1f / (rpx * rpx);
+            for (int y = y0; y <= y1; y++)
+            {
+                float dy = y - cy;
+                int row = y * width;
+                for (int x = x0; x <= x1; x++)
+                {
+                    float dx = x - cx;
+                    float d2 = (dx * dx + dy * dy) * invR2;
+                    if (d2 >= 1f) continue;               // outside the DISC — corners stay untouched
+                    int idx = row + x;
+                    if (zbuf[idx] < depth) continue;      // scene geometry in front
+                    float fall = 1f - d2;
+                    float a = a0 * fall * fall;           // quadratic falloff = soft round core
+                    if (a <= 0.004f) continue;
+                    int o = idx * 4;
+                    if (s.Additive)
+                    {
+                        px[o]     = ClampByte(px[o]     + cb * a);
+                        px[o + 1] = ClampByte(px[o + 1] + cg * a);
+                        px[o + 2] = ClampByte(px[o + 2] + cr * a);
+                    }
+                    else
+                    {
+                        px[o]     = (byte)(px[o]     + (int)((cb - px[o])     * a));
+                        px[o + 1] = (byte)(px[o + 1] + (int)((cg - px[o + 1]) * a));
+                        px[o + 2] = (byte)(px[o + 2] + (int)((cr - px[o + 2]) * a));
+                    }
+                }
+            }
+        }
+    }
+
     public static byte[] Render(
         Vector3[] verts, Vector3[] normals,
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
         bool wireframe, DirLight[]? lights = null, int[]? triColor = null,
-        bool ortho = false, Fog? fog = null)
+        bool ortho = false, Fog? fog = null, IReadOnlyList<Splat>? splats = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -164,6 +251,8 @@ public static class SoftwareRenderer
                 cr, cg, cb);
         }
         if (fog is { } fp && !wireframe) ApplyFog(px, zbuf, fp); // gizmo stays crisp above the fog
+        if (splats is { Count: > 0 } && !wireframe)
+            DrawSplats(px, zbuf, width, height, view, proj, splats, fog); // soft particles over the fogged scene
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
@@ -189,7 +278,7 @@ public static class SoftwareRenderer
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist, DirLight[]? lights = null, int[]? triColor = null,
-        bool ortho = false, Fog? fog = null)
+        bool ortho = false, Fog? fog = null, IReadOnlyList<Splat>? splats = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -275,6 +364,8 @@ public static class SoftwareRenderer
             }
         }
         if (fog is { } fp) ApplyFog(px, zbuf, fp); // ED-8 — mood fog audition
+        if (splats is { Count: > 0 })
+            DrawSplats(px, zbuf, width, height, view, proj, splats, fog); // soft particles over the fogged scene
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }

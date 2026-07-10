@@ -4982,21 +4982,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
         }
 
-        // GAME-1 — LIVE effects: fire/smoke emitters preview as animated,
-        // age-shaded billboard particles (deterministic per time, so no sim
-        // state). Excluded from the scene bounds so the camera never
-        // "breathes" with the flames; not pickable (the marker cube is the
-        // grab handle). The FX toolbar toggle pauses this for huge regions.
+        // GAME-1 (reworked) — LIVE effects: fire/smoke emitters preview as
+        // SOFT ROUND SPLATS drawn by the renderer's particle pass (round with
+        // radial falloff — geometry billboards can only ever be hard-edged
+        // polygons, which read as squares). Deterministic per time, so no sim
+        // state; never in the scene bounds, never pickable (the marker cube
+        // is the grab handle). The FX toolbar toggle pauses this for huge
+        // regions.
+        List<SoftwareRenderer.Splat>? fxSplats = null;
         if (_liveFx && Emitters.Count > 0 && GroupVisible("Emitters"))
         {
-            var fxDir = new Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch));
-            var fxRight = Vector3.Normalize(Vector3.Cross(new Vector3(0, 0, 1), fxDir));
-            var fxUp = Vector3.Normalize(Vector3.Cross(fxDir, fxRight));
+            fxSplats = new List<SoftwareRenderer.Splat>(Emitters.Count * 64);
             foreach (var em in Emitters)
             {
                 if (!layout.TryGetTransform(em.NodeGuid, out var enw)) continue;
-                AppendEmitterParticles(em, Vector3.Transform(em.LocalPos, enw), fxRight, fxUp, _fxTime,
-                    verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+                BuildEmitterSplats(em, Vector3.Transform(em.LocalPos, enw), _fxTime, fxSplats);
             }
         }
 
@@ -5055,9 +5055,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var fog = PreviewFog(); // ED-8 — audition the authored mood fog live
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr, _ortho, fog)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr, _ortho, fog, fxSplats)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr, _ortho, fog);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr, _ortho, fog, fxSplats);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -5120,15 +5120,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
     }
 
-    /// <summary>GAME-1 — the live fire/smoke preview. Each particle's whole
-    /// life is a pure function of (emitter scid, index, time): phase loops
-    /// over the fade time, the particle spirals up from the base with the
-    /// authored size/growth, and the colour rides the phase (fire: hot core
-    /// → orange → ember; smoke: light → dark grey, expanding). Deterministic,
-    /// so pausing the FX timer freezes rather than resets.</summary>
-    private static void AppendEmitterParticles(RegionEmitter em, Vector3 basePos, Vector3 right, Vector3 up, float t,
-        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
-        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    /// <summary>GAME-1 (reworked) — the live fire/smoke preview as SOFT ROUND
+    /// SPLATS instead of billboard geometry: a triangle rasterizer can only
+    /// produce hard-edged polygons, which is why particles used to read as
+    /// squares no matter how they spun. Each particle's whole life stays a
+    /// pure function of (emitter scid, index, time): phase loops over the
+    /// fade time, the particle spirals up from the base with the authored
+    /// size/growth, and the colour rides the phase. Fire is two splats — a
+    /// bright ADDITIVE core inside a soft halo — so it glows; smoke is a
+    /// single expanding grey alpha puff. Deterministic, so pausing the FX
+    /// timer freezes rather than resets.</summary>
+    private static void BuildEmitterSplats(RegionEmitter em, Vector3 basePos, float t,
+        List<SoftwareRenderer.Splat> splats)
     {
         int count = Math.Clamp(em.Count, 10, 48); // preview budget — the engine shows the full count
         float life = MathF.Max(0.4f, em.Fade);
@@ -5147,23 +5150,29 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var p = basePos + new Vector3(MathF.Cos(ang) * rad, MathF.Sin(ang) * rad, 0.05f + rise);
             float flick = em.Smoke ? 1f : 0.8f + 0.4f * Hash01(seed ^ (uint)(t * 24f));
             float s = size0 * (0.45f + phase * (0.8f + grow * 0.35f)) * flick;
-            int rgb = em.Smoke
-                ? LerpRgb(0x9A9AA2, 0x3A3A40, phase)
-                : phase < 0.35f
-                    ? LerpRgb(0xFFE08A, 0xF07A28, phase / 0.35f)
-                    : LerpRgb(0xF07A28, 0x6E1F0A, (phase - 0.35f) / 0.65f);
-            // Soft wisps: alpha rides the phase (dense young, fading out),
-            // packed in triColor's high byte for the blend raster path.
-            float alpha = em.Smoke ? 0.50f - 0.30f * phase : 0.75f - 0.55f * phase;
-            int color = (Math.Clamp((int)(alpha * 255f), 0x18, 0xF0) << 24) | rgb;
-            // Diamond billboard on per-particle rotated axes — never reads
-            // as a box, and the slow spin sells the churn.
-            float rot = h1 * (MathF.PI * 2f) + t * (em.Smoke ? 0.6f : 1.7f) * (h2 > 0.5f ? 1f : -1f);
-            float cs = MathF.Cos(rot), sn = MathF.Sin(rot);
-            var rr = (right * cs + up * sn) * s;
-            var uu = (up * cs - right * sn) * s;
-            AppendQuad(p - rr, p - uu, p + rr, p + uu, -1, color, 0u,
-                verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+            if (em.Smoke)
+            {
+                int rgb = LerpRgb(0x9A9AA2, 0x3A3A40, phase);
+                float alpha = 0.45f - 0.33f * phase;
+                splats.Add(new SoftwareRenderer.Splat(p, s * 1.5f,
+                    (byte)((rgb >> 16) & 0xFF), (byte)((rgb >> 8) & 0xFF), (byte)(rgb & 0xFF),
+                    alpha, Additive: false));
+            }
+            else
+            {
+                int core = phase < 0.35f
+                    ? LerpRgb(0xFFE8A0, 0xFFAE42, phase / 0.35f)
+                    : LerpRgb(0xFFAE42, 0xB33A10, (phase - 0.35f) / 0.65f);
+                int halo = LerpRgb(0xF07A28, 0x571505, phase);
+                float coreA = 0.85f - 0.65f * phase;
+                float haloA = 0.40f - 0.30f * phase;
+                splats.Add(new SoftwareRenderer.Splat(p, s * 1.9f,
+                    (byte)((halo >> 16) & 0xFF), (byte)((halo >> 8) & 0xFF), (byte)(halo & 0xFF),
+                    haloA, Additive: true));
+                splats.Add(new SoftwareRenderer.Splat(p, s * 0.85f,
+                    (byte)((core >> 16) & 0xFF), (byte)((core >> 8) & 0xFF), (byte)(core & 0xFF),
+                    coreA, Additive: true));
+            }
         }
     }
 
