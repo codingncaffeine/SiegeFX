@@ -1680,6 +1680,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         TakeBaselineCommand = new RelayCommand(_ => TakeBaseline());
         CompareBaselineCommand = new RelayCommand(_ => CompareBaseline(), _ => _diffBaseline is not null);
         DependenciesCommand = new RelayCommand(_ => ShowDependencies());
+        SyncGameCommand = new RelayCommand(_ => SyncGame(), _ => HasLiveSession());
         RefreshPrefabs();
         AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
         AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
@@ -3476,8 +3477,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
-            RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
-            Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
+            TrackSession(RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath), play: false);
+            Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}). '⟲ Sync game' repacks + restarts it after edits.";
         }
         catch (Exception ex) { Status = "Test-in-engine failed: " + ex.Message; }
     }
@@ -3511,15 +3512,52 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
-            RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
+            TrackSession(RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
                 onEarlyExit: (code, err) => System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                 {
                     Status = $"Engine exited with code {code} — {FirstLine(err)}";
                     ValidationRows.Add(new ValidationRow(false, $"Runtime exited {code}: {FirstLine(err)}"));
-                }));
-            Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).";
+                })), play: true);
+            Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}). '⟲ Sync game' repacks + restarts it after edits.";
         }
         catch (Exception ex) { Status = "Play-in-engine failed: " + ex.Message; }
+    }
+
+    // ═══ ED-14 — live-engine link ═════════════════════════════════════
+    // The editor tracks the engine session it launched. "Sync game" closes
+    // it, repacks the CURRENT region state through the same pipeline, and
+    // relaunches the same mode — a one-click edit→see loop. (In-process
+    // hot-reload without a restart needs engine-side reload plumbing and
+    // stays future work; this keeps the whole loop inside one button today.)
+
+    private System.Diagnostics.Process? _liveSession;
+    private bool _liveSessionIsPlay;
+
+    private void TrackSession(System.Diagnostics.Process p, bool play)
+    {
+        _liveSession = p;
+        _liveSessionIsPlay = play;
+    }
+
+    public RelayCommand SyncGameCommand { get; }
+
+    private bool HasLiveSession()
+    {
+        try { return _liveSession is { HasExited: false }; }
+        catch { return false; }
+    }
+
+    private void SyncGame()
+    {
+        if (!HasLiveSession()) { Status = "No running session — Test terrain ▶ or Play ▶ first, then Sync repacks it."; return; }
+        try
+        {
+            _liveSession!.Kill();
+            _liveSession.WaitForExit(3000);
+        }
+        catch { /* it may have just closed on its own — relaunch regardless */ }
+        if (_liveSessionIsPlay) PlayInEngine();
+        else TestInEngine();
     }
 
     /// <summary>Runs the pre-launch checklist and shows it in the validation panel.</summary>

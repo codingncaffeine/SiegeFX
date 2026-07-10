@@ -80,8 +80,10 @@
                             ToolTip="Run the pre-launch checklist — results land on the Map tab below"/>
                     <Button Content="Test terrain ▶" Command="{Binding TestInEngineCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Pack this region into a .dsmap and launch SiegeFX to walk its terrain"/>
-                    <Button Content="Play ▶" Command="{Binding PlayInEngineCommand}" Padding="10,4"
+                    <Button Content="Play ▶" Command="{Binding PlayInEngineCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Pack a playable map (start point + seed actor) and launch SiegeFX to play it"/>
+                    <Button Content="⟲ Sync game" Command="{Binding SyncGameCommand}" Padding="10,4"
+                            ToolTip="ED-14 — one-click edit→see loop: closes the running engine session, repacks the region with your latest edits, and relaunches the same mode. Enabled while a Test/Play session is running."/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal">
                     <Button Content="{Binding TexturedLabel}" Command="{Binding TexturedCommand}" Padding="10,4" Margin="0,0,6,0"
