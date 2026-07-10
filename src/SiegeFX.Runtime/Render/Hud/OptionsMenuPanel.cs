@@ -110,6 +110,12 @@ internal sealed class OptionsMenuPanel
         public float CompanionInvPosX = -1f, CompanionInvPosY = -1f;
         public float AwpPosX = -1f, AwpPosY = -1f;   // player portrait + slots cluster
         public float TeamPosX = -1f, TeamPosY = -1f; // companion portrait strip
+        // Info-rail trio (character sheet / inventory / spellbook).
+        // RailLocked=true (default) moves them as ONE unit anchored by
+        // PaperdollPos; unlocked, each panel takes its own stored spot.
+        public bool RailLocked = true;
+        public float PaperdollPosX = -1f, PaperdollPosY = -1f;
+        public float SpellbookPosX = -1f, SpellbookPosY = -1f;
 
         // Advanced — ALPHA-2V modern-GPU tab (new; DS1 had no equivalent).
         // All vendor-neutral GL features. MSAA needs a window rebuild so it
@@ -1040,6 +1046,8 @@ internal sealed class OptionsMenuPanel
             () => _staged.PointLightBudget, v => _staged.PointLightBudget = v, 4, 32);
         IntSlider(bars, text, vw, vh, r++, "UI Scale %",
             () => _staged.UiScalePercent, v => _staged.UiScalePercent = v, 50, 150);
+        BoolCycle(bars, text, vw, vh, r++, "Move Panels As One",
+            () => _staged.RailLocked, v => _staged.RailLocked = v);
     }
 
     void DrawPageButton(BarRenderer bars, TextRenderer text, int vw, int vh,
@@ -1265,6 +1273,7 @@ internal sealed class OptionsMenuPanel
                 _staged.Msaa = d.Msaa;
                 _staged.PointLightBudget = d.PointLightBudget;
                 _staged.UiScalePercent = d.UiScalePercent;
+                _staged.RailLocked = d.RailLocked;
                 break;
         }
     }

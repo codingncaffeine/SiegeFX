@@ -4559,10 +4559,12 @@ void main()
                     {
                         var sz2 = _window.Size;
                         float irs2 = Hud.InfoRailLayout.Scale(sz2.Y);
-                        int pdx = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 * irs2);
+                        // SC-HUD-DRAG — anchor to the LIVE (possibly dragged)
+                        // sheet rect, not the authored dock.
+                        int pdx = _paperdollRect.X;
                         var r2 = Hud.InfoRailLayout.SpellbookToggle;
                         int tx2 = pdx + (int)System.Math.Round((r2.X0 - Hud.InfoRailLayout.Pane1.X0) * irs2);
-                        int ty2 = (int)System.Math.Round(r2.Y0 * irs2);
+                        int ty2 = _paperdollRect.Y + (int)System.Math.Round(r2.Y0 * irs2);
                         int tw2 = (int)System.Math.Round(r2.W * irs2);
                         int th2 = (int)System.Math.Round(r2.H * irs2);
                         if (mx >= tx2 && my >= ty2 && mx < tx2 + tw2 && my < ty2 + th2)
@@ -4778,11 +4780,10 @@ void main()
                     if (_charPanelOpen && _player is not null)
                     {
                         var sz = _window.Size;
-                        // Must match the paperdollX draw anchor (AwpAnchorX ×
-                        // the AWP's clamped scale) or clicks land offset.
-                        int pdx = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 *
-                            Hud.CharacterAwp.Scale(sz.Y));
-                        var slotName = _paperdoll.TryHitTestSlot(imx, imy, pdx, 0, sz.Y);
+                        // SC-HUD-DRAG — anchor to the LIVE (possibly dragged)
+                        // sheet rect so slot clicks land wherever it sits.
+                        var slotName = _paperdoll.TryHitTestSlot(imx, imy,
+                            _paperdollRect.X, _paperdollRect.Y, sz.Y);
                         if (slotName is not null)
                         {
                             TryPaperdollSlotClick(slotName);
@@ -4890,10 +4891,14 @@ void main()
             mouse.MouseUp += (m, btn) =>
             {
                 // SC-HUD-DRAG — releasing the button locks the dragged HUD
-                // piece where it sits and persists the spot immediately.
+                // piece where it sits (with magnetic edge/home snapping) and
+                // persists the spot immediately.
                 if (btn == MouseButton.Left && _hudDrag != HudDragPiece.None)
                 {
+                    var released = _hudDrag;
                     _hudDrag = HudDragPiece.None;
+                    SnapHudPieceOnRelease(released);
+                    ApplyHudPieceOffsets();
                     Hud.OptionsPrefs.Save(_optionsMenu.Live);
                     return;
                 }
@@ -9261,10 +9266,30 @@ void main()
     // companion-inventory tile row; dragging moves it, releasing locks the
     // spot into prefs.json (normalized fractions, resolution-independent).
     // While shift is held, a click on a piece bypasses its buttons.
-    private enum HudDragPiece { None, Compass, Inventory, CompanionInv, Awp, TeamStrip }
+    private enum HudDragPiece { None, Compass, Inventory, CompanionInv, Awp, TeamStrip, Paperdoll, Spellbook }
     private HudDragPiece _hudDrag = HudDragPiece.None;
     private int _hudDragOffX, _hudDragOffY;
     private (int X, int Y, int W, int H) _companionRowRect; // stashed by the draw pass
+    private (int X, int Y, int W, int H) _paperdollRect;    // rail origin + sheet rect, stashed by the draw pass
+
+    /// <summary>Route a grab on any info-rail panel: RailLocked drags the
+    /// whole trio via the rail anchor (Paperdoll slot); unlocked drags just
+    /// the grabbed panel.</summary>
+    private void BeginRailDrag(HudDragPiece piece, int mx, int my, int px, int py)
+    {
+        if (_optionsMenu.Live.RailLocked)
+        {
+            _hudDrag = HudDragPiece.Paperdoll; // the rail anchor
+            _hudDragOffX = mx - _paperdollRect.X;
+            _hudDragOffY = my - _paperdollRect.Y;
+        }
+        else
+        {
+            _hudDrag = piece;
+            _hudDragOffX = mx - px;
+            _hudDragOffY = my - py;
+        }
+    }
 
     private bool ShiftHeld()
     {
@@ -9297,6 +9322,17 @@ void main()
             _hudDragOffX = mx - cxr; _hudDragOffY = my - cyr;
             return true;
         }
+        // Spellbook first — it draws last in the rail, i.e. on top.
+        if (_spellBookOpen)
+        {
+            int sw = Hud.SpellBookPanel.WidthAt(vh), sh = Hud.SpellBookPanel.HeightAt(vh);
+            int sx = _spellBookPanel.OriginX, sy = _spellBookPanel.OriginY;
+            if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sh)
+            {
+                BeginRailDrag(HudDragPiece.Spellbook, mx, my, sx, sy);
+                return true;
+            }
+        }
         // Companion row before the player panel — it can tile over/near it.
         var cr = _companionRowRect;
         if (cr.W > 0 && mx >= cr.X && mx < cr.X + cr.W && my >= cr.Y && my < cr.Y + cr.H)
@@ -9311,10 +9347,17 @@ void main()
             int ix = _inventoryPanel.OriginX, iy = _inventoryPanel.OriginY;
             if (mx >= ix && mx < ix + pw && my >= iy && my < iy + ph)
             {
-                _hudDrag = HudDragPiece.Inventory;
-                _hudDragOffX = mx - ix; _hudDragOffY = my - iy;
+                BeginRailDrag(HudDragPiece.Inventory, mx, my, ix, iy);
                 return true;
             }
+        }
+        // Character sheet (paperdoll) — the rail's anchor panel.
+        var pr = _paperdollRect;
+        if (_charPanelOpen && pr.W > 0
+            && mx >= pr.X && mx < pr.X + pr.W && my >= pr.Y && my < pr.Y + pr.H)
+        {
+            BeginRailDrag(HudDragPiece.Paperdoll, mx, my, pr.X, pr.Y);
+            return true;
         }
         // Companion portrait strip (below the AWP; only with followers).
         // Checked before the AWP because the strip's authored top (y=56)
@@ -9364,8 +9407,113 @@ void main()
             case HudDragPiece.CompanionInv: s.CompanionInvPosX = nx; s.CompanionInvPosY = ny; break;
             case HudDragPiece.Awp:          s.AwpPosX = nx;          s.AwpPosY = ny;          break;
             case HudDragPiece.TeamStrip:    s.TeamPosX = nx;         s.TeamPosY = ny;         break;
+            case HudDragPiece.Paperdoll:    s.PaperdollPosX = nx;    s.PaperdollPosY = ny;    break;
+            case HudDragPiece.Spellbook:    s.SpellbookPosX = nx;    s.SpellbookPosY = ny;    break;
         }
         ApplyHudPieceOffsets();
+    }
+
+    /// <summary>SC-HUD-DRAG — magnetic release: when a dropped rail panel's
+    /// edge lands near another rail piece's edge, snap flush (with top-edge
+    /// alignment); when any piece lands near its DEFAULT home, clear the
+    /// override entirely so it re-adopts the built-in layout.</summary>
+    private void SnapHudPieceOnRelease(HudDragPiece piece)
+    {
+        const int Th = 14; // snap threshold, device px
+        int vw = _window.Size.X, vh = _window.Size.Y;
+        if (vw <= 0 || vh <= 0) return;
+        var s = _optionsMenu.Live;
+
+        (float px, float py)? Get(HudDragPiece p) => p switch
+        {
+            HudDragPiece.Compass      => s.CompassPosX >= 0f ? (s.CompassPosX, s.CompassPosY) : null,
+            HudDragPiece.Inventory    => s.InventoryPosX >= 0f ? (s.InventoryPosX, s.InventoryPosY) : null,
+            HudDragPiece.CompanionInv => s.CompanionInvPosX >= 0f ? (s.CompanionInvPosX, s.CompanionInvPosY) : null,
+            HudDragPiece.Awp          => s.AwpPosX >= 0f ? (s.AwpPosX, s.AwpPosY) : null,
+            HudDragPiece.TeamStrip    => s.TeamPosX >= 0f ? (s.TeamPosX, s.TeamPosY) : null,
+            HudDragPiece.Paperdoll    => s.PaperdollPosX >= 0f ? (s.PaperdollPosX, s.PaperdollPosY) : null,
+            HudDragPiece.Spellbook    => s.SpellbookPosX >= 0f ? (s.SpellbookPosX, s.SpellbookPosY) : null,
+            _ => null,
+        };
+        void Set(HudDragPiece p, float px, float py)
+        {
+            switch (p)
+            {
+                case HudDragPiece.Compass:      s.CompassPosX = px;      s.CompassPosY = py;      break;
+                case HudDragPiece.Inventory:    s.InventoryPosX = px;    s.InventoryPosY = py;    break;
+                case HudDragPiece.CompanionInv: s.CompanionInvPosX = px; s.CompanionInvPosY = py; break;
+                case HudDragPiece.Awp:          s.AwpPosX = px;          s.AwpPosY = py;          break;
+                case HudDragPiece.TeamStrip:    s.TeamPosX = px;         s.TeamPosY = py;         break;
+                case HudDragPiece.Paperdoll:    s.PaperdollPosX = px;    s.PaperdollPosY = py;    break;
+                case HudDragPiece.Spellbook:    s.SpellbookPosX = px;    s.SpellbookPosY = py;    break;
+            }
+        }
+
+        if (Get(piece) is not { } pos) return;
+        int x = (int)MathF.Round(pos.px * vw), y = (int)MathF.Round(pos.py * vh);
+
+        // Piece dimensions + default home (the built-in layout position).
+        float irs = Hud.InfoRailLayout.Scale(vh);
+        float aws = Hud.CharacterAwp.Scale(vh);
+        int railH = (int)MathF.Round(449 * irs);
+        int homeRailX = (int)MathF.Round(87 * aws); // AwpAnchorX
+        (int w, int h, int hx, int hy) dims = piece switch
+        {
+            HudDragPiece.Compass   => (0, 0, int.MinValue, int.MinValue), // home computed below
+            HudDragPiece.Paperdoll => (_paperdollRect.W, railH, homeRailX, 0),
+            HudDragPiece.Inventory => (Hud.InventoryPanel.PanelWidth(vh), railH, homeRailX, 0),
+            HudDragPiece.Spellbook => (Hud.SpellBookPanel.WidthAt(vh), Hud.SpellBookPanel.HeightAt(vh), homeRailX, 0),
+            HudDragPiece.CompanionInv => (_companionRowRect.W, _companionRowRect.H,
+                                          _inventoryPanel.OriginX + Hud.InventoryPanel.PanelWidth(vh), 0),
+            HudDragPiece.Awp       => ((int)MathF.Round(150 * aws), (int)MathF.Round(58 * aws), 0, 0),
+            HudDragPiece.TeamStrip => ((int)MathF.Round(150 * Hud.TeamPortraits.Scale(vh)),
+                                       _party.Count > 1 ? (int)MathF.Round((_party.Count - 1) * Hud.TeamPortraits.CellStep * Hud.TeamPortraits.Scale(vh)) : 0,
+                                       0, (int)MathF.Round(Hud.TeamPortraits.CellTop0 * Hud.TeamPortraits.Scale(vh))),
+            _ => (0, 0, int.MinValue, int.MinValue),
+        };
+        if (piece == HudDragPiece.Compass)
+        {
+            var (cx, cy, csz) = CompassRect(vw, vh);
+            float cscale = Hud.HudScale.Hud(vh);
+            dims = (csz, csz, vw - csz - (int)(6 * cscale), (int)(6 * cscale));
+            _ = cx; _ = cy;
+        }
+
+        // Home snap: near the default spot → clear the override entirely.
+        if (dims.hx != int.MinValue
+            && Math.Abs(x - dims.hx) <= Th && Math.Abs(y - dims.hy) <= Th)
+        {
+            Set(piece, -1f, -1f);
+            return;
+        }
+
+        // Edge snap between rail-family pieces: flush left/right docking
+        // with top alignment (the classic DS1 chain, user-arranged).
+        if (piece is HudDragPiece.Paperdoll or HudDragPiece.Inventory
+                  or HudDragPiece.Spellbook or HudDragPiece.CompanionInv)
+        {
+            var targets = new List<(int X, int Y, int W, int H)>();
+            if (piece != HudDragPiece.Paperdoll && _charPanelOpen && _paperdollRect.W > 0) targets.Add(_paperdollRect);
+            if (piece != HudDragPiece.Inventory && _inventoryOpen)
+                targets.Add((_inventoryPanel.OriginX, _inventoryPanel.OriginY,
+                             Hud.InventoryPanel.PanelWidth(vh), railH));
+            if (piece != HudDragPiece.Spellbook && _spellBookOpen)
+                targets.Add((_spellBookPanel.OriginX, _spellBookPanel.OriginY,
+                             Hud.SpellBookPanel.WidthAt(vh), Hud.SpellBookPanel.HeightAt(vh)));
+            if (piece != HudDragPiece.CompanionInv && _companionRowRect.W > 0) targets.Add(_companionRowRect);
+
+            foreach (var t in targets)
+            {
+                bool vOverlap = y < t.Y + t.H + Th && y + dims.h > t.Y - Th;
+                if (!vOverlap) continue;
+                if (Math.Abs(x - (t.X + t.W)) <= Th) x = t.X + t.W;           // my left ↔ their right
+                else if (Math.Abs((x + dims.w) - t.X) <= Th) x = t.X - dims.w; // my right ↔ their left
+                else continue;
+                if (Math.Abs(y - t.Y) <= Th) y = t.Y;                          // align tops
+                Set(piece, (float)x / vw, (float)y / vh);
+                return;
+            }
+        }
     }
 
     /// <summary>SC-HUD-DRAG — convert the persisted normalized positions
@@ -21339,6 +21487,33 @@ void main()
             int inventoryMinX = paperdollX;
             const int panelTopY    = 0;
 
+            // SC-HUD-DRAG — info-rail placement. RailLocked (default): the
+            // trio moves as ONE unit anchored by PaperdollPos, preserving
+            // the DS1 dock chain internally; unlocked: each panel takes its
+            // own stored spot. -1 sentinels = the authored chain positions.
+            var railPos = _optionsMenu.Live;
+            int pdX = railPos.PaperdollPosX >= 0f ? (int)MathF.Round(railPos.PaperdollPosX * size.X) : paperdollX;
+            int pdY = railPos.PaperdollPosY >= 0f ? (int)MathF.Round(railPos.PaperdollPosY * size.Y) : panelTopY;
+            int invX, invY, spX, spY;
+            if (railPos.RailLocked)
+            {
+                int railDx = pdX - paperdollX, railDy = pdY - panelTopY;
+                invX = (_charPanelOpen ? inventoryMaxX : inventoryMinX) + railDx;
+                invY = panelTopY + railDy;
+                spX  = spellbookX + railDx;
+                spY  = panelTopY + railDy;
+            }
+            else
+            {
+                invX = railPos.InventoryPosX >= 0f ? (int)MathF.Round(railPos.InventoryPosX * size.X)
+                                                   : (_charPanelOpen ? inventoryMaxX : inventoryMinX);
+                invY = railPos.InventoryPosY >= 0f ? (int)MathF.Round(railPos.InventoryPosY * size.Y) : panelTopY;
+                spX  = railPos.SpellbookPosX >= 0f ? (int)MathF.Round(railPos.SpellbookPosX * size.X) : spellbookX;
+                spY  = railPos.SpellbookPosY >= 0f ? (int)MathF.Round(railPos.SpellbookPosY * size.Y) : panelTopY;
+            }
+            int railH = (int)System.Math.Round(449 * infoRailScale);
+            _paperdollRect = (pdX, pdY, paperdollW, railH);
+
             if (_charPanelOpen && _player is not null)
             {
                 // The sheet shows either the player (target 0) or a clicked
@@ -21350,8 +21525,8 @@ void main()
                 if (sheetMember is null) { _paperdollTargetIndex = 0; sheetMember = _player; }
                 bool isPlayerSheet = _paperdollTargetIndex <= 0;
 
-                _characterPanel.OriginX = paperdollX;
-                _characterPanel.OriginY = panelTopY;
+                _characterPanel.OriginX = pdX;
+                _characterPanel.OriginY = pdY;
                 _characterPanel.IsOpen  = true;
                 // Armor + weapon stats come from the active character's live equipment.
                 int armor = ComputeArmorRating(ActiveEquipment);
@@ -21391,7 +21566,7 @@ void main()
                 if (_iconRenderer is not null)
                 {
                     _paperdoll.Draw(_iconRenderer, _barRenderer!, _textRenderer,
-                        size.X, size.Y, paperdollX, panelTopY,
+                        size.X, size.Y, pdX, pdY,
                         _paperdollBotPaneTex,
                         ghostName =>
                         {
@@ -21420,8 +21595,9 @@ void main()
                 {
                     float irs = Hud.InfoRailLayout.Scale(size.Y);
                     var r = Hud.InfoRailLayout.SpellbookToggle;
-                    int tx = paperdollX + (int)System.Math.Round((r.X0 - Hud.InfoRailLayout.Pane1.X0) * irs);
-                    int ty = panelTopY  + (int)System.Math.Round(r.Y0 * irs);
+                    // SC-HUD-DRAG — ride the live (possibly dragged) sheet.
+                    int tx = pdX + (int)System.Math.Round((r.X0 - Hud.InfoRailLayout.Pane1.X0) * irs);
+                    int ty = pdY + (int)System.Math.Round(r.Y0 * irs);
                     int tw = (int)System.Math.Round(r.W * irs);
                     int th = (int)System.Math.Round(r.H * irs);
                     var uv = _spellbookWithI
@@ -21437,14 +21613,10 @@ void main()
             {
                 // INFORAIL-B: max mode (paperdoll open) → x=253; min mode
                 // (paperdoll closed) → x=89 per hud_inventory.gas.
-                // SC-HUD-DRAG — a user-dragged position overrides the dock.
+                // SC-HUD-DRAG — invX/invY carry the lock/override logic.
                 var hudPos = _optionsMenu.Live;
-                _inventoryPanel.OriginX     = hudPos.InventoryPosX >= 0f
-                    ? (int)MathF.Round(hudPos.InventoryPosX * size.X)
-                    : (_charPanelOpen ? inventoryMaxX : inventoryMinX);
-                _inventoryPanel.OriginY     = hudPos.InventoryPosY >= 0f
-                    ? (int)MathF.Round(hudPos.InventoryPosY * size.Y)
-                    : panelTopY;
+                _inventoryPanel.OriginX     = invX;
+                _inventoryPanel.OriginY     = invY;
                 _inventoryPanel.DimBackdrop = false;
                 _inventoryPanel.Gold        = _progression?.Gold ?? 0;
                 // Phase 22-AUTH-INV — DS1-authentic chrome assets loaded
@@ -21522,8 +21694,8 @@ void main()
             }
             if (_spellBookOpen && _barRenderer is not null)
             {
-                _spellBookPanel.OriginX = spellbookX;
-                _spellBookPanel.OriginY = panelTopY;
+                _spellBookPanel.OriginX = spX;
+                _spellBookPanel.OriginY = spY;
                 _spellBookPanel.IsOpen  = true;
                 // Phase 21-SC-SCROLL-C-1 — the 10 below-active rows are now
                 // backed by PlayerSpellbook.Placed. Null entries render as
