@@ -57,14 +57,36 @@ public sealed class ActorFollower
     int _idleTicksRemaining;
     const int IdleAfterFail = 20;
 
+    /// <summary>SC-MOB-ROAM-AUDIT — computer-gated amphibious policy for actors
+    /// AUTHORED on water (Dark Mire mucosa, pond fish). Their placement is the
+    /// capability statement: with the land-only Computer policy their spawn tri
+    /// was an illegal path START, every SetTarget failed, and they stood frozen
+    /// from tick 0 (roam-sim: 12 actors blocked 1800/1800 ticks).</summary>
+    static readonly NavTraversal ComputerAmphibious = new()
+    {
+        WaterCostMultiplier = 4f,
+        Actor = Assets.LogicalFlagsStore.ActorClass.ComputerPlayer,
+    };
+
     public ActorFollower(NavMesh mesh, Vector3 startPos, float speed, int rngSeed, Vector3 initialFacing)
     {
+        // SC-MOB-ROAM-AUDIT — island escape. A spawn that resolves onto a tiny
+        // disconnected component (sd_r2's 4-triangle trap-pit floors sit 3u
+        // under the dungeon floor and catch best-Y spawn snaps) can never path
+        // anywhere: the actor freezes for the whole session. Re-snap to the
+        // nearest triangle of a real component before wiring the follower.
+        startPos = EscapeTinyIsland(mesh, startPos);
+        // Phase 24-NAV-LOGICAL-FLAGS — NPC / brain actors respect the
+        // lf_computer_player gate so they stay out of human-only zones.
+        // SC-MOB-ROAM-AUDIT — actors placed on a Water triangle get the
+        // amphibious variant; everyone else stays land-only per DS1 stock.
+        var traversal = NavTraversal.Computer;
+        if (mesh.TryFindTriangle(startPos, out var spawnTri, includeFadeHidden: true) &&
+            mesh.Kinds[spawnTri] == Assets.SnoModel.FloorKind.Water)
+            traversal = ComputerAmphibious;
         Follower = new NavFollower(mesh, startPos, speed)
         {
-            // Phase 24-NAV-LOGICAL-FLAGS — NPC / brain actors respect
-            // the lf_computer_player gate so they stay out of human-
-            // only zones (town building interiors, scripted refuges).
-            Traversal = NavTraversal.Computer,
+            Traversal = traversal,
         };
         _rng = new Random(rngSeed);
         // Collapse to XZ unit vector; degenerate input (Y-only or zero) falls back to +Z.
@@ -104,9 +126,13 @@ public sealed class ActorFollower
 
         // SC-MOB-ROAM — a finished stroll parks the actor at its post for a random
         // dwell instead of immediately re-rolling, so idle mobs mostly stand and
-        // fidget. A blocked path re-routes right away (no point pressing a wall).
+        // fidget. SC-MOB-ROAM-AUDIT — a blocked path re-routes after a short
+        // idle, NOT immediately: an actor whose every pick fails (hemmed in, or
+        // its stand-bind rejected) used to re-run target selection + A* at the
+        // full 20 Hz forever — a frozen mob that also burned a pathfinder's
+        // worth of CPU each tick.
         if (Follower.PathBlocked)
-            PickNewTarget();
+            _idleTicksRemaining = IdleAfterFail;
         else if (Follower.ReachedGoal)
             _idleTicksRemaining = _rng.Next(IdleMinTicks, IdleMaxTicks + 1);
     }
@@ -136,6 +162,50 @@ public sealed class ActorFollower
         if (len > 1e-4f) _facing = flat / len;
     }
 
+    /// <summary>True when <paramref name="startTri"/>'s connected component holds
+    /// fewer than <paramref name="limit"/> triangles — a nav island too small to
+    /// live on (trap covers, rubble slabs). Bounded flood fill; cost is O(limit).</summary>
+    static bool IsTinyComponent(NavMesh mesh, int startTri, int limit)
+    {
+        var seen = new HashSet<int> { startTri };
+        var stack = new Stack<int>();
+        stack.Push(startTri);
+        while (stack.Count > 0)
+        {
+            int t = stack.Pop();
+            for (int s = 0; s < 3; s++)
+            {
+                int n = mesh.Neighbors[3 * t + s];
+                if (n < 0 || !seen.Add(n)) continue;
+                if (seen.Count >= limit) return false;
+                stack.Push(n);
+            }
+        }
+        return true;
+    }
+
+    /// <summary>If <paramref name="pos"/> resolves onto a tiny nav island, returns
+    /// the nearest surrounding point on a real component (ring probe, out to 4u);
+    /// otherwise returns <paramref name="pos"/> unchanged.</summary>
+    static Vector3 EscapeTinyIsland(NavMesh mesh, Vector3 pos)
+    {
+        const int MinComponentTris = 12;
+        if (!mesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) return pos;
+        if (!IsTinyComponent(mesh, tri, MinComponentTris)) return pos;
+        for (float r = 0.75f; r <= 4.01f; r += 0.75f)
+        {
+            for (int i = 0; i < 12; i++)
+            {
+                float a = i * MathF.PI * 2f / 12f;
+                var probe = new Vector3(pos.X + MathF.Cos(a) * r, pos.Y, pos.Z + MathF.Sin(a) * r);
+                if (!mesh.TryFindTriangle(probe, out var t2, includeFadeHidden: true)) continue;
+                if (IsTinyComponent(mesh, t2, MinComponentTris)) continue;
+                return probe with { Y = mesh.SampleYOnTriangle(t2, probe) };
+            }
+        }
+        return pos;
+    }
+
     void PickNewTarget()
     {
         // SC-MOB-ROAM — sample around the spawn anchor, not the live position, so
@@ -160,11 +230,19 @@ public sealed class ActorFollower
                     origin.X + MathF.Cos(angle) * radius,
                     origin.Y,
                     origin.Z + MathF.Sin(angle) * radius);
-                if (mesh.TryFindTriangle(candidate, out _))
-                {
-                    Follower.SetTarget(candidate);
-                    return;
-                }
+                if (!mesh.TryFindTriangle(candidate, out var tri)) continue;
+                // SC-MOB-ROAM-AUDIT — the sample must land on the actor's OWN
+                // layer and on ground its policy can enter. The picker resolves
+                // best-Y at the XZ, so on a switchback path or above a valley an
+                // un-gated sample happily targeted a leg 10-30u below — mobs
+                // marched off toward cross-layer picks and piled against the
+                // corner where the route pinched (the field report's krug pile
+                // at (-26.5,32,151), reproduced 1:1 by `region roam-sim`).
+                float triY = mesh.SampleYOnTriangle(tri, candidate);
+                if (MathF.Abs(triY - origin.Y) > 3f) continue;
+                if (!Follower.Traversal.CanEnter(mesh.Kinds[tri])) continue;
+                Follower.SetTarget(candidate);
+                return;
             }
         }
         // Last-ditch: if EVERY scaled sample missed (mob spawned on a

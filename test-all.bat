@@ -182,6 +182,7 @@ echo  109. ALPHA-2: CRATES + SHRINE     - path2crypts: trapped crates spring, ch
 echo  110. ALPHA-2: DWARVEN GATE        - path2sd: stuck use-toggle gate shows authored text on click; opens only via its quest message
 echo  111. ALPHA-2: STAR DEVICE         - gd_a_r1: locked usable reports Locked. without key_glb_star; crypt doors chain msg_scid_opening
 echo  112. NAV VERTICAL-REBIND REPRO    - sd_r1 mine ledge (headless): horseshoe walk must reach at Y=17, never teleport to the Y=44 mountain top
+echo  113. ENEMY ROAM-SIM               - headless 90s wander soak over the path2sd..sd_r2 set; expect 0 FROZEN and no field-report piles
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -300,6 +301,7 @@ if /i "%CHOICE%"=="109" goto T109
 if /i "%CHOICE%"=="110" goto T110
 if /i "%CHOICE%"=="111" goto T111
 if /i "%CHOICE%"=="112" goto T112
+if /i "%CHOICE%"=="113" goto T113
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2611,6 +2613,20 @@ echo [Also available: "%%TOOL%%" world probe ^<map^> ^<terrain^> ^<regions^> ^<x
 echo  lists every nav tri in an XZ column / a snode's tri contribution;
 echo  "world path ... --full" dumps a corridor with snode + seam provenance;
 echo  "sno find ^<terrain-tank^> 0xMESHGUID" names + parses a mesh guid.]
+echo.
+pause
+goto MENU
+
+:T113
+echo.
+echo --- ENEMY ROAM-SIM (headless wander soak, path2sd..sd_r2 set) ---
+echo [Every actor.gas mob gets the game's real wander driver and 90 sim-
+echo  seconds at 20 Hz. Receipts: 0 FROZEN; no pile at a user-reported
+echo  spot (the 2026-07-10 krug pile at -26.5,32,151 must stay gone).
+echo  A handful of BLOCKED-heavy but moving actors is normal (pond fish,
+echo  narrow trails). Use --near=x,z,r to reproduce a field report spot.]
+echo.
+"%TOOL%" region roam-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/path2sd,/world/maps/map_world/regions/bt_r1,/world/maps/map_world/regions/path2dm,/world/maps/map_world/regions/path2sd_a,/world/maps/map_world/regions/sd_r1,/world/maps/map_world/regions/sd_r2 90
 echo.
 pause
 goto MENU

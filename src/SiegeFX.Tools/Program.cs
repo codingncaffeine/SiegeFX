@@ -813,6 +813,7 @@ static int DispatchRegion(string[] a)
         "cmd-audit"   => CmdRegionCmdAudit(a[1..]),
         "elevators"   => CmdRegionElevators(a[1..]),
         "logic-gizmos" => CmdRegionLogicGizmos(a[1..]),
+        "roam-sim"    => CmdRegionRoamSim(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -3024,6 +3025,149 @@ static int CmdWorldPath(string[] a)
     }
     if (path.Count > show) Console.WriteLine($"  ... {path.Count - show} more");
     return 0;
+}
+
+/// <summary>`region roam-sim` — headless enemy-roam soak. Spawns an
+/// <see cref="SiegeFX.Core.Actors.ActorFollower"/> (the exact wander driver the
+/// game gives every mob) at every actor.gas placement across the listed regions,
+/// ticks them at 20 Hz for the requested sim-seconds, and reports who FROZE
+/// (walked less than 1u total), who spent the run path-blocked, and where actors
+/// PILED (4+ actors ending within 1.5u of each other). This is the receipt for
+/// "enemies roam as intended" — runnable after any nav/brain change without an
+/// in-game eyes pass. `--near=x,z,r` narrows the spawn set for a focused repro
+/// of a field report (e.g. the F7-stamped spot of a trapped group).</summary>
+static int CmdRegionRoamSim(string[] a)
+{
+    if (a.Length < 4)
+    {
+        Console.Error.WriteLine("usage: siegefx region roam-sim <map-tank> <terrain-tank> <region1,region2,...> <sim-seconds> [--speed=4.5] [--seed=1] [--near=x,z,r]");
+        Console.Error.WriteLine("       coordinates are in the world frame rooted at region1");
+        return 1;
+    }
+    if (!float.TryParse(a[3], System.Globalization.NumberStyles.Float,
+        System.Globalization.CultureInfo.InvariantCulture, out var simSeconds) || simSeconds <= 0)
+    { Console.Error.WriteLine($"bad sim-seconds: '{a[3]}'"); return 1; }
+    float speed = 4.5f;
+    int seed = 1;
+    Vector3 nearCenter = default;
+    float nearRadius = 0f;
+    for (int i = 4; i < a.Length; i++)
+    {
+        if (a[i].StartsWith("--speed=") && float.TryParse(a[i]["--speed=".Length..],
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sv)) speed = sv;
+        else if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var kv)) seed = kv;
+        else if (a[i].StartsWith("--near="))
+        {
+            var parts = a[i]["--near=".Length..].Split(',');
+            if (parts.Length == 3 &&
+                float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nx) &&
+                float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nz) &&
+                float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nr))
+            { nearCenter = new Vector3(nx, 0f, nz); nearRadius = nr; }
+        }
+    }
+
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.DoorSeamCount} door seam(s)");
+    var nodeWorld = new Dictionary<uint, Matrix4x4>();
+    foreach (var (guid, _, _, w) in LoadWorldNodePlacements(a[0], a[1], a[2]))
+        nodeWorld[guid] = w;
+
+    // One sim entry per actor.gas placement that lands on the mesh.
+    var sims = new List<(string Template, Vector3 Anchor, SiegeFX.Core.Actors.ActorFollower Follower, int BlockedTicks, float Walked)>();
+    int offMesh = 0, filtered = 0;
+    using (var mapTank = TankFile.Open(a[0]))
+    {
+        var mapReader = new TankReader(mapTank);
+        foreach (var raw in a[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var rp = raw.Replace('\\', '/');
+            if (!rp.StartsWith('/')) rp = "/" + rp;
+            if (rp.EndsWith('/')) rp = rp[..^1];
+            var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+            foreach (var p in actors)
+            {
+                if (!nodeWorld.TryGetValue(p.Placement.NodeGuid, out var w)) continue;
+                var pos = Vector3.Transform(p.Placement.LocalPosition, w);
+                if (nearRadius > 0f)
+                {
+                    float dx = pos.X - nearCenter.X, dz = pos.Z - nearCenter.Z;
+                    if (dx * dx + dz * dz > nearRadius * nearRadius) { filtered++; continue; }
+                }
+                if (!mesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) { offMesh++; continue; }
+                pos = pos with { Y = mesh.SampleYOnTriangle(tri, pos) };
+                var f = new SiegeFX.Core.Actors.ActorFollower(mesh, pos, speed, seed + sims.Count, Vector3.UnitZ);
+                sims.Add((p.TemplateName, pos, f, 0, 0f));
+            }
+        }
+    }
+    Console.WriteLine($"Actors     : {sims.Count} simulated, {offMesh} off-mesh skipped" +
+                      (nearRadius > 0f ? $", {filtered} outside --near circle" : ""));
+    if (sims.Count == 0) return 2;
+
+    const float dt = 1f / 20f;
+    int ticks = (int)(simSeconds * 20f);
+    for (int t = 0; t < ticks; t++)
+    {
+        for (int i = 0; i < sims.Count; i++)
+        {
+            var s = sims[i];
+            var before = s.Follower.Position;
+            s.Follower.Tick(dt);
+            s.Walked += Vector3.Distance(before, s.Follower.Position);
+            if (s.Follower.Follower.PathBlocked) s.BlockedTicks++;
+            sims[i] = s;
+        }
+    }
+
+    int frozen = 0, blockedHeavy = 0;
+    var lines = new List<(float Walked, string Line)>();
+    for (int i = 0; i < sims.Count; i++)
+    {
+        var s = sims[i];
+        var end = s.Follower.Position;
+        bool froze = s.Walked < 1.0f;
+        bool heavy = s.BlockedTicks > ticks / 4;
+        if (froze) frozen++;
+        if (heavy) blockedHeavy++;
+        if (froze || heavy)
+            lines.Add((s.Walked, $"  {(froze ? "FROZEN " : "BLOCKED")} {s.Template,-28} anchor=({s.Anchor.X:F1},{s.Anchor.Y:F1},{s.Anchor.Z:F1}) end=({end.X:F1},{end.Y:F1},{end.Z:F1}) walked={s.Walked:F1}u blockedTicks={s.BlockedTicks}/{ticks}"));
+    }
+    // Pile detection: 4+ actors whose END positions cluster within 1.5u AND
+    // who each TRAVELED into the cluster (end >2.5u from their own anchor) —
+    // authored-dense spawns (pens, nests) are not piles, converging is.
+    int piled = 0;
+    var pileSeats = new List<Vector3>();
+    for (int i = 0; i < sims.Count; i++)
+    {
+        var pi = sims[i].Follower.Position;
+        if (Vector3.DistanceSquared(pi, sims[i].Anchor) <= 2.5f * 2.5f) continue;
+        int close = 0;
+        for (int j = 0; j < sims.Count; j++)
+        {
+            if (i == j) continue;
+            var pj = sims[j].Follower.Position;
+            if (Vector3.DistanceSquared(pj, sims[j].Anchor) <= 2.5f * 2.5f) continue;
+            if (Vector3.DistanceSquared(pi, pj) <= 1.5f * 1.5f) close++;
+        }
+        if (close >= 3)
+        {
+            piled++;
+            bool nearExisting = false;
+            foreach (var seat in pileSeats)
+                if (Vector3.DistanceSquared(seat, pi) <= 3f * 3f) { nearExisting = true; break; }
+            if (!nearExisting) pileSeats.Add(pi);
+        }
+    }
+
+    Console.WriteLine($"Sim        : {simSeconds:F0}s at 20 Hz, walk speed {speed:F1}u/s");
+    Console.WriteLine($"Result     : {frozen} FROZEN (<1u walked), {blockedHeavy} blocked >25% of ticks, {piled} in piles ({pileSeats.Count} pile site(s))");
+    foreach (var seat in pileSeats)
+        Console.WriteLine($"  pile at ({seat.X:F1},{seat.Y:F1},{seat.Z:F1})");
+    lines.Sort((x, y) => x.Walked.CompareTo(y.Walked));
+    foreach (var (_, line) in lines.Take(15)) Console.WriteLine(line);
+    if (lines.Count > 15) Console.WriteLine($"  ... {lines.Count - 15} more");
+    return frozen == 0 && piled == 0 ? 0 : 3;
 }
 
 /// <summary>`world probe` — list EVERY nav triangle whose XZ footprint contains the

@@ -11679,6 +11679,56 @@ void main()
     /// <summary>Per-frame elevator pump: pending lever walk-up, delayed
     /// actioninfo fades, and the ride itself (car pose + rider carry +
     /// arrival nav re-bake).</summary>
+    // SC-MOB-ROAM-AUDIT — roam heartbeat state. Positions from the previous
+    // beat, keyed by actor list index (stable within a region load).
+    private readonly Dictionary<int, Vector3> _roamAuditLastPos = new();
+    private float _roamAuditAccumulator;
+    private const float RoamAuditIntervalSec = 15f;
+
+    /// <summary>SC-MOB-ROAM-AUDIT — one summary line per beat: how many brains
+    /// are in each state, how many followers report a blocked path right now,
+    /// and which actors look STALLED (alive, wandering, blocked, and moved
+    /// less than 0.25u since the previous beat — a legit idle dwell tops out
+    /// around 7s, so a 15s window with a blocked path is a real signal, not
+    /// fidgeting). Up to three stalled actors get positions logged so a field
+    /// report like "krug frozen in place" comes with coordinates for the
+    /// headless repro (`region roam-sim --near=x,z,r`).</summary>
+    private void TickRoamAudit(float dt)
+    {
+        _roamAuditAccumulator += dt;
+        if (_roamAuditAccumulator < RoamAuditIntervalSec) return;
+        _roamAuditAccumulator = 0f;
+        int brains = 0, wander = 0, chase = 0, attack = 0, blockedNow = 0, stalled = 0;
+        var stalledLines = new List<string>();
+        for (int i = 0; i < _actors.Count; i++)
+        {
+            var s = _actors[i];
+            if (s.Brain is null || s.IsDead || s.IsPartyMember) continue;
+            brains++;
+            switch (s.Brain.State)
+            {
+                case SiegeFX.Core.Actors.ActorBrain.BrainState.Chase: chase++; break;
+                case SiegeFX.Core.Actors.ActorBrain.BrainState.Attack: attack++; break;
+                default: wander++; break;
+            }
+            var follower = s.Brain.Wander.Follower;
+            bool blocked = follower.PathBlocked;
+            if (blocked) blockedNow++;
+            var pos = s.CurrentTransform.Translation;
+            if (blocked && s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Wander &&
+                _roamAuditLastPos.TryGetValue(i, out var prev) &&
+                Vector3.DistanceSquared(pos, prev) < 0.25f * 0.25f)
+            {
+                stalled++;
+                if (stalledLines.Count < 3)
+                    stalledLines.Add($"  [roam-audit]   stalled {s.Actor.Template} at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
+            }
+            _roamAuditLastPos[i] = pos;
+        }
+        Console.WriteLine($"[roam-audit] brains={brains} wander={wander} chase={chase} attack={attack} blockedNow={blockedNow} stalled15s={stalled}");
+        foreach (var line in stalledLines) Console.WriteLine(line);
+    }
+
     private void TickElevators(float dt)
     {
         if (dt <= 0f) return;
@@ -20715,6 +20765,11 @@ void main()
         TickFragDebris(simDt);
         TickDoors(simDt);
         TickElevators(simDt);
+        // SC-MOB-ROAM-AUDIT — 15s roam heartbeat to the session log:
+        // brain-state counts + any actor that neither moved nor died since
+        // the last beat while path-blocked. One line per beat; the headless
+        // twin is `siegefx region roam-sim` (test-all #113).
+        TickRoamAudit((float)dt);
         // SC-REGION-LAYER-HIDE — sticky underground/surface mode.
         // While underground, all upper-layer terrain / props / actors
         // are dropped from render (matches DS1 — upper world is just
@@ -22778,6 +22833,7 @@ void main()
         _actorMeshCache.Clear();
         _actorIdentityBones.Clear();
         _actors.Clear();
+        _roamAuditLastPos.Clear();   // SC-MOB-ROAM-AUDIT — indices are per-load
         _party.Clear();          // Phase 26a — party roster is per-region-load
         _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
         _paperdollTargetIndex = 0; // sheet returns to the player on region reload
