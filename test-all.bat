@@ -181,6 +181,7 @@ echo  108. ALPHA-2: TOWN + DIALOGUE     - Stonebridge (bt_r1): retail dialogue c
 echo  109. ALPHA-2: CRATES + SHRINE     - path2crypts: trapped crates spring, chests open+loot, life shrine heals, world gold credits
 echo  110. ALPHA-2: DWARVEN GATE        - path2sd: stuck use-toggle gate shows authored text on click; opens only via its quest message
 echo  111. ALPHA-2: STAR DEVICE         - gd_a_r1: locked usable reports Locked. without key_glb_star; crypt doors chain msg_scid_opening
+echo  112. NAV VERTICAL-REBIND REPRO    - sd_r1 mine ledge (headless): horseshoe walk must reach at Y=17, never teleport to the Y=44 mountain top
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -298,6 +299,7 @@ if /i "%CHOICE%"=="108" goto T108
 if /i "%CHOICE%"=="109" goto T109
 if /i "%CHOICE%"=="110" goto T110
 if /i "%CHOICE%"=="111" goto T111
+if /i "%CHOICE%"=="112" goto T112
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2585,6 +2587,25 @@ set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test111.log"
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/gd_a_r1
 set "SIEGEFX_DEBUG_LOG_FILE="
 echo Log written to: %TEMP%\siegefx_diag\test111.log
+echo.
+pause
+goto MENU
+
+:T112
+echo.
+echo --- NAV VERTICAL-REBIND REPRO (sd_r1 mine ledge, headless) ---
+echo [test-110 field bug: walking the ledge horseshoe around the sealed
+echo  t_sd_cap node, the funnel line grazes the ledge edge; the walker used
+echo  to re-bind to the path2sd mountain top 27u above and strand there.
+echo  Expect: "reached", every tick pos Y=17.00, ~29u walked vs 6.2 straight.
+echo  A Y=44.00 line or "blocked" = regression.]
+echo.
+"%TOOL%" world follow "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/path2sd,/world/maps/map_world/regions/bt_r1,/world/maps/map_world/regions/path2dm,/world/maps/map_world/regions/path2sd_a,/world/maps/map_world/regions/sd_r1,/world/maps/map_world/regions/sd_r2 "-88.1,17.0,135.8" "-83.6,17.0,140.0" 4.5 600
+echo.
+echo [Also available: "%%TOOL%%" world probe ^<map^> ^<terrain^> ^<regions^> ^<x,y,z or 0xGUID^>
+echo  lists every nav tri in an XZ column / a snode's tri contribution;
+echo  "world path ... --full" dumps a corridor with snode + seam provenance;
+echo  "sno find ^<terrain-tank^> 0xMESHGUID" names + parses a mesh guid.]
 echo.
 pause
 goto MENU

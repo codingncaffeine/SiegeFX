@@ -484,8 +484,44 @@ static int DispatchSno(string[] a)
         "info" => CmdSnoInfo(a[1..]),
         "nav"  => CmdSnoNav(a[1..]),
         "fuzz" => CmdSnoFuzz(a[1..]),
+        "find" => CmdSnoFind(a[1..]),
         _      => UnknownCommand("sno " + a[0]),
     };
+}
+
+/// <summary>`sno find` — resolve a mesh guid to its SNO path inside a terrain tank and
+/// report load status + logical-grouping summary. The unified-mesh builders silently
+/// skip snodes whose SNO fails to resolve or parse; this names the culprit.</summary>
+static int CmdSnoFind(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx sno find <terrain-tank> <0xMESHGUID>");
+        return 1;
+    }
+    uint guid = Convert.ToUInt32(a[1], 16);
+    using var terrainTank = TankFile.Open(a[0]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    if (!meshIndex.TryResolve(guid, out var path))
+    {
+        Console.WriteLine($"mesh 0x{guid:X8}: NOT in the mesh index ({meshIndex.GuidCount} guids)");
+        return 2;
+    }
+    Console.WriteLine($"mesh 0x{guid:X8} -> {path}");
+    try
+    {
+        var sno = SnoModel.Load(terrainReader.ExtractToMemory(path));
+        Console.WriteLine($"  parsed OK: {sno.LogicalGroupings.Count()} logical grouping(s), {sno.Doors.Length} door(s)");
+        foreach (var g in sno.LogicalGroupings)
+            Console.WriteLine($"    grouping id={g.Id} kind={g.Kind} faces={g.Faces.Count()}");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"  PARSE FAILED: {ex.GetType().Name}: {ex.Message}");
+        return 3;
+    }
+    return 0;
 }
 
 static int DispatchPrs(string[] a)
@@ -1270,6 +1306,7 @@ static int DispatchWorld(string[] a)
         "layout" => CmdWorldLayout(a[1..]),
         "path"   => CmdWorldPath(a[1..]),
         "follow" => CmdWorldFollow(a[1..]),
+        "probe"  => CmdWorldProbe(a[1..]),
         "campaign-audit" => CmdWorldCampaignAudit(a[1..]),
         "map-point" => CmdWorldMapPoint(a[1..]),
         _        => UnknownCommand("world " + a[0]),
@@ -2911,10 +2948,17 @@ static NavMesh LoadWorldNavMesh(string mapTankPath, string terrainTankPath, stri
 static int CmdWorldPath(string[] a)
 {
     var traversal = ExtractTraversalFlag(ref a);
+    bool full = false;
+    if (a.Contains("--full"))
+    {
+        full = true;
+        a = a.Where(x => x != "--full").ToArray();
+    }
     if (a.Length != 5)
     {
-        Console.Error.WriteLine("usage: siegefx world path <map-tank> <terrain-tank> <region1,region2,...> <x1,y1,z1> <x2,y2,z2> [--water=<cost-mul>]");
+        Console.Error.WriteLine("usage: siegefx world path <map-tank> <terrain-tank> <region1,region2,...> <x1,y1,z1> <x2,y2,z2> [--water=<cost-mul>] [--full]");
         Console.Error.WriteLine("       coordinates are in the world frame rooted at region1");
+        Console.Error.WriteLine("       --full dumps every corridor tri with snode guid + hop edge-gap (0 = welded, >0 = stitched seam)");
         return 1;
     }
     if (!TryParseVec3(a[3], out var start)) { Console.Error.WriteLine($"bad start vector: '{a[3]}'"); return 1; }
@@ -2938,11 +2982,156 @@ static int CmdWorldPath(string[] a)
     for (int i = 1; i < path.Count; i++)
         length += Vector3.Distance(mesh.Centroids[path[i - 1]], mesh.Centroids[path[i]]);
     Console.WriteLine($"Path       : {path.Count} tris, centroid length {length:F2} units");
-    int show = Math.Min(8, path.Count);
+    int show = full ? path.Count : Math.Min(8, path.Count);
     for (int i = 0; i < show; i++)
-        Console.WriteLine($"  [{i,3}] tri={path[i]}  {FormatVec(mesh.Centroids[path[i]])}");
+    {
+        int t = path[i];
+        if (!full)
+        {
+            Console.WriteLine($"  [{i,3}] tri={t}  {FormatVec(mesh.Centroids[t])}");
+            continue;
+        }
+        // Hop provenance: find the linking slots between this tri and the next,
+        // and measure the distance between the two linking edges' midpoints.
+        // Welded adjacency shares vertices (gap 0); door/water-stitched seams
+        // join physically separate edges (gap > 0).
+        string hop = "";
+        if (i + 1 < path.Count)
+        {
+            int next = path[i + 1];
+            float gap = -1f;
+            for (int s = 0; s < 3; s++)
+            {
+                if (mesh.Neighbors[3 * t + s] != next) continue;
+                var ea = mesh.Vertices[mesh.Indices[3 * t + (s + 1) % 3]];
+                var eb = mesh.Vertices[mesh.Indices[3 * t + (s + 2) % 3]];
+                var midA = 0.5f * (ea + eb);
+                var midB = midA;
+                for (int s2 = 0; s2 < 3; s2++)
+                {
+                    if (mesh.Neighbors[3 * next + s2] != t) continue;
+                    var fa = mesh.Vertices[mesh.Indices[3 * next + (s2 + 1) % 3]];
+                    var fb = mesh.Vertices[mesh.Indices[3 * next + (s2 + 2) % 3]];
+                    midB = 0.5f * (fa + fb);
+                    break;
+                }
+                gap = Vector3.Distance(midA, midB);
+                break;
+            }
+            hop = gap < 0f ? "  hop=NO-LINK?" : gap > 0.001f ? $"  hop=SEAM gap={gap:F2}" : "  hop=weld";
+        }
+        Console.WriteLine($"  [{i,3}] tri={t}  snode=0x{mesh.SourceSnodeGuid[t]:X8}  {FormatVec(mesh.Centroids[t])}{hop}");
+    }
     if (path.Count > show) Console.WriteLine($"  ... {path.Count - show} more");
     return 0;
+}
+
+/// <summary>`world probe` — list EVERY nav triangle whose XZ footprint contains the
+/// probe point, at any height, with per-tri Y/kind/snode. The tri-picker diagnostics
+/// (TryFindTriangle takes the best Y match) hide vertical stacking; this shows the
+/// whole column, which is what you need when a walker snaps to the wrong layer or
+/// a floor has a hole (no tris at the expected Y).</summary>
+static int CmdWorldProbe(string[] a)
+{
+    if (a.Length != 4)
+    {
+        Console.Error.WriteLine("usage: siegefx world probe <map-tank> <terrain-tank> <region1,region2,...> <x,y,z>");
+        Console.Error.WriteLine("       lists all nav tris containing the XZ point at any height");
+        return 1;
+    }
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.DoorSeamCount} door seam(s)");
+    // "0x<guid>" probes by source snode instead of by XZ point.
+    if (a[3].StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+    {
+        uint guid = Convert.ToUInt32(a[3], 16);
+        int count = 0;
+        Vector3 min = new(float.PositiveInfinity), max = new(float.NegativeInfinity);
+        for (int t = 0; t < mesh.TriangleCount; t++)
+        {
+            if (mesh.SourceSnodeGuid[t] != guid) continue;
+            count++;
+            var c = mesh.Centroids[t];
+            min = Vector3.Min(min, c);
+            max = Vector3.Max(max, c);
+        }
+        Console.WriteLine(count == 0
+            ? $"snode 0x{guid:X8}: NO triangles in the unified mesh"
+            : $"snode 0x{guid:X8}: {count} tri(s), centroid range {FormatVec(min)} .. {FormatVec(max)}");
+        return 0;
+    }
+    if (!TryParseVec3(a[3], out var probe)) { Console.Error.WriteLine($"bad probe vector: '{a[3]}'"); return 1; }
+    Console.WriteLine($"Probe      : {FormatVec(probe)}");
+    int found = 0;
+    for (int t = 0; t < mesh.TriangleCount; t++)
+    {
+        var va = mesh.Vertices[mesh.Indices[3 * t + 0]];
+        var vb = mesh.Vertices[mesh.Indices[3 * t + 1]];
+        var vc = mesh.Vertices[mesh.Indices[3 * t + 2]];
+        if (!NavMesh.PointInTriangleXZ(probe, va, vb, vc)) continue;
+        float y = mesh.SampleYOnTriangle(t, probe);
+        Console.WriteLine($"  tri={t,-6} Y={y,7:F2}  kind={mesh.Kinds[t],-6} snode=0x{mesh.SourceSnodeGuid[t]:X8}  n=[{mesh.Neighbors[3 * t]},{mesh.Neighbors[3 * t + 1]},{mesh.Neighbors[3 * t + 2]}]");
+        found++;
+    }
+    if (found == 0) Console.WriteLine("  (no triangle contains this XZ — hole in walkable coverage)");
+    // Nearby snode ORIGINS (any height) — names the node that should own this
+    // spot even when it contributed zero nav triangles.
+    var layoutPairs = LoadWorldNodePlacements(a[0], a[1], a[2]);
+    foreach (var (guid, region, meshGuid, world) in layoutPairs)
+    {
+        float ddx = world.M41 - probe.X, ddz = world.M43 - probe.Z;
+        if (ddx * ddx + ddz * ddz > 5f * 5f) continue;
+        Console.WriteLine($"  near-origin snode=0x{guid:X8} mesh=0x{meshGuid:X8} region={region} t=({world.M41:F2},{world.M42:F2},{world.M43:F2})");
+    }
+    return 0;
+}
+
+/// <summary>All placed snodes across the world build: (guid, region-leaf, mesh guid, world transform).</summary>
+static List<(uint Guid, string Region, uint MeshGuid, Matrix4x4 World)> LoadWorldNodePlacements(string mapTankPath, string terrainTankPath, string regionsCsv)
+{
+    using var mapTank = TankFile.Open(mapTankPath);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(terrainTankPath);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+    var entries = new List<WorldLayout.RegionEntry>();
+    foreach (var raw in regionsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var rp = raw.Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        if (rp.EndsWith('/')) rp = rp[..^1];
+        var graph = RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+        var layout = RegionLayout.Build(graph, Resolve);
+        RegionStitchHelper? stitches = null;
+        try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(rp + "/editor/stitch_helper.gas")); }
+        catch { }
+        entries.Add(new WorldLayout.RegionEntry(rp, graph, layout, stitches));
+    }
+    var world = WorldLayout.Build(entries, Resolve, entries[0].Path);
+    var result = new List<(uint, string, uint, Matrix4x4)>();
+    foreach (var entry in entries)
+    {
+        foreach (var n in entry.Graph.Nodes)
+        {
+            if (!world.Transforms.TryGetValue(n.Guid, out var w)) continue;
+            var leaf = entry.Path[(entry.Path.LastIndexOf('/') + 1)..];
+            result.Add((n.Guid, leaf, n.MeshGuid, w));
+        }
+    }
+    return result;
 }
 
 static int CmdWorldFollow(string[] a)

@@ -1049,14 +1049,21 @@ public sealed class NavMesh
     // is now carried by SC-NAV-BSP-LOOKUP (BSP-accelerated point-in-
     // mesh) and SC-NAV-OBSTACLE-AVOID (prop-based no-go zones).
 
-    private static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
+    public static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
     {
         // Sign-of-cross-product test in the XZ plane. Accepts either winding.
+        // The epsilon band treats points ON an edge as inside: funnel waypoints
+        // sit on portal corners, so walkers ride straight lines that run exactly
+        // along shared triangle edges — with a strict sign test, float noise
+        // flips the containment verdict tick to tick, and the "best Y" fallback
+        // then grabs whatever unrelated surface overlaps that XZ (the sd_r1
+        // mine-ledge walker re-binding to the path2sd mountain top 27u above).
+        const float eps = 1e-4f;
         float d1 = Cross2(p.X - b.X, p.Z - b.Z, a.X - b.X, a.Z - b.Z);
         float d2 = Cross2(p.X - c.X, p.Z - c.Z, b.X - c.X, b.Z - c.Z);
         float d3 = Cross2(p.X - a.X, p.Z - a.Z, c.X - a.X, c.Z - a.Z);
-        bool hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
-        bool hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+        bool hasNeg = d1 < -eps || d2 < -eps || d3 < -eps;
+        bool hasPos = d1 > eps || d2 > eps || d3 > eps;
         return !(hasNeg && hasPos);
     }
 

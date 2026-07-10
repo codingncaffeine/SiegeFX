@@ -96,6 +96,30 @@ public sealed class NavFollower
     private const float EscapeStepDist = 0.4f;
     private const int MaxRecoveryAttempts = 4;
 
+    // SC-NAV-VERTICAL-REBIND — a walker can step, not teleport. Every
+    // standing-triangle (re)bind must land within this much of the
+    // walker's current Y. Without the gate, any probe over a coverage
+    // gap resolves to whatever unrelated surface overlaps that XZ —
+    // the sd_r1 mine-ledge walker re-bound to the path2sd mountain top
+    // 27u above (test 110) and stranded the player on a disconnected
+    // component. 2.0u clears any authored step or per-tick ramp rise
+    // while rejecting cross-layer snaps (stacked floors are 3u+ apart).
+    private const float MaxRebindDy = 2.0f;
+
+    /// <summary>Standing-triangle probe: <see cref="NavMesh.TryFindTriangle(Vector3, out int, bool)"/>
+    /// including fade-hidden ground (it's physical), but only accepting a
+    /// triangle within <see cref="MaxRebindDy"/> of the walker's current Y.
+    /// A far-vertical hit means the walkable floor here has a hole — treat
+    /// as off-mesh so the swept clamp / stuck recovery handles it.</summary>
+    private bool TryFindStandTriangle(Vector3 pos, out int tri)
+    {
+        if (Mesh.TryFindTriangle(pos, out tri, includeFadeHidden: true) &&
+            MathF.Abs(Mesh.SampleYOnTriangle(tri, pos) - pos.Y) <= MaxRebindDy)
+            return true;
+        tri = -1;
+        return false;
+    }
+
     /// <summary>Per-actor traversal policy: which kinds (Floor / Water) the follower can
     /// enter and at what cost. Defaults to <see cref="NavTraversal.LandOnly"/>; assign
     /// <see cref="NavTraversal.Amphibious"/> (or a custom one) for swimmers. Re-read on
@@ -164,7 +188,10 @@ public sealed class NavFollower
         // SC-FADE-WALKABLE — the tile we're STANDING on is physical ground
         // even if a fade just hid it (a cutaway firing mid-walk must not
         // strand the walker); include hidden tris in the start lookup.
-        if (!Mesh.TryFindTriangle(Position, out var startTri, includeFadeHidden: true))
+        // SC-NAV-VERTICAL-REBIND — the start bind is Y-gated: replanning
+        // from a position over a coverage hole must fail (blocked) rather
+        // than re-bind the walker to a vertically unrelated surface.
+        if (!TryFindStandTriangle(Position, out var startTri))
         {
             PathBlocked = true;
             return;
@@ -262,7 +289,7 @@ public sealed class NavFollower
                                 Position.X + ex * EscapeStepDist,
                                 Position.Y,
                                 Position.Z + ez * EscapeStepDist);
-                            if (Mesh.TryFindTriangle(escape, out _))
+                            if (TryFindStandTriangle(escape, out _))
                             {
                                 if (DiagnosticLogging)
                                 {
@@ -340,7 +367,10 @@ public sealed class NavFollower
             // SC-FADE-WALKABLE — standing resolution includes fade-hidden
             // ground (it's physical; skipping it re-glued the walker to the
             // wrong layer whenever a path crossed a faded area).
-            bool onMesh = Mesh.TryFindTriangle(new Vector3(nx, Position.Y, nz), out var hit, includeFadeHidden: true);
+            // SC-NAV-VERTICAL-REBIND — the probe is Y-gated; a hit on a
+            // vertically unrelated overlapping surface counts as off-mesh
+            // and flows into the swept clamp below instead of being walked.
+            bool onMesh = TryFindStandTriangle(new Vector3(nx, Position.Y, nz), out var hit);
             if (onMesh)
             {
                 if (hit == _path[_pathIdx])
@@ -413,7 +443,7 @@ public sealed class NavFollower
                     float mid = (lo + hi) * 0.5f;
                     float tx = Position.X + (nx - Position.X) * mid;
                     float tz = Position.Z + (nz - Position.Z) * mid;
-                    if (Mesh.TryFindTriangle(new Vector3(tx, Position.Y, tz), out var thit, includeFadeHidden: true))
+                    if (TryFindStandTriangle(new Vector3(tx, Position.Y, tz), out var thit))
                     { lo = mid; standing = thit; }
                     else hi = mid;
                 }
