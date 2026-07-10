@@ -50,18 +50,20 @@ public sealed class PauseMenu
 
     private void Layout(int viewportW, int viewportH)
     {
-        // ALPHA-2V FIX — the pause menu is a full-screen 640×480 COMPOSITION
-        // (button positions authored in screen space), not a docked panel:
-        // clamping its scale squished the button list into the top of the
-        // window. Modal fit-scaling maps the composition over the window
-        // like the Options dialog (and still honors UI-scale shrink).
-        float s = HudScale.Modal(viewportW, viewportH);
+        // SC-HUD-MATCH — the button column sizes by the SAME shared HUD
+        // scale as every panel (baseline × UI-scale knob) so the Escape
+        // menu matches the rest of the interface, and the whole authored
+        // composition centers on BOTH axes — that's what keeps the column
+        // mid-screen at any scale (the earlier clamp attempt only scaled,
+        // leaving the top-anchored Y coords stranded high).
+        float s = HudScale.Hud(viewportH);
         int originX = (int)MathF.Round((viewportW - RefW * s) / 2f);
+        int originY = (int)MathF.Round((viewportH - RefH * s) / 2f);
         for (int i = 0; i < _buttons.Length; i++)
         {
             var r = Buttons[i].R;
             _buttons[i].X      = originX + (int)MathF.Round(r.x0 * s);
-            _buttons[i].Y      = (int)MathF.Round(r.y0 * s);
+            _buttons[i].Y      = originY + (int)MathF.Round(r.y0 * s);
             _buttons[i].Width  = (int)MathF.Round((r.x1 - r.x0) * s);
             _buttons[i].Height = (int)MathF.Round((r.y1 - r.y0) * s);
         }
@@ -103,7 +105,9 @@ public sealed class PauseMenu
         // true; the button_5 chrome carries each button's background).
         bars.DrawRect(viewportW, viewportH, 0, 0, viewportW, viewportH, new Vector4(0f, 0f, 0f, 0.55f));
 
-        int fontScale = System.Math.Max(1, (int)MathF.Round(viewportH / (float)RefH));
+        // SC-HUD-MATCH — label size rides the same shared HUD scale as the
+        // buttons (was raw viewportH/480 = oversized vs the rest of the UI).
+        int fontScale = System.Math.Max(1, (int)MathF.Round(HudScale.Hud(viewportH)));
         foreach (var b in _buttons)
         {
             var state = b.Pressed ? ButtonChrome.State.Down
