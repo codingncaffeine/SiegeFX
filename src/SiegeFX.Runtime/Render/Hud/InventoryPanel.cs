@@ -443,18 +443,10 @@ public sealed class InventoryPanel
                 0f, 0f, 0.648438f, 1f - 0.125f);
         }
 
-        // gold coin icon: multi rect 304,8,320,24 → panel-rel x=51 y=8 w=16 h=16
-        // (sits at the left of the compressed gold box).
-        int coinX = px + (int)System.Math.Round(51 * s);
-        int coinY = py + (int)System.Math.Round(8  * s);
-        int coinSz = (int)System.Math.Round(RefGoldIconSz * s);
-        if (goldCoinIcon is not null && icons is not null)
-            icons.DrawIcon(viewportW, viewportH, goldCoinIcon, coinX, coinY, coinSz, coinSz, white);
-
         // gold amount box: gas button_gold common_template=button_4 at rect
         // 302,8,360,24 → panel-rel x=49 y=8 w=58 h=16. The ornate bevel + corner
         // brackets around the number are the same button_4 chrome the Field
-        // Commands order buttons use. Drawn behind the count text.
+        // Commands order buttons use. Drawn behind the coin + count text.
         int goldBoxX = px + (int)System.Math.Round(49 * s);
         int goldBoxY = py + (int)System.Math.Round(8  * s);
         int goldBoxW = (int)System.Math.Round(RefGoldTextW * s);
@@ -469,14 +461,25 @@ public sealed class InventoryPanel
                               goldBoxX, goldBoxY, goldBoxW, goldBoxH, "button4", ButtonChrome.State.Up);
         }
 
-        // gold count text: centered both ways inside the gold box (panel-rel
-        // x=49 y=8 w=58 h=16). Scaled with the panel and vertically centered —
-        // was drawn at unity size anchored to the box top, so it read small and
-        // hugged the upper edge.
+        // gold coin pile: multi rect 304,8,320,24 → panel-rel x=51 y=8 w=16 h=16.
+        // The authored rect OVERLAPS the button_gold box's left cap (302..360),
+        // so the coin renders on top of the chrome — over the box's left edge,
+        // reading as "coins at the left of the gold frame".
+        int coinX = px + (int)System.Math.Round(51 * s);
+        int coinY = py + (int)System.Math.Round(8  * s);
+        int coinSz = (int)System.Math.Round(RefGoldIconSz * s);
+        bool coinDrawn = goldCoinIcon is not null && icons is not null;
+        if (coinDrawn)
+            icons!.DrawIcon(viewportW, viewportH, goldCoinIcon!, coinX, coinY, coinSz, coinSz, white);
+
+        // gold count text: centered in the box right of the coin pile (or the
+        // whole box when the coin raw is unresolved). Scaled with the panel and
+        // vertically centered.
         int goldFontScale = System.Math.Max(1, (int)System.Math.Round(s));
         var countText = Gold.ToString();
         int countW = text.MeasureWidth(countText, goldFontScale);
-        int textCenterX = goldBoxX + (goldBoxW - countW) / 2;
+        int countLeft = coinDrawn ? coinX + coinSz : goldBoxX;
+        int textCenterX = countLeft + (goldBoxX + goldBoxW - countLeft - countW) / 2;
         int goldTextY = goldBoxY + (goldBoxH - text.LineHeight * goldFontScale) / 2;
         text.DrawString(viewportW, viewportH, countText, textCenterX, goldTextY, ink, goldFontScale);
 

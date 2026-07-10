@@ -66,19 +66,34 @@ public sealed class MenuButton
     public void CancelPress() => _pressed = false;
 
     public void Draw(BarRenderer bars, TextRenderer text, int viewportW, int viewportH)
+        => Draw(bars, text, null, null, viewportW, viewportH);
+
+    /// <summary>ALPHA-2H — DS1 draws every in-panel button with the same
+    /// authored button_4 3-slice chrome (user: "every button in Dungeon
+    /// Siege essentially looks the same"). Callers that can resolve GUI
+    /// textures pass them; the flat bevel remains the diagnostics fallback.</summary>
+    public void Draw(BarRenderer bars, TextRenderer text,
+                     IconRenderer? icons, System.Func<string, GlTexture?>? guiTex,
+                     int viewportW, int viewportH)
     {
-        // Three states with subtly different fill + border. Pressed gets a
-        // 1px nudge so the label visibly "sinks" — DS1 buttons do the same.
-        Vector4 fill = _pressed ? new Vector4(0.20f, 0.16f, 0.10f, 1f)
-                     : _hover   ? new Vector4(0.26f, 0.21f, 0.14f, 1f)
-                                : new Vector4(0.16f, 0.13f, 0.10f, 1f);
-        Vector4 border = _hover  ? new Vector4(0.92f, 0.78f, 0.50f, 1f)
-                                 : new Vector4(0.60f, 0.50f, 0.32f, 1f);
         Vector4 ink = _hover ? new Vector4(1f, 0.96f, 0.85f, 1f)
                              : new Vector4(0.88f, 0.82f, 0.70f, 1f);
 
-        bars.DrawRect  (viewportW, viewportH, X, Y, Width, Height, fill);
-        bars.DrawBorder(viewportW, viewportH, X, Y, Width, Height, border);
+        var state = _pressed ? ButtonChrome.State.Down
+                  : _hover   ? ButtonChrome.State.Hover
+                             : ButtonChrome.State.Up;
+        if (!ButtonChrome.Draw(icons, guiTex, viewportW, viewportH, X, Y, Width, Height, "button4", state))
+        {
+            // Three states with subtly different fill + border. Pressed gets a
+            // 1px nudge so the label visibly "sinks" — DS1 buttons do the same.
+            Vector4 fill = _pressed ? new Vector4(0.20f, 0.16f, 0.10f, 1f)
+                         : _hover   ? new Vector4(0.26f, 0.21f, 0.14f, 1f)
+                                    : new Vector4(0.16f, 0.13f, 0.10f, 1f);
+            Vector4 border = _hover  ? new Vector4(0.92f, 0.78f, 0.50f, 1f)
+                                     : new Vector4(0.60f, 0.50f, 0.32f, 1f);
+            bars.DrawRect  (viewportW, viewportH, X, Y, Width, Height, fill);
+            bars.DrawBorder(viewportW, viewportH, X, Y, Width, Height, border);
+        }
 
         int labelW = text.MeasureWidth(Label);
         int labelH = text.HasFont ? text.Font!.Height : 14;

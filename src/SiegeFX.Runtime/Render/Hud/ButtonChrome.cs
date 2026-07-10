@@ -21,6 +21,13 @@ public static class ButtonChrome
     public static bool Draw(IconRenderer? icons, Func<string, GlTexture?>? guiTex,
                             int vw, int vh, int x, int y, int w, int h,
                             string template, State state)
+        => Draw(icons, guiTex, vw, vh, x, y, w, h, template, state, Vector4.One);
+
+    /// <summary>ALPHA-2H — tinted variant: the store's inactive tab row draws
+    /// the same authored chrome dimmed so the selected row reads as a unit.</summary>
+    public static bool Draw(IconRenderer? icons, Func<string, GlTexture?>? guiTex,
+                            int vw, int vh, int x, int y, int w, int h,
+                            string template, State state, Vector4 tint)
     {
         if (icons is null || guiTex is null || w <= 0 || h <= 0) return false;
         string suf = state switch { State.Down => "_dwn", State.Hover => "_hov", _ => "_up" };
@@ -34,9 +41,9 @@ public static class ButtonChrome
         float aspect = template == "button5" ? 0.5f : 1f;
         int cap = Math.Clamp((int)MathF.Round(h * aspect), 1, w / 2);
 
-        icons.DrawIcon(vw, vh, ce, x + cap, y, w - 2 * cap, h, Vector4.One); // stretched centre
-        icons.DrawIcon(vw, vh, lt, x, y, cap, h, Vector4.One);
-        icons.DrawIcon(vw, vh, rt, x + w - cap, y, cap, h, Vector4.One);
+        icons.DrawIcon(vw, vh, ce, x + cap, y, w - 2 * cap, h, tint); // stretched centre
+        icons.DrawIcon(vw, vh, lt, x, y, cap, h, tint);
+        icons.DrawIcon(vw, vh, rt, x + w - cap, y, cap, h, tint);
         return true;
     }
 }

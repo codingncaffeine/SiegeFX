@@ -303,7 +303,20 @@ public sealed class VendorPanel
                 new Vector4(0.95f, 0.95f, 0.92f, 1f));
         }
 
-        // Grid backdrop — the authored b_gui_ig_mnu_ip_grid tile (8×10).
+        // ALPHA-2H fold — draw order per the reference: red occupied-cell
+        // backing FIRST, then the authored white-box cell lattice OVER it
+        // (the white squares stay visible peeking behind items — user
+        // callout), then icons on top.
+        foreach (var p in _placed)
+        {
+            bool hovered = p.StockIndex == _hoverStock;
+            bars.DrawRect(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H,
+                hovered ? new Vector4(0.38f, 0.10f, 0.08f, 0.92f)
+                        : new Vector4(0.24f, 0.05f, 0.05f, 0.88f));
+        }
+
+        // Grid lattice — the authored b_gui_ig_mnu_ip_grid tile (8×10, the
+        // white cell boxes of every DS1 inventory surface).
         {
             var g = _gridPx;
             var gridTex = guiTex?.Invoke("b_gui_ig_mnu_ip_grid");
@@ -311,22 +324,14 @@ public sealed class VendorPanel
                 icons.DrawIcon(viewportW, viewportH, gridTex, g.x, g.y, g.w, g.h, Vector4.One,
                                0f, 10f, 8f, 0f);
             else
-                bars.DrawRect(viewportW, viewportH, g.x, g.y, g.w, g.h, new Vector4(0.05f, 0.05f, 0.07f, 0.9f));
+                bars.DrawRect(viewportW, viewportH, g.x, g.y, g.w, g.h, new Vector4(0.05f, 0.05f, 0.07f, 0.35f));
         }
 
-        // Shelf items — retail backs each occupied footprint with a dark-red
-        // cell block (reference: the weapons shelf); hover brightens it.
+        // Shelf items — icons over the lattice; hover pops the stat box.
         foreach (var p in _placed)
         {
             var it = _vendor.Stock[p.StockIndex];
             bool hovered = p.StockIndex == _hoverStock;
-            // Near-black frame around each occupied footprint over the cell
-            // lattice — the reference's red blocks sit inside dark outlines.
-            bars.DrawRect(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H,
-                hovered ? new Vector4(0.38f, 0.10f, 0.08f, 0.92f)
-                        : new Vector4(0.24f, 0.05f, 0.05f, 0.88f));
-            bars.DrawBorder(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H,
-                new Vector4(0.06f, 0.06f, 0.07f, 1f));
             var tex = itemIcon?.Invoke(it.ItemReference);
             if (icons is not null && tex is not null)
                 icons.DrawIcon(viewportW, viewportH, tex, p.Cx + 1, p.Cy + 1, p.W - 2, p.H - 2, Vector4.One);
@@ -370,9 +375,10 @@ public sealed class VendorPanel
             }
         }
 
-        // Tabs — checked tab shifts down 5 (authored shift_y(5)). The
-        // reference shows the ACTIVE ROW highlighted as a unit: tabs sharing
-        // the selected tab's row draw warm, the other row recedes.
+        // Tabs — the SAME authored button_4 chrome as every DS1 button (user
+        // callout: tabs included). Checked tab draws pressed and shifts down
+        // 5 (authored shift_y(5)); the selected tab's ROW draws full-bright,
+        // the other row dims the same chrome. Flat bevel = fallback.
         int activeRowY = _tabPx[_tab].y;
         for (int t = 0; t < 6; t++)
         {
@@ -380,14 +386,17 @@ public sealed class VendorPanel
             int yOff = t == _tab ? (int)MathF.Round(5f * s) : 0;
             bool stocked = StockForTab(t).Any();
             bool activeRow = Math.Abs(r.y - activeRowY) < Math.Max(2, r.h / 2);
-            var fill = t == _tab ? new Vector4(0.22f, 0.18f, 0.12f, 1f)
-                     : activeRow ? new Vector4(0.13f, 0.11f, 0.09f, 1f)
-                                 : new Vector4(0.07f, 0.07f, 0.07f, 1f);
-            bars.DrawRect(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h, fill);
-            bars.DrawBorder(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h,
-                !stocked    ? new Vector4(0.28f, 0.26f, 0.22f, 1f)
-                : activeRow ? new Vector4(0.62f, 0.52f, 0.33f, 1f)
-                            : new Vector4(0.40f, 0.36f, 0.28f, 1f));
+            var tint = !stocked    ? new Vector4(0.55f, 0.55f, 0.55f, 1f)
+                     : activeRow   ? Vector4.One
+                                   : new Vector4(0.72f, 0.72f, 0.72f, 1f);
+            var state = t == _tab ? ButtonChrome.State.Down : ButtonChrome.State.Up;
+            if (!ButtonChrome.Draw(icons, guiTex, viewportW, viewportH, r.x, r.y + yOff, r.w, r.h, "button4", state, tint))
+            {
+                bars.DrawRect(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h,
+                    t == _tab ? new Vector4(0.22f, 0.18f, 0.12f, 1f) : new Vector4(0.10f, 0.09f, 0.08f, 1f));
+                bars.DrawBorder(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h,
+                    activeRow ? new Vector4(0.62f, 0.52f, 0.33f, 1f) : new Vector4(0.40f, 0.36f, 0.28f, 1f));
+            }
             var label = Tabs[t].Label;
             int lw = text.MeasureWidth(label);
             text.DrawString(viewportW, viewportH, label,
@@ -395,12 +404,17 @@ public sealed class VendorPanel
                 !stocked ? dimInk : activeRow ? ink : new Vector4(0.70f, 0.66f, 0.55f, 1f));
         }
 
-        // Prev / Next / Close.
+        // Prev / Next / Close — authored button_4 chrome, disabled = dimmed.
         void Button((int x, int y, int w, int h) r, string label, bool enabled)
         {
-            bars.DrawRect(viewportW, viewportH, r.x, r.y, r.w, r.h, new Vector4(0.16f, 0.13f, 0.10f, 1f));
-            bars.DrawBorder(viewportW, viewportH, r.x, r.y, r.w, r.h,
-                enabled ? new Vector4(0.60f, 0.50f, 0.32f, 1f) : new Vector4(0.30f, 0.28f, 0.24f, 1f));
+            var tint = enabled ? Vector4.One : new Vector4(0.55f, 0.55f, 0.55f, 1f);
+            if (!ButtonChrome.Draw(icons, guiTex, viewportW, viewportH, r.x, r.y, r.w, r.h,
+                    "button4", ButtonChrome.State.Up, tint))
+            {
+                bars.DrawRect(viewportW, viewportH, r.x, r.y, r.w, r.h, new Vector4(0.16f, 0.13f, 0.10f, 1f));
+                bars.DrawBorder(viewportW, viewportH, r.x, r.y, r.w, r.h,
+                    enabled ? new Vector4(0.60f, 0.50f, 0.32f, 1f) : new Vector4(0.30f, 0.28f, 0.24f, 1f));
+            }
             int lw = text.MeasureWidth(label);
             text.DrawString(viewportW, viewportH, label, r.x + (r.w - lw) / 2, r.y + r.h / 4,
                 enabled ? ink : dimInk);
@@ -409,29 +423,13 @@ public sealed class VendorPanel
         Button(_nextPx, "Next >", _page + 1 < _pageCount);
         Button(_closePx, "Close", true);
 
-        // ALPHA-2H — gold plate, reference style: a dark bordered strip with
-        // the coin icon and the amount in yellow (top-left in retail's
-        // inventory pane; ours rides the store frame's top-left).
-        {
-            var f = Px(RFrame, s, originX);
-            var amount = playerGold.ToString();
-            int lineH = text.HasFont ? text.Font!.Height : 12;
-            int iconS = lineH + 4;
-            int plateW = iconS + text.MeasureWidth(amount) + 16;
-            int plateH = iconS + 6;
-            int gx = f.x + 6, gy = f.y + f.h - plateH - 6;
-            bars.DrawRect(viewportW, viewportH, gx, gy, plateW, plateH, new Vector4(0.02f, 0.02f, 0.03f, 0.94f));
-            bars.DrawBorder(viewportW, viewportH, gx, gy, plateW, plateH, new Vector4(0.45f, 0.39f, 0.25f, 1f));
-            var coin = guiTex?.Invoke("b_gui_ig_i_it_gold-pile");
-            if (icons is not null && coin is not null)
-                icons.DrawIcon(viewportW, viewportH, coin, gx + 3, gy + 3, iconS, iconS, Vector4.One);
-            text.DrawString(viewportW, viewportH, amount,
-                gx + iconS + 8, gy + (plateH - lineH) / 2,
-                new Vector4(1.0f, 0.86f, 0.25f, 1f));
-            if (_pageCount > 1)
-                text.DrawString(viewportW, viewportH, $"page {_page + 1}/{_pageCount}",
-                    gx + plateW + 10, gy + (plateH - lineH) / 2, dimInk);
-        }
+        // ALPHA-2H fold — NO gold plate here (user callout: retail shows
+        // gold on the player's inventory pane, which already draws it).
+        // Page indicator rides as plain small text beside Previous.
+        _ = playerGold;
+        if (_pageCount > 1)
+            text.DrawString(viewportW, viewportH, $"{_page + 1}/{_pageCount}",
+                _prevPx.x + _prevPx.w + 6, _prevPx.y + _prevPx.h / 4, dimInk);
     }
 }
 

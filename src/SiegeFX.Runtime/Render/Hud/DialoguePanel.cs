@@ -292,7 +292,6 @@ public sealed class DialoguePanel
         // slightly-translucent panel with a thin two-tone gold border, NOT the
         // parchment cpbox (the earlier cpbox read as scaffolding against the
         // reference). Same authored geometry, restyled fills.
-        _ = icons; _ = guiTex;
         void DarkPanel((int x0, int y0, int x1, int y1) r, bool recessed)
         {
             var p = Px(r, s, originX);
@@ -336,24 +335,35 @@ public sealed class DialoguePanel
             if (_totalLines <= _visibleLines) { thumbH = trackH; thumbY = trackY; }
             bars.DrawRect(viewportW, viewportH, trackX + 1, thumbY + 1, sbW - 2, Math.Max(1, thumbH - 2),
                 new Vector4(0.42f, 0.37f, 0.24f, 1f));
-            _scrollUp.Draw(bars, text, viewportW, viewportH);
-            _scrollDown.Draw(bars, text, viewportW, viewportH);
+            _scrollUp.Draw(bars, text, icons, guiTex, viewportW, viewportH);
+            _scrollDown.Draw(bars, text, icons, guiTex, viewportW, viewportH);
         }
 
         // Context buttons — Accept/Decline for a recruit or quest fork
         // (group = potential_member), a single Close/Continue otherwise.
+        // Passing icons/guiTex routes each through the authored button_4
+        // 3-slice chrome (every DS1 in-panel button shares it).
         if (node.IsChoiceFork)
         {
-            _accept.Draw(bars, text, viewportW, viewportH);
-            _decline.Draw(bars, text, viewportW, viewportH);
+            _accept.Draw(bars, text, icons, guiTex, viewportW, viewportH);
+            _decline.Draw(bars, text, icons, guiTex, viewportW, viewportH);
         }
         else if (node.Choice == "more")
-            _more.Draw(bars, text, viewportW, viewportH);
+            _more.Draw(bars, text, icons, guiTex, viewportW, viewportH);
         else
-            _continue.Draw(bars, text, viewportW, viewportH);
+            _continue.Draw(bars, text, icons, guiTex, viewportW, viewportH);
 
-        // Corner X (button_x) — always present.
-        _closeX.Draw(bars, text, viewportW, viewportH);
+        // Corner X — the authored red-X raw (b_gui_cmn_button_x_*) when it
+        // resolves, MenuButton chrome otherwise.
+        var xTex = guiTex?.Invoke(_closeX.Pressed ? "b_gui_cmn_button_x_dwn"
+                     : _closeX.Hovered ? "b_gui_cmn_button_x_hov"
+                                       : "b_gui_cmn_button_x_up")
+                   ?? guiTex?.Invoke("b_gui_cmn_button_x_up");
+        if (xTex is not null && icons is not null)
+            icons.DrawIcon(viewportW, viewportH, xTex,
+                _closeX.X, _closeX.Y, _closeX.Width, _closeX.Height, Vector4.One);
+        else
+            _closeX.Draw(bars, text, icons, guiTex, viewportW, viewportH);
     }
 
     /// <summary>Word-wrap to a pixel width using the active font. Falls back to
