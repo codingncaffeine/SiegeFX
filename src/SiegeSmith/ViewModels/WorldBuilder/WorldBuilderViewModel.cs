@@ -1669,6 +1669,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ReplaceNodeMeshCommand = new RelayCommand(_ => ReplaceNodeMesh(),
             _ => _selectedNode is not null && _selectedMesh is not null);
         RefreshGraphCommand = new RelayCommand(_ => RefreshGraph());
+        ApplyTemplateToSelectionCommand = new RelayCommand(_ => ApplyTemplateToSelection(),
+            _ => _multiSel.Count >= 2 && _selectedProp is not null);
+        ToggleHotkeysCommand = new RelayCommand(_ => ShowHotkeys = !ShowHotkeys);
         AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
         AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
         DistributeXCommand = new RelayCommand(_ => DistributeSelected(0), _ => _multiSel.Count >= 3);
@@ -1834,7 +1837,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
-                questsGas: ComposeQuests());
+                questsGas: ComposeQuests(), manifestText: ComposeManifest());
             _lastAutosaveFingerprint = fp;
             Status = "Autosaved to " + outDir + ".";
         }
@@ -2727,6 +2730,101 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ═══ ED-13 — QoL batch ════════════════════════════════════════════
+
+    // Search everywhere: one box (Ctrl+F) that hits every authored family —
+    // nodes, placements, effects, logic, dialogue, quests — and jumps the
+    // camera to whatever you pick.
+    public ObservableCollection<SearchHit> SearchHits { get; } = new();
+    public bool HasSearchHits => SearchHits.Count > 0;
+    private string _searchEverywhere = "";
+    public string SearchEverywhereText
+    {
+        get => _searchEverywhere;
+        set { if (SetProperty(ref _searchEverywhere, value ?? "")) RunSearchEverywhere(); }
+    }
+    private SearchHit? _selectedHit;
+    public SearchHit? SelectedSearchHit
+    {
+        get => _selectedHit;
+        set
+        {
+            if (!SetProperty(ref _selectedHit, value) || value?.Target is null) return;
+            SelectFromOutliner(value.Target);
+            FocusSelected(); // jump the camera to it
+        }
+    }
+
+    private void RunSearchEverywhere()
+    {
+        SearchHits.Clear();
+        var q = _searchEverywhere.Trim();
+        if (q.Length >= 2)
+        {
+            bool M(string? s) => s is not null && s.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
+            void Add(string label, string detail, object target)
+            {
+                if (SearchHits.Count < 40) SearchHits.Add(new SearchHit { Label = label, Detail = detail, Target = target });
+            }
+            foreach (var n in Nodes) if (M(n.Mesh)) Add(n.Mesh, $"node · {n.Detail}", n);
+            foreach (var r in PlacedObjects) if (M(r.Label) || M(r.Detail)) Add(r.Label, $"object · {r.Detail}", r);
+            foreach (var e in Emitters) if (M(e.Template) || M("emitter")) Add(e.Template, $"emitter · 0x{e.Scid:X8}", e);
+            foreach (var d in Decals) if (M(d.Texture) || M("decal")) Add(d.Texture, $"decal · 0x{d.Scid:X8}", d);
+            foreach (var t in Triggers) if (M(t.Template) || M("trigger")) Add(t.Template, $"trigger · 0x{t.Scid:X8}", t);
+            foreach (var cmd in Commands) if (M(cmd.Template) || M(cmd.Order)) Add(cmd.Template, $"command · 0x{cmd.Scid:X8}", cmd);
+            foreach (var cv in Conversations)
+            {
+                bool hit = M(cv.Key);
+                if (!hit) foreach (var line in cv.Nodes) if (M(line.ScreenText)) { hit = true; break; }
+                if (hit) Add(cv.FullKey, $"conversation · {cv.Nodes.Count} line(s)", cv);
+            }
+            foreach (var qm in MapQuests) if (M(qm.Key) || M(qm.ScreenName) || M(qm.Description)) Add(qm.Key, "quest", qm);
+        }
+        OnPropertyChanged(nameof(HasSearchHits));
+    }
+
+    /// <summary>ED-13 — batch template swap: every placed object in the
+    /// multi-selection takes the Objects palette's selected template (models
+    /// re-resolve immediately). The batch is one undo step.</summary>
+    public RelayCommand ApplyTemplateToSelectionCommand { get; }
+
+    private void ApplyTemplateToSelection()
+    {
+        PruneMulti();
+        if (_selectedProp is null) { Status = "Pick the new template in the Objects palette first."; return; }
+        int n = 0;
+        foreach (var m in _multiSel) if (m is PlacedObject) n++;
+        if (n == 0) { Status = "Ctrl+click some placed objects first — the swap applies to the selection."; return; }
+        PushUndo();
+        foreach (var m in _multiSel)
+            if (m is PlacedObject p) p.Template = _selectedProp.Name;
+        RebuildPlacedRows();
+        Render();
+        Status = $"Swapped {n} placement(s) to {_selectedProp.Name} (one undo).";
+    }
+
+    /// <summary>ED-13 — F1 hotkey cheat sheet overlay.</summary>
+    private bool _showHotkeys;
+    public bool ShowHotkeys { get => _showHotkeys; set => SetProperty(ref _showHotkeys, value); }
+    public RelayCommand ToggleHotkeysCommand { get; }
+
+    // Mod manifest — identity text bundled into the packaged map so a
+    // distributed .dsmap says what it is and who made it.
+    private string _mapAuthor = "", _mapVersion = "1.0", _mapDescription = "";
+    public string MapAuthor { get => _mapAuthor; set => SetProperty(ref _mapAuthor, value); }
+    public string MapVersion { get => _mapVersion; set => SetProperty(ref _mapVersion, value); }
+    public string MapDescription { get => _mapDescription; set => SetProperty(ref _mapDescription, value); }
+
+    private string ComposeManifest() =>
+        "SiegeSmith mod manifest\r\n"
+        + $"name = {MapName}\r\n"
+        + $"region = {RegionName}\r\n"
+        + $"author = {_mapAuthor}\r\n"
+        + $"version = {_mapVersion}\r\n"
+        + $"description = {_mapDescription}\r\n"
+        + $"built = {DateTime.Now:yyyy-MM-dd HH:mm}\r\n"
+        + "tool = SiegeSmith (SiegeFX)\r\n";
+
     private void DeleteSelectedNode()
     {
         if (_selectedNode is null) return;
@@ -3069,7 +3167,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
-                questsGas: ComposeQuests());
+                questsGas: ComposeQuests(), manifestText: ComposeManifest());
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -3104,7 +3202,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
-                questsGas: ComposeQuests());
+                questsGas: ComposeQuests(), manifestText: ComposeManifest());
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
                 onEarlyExit: (code, err) => System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                 {
@@ -5103,6 +5201,15 @@ public sealed class OutlineGroup : System.ComponentModel.INotifyPropertyChanged
     }
     public System.Action? VisibilityChanged;
     public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>ED-13 — one search-everywhere result; Target is the model the
+/// Outliner-style selection routing understands.</summary>
+public sealed class SearchHit
+{
+    public string Label { get; init; } = "";
+    public string Detail { get; init; } = "";
+    public object? Target { get; init; }
 }
 
 public sealed record NodeRow(uint Guid, string Mesh, int DoorCount, bool IsAnchor)

@@ -39,7 +39,7 @@ public static class MapPackager
         uint sourceGuid = 0, IReadOnlyList<RegionStitch>? stitches = null,
         IReadOnlyList<StitchRegionRef>? siblings = null,
         IReadOnlyList<LogicalFlag>? logicalFlags = null,
-        string? questsGas = null)
+        string? questsGas = null, string? manifestText = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -65,6 +65,11 @@ public static class MapPackager
             Directory.CreateDirectory(infoDir);
             File.WriteAllText(Path.Combine(infoDir, "start_positions.gas"), BuildStartPositions(s));
         }
+
+        // ED-13 — mod identity manifest at the tank root: a distributed
+        // .dsmap says what it is, who made it, and which tool built it.
+        if (!string.IsNullOrWhiteSpace(manifestText))
+            File.WriteAllText(Path.Combine(staging, "siegesmith_mod.txt"), manifestText);
 
         // GAME-4 — map-local quest catalog (retail quests/quests.gas shape).
         if (!string.IsNullOrWhiteSpace(questsGas))

@@ -22,6 +22,7 @@
         <KeyBinding Key="D2" Command="{Binding RecallBookmarkCommand}" CommandParameter="1"/>
         <KeyBinding Key="D3" Command="{Binding RecallBookmarkCommand}" CommandParameter="2"/>
         <KeyBinding Key="D4" Command="{Binding RecallBookmarkCommand}" CommandParameter="3"/>
+        <KeyBinding Key="F1" Command="{Binding ToggleHotkeysCommand}"/>
     </Window.InputBindings>
 
     <Grid>
@@ -38,6 +39,41 @@
                 BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,0,1">
             <DockPanel Margin="10,6">
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <!-- ED-13 — search everywhere (Ctrl+F) -->
+                    <Grid Margin="0,0,10,0" VerticalAlignment="Center">
+                        <TextBox x:Name="SearchEverywhereBox" Width="170" Padding="4,3"
+                                 Text="{Binding SearchEverywhereText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
+                                 ToolTip="Search everywhere (Ctrl+F): nodes, objects, effects, logic, dialogue text, quests — pick a result to select it and jump the camera there"/>
+                        <TextBlock Text="🔍 search everything…" Foreground="{StaticResource Brush.Muted}" FontSize="11"
+                                   Margin="7,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Text, ElementName=SearchEverywhereBox}" Value="">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                        <Popup IsOpen="{Binding HasSearchHits, Mode=OneWay}" PlacementTarget="{Binding ElementName=SearchEverywhereBox}"
+                               Placement="Bottom" StaysOpen="True" AllowsTransparency="True">
+                            <Border Background="{StaticResource Brush.Panel}" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" MaxHeight="320" Width="330">
+                                <ListBox ItemsSource="{Binding SearchHits}" SelectedItem="{Binding SelectedSearchHit, Mode=TwoWay}"
+                                         BorderThickness="0" Background="Transparent">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,1">
+                                                <TextBlock Text="{Binding Label}" FontSize="12" Foreground="{StaticResource Brush.Foreground}"/>
+                                                <TextBlock Text="{Binding Detail}" FontSize="10" FontFamily="Consolas" Foreground="{StaticResource Brush.Muted}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Border>
+                        </Popup>
+                    </Grid>
                     <Button Content="Save region…" Command="{Binding SaveNodesCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Write this region's nodes.gas (terrain graph) to disk"/>
                     <Button Content="Validate" Command="{Binding ValidateCommand}" Padding="10,4" Margin="0,0,6,0"
@@ -432,6 +468,26 @@
                     <TextBlock Text="Loading SNO catalogue from the install…" Foreground="{StaticResource Brush.Foreground}"
                                HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="15"/>
                 </Border>
+
+                <!-- ED-13 — F1 hotkey cheat sheet -->
+                <Border Background="#E6141416" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" CornerRadius="6"
+                        MaxWidth="640" Margin="24" Padding="18,12" HorizontalAlignment="Center" VerticalAlignment="Center"
+                        Visibility="{Binding ShowHotkeys, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <DockPanel Margin="0,0,0,8">
+                            <TextBlock Text="Keyboard &amp; mouse" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Brush.Foreground}"/>
+                            <TextBlock Text="F1 closes" Foreground="{StaticResource Brush.Muted}" FontSize="11" HorizontalAlignment="Right"/>
+                        </DockPanel>
+                        <UniformGrid Columns="2">
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Left-drag — orbit&#x0a;Right-drag — pan&#x0a;Middle-drag — spin&#x0a;Wheel — zoom&#x0a;W A S D / Q E — fly (Shift fast, Ctrl slow)&#x0a;Ctrl+1–4 — save camera bookmark&#x0a;1–4 — recall bookmark&#x0a;F — focus selection"/>
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Click — select · Ctrl+click — multi-select&#x0a;Drag — move · Shift-drag — rotate (15° snap toggle)&#x0a;Ctrl+D — duplicate · Del — delete&#x0a;Ctrl+C / Ctrl+V — copy / paste&#x0a;Ctrl+Z / Ctrl+Y — undo / redo&#x0a;Ctrl+F — search everything&#x0a;Drag palette entry into viewport — place it&#x0a;Brushes: 🖌 paint terrain · 🌿 scatter · 🚶 patrol"/>
+                            </StackPanel>
+                        </UniformGrid>
+                    </StackPanel>
+                </Border>
             </Grid>
 
             <GridSplitter Grid.Column="3" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
@@ -512,6 +568,9 @@
                                         <Button Content="Distribute Y" Command="{Binding DistributeYCommand}" Margin="3,0,0,0" Padding="6,3"
                                                 ToolTip="Space the selection evenly along world Y — the two outermost pieces stay put (needs 3+)"/>
                                     </UniformGrid>
+                                    <!-- ED-13 — batch template swap -->
+                                    <Button Content="Set template from palette" Command="{Binding ApplyTemplateToSelectionCommand}" Margin="0,4,0,0" Padding="6,3"
+                                            ToolTip="Every placed object in the selection takes the template currently picked in the Objects palette — swap 20 pines for oaks in one undo"/>
                                 </StackPanel>
 
                                 <!-- Emitter -->
@@ -925,6 +984,21 @@
                             <Button Content="Save nodes.gas…" Command="{Binding SaveNodesCommand}" Margin="0,6,0,3" Padding="8,5"/>
                         </StackPanel>
                         <StackPanel Grid.Column="2">
+                            <!-- ED-13 — mod identity manifest (bundled into the .dsmap as siegesmith_mod.txt) -->
+                            <TextBlock Text="Mod identity" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"
+                                       ToolTip="→ writes siegesmith_mod.txt at the tank root — a distributed .dsmap says what it is and who made it"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="70"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Text="{Binding MapAuthor, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,3,0"
+                                         ToolTip="Author name for the mod manifest"/>
+                                <TextBox Grid.Column="1" Text="{Binding MapVersion, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Version string (e.g. 1.0)"/>
+                            </Grid>
+                            <TextBox Text="{Binding MapDescription, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8"
+                                     ToolTip="One-line description for the mod manifest"/>
                             <TextBlock Text="Mood &amp; music" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
                             <Button Content="{Binding MoodInteriorLabel}" Command="{Binding ToggleMoodInteriorCommand}" Margin="0,0,0,3" Padding="8,4"
                                     ToolTip="Interior mood flag (reverb)"/>

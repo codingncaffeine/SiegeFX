@@ -38,6 +38,17 @@ public partial class WorldBuilderWindow : Window
         _flyTimer.Tick += (_, _) => FlyTick();
         _flyTimer.Start();
 
+        // ED-13 — Ctrl+F jumps to the search-everywhere box.
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
+            {
+                SearchEverywhereBox.Focus();
+                SearchEverywhereBox.SelectAll();
+                e.Handled = true;
+            }
+        };
+
         Closed += (_, _) =>
         {
             _flyTimer.Stop();
