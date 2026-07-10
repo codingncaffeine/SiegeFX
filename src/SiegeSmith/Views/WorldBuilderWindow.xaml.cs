@@ -207,6 +207,13 @@ public partial class WorldBuilderWindow : Window
         DragDrop.DoDragDrop(lb, new DataObject(lb.SelectedItem.GetType(), lb.SelectedItem), DragDropEffects.Copy);
     }
 
+    /// <summary>ED-10 — clicking a graph box selects the underlying piece.</summary>
+    private void OnGraphNodeClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: ViewModels.WorldBuilder.GraphNode n })
+            _vm.SelectFromGraph(n);
+    }
+
     private void OnViewportDrop(object sender, DragEventArgs e)
     {
         var p = e.GetPosition(Viewport);

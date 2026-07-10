@@ -1667,6 +1667,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         RecallBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) RecallBookmark(i); });
         ReplaceNodeMeshCommand = new RelayCommand(_ => ReplaceNodeMesh(),
             _ => _selectedNode is not null && _selectedMesh is not null);
+        RefreshGraphCommand = new RelayCommand(_ => RefreshGraph());
         AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
         AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
         DistributeXCommand = new RelayCommand(_ => DistributeSelected(0), _ => _multiSel.Count >= 3);
@@ -2555,6 +2556,59 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             triTex.Add(-1); triColor.Add(packed);
             pickGuid.Add(0u); pickScid.Add(0u);
             prev = cur;
+        }
+    }
+
+    // ═══ ED-10 — logic graph views ════════════════════════════════════
+    // Read-only graph canvases over the real models (the matrix/list editors
+    // stay the source of truth). Clicking a box selects the piece.
+
+    public ObservableCollection<GraphNode> GraphNodes { get; } = new();
+    public ObservableCollection<GraphEdge> GraphEdges { get; } = new();
+    public string[] GraphKinds { get; } = { "Trigger flow", "Dialogue", "Quest flow" };
+    private string _graphKind = "Trigger flow";
+    public string SelectedGraphKind
+    {
+        get => _graphKind;
+        set { if (SetProperty(ref _graphKind, value ?? "Trigger flow")) RefreshGraph(); }
+    }
+    private double _graphW = 400, _graphH = 200;
+    public double GraphWidth { get => _graphW; private set => SetProperty(ref _graphW, value); }
+    public double GraphHeight { get => _graphH; private set => SetProperty(ref _graphH, value); }
+    public RelayCommand RefreshGraphCommand { get; }
+
+    public void RefreshGraph()
+    {
+        var (nodes, edges, w, h) = _graphKind switch
+        {
+            "Dialogue" => LogicGraphBuilder.BuildDialogue(Conversations, MapQuests),
+            "Quest flow" => LogicGraphBuilder.BuildQuestFlow(ChapterName, MapQuests, Conversations),
+            _ => LogicGraphBuilder.BuildTriggerFlow(Triggers, Commands, _objects),
+        };
+        GraphNodes.Clear();
+        foreach (var n in nodes) GraphNodes.Add(n);
+        GraphEdges.Clear();
+        foreach (var e in edges) GraphEdges.Add(e);
+        GraphWidth = w;
+        GraphHeight = h;
+        Status = nodes.Count == 0
+            ? $"Graph: {_graphKind} is empty — author some {(_graphKind == "Trigger flow" ? "triggers/commands" : _graphKind == "Dialogue" ? "conversations" : "quests")} first."
+            : $"Graph: {_graphKind} — {nodes.Count} box(es), {edges.Count} arrow(s). Click a box to select it; unknown-scid stubs mark dangling wiring.";
+    }
+
+    public void SelectFromGraph(GraphNode n)
+    {
+        switch (n.Target)
+        {
+            case null:
+                Status = string.IsNullOrEmpty(n.Detail) ? n.Label : n.Detail;
+                return;
+            case PlacedObject po:
+                foreach (var r in PlacedObjects) if (r.Scid == po.Scid) { SelectedPlacedObject = r; break; }
+                return;
+            default:
+                SelectFromOutliner(n.Target);
+                return;
         }
     }
 

@@ -988,6 +988,65 @@
                     </Grid>
                 </TabItem>
 
+                <!-- ED-10 — logic graph views over the real gas models -->
+                <TabItem Header="Graph" ToolTip="Visualize trigger wiring, dialogue chains, and quest flow — click any box to select it">
+                    <DockPanel Margin="10,8">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                            <TextBlock Text="View" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox Width="130" ItemsSource="{Binding GraphKinds}" SelectedItem="{Binding SelectedGraphKind, Mode=TwoWay}"
+                                      ToolTip="Trigger flow: who fires what (arrows = actions/targets; grey stubs = dangling SCIDs). Dialogue: each conversation's line chain and the quests it activates. Quest flow: chapter → quests → what activates them."/>
+                            <Button Content="⟳ Refresh" Command="{Binding RefreshGraphCommand}" Padding="10,3" Margin="8,0,0,0"
+                                    ToolTip="Rebuild the graph from the current region (it reads the live trigger/conversation/quest data)"/>
+                            <TextBlock Text="Click a box to select and edit it in the Inspector — the graph is a view; the editors stay the source of truth."
+                                       Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </StackPanel>
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                            <Grid Width="{Binding GraphWidth}" Height="{Binding GraphHeight}">
+                                <ItemsControl ItemsSource="{Binding GraphEdges}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><Canvas/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Canvas>
+                                                <Line X1="{Binding X1}" Y1="{Binding Y1}" X2="{Binding X2}" Y2="{Binding Y2}"
+                                                      Stroke="#66FFFFFF" StrokeThickness="1.2"/>
+                                                <Ellipse Canvas.Left="{Binding X2}" Canvas.Top="{Binding Y2}" Width="5" Height="5"
+                                                         Margin="-2.5,-2.5,0,0" Fill="#88FFFFFF"/>
+                                                <TextBlock Canvas.Left="{Binding LabelX}" Canvas.Top="{Binding LabelY}"
+                                                           Text="{Binding Label}" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
+                                            </Canvas>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <ItemsControl ItemsSource="{Binding GraphNodes}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><Canvas/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="Canvas.Left" Value="{Binding X}"/>
+                                            <Setter Property="Canvas.Top" Value="{Binding Y}"/>
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Width="{Binding W}" MinHeight="{Binding H}" CornerRadius="4" Padding="7,4"
+                                                    Background="#1D1D20" BorderBrush="{Binding Stroke}" BorderThickness="1.4"
+                                                    Cursor="Hand" MouseLeftButtonDown="OnGraphNodeClick">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                        </ScrollViewer>
+                    </DockPanel>
+                </TabItem>
+
                 <TabItem Header="World" ToolTip="Stitch multiple regions into one continuous world">
                     <Grid Margin="10,8">
                         <Grid.ColumnDefinitions>
