@@ -837,7 +837,8 @@ internal sealed class OptionsMenuPanel
     /// a common-list so headless/test bootstrap still lays out.</summary>
     public string[]? ResolutionOptions;
     static readonly string[] FallbackResolutions =
-        { "1280x720", "1600x900", "1920x1080", "2560x1440", "3440x1440", "3840x2160" };
+        { "1280x720", "1600x900", "1920x1080", "2048x1080", "2560x1080",
+          "2560x1440", "3440x1440", "3840x2160" };
 
     void LayoutVideo(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
