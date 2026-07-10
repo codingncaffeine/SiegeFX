@@ -19,7 +19,7 @@ namespace SiegeSmith.ViewModels.WorldBuilder;
 /// node palette, lets the user place an anchor node and door-connect further nodes, and renders
 /// the composed region live. The region round-trips through real <c>nodes.gas</c> — the same text
 /// the engine loads and we save — so the preview is faithful to the shipped world.</summary>
-public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
+public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScrubGestureSink
 {
     private SnoCatalog? _catalog;
     private TextureResolver? _textures;
@@ -1401,7 +1401,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             target = nw.Translation;
         if (target is null) { Status = "Select something to focus (F)."; return; }
         _pan = target.Value - _center;
-        _dist = MathF.Max(MathF.Min(_dist, _radius * 0.5f), 6f);
+        _dist = MathF.Max(MathF.Min(_dist, _radius * 0.5f), 2.5f); // F pulls in close enough to inspect one prop
         Render();
     }
 
@@ -3368,8 +3368,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private static float PF(string s) =>
         float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0f;
 
+    // Scrub-drag support (DragScrub behavior): the drag pushes ONE undo
+    // snapshot up front, then every per-pixel value commit skips its own
+    // push — otherwise a 100px drag would flood the stack with 100 entries.
+    private bool _scrubGesture;
+
+    public void BeginScrubGesture()
+    {
+        PushUndo();
+        _scrubGesture = true;
+    }
+
+    public void EndScrubGesture() => _scrubGesture = false;
+
     private void PushUndo()
     {
+        if (_scrubGesture) return; // the gesture already snapshotted once
         _undo.Push(Snapshot());
         _redo.Clear();
         RaiseUndoRedo();
@@ -5270,7 +5284,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     public void Zoom(int wheelDelta)
     {
-        _dist = Math.Clamp(_dist * (wheelDelta > 0 ? 0.9f : 1.1f), _radius * 0.2f, _radius * 40f);
+        // Deep zoom: the floor is a small absolute distance (inspect a single
+        // prop up close), not a fraction of the whole region's radius. The
+        // multiplicative step naturally slows as you approach.
+        _dist = Math.Clamp(_dist * (wheelDelta > 0 ? 0.9f : 1.1f),
+            MathF.Max(0.4f, _radius * 0.004f), _radius * 40f);
         Render();
     }
 

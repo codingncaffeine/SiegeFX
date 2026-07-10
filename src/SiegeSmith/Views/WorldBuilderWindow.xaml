@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wb="clr-namespace:SiegeSmith.ViewModels.WorldBuilder"
+        xmlns:mvvm="clr-namespace:SiegeSmith.Mvvm"
         Title="World Builder — SiegeSmith"
         Width="1400" Height="880" WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.Window}"
@@ -505,7 +506,7 @@
                                 <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Left-drag — orbit&#x0a;Right-drag — pan&#x0a;Middle-drag — spin&#x0a;Wheel — zoom&#x0a;W A S D / Q E — fly (Shift fast, Ctrl slow)&#x0a;Ctrl+1–4 — save camera bookmark&#x0a;1–4 — recall bookmark&#x0a;F — focus selection"/>
                             </StackPanel>
                             <StackPanel>
-                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Click — select · Ctrl+click — multi-select&#x0a;Drag — move · Shift-drag — rotate (15° snap toggle)&#x0a;Ctrl+D — duplicate · Del — delete&#x0a;Ctrl+C / Ctrl+V — copy / paste&#x0a;Ctrl+Z / Ctrl+Y — undo / redo&#x0a;Ctrl+F — search everything&#x0a;Drag palette entry into viewport — place it&#x0a;Brushes: 🖌 paint terrain · 🌿 scatter · 🚶 patrol"/>
+                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Click — select · Ctrl+click — multi-select&#x0a;Drag — move · Shift-drag — rotate (15° snap toggle)&#x0a;Ctrl+D — duplicate · Del — delete&#x0a;Ctrl+C / Ctrl+V — copy / paste&#x0a;Ctrl+Z / Ctrl+Y — undo / redo&#x0a;Ctrl+F — search everything&#x0a;Drag a number box — scrub it (Shift fine · Ctrl coarse)&#x0a;Drag palette entry into viewport — place it&#x0a;Brushes: 🖌 paint terrain · 🌿 scatter · 🚶 patrol"/>
                             </StackPanel>
                         </UniformGrid>
                     </StackPanel>
@@ -618,9 +619,13 @@
                                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="Count" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding SelectedEmitterCount, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Particles per burst (1–500)"/>
+                                        <TextBox Grid.Column="1" Text="{Binding SelectedEmitterCount, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
+                                                 mvvm:DragScrub.Step="0.5" mvvm:DragScrub.Min="1" mvvm:DragScrub.Max="500" mvvm:DragScrub.Format="0"
+                                                 ToolTip="Particles per burst (1–500). Drag to scrub; click to type."/>
                                         <TextBlock Grid.Column="2" Text="Size" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="3" Text="{Binding SelectedEmitterSize, UpdateSourceTrigger=LostFocus}" ToolTip="Particle size"/>
+                                        <TextBox Grid.Column="3" Text="{Binding SelectedEmitterSize, UpdateSourceTrigger=LostFocus}"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="0.01"
+                                                 ToolTip="Particle size. Drag to scrub; click to type."/>
                                     </Grid>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions>
@@ -628,9 +633,13 @@
                                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="Fade" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding SelectedEmitterFade, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Seconds a particle lives before fading"/>
+                                        <TextBox Grid.Column="1" Text="{Binding SelectedEmitterFade, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
+                                                 mvvm:DragScrub.Step="0.02" mvvm:DragScrub.Min="0.1"
+                                                 ToolTip="Seconds a particle lives before fading. Drag to scrub; click to type."/>
                                         <TextBlock Grid.Column="2" Text="Grow" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="3" Text="{Binding SelectedEmitterGrowth, UpdateSourceTrigger=LostFocus}" ToolTip="Growth rate as particles rise"/>
+                                        <TextBox Grid.Column="3" Text="{Binding SelectedEmitterGrowth, UpdateSourceTrigger=LostFocus}"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="0"
+                                                 ToolTip="Growth rate as particles rise. Drag to scrub; click to type."/>
                                     </Grid>
                                     <TextBlock Text="Offset from node (drag the marker in 3D, or type):" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,2"/>
                                     <Grid Margin="0,0,0,3">
@@ -663,9 +672,13 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="W" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding SelectedDecalHoriz, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Horizontal extent (m)"/>
+                                        <TextBox Grid.Column="1" Text="{Binding SelectedDecalHoriz, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
+                                                 mvvm:DragScrub.Step="0.02" mvvm:DragScrub.Min="0.05"
+                                                 ToolTip="Horizontal extent (m). Drag to scrub; click to type."/>
                                         <TextBlock Grid.Column="2" Text="H" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="3" Text="{Binding SelectedDecalVert, UpdateSourceTrigger=LostFocus}" ToolTip="Vertical extent (m)"/>
+                                        <TextBox Grid.Column="3" Text="{Binding SelectedDecalVert, UpdateSourceTrigger=LostFocus}"
+                                                 mvvm:DragScrub.Step="0.02" mvvm:DragScrub.Min="0.05"
+                                                 ToolTip="Vertical extent (m). Drag to scrub; click to type."/>
                                     </Grid>
                                     <Button Content="Delete decal" Command="{Binding DeleteDecalCommand}" Padding="8,4"/>
                                 </StackPanel>
@@ -685,7 +698,9 @@
                                         <TextBox Grid.Column="1" Text="{Binding SelectedLightColorHex, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
                                                  FontFamily="Consolas" ToolTip="Light colour as 0xAARRGGBB (alpha ignored)"/>
                                         <TextBlock Grid.Column="2" Text="Int" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="3" Text="{Binding SelectedLightIntensity, UpdateSourceTrigger=LostFocus}" ToolTip="Intensity"/>
+                                        <TextBox Grid.Column="3" Text="{Binding SelectedLightIntensity, UpdateSourceTrigger=LostFocus}"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="0"
+                                                 ToolTip="Intensity. Drag to scrub; click to type."/>
                                     </Grid>
                                     <Grid Margin="0,0,0,3" Visibility="{Binding SelectedLightIsDirectional, Converter={StaticResource BoolToVis}}">
                                         <Grid.ColumnDefinitions>
@@ -695,9 +710,15 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="Dir" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding SelectedLightDirX, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="Direction X (world)"/>
-                                        <TextBox Grid.Column="2" Text="{Binding SelectedLightDirY, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0" ToolTip="Direction Y (world)"/>
-                                        <TextBox Grid.Column="3" Text="{Binding SelectedLightDirZ, UpdateSourceTrigger=LostFocus}" ToolTip="Direction Z (world, up)"/>
+                                        <TextBox Grid.Column="1" Text="{Binding SelectedLightDirX, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="-1" mvvm:DragScrub.Max="1"
+                                                 ToolTip="Direction X (world). Drag to scrub; click to type."/>
+                                        <TextBox Grid.Column="2" Text="{Binding SelectedLightDirY, UpdateSourceTrigger=LostFocus}" Margin="0,0,3,0"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="-1" mvvm:DragScrub.Max="1"
+                                                 ToolTip="Direction Y (world). Drag to scrub; click to type."/>
+                                        <TextBox Grid.Column="3" Text="{Binding SelectedLightDirZ, UpdateSourceTrigger=LostFocus}"
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="-1" mvvm:DragScrub.Max="1"
+                                                 ToolTip="Direction Z (world, up). Drag to scrub; click to type."/>
                                     </Grid>
                                     <Button Content="Delete light" Command="{Binding DeleteLightCommand}" Padding="8,4"/>
                                 </StackPanel>
@@ -895,11 +916,11 @@
                                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="X" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding ObjPosX, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjPosX, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" mvvm:DragScrub.Step="0.02"/>
                                         <TextBlock Grid.Column="2" Text="Y" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="3" Text="{Binding ObjPosY, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                        <TextBox Grid.Column="3" Text="{Binding ObjPosY, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" mvvm:DragScrub.Step="0.02"/>
                                         <TextBlock Grid.Column="4" Text="Z" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="5" Text="{Binding ObjPosZ, UpdateSourceTrigger=LostFocus}"/>
+                                        <TextBox Grid.Column="5" Text="{Binding ObjPosZ, UpdateSourceTrigger=LostFocus}" mvvm:DragScrub.Step="0.02"/>
                                     </Grid>
                                     <Grid Margin="0,0,0,4">
                                         <Grid.ColumnDefinitions>
@@ -907,8 +928,8 @@
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="Yaw°" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBox Grid.Column="1" Text="{Binding ObjYawDeg, UpdateSourceTrigger=LostFocus}"
-                                                 ToolTip="Rotation about the vertical axis, in degrees (Shift-drag in the viewport does the same)"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjYawDeg, UpdateSourceTrigger=LostFocus}" mvvm:DragScrub.Step="0.5" mvvm:DragScrub.Format="0.#"
+                                                 ToolTip="Rotation about the vertical axis, in degrees (Shift-drag in the viewport does the same). Drag the box to scrub; click to type."/>
                                     </Grid>
                                     <TextBlock Text="{Binding ObjWorldText}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10" Margin="0,0,0,4"
                                                ToolTip="World-space position (local values above are relative to the node this object sits on)"/>
@@ -924,10 +945,12 @@
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="Life" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                         <TextBox Grid.Column="1" Text="{Binding ObjLife, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
-                                                 ToolTip="Hit points for THIS placement only (empty = template's value). Make one krug a 500-life boss while the rest stay stock."/>
+                                                 mvvm:DragScrub.Step="1" mvvm:DragScrub.Min="0" mvvm:DragScrub.Format="0.#"
+                                                 ToolTip="Hit points for THIS placement only (empty = template's value). Make one krug a 500-life boss while the rest stay stock. Drag to scrub; click to type."/>
                                         <TextBlock Grid.Column="2" Text="Scale ×" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                         <TextBox Grid.Column="3" Text="{Binding ObjScale, UpdateSourceTrigger=LostFocus}"
-                                                 ToolTip="Visual size multiplier for THIS placement (empty = 1). DS1 itself uses this — the breakable farmhouse door ships 1.5."/>
+                                                 mvvm:DragScrub.Step="0.01" mvvm:DragScrub.Min="0.05"
+                                                 ToolTip="Visual size multiplier for THIS placement (empty = 1). DS1 itself uses this — the breakable farmhouse door ships 1.5. Drag to scrub; click to type."/>
                                     </Grid>
                                     <Grid Margin="0,0,0,4">
                                         <Grid.ColumnDefinitions>
@@ -1058,10 +1081,12 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Fog" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="1" Text="{Binding MoodFogNear, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
-                                         ToolTip="Fog start distance in meters from the camera (empty = no fog)"/>
+                                         mvvm:DragScrub.Step="0.25" mvvm:DragScrub.Min="0" mvvm:DragScrub.Format="0.#"
+                                         ToolTip="Fog start distance in meters from the camera (empty = no fog). Drag to scrub — the viewport audition follows live."/>
                                 <TextBlock Grid.Column="2" Text="→" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="3" Text="{Binding MoodFogFar, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
-                                         ToolTip="Fog full distance in meters — geometry past this is pure fog colour. Retail moods run ~20–120"/>
+                                         mvvm:DragScrub.Step="0.5" mvvm:DragScrub.Min="0" mvvm:DragScrub.Format="0.#"
+                                         ToolTip="Fog full distance in meters — geometry past this is pure fog colour. Retail moods run ~20–120. Drag to scrub — the viewport audition follows live."/>
                                 <TextBlock Grid.Column="4" Text="Col" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="5" Text="{Binding MoodFogColor, UpdateSourceTrigger=LostFocus}"
                                          ToolTip="Fog colour, hex — 0xAARRGGBB or #RRGGBB (e.g. #9AA5B1 for a grey morning haze)"/>
@@ -1075,10 +1100,12 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Rain" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="1" Text="{Binding MoodRainDensity, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
-                                         ToolTip="Raindrops per second (retail 30–225; empty = no rain). Plays in the engine via Test/Play"/>
+                                         mvvm:DragScrub.Step="1" mvvm:DragScrub.Min="0" mvvm:DragScrub.Max="400" mvvm:DragScrub.Format="0"
+                                         ToolTip="Raindrops per second (retail 30–225; empty = no rain). Plays in the engine via Test/Play. Drag to scrub; click to type."/>
                                 <TextBlock Grid.Column="2" Text="Snow" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="3" Text="{Binding MoodSnowDensity, UpdateSourceTrigger=LostFocus}"
-                                         ToolTip="Snowflakes per second (retail 75–500; empty = no snow)"/>
+                                         mvvm:DragScrub.Step="2" mvvm:DragScrub.Min="0" mvvm:DragScrub.Max="800" mvvm:DragScrub.Format="0"
+                                         ToolTip="Snowflakes per second (retail 75–500; empty = no snow). Drag to scrub; click to type."/>
                             </Grid>
                             <Grid Margin="0,0,0,3">
                                 <Grid.ColumnDefinitions>
@@ -1087,10 +1114,12 @@
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="Wind" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="1" Text="{Binding MoodWindVelocity, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
-                                         ToolTip="Wind velocity in m/s — shears the rain/snow fall direction (empty = calm)"/>
+                                         mvvm:DragScrub.Step="0.05" mvvm:DragScrub.Min="0"
+                                         ToolTip="Wind velocity in m/s — shears the rain/snow fall direction (empty = calm). Drag to scrub; click to type."/>
                                 <TextBlock Grid.Column="2" Text="Dir°" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
                                 <TextBox Grid.Column="3" Text="{Binding MoodWindDirDeg, UpdateSourceTrigger=LostFocus}"
-                                         ToolTip="Wind direction in degrees clockwise from north (90 = east)"/>
+                                         mvvm:DragScrub.Step="1" mvvm:DragScrub.Min="0" mvvm:DragScrub.Max="360" mvvm:DragScrub.Format="0"
+                                         ToolTip="Wind direction in degrees clockwise from north (90 = east). Drag to scrub; click to type."/>
                             </Grid>
                             <CheckBox Content="Lightning with the rain" IsChecked="{Binding MoodLightning, Mode=TwoWay}"
                                       ToolTip="Storm flashes — retail also forces lightning on whenever rain density drifts ≥ 200"/>

@@ -167,12 +167,15 @@ public static class SoftwareRenderer
 
         pitch = Math.Clamp(pitch, -1.50f, 1.50f);
         radius = MathF.Max(radius, 0.001f);
-        dist = MathF.Max(dist, radius * 0.2f);
+        dist = MathF.Max(dist, 0.05f); // deep zoom: the floor is absolute, not scene-relative
 
         var eye = center + dist * CamDir(yaw, pitch);
         var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
-        float near = MathF.Max(0.01f, radius * 0.05f);
+        // Near plane tracks the CAMERA DISTANCE when zoomed in close (a
+        // scene-relative near would clip everything at deep zoom). The
+        // z-buffer stores view-space distance, so a tiny near costs nothing.
+        float near = MathF.Max(0.005f, MathF.Min(radius * 0.05f, dist * 0.2f));
         float far = dist + radius * 6f + 1f;
         // ED-2 — orthographic option: the ortho frustum height matches what
         // the perspective view would span at the orbit distance, so toggling
@@ -288,12 +291,15 @@ public static class SoftwareRenderer
 
         pitch = Math.Clamp(pitch, -1.50f, 1.50f);
         radius = MathF.Max(radius, 0.001f);
-        dist = MathF.Max(dist, radius * 0.2f);
+        dist = MathF.Max(dist, 0.05f); // deep zoom: the floor is absolute, not scene-relative
 
         var eye = center + dist * CamDir(yaw, pitch);
         var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
-        float near = MathF.Max(0.01f, radius * 0.05f);
+        // Near plane tracks the CAMERA DISTANCE when zoomed in close (a
+        // scene-relative near would clip everything at deep zoom). The
+        // z-buffer stores view-space distance, so a tiny near costs nothing.
+        float near = MathF.Max(0.005f, MathF.Min(radius * 0.05f, dist * 0.2f));
         float far = dist + radius * 6f + 1f;
         var proj = ortho
             ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
@@ -595,12 +601,15 @@ public static class SoftwareRenderer
 
         pitch = Math.Clamp(pitch, -1.50f, 1.50f);
         radius = MathF.Max(radius, 0.001f);
-        dist = MathF.Max(dist, radius * 0.2f);
+        dist = MathF.Max(dist, 0.05f); // deep zoom: the floor is absolute, not scene-relative
 
         var eye = center + dist * CamDir(yaw, pitch);
         var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
-        float near = MathF.Max(0.01f, radius * 0.05f);
+        // Near plane tracks the CAMERA DISTANCE when zoomed in close (a
+        // scene-relative near would clip everything at deep zoom). The
+        // z-buffer stores view-space distance, so a tiny near costs nothing.
+        float near = MathF.Max(0.005f, MathF.Min(radius * 0.05f, dist * 0.2f));
         float far = dist + radius * 6f + 1f;
         var proj = ortho
             ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
@@ -655,12 +664,15 @@ public static class SoftwareRenderer
 
         pitch = Math.Clamp(pitch, -1.50f, 1.50f);
         radius = MathF.Max(radius, 0.001f);
-        dist = MathF.Max(dist, radius * 0.2f);
+        dist = MathF.Max(dist, 0.05f); // deep zoom: the floor is absolute, not scene-relative
 
         var eye = center + dist * CamDir(yaw, pitch);
         var view = Matrix4x4.CreateLookAt(eye, center, RolledUp(CamDir(yaw, pitch), 0f));
         float aspect = width / (float)height;
-        float near = MathF.Max(0.01f, radius * 0.05f);
+        // Near plane tracks the CAMERA DISTANCE when zoomed in close (a
+        // scene-relative near would clip everything at deep zoom). The
+        // z-buffer stores view-space distance, so a tiny near costs nothing.
+        float near = MathF.Max(0.005f, MathF.Min(radius * 0.05f, dist * 0.2f));
         float far = dist + radius * 6f + 1f;
         var proj = ortho
             ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
