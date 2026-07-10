@@ -41,10 +41,18 @@ internal sealed class RenderHostTriggerContext : TriggerContext
     }
 
     public override bool PartyMemberWithinAabb(Vector3 center, float halfX, float halfY, float halfZ)
+        => PartyMemberWithinBox(center, Quaternion.Identity, halfX, halfY, halfZ);
+
+    // ALPHA-2 ORIENTED-BOX — test in the trigger's authored frame. DS1's
+    // threshold strips (cr_r1's 2×2×7 cutaway lines) rotate 90°; treating
+    // them as world-axis-aligned turned a thin crossing line into a deep
+    // dwell zone lying along the corridor.
+    public override bool PartyMemberWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ)
     {
+        var inv = Quaternion.Inverse(orientation);
         foreach (var p in _host.PartyMemberPositionsForTriggers())
         {
-            var d = p - center;
+            var d = Vector3.Transform(p - center, inv);
             if (MathF.Abs(d.X) <= halfX && MathF.Abs(d.Y) <= halfY && MathF.Abs(d.Z) <= halfZ)
                 return true;
         }
@@ -80,13 +88,18 @@ internal sealed class RenderHostTriggerContext : TriggerContext
         return _host.PlayerWithinNodeGroup(regionGuid, nodeSection, nodeLevel, nodeObject);
     }
 
-    // ALPHA-2B — the six previously-undispatched authored verbs.
+    // ALPHA-2B — the six previously-undispatched authored verbs (oriented
+    // variants; the Aabb names route through with identity rotation).
     public override bool AnyActorWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint exceptScid)
+        => AnyActorWithinBox(center, Quaternion.Identity, halfX, halfY, halfZ, exceptScid);
+
+    public override bool AnyActorWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ, uint exceptScid)
     {
+        var inv = Quaternion.Inverse(orientation);
         foreach (var (scid, pos) in _host.EnumerateActorPositionsForTriggers())
         {
             if (scid == exceptScid) continue;
-            var d = pos - center;
+            var d = Vector3.Transform(pos - center, inv);
             if (MathF.Abs(d.X) <= halfX && MathF.Abs(d.Y) <= halfY && MathF.Abs(d.Z) <= halfZ)
                 return true;
         }
@@ -94,8 +107,11 @@ internal sealed class RenderHostTriggerContext : TriggerContext
     }
 
     public override bool AnyGoWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter)
+        => AnyGoWithinBox(center, Quaternion.Identity, halfX, halfY, halfZ, scidFilter, templateFilter);
+
+    public override bool AnyGoWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter)
     {
-        return _host.AnyGoWithinAabbForTriggers(center, halfX, halfY, halfZ, scidFilter, templateFilter);
+        return _host.AnyGoWithinBoxForTriggers(center, orientation, halfX, halfY, halfZ, scidFilter, templateFilter);
     }
 
     public override bool PartyHasItemTemplate(string templateName)

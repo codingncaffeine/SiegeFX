@@ -134,7 +134,7 @@ public sealed class TriggerRuntime
                 return TryFloatArg(cond, 0, out var hx)
                     && TryFloatArg(cond, 1, out var hy)
                     && TryFloatArg(cond, 2, out var hz)
-                    && ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
+                    && ctx.PartyMemberWithinBox(trig.Position, trig.Orientation, hx, hy, hz);
             case "party_member_within_node":
                 return EvaluateWithinNode(cond, ctx);
             default:
@@ -323,7 +323,7 @@ public sealed class TriggerRuntime
                     hy += VolumeHysteresisMargin;
                     hz += VolumeHysteresisMargin;
                 }
-                return ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
+                return ctx.PartyMemberWithinBox(trig.Position, trig.Orientation, hx, hy, hz);
             }
             case "party_member_within_node":
                 return EvaluateWithinNode(cond, ctx);
@@ -334,7 +334,7 @@ public sealed class TriggerRuntime
                 if (!TryFloatArg(cond, 0, out var bx)) return false;
                 if (!TryFloatArg(cond, 1, out var by)) return false;
                 if (!TryFloatArg(cond, 2, out var bz)) return false;
-                return ctx.AnyActorWithinAabb(trig.Position, bx, by, bz, exceptScid: trig.Scid);
+                return ctx.AnyActorWithinBox(trig.Position, trig.Orientation, bx, by, bz, exceptScid: trig.Scid);
             }
             // ALPHA-2B — any game object in the box, optionally filtered by
             // scid (arg 3, 0 = any) and template name (arg 4, "" = any).
@@ -346,7 +346,7 @@ public sealed class TriggerRuntime
                 if (!TryFloatArg(cond, 2, out var gz)) return false;
                 uint scidFilter = cond.Args.Count > 3 ? ParseScid(cond.Args[3]) : 0;
                 string nameFilter = cond.Args.Count > 4 ? cond.Args[4].Trim('"') : "";
-                return ctx.AnyGoWithinAabb(trig.Position, gx, gy, gz, scidFilter, nameFilter);
+                return ctx.AnyGoWithinBox(trig.Position, trig.Orientation, gx, gy, gz, scidFilter, nameFilter);
             }
             // ALPHA-2B — item-gated trigger: has_go_in_inventory("any", scid,
             // template). Shipped form checks the whole party for a quest item
@@ -603,6 +603,14 @@ public sealed class TriggerInstance
     public TriggerMatrix Matrix { get; }
     public bool IsActive;
 
+    /// <summary>ALPHA-2 ORIENTED-BOX — the trigger's WORLD orientation (node
+    /// rotation composed with the placement quaternion). Bounding-box
+    /// conditions test in this frame: DS1 authors thin threshold strips
+    /// rotated 90° (cr_r1's 2×2×7 cutaway lines), and testing them as
+    /// world-axis-aligned boxes turned a 2u-deep crossing line into a
+    /// 14u-deep dwell zone lying along the corridor.</summary>
+    public Quaternion Orientation { get; }
+
     /// <summary>SC-FADE-BOX-REVERSE — the placement's template name; box-family
     /// fade templates get their held "out" fades restored on row falling edge.</summary>
     public string TemplateName { get; }
@@ -611,13 +619,14 @@ public sealed class TriggerInstance
     readonly TriggerRowState[] _rowStates;
 
     public TriggerInstance(uint scid, uint nodeGuid, Vector3 position, TriggerMatrix matrix, bool startActive,
-                           string templateName = "")
+                           string templateName = "", Quaternion? orientation = null)
     {
         Scid = scid;
         NodeGuid = nodeGuid;
         Position = position;
         Matrix = matrix;
         IsActive = startActive;
+        Orientation = orientation ?? Quaternion.Identity;
         TemplateName = templateName;
         var tn = templateName.ToLowerInvariant();
         AutoReverseFades = tn.Contains("box") &&
@@ -651,6 +660,16 @@ public class TriggerContext
     // ALPHA-2B — non-party volume checks + item gate + camera-flag / life actions.
     public virtual bool AnyActorWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint exceptScid) => false;
     public virtual bool AnyGoWithinAabb(Vector3 center, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter) => false;
+    // ALPHA-2 ORIENTED-BOX — box conditions carry the trigger's world
+    // orientation. Defaults fall through to the axis-aligned variants so
+    // headless/audit contexts that only override those keep functioning;
+    // live hosts override these for correct rotated thresholds.
+    public virtual bool PartyMemberWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ)
+        => PartyMemberWithinAabb(center, halfX, halfY, halfZ);
+    public virtual bool AnyActorWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ, uint exceptScid)
+        => AnyActorWithinAabb(center, halfX, halfY, halfZ, exceptScid);
+    public virtual bool AnyGoWithinBox(Vector3 center, Quaternion orientation, float halfX, float halfY, float halfZ, uint scidFilter, string templateFilter)
+        => AnyGoWithinAabb(center, halfX, halfY, halfZ, scidFilter, templateFilter);
     public virtual bool PartyHasItemTemplate(string templateName) => false;
     public virtual void SetCameraNodeFlag(string verb, uint nodeGuid, bool on) { }
     public virtual void ChangeActorLife(uint scid, float newLife) { }

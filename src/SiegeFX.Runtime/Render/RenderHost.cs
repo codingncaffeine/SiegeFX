@@ -1105,14 +1105,15 @@ public sealed class RenderHost : IDisposable
     /// the box, optionally filtered by scid / template name. GOs ≈ actors
     /// (incl. player + party) for our purposes; static props can't move into
     /// a volume so they'd only ever match at author time.</summary>
-    internal bool AnyGoWithinAabbForTriggers(Vector3 center, float hx, float hy, float hz, uint scidFilter, string templateFilter)
+    internal bool AnyGoWithinBoxForTriggers(Vector3 center, Quaternion orientation, float hx, float hy, float hz, uint scidFilter, string templateFilter)
     {
+        var inv = Quaternion.Inverse(orientation);
         bool Match(uint scid, string template, Vector3 pos, bool dead)
         {
             if (dead) return false;
             if (scidFilter != 0 && scid != scidFilter) return false;
             if (templateFilter.Length > 0 && !template.Equals(templateFilter, StringComparison.OrdinalIgnoreCase)) return false;
-            var d = pos - center;
+            var d = Vector3.Transform(pos - center, inv);
             return MathF.Abs(d.X) <= hx && MathF.Abs(d.Y) <= hy && MathF.Abs(d.Z) <= hz;
         }
         foreach (var s in _actors)

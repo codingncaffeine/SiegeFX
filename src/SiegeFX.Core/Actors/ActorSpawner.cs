@@ -86,6 +86,10 @@ public sealed class ActorSpawner
 
             var world = ComposeWorldTransform(p.Placement);
             var pos = world.Translation;
+            // ALPHA-2 ORIENTED-BOX — carry the composed world rotation (node
+            // rotation × placement quaternion) so box conditions test in the
+            // authored frame. DS1's threshold strips rotate 90° routinely.
+            var orient = System.Numerics.Quaternion.CreateFromRotationMatrix(world);
 
             // start_active is per-row in the GAS but for the instance we honor the
             // first row's flag — DS1's editor only ever writes one [*] row that
@@ -94,7 +98,7 @@ public sealed class ActorSpawner
             // unauthored.
             bool startActive = matrix.Rows.Count == 0 || matrix.Rows[0].StartActive;
 
-            var trigger = new TriggerInstance(p.Scid, p.Placement.NodeGuid, pos, matrix, startActive, p.TemplateName);
+            var trigger = new TriggerInstance(p.Scid, p.Placement.NodeGuid, pos, matrix, startActive, p.TemplateName, orient);
             _triggerRuntime.Register(trigger);
             spawned.Add(trigger);
         }
