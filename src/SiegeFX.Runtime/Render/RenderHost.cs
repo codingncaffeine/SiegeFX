@@ -2187,7 +2187,81 @@ public sealed class RenderHost : IDisposable
         _navMesh?.SetFadeHiddenForSnode(snodeGuid, hidden);
     }
 
+    // ALPHA-2 FADE-GRACE — retail fades are TIMED (the data distinguishes
+    // "out:instant" from plain "out:black"), so DS1's staged-reveal box pairs
+    // (hide box at a doorway + reveal box a few steps deeper) never flash:
+    // the reveal catches the hide mid-fade. We apply fades binarily, which
+    // blacked the crypt room for the strip between the boxes. Non-instant
+    // OUT fades now wait a short grace window that a matching IN cancels —
+    // walking through shows nothing, pausing dead in the strip still hides
+    // (the authentic cutaway). 0.6s is INFERRED (no authored fade time found).
+    private const float FadeOutGraceSeconds = 0.6f;
+    private readonly List<(float FireIn, string Verb, string[] Args, string Key)> _pendingOutFades = new();
+
+    private static string FadeKeyOf(IReadOnlyList<string> args)
+    {
+        // Pairs address the same (region/snode guid, section, level, object).
+        int n = Math.Min(4, args.Count);
+        var sb = new System.Text.StringBuilder(48);
+        for (int i = 0; i < n; i++) { sb.Append(args[i].Trim().Trim('"')); sb.Append('|'); }
+        return sb.ToString();
+    }
+
     internal void OnTriggerFadeNodes(string verb, IReadOnlyList<string> args)
+    {
+        if (args is null || args.Count == 0) return;
+
+        string modePeek = "";
+        for (int i = args.Count - 1; i >= 1; i--)
+        {
+            var a = args[i].Trim().Trim('"').ToLowerInvariant();
+            if (a.StartsWith("out") || a.StartsWith("in") || a.StartsWith("fade")) { modePeek = a; break; }
+        }
+        bool isIn = modePeek == "in" || modePeek == "fade_in";
+        bool isTimedOut = !isIn && modePeek.Length > 0 && !modePeek.Contains("instant");
+
+        if (isIn)
+        {
+            // A reveal cancels any not-yet-applied hide on the same target
+            // (the staged-reveal walk-through case).
+            var key = FadeKeyOf(args);
+            int cancelled = _pendingOutFades.RemoveAll(p => p.Key == key);
+            if (cancelled > 0)
+                Console.WriteLine($"[fade-grace] '{key}' reveal cancelled {cancelled} pending hide(s)");
+        }
+        else if (isTimedOut)
+        {
+            var key = FadeKeyOf(args);
+            // Latest wins; don't stack duplicates of the same pending hide.
+            _pendingOutFades.RemoveAll(p => p.Key == key);
+            var copy = new string[args.Count];
+            for (int i = 0; i < args.Count; i++) copy[i] = args[i];
+            _pendingOutFades.Add((FadeOutGraceSeconds, verb, copy, key));
+            return;
+        }
+
+        ApplyTriggerFadeNodesNow(verb, args);
+    }
+
+    /// <summary>ALPHA-2 FADE-GRACE — pump the delayed hide queue (called from
+    /// the per-frame interactables tick).</summary>
+    private void TickPendingOutFades(float dt)
+    {
+        if (dt <= 0f || _pendingOutFades.Count == 0) return;
+        for (int i = _pendingOutFades.Count - 1; i >= 0; i--)
+        {
+            var (fireIn, verb, fadeArgs, key) = _pendingOutFades[i];
+            fireIn -= dt;
+            if (fireIn <= 0f)
+            {
+                _pendingOutFades.RemoveAt(i);
+                ApplyTriggerFadeNodesNow(verb, fadeArgs);
+            }
+            else _pendingOutFades[i] = (fireIn, verb, fadeArgs, key);
+        }
+    }
+
+    private void ApplyTriggerFadeNodesNow(string verb, IReadOnlyList<string> args)
     {
         if (args is null || args.Count == 0) return;
         if (!TryParseSnodeGuid(args[0], out var guid))
@@ -10910,6 +10984,7 @@ void main()
 
         TickAutoTraps(dt);
         TickShrines(dt);
+        TickPendingOutFades(dt);
 
         for (int i = _elevatorDelayedFades.Count - 1; i >= 0; i--)
         {
@@ -21627,6 +21702,8 @@ void main()
         _lockedUsables.Clear();
         _pendingLockedUse = null;
         _blockingGizmos.Clear();
+        // ALPHA-2 FADE-GRACE — pending hides die with the region.
+        _pendingOutFades.Clear();
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();
