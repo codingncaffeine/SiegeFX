@@ -166,29 +166,37 @@ public sealed class HandbookPanel
     // ---- draw --------------------------------------------------------------
 
     public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
-                     Func<string, GlTexture?>? guiTex, int vw, int vh)
+                     Func<string, GlTexture?>? guiTex, Func<string, GlTexture?>? commonChrome,
+                     int vw, int vh)
     {
         if (!IsOpen || _tips.Count == 0) return;
         Layout(vw, vh);
         float s = HudScale.Modal(vw, vh);
         int fs = Math.Max(1, (int)MathF.Round(s));
         int lineH = text.LineHeight * fs + Math.Max(1, (int)MathF.Round(2 * s));
-        bool chrome = icons is not null && guiTex is not null;
+        // NinePatch (cpbox chrome) needs the COMMON-CHROME resolver — bare
+        // family keys ("cpbox_ul") that GetCommonTexture b_gui_cmn_-prefixes.
+        // Passing the plain gui resolver was the original "no border" bug.
+        bool chrome = icons is not null && commonChrome is not null;
 
         var parch = new Vector4(0.86f, 0.80f, 0.66f, 1f);
         var gold  = new Vector4(1f, 0.90f, 0.55f, 1f);
         var dim   = new Vector4(0.60f, 0.57f, 0.50f, 1f);
 
-        // Modal scrim + panel + inner frames.
-        bars.DrawRect(vw, vh, 0, 0, vw, vh, new Vector4(0f, 0f, 0f, 0.55f));
+        // DS1's handbook floats over the live world (no full-screen scrim). A
+        // dark backing fill under the frame brings the panel to ~25%
+        // transparency; inner cpbox boxes stack over it and read as recessed.
+        var panelScr = Scr(RPanel, vw, vh);
+        bars.DrawRect(vw, vh, panelScr.x, panelScr.y, panelScr.w, panelScr.h,
+                      new Vector4(0.03f, 0.03f, 0.04f, 0.55f));
         void Frame((int, int, int, int) refRect)
         {
             var r = Scr(refRect, vw, vh);
-            if (chrome) NinePatch.DrawCpbox(icons!, guiTex!, vw, vh, r.x, r.y, r.w, r.h, Vector4.One);
+            if (chrome) NinePatch.DrawCpbox(icons!, commonChrome!, vw, vh, r.x, r.y, r.w, r.h, Vector4.One);
             else
             {
-                bars.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.05f, 0.05f, 0.06f, 0.94f));
-                bars.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.35f, 0.33f, 0.28f, 1f));
+                bars.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.07f, 0.07f, 0.08f, 0.9f));
+                bars.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.45f, 0.42f, 0.34f, 1f));
             }
         }
         Frame(RPanel);

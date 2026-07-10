@@ -22481,11 +22481,13 @@ void main()
             if (_saveDialog.IsOpen && _barRenderer is not null)
             {
                 _saveDialog.Tick((float)dt);
-                _saveDialog.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
+                _saveDialog.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                                 TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             if (_handbook.IsOpen && _barRenderer is not null)
             {
-                _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
+                _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                               TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
             // menu so a future "open Options from pause" hookup stacks

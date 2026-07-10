@@ -198,39 +198,45 @@ public sealed class SaveGameDialog
     // ---- draw --------------------------------------------------------------
 
     public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
-                     Func<string, GlTexture?>? guiTex, int vw, int vh)
+                     Func<string, GlTexture?>? guiTex, Func<string, GlTexture?>? commonChrome,
+                     int vw, int vh)
     {
         if (!IsOpen) return;
         Layout(vw, vh);
         float s = HudScale.Modal(vw, vh);
         int fs = Math.Max(1, (int)MathF.Round(s));
 
-        // Modal scrim — same 55% black the pause/options menus use.
-        bars.DrawRect(vw, vh, 0, 0, vw, vh, new Vector4(0f, 0f, 0f, 0.55f));
-
         var parch = new Vector4(0.88f, 0.82f, 0.70f, 1f);
         var gold  = new Vector4(1f, 0.90f, 0.55f, 1f);
         var dim   = new Vector4(0.55f, 0.52f, 0.46f, 1f);
 
-        // Panel + inner frames. cpbox chrome if the raws resolve; flat fallback
-        // keeps the dialog usable headless / with missing art.
-        bool chrome = icons is not null && guiTex is not null;
-        void Frame((int x, int y, int w, int h) r, float fill)
+        // No full-screen scrim — DS1's Save window floats over the live world.
+        // A dark backing fill under the frame brings the panel to ~25%
+        // transparency (the cpbox's own box_alpha_154 fill alone reads ~40%
+        // transparent, which the user found too see-through). Inner cpbox
+        // boxes stack over this and read as recessed. NinePatch needs the
+        // COMMON-CHROME resolver (bare "cpbox_ul" keys, b_gui_cmn_-prefixed
+        // inside GetCommonTexture) — passing the plain gui resolver here was
+        // the original "no border" bug.
+        bool chrome = icons is not null && commonChrome is not null;
+        bars.DrawRect(vw, vh, _sPanel.x, _sPanel.y, _sPanel.w, _sPanel.h,
+                      new Vector4(0.03f, 0.03f, 0.04f, 0.55f));
+        void Frame((int x, int y, int w, int h) r)
         {
             if (chrome)
-                NinePatch.DrawCpbox(icons!, guiTex!, vw, vh, r.x, r.y, r.w, r.h, Vector4.One);
+                NinePatch.DrawCpbox(icons!, commonChrome!, vw, vh, r.x, r.y, r.w, r.h, Vector4.One);
             else
             {
-                bars.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.06f, 0.06f, 0.07f, fill));
-                bars.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.35f, 0.33f, 0.28f, 1f));
+                bars.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.07f, 0.07f, 0.08f, 0.85f));
+                bars.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.45f, 0.42f, 0.34f, 1f));
             }
         }
 
-        Frame(_sPanel, 0.92f);
-        Frame(Scr(RPreview, vw, vh), 0.92f);
-        Frame(Scr(RDesc, vw, vh), 0.92f);
-        Frame(_sList, 0.92f);
-        Frame(_sEdit, 0.92f);
+        Frame(_sPanel);
+        Frame(Scr(RPreview, vw, vh));
+        Frame(Scr(RDesc, vw, vh));
+        Frame(_sList);
+        Frame(_sEdit);
 
         // Title — one size up (14p), gold, centered over the panel.
         int titleScale = Math.Max(1, (int)MathF.Round(s * 1.16f));
