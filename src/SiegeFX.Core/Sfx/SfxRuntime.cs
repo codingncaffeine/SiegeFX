@@ -1568,16 +1568,18 @@ public sealed class SfxRuntime
     static PlumeSpec BuildPlumeSpec(in Handle h)
     {
         bool steam = h.Mode == EmitterMode.Steam;
-        var vel = h.VelocityVec.LengthSquared() > 0.0001f
+        // Honor an AUTHORED velocity even when it's (0,0,0): fireshot's fire
+        // rides the trackball and authors velocity(0,0,0) so the flames stay
+        // ON the ball. Treating zero as "unauthored" substituted an upward
+        // drift that made the fireball smear upward into a spray. Only truly
+        // unauthored plumes get the gentle rise default.
+        var vel = h.HasVelocity
             ? h.VelocityVec
             : (steam ? new Vector3(0f, 5.75f, 0f) : new Vector3(0f, 8f, 0f)) * 0.25f;
             // 0.25x: DS1's doc velocities are authored against its raw
             // effect scale; unauthored spell plumes at full 8 u/s read as
             // geysers at our world scale. Authored velocities pass as-is.
-        if (h.VelocityVec.LengthSquared() > 0.0001f) vel = h.VelocityVec;
-        var acc = h.AccelVec.LengthSquared() > 0.0001f
-            ? h.AccelVec
-            : Vector3.Zero;
+        var acc = h.HasAccel ? h.AccelVec : Vector3.Zero;
         return new PlumeSpec
         {
             Kind        = h.Mode == EmitterMode.Fire ? (byte)0 : steam ? (byte)2 : (byte)1,
@@ -2669,11 +2671,11 @@ public sealed class SfxRuntime
         if (TryReadFloat(raw, "velocity", out var vx, argIndex: 0)
          && TryReadFloat(raw, "velocity", out var vy, argIndex: 1)
          && TryReadFloat(raw, "velocity", out var vz, argIndex: 2))
-            h.VelocityVec = new Vector3(vx, vy, vz);
+            { h.VelocityVec = new Vector3(vx, vy, vz); h.HasVelocity = true; }
         if (TryReadFloat(raw, "accel", out var ax, argIndex: 0)
          && TryReadFloat(raw, "accel", out var ay, argIndex: 1)
          && TryReadFloat(raw, "accel", out var az, argIndex: 2))
-            h.AccelVec = new Vector3(ax, ay, az);
+            { h.AccelVec = new Vector3(ax, ay, az); h.HasAccel = true; }
         if (TryReadFloat(raw, "max_displace", out var maxd))
             h.MaxDisplace = MathF.Abs(maxd);
         if (TryReadFloat(raw, "alphafade", out var afade))
@@ -3301,7 +3303,9 @@ public sealed class SfxRuntime
         public Vector4     ColorTail;    // color1
         // Phase 21-SC-SPELL-VISUAL-C — fireb-specific knobs.
         public Vector3     VelocityVec;  // velocity(x,y,z) — directional vector
+        public bool        HasVelocity;  // velocity() authored (even (0,0,0))
         public Vector3     AccelVec;     // accel(x,y,z)
+        public bool        HasAccel;     // accel() authored (even (0,0,0))
         public float       MaxDisplace;  // max_displace
         public float       AlphaFade;    // alphafade — particle lifetime
         public float       LowerRadius;  // lower_r0/r1 average

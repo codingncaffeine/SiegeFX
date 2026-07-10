@@ -1244,14 +1244,35 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                     : Rand(0f, 1f);
                 if (t01 < 0f) t01 += 1f;
                 pos = Vector3.Lerp(position, s.LineEnd, t01);
+                pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
             }
-            else
+            else if (s.Instant)
             {
+                // instant()/area() volume fill (campfire, area_smoke): scatter
+                // across the [min_radius, max_radius] disc to paint the volume.
                 float ang = Rand(0f, MathF.Tau);
                 float r = Rand(MathF.Min(s.MinRadius, maxR), MathF.Max(s.MinRadius, maxR));
                 pos = position + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
+                pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
             }
-            pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
+            else
+            {
+                // Continuous point emitter (fireshot's flying fire, torches):
+                // spawn a tight, center-dense ball around the emitter so a
+                // moving fire stays a cohesive fireball. max_radius is DS1's
+                // drift bound for velocity-driven spread, NOT a spawn scatter —
+                // flinging particles across a max_radius(7) disc is what turned
+                // the fireball into a spray. Ball radius = the authored displace
+                // jitter (fireshot ±1), falling back to a small radius-derived
+                // default when displace is unauthored.
+                float jr = MathF.Max(MathF.Abs(s.MinDisplace), MathF.Abs(s.MaxDisplace));
+                if (jr < 0.01f) jr = MathF.Min(MathF.Max(0.25f, s.MaxRadius), 1.0f);
+                float z   = Rand(-1f, 1f);
+                float rho = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
+                float th  = Rand(0f, MathF.Tau);
+                float rr  = jr * Rand(0f, 1f);   // center-biased → dense core, soft edge
+                pos = position + new Vector3(rho * MathF.Cos(th), z, rho * MathF.Sin(th)) * rr;
+            }
 
             var vel = s.Velocity * Rand(0.8f, 1.2f);
             // Particle radius tracks the authored scale the same way the
