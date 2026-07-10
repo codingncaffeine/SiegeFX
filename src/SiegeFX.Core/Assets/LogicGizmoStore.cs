@@ -22,7 +22,7 @@ namespace SiegeFX.Core.Assets;
 ///
 /// The booleans are WORLD-scoped: bt_r1 checks bools that path2sd_a sets.
 /// They live for the whole session and belong in the save file.</summary>
-public enum LogicGizmoKind { SetBool, CheckBool, Accumulate, MsgSwitch }
+public enum LogicGizmoKind { SetBool, CheckBool, Accumulate, MsgSwitch, CheckQuest }
 
 public sealed record LogicGizmoDef(
     uint Scid,
@@ -43,6 +43,10 @@ public static class LogicGizmoStore
         ("check_bool", LogicGizmoKind.CheckBool),
         ("generic_accumtrigger", LogicGizmoKind.Accumulate),
         ("msg_switch", LogicGizmoKind.MsgSwitch),
+        // ALPHA-2F — [check_quest] { quest_name; send_to_scid }: quest-state
+        // sibling of check_bool (ds_r1's temple purification chain). The
+        // quest name rides the BoolVariable slot.
+        ("check_quest", LogicGizmoKind.CheckQuest),
     };
 
     /// <summary>Scan every <c>objects/*.gas</c> file of <paramref name="regionPath"/>
@@ -91,12 +95,14 @@ public static class LogicGizmoStore
                     if (kind == LogicGizmoKind.CheckBool && ifTrue.Length == 0 && ifFalse.Length == 0)
                         ifTrue = "we_req_activate"; // shipped default: fire only when true
 
+                    var variable = Attr("bool_variable");
+                    if (variable.Length == 0) variable = Attr("quest_name");
                     defs.Add(new LogicGizmoDef(
                         Scid: p.Scid,
                         TemplateName: p.TemplateName,
                         RegionPath: norm,
                         Kind: kind,
-                        BoolVariable: Attr("bool_variable"),
+                        BoolVariable: variable,
                         MessageIfTrue: ifTrue,
                         MessageIfFalse: ifFalse,
                         SendToScid: Hex(Attr("send_to_scid")),

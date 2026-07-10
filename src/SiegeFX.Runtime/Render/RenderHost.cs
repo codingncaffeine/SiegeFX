@@ -1796,6 +1796,22 @@ public sealed class RenderHost : IDisposable
                     }
                     break;
                 }
+                case SiegeFX.Core.Assets.LogicGizmoKind.CheckQuest:
+                {
+                    // ALPHA-2F — fire when the named quest has been STARTED
+                    // (active or completed). INFERRED: shipped rows gate
+                    // temple-purification staging in ds_r1; "quest known to
+                    // the journal" is the conservative reading.
+                    if (!activate) break;
+                    bool known = d.BoolVariable.Length > 0 &&
+                                 _progression is not null &&
+                                 _progression.Journal.TryGet(d.BoolVariable, out _);
+                    Console.WriteLine($"[logic] check_quest 0x{d.Scid:X8}: '{d.BoolVariable}' known={known}" +
+                        (known && d.SendToScid != 0 ? $" -> we_req_activate 0x{d.SendToScid:X8}" : ""));
+                    if (known && d.SendToScid != 0 && d.SendToScid != d.Scid)
+                        PostTriggerWorldMessage("we_req_activate", d.Scid, d.SendToScid);
+                    break;
+                }
                 case SiegeFX.Core.Assets.LogicGizmoKind.MsgSwitch:
                 {
                     if (!activate) break;

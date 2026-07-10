@@ -1461,6 +1461,7 @@ static int CmdWorldCampaignAudit(string[] a)
         "gold",                                                     // ALPHA-2C world gold = currency pickup (mesh table)
         "fountain", "effect_manager_server",                        // ALPHA-2D life/mana shrines heal+revive+fx loop
         "respawn_shrine",                                           // ALPHA-2D (statue is MP-only; SP shrines revive via fountain gizmos)
+        "check_quest",                                              // ALPHA-2F quest-state logic gizmo
         "messages",                                                 // ALPHA-2E stuck-door locked text ([messages][locked])
         "locked",                                                   // ALPHA-2E key_template+message_scid usables (Star Device)
         "breaking_object",                                          // ALPHA-2E message-broken rubble blockers
@@ -1506,6 +1507,9 @@ static int CmdWorldCampaignAudit(string[] a)
         ["check_level"] = "MP-only level gate",
         ["chipper"] = "one-off ambient (dm_r8)",
         ["minigun_magic"] = "one-off turret fx (gi_r4) — verify in Piece 2",
+        ["tsd_manager"] = "melt-effect texture anim on the heater MONSTER (an actor) — cosmetic",
+        ["animate_object"] = "cmd-family object animation — part of the known anim-command gap; VERIFY gi_r10 bridge at eyes test",
+        ["alignment_switcher"] = "Gom phase-2 alignment flip — VERIFY at Gom fight eyes test",
     };
     // Header FAMILIES handled by prefix (elevator_2s_1c_1n etc.).
     static bool HandledFamily(string h) =>
