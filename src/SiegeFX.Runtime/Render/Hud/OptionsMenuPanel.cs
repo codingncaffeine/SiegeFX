@@ -553,7 +553,9 @@ internal sealed class OptionsMenuPanel
         DrawTab(bars, text, viewportW, viewportH, _tabAudio, "AUDIO", Tab.Audio);
         DrawTab(bars, text, viewportW, viewportH, _tabInput, "INPUT", Tab.Input);
         DrawTab(bars, text, viewportW, viewportH, _tabGame,  "GAME",  Tab.Game);
-        DrawTab(bars, text, viewportW, viewportH, _tabAdvanced, "ADVANCED", Tab.Advanced);
+        // "ADV" — the full word overflows the 5-way-split 82px tab at the
+        // copperplate label width.
+        DrawTab(bars, text, viewportW, viewportH, _tabAdvanced, "ADV", Tab.Advanced);
 
         // Inner content panel.
         bars.DrawRect(viewportW, viewportH, _inner.X, _inner.Y, _inner.W, _inner.H, InnerBg);

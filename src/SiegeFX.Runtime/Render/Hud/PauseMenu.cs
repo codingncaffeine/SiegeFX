@@ -50,9 +50,12 @@ public sealed class PauseMenu
 
     private void Layout(int viewportW, int viewportH)
     {
-        // ALPHA-2V RE-BASELINE — shared HUD baseline + UI-scale knob
-        // (RefH is 480, the same convention HudScale.Hud clamps).
-        float s = HudScale.Hud(viewportH);
+        // ALPHA-2V FIX — the pause menu is a full-screen 640×480 COMPOSITION
+        // (button positions authored in screen space), not a docked panel:
+        // clamping its scale squished the button list into the top of the
+        // window. Modal fit-scaling maps the composition over the window
+        // like the Options dialog (and still honors UI-scale shrink).
+        float s = HudScale.Modal(viewportW, viewportH);
         int originX = (int)MathF.Round((viewportW - RefW * s) / 2f);
         for (int i = 0; i < _buttons.Length; i++)
         {

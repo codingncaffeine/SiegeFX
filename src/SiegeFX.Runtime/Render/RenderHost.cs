@@ -4774,8 +4774,10 @@ void main()
                     if (_charPanelOpen && _player is not null)
                     {
                         var sz = _window.Size;
+                        // Must match the paperdollX draw anchor (AwpAnchorX ×
+                        // the AWP's clamped scale) or clicks land offset.
                         int pdx = (int)System.Math.Round(Hud.InfoRailLayout.Pane1.X0 *
-                            (sz.Y / 480f));
+                            Hud.CharacterAwp.Scale(sz.Y));
                         var slotName = _paperdoll.TryHitTestSlot(imx, imy, pdx, 0, sz.Y);
                         if (slotName is not null)
                         {
@@ -9240,7 +9242,7 @@ void main()
         if (_iconRenderer is null) return;
         EnsureCompassTextures();
         if (_compassCover is null) return;
-        float scale = Math.Clamp(viewportH / 480f, 1f, 3f);
+        float scale = Hud.HudScale.Hud(viewportH); // ALPHA-2V — shared HUD baseline + UI-scale knob
         int size = (int)(108 * scale);
         int cx = viewportW - size / 2 - (int)(6 * scale);
         int cy = size / 2 + (int)(6 * scale);
@@ -9307,7 +9309,7 @@ void main()
     private bool CompassHitTest(int px, int py, int viewportW, int viewportH)
     {
         if (_compassCover is null) return false;
-        float scale = Math.Clamp(viewportH / 480f, 1f, 3f);
+        float scale = Hud.HudScale.Hud(viewportH); // ALPHA-2V — shared HUD baseline + UI-scale knob
         int size = (int)(108 * scale);
         int cx = viewportW - size / 2 - (int)(6 * scale);
         int cy = size / 2 + (int)(6 * scale);
@@ -16563,16 +16565,14 @@ void main()
                 hoveredId.Value, isPaused: _isPaused, labelsOn: _overheadLabelsVisible);
             if (!string.IsNullOrEmpty(tip))
             {
-                // text_box_info rect 95,450,501,479 in 640×480 ref. Use
-                // raw viewportH/480 (the same scale data_bar buttons
-                // use) so the tooltip rect aligns with the gas authoring.
-                float dbScale = viewportH / 480f;
+                // text_box_info rect 95,450,501,479 in 640×480 ref. Same
+                // clamped scale + bottom anchoring as DataBar.ProjectRect
+                // so the tooltip stays inside the (re-baselined) bar band.
+                float dbScale = Hud.HudScale.Hud(viewportH);
                 int tipX0 = (int)Math.Round(95 * dbScale);
-                int tipY0 = (int)Math.Round(450 * dbScale);
-                int tipX1 = (int)Math.Round(501 * dbScale);
-                int tipY1 = (int)Math.Round(479 * dbScale);
-                int tipW  = tipX1 - tipX0;
-                int tipH  = tipY1 - tipY0;
+                int tipY0 = viewportH - (int)Math.Round((480 - 450) * dbScale);
+                int tipW  = (int)Math.Round((501 - 95) * dbScale);
+                int tipH  = (int)Math.Round((479 - 450) * dbScale);
                 int textW = _textRenderer.MeasureWidth(tip);
                 int tx = tipX0 + (tipW - textW) / 2;
                 int ty = tipY0 + (tipH - 8) / 2;
@@ -17484,8 +17484,9 @@ void main()
 
         // Reference rect (640×480): health 56×8, mana 56×7. Stack mana
         // directly above health with a 1px gap, both centered horizontally
-        // on the actor's projected head position.
-        float refScale = viewportH / 480f;
+        // on the actor's projected head position. Size follows the shared
+        // HUD baseline; position is the world-projected head (unaffected).
+        float refScale = Hud.HudScale.Hud(viewportH);
         int barW = (int)Math.Round(56 * refScale);
         int hpH  = (int)Math.Round(8 * refScale);
         int mpH  = (int)Math.Round(7 * refScale);
@@ -21164,18 +21165,15 @@ void main()
             //
             // ANCHOR: the rail starts to the RIGHT of the AWP's slot 1
             // (which stays visible during the rail-open transformation).
-            // AWP scales by raw viewportH/480 (uncapped) but the rail
-            // panels use the clamped InfoRailLayout.Scale (1.5× cap).
-            // If we anchor the rail at gas-x=87 * railScale, at 1080p
-            // the rail starts at ~130px while the AWP's slot 1 right
-            // edge sits at ~189px — overlap. Anchoring at AWP-scale
-            // gas-x=87 puts the rail flush to the AWP cluster:
+            // ALPHA-2V RE-BASELINE — the AWP now scales by the same shared
+            // clamped baseline as the rail, so the dock chain MUST anchor
+            // at the AWP's actual scale (anchoring at raw viewportH/480
+            // while the AWP draws clamped strands the rail — and the
+            // companion tiles beyond it — far right of the AWP cluster):
             //   paperdoll X = round(AwpAnchorX * awpScale)
             //   inv MAX X   = paperdollX + paperdollW (rail scale)
             //   spellbook X = invX + invW
-            // Panel internal sizes still use the clamped rail scale,
-            // so the panels themselves stay at user-friendly proportions.
-            float awpScale = size.Y / 480f;
+            float awpScale = Hud.CharacterAwp.Scale(size.Y);
             float infoRailScale = Hud.InfoRailLayout.Scale(size.Y);
             const int AwpAnchorX = 87; // gas-x where the AWP ends + rail begins
             int paperdollX = (int)System.Math.Round(AwpAnchorX * awpScale);

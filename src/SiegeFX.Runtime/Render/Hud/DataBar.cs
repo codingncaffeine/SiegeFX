@@ -115,16 +115,21 @@ public sealed class DataBar
     /// implicit because every button's Y is in the lower band of the frame.</summary>
     public static (int X, int Y, int W, int H) ProjectRect(in Slot slot, int viewportW, int viewportH)
     {
-        float scale = viewportH / (float)RefH;
+        // ALPHA-2V RE-BASELINE — element SIZE follows the shared HUD
+        // baseline (+ UI-scale knob); ANCHORING stays window-relative.
+        // The bar is authored in the bottom band (Y 439..471 of 480), so
+        // Y projects from the BOTTOM edge — scaling the absolute Y by a
+        // clamped factor would strand the bar mid-screen.
+        float scale = HudScale.Hud(viewportH);
         int w = (int)Math.Round(slot.W * scale);
         int h = (int)Math.Round(slot.H * scale);
-        int y = (int)Math.Round(slot.Y * scale);
+        int y = viewportH - (int)Math.Round((RefH - slot.Y) * scale);
         int x;
         if (slot.RightAnchorPx > 0)
         {
             // gas's right_anchor=N is the distance from the right edge in
-            // ref-space to the LEFT edge of the rect. Scale by height-ratio
-            // and subtract from viewportW so widescreen keeps the icon glued.
+            // ref-space to the LEFT edge of the rect. Scale and subtract
+            // from viewportW so widescreen keeps the icon glued.
             int anchorPx = (int)Math.Round(slot.RightAnchorPx * scale);
             x = viewportW - anchorPx;
         }
@@ -140,9 +145,10 @@ public sealed class DataBar
     /// authors stretch_x=true on the dockbar.</summary>
     public static (int X, int Y, int W, int H) ProjectBgRect(int viewportW, int viewportH)
     {
-        float scale = viewportH / (float)RefH;
-        int y = (int)Math.Round(BgY * scale);
+        // Bottom-anchored like ProjectRect (band authored 449..480).
+        float scale = HudScale.Hud(viewportH);
         int h = (int)Math.Round(BgH * scale);
+        int y = viewportH - (int)Math.Round((RefH - BgY) * scale);
         return (0, y, viewportW, h);
     }
 
