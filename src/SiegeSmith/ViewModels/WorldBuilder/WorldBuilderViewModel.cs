@@ -654,6 +654,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand CreateTemplateCommand { get; }
     public RelayCommand AddQuestCommand { get; }
     public RelayCommand DeleteQuestCommand { get; }
+    public RelayCommand ImportAudioCommand { get; }
 
     // GAME-4 — map-local quests (journal entries of the custom game).
     public ObservableCollection<MapQuest> MapQuests { get; } = new();
@@ -797,6 +798,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
         ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
         CreateTemplateCommand = new RelayCommand(_ => CreateTemplate(), _ => _assetsFolder is not null);
+        ImportAudioCommand = new RelayCommand(_ => ImportAudio(), _ => _assetsFolder is not null);
         AddQuestCommand = new RelayCommand(_ =>
         {
             var q = new MapQuest { Key = $"quest_custom_{MapQuests.Count + 1:00}" };
@@ -2344,7 +2346,50 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OpenAssetsFolderCommand.RaiseCanExecuteChanged();
         ImportTextureCommand.RaiseCanExecuteChanged();
         CreateTemplateCommand.RaiseCanExecuteChanged();
+        ImportAudioCommand.RaiseCanExecuteChanged();
         Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
+    }
+
+    /// <summary>GAME-5 — import audio into the map bundle: WAV validated by the
+    /// engine's own PCM parser → assets/sound (usable by SED-referencing sound
+    /// emitters); MP3 → assets/music (usable as mood ambient/standard/battle
+    /// track by basename).</summary>
+    private void ImportAudio()
+    {
+        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Audio (*.wav;*.mp3)|*.wav;*.mp3|WAV (*.wav)|*.wav|MP3 (*.mp3)|*.mp3|All files|*.*",
+            Title = "Import audio (WAV for sound effects, MP3 for music)",
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+            var sb = new StringBuilder();
+            foreach (var ch in Path.GetFileNameWithoutExtension(dlg.FileName).ToLowerInvariant())
+                sb.Append(char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '_');
+            var name = sb.Length > 0 ? sb.ToString() : "audio";
+            if (ext == ".wav")
+            {
+                var bytes = File.ReadAllBytes(dlg.FileName);
+                var clip = SiegeFX.Audio.WavLoader.Parse(bytes); // engine acceptance
+                var dir = Path.Combine(_assetsFolder, "sound");
+                Directory.CreateDirectory(dir);
+                File.WriteAllBytes(Path.Combine(dir, name + ".wav"), bytes);
+                Status = $"Imported {name}.wav — {clip.Channels}ch {clip.BitsPerSample}-bit {clip.SampleRate}Hz, engine-verified. " +
+                         "Reference it by basename from sound emitters / effect cues.";
+            }
+            else if (ext == ".mp3")
+            {
+                var dir = Path.Combine(_assetsFolder, "music");
+                Directory.CreateDirectory(dir);
+                File.Copy(dlg.FileName, Path.Combine(dir, name + ".mp3"), overwrite: true);
+                Status = $"Imported {name}.mp3 — use '{name}' as a mood track (Region tab: ambient / standard / battle).";
+            }
+            else Status = "Pick a .wav (sound effect) or .mp3 (music track).";
+        }
+        catch (Exception ex) { Status = "Audio import failed: " + ex.Message; }
     }
 
     /// <summary>GAME-2 — import any WIC-decodable image (PNG/JPG/BMP/GIF/TIFF)

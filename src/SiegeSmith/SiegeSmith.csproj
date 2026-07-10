@@ -19,6 +19,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
+    <!-- GAME-5 — WavLoader validates imported audio with the engine's own parser. -->
+    <ProjectReference Include="..\SiegeFX.Audio\SiegeFX.Audio.csproj" />
   </ItemGroup>
 
   <ItemGroup>
