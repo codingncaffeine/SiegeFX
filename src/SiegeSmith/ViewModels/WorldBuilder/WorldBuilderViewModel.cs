@@ -717,6 +717,27 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             new OutlineGroup("Nav flags",     LogicalFlags,  "#7FBF7F"),
         };
 
+        // GAME-1 — the live-FX clock: ~15fps re-render while emitters exist
+        // and FX are live. Deterministic particle time, so toggling live/
+        // static freezes and resumes rather than restarting.
+        LiveFxCommand = new RelayCommand(_ =>
+        {
+            _liveFx = !_liveFx;
+            OnPropertyChanged(nameof(LiveFxLabel));
+            Render();
+        });
+        _fxTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(66),
+        };
+        _fxTimer.Tick += (_, _) =>
+        {
+            if (!_liveFx || Emitters.Count == 0 || _isLoading) return;
+            _fxTime += 0.066f;
+            Render();
+        };
+        _fxTimer.Start();
+
         // SC-UX5 — crash-safe autosave: every 3 minutes, the WHOLE region
         // (terrain, objects, lights, mood, effects, logic, conversations,
         // stitches, nav flags) packs through the same MapPackager path the
@@ -734,6 +755,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private readonly System.Windows.Threading.DispatcherTimer _autosaveTimer;
     private string? _lastAutosaveFingerprint;
+
+    // GAME-1 — live effects preview state.
+    private readonly System.Windows.Threading.DispatcherTimer _fxTimer;
+    private float _fxTime;
+    private bool _liveFx = true;
+    public string LiveFxLabel => _liveFx ? "FX: live" : "FX: static";
+    public RelayCommand LiveFxCommand { get; }
 
     private void Autosave()
     {
@@ -2480,13 +2508,49 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em);
         foreach (var tg in Triggers)
             Marker(tg.NodeGuid, tg.LocalPos, tg.Scid, MarkerTrigger, tg);
-        foreach (var dc in Decals)
-            Marker(dc.NodeGuid, dc.OriginLocal, dc.Scid, MarkerDecal, dc);
         foreach (var pl in Lights)
             if (pl.Kind == AuthoredLightKind.Point)
                 Marker(pl.NodeGuid, pl.Position, pl.Scid, MarkerLight, pl);
         foreach (var cm in Commands)
             Marker(cm.NodeGuid, cm.LocalPos, cm.Scid, MarkerCommand, cm);
+
+        // GAME-1 — decals preview as REAL textured quads on the surface
+        // (world-absolute basis per the decal contract; origin node-local).
+        // The quad carries the decal's scid, so clicking the art selects it.
+        // A small marker cube stays only while the texture doesn't resolve.
+        foreach (var dc in Decals)
+        {
+            int slot = string.IsNullOrWhiteSpace(dc.Texture) ? -1 : ResolveSlot(dc.Texture, "", texSlot, texList);
+            if (slot < 0 || !layout.TryGetTransform(dc.NodeGuid, out var dnw))
+            {
+                Marker(dc.NodeGuid, dc.OriginLocal, dc.Scid, MarkerDecal, dc);
+                continue;
+            }
+            if (dc.Scid != 0) _markers[dc.Scid] = dc;
+            var o = Vector3.Transform(dc.OriginLocal, dnw) + dc.Normal * 0.04f;
+            var h = dc.AxisH * (dc.HorizExtent * 0.5f);
+            var v = dc.AxisV * (dc.VertExtent * 0.5f);
+            AppendQuad(o - h - v, o + h - v, o + h + v, o - h + v, slot, -1, dc.Scid,
+                verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+        }
+
+        // GAME-1 — LIVE effects: fire/smoke emitters preview as animated,
+        // age-shaded billboard particles (deterministic per time, so no sim
+        // state). Excluded from the scene bounds so the camera never
+        // "breathes" with the flames; not pickable (the marker cube is the
+        // grab handle). The FX toolbar toggle pauses this for huge regions.
+        if (_liveFx && Emitters.Count > 0)
+        {
+            var fxDir = new Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch));
+            var fxRight = Vector3.Normalize(Vector3.Cross(new Vector3(0, 0, 1), fxDir));
+            var fxUp = Vector3.Normalize(Vector3.Cross(fxDir, fxRight));
+            foreach (var em in Emitters)
+            {
+                if (!layout.TryGetTransform(em.NodeGuid, out var enw)) continue;
+                AppendEmitterParticles(em, Vector3.Transform(em.LocalPos, enw), fxRight, fxUp, _fxTime,
+                    verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+            }
+        }
 
         if (verts.Count < 3)
         {
@@ -2551,6 +2615,83 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     // Absolute-ish marker size: scales gently with the region but clamps hard —
     // the old unclamped radius*0.03 made markers enormous in big regions.
     private static float MarkerSize(float radius) => Math.Clamp(radius * 0.015f, 0.25f, 0.6f);
+
+    /// <summary>GAME-1 — appends one textured/coloured quad (two tris) with a
+    /// pick scid, used by decal previews and effect billboards.</summary>
+    private static void AppendQuad(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 p3, int texSlot, int color, uint scid,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    {
+        void V(Vector3 p, float u, float w)
+        {
+            verts.Add(p);
+            normals.Add(Vector3.Zero);
+            uvs.Add(new Vector2(u, w));
+        }
+        V(p0, 0, 0); V(p1, 1, 0); V(p2, 1, 1);
+        V(p0, 0, 0); V(p2, 1, 1); V(p3, 0, 1);
+        for (int i = 0; i < 2; i++)
+        {
+            triTex.Add(texSlot);
+            triColor.Add(color);
+            pickGuid.Add(0u);
+            pickScid.Add(scid);
+        }
+    }
+
+    /// <summary>GAME-1 — the live fire/smoke preview. Each particle's whole
+    /// life is a pure function of (emitter scid, index, time): phase loops
+    /// over the fade time, the particle spirals up from the base with the
+    /// authored size/growth, and the colour rides the phase (fire: hot core
+    /// → orange → ember; smoke: light → dark grey, expanding). Deterministic,
+    /// so pausing the FX timer freezes rather than resets.</summary>
+    private static void AppendEmitterParticles(RegionEmitter em, Vector3 basePos, Vector3 right, Vector3 up, float t,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    {
+        int count = Math.Clamp(em.Count / 2, 6, 36); // preview budget — the engine shows the full count
+        float life = MathF.Max(0.4f, em.Fade);
+        float size0 = MathF.Max(0.06f, em.ParticleSize * 0.5f);
+        float grow = MathF.Max(0f, em.Growth);
+        for (int i = 0; i < count; i++)
+        {
+            uint seed = em.Scid * 977u + (uint)i * 7919u;
+            float h0 = Hash01(seed);
+            float h1 = Hash01(seed * 3u + 11u);
+            float h2 = Hash01(seed * 7u + 5u);
+            float phase = (t / life + h0) % 1f;
+            float ang = h1 * (MathF.PI * 2f) + phase * (0.8f + h2 * 1.4f);
+            float rad = 0.10f + size0 * 0.4f * h2 + phase * (em.Smoke ? 0.55f : 0.22f);
+            float rise = phase * life * (em.Smoke ? 0.9f : 1.25f);
+            var p = basePos + new Vector3(MathF.Cos(ang) * rad, MathF.Sin(ang) * rad, 0.05f + rise);
+            float flick = em.Smoke ? 1f : 0.8f + 0.4f * Hash01(seed ^ (uint)(t * 24f));
+            float s = size0 * (0.45f + phase * (0.8f + grow * 0.35f)) * flick;
+            int color = em.Smoke
+                ? LerpRgb(0x9A9AA2, 0x3A3A40, phase)
+                : phase < 0.35f
+                    ? LerpRgb(0xFFE08A, 0xF07A28, phase / 0.35f)
+                    : LerpRgb(0xF07A28, 0x6E1F0A, (phase - 0.35f) / 0.65f);
+            var r = right * s;
+            var u = up * s;
+            AppendQuad(p - r - u, p + r - u, p + r + u, p - r + u, -1, color, 0u,
+                verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+        }
+    }
+
+    private static float Hash01(uint x)
+    {
+        x ^= x >> 16; x *= 2654435761u; x ^= x >> 13; x *= 2246822519u; x ^= x >> 16;
+        return (x & 0xFFFFFF) / 16777216f;
+    }
+
+    private static int LerpRgb(int a, int b, float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+        int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+        int r = ar + (int)((br - ar) * t), g = ag + (int)((bg - ag) * t), c = ab + (int)((bb - ab) * t);
+        return (r << 16) | (g << 8) | c;
+    }
 
     /// <summary>Selection highlight: lerp the packed 0xRRGGBB ~45% toward white,
     /// so a selected marker stays recognisably its type colour, just lit.</summary>
@@ -2843,6 +2984,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _fxTimer.Stop();
         _autosaveTimer.Stop();
         _catalog?.Dispose();
         _textures?.Dispose();

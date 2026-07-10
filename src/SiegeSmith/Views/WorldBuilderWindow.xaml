@@ -40,6 +40,8 @@
                             ToolTip="Toggle in-game textures vs. flat shading"/>
                     <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Toggle wireframe"/>
+                    <Button Content="{Binding LiveFxLabel}" Command="{Binding LiveFxCommand}" Padding="10,4" Margin="0,0,6,0"
+                            ToolTip="Animate fire/smoke emitters live in the preview (pause on very large regions if it feels heavy)"/>
                     <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,4" Margin="0,0,12,0"
                             ToolTip="Frame the whole region at the default angle"/>
                     <Button Content="↶ Undo" Command="{Binding UndoCommand}" Padding="10,4" Margin="0,0,6,0" ToolTip="Undo (Ctrl+Z)"/>
