@@ -177,9 +177,31 @@
                                     </ListBox.ItemTemplate>
                                 </ListBox>
                             </StackPanel>
-                            <Button DockPanel.Dock="Bottom" Content="Place on selected node" Command="{Binding PlaceObjectCommand}"
-                                    Margin="10,6,10,10" Padding="8,5"
-                                    ToolTip="Drop the selected template onto the selected terrain node — then drag it in the viewport"/>
+                            <StackPanel DockPanel.Dock="Bottom" Margin="10,6,10,10">
+                                <Button Content="Place on selected node" Command="{Binding PlaceObjectCommand}" Padding="8,5"
+                                        ToolTip="Drop the selected template onto the selected terrain node — then drag it in the viewport"/>
+                                <!-- ED-6 — scatter brush -->
+                                <CheckBox Content="🌿 Scatter (click/drag in viewport)" IsChecked="{Binding ScatterMode, Mode=TwoWay}" Margin="0,6,0,3"
+                                          ToolTip="Brush mode: each click sprinkles copies of this template around the cursor — grass, trees, rocks, crowds, krug packs. One click = one undo."/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="×" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                    <ComboBox Grid.Column="1" ItemsSource="{Binding ScatterCounts}" SelectedItem="{Binding ScatterCount, Mode=TwoWay}" Margin="0,0,6,0"
+                                              ToolTip="Copies per click"/>
+                                    <TextBlock Grid.Column="2" Text="r" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                    <ComboBox Grid.Column="3" ItemsSource="{Binding ScatterRadii}" SelectedItem="{Binding ScatterRadius, Mode=TwoWay}" Margin="0,0,6,0"
+                                              ToolTip="Brush radius in world units"/>
+                                    <TextBlock Grid.Column="4" Text="gap" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                    <ComboBox Grid.Column="5" ItemsSource="{Binding ScatterSpacings}" SelectedItem="{Binding ScatterSpacing, Mode=TwoWay}"
+                                              ToolTip="Minimum spacing (world units) from existing placements and each other — collision avoidance"/>
+                                </Grid>
+                                <CheckBox Content="Random facing" IsChecked="{Binding ScatterRandomYaw, Mode=TwoWay}" Margin="0,3,0,0"
+                                          ToolTip="Give every scattered copy a random yaw so the patch doesn't look stamped"/>
+                            </StackPanel>
                             <ListBox ItemsSource="{Binding PropPalette}" SelectedItem="{Binding SelectedProp, Mode=TwoWay}"
                                      VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
                                 <ListBox.ItemTemplate>

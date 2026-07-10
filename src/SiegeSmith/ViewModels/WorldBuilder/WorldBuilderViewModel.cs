@@ -2022,6 +2022,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         set
         {
             if (!SetProperty(ref _paintMode, value)) return;
+            if (value && _scatterMode) ScatterMode = false; // one brush at a time
             Status = value
                 ? "Paint mode — pick a node mesh, then click/drag on terrain: each step chains it onto the nearest free door. Every step is one undo."
                 : "Paint mode off.";
@@ -2118,6 +2119,122 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         node.MeshGuid = _selectedMesh.MeshGuid;
         AfterModelChanged($"Replaced node mesh with {_selectedMesh.Name} — doors and anchored content kept.");
         SelectNode(node.Guid);
+    }
+
+    // ═══ ED-6 — scatter brush ═════════════════════════════════════════
+    // Scatters copies of the Objects palette's template around the click
+    // point: uniform-disc candidates, projected onto whatever node terrain
+    // is under each one, spacing-checked against existing placements and
+    // each other, optional random facing. One click = one undo step.
+
+    private bool _scatterMode;
+    public bool ScatterMode
+    {
+        get => _scatterMode;
+        set
+        {
+            if (!SetProperty(ref _scatterMode, value)) return;
+            if (value && _paintMode) PaintMode = false; // one brush at a time
+            Status = value
+                ? "Scatter mode — pick a template in the Objects palette, then click/drag terrain to sprinkle copies. Tune count/radius/spacing beside the toggle."
+                : "Scatter mode off.";
+        }
+    }
+
+    public int[] ScatterCounts { get; } = { 3, 5, 8, 12, 20 };
+    private int _scatterCount = 5;
+    public int ScatterCount { get => _scatterCount; set => SetProperty(ref _scatterCount, value); }
+
+    public double[] ScatterRadii { get; } = { 1.5, 3, 5, 8, 12 };
+    private double _scatterRadius = 5;
+    public double ScatterRadius { get => _scatterRadius; set => SetProperty(ref _scatterRadius, value); }
+
+    public double[] ScatterSpacings { get; } = { 0.5, 1, 2, 3 };
+    private double _scatterSpacing = 1;
+    public double ScatterSpacing { get => _scatterSpacing; set => SetProperty(ref _scatterSpacing, value); }
+
+    private bool _scatterRandomYaw = true;
+    public bool ScatterRandomYaw { get => _scatterRandomYaw; set => SetProperty(ref _scatterRandomYaw, value); }
+
+    private readonly Random _scatterRng = new();
+
+    /// <summary>Routes a brush click/drag step to whichever brush is active.</summary>
+    public bool TryBrush(double sx, double sy) =>
+        _paintMode ? TryPaint(sx, sy) : _scatterMode && TryScatter(sx, sy);
+
+    public bool HasBrush => _paintMode || _scatterMode;
+
+    private bool TryScatter(double sx, double sy)
+    {
+        if (!_scatterMode) return false;
+        if (_selectedProp is null) { Status = "Scatter: pick a template in the Objects palette first."; return true; }
+        if (_pickVerts.Length < 3) return true;
+
+        uint anchor = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
+        if (anchor == 0) return true; // clicked past the terrain — ignore quietly
+
+        // World-units-per-pixel at the current view, so the radius combo means
+        // world units regardless of zoom or projection.
+        float unitsPerPx = _ortho
+            ? _dist * 0.828f / MathF.Max(1, _vh)
+            : 2f * _dist * MathF.Tan(MathF.PI / 8f) / MathF.Max(1, _vh);
+        double radiusPx = _scatterRadius / MathF.Max(unitsPerPx, 1e-6f);
+        float sp2 = (float)(_scatterSpacing * _scatterSpacing);
+
+        var existing = new List<Vector3>();
+        foreach (var o in _objects)
+            if (_nodeWorld.TryGetValue(o.NodeGuid, out var onw))
+                existing.Add(Vector3.Transform(o.LocalPos, onw));
+
+        var accepted = new List<Vector3>();
+        int placed = 0, attempts = _scatterCount * 5;
+        bool pushed = false;
+        for (int i = 0; i < attempts && placed < _scatterCount; i++)
+        {
+            double ang = _scatterRng.NextDouble() * Math.PI * 2;
+            double r = Math.Sqrt(_scatterRng.NextDouble()) * radiusPx; // sqrt = uniform over the disc
+            double cx = sx + Math.Cos(ang) * r, cy = sy + Math.Sin(ang) * r;
+            if (cx < 0 || cy < 0 || cx >= _vw || cy >= _vh) continue;
+
+            uint g = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+                _center + _pan, _radius, _yaw, _pitch, _dist, cx, cy, _ortho);
+            if (g == 0) continue; // candidate fell off the terrain
+            if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, g, _vw, _vh,
+                    _center + _pan, _radius, _yaw, _pitch, _dist, cx, cy, out var hit, _ortho)) continue;
+
+            bool tooClose = false;
+            foreach (var w in accepted) if (Vector3.DistanceSquared(w, hit) < sp2) { tooClose = true; break; }
+            if (!tooClose)
+                foreach (var w in existing) if (Vector3.DistanceSquared(w, hit) < sp2) { tooClose = true; break; }
+            if (tooClose) continue;
+
+            if (!_nodeWorld.TryGetValue(g, out var nw) || !Matrix4x4.Invert(nw, out var inv)) continue;
+            if (!pushed) { PushUndo(); PushRecent(RecentProps, _selectedProp.Name); pushed = true; }
+            float yaw = _scatterRandomYaw ? (float)(_scatterRng.NextDouble() * Math.PI * 2) : 0f;
+            _objects.Add(new PlacedObject
+            {
+                Scid = NextScid(),
+                Template = _selectedProp.Name,
+                NodeGuid = g,
+                LocalPos = Vector3.Transform(hit, inv),
+                Orientation = Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), yaw),
+                File = _placingActors ? "actor.gas" : "non_interactive.gas",
+            });
+            accepted.Add(hit);
+            placed++;
+        }
+
+        if (placed == 0)
+        {
+            Status = "Scatter: no clear spots found — widen the radius, lower the spacing, or aim at open ground.";
+            return true;
+        }
+        RebuildPlacedRows();
+        Render();
+        Status = $"Scattered {placed}× {_selectedProp.Name} (radius {_scatterRadius:0.#}u, spacing {_scatterSpacing:0.#}u). One undo removes them all.";
+        RaiseCommands();
+        return true;
     }
 
     private void DeleteSelectedNode()

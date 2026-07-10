@@ -66,11 +66,11 @@ public partial class WorldBuilderWindow : Window
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
 
-        // ED-5 — paint mode: click lays a node; holding and dragging keeps
-        // laying them every PaintStepPx of cursor travel.
-        if (_vm.PaintMode && (Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        // ED-5/ED-6 — brush modes (terrain paint / object scatter): click
+        // applies once; holding and dragging re-applies every PaintStepPx.
+        if (_vm.HasBrush && (Keyboard.Modifiers & ModifierKeys.Control) == 0)
         {
-            if (_vm.TryPaint(p.X, p.Y))
+            if (_vm.TryBrush(p.X, p.Y))
             {
                 _painting = true;
                 _lastPaint = p;
@@ -156,10 +156,10 @@ public partial class WorldBuilderWindow : Window
         }
         if (_spinning) { _spinning = false; if (!_dragging && !_panning) Viewport.ReleaseMouseCapture(); }
 
-        // ED-5 — drag-paint: lay another node every PaintStepPx of travel.
+        // ED-5/ED-6 — drag-brush: re-apply every PaintStepPx of travel.
         if (_painting)
         {
-            if ((p - _lastPaint).Length >= PaintStepPx && _vm.TryPaint(p.X, p.Y))
+            if ((p - _lastPaint).Length >= PaintStepPx && _vm.TryBrush(p.X, p.Y))
                 _lastPaint = p;
             return;
         }
