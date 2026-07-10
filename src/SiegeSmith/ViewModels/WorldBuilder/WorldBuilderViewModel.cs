@@ -128,8 +128,55 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         : "Props — inert scenery, placed into non_interactive.gas.";
     public ObservableCollection<PlacedObjectRow> PlacedObjects { get; } = new();
     private PlacedObjectRow? _selectedPlacedObject;
-    public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) { OnPropertyChanged(nameof(HasSelectedPlacedObject)); RaiseCommands(); } } }
+    public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) { OnPropertyChanged(nameof(HasSelectedPlacedObject)); RaiseObjTransform(); RaiseCommands(); } } }
     public bool HasSelectedPlacedObject => _selectedPlacedObject is not null;
+
+    // SC-UX2 — numeric transform entry for the selected placed object. The
+    // Inspector's X/Y/Z boxes edit the node-local offset; Yaw replaces the
+    // orientation with a pure vertical-axis spin in degrees (the same axis
+    // Shift-drag rotates around). Every commit is one undo step.
+    private PlacedObject? SelObj() =>
+        _selectedPlacedObject is null ? null : _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
+    public string ObjPosX { get => SelObj()?.LocalPos.X.ToString("0.###", CultureInfo.InvariantCulture) ?? ""; set => SetObjPos(0, value); }
+    public string ObjPosY { get => SelObj()?.LocalPos.Y.ToString("0.###", CultureInfo.InvariantCulture) ?? ""; set => SetObjPos(1, value); }
+    public string ObjPosZ { get => SelObj()?.LocalPos.Z.ToString("0.###", CultureInfo.InvariantCulture) ?? ""; set => SetObjPos(2, value); }
+    public string ObjYawDeg
+    {
+        get
+        {
+            if (SelObj() is not { } o) return "";
+            float yaw = 2f * MathF.Atan2(o.Orientation.Z, o.Orientation.W) * 180f / MathF.PI;
+            return yaw.ToString("0.#", CultureInfo.InvariantCulture);
+        }
+        set
+        {
+            if (SelObj() is not { } o) return;
+            if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var deg)) return;
+            PushUndo();
+            o.Orientation = Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), deg * MathF.PI / 180f);
+            Render();
+        }
+    }
+    private void SetObjPos(int axis, string text)
+    {
+        if (SelObj() is not { } o) return;
+        if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        PushUndo();
+        o.LocalPos = axis switch
+        {
+            0 => new Vector3(v, o.LocalPos.Y, o.LocalPos.Z),
+            1 => new Vector3(o.LocalPos.X, v, o.LocalPos.Z),
+            _ => new Vector3(o.LocalPos.X, o.LocalPos.Y, v),
+        };
+        Render();
+    }
+    private void RaiseObjTransform()
+    {
+        OnPropertyChanged(nameof(ObjPosX));
+        OnPropertyChanged(nameof(ObjPosY));
+        OnPropertyChanged(nameof(ObjPosZ));
+        OnPropertyChanged(nameof(ObjYawDeg));
+    }
 
     // ── lighting & mood (LE-6) ──────────────────────────────────
     public ObservableCollection<AuthoredLight> Lights { get; } = new();
@@ -670,7 +717,60 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             new OutlineGroup("Nav flags",     LogicalFlags,  "#7FBF7F"),
         };
 
+        // SC-UX5 — crash-safe autosave: every 3 minutes, the WHOLE region
+        // (terrain, objects, lights, mood, effects, logic, conversations,
+        // stitches, nav flags) packs through the same MapPackager path the
+        // Play button uses, into %APPDATA%\SiegeSmith\autosave. Failures
+        // never interrupt editing.
+        _autosaveTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMinutes(3),
+        };
+        _autosaveTimer.Tick += (_, _) => Autosave();
+        _autosaveTimer.Start();
+
         LoadCatalogAsync(tankPaths);
+    }
+
+    private readonly System.Windows.Threading.DispatcherTimer _autosaveTimer;
+    private string? _lastAutosaveFingerprint;
+
+    private void Autosave()
+    {
+        if (IsEmpty || _catalog is null) return;
+        try
+        {
+            // Cheap change fingerprint: the undo snapshot (nodes + objects)
+            // plus the per-family counts. Property-only edits inside a family
+            // may not change it — the next fingerprinted edit catches up.
+            string fp = Snapshot() + "|" + Emitters.Count + "," + Decals.Count + "," + Lights.Count + ","
+                + Triggers.Count + "," + Commands.Count + "," + Conversations.Count + ","
+                + LogicalFlags.Count + "," + PrimaryStitches.Count;
+            if (fp == _lastAutosaveFingerprint) return;
+
+            var nodesGas = NodesGasWriter.Write(_region);
+            var outDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "SiegeSmith", "autosave");
+            MapPackager.PackStartableMap(nodesGas,
+                string.IsNullOrWhiteSpace(MapName) ? "autosave" : MapName,
+                string.IsNullOrWhiteSpace(RegionName) ? "region" : RegionName,
+                outDir, BuildStartInfo(),
+                assetsRoot: _assetsFolder, placements: _objects,
+                lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
+                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
+                triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
+                conversations: new List<Conversation>(Conversations),
+                sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                logicalFlags: new List<LogicalFlag>(LogicalFlags));
+            _lastAutosaveFingerprint = fp;
+            Status = "Autosaved to " + outDir + ".";
+        }
+        catch
+        {
+            // Autosave must never interrupt or alarm — the next tick retries.
+        }
     }
 
     /// <summary>Outliner click → the same selection the side panels and the
@@ -2670,6 +2770,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, o.NodeGuid, _vw, _vh,
                 _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit2)) return;
         o.LocalPos = Vector3.Transform(worldHit2, inv2);
+        RaiseObjTransform();
         Render();
     }
 
@@ -2683,6 +2784,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (o is null) return;
         o.Orientation = Quaternion.Normalize(
             Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), (float)dx * 0.02f) * o.Orientation);
+        RaiseObjTransform();
         Render();
     }
 
@@ -2741,6 +2843,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _autosaveTimer.Stop();
         _catalog?.Dispose();
         _textures?.Dispose();
         _props?.Dispose();

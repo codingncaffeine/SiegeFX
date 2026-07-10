@@ -569,6 +569,29 @@
                                     <TextBlock Text="Placed object" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
                                     <TextBlock Text="{Binding SelectedPlacedObject.Label}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
                                     <TextBlock Text="{Binding SelectedPlacedObject.Detail}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10" Margin="0,0,0,4"/>
+                                    <TextBlock Text="Node-local transform (drag in viewport, or type):" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,2"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="X" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjPosX, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                        <TextBlock Grid.Column="2" Text="Y" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="3" Text="{Binding ObjPosY, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                        <TextBlock Grid.Column="4" Text="Z" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="5" Text="{Binding ObjPosZ, UpdateSourceTrigger=LostFocus}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="120"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Yaw°" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjYawDeg, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Rotation about the vertical axis, in degrees (Shift-drag in the viewport does the same)"/>
+                                    </Grid>
                                     <TextBlock Text="Drag in the viewport to move · Shift-drag to rotate." Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,4"/>
                                     <Button Content="Delete object" Command="{Binding DeleteObjectCommand}" Padding="8,4"/>
                                 </StackPanel>
