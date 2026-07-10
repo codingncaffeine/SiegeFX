@@ -6216,6 +6216,7 @@ void main()
         _pendingRegionFades.Clear();
         _pendingObjectSpawns.Clear();
         _commands.Clear();
+        _patrolClaimedCommands.Clear();
         _commandGasLoaded?.Clear();
         _nisCommands.Clear();
         _nisPhase = NisPhase.Off;
@@ -9278,6 +9279,19 @@ void main()
         {
             case "cmd_ai_c_move":
             case "cmd_ai_c_move_orient":
+                // ALPHA-2 CRASH FOLD — a c_move chain claimed by any actor's
+                // [mind]initial_command is a PATROL ROUTE; activating it must
+                // never hijack the player. path2crypts' authored triggers
+                // we_req_activate their patrol chains and the old
+                // hero-move assumption dragged the PC ~200u toward the
+                // route on every fire (the "can't walk down the stairs"
+                // fight). Hero movement stays only for unclaimed chains —
+                // the intro's authored "move hero" form.
+                if (_patrolClaimedCommands.Contains(scid))
+                {
+                    Console.WriteLine($"[cmd] c_move 0x{scid:X8} is a patrol-route link — not a hero move");
+                    break;
+                }
                 if (_playerFollower is not null)
                 {
                     _playerFollower.SetTarget(cmd.Pos);
@@ -9297,11 +9311,29 @@ void main()
                 }
                 break;
             default:
+                // ALPHA-2 CRASH FOLD — walk stubbed links ITERATIVELY with a
+                // visited set. Patrol chains cycle by design; the old
+                // recursive pass-through stack-overflowed the process (no
+                // managed exception, no crash log) the first time a trigger
+                // activated a looping chain of stubbed commands
+                // (path2crypts, 2026-07-09 user crash).
                 if (_fadeWarnedOnce.Add($"cmd:{t}"))
                     Console.WriteLine($"[cmd] {t} 0x{scid:X8} recognized but not yet implemented");
-                // Keep authored chains alive even through stubbed links.
-                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var chained))
-                    ActivateAiCommand(cmd.Next, chained);
+                var visited = new HashSet<uint> { scid };
+                uint cursor = cmd.Next;
+                while (cursor != 0 && visited.Add(cursor) && _commands.TryGetValue(cursor, out var chained))
+                {
+                    var ct = chained.Type.ToLowerInvariant();
+                    if (ct is "cmd_ai_c_move" or "cmd_ai_c_move_orient" or "cmd_ai_t_move" or "cmd_ai_t_move_orient")
+                    {
+                        // Real handler; its move cases don't recurse into stubs.
+                        ActivateAiCommand(cursor, chained);
+                        break;
+                    }
+                    if (_fadeWarnedOnce.Add($"cmd:{ct}"))
+                        Console.WriteLine($"[cmd] {ct} 0x{cursor:X8} recognized but not yet implemented");
+                    cursor = chained.Next;
+                }
                 break;
         }
     }
@@ -9983,13 +10015,21 @@ void main()
     /// <summary>Assign patrol routes to brains whose placement authors
     /// [mind] initial_command. Idempotent — brains with a live route are
     /// skipped, so the post-load and streaming passes can both call it.</summary>
+    /// <summary>ALPHA-2 CRASH FOLD — every command scid reachable from any
+    /// actor's [mind]initial_command chain. ActivateAiCommand consults this
+    /// so message-activated patrol links can never be mistaken for the
+    /// intro-style "move hero" command.</summary>
+    private readonly HashSet<uint> _patrolClaimedCommands = new();
+
     private void AssignPatrolRoutes()
     {
         if (_commands.Count == 0) return;
         int assigned = 0;
         foreach (var s in _actors)
         {
-            if (s.Brain is null || s.Brain.PatrolRoute is not null || s.Brain.HasHadPatrol || s.IsDead) continue;
+            // Claim pass runs for EVERY actor with an initial_command —
+            // including dead/brainless ones — so hero-move gating doesn't
+            // depend on whether the route got assigned this load.
             uint cmdScid = 0;
             foreach (var child in s.Actor.Instance.Node.Children)
             {
@@ -10000,6 +10040,17 @@ void main()
                 break;
             }
             if (cmdScid == 0) continue;
+            {
+                var seen = new HashSet<uint>();
+                uint c = cmdScid;
+                while (c != 0 && seen.Add(c) && _commands.TryGetValue(c, out var link))
+                {
+                    _patrolClaimedCommands.Add(c);
+                    c = link.Next;
+                }
+            }
+
+            if (s.Brain is null || s.Brain.PatrolRoute is not null || s.Brain.HasHadPatrol || s.IsDead) continue;
             var route = BuildCommandRoute(cmdScid, out bool loops);
             if (route is null) continue;
             s.Brain.AssignPatrol(route, loops);
@@ -21892,6 +21943,7 @@ void main()
         _pendingRegionFades.Clear();
         _pendingObjectSpawns.Clear();
         _commands.Clear();
+        _patrolClaimedCommands.Clear();
         _commandGasLoaded?.Clear();
         _nisCommands.Clear();
         _nisPhase = NisPhase.Off;
