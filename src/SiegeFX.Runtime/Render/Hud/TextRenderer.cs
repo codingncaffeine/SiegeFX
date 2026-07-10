@@ -81,13 +81,62 @@ void main() {
     {
         _font = font;
         _atlasTex?.Dispose();
-        _atlasTex = new GlTexture(_gl, font.Atlas);
+        _atlasTex = MakeAtlasTexture(font);
+    }
+
+    private GlTexture MakeAtlasTexture(BitmapFont font)
+    {
+        var tex = new GlTexture(_gl, font.Atlas);
         // Override the default REPEAT wrap. The bottommost glyph cell can sample
         // v=1.0 exactly (its visual top is the atlas's last row), and REPEAT would
         // wrap that to the opposite edge and bleed in foreign pixels.
-        _atlasTex.Bind(TextureUnit.Texture0);
+        tex.Bind(TextureUnit.Texture0);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapS, (int)GLEnum.ClampToEdge);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT, (int)GLEnum.ClampToEdge);
+        return tex;
+    }
+
+    // ALPHA-2H — authored font VARIANTS. DS1 gas authors font_type per
+    // control (12p body copy, 14p store nameplates, 16/20p titles); the
+    // single-font renderer flattened everything to 12p, which is a big part
+    // of "the panels don't look like retail". Variants register by key and
+    // draw via the keyed overloads; DrawString is per-call immediate (bind,
+    // upload, draw) so swapping font + atlas around the call is safe.
+    private readonly Dictionary<string, (BitmapFont Font, GlTexture Tex)> _variants =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    public void AddFontVariant(string key, BitmapFont font)
+    {
+        if (_variants.TryGetValue(key, out var old)) old.Tex.Dispose();
+        _variants[key] = (font, MakeAtlasTexture(font));
+    }
+
+    public bool HasFontVariant(string key) => _variants.ContainsKey(key);
+    public int LineHeightOf(string key) =>
+        _variants.TryGetValue(key, out var v) ? v.Font.Height : LineHeight;
+
+    public void DrawString(string fontKey, int viewportW, int viewportH, string text,
+                           int x, int y, Vector4 color, int pixelScale = 1)
+    {
+        if (!_variants.TryGetValue(fontKey, out var v))
+        {
+            DrawString(viewportW, viewportH, text, x, y, color, pixelScale);
+            return;
+        }
+        var pf = _font; var pt = _atlasTex;
+        _font = v.Font; _atlasTex = v.Tex;
+        DrawString(viewportW, viewportH, text, x, y, color, pixelScale);
+        _font = pf; _atlasTex = pt;
+    }
+
+    public int MeasureWidth(string fontKey, string text)
+    {
+        if (!_variants.TryGetValue(fontKey, out var v)) return MeasureWidth(text);
+        var pf = _font;
+        _font = v.Font;
+        int w = MeasureWidth(text);
+        _font = pf;
+        return w;
     }
 
     /// <summary>Unscaled bitmap glyph height; multiply by pixelScale for the

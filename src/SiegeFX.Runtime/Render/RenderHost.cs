@@ -5670,6 +5670,19 @@ void main()
                 {
                     Console.Error.WriteLine("  !! boot font missing — menu overlay text disabled");
                 }
+                // ALPHA-2H — authored size variants (gas font_type per control:
+                // 14p store nameplates, 16/20p titles). Best-effort: a missing
+                // variant falls back to the 12p default at the call sites.
+                foreach (var (key, name) in new[]
+                {
+                    ("14p", "b_gui_fnt_14p_copperplate-light"),
+                    ("16p", "b_gui_fnt_16p_copperplate-light"),
+                    ("20p", "b_gui_fnt_20p_copperplate-light"),
+                })
+                {
+                    var vf = SiegeFX.Core.Assets.BitmapFont.TryLoadByName(resolver, name);
+                    if (vf is not null) _textRenderer.AddFontVariant(key, vf);
+                }
             }
             catch (Exception ex)
             {
@@ -7010,6 +7023,18 @@ void main()
             else
             {
                 Console.Error.WriteLine("  !! hud font missing — overlay text disabled");
+            }
+            // ALPHA-2H — authored size variants (see the boot-font site).
+            foreach (var (key, name) in new[]
+            {
+                ("14p", "b_gui_fnt_14p_copperplate-light"),
+                ("16p", "b_gui_fnt_16p_copperplate-light"),
+                ("20p", "b_gui_fnt_20p_copperplate-light"),
+            })
+            {
+                if (_textRenderer.HasFontVariant(key)) continue;
+                var vf = SiegeFX.Core.Assets.BitmapFont.TryLoadByName(resolver, name);
+                if (vf is not null) _textRenderer.AddFontVariant(key, vf);
             }
         }
 
@@ -15640,6 +15665,31 @@ void main()
             if (!string.IsNullOrEmpty(ws)) int.TryParse(ws.Trim(), out w);
             if (!string.IsNullOrEmpty(hs)) int.TryParse(hs.Trim(), out h);
             return (Math.Max(1, w), Math.Max(1, h));
+        };
+        // ALPHA-2H — hover-popup stat lines from the authored template
+        // (reference: shopkeeper acha.webp). Damage/armor in white; a
+        // two-handed marker mirrors retail's line.
+        _vendor.ResolveStatLines ??= itemRef =>
+        {
+            var lines = new List<(string, Vector4)>();
+            if (_templateStore is null
+                || !_templateStore.TryGet(itemRef, out var st) || st is null) return lines;
+            var white = new Vector4(0.92f, 0.92f, 0.88f, 1f);
+            var dmin = _templateStore.GetAttribute(st, "attack", "damage_min");
+            var dmax = _templateStore.GetAttribute(st, "attack", "damage_max");
+            if (float.TryParse(dmin?.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var dlo) &&
+                float.TryParse(dmax?.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var dhi) && dhi > 0f)
+                lines.Add(($"Damage: {dlo:0} to {dhi:0}", white));
+            var th = _templateStore.GetAttribute(st, "attack", "is_two_handed");
+            if (th is not null && (th.Trim().Equals("true", StringComparison.OrdinalIgnoreCase) || th.Trim() == "1"))
+                lines.Add(("Two Handed Weapon", white));
+            var def2 = _templateStore.GetAttribute(st, "defend", "defense");
+            if (float.TryParse(def2?.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var dv) && dv > 0f)
+                lines.Add(($"Armor: {dv:0}", white));
+            return lines;
         };
 
         SiegeFX.Core.Actors.VendorDefinition? def = null;

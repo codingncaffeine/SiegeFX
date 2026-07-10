@@ -25,6 +25,12 @@ public sealed class VendorPanel
     public bool IsOpen { get; private set; }
     public VendorDefinition? OpenVendor => _vendor;
 
+    /// <summary>ALPHA-2H — host-provided item-stat resolver for the hover
+    /// popup (reference: the big stat box in shopkeeper acha.webp). Takes an
+    /// item template reference, returns colored lines (damage, armor,
+    /// requirements). Null → the popup shows name + price only.</summary>
+    public Func<string, List<(string Text, Vector4 Color)>>? ResolveStatLines { get; set; }
+
     private VendorDefinition? _vendor;
     private int _tab;   // 0 armor, 1 weapons, 2 shields, 3 magic, 4 potions, 5 misc
     private int _page;
@@ -264,29 +270,37 @@ public sealed class VendorPanel
         var ink    = new Vector4(0.86f, 0.83f, 0.69f, 1f);
         var dimInk = new Vector4(0.60f, 0.58f, 0.49f, 1f);
 
-        void Cpbox((int x0, int y0, int x1, int y1) r)
+        // ALPHA-2H — retail store chrome (reference: shopkeeper acha.webp):
+        // near-black panels with thin gold borders — the same dark family as
+        // the conversation box, not the parchment cpbox.
+        _ = icons; _ = guiTex;
+        void DarkPanel((int x0, int y0, int x1, int y1) r, bool recessed)
         {
             var p = Px(r, s, originX);
-            if (icons is not null && guiTex is not null)
-                NinePatch.DrawCpbox(icons, guiTex, viewportW, viewportH, p.x, p.y, p.w, p.h, Vector4.One);
-            else
-            {
-                bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.08f, 0.08f, 0.10f, 0.95f));
-                bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.667f, 0.655f, 0.557f, 1f));
-            }
+            bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h,
+                recessed ? new Vector4(0.015f, 0.015f, 0.02f, 0.94f)
+                         : new Vector4(0.05f, 0.05f, 0.06f, 0.95f));
+            bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h,
+                recessed ? new Vector4(0.35f, 0.31f, 0.20f, 1f)
+                         : new Vector4(0.62f, 0.55f, 0.36f, 1f));
         }
 
-        Cpbox(RFrame);
-        Cpbox(RPortrait);
-        Cpbox(RNamePlate);
-        Cpbox(RGridFrame);
+        DarkPanel(RFrame, recessed: false);
+        DarkPanel(RPortrait, recessed: true);
+        DarkPanel(RNamePlate, recessed: true);
+        DarkPanel(RGridFrame, recessed: true);
 
-        // Store name (authored: 14p copperplate centered in the plate).
+        // Store name — white on the dark header, at the AUTHORED 14p
+        // (store.gas font_type; falls back to 12p when the variant is
+        // absent). Retail reference: "Blacksmith Acha" plate.
         {
             var p = Px(RNamePlate, s, originX);
             var name = _vendor.ScreenName;
-            int lw = text.MeasureWidth(name);
-            text.DrawString(viewportW, viewportH, name, p.x + (p.w - lw) / 2, p.y + p.h / 3, ink);
+            int lw = text.MeasureWidth("14p", name);
+            int lh = text.LineHeightOf("14p");
+            text.DrawString("14p", viewportW, viewportH, name,
+                p.x + (p.w - lw) / 2, p.y + (p.h - lh) / 2,
+                new Vector4(0.95f, 0.95f, 0.92f, 1f));
         }
 
         // Grid backdrop — the authored b_gui_ig_mnu_ip_grid tile (8×10).
@@ -300,13 +314,19 @@ public sealed class VendorPanel
                 bars.DrawRect(viewportW, viewportH, g.x, g.y, g.w, g.h, new Vector4(0.05f, 0.05f, 0.07f, 0.9f));
         }
 
-        // Shelf items — icon + price under hover highlight.
+        // Shelf items — retail backs each occupied footprint with a dark-red
+        // cell block (reference: the weapons shelf); hover brightens it.
         foreach (var p in _placed)
         {
             var it = _vendor.Stock[p.StockIndex];
             bool hovered = p.StockIndex == _hoverStock;
-            if (hovered)
-                bars.DrawRect(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H, new Vector4(0.30f, 0.28f, 0.18f, 0.45f));
+            // Near-black frame around each occupied footprint over the cell
+            // lattice — the reference's red blocks sit inside dark outlines.
+            bars.DrawRect(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H,
+                hovered ? new Vector4(0.38f, 0.10f, 0.08f, 0.92f)
+                        : new Vector4(0.24f, 0.05f, 0.05f, 0.88f));
+            bars.DrawBorder(viewportW, viewportH, p.Cx, p.Cy, p.W, p.H,
+                new Vector4(0.06f, 0.06f, 0.07f, 1f));
             var tex = itemIcon?.Invoke(it.ItemReference);
             if (icons is not null && tex is not null)
                 icons.DrawIcon(viewportW, viewportH, tex, p.Cx + 1, p.Cy + 1, p.W - 2, p.H - 2, Vector4.One);
@@ -317,46 +337,70 @@ public sealed class VendorPanel
             }
             if (hovered)
             {
-                // Hover readout: name + buy price near the cursor cell —
-                // affordable stays gold-ink, unaffordable reads red.
+                // ALPHA-2H — retail-style stat POPUP (reference: the big
+                // hover box over the weapons shelf): dark panel + gold
+                // hairline; name line on top, host-resolved stat lines
+                // (damage/armor/etc, each with its authored-look color),
+                // price at the bottom — red when unaffordable.
                 var afford = it.Price <= playerGold;
-                var line = $"{it.ScreenName}  {it.Price}g";
-                int lw = text.MeasureWidth(line);
-                int tx = Math.Clamp(p.Cx, _gridPx.x, _gridPx.x + _gridPx.w - lw - 2);
-                int ty = Math.Max(0, p.Cy - 12);
-                bars.DrawRect(viewportW, viewportH, tx - 2, ty - 2, lw + 4, 12,
-                              new Vector4(0f, 0f, 0f, 0.85f));
-                text.DrawString(viewportW, viewportH, line, tx, ty,
-                    afford ? ink : new Vector4(0.85f, 0.25f, 0.2f, 1f));
+                int lineH = (text.HasFont ? text.Font!.Height : 12) + 2;
+                var lines = new List<(string Text, Vector4 Color)>
+                {
+                    (it.ScreenName, new Vector4(0.95f, 0.85f, 0.55f, 1f)),
+                };
+                if (ResolveStatLines is not null)
+                    lines.AddRange(ResolveStatLines(it.ItemReference));
+                lines.Add(($"{it.Price} Gold",
+                    afford ? new Vector4(0.92f, 0.92f, 0.88f, 1f) : new Vector4(0.85f, 0.25f, 0.2f, 1f)));
+
+                int boxW = 0;
+                foreach (var (t2, _) in lines) boxW = Math.Max(boxW, text.MeasureWidth(t2));
+                boxW += 16;
+                int boxH = lineH * lines.Count + 10;
+                int tx = Math.Clamp(p.Cx + p.W / 2 - boxW / 2, _gridPx.x, Math.Max(_gridPx.x, _gridPx.x + _gridPx.w - boxW));
+                int ty = Math.Max(0, p.Cy - boxH - 4);
+                bars.DrawRect(viewportW, viewportH, tx, ty, boxW, boxH, new Vector4(0.02f, 0.02f, 0.03f, 0.94f));
+                bars.DrawBorder(viewportW, viewportH, tx, ty, boxW, boxH, new Vector4(0.55f, 0.48f, 0.32f, 1f));
+                for (int li = 0; li < lines.Count; li++)
+                {
+                    int lw2 = text.MeasureWidth(lines[li].Text);
+                    text.DrawString(viewportW, viewportH, lines[li].Text,
+                        tx + (boxW - lw2) / 2, ty + 5 + li * lineH, lines[li].Color);
+                }
             }
         }
 
-        // Tabs — checked tab shifts down 5 (authored shift_y(5)); the
-        // button_4 chrome bridge is the colour-matched frame.
+        // Tabs — checked tab shifts down 5 (authored shift_y(5)). The
+        // reference shows the ACTIVE ROW highlighted as a unit: tabs sharing
+        // the selected tab's row draw warm, the other row recedes.
+        int activeRowY = _tabPx[_tab].y;
         for (int t = 0; t < 6; t++)
         {
             var r = _tabPx[t];
             int yOff = t == _tab ? (int)MathF.Round(5f * s) : 0;
             bool stocked = StockForTab(t).Any();
-            var fill = t == _tab
-                ? new Vector4(0.12f, 0.11f, 0.08f, 1f)
-                : new Vector4(0.08f, 0.08f, 0.10f, 1f);
+            bool activeRow = Math.Abs(r.y - activeRowY) < Math.Max(2, r.h / 2);
+            var fill = t == _tab ? new Vector4(0.22f, 0.18f, 0.12f, 1f)
+                     : activeRow ? new Vector4(0.13f, 0.11f, 0.09f, 1f)
+                                 : new Vector4(0.07f, 0.07f, 0.07f, 1f);
             bars.DrawRect(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h, fill);
             bars.DrawBorder(viewportW, viewportH, r.x, r.y + yOff, r.w, r.h,
-                stocked ? new Vector4(0.667f, 0.655f, 0.557f, 1f) : new Vector4(0.35f, 0.34f, 0.30f, 1f));
+                !stocked    ? new Vector4(0.28f, 0.26f, 0.22f, 1f)
+                : activeRow ? new Vector4(0.62f, 0.52f, 0.33f, 1f)
+                            : new Vector4(0.40f, 0.36f, 0.28f, 1f));
             var label = Tabs[t].Label;
             int lw = text.MeasureWidth(label);
             text.DrawString(viewportW, viewportH, label,
                 r.x + (r.w - lw) / 2, r.y + yOff + r.h / 4,
-                stocked ? ink : dimInk);
+                !stocked ? dimInk : activeRow ? ink : new Vector4(0.70f, 0.66f, 0.55f, 1f));
         }
 
         // Prev / Next / Close.
         void Button((int x, int y, int w, int h) r, string label, bool enabled)
         {
-            bars.DrawRect(viewportW, viewportH, r.x, r.y, r.w, r.h, new Vector4(0.08f, 0.08f, 0.10f, 1f));
+            bars.DrawRect(viewportW, viewportH, r.x, r.y, r.w, r.h, new Vector4(0.16f, 0.13f, 0.10f, 1f));
             bars.DrawBorder(viewportW, viewportH, r.x, r.y, r.w, r.h,
-                enabled ? new Vector4(0.667f, 0.655f, 0.557f, 1f) : new Vector4(0.35f, 0.34f, 0.30f, 1f));
+                enabled ? new Vector4(0.60f, 0.50f, 0.32f, 1f) : new Vector4(0.30f, 0.28f, 0.24f, 1f));
             int lw = text.MeasureWidth(label);
             text.DrawString(viewportW, viewportH, label, r.x + (r.w - lw) / 2, r.y + r.h / 4,
                 enabled ? ink : dimInk);
@@ -365,13 +409,28 @@ public sealed class VendorPanel
         Button(_nextPx, "Next >", _page + 1 < _pageCount);
         Button(_closePx, "Close", true);
 
-        // Gold + page footer inside the frame's bottom band.
+        // ALPHA-2H — gold plate, reference style: a dark bordered strip with
+        // the coin icon and the amount in yellow (top-left in retail's
+        // inventory pane; ours rides the store frame's top-left).
         {
             var f = Px(RFrame, s, originX);
-            var line = _pageCount > 1
-                ? $"Gold: {playerGold}    page {_page + 1}/{_pageCount}"
-                : $"Gold: {playerGold}";
-            text.DrawString(viewportW, viewportH, line, f.x + 8, f.y + f.h - 12, ink);
+            var amount = playerGold.ToString();
+            int lineH = text.HasFont ? text.Font!.Height : 12;
+            int iconS = lineH + 4;
+            int plateW = iconS + text.MeasureWidth(amount) + 16;
+            int plateH = iconS + 6;
+            int gx = f.x + 6, gy = f.y + f.h - plateH - 6;
+            bars.DrawRect(viewportW, viewportH, gx, gy, plateW, plateH, new Vector4(0.02f, 0.02f, 0.03f, 0.94f));
+            bars.DrawBorder(viewportW, viewportH, gx, gy, plateW, plateH, new Vector4(0.45f, 0.39f, 0.25f, 1f));
+            var coin = guiTex?.Invoke("b_gui_ig_i_it_gold-pile");
+            if (icons is not null && coin is not null)
+                icons.DrawIcon(viewportW, viewportH, coin, gx + 3, gy + 3, iconS, iconS, Vector4.One);
+            text.DrawString(viewportW, viewportH, amount,
+                gx + iconS + 8, gy + (plateH - lineH) / 2,
+                new Vector4(1.0f, 0.86f, 0.25f, 1f));
+            if (_pageCount > 1)
+                text.DrawString(viewportW, viewportH, $"page {_page + 1}/{_pageCount}",
+                    gx + plateW + 10, gy + (plateH - lineH) / 2, dimInk);
         }
     }
 }
