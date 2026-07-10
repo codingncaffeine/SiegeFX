@@ -1254,7 +1254,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             pos.Y += Rand(MathF.Min(s.MinDisplace, s.MaxDisplace), MathF.Max(s.MinDisplace, s.MaxDisplace));
 
             var vel = s.Velocity * Rand(0.8f, 1.2f);
-            float fs = MathF.Max(0.04f, s.FlameSize * 0.4f);
+            // Particle radius tracks the authored scale the same way the
+            // hand-tuned SpawnFire one-shot does (~scale*0.6→*1.1 over life).
+            // The old *0.4 rendered every authored plume at half size, so
+            // fireshot's scale(1.1) core never fused into a solid fireball.
+            float fs = MathF.Max(0.04f, s.FlameSize * 0.8f);
             float s0, s1;
             if (s.HasFctrl)
             {

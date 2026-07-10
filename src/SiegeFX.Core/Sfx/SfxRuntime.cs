@@ -2578,6 +2578,16 @@ public sealed class SfxRuntime
         // lightning uses scale(N) for line thickness.
         if (TryReadFloat(raw, "scale", out var sc)) h.Scale = MathF.Max(0.05f, sc);
 
+        // Plume particle SIZE (fire/smoke/steam) is the authored scale()/
+        // scale_range(), NOT radius/max_radius (those are the spawn footprint,
+        // which also writes h.Scale above). Capture it into FlameSize so
+        // BuildPlumeSpec sizes flames per-emitter — fireshot layers a big
+        // scale(1.1) core over a scale(.5) aura; collapsing both to a fixed
+        // fallback is what made the fireball a string of tiny embers.
+        // flamesize() is the most explicit knob and still wins (applied below).
+        if (TryReadFloat(raw, "scale_range", out var srFlame, argIndex: 1)) h.FlameSize = MathF.Max(0.05f, srFlame);
+        else if (TryReadFloat(raw, "scale", out var scFlame)) h.FlameSize = MathF.Max(0.05f, scFlame);
+
         // Phase 21-SC-SPELL-VFX-2 — duration/lifetime params.
         // bolt_life(N) for lightning, dur(N) for explosion/sparkles.
         if (TryReadFloat(raw, "bolt_life", out var bl)) h.Duration = MathF.Max(0.10f, bl);
