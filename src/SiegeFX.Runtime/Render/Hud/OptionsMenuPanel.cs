@@ -682,14 +682,22 @@ internal sealed class OptionsMenuPanel
         // above; the Y origin moved from 80 → 86 to clear the tab labels.
         int innerAuthorY = 86;
         int yAuthor = innerAuthorY + FirstRowY + i * RowStride;
+        // ALPHA-2V FIX — anchor rows to the LIVE inner-panel rect on BOTH
+        // axes. X always did this (the `_inner.X - round(innerAuthorX*s)`
+        // translation re-adds Layout's dx); Y was raw authored×scale with
+        // no dy, which floated every row above the panel whenever the
+        // panel is vertically centered (dy>0 — i.e. any UI scale < 100%,
+        // where the fit-capped modal shrinks below full height).
+        int xOff = _inner.X - (int)MathF.Round(innerAuthorX * s);
+        int yOff = _inner.Y - (int)MathF.Round(innerAuthorY * s);
         labelR = (
-            (int)MathF.Round((innerAuthorX + LabelLeftX) * s) + (_inner.X - (int)MathF.Round(innerAuthorX * s)),
-            (int)MathF.Round(yAuthor * s),
+            (int)MathF.Round((innerAuthorX + LabelLeftX) * s) + xOff,
+            (int)MathF.Round(yAuthor * s) + yOff,
             (int)MathF.Round(LabelW * s),
             (int)MathF.Round(RowHeight * s));
         widgetR = (
-            (int)MathF.Round((innerAuthorX + WidgetX) * s) + (_inner.X - (int)MathF.Round(innerAuthorX * s)),
-            (int)MathF.Round(yAuthor * s),
+            (int)MathF.Round((innerAuthorX + WidgetX) * s) + xOff,
+            (int)MathF.Round(yAuthor * s) + yOff,
             (int)MathF.Round(WidgetW * s),
             (int)MathF.Round(RowHeight * s));
     }
