@@ -4422,12 +4422,19 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    // SC-HUD-DRAG — Shift+LMB on a movable HUD piece grabs it
-                    // for repositioning; the piece's own buttons are bypassed
-                    // while shift is held.
-                    if (ShiftHeld() && TryBeginHudDrag(mx, my))
+                    // SC-HUD-DRAG — while Shift is held, LMB is reserved for
+                    // HUD arranging: a hit on a movable piece grabs it, and
+                    // EVERY HUD button below stays quiet either way (per the
+                    // feature spec: "it'll disable buttons but let you freely
+                    // move it"). Without the hard gate, any pickup miss fell
+                    // through and fired portrait/slot/chevron buttons.
+                    if (ShiftHeld())
                     {
-                        Console.WriteLine($"[hud-drag] grabbed {_hudDrag} at {mx},{my}");
+                        if (TryBeginHudDrag(mx, my))
+                            Console.WriteLine($"[hud-drag] grabbed {_hudDrag} at {mx},{my}");
+                        else
+                            Console.WriteLine($"[hud-drag] shift-click at {mx},{my} hit no movable piece "
+                                + $"(team strip rect: {_teamPortraits.LastDrawnRect})");
                         return;
                     }
                     // Compass hide/show toggle (top-right) — only live while the
