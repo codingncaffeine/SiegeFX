@@ -638,6 +638,82 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     /// object, then node). One key, every piece.</summary>
     public RelayCommand DeleteSelectedAnyCommand { get; }
     public RelayCommand ImportTextureCommand { get; }
+    public RelayCommand CreateTemplateCommand { get; }
+
+    // GAME-3 — custom template authoring (items / monsters / NPCs).
+    public string[] TemplateKinds { get; } = { "Weapon", "Armor / shield", "Monster", "NPC" };
+    private string _tplKind = "Weapon";
+    public string TplKind
+    {
+        get => _tplKind;
+        set
+        {
+            if (!SetProperty(ref _tplKind, value)) return;
+            OnPropertyChanged(nameof(TplIsWeapon));
+            OnPropertyChanged(nameof(TplIsArmor));
+            OnPropertyChanged(nameof(TplIsMonster));
+        }
+    }
+    public bool TplIsWeapon => _tplKind == "Weapon";
+    public bool TplIsArmor => _tplKind.StartsWith("Armor", StringComparison.Ordinal);
+    public bool TplIsMonster => _tplKind == "Monster";
+    private string _tplName = "";
+    public string TplName { get => _tplName; set => SetProperty(ref _tplName, value); }
+    private string _tplBase = "";
+    public string TplBase { get => _tplBase; set => SetProperty(ref _tplBase, value); }
+    private string _tplScreen = "";
+    public string TplScreenName { get => _tplScreen; set => SetProperty(ref _tplScreen, value); }
+    private string _tplDmgMin = "4", _tplDmgMax = "9", _tplDefense = "10", _tplLife = "50";
+    public string TplDamageMin { get => _tplDmgMin; set => SetProperty(ref _tplDmgMin, value); }
+    public string TplDamageMax { get => _tplDmgMax; set => SetProperty(ref _tplDmgMax, value); }
+    public string TplDefense { get => _tplDefense; set => SetProperty(ref _tplDefense, value); }
+    public string TplLife { get => _tplLife; set => SetProperty(ref _tplLife, value); }
+
+    private static int ParseI(string s, int fallback) =>
+        int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    /// <summary>GAME-3 — compose → syntax-check → write a custom template, and
+    /// register monsters/NPCs into the placeable palette when the base's model
+    /// resolves so they can be placed immediately.</summary>
+    private void CreateTemplate()
+    {
+        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        var name = TemplateAuthor.SanitizeName(_tplName);
+        var baseName = _tplBase.Trim();
+        if (string.IsNullOrEmpty(baseName)) { Status = "Pick a base template to specialize (e.g. farmgirl, sword_bastard)."; return; }
+        var kind = TplIsWeapon ? TemplateAuthor.Kind.Weapon
+                 : TplIsArmor ? TemplateAuthor.Kind.Armor
+                 : TplIsMonster ? TemplateAuthor.Kind.Monster
+                 : TemplateAuthor.Kind.Npc;
+        var spec = new TemplateAuthor.Spec
+        {
+            Kind = kind, Name = name, Base = baseName, ScreenName = _tplScreen,
+            DamageMin = ParseI(_tplDmgMin, 4), DamageMax = ParseI(_tplDmgMax, 9),
+            Defense = ParseI(_tplDefense, 10), Life = ParseI(_tplLife, 50),
+        };
+        string path;
+        try
+        {
+            GasDocument.Parse(TemplateAuthor.Compose(spec)); // engine-grammar acceptance BEFORE writing
+            path = TemplateAuthor.Write(_assetsFolder, spec);
+        }
+        catch (Exception ex) { Status = "Template failed: " + ex.Message; return; }
+
+        bool knownBase = _allProps.Exists(p => p.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase))
+                      || _allActors.Exists(a => a.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase));
+        if (kind is TemplateAuthor.Kind.Monster or TemplateAuthor.Kind.Npc)
+        {
+            var b = _allActors.Find(a => a.Name.Equals(baseName, StringComparison.OrdinalIgnoreCase));
+            if (b is not null && !_allActors.Exists(a => a.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            {
+                _allActors.Add(new PropTemplate(name, b.Model));
+                _templateModel[name] = b.Model;
+                RefreshPropPalette();
+            }
+        }
+        Status = $"Created template '{name}' → {path} — bundles into the map and loads in-engine."
+               + (knownBase ? "" : $" Note: base '{baseName}' isn't in the placeable catalog; abstract bases are fine if the name is exact.");
+    }
 
     /// <summary>SC-UX1 — the Scene Outliner's fixed groups. Each group wraps
     /// one of the live ObservableCollections, so the tree stays current with
@@ -652,6 +728,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
         ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
+        CreateTemplateCommand = new RelayCommand(_ => CreateTemplate(), _ => _assetsFolder is not null);
         GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
@@ -2178,6 +2255,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         AssetsFolder = folder;
         OpenAssetsFolderCommand.RaiseCanExecuteChanged();
         ImportTextureCommand.RaiseCanExecuteChanged();
+        CreateTemplateCommand.RaiseCanExecuteChanged();
         Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
     }
 

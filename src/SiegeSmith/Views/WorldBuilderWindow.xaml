@@ -204,6 +204,49 @@
                                 <Button Content="Import texture (PNG / JPG…) → .raw…" Command="{Binding ImportTextureCommand}" Margin="0,0,0,10" Padding="8,5"
                                         ToolTip="Convert any image to a DS1 .raw (BGRA, power-of-two ≤512, full mip chain), verified by the engine reader — usable by decals, custom terrain tiles, and templates"/>
 
+                                <TextBlock Text="Custom templates (items · monsters · NPCs)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
+                                <TextBlock Text="Specialize a shipped template — the base supplies mesh, animation, sounds, and AI; you set the identity and stats. Bundles into the map and loads in-engine."
+                                           Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                                <ComboBox ItemsSource="{Binding TemplateKinds}" SelectedItem="{Binding TplKind, Mode=TwoWay}" Margin="0,0,0,3"/>
+                                <TextBox Text="{Binding TplName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
+                                         ToolTip="Template identifier (lowercase, e.g. my_flame_sword)"/>
+                                <TextBox Text="{Binding TplBase, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
+                                         ToolTip="Base template to specialize — e.g. sword_bastard for a weapon, farmgirl or gremal for an actor. Browse names in the Objects palette."/>
+                                <TextBox Text="{Binding TplScreenName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,3"
+                                         ToolTip="In-game display name"/>
+                                <Grid Margin="0,0,0,3" Visibility="{Binding TplIsWeapon, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Dmg" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding TplDamageMin, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Damage minimum"/>
+                                    <TextBlock Grid.Column="2" Text="to" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="3" Text="{Binding TplDamageMax, UpdateSourceTrigger=LostFocus}" ToolTip="Damage maximum"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,3" Visibility="{Binding TplIsArmor, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Defense" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding TplDefense, UpdateSourceTrigger=LostFocus}" ToolTip="Armor rating this piece contributes"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,3" Visibility="{Binding TplIsMonster, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Life" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="1" Text="{Binding TplLife, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Hit points"/>
+                                    <TextBlock Grid.Column="2" Text="Dmg" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="3" Text="{Binding TplDamageMin, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Melee damage minimum"/>
+                                    <TextBlock Grid.Column="4" Text="to" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Grid.Column="5" Text="{Binding TplDamageMax, UpdateSourceTrigger=LostFocus}" ToolTip="Melee damage maximum"/>
+                                </Grid>
+                                <Button Content="Create template" Command="{Binding CreateTemplateCommand}" Margin="0,0,0,10" Padding="8,5"
+                                        ToolTip="Write the template gas into the assets folder (world/contentdb/templates/custom) — monsters/NPCs whose base is placeable appear in the Objects palette immediately"/>
+
                                 <TextBlock Text="Custom terrain tile (.sno)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
                                 <Grid Margin="0,0,0,3">
                                     <Grid.ColumnDefinitions>
