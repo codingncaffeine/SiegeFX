@@ -147,6 +147,26 @@ public static class MoodStore
         return (moods, diags);
     }
 
+    /// <summary>SS-CUSTOM (ED-8) — merge mood definitions from an already-parsed
+    /// document into <paramref name="sink"/> (a SiegeSmith map bundles its own
+    /// moods.gas inside the MAP tank; the loader merges them over the stock
+    /// store so custom fog/weather/music apply in-engine). Returns how many
+    /// mood definitions the document contributed.</summary>
+    public static int MergeFromDocument(GasDocument doc, Dictionary<string, MoodSetting> sink)
+    {
+        int before = sink.Count;
+        ParseDocument(doc, sink);
+        // Same-name overrides don't change Count; report parse hits instead.
+        int parsed = 0;
+        foreach (var root in doc.Roots)
+        {
+            if (root.Header.TrimStart().StartsWith("mood_setting", StringComparison.OrdinalIgnoreCase)) parsed++;
+            foreach (var child in root.Children)
+                if (child.Header.TrimStart().StartsWith("mood_setting", StringComparison.OrdinalIgnoreCase)) parsed++;
+        }
+        return Math.Max(parsed, sink.Count - before);
+    }
+
     static void ParseDocument(GasDocument doc, Dictionary<string, MoodSetting> sink)
     {
         // Three shapes show up in shipped data:

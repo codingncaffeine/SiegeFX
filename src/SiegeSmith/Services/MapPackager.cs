@@ -105,8 +105,9 @@ public static class MapPackager
             File.WriteAllText(Path.Combine(lightsDir, "lights.gas"), LightsGasWriter.Write(lights));
         }
 
-        // Mood audio is MAP-GLOBAL: /world/global/moods/<map>/moods.gas, not under the region tree.
-        if (mood is { } md && !string.IsNullOrWhiteSpace(md.Name) && md.HasAudio)
+        // Moods are MAP-GLOBAL: /world/global/moods/<map>/moods.gas, not under the
+        // region tree. ED-8 — weather/fog-only moods (no audio) now write too.
+        if (mood is { } md && !string.IsNullOrWhiteSpace(md.Name) && md.HasContent)
         {
             string moodDir = Path.Combine(staging, "world", "global", "moods", map);
             Directory.CreateDirectory(moodDir);

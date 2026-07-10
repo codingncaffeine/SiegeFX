@@ -42,13 +42,34 @@ public static class SoftwareRenderer
     /// <summary><paramref name="triColor"/>, when supplied, is one packed 0xRRGGBB per triangle (-1 = the
     /// default terrain tint). Used to colour-code editor markers (fire/smoke/trigger/command) so they're
     /// distinguishable at a glance instead of an anonymous beige box.</summary>
+    /// <summary>ED-8 — linear camera-distance fog for the mood audition,
+    /// applied as a post-pass over the view-space z-buffer (matches the
+    /// engine's shader: lerp toward the fog colour from Near to Far meters;
+    /// the background fills with the fog colour, which IS the horizon).</summary>
+    public readonly record struct Fog(float Near, float Far, byte R, byte G, byte B);
+
+    private static void ApplyFog(byte[] px, float[] zbuf, Fog f)
+    {
+        float inv = 1f / MathF.Max(f.Far - f.Near, 0.001f);
+        for (int i = 0; i < zbuf.Length; i++)
+        {
+            float z = zbuf[i];
+            float t = z == float.MaxValue ? 1f : Math.Clamp((z - f.Near) * inv, 0f, 1f);
+            if (t <= 0f) continue;
+            int o = i * 4;
+            px[o]     = (byte)(px[o]     + (int)((f.B - px[o])     * t));
+            px[o + 1] = (byte)(px[o + 1] + (int)((f.G - px[o + 1]) * t));
+            px[o + 2] = (byte)(px[o + 2] + (int)((f.R - px[o + 2]) * t));
+        }
+    }
+
     public static byte[] Render(
         Vector3[] verts, Vector3[] normals,
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
         bool wireframe, DirLight[]? lights = null, int[]? triColor = null,
-        bool ortho = false)
+        bool ortho = false, Fog? fog = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -142,6 +163,7 @@ public static class SoftwareRenderer
                 sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
                 cr, cg, cb);
         }
+        if (fog is { } fp && !wireframe) ApplyFog(px, zbuf, fp); // gizmo stays crisp above the fog
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
@@ -167,7 +189,7 @@ public static class SoftwareRenderer
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist, DirLight[]? lights = null, int[]? triColor = null,
-        bool ortho = false)
+        bool ortho = false, Fog? fog = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -252,6 +274,7 @@ public static class SoftwareRenderer
                         ClampByte(190 * sr), ClampByte(182 * sg), ClampByte(170 * sb));
             }
         }
+        if (fog is { } fp) ApplyFog(px, zbuf, fp); // ED-8 — mood fog audition
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }

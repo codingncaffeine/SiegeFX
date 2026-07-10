@@ -921,6 +921,54 @@
                                 <TextBox Grid.Column="1" Text="{Binding MoodBattle, UpdateSourceTrigger=PropertyChanged}" Margin="3,0,0,0"
                                          ToolTip="Battle music track"/>
                             </Grid>
+
+                            <!-- ED-8 — atmosphere: fog auditions live in the viewport; rain/snow/wind play in-engine -->
+                            <TextBlock Text="Atmosphere" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,8,0,3"
+                                       ToolTip="→ writes [fog]/[rain]/[snow]/[wind] into world/global/moods/&lt;map&gt;/moods.gas — the engine's weather system applies all of them"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Fog" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding MoodFogNear, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
+                                         ToolTip="Fog start distance in meters from the camera (empty = no fog)"/>
+                                <TextBlock Grid.Column="2" Text="→" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding MoodFogFar, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
+                                         ToolTip="Fog full distance in meters — geometry past this is pure fog colour. Retail moods run ~20–120"/>
+                                <TextBlock Grid.Column="4" Text="Col" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="5" Text="{Binding MoodFogColor, UpdateSourceTrigger=LostFocus}"
+                                         ToolTip="Fog colour, hex — 0xAARRGGBB or #RRGGBB (e.g. #9AA5B1 for a grey morning haze)"/>
+                            </Grid>
+                            <CheckBox Content="Audition fog in viewport" IsChecked="{Binding MoodFogPreview, Mode=TwoWay}" Margin="0,0,0,3"
+                                      ToolTip="Applies the authored fog to the editor preview so you can tune distances and colour without launching the engine"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Rain" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding MoodRainDensity, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
+                                         ToolTip="Raindrops per second (retail 30–225; empty = no rain). Plays in the engine via Test/Play"/>
+                                <TextBlock Grid.Column="2" Text="Snow" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding MoodSnowDensity, UpdateSourceTrigger=LostFocus}"
+                                         ToolTip="Snowflakes per second (retail 75–500; empty = no snow)"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Wind" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding MoodWindVelocity, UpdateSourceTrigger=LostFocus}" Margin="0,0,4,0"
+                                         ToolTip="Wind velocity in m/s — shears the rain/snow fall direction (empty = calm)"/>
+                                <TextBlock Grid.Column="2" Text="Dir°" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,3,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding MoodWindDirDeg, UpdateSourceTrigger=LostFocus}"
+                                         ToolTip="Wind direction in degrees clockwise from north (90 = east)"/>
+                            </Grid>
+                            <CheckBox Content="Lightning with the rain" IsChecked="{Binding MoodLightning, Mode=TwoWay}"
+                                      ToolTip="Storm flashes — retail also forces lightning on whenever rain density drifts ≥ 200"/>
                         </StackPanel>
                     </Grid>
                 </TabItem>

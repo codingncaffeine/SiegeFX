@@ -86,24 +86,72 @@ public sealed class AuthoredMood
     public string Standard = "";
     public string Battle = "";
 
+    // ED-8 — atmosphere. FogFar/density ≤ 0 mean "no block", and per DS1
+    // semantics an omitted block means that component is OFF.
+    public float FogNear = -1f, FogFar = -1f;
+    public uint FogColor = 0xFF888888;
+    public float RainDensity;      // drops/second; shipped range 30–225
+    public bool Lightning;
+    public float SnowDensity;      // flakes/second; shipped range 75–500
+    public float WindVelocity;     // m/s — shears precipitation
+    public float WindDirectionRad; // radians clockwise from north
+
     public bool HasAudio => !string.IsNullOrWhiteSpace(Ambient);
+    public bool HasWeather => FogFar > 0f || RainDensity > 0f || SnowDensity > 0f || WindVelocity > 0f;
+    public bool HasContent => HasAudio || HasWeather
+        || !string.IsNullOrWhiteSpace(Standard) || !string.IsNullOrWhiteSpace(Battle);
 }
 
-/// <summary>Writes a map-global <c>moods.gas</c>. The engine's MoodStore reads only mood_name,
-/// interior, and the three <c>[music]</c> tracks.</summary>
+/// <summary>Writes a map-global <c>moods.gas</c>. The engine's MoodStore reads mood_name,
+/// interior, the three <c>[music]</c> tracks, and the [fog]/[rain]/[snow]/[wind]
+/// atmosphere blocks (ED-8) — the SiegeFX weather system applies all of them.</summary>
 public static class MoodsGasWriter
 {
     public static string Write(AuthoredMood m)
     {
         var sb = new StringBuilder();
-        sb.Append($"[t:mood_setting,n:{m.Name}]\r\n{{\r\n");
+        // Retail shape: [mood_setting*] blocks keyed by their mood_name
+        // attribute — the exact header MoodStore matches on.
+        sb.Append("[mood_setting*]\r\n{\r\n");
         sb.Append($"\tmood_name = {m.Name};\r\n");
         sb.Append($"\tinterior = {(m.Interior ? "true" : "false")};\r\n");
         sb.Append("\t[music]\r\n\t{\r\n");
         if (!string.IsNullOrWhiteSpace(m.Ambient)) sb.Append($"\t\tambient_track = {m.Ambient.Trim()};\r\n");
         if (!string.IsNullOrWhiteSpace(m.Standard)) sb.Append($"\t\tstandard_track = {m.Standard.Trim()};\r\n");
         if (!string.IsNullOrWhiteSpace(m.Battle)) sb.Append($"\t\tbattle_track = {m.Battle.Trim()};\r\n");
-        sb.Append("\t}\r\n}\r\n");
+        sb.Append("\t}\r\n");
+        // ED-8 — atmosphere blocks, exactly the attribute names MoodStore parses.
+        if (m.FogFar > 0f)
+        {
+            sb.Append("\t[fog]\r\n\t{\r\n");
+            sb.Append($"\t\tfog_near_dist = {F(Math.Max(0f, m.FogNear))};\r\n");
+            sb.Append($"\t\tfog_far_dist = {F(m.FogFar)};\r\n");
+            sb.Append($"\t\tfog_color = 0x{m.FogColor:X8};\r\n");
+            sb.Append("\t}\r\n");
+        }
+        if (m.RainDensity > 0f)
+        {
+            sb.Append("\t[rain]\r\n\t{\r\n");
+            sb.Append($"\t\train_density = {F(m.RainDensity)};\r\n");
+            if (m.Lightning) sb.Append("\t\tlightning = true;\r\n");
+            sb.Append("\t}\r\n");
+        }
+        if (m.SnowDensity > 0f)
+        {
+            sb.Append("\t[snow]\r\n\t{\r\n");
+            sb.Append($"\t\tsnow_density = {F(m.SnowDensity)};\r\n");
+            sb.Append("\t}\r\n");
+        }
+        if (m.WindVelocity > 0f)
+        {
+            sb.Append("\t[wind]\r\n\t{\r\n");
+            sb.Append($"\t\twind_velocity = {F(m.WindVelocity)};\r\n");
+            sb.Append($"\t\twind_direction = {F(m.WindDirectionRad)};\r\n");
+            sb.Append("\t}\r\n");
+        }
+        sb.Append("}\r\n");
         return sb.ToString();
     }
+
+    private static string F(float v) => v.ToString("0.0###", System.Globalization.CultureInfo.InvariantCulture);
 }

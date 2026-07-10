@@ -275,6 +275,45 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public string MoodStandard { get => _moodStandard; set => SetProperty(ref _moodStandard, value); }
     public string MoodBattle { get => _moodBattle; set => SetProperty(ref _moodBattle, value); }
 
+    // ED-8 — atmosphere authoring (fog auditions live in the viewport; rain/
+    // snow/wind play in the real engine via Test/Play). Empty = component off.
+    private string _moodFogNear = "", _moodFogFar = "", _moodFogColor = "";
+    private string _moodRain = "", _moodSnow = "", _moodWindVel = "", _moodWindDir = "";
+    private bool _moodLightning, _moodFogPreview = true;
+    public string MoodFogNear { get => _moodFogNear; set { if (SetProperty(ref _moodFogNear, value)) Render(); } }
+    public string MoodFogFar { get => _moodFogFar; set { if (SetProperty(ref _moodFogFar, value)) Render(); } }
+    public string MoodFogColor { get => _moodFogColor; set { if (SetProperty(ref _moodFogColor, value)) Render(); } }
+    public string MoodRainDensity { get => _moodRain; set => SetProperty(ref _moodRain, value); }
+    public string MoodSnowDensity { get => _moodSnow; set => SetProperty(ref _moodSnow, value); }
+    public string MoodWindVelocity { get => _moodWindVel; set => SetProperty(ref _moodWindVel, value); }
+    public string MoodWindDirDeg { get => _moodWindDir; set => SetProperty(ref _moodWindDir, value); }
+    public bool MoodLightning { get => _moodLightning; set => SetProperty(ref _moodLightning, value); }
+    public bool MoodFogPreview { get => _moodFogPreview; set { if (SetProperty(ref _moodFogPreview, value)) Render(); } }
+
+    private static float MoodF(string s, float fallback = 0f) =>
+        float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static uint MoodColor(string s, uint fallback)
+    {
+        var t = (s ?? "").Trim();
+        if (t.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) t = t[2..];
+        else if (t.StartsWith("#")) t = t[1..];
+        if (t.Length == 6) t = "FF" + t; // RGB shorthand — opaque
+        return uint.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    }
+
+    /// <summary>ED-8 — the viewport fog audition parameters, or null when fog
+    /// isn't authored / preview is off.</summary>
+    private SoftwareRenderer.Fog? PreviewFog()
+    {
+        if (!_moodFogPreview) return null;
+        float far = MoodF(_moodFogFar, -1f);
+        if (far <= 0f) return null;
+        uint fc = MoodColor(_moodFogColor, 0xFF888888);
+        return new SoftwareRenderer.Fog(MoodF(_moodFogNear), far,
+            (byte)((fc >> 16) & 0xFF), (byte)((fc >> 8) & 0xFF), (byte)(fc & 0xFF));
+    }
+
     // ── effects: emitters, decals, placed sound (LE-7) ──────────
     private uint _nextEffectScid = 0x03000001;
     public ObservableCollection<RegionEmitter> Emitters { get; } = new();
@@ -3280,15 +3319,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private AuthoredMood? BuildMood()
     {
-        if (!_moodInterior && string.IsNullOrWhiteSpace(_moodAmbient)
-            && string.IsNullOrWhiteSpace(_moodStandard) && string.IsNullOrWhiteSpace(_moodBattle))
-            return null;
-        return new AuthoredMood
+        var m = new AuthoredMood
         {
             Name = $"map_{LightSanitize(MapName)}_{LightSanitize(RegionName)}_1",
             Interior = _moodInterior,
             Ambient = _moodAmbient, Standard = _moodStandard, Battle = _moodBattle,
+            // ED-8 — atmosphere; empty boxes parse to "component off".
+            FogNear = MoodF(_moodFogNear, -1f),
+            FogFar = MoodF(_moodFogFar, -1f),
+            FogColor = MoodColor(_moodFogColor, 0xFF888888),
+            RainDensity = MoodF(_moodRain),
+            Lightning = _moodLightning,
+            SnowDensity = MoodF(_moodSnow),
+            WindVelocity = MoodF(_moodWindVel),
+            WindDirectionRad = MoodF(_moodWindDir) * MathF.PI / 180f,
         };
+        return m.HasContent || m.Interior ? m : null;
     }
 
     private static string LightSanitize(string? raw)
@@ -4249,11 +4295,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
         var lights = BuildPreviewLights(); // authored directional lights → the software renderer
         var triColorArr = triColor.ToArray();
+        var fog = PreviewFog(); // ED-8 — audition the authored mood fog live
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr, _ortho)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr, _ortho, fog)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr, _ortho);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr, _ortho, fog);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;

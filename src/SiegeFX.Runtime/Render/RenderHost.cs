@@ -7073,6 +7073,32 @@ void main()
                         var (moods, moodDiags) = SiegeFX.Core.Assets.MoodStore.Load(logicReader);
                         _moodStore = moods;
                         _moodMapName = DeriveMapName(_regionPath);
+
+                        // SS-CUSTOM (ED-8) — a SiegeSmith map bundles its own moods at
+                        // world/global/moods/<map>/moods.gas inside the MAP tank. Merge
+                        // them over the stock store so authored fog/weather/music apply.
+                        try
+                        {
+                            Dictionary<string, SiegeFX.Core.Assets.MoodSetting>? merged = null;
+                            foreach (var mp in mapReader.ListFiles())
+                            {
+                                var t = mp.TrimStart('/');
+                                if (!t.StartsWith("world/global/moods/", StringComparison.OrdinalIgnoreCase)) continue;
+                                if (!t.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+                                var mDoc = SiegeFX.Core.Assets.GasDocument.Load(mapReader.ExtractToMemory(mp));
+                                merged ??= new Dictionary<string, SiegeFX.Core.Assets.MoodSetting>(
+                                    moods, StringComparer.OrdinalIgnoreCase);
+                                int added = SiegeFX.Core.Assets.MoodStore.MergeFromDocument(mDoc, merged);
+                                if (added > 0) Console.WriteLine($"  map moods: {added} custom mood(s) from {t}");
+                            }
+                            if (merged is not null)
+                            {
+                                _moodStore = merged;
+                                foreach (var track in CollectDistinctAmbientTracks(merged))
+                                    TryRegisterSfx(soundReader, track, $"/sound/effects/{track}.wav");
+                            }
+                        }
+                        catch { /* no bundled moods — the stock store stands */ }
                         int regBeds = 0;
                         foreach (var track in CollectDistinctAmbientTracks(moods))
                         {
