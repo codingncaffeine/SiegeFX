@@ -84,8 +84,21 @@ public sealed record ActorStats(
     /// ActorStats built without a template (synthetic combat targets) is unaffected.</summary>
     public float RenderScale { get; init; } = 1f;
 
-    public static ActorStats FromTemplate(TemplateStore store, Template template)
+    public static ActorStats FromTemplate(TemplateStore store, Template template) =>
+        FromTemplate(store, template, instance: null);
+
+    /// <summary>SC-INSTANCE-OVERRIDES — DS1 lets a region placement override
+    /// template [aspect] values inside its own <c>[t:...,n:...]</c> block
+    /// (the same instance-first rule the static-prop path applies to
+    /// scale_multiplier). Passing the placement's raw <see cref="GasNode"/>
+    /// makes instance <c>life</c>/<c>max_life</c>/<c>scale_multiplier</c> win
+    /// over the template chain — a placed boss krug can carry 500 life while
+    /// its template ships 60.</summary>
+    public static ActorStats FromTemplate(TemplateStore store, Template template, GasNode? instance)
     {
+        var instAspect = instance is null ? null : TemplateStore.FindChild(instance, "aspect");
+        string? InstAspect(string name) => instAspect is null ? null : TemplateStore.FindAttr(instAspect, name);
+
         // DS1 authors [actor][skills] entries as "value, ?, base" triples, where the
         // effective score = value + base (base 10 for attributes, 0 for skills/monsters).
         // gyorn's "strength = 1.28, 0, 10" is a level-1.28 gain over base 10 = 11.28,
@@ -107,7 +120,10 @@ public sealed record ActorStats(
 
         // life first, max_life as fallback (a few templates set one or the other,
         // not both); same for mana. AttackRange / Defense / Damage are single-keyed.
-        float templateLife = ParseFloat(store.GetAttribute(template, "aspect", "max_life")) ??
+        // SC-INSTANCE-OVERRIDES: the placement's own [aspect] wins when present.
+        float templateLife = ParseFloat(InstAspect("max_life")) ??
+                             ParseFloat(InstAspect("life")) ??
+                             ParseFloat(store.GetAttribute(template, "aspect", "max_life")) ??
                              ParseFloat(store.GetAttribute(template, "aspect", "life")) ?? 0f;
         float templateMana = ParseFloat(store.GetAttribute(template, "aspect", "max_mana")) ??
                              ParseFloat(store.GetAttribute(template, "aspect", "mana")) ?? 0f;
@@ -136,7 +152,10 @@ public sealed record ActorStats(
         // 0.3-0.5) render at native size without it. Clamp above 0 so a malformed
         // 0 can't collapse a creature to an invisible point.
         float scaleBase = ParseFloat(store.GetAttribute(template, "aspect", "scale_base")) ?? 1f;
-        float scaleMult = ParseFloat(store.GetAttribute(template, "aspect", "scale_multiplier")) ?? 1f;
+        // SC-INSTANCE-OVERRIDES: instance scale_multiplier replaces the template's
+        // (same replace-not-multiply rule as the static-prop path).
+        float scaleMult = ParseFloat(InstAspect("scale_multiplier")) ??
+                          ParseFloat(store.GetAttribute(template, "aspect", "scale_multiplier")) ?? 1f;
         float renderScale = MathF.Max(0.05f, scaleBase * scaleMult);
         // avg_move_velocity is the DS1 idle-walk gait (krug ≈ 2.5, chickens ≈ 1.9).
         // Fall back to 4 u/s — what Phase 11d hardcoded — when no template in the

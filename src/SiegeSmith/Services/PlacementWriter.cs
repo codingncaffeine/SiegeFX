@@ -18,10 +18,23 @@ public sealed class PlacedObject
     public Quaternion Orientation = Quaternion.Identity;
     public string File = "non_interactive.gas"; // objects/<File>
 
+    // ED-4b — per-placement instance overrides. DS1 semantics: values inside
+    // the [t:...,n:...] block win over the template chain (the engine reads
+    // instance [aspect]/[inventory] first). Defaults mean "no override" and
+    // emit nothing, so plain placements stay byte-identical.
+    public float ScaleMult = 1f;   // [aspect] scale_multiplier (visual size)
+    public float LifeOverride;     // [aspect] life + max_life; 0 = template's
+    public string LootDrop = "";   // [inventory][pcontent][oneof] il_main — guaranteed drop/contents
+
+    public bool HasOverrides =>
+        LifeOverride > 0f || !string.IsNullOrWhiteSpace(LootDrop)
+        || (ScaleMult > 0f && System.Math.Abs(ScaleMult - 1f) > 0.0001f);
+
     public PlacedObject Clone() => new()
     {
         Scid = Scid, Template = Template, NodeGuid = NodeGuid,
         LocalPos = LocalPos, Orientation = Orientation, File = File,
+        ScaleMult = ScaleMult, LifeOverride = LifeOverride, LootDrop = LootDrop,
     };
 }
 
@@ -48,6 +61,30 @@ public static class PlacementWriter
               .Append(F(o.LocalPos.X)).Append(',').Append(F(o.LocalPos.Y)).Append(',').Append(F(o.LocalPos.Z))
               .Append(",0x").Append(o.NodeGuid.ToString("X8")).Append(";\r\n");
             sb.Append("\t}\r\n");
+            // ED-4b — instance overrides, emitted only when authored so
+            // untouched placements keep the minimal retail shape.
+            bool scaleOverride = o.ScaleMult > 0f && System.Math.Abs(o.ScaleMult - 1f) > 0.0001f;
+            if (scaleOverride || o.LifeOverride > 0f)
+            {
+                sb.Append("\t[aspect]\r\n\t{\r\n");
+                if (scaleOverride)
+                    sb.Append("\t\tscale_multiplier = ").Append(F(o.ScaleMult)).Append(";\r\n");
+                if (o.LifeOverride > 0f)
+                {
+                    sb.Append("\t\tlife = ").Append(F(o.LifeOverride)).Append(";\r\n");
+                    sb.Append("\t\tmax_life = ").Append(F(o.LifeOverride)).Append(";\r\n");
+                }
+                sb.Append("\t}\r\n");
+            }
+            if (!string.IsNullOrWhiteSpace(o.LootDrop))
+            {
+                // A chance-less [oneof] is always-on: the named item is a
+                // GUARANTEED drop (actors) / content (containers), additive
+                // to whatever the template's own pcontent rolls.
+                sb.Append("\t[inventory]\r\n\t{\r\n\t\t[pcontent]\r\n\t\t{\r\n\t\t\t[oneof]\r\n\t\t\t{\r\n");
+                sb.Append("\t\t\t\til_main = ").Append(o.LootDrop.Trim()).Append(";\r\n");
+                sb.Append("\t\t\t}\r\n\t\t}\r\n\t}\r\n");
+            }
             if (convBindings is not null && convBindings.TryGetValue(o.Scid, out var convKey) && !string.IsNullOrWhiteSpace(convKey))
             {
                 sb.Append("\t[conversation]\r\n\t{\r\n\t\t[conversations]\r\n\t\t{\r\n");

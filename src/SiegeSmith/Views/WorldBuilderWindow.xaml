@@ -760,6 +760,30 @@
                                     <TextBlock Text="{Binding ObjWorldText}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10" Margin="0,0,0,4"
                                                ToolTip="World-space position (local values above are relative to the node this object sits on)"/>
                                     <TextBlock Text="Drag in the viewport to move · Shift-drag to rotate (15° snap in the toolbar) · Ctrl+click others to group." Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
+
+                                    <!-- ED-4b — per-placement instance overrides -->
+                                    <TextBlock Text="Instance overrides" FontWeight="SemiBold" FontSize="11" Margin="0,6,0,0"/>
+                                    <TextBlock Text="→ writes [aspect] / [inventory] inside THIS placement's block — the template stays untouched" Foreground="{StaticResource Brush.Muted}" FontSize="9" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,3">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Life" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjLife, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"
+                                                 ToolTip="Hit points for THIS placement only (empty = template's value). Make one krug a 500-life boss while the rest stay stock."/>
+                                        <TextBlock Grid.Column="2" Text="Scale ×" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="3" Text="{Binding ObjScale, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Visual size multiplier for THIS placement (empty = 1). DS1 itself uses this — the breakable farmhouse door ships 1.5."/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Drop" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBox Grid.Column="1" Text="{Binding ObjLoot, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Guaranteed item template (e.g. potion_health_small) — dropped on death for actors, found inside for chests/barrels. Adds to the template's own loot roll."/>
+                                    </Grid>
                                     <Button Content="Delete object" Command="{Binding DeleteObjectCommand}" Padding="8,4"/>
                                 </StackPanel>
 

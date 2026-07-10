@@ -183,6 +183,65 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
     }
 
+    // ED-4b — per-placement instance overrides (life, scale, guaranteed drop).
+    // Empty box = no override = the template's own values; the writer emits
+    // instance [aspect]/[inventory] blocks only when something is authored.
+    public string ObjLife
+    {
+        get => SelObj() is { LifeOverride: > 0f } o ? o.LifeOverride.ToString("0.#", CultureInfo.InvariantCulture) : "";
+        set
+        {
+            if (SelObj() is not { } o) return;
+            float v = 0f;
+            if (!string.IsNullOrWhiteSpace(value)
+                && !float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out v)) return;
+            if (v < 0f) v = 0f;
+            if (Math.Abs(o.LifeOverride - v) < 0.001f) return;
+            PushUndo();
+            o.LifeOverride = v;
+            Status = v > 0f ? $"Life override {v:0.#} — this placement spawns with it regardless of the template."
+                            : "Life override cleared — back to the template's value.";
+        }
+    }
+
+    public string ObjScale
+    {
+        get
+        {
+            var o = SelObj();
+            return o is null || Math.Abs(o.ScaleMult - 1f) < 0.0001f ? "" : o.ScaleMult.ToString("0.###", CultureInfo.InvariantCulture);
+        }
+        set
+        {
+            if (SelObj() is not { } o) return;
+            float v = 1f;
+            if (!string.IsNullOrWhiteSpace(value)
+                && (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out v) || v <= 0f)) return;
+            if (Math.Abs(o.ScaleMult - v) < 0.0001f) return;
+            PushUndo();
+            o.ScaleMult = v;
+            Render();
+            Status = Math.Abs(v - 1f) < 0.0001f ? "Scale override cleared."
+                : $"Scale ×{v:0.###} — the engine renders this placement at that size (preview shows the marker only).";
+        }
+    }
+
+    public string ObjLoot
+    {
+        get => SelObj()?.LootDrop ?? "";
+        set
+        {
+            if (SelObj() is not { } o) return;
+            var v = (value ?? "").Trim();
+            if (o.LootDrop == v) return;
+            PushUndo();
+            o.LootDrop = v;
+            Status = v.Length > 0
+                ? $"Guaranteed drop '{v}' — dropped on death (actors) or found inside (containers), on top of the template's own loot."
+                : "Guaranteed drop cleared.";
+        }
+    }
+
     private void RaiseObjTransform()
     {
         OnPropertyChanged(nameof(ObjPosX));
@@ -190,6 +249,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ObjPosZ));
         OnPropertyChanged(nameof(ObjYawDeg));
         OnPropertyChanged(nameof(ObjWorldText));
+        OnPropertyChanged(nameof(ObjLife));
+        OnPropertyChanged(nameof(ObjScale));
+        OnPropertyChanged(nameof(ObjLoot));
     }
 
     // ── lighting & mood (LE-6) ──────────────────────────────────
@@ -713,11 +775,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             case PlacedObject src:
             {
                 uint node = SrcNode(src.NodeGuid);
-                var copy = new PlacedObject
-                {
-                    Scid = _nextScid++, Template = src.Template, NodeGuid = node,
-                    LocalPos = Pos(node, src.LocalPos), Orientation = src.Orientation, File = src.File,
-                };
+                var copy = src.Clone(); // overrides (life/scale/loot) ride along
+                copy.Scid = _nextScid++;
+                copy.NodeGuid = node;
+                copy.LocalPos = Pos(node, src.LocalPos);
                 _objects.Add(copy);
                 RebuildPlacedRows();
                 foreach (var r in PlacedObjects) if (r.Scid == copy.Scid) { SelectedPlacedObject = r; break; }
@@ -1170,11 +1231,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         {
             case PlacedObject p:
             {
-                var c = new PlacedObject
-                {
-                    Scid = _nextScid++, Template = p.Template, NodeGuid = p.NodeGuid,
-                    LocalPos = p.LocalPos + DupOffset, Orientation = p.Orientation, File = p.File,
-                };
+                var c = p.Clone(); // overrides (life/scale/loot) ride along
+                c.Scid = _nextScid++;
+                c.LocalPos = p.LocalPos + DupOffset;
                 _objects.Add(c); return c;
             }
             case RegionEmitter e:
@@ -1334,11 +1393,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var src = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
             if (src is null) return;
             PushUndo();
-            var copy = new PlacedObject
-            {
-                Scid = _nextScid++, Template = src.Template, NodeGuid = src.NodeGuid,
-                LocalPos = src.LocalPos + DupOffset, Orientation = src.Orientation, File = src.File,
-            };
+            var copy = src.Clone(); // overrides (life/scale/loot) ride along
+            copy.Scid = _nextScid++;
+            copy.LocalPos = src.LocalPos + DupOffset;
             _objects.Add(copy);
             RebuildPlacedRows();
             foreach (var r in PlacedObjects) if (r.Scid == copy.Scid) { SelectedPlacedObject = r; break; }
@@ -2145,7 +2202,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
               .Append(o.Orientation.Y.ToString(CultureInfo.InvariantCulture)).Append('\t')
               .Append(o.Orientation.Z.ToString(CultureInfo.InvariantCulture)).Append('\t')
               .Append(o.Orientation.W.ToString(CultureInfo.InvariantCulture)).Append('\t')
-              .Append(o.File).Append('\n');
+              .Append(o.File).Append('\t')
+              // ED-4b — instance overrides ride the same undo snapshot.
+              .Append(o.ScaleMult.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.LifeOverride.ToString(CultureInfo.InvariantCulture)).Append('\t')
+              .Append(o.LootDrop).Append('\n');
         return sb.ToString();
     }
 
@@ -2165,6 +2226,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 LocalPos = new Vector3(PF(f[3]), PF(f[4]), PF(f[5])),
                 Orientation = new Quaternion(PF(f[6]), PF(f[7]), PF(f[8]), PF(f[9])),
                 File = f[10],
+                // ED-4b columns — absent in pre-override snapshots, so default.
+                ScaleMult = f.Length > 11 && PF(f[11]) > 0f ? PF(f[11]) : 1f,
+                LifeOverride = f.Length > 12 ? PF(f[12]) : 0f,
+                LootDrop = f.Length > 13 ? f[13] : "",
             });
         }
     }

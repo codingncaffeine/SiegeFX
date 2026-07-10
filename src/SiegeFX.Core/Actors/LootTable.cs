@@ -84,29 +84,44 @@ public sealed class LootTable
     /// <see cref="LootTable"/>. Returns an empty table if no ancestor declares
     /// pcontent — many templates (chickens, props, specializes-only stubs) have
     /// no drops at all, which is expected.</summary>
-    public static LootTable FromTemplate(TemplateStore store, Template template)
-    {
-        var pcontent = store.GetSection(template, "inventory", "pcontent");
-        if (pcontent is null)
-            return new LootTable(Array.Empty<LootBucket>(), Array.Empty<LootBucket>());
+    public static LootTable FromTemplate(TemplateStore store, Template template) =>
+        FromTemplate(store, template, instance: null);
 
+    /// <summary>SC-INSTANCE-OVERRIDES — overload that ALSO folds in the
+    /// placement's own <c>[inventory][pcontent]</c> buckets (a chest or mob
+    /// authored to carry a specific item on top of whatever its template
+    /// rolls). Instance buckets are additive: template buckets still roll.</summary>
+    public static LootTable FromTemplate(TemplateStore store, Template template, GasNode? instance)
+    {
         var equipped = new List<LootBucket>();
         var drops = new List<LootBucket>();
 
-        foreach (var bucket in pcontent.Children)
+        void Collect(GasNode pcontent)
         {
-            // Phase 21-SC-BARREL-FOLD — krug.gas + heroes.gas put [gold*]
-            // directly under [pcontent] (no enclosing [oneof*]). Without
-            // accepting Gold here those gold drops were silently dropped
-            // on the floor. [all*] is still pre-existing-unsupported (see
-            // splinter SC-LOOT-ALL); accepting it would over-emit since
-            // ParseBucket reads it as a oneof — separate slice.
-            if (!IsOneof(bucket.Header) && !IsGold(bucket.Header)) continue;
-            var parsed = ParseBucket(bucket);
-            if (parsed is null) continue;
-            if (IsEquippedBucket(parsed)) equipped.Add(parsed);
-            else drops.Add(parsed);
+            foreach (var bucket in pcontent.Children)
+            {
+                // Phase 21-SC-BARREL-FOLD — krug.gas + heroes.gas put [gold*]
+                // directly under [pcontent] (no enclosing [oneof*]). Without
+                // accepting Gold here those gold drops were silently dropped
+                // on the floor. [all*] is still pre-existing-unsupported (see
+                // splinter SC-LOOT-ALL); accepting it would over-emit since
+                // ParseBucket reads it as a oneof — separate slice.
+                if (!IsOneof(bucket.Header) && !IsGold(bucket.Header)) continue;
+                var parsed = ParseBucket(bucket);
+                if (parsed is null) continue;
+                if (IsEquippedBucket(parsed)) equipped.Add(parsed);
+                else drops.Add(parsed);
+            }
         }
+
+        var pcontent = store.GetSection(template, "inventory", "pcontent");
+        if (pcontent is not null) Collect(pcontent);
+
+        if (instance is not null
+            && TemplateStore.FindChild(instance, "inventory") is { } instInv
+            && TemplateStore.FindChild(instInv, "pcontent") is { } instPc)
+            Collect(instPc);
+
         return new LootTable(equipped, drops);
     }
 

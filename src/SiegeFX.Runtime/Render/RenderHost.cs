@@ -2648,6 +2648,12 @@ public sealed class RenderHost : IDisposable
         public int   SpinAxis;
         public float SpinRadPerSec;
 
+        // SC-INSTANCE-OVERRIDES — the placement's raw gas block, kept so
+        // use-time paths (container loot rolls) can honor instance-level
+        // [inventory][pcontent] additions the same way spawn-time paths
+        // honor instance [aspect] overrides.
+        public SiegeFX.Core.Assets.GasNode? Source;
+
         // SC-DOORS-OPEN — door props detected at spawn (template
         // specializes chain hits base_door). DoorTargetOpen is set when
         // the player clicks the door; DoorOpenFrac then lerps 0→1 over
@@ -8157,7 +8163,15 @@ void main()
                         if (!invincible)
                         {
                             isBreakable = true;
-                            var lifeAttr = _templateStore.GetAttribute(template, "aspect", "max_life");
+                            // SC-INSTANCE-OVERRIDES — instance [aspect] life
+                            // wins over the template chain (a placed crate can
+                            // be authored tougher than its template).
+                            string? lifeAttr = null;
+                            var instAspect = SiegeFX.Core.Assets.TemplateStore.FindChild(p.Node, "aspect");
+                            if (instAspect is not null)
+                                lifeAttr = SiegeFX.Core.Assets.TemplateStore.FindAttr(instAspect, "max_life")
+                                        ?? SiegeFX.Core.Assets.TemplateStore.FindAttr(instAspect, "life");
+                            lifeAttr ??= _templateStore.GetAttribute(template, "aspect", "max_life");
                             if (lifeAttr is null)
                                 lifeAttr = _templateStore.GetAttribute(template, "aspect", "life");
                             if (lifeAttr is not null &&
@@ -8342,6 +8356,7 @@ void main()
                         Scid          = p.Scid,
                         RegionPath    = rp,
                         CenterY       = world.Translation.Y,
+                        Source        = p.Node,
                     };
                     _staticProps.Add(inst);
                     if (isDoor)
@@ -19937,7 +19952,9 @@ void main()
     private void LogLootDrop(SiegeFX.Core.Actors.Actor actor, Vector3 deathPos)
     {
         if (_templateStore is null) return;
-        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, actor.Template);
+        // SC-INSTANCE-OVERRIDES — fold in the placement's own [inventory]
+        // [pcontent] buckets (a mob authored to guarantee a specific drop).
+        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, actor.Template, actor.Instance.Node);
         if (table.IsEmpty)
         {
             Console.WriteLine($"  loot: {actor.Template.Name} has no inventory.pcontent");
@@ -20085,7 +20102,9 @@ void main()
         // loot roll so an empty crate still bites.
         FireContainerTrap(prop);
         if (!_templateStore.TryGet(prop.Template, out var template)) return;
-        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, template);
+        // SC-INSTANCE-OVERRIDES — a chest/barrel placement can author its own
+        // [inventory][pcontent] on top of the template's roll.
+        var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, template, prop.Source);
         if (table.IsEmpty) return;
 
         var origin = prop.World.Translation;

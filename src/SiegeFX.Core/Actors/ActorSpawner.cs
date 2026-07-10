@@ -285,7 +285,9 @@ public sealed class ActorSpawner
         skrit.Dispatch("OnStartChore$", SkritValue.FromInt(0), SkritValue.FromInt(0));
 
         var world = ComposeWorldTransform(inst.Placement);
-        var stats = ActorStats.FromTemplate(_store, template);
+        // SC-INSTANCE-OVERRIDES — the placement's own [aspect] block (life /
+        // max_life / scale_multiplier) wins over the template chain.
+        var stats = ActorStats.FromTemplate(_store, template, inst.Node);
         return new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
     }
 
