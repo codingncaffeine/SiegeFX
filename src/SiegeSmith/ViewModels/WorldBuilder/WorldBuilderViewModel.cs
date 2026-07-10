@@ -655,6 +655,240 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand AddQuestCommand { get; }
     public RelayCommand DeleteQuestCommand { get; }
     public RelayCommand ImportAudioCommand { get; }
+    /// <summary>ED-1a — Ctrl+C/Ctrl+V. Copy remembers the selected piece;
+    /// paste recreates it on the CURRENTLY SELECTED NODE (so copy → pick
+    /// another node → paste moves content across the region), or beside the
+    /// original when no other node is picked.</summary>
+    public RelayCommand CopyCommand { get; }
+    public RelayCommand PasteCommand { get; }
+    private object? _clipboard;
+
+    private void CopySelected()
+    {
+        _clipboard = (object?)SelObj() ?? _selectedEmitter ?? _selectedDecal
+                   ?? (_selectedLight is { Kind: AuthoredLightKind.Point } ? _selectedLight : null)
+                   ?? (object?)_selectedTrigger ?? _selectedCommand;
+        Status = _clipboard is null
+            ? "Select an object, emitter, decal, point light, trigger, or command to copy."
+            : "Copied — select a target node and press Ctrl+V.";
+        PasteCommand.RaiseCanExecuteChanged();
+    }
+
+    private void PasteClipboard()
+    {
+        if (_clipboard is null) return;
+        uint SrcNode(uint fallback) => _selectedNode?.Guid ?? fallback;
+        Vector3 Pos(uint node, Vector3 srcPos) =>
+            _selectedNode is not null && _selectedNode.Guid != NodeOf(_clipboard)
+                ? LocalCenter(node) : srcPos + DupOffset;
+        static uint NodeOfStatic(object item) => item switch
+        {
+            PlacedObject p => p.NodeGuid,
+            RegionEmitter e => e.NodeGuid,
+            RegionDecal d => d.NodeGuid,
+            AuthoredLight l => l.NodeGuid,
+            RegionTrigger t => t.NodeGuid,
+            CommandPlacement c => c.NodeGuid,
+            _ => 0u,
+        };
+        uint NodeOf(object item) => NodeOfStatic(item);
+
+        PushUndo();
+        switch (_clipboard)
+        {
+            case PlacedObject src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new PlacedObject
+                {
+                    Scid = _nextScid++, Template = src.Template, NodeGuid = node,
+                    LocalPos = Pos(node, src.LocalPos), Orientation = src.Orientation, File = src.File,
+                };
+                _objects.Add(copy);
+                RebuildPlacedRows();
+                foreach (var r in PlacedObjects) if (r.Scid == copy.Scid) { SelectedPlacedObject = r; break; }
+                break;
+            }
+            case RegionEmitter src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new RegionEmitter
+                {
+                    Scid = _nextEffectScid++, Template = src.Template, NodeGuid = node,
+                    LocalPos = Pos(node, src.LocalPos), Smoke = src.Smoke,
+                    Count = src.Count, Fade = src.Fade, ParticleSize = src.ParticleSize, Growth = src.Growth,
+                };
+                Emitters.Add(copy);
+                SelectMarker(copy);
+                break;
+            }
+            case RegionDecal src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new RegionDecal
+                {
+                    Scid = _nextEffectScid++, NodeGuid = node, OriginLocal = Pos(node, src.OriginLocal),
+                    Normal = src.Normal, AxisH = src.AxisH, AxisV = src.AxisV,
+                    HorizExtent = src.HorizExtent, VertExtent = src.VertExtent, Texture = src.Texture,
+                };
+                Decals.Add(copy);
+                SelectMarker(copy);
+                break;
+            }
+            case AuthoredLight src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new AuthoredLight
+                {
+                    Scid = _nextLightScid++, Kind = AuthoredLightKind.Point, NodeGuid = node,
+                    Position = Pos(node, src.Position), Color = src.Color, Intensity = src.Intensity,
+                    InnerRadius = src.InnerRadius, OuterRadius = src.OuterRadius,
+                    DrawShadow = src.DrawShadow, AffectsActors = src.AffectsActors,
+                    AffectsItems = src.AffectsItems, AffectsTerrain = src.AffectsTerrain,
+                };
+                Lights.Add(copy);
+                SelectMarker(copy);
+                break;
+            }
+            case RegionTrigger src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new RegionTrigger { Scid = _nextLogicScid++, Template = src.Template, NodeGuid = node, LocalPos = Pos(node, src.LocalPos) };
+                Triggers.Add(copy);
+                SelectMarker(copy);
+                break;
+            }
+            case CommandPlacement src:
+            {
+                uint node = SrcNode(src.NodeGuid);
+                var copy = new CommandPlacement
+                {
+                    Scid = _nextLogicScid++, Kind = src.Kind, NodeGuid = node, LocalPos = Pos(node, src.LocalPos),
+                    NextScid = src.NextScid, Target1 = src.Target1, Target2 = src.Target2,
+                    ClientScid = src.ClientScid, Duration = src.Duration, Order = src.Order,
+                };
+                Commands.Add(copy);
+                SelectMarker(copy);
+                break;
+            }
+        }
+        Render();
+        Status = "Pasted.";
+    }
+
+    // ED-1a — recently used palette entries (max 8, most-recent first).
+    public ObservableCollection<string> RecentMeshes { get; } = new();
+    public ObservableCollection<string> RecentProps { get; } = new();
+    public bool HasRecentMeshes => RecentMeshes.Count > 0;
+    public bool HasRecentProps => RecentProps.Count > 0;
+
+    // ED-1a — persisted favorites (%APPDATA%\SiegeSmith\worldbuilder.json).
+    public ObservableCollection<string> FavoriteMeshes { get; } = new();
+    public ObservableCollection<string> FavoriteProps { get; } = new();
+    public bool HasFavoriteMeshes => FavoriteMeshes.Count > 0;
+    public bool HasFavoriteProps => FavoriteProps.Count > 0;
+    public RelayCommand ToggleFavoriteMeshCommand { get; }
+    public RelayCommand ToggleFavoritePropCommand { get; }
+    private string? _selectedFavoriteMesh;
+    public string? SelectedFavoriteMesh
+    {
+        get => _selectedFavoriteMesh;
+        set
+        {
+            if (!SetProperty(ref _selectedFavoriteMesh, value) || value is null) return;
+            foreach (var m in _allMeshes) if (m.Name == value) { SelectedMesh = m; break; }
+        }
+    }
+    private string? _selectedFavoriteProp;
+    public string? SelectedFavoriteProp
+    {
+        get => _selectedFavoriteProp;
+        set
+        {
+            if (!SetProperty(ref _selectedFavoriteProp, value) || value is null) return;
+            foreach (var p in _allProps) if (p.Name == value) { SelectedProp = p; return; }
+            foreach (var a in _allActors) if (a.Name == value) { SelectedProp = a; return; }
+        }
+    }
+
+    private void ToggleFavorite(ObservableCollection<string> list, string? name, string what)
+    {
+        if (string.IsNullOrEmpty(name)) { Status = $"Select a {what} in the palette first."; return; }
+        if (!list.Remove(name)) { list.Insert(0, name); Status = $"★ {name} added to favorites."; }
+        else Status = $"{name} removed from favorites.";
+        OnPropertyChanged(nameof(HasFavoriteMeshes));
+        OnPropertyChanged(nameof(HasFavoriteProps));
+        SaveWorldBuilderPrefs();
+    }
+
+    private string PrefsPath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SiegeSmith", "worldbuilder.json");
+
+    private sealed class WbPrefs
+    {
+        public List<string> FavoriteMeshes { get; set; } = new();
+        public List<string> FavoriteProps { get; set; } = new();
+    }
+
+    private void LoadWorldBuilderPrefs()
+    {
+        try
+        {
+            if (!File.Exists(PrefsPath)) return;
+            var p = System.Text.Json.JsonSerializer.Deserialize<WbPrefs>(File.ReadAllText(PrefsPath));
+            if (p is null) return;
+            foreach (var m in p.FavoriteMeshes) FavoriteMeshes.Add(m);
+            foreach (var t in p.FavoriteProps) FavoriteProps.Add(t);
+            OnPropertyChanged(nameof(HasFavoriteMeshes));
+            OnPropertyChanged(nameof(HasFavoriteProps));
+        }
+        catch { /* favorites are a convenience — never block startup */ }
+    }
+
+    private void SaveWorldBuilderPrefs()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(PrefsPath)!);
+            var p = new WbPrefs
+            {
+                FavoriteMeshes = new List<string>(FavoriteMeshes),
+                FavoriteProps = new List<string>(FavoriteProps),
+            };
+            File.WriteAllText(PrefsPath, System.Text.Json.JsonSerializer.Serialize(p));
+        }
+        catch { /* best effort */ }
+    }
+    private string? _selectedRecentMesh;
+    public string? SelectedRecentMesh
+    {
+        get => _selectedRecentMesh;
+        set
+        {
+            if (!SetProperty(ref _selectedRecentMesh, value) || value is null) return;
+            foreach (var m in _allMeshes) if (m.Name == value) { SelectedMesh = m; break; }
+        }
+    }
+    private string? _selectedRecentProp;
+    public string? SelectedRecentProp
+    {
+        get => _selectedRecentProp;
+        set
+        {
+            if (!SetProperty(ref _selectedRecentProp, value) || value is null) return;
+            foreach (var p in _allProps) if (p.Name == value) { SelectedProp = p; return; }
+            foreach (var a in _allActors) if (a.Name == value) { SelectedProp = a; return; }
+        }
+    }
+    private void PushRecent(ObservableCollection<string> list, string name)
+    {
+        list.Remove(name);
+        list.Insert(0, name);
+        while (list.Count > 8) list.RemoveAt(list.Count - 1);
+        OnPropertyChanged(nameof(HasRecentMeshes));
+        OnPropertyChanged(nameof(HasRecentProps));
+    }
+
     /// <summary>ED-2 — F: frame the selection. Pans the orbit target onto the
     /// selected piece and pulls the camera in, Unity/Unreal-style.</summary>
     public RelayCommand FocusSelectedCommand { get; }
@@ -925,6 +1159,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ImportAudioCommand = new RelayCommand(_ => ImportAudio(), _ => _assetsFolder is not null);
         DuplicateCommand = new RelayCommand(_ => DuplicateSelected());
         FocusSelectedCommand = new RelayCommand(_ => FocusSelected());
+        CopyCommand = new RelayCommand(_ => CopySelected());
+        PasteCommand = new RelayCommand(_ => PasteClipboard(), _ => _clipboard is not null);
+        ToggleFavoriteMeshCommand = new RelayCommand(_ => ToggleFavorite(FavoriteMeshes, _selectedMesh?.Name, "node mesh"));
+        ToggleFavoritePropCommand = new RelayCommand(_ => ToggleFavorite(FavoriteProps, _selectedProp?.Name, "template"));
+        LoadWorldBuilderPrefs();
         AddQuestCommand = new RelayCommand(_ =>
         {
             var q = new MapQuest { Key = $"quest_custom_{MapQuests.Count + 1:00}" };
@@ -1246,6 +1485,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         if (_selectedMesh is null) return;
         PushUndo();
+        PushRecent(RecentMeshes, _selectedMesh.Name); // ED-1a
         var guid = NextGuid();
         var node = new BuilderNode { Guid = guid, MeshGuid = _selectedMesh.MeshGuid };
         _region.Nodes.Add(node);
@@ -1264,6 +1504,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         int srcDoor = _selectedSourceDoor.Id;
         int tgtDoor = _selectedTargetDoor.Id;
         if (src.UsesDoor(srcDoor)) { Status = $"Door {srcDoor} on the selected node is already connected."; return; }
+        PushRecent(RecentMeshes, _selectedMesh.Name); // ED-1a
 
         PushUndo();
         var guid = NextGuid();
@@ -1912,6 +2153,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (node is null) return;
         bool actor = _placingActors;
         PushUndo();
+        PushRecent(RecentProps, _selectedProp.Name); // ED-1a
         _objects.Add(new PlacedObject
         {
             Scid = NextScid(),

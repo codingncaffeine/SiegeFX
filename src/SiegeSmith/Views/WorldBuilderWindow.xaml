@@ -12,6 +12,8 @@
         <KeyBinding Key="Delete" Command="{Binding DeleteSelectedAnyCommand}"/>
         <KeyBinding Key="D" Modifiers="Control" Command="{Binding DuplicateCommand}"/>
         <KeyBinding Key="F" Command="{Binding FocusSelectedCommand}"/>
+        <KeyBinding Key="C" Modifiers="Control" Command="{Binding CopyCommand}"/>
+        <KeyBinding Key="V" Modifiers="Control" Command="{Binding PasteCommand}"/>
     </Window.InputBindings>
 
     <Grid>
@@ -68,9 +70,35 @@
                 <TabControl>
                     <TabItem Header="Nodes" ToolTip="Terrain siege-node meshes — the building blocks of the region">
                         <DockPanel Margin="0,6,0,0">
-                            <TextBox DockPanel.Dock="Top" Margin="10,0,10,8"
-                                     Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
-                                     ToolTip="Filter the node meshes"/>
+                            <Grid DockPanel.Dock="Top" Margin="10,0,10,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Margin="0,0,4,0"
+                                         Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
+                                         ToolTip="Filter the node meshes"/>
+                                <Button Grid.Column="1" Content="★" Padding="8,2" Command="{Binding ToggleFavoriteMeshCommand}"
+                                        ToolTip="Star/unstar the selected mesh — favorites persist between sessions"/>
+                            </Grid>
+                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasFavoriteMeshes, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="★ FAVORITES" Style="{StaticResource Header.Section}"/>
+                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding FavoriteMeshes}"
+                                         SelectedItem="{Binding SelectedFavoriteMesh, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasRecentMeshes, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="RECENT" Style="{StaticResource Header.Section}"/>
+                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding RecentMeshes}"
+                                         SelectedItem="{Binding SelectedRecentMesh, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
                             <StackPanel DockPanel.Dock="Bottom" Margin="10,4,10,10">
                                 <Button Content="Place as anchor" Command="{Binding PlaceAnchorCommand}" Margin="0,3" Padding="8,5"
                                         ToolTip="Start the region: the anchor node everything else connects to"/>
@@ -101,9 +129,35 @@
                                     ToolTip="Toggle between inert props (non_interactive.gas) and spawnable actors (actor.gas)"/>
                             <TextBlock DockPanel.Dock="Top" Margin="10,0,10,6" Text="{Binding PaletteHint}" TextWrapping="Wrap"
                                        Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
-                            <TextBox DockPanel.Dock="Top" Margin="10,0,10,6"
-                                     Text="{Binding PropSearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
-                                     ToolTip="Filter the template catalog"/>
+                            <Grid DockPanel.Dock="Top" Margin="10,0,10,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Grid.Column="0" Margin="0,0,4,0"
+                                         Text="{Binding PropSearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
+                                         ToolTip="Filter the template catalog"/>
+                                <Button Grid.Column="1" Content="★" Padding="8,2" Command="{Binding ToggleFavoritePropCommand}"
+                                        ToolTip="Star/unstar the selected template — favorites persist between sessions"/>
+                            </Grid>
+                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasFavoriteProps, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="★ FAVORITES" Style="{StaticResource Header.Section}"/>
+                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding FavoriteProps}"
+                                         SelectedItem="{Binding SelectedFavoriteProp, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasRecentProps, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="RECENT" Style="{StaticResource Header.Section}"/>
+                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding RecentProps}"
+                                         SelectedItem="{Binding SelectedRecentProp, Mode=TwoWay}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
                             <Button DockPanel.Dock="Bottom" Content="Place on selected node" Command="{Binding PlaceObjectCommand}"
                                     Margin="10,6,10,10" Padding="8,5"
                                     ToolTip="Drop the selected template onto the selected terrain node — then drag it in the viewport"/>
