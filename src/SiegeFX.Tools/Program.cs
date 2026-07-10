@@ -3914,6 +3914,34 @@ static int CmdSnoInfo(string[] a)
     {
         Console.WriteLine($"  spot[{i}] name='{sno.Spots[i].Name}'");
     }
+    // Vertex-color (baked radiosity) histogram — answers "is the bake real
+    // data or uniform grey?" without a render. DS1 stores per-corner Rgba
+    // that the terrain shader uses as MODULATE2X light (0x80 = 1.0x).
+    if (sno.Corners.Length > 0)
+    {
+        long rSum = 0, gSum = 0, bSum = 0;
+        byte rMin = 255, rMax = 0;
+        var distinct = new HashSet<uint>();
+        int dark = 0, mid = 0, bright = 0;
+        foreach (var c in sno.Corners)
+        {
+            uint rgba = c.Rgba;
+            distinct.Add(rgba);
+            byte b = (byte)(rgba & 0xFF), g = (byte)((rgba >> 8) & 0xFF), r = (byte)((rgba >> 16) & 0xFF);
+            rSum += r; gSum += g; bSum += b;
+            if (r < rMin) rMin = r;
+            if (r > rMax) rMax = r;
+            int lum = (r + g + b) / 3;
+            if (lum < 0x40) dark++;
+            else if (lum < 0xA0) mid++;
+            else bright++;
+        }
+        int n = sno.Corners.Length;
+        Console.WriteLine($"VertColors: {distinct.Count} distinct across {n} corners; " +
+                          $"avg=({rSum / n},{gSum / n},{bSum / n}) rMin={rMin} rMax={rMax}; " +
+                          $"lum buckets dark(<0x40)={dark} mid={mid} bright(>=0xA0)={bright}" +
+                          (distinct.Count == 1 ? "  <-- UNIFORM (bake carries no lighting)" : ""));
+    }
     if (sno.LogicalGroupings.Length > 0)
     {
         int floor = 0, water = 0, ignored = 0, navFaces = 0;

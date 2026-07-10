@@ -629,9 +629,20 @@ public sealed class TriggerInstance
         Orientation = orientation ?? Quaternion.Identity;
         TemplateName = templateName;
         var tn = templateName.ToLowerInvariant();
+        // The GLOBAL fade family is excluded: fade_nodes_global rows are one-way
+        // world-state choreography, not held-volume cutaways. cr_r1 authors 48
+        // "out:black" global rows (progressive crypt de-roofing as the party
+        // descends) against a single authored "in" — nothing ever restores the
+        // caps. Synthesized exit-reversal put the crypt roofs BACK each time the
+        // player left a threshold box, so from a doorway the chase camera stared
+        // at unlit cap exteriors in black fog — the "next room is pitch black /
+        // not loaded" report (test 107). sd_r1 ships the same pattern (38:0).
+        // The local box families keep the measured hold-while-inside reversal
+        // (fh_r1 surface / hc_r1 basement, user-confirmed correct).
         AutoReverseFades = tn.Contains("box") &&
                            (tn.Contains("fade_node") || tn.Contains("change_mood")) &&
-                           !tn.Contains("offonly");
+                           !tn.Contains("offonly") &&
+                           !tn.Contains("global");
         _rowStates = new TriggerRowState[matrix.Rows.Count];
     }
 

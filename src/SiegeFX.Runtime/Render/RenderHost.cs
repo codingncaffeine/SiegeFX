@@ -995,6 +995,14 @@ public sealed class RenderHost : IDisposable
     // the duration of the draw, so each ASP subset shows up as a distinct color
     // on the rendered model.
     private bool _subsetTintActive;
+    // Dev knobs (strip before v1.0) — read once at startup:
+    // SIEGEFX_BAKED_PROBE=1 magenta-paints baked-light terrain fragments;
+    // SIEGEFX_NO_FOG=1 disables distance fog. Both exist to make a single
+    // retest of a "room renders black" report conclusive (see F7 fade diag).
+    private readonly bool _bakedProbeKnob =
+        Environment.GetEnvironmentVariable("SIEGEFX_BAKED_PROBE") == "1";
+    private readonly bool _noFogKnob =
+        Environment.GetEnvironmentVariable("SIEGEFX_NO_FOG") == "1";
     private readonly List<(string Label, double Ms)> _diagStageTimings = new();
     private readonly System.Diagnostics.Stopwatch _diagBootStopwatch = new();
     private const int FrameRingSize = 240;     // 4 sec at 60 Hz
@@ -3664,6 +3672,8 @@ uniform float     uGamma;
 // (vColor.bgr) with the fixed-function MODULATE2X convention: 128 = neutral,
 // which is why a plain multiply once read 'uniformly darker'.
 uniform int       uUseBakedLight;
+// SIEGEFX_BAKED_PROBE dev knob — magenta-paints baked-light fragments.
+uniform int       uBakedProbe;
 // SC-TERRAIN-UV — the 8 dihedral symmetries of a square tile.
 vec2 orientUv(vec2 uv, int o)
 {
@@ -3735,6 +3745,11 @@ void main()
         // with our dynamic sources would wash outdoor sun and re-add torch
         // pools the bake already contains).
         lighting = clamp(vColor.bgr * 2.0, 0.0, 1.0);
+        // SIEGEFX_BAKED_PROBE dev knob — paint every baked-light fragment
+        // magenta. One glance separates pass-not-running / flag-not-set
+        // (no magenta where terrain should be) from lighting/fog data
+        // problems (magenta everywhere terrain is). Strip before v1.0.
+        if (uBakedProbe != 0) { FragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
     } else {
         lighting = vec3(uAmbient);
         for (int i = 0; i < uDirCount; ++i) {
@@ -10996,12 +11011,18 @@ void main()
         // ALPHA-2V — options gamma (uUseBakedLight's per-draw reset moved
         // to the top of this method, ahead of the per-frame gate).
         shader.SetFloat("uGamma", _gammaLevel);
+        // Dev knobs (strip before v1.0): SIEGEFX_BAKED_PROBE=1 magenta-paints
+        // baked-light terrain fragments; SIEGEFX_NO_FOG=1 kills distance fog.
+        // Together with F7 they make one retest of a "room renders black"
+        // report conclusive: probe says whether the terrain pass + flag run,
+        // no-fog says whether the mood's black fog is what's eating the room.
+        shader.SetInt("uBakedProbe", _bakedProbeKnob ? 1 : 0);
         // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
         // so both world shaders (static + skinned) stay in sync with the
         // weather state without a separate dirty-tracking pass. Lightning
         // flash brightens the fog itself (the sky "lights up" and the fog
         // wall reads white for the strike frames) — cheap and reads right.
-        bool fogOn = _weather.FogActive && _weather.FogFar > _weather.FogNear;
+        bool fogOn = _weather.FogActive && _weather.FogFar > _weather.FogNear && !_noFogKnob;
         shader.SetInt("uFogOn", fogOn ? 1 : 0);
         if (fogOn)
         {
