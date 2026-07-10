@@ -202,6 +202,11 @@ public sealed class RenderHost : IDisposable
     // alongside _staticProps on region teardown.
     private readonly List<StaticPropInstance> _leverProps = new();
     private StaticPropInstance? _pendingLeverUse;
+    // ALPHA-2 USE-POINTS — [t:use_point] placements from special.gas, keyed by
+    // scid. A usable's [placement] use_point_scids reference these; the world
+    // pose is composed on demand through EffectiveNavLayout so a spot anchored
+    // to an elevator car node rides with the car.
+    private readonly Dictionary<uint, (uint NodeGuid, Vector3 Local)> _usePointsByScid = new();
     // ALPHA-2C — chests (click-to-open loot containers) + placed auto-traps.
     private readonly List<StaticPropInstance> _chestProps = new();
     private readonly Dictionary<uint, StaticPropInstance> _chestsByScid = new();
@@ -2697,6 +2702,11 @@ public sealed class RenderHost : IDisposable
         public uint   LeverOnScid, LeverOffScid;
         public string LeverOnMessage  = "we_req_activate";
         public string LeverOffMessage = "we_req_activate";
+        // ALPHA-2 USE-POINTS — [placement] use_point_scids: DS1's authored
+        // stand spots for operating this lever. The farm winch authors one ON
+        // the elevator grate (ride down with it) and one at the landing (call
+        // or send the car); the pull fires only once the player reaches one.
+        public uint[] LeverUsePointScids = Array.Empty<uint>();
 
         // ALPHA-2C — chests/lockers (base_chest chain) open on use instead of
         // shattering: click within use range rolls the container's pcontent
@@ -6658,6 +6668,12 @@ void main()
                     fadeNodesBoxCount++;
                 else if (tn.Contains("mood_change") || tn.Contains("mood_box"))
                     moodChangeBoxCount++;
+                // ALPHA-2 USE-POINTS — authored stand spots referenced by
+                // usables' [placement] use_point_scids (the farm winch's
+                // on-the-grate spot). Stored node-relative; world pose
+                // composed on demand (elevator car spots move with the car).
+                else if (string.Equals(p.TemplateName, "use_point", StringComparison.OrdinalIgnoreCase))
+                    _usePointsByScid[p.Scid] = (p.Placement.NodeGuid, p.Placement.LocalPosition);
             }
             var spawned = spawner.SpawnTriggers(placements);
             // SC-FADE-NODES-LNODE diagnostic — dump every fade-related
@@ -8325,6 +8341,7 @@ void main()
                     uint levOnScid = 0, levOffScid = 0;
                     string levOnMsg = "we_req_activate", levOffMsg = "we_req_activate";
                     float levUseRange = 2f;
+                    uint[] levUsePoints = Array.Empty<uint>();
                     {
                         SiegeFX.Core.Assets.GasNode? onOff = null;
                         foreach (var c in p.Node.Children)
@@ -8361,6 +8378,27 @@ void main()
                                 System.Globalization.NumberStyles.Float,
                                 System.Globalization.CultureInfo.InvariantCulture, out var urv) && urv > 0f)
                                 levUseRange = urv;
+                            // ALPHA-2 USE-POINTS — [placement] use_point_scids
+                            // (comma-joined hex list) names the authored stand
+                            // spots; resolved to world positions on demand so
+                            // spots anchored to an elevator car ride with it.
+                            foreach (var c in p.Node.Children)
+                            {
+                                if (!string.Equals(c.Header, "placement", StringComparison.OrdinalIgnoreCase)) continue;
+                                foreach (var a in c.Attributes)
+                                {
+                                    if (!string.Equals(a.Name, "use_point_scids", StringComparison.OrdinalIgnoreCase)) continue;
+                                    var ups = new List<uint>();
+                                    foreach (var tok in a.Value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                                    {
+                                        var v = ParseHexScid(tok);
+                                        if (v != 0) ups.Add(v);
+                                    }
+                                    levUsePoints = ups.ToArray();
+                                    break;
+                                }
+                                break;
+                            }
                         }
                     }
 
@@ -8385,6 +8423,7 @@ void main()
                         LeverOffScid    = levOffScid,
                         LeverOnMessage  = levOnMsg,
                         LeverOffMessage = levOffMsg,
+                        LeverUsePointScids = levUsePoints,
                         IsChest         = isChest,
                         ChestWaitsForActivate = chestWaits,
                         ChestUseRange   = chestUseRange,
@@ -11348,6 +11387,56 @@ void main()
         return SiegeFX.Core.Assets.RegionLayout.FromTransforms(_regionLayout.AnchorGuid, dict);
     }
 
+    /// <summary>ALPHA-2 SHAFT RESCUE — after a nav rebuild, nudge the player
+    /// and party members off any spot the new mesh no longer floors (within
+    /// step range). The motivating case: standing at the shaft lip when the
+    /// elevator departs — at arrival the car's tris are at the far stop, the
+    /// XZ under the actor's feet only resolves 12u down, the follower's
+    /// vertical re-bind gate refuses it, and every click is then rejected
+    /// from a permanently off-mesh start. A ring search snaps them to the
+    /// nearest real floor instead (the landing edge, in practice ≤1u away).</summary>
+    private void RescueOffMeshAfterRebuild(SiegeFX.Core.Nav.NavMesh nav)
+    {
+        bool StandableAt(Vector3 p, out float y)
+        {
+            y = p.Y;
+            if (!nav.TryFindTriangle(p, out var tri, includeFadeHidden: true)) return false;
+            y = nav.SampleYOnTriangle(tri, p);
+            return MathF.Abs(y - p.Y) <= 2.0f;
+        }
+        void Rescue(ActorRenderState s, SiegeFX.Core.Nav.NavFollower? follower)
+        {
+            var pos = s.CurrentTransform.Translation;
+            if (StandableAt(pos, out _)) return;
+            for (float r = 0.5f; r <= 3.01f; r += 0.5f)
+            {
+                for (int i = 0; i < 16; i++)
+                {
+                    float a = i * MathF.PI * 2f / 16f;
+                    var probe = new Vector3(pos.X + MathF.Cos(a) * r, pos.Y, pos.Z + MathF.Sin(a) * r);
+                    if (!StandableAt(probe, out float y)) continue;
+                    var dest = probe with { Y = y };
+                    var t = s.CurrentTransform;
+                    t.Translation = dest;
+                    s.CurrentTransform = t;
+                    follower?.Teleport(dest);
+                    if (ReferenceEquals(s, _player)) _playerRenderInit = false;
+                    else s.PartyRenderInit = false;
+                    Console.WriteLine($"[nav-rescue] {(ReferenceEquals(s, _player) ? "player" : s.Actor.Template)} " +
+                        $"off-floor at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) -> ({dest.X:F1},{dest.Y:F1},{dest.Z:F1})");
+                    return;
+                }
+            }
+            Console.WriteLine($"[nav-rescue] no floor within 3u of ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) — actor left in place");
+        }
+        if (_player is not null && !_player.IsDead) Rescue(_player, _playerFollower);
+        foreach (var m in _party)
+        {
+            if (ReferenceEquals(m, _player) || m.IsDead) continue;
+            Rescue(m, m.Brain?.Wander?.Follower);
+        }
+    }
+
     private bool TryGetNodeMeshGuid(uint nodeGuid, out uint meshGuid)
     {
         foreach (var (_, graph, _) in _worldRegionGraphs)
@@ -11588,12 +11677,28 @@ void main()
             else if (_player is not null && !_player.IsDead)
             {
                 var pp = _player.CurrentTransform.Translation;
-                var lp = lever.World.Translation;
-                float dx = pp.X - lp.X, dz = pp.Z - lp.Z;
-                // XZ range only + generous vertical: the farm lever mounts on
-                // the shaft wall ~chest height above the grate lip.
-                if (dx * dx + dz * dz <= lever.LeverUseRange * lever.LeverUseRange &&
-                    MathF.Abs(pp.Y - lp.Y) <= 3.5f)
+                bool inRange;
+                if (lever.LeverUsePointScids.Length > 0 &&
+                    TryNearestLeverUsePoint(lever, pp, out var up))
+                {
+                    // ALPHA-2 USE-POINTS — the pull fires only standing AT the
+                    // authored spot. For the farm winch that spot rides the
+                    // grate: the player is on the platform when it moves,
+                    // never watching it leave from the landing.
+                    float dx = pp.X - up.X, dz = pp.Z - up.Z;
+                    inRange = dx * dx + dz * dz <= 0.8f * 0.8f &&
+                              MathF.Abs(pp.Y - up.Y) <= 1.6f;
+                }
+                else
+                {
+                    var lp = lever.World.Translation;
+                    float dx = pp.X - lp.X, dz = pp.Z - lp.Z;
+                    // XZ range only + generous vertical: wall-mounted levers
+                    // sit ~chest height above the floor the player stands on.
+                    inRange = dx * dx + dz * dz <= lever.LeverUseRange * lever.LeverUseRange &&
+                              MathF.Abs(pp.Y - lp.Y) <= 3.5f;
+                }
+                if (inRange)
                 {
                     _pendingLeverUse = null;
                     PullLever(lever);
@@ -11723,6 +11828,14 @@ void main()
                         var combatStats = InjectFollowerWeapon(r.Actor.Template, baseStats) ?? baseStats;
                         RebuildFollowerBrain(r, combatStats, remesh: true);
                     }
+                    // ALPHA-2 SHAFT RESCUE — anyone left standing where the
+                    // rebuilt mesh has no floor (the car departed under their
+                    // feet: its tris moved to the far stop, leaving an open
+                    // shaft) gets nudged to the nearest real floor. Without
+                    // this the follower's vertical re-bind gate correctly
+                    // refuses the shaft bottom 12u below — and the player
+                    // freezes over the hole with every click refused.
+                    RescueOffMeshAfterRebuild(nav);
                 }
                 el.Riders.Clear();
                 Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
@@ -11744,25 +11857,71 @@ void main()
         return m;
     }
 
-    /// <summary>LMB near a lever = walk up and pull. The click also sets the
-    /// walk target (caller), so the player approaches naturally; the pull
-    /// fires from TickElevators the moment they're inside use range. A click
-    /// that lands nowhere near any lever clears the pending use.</summary>
-    private void RequestLeverUseNear(Vector3 worldPoint)
+    /// <summary>Resolves an authored use_point scid to its current world
+    /// position. Composed through <see cref="EffectiveNavLayout"/> so a spot
+    /// anchored to an elevator car node rides with the car (the farm winch's
+    /// on-the-grate spot is only at the top landing while the car is).</summary>
+    private bool TryGetUsePointWorld(uint scid, out Vector3 world)
+    {
+        world = default;
+        if (!_usePointsByScid.TryGetValue(scid, out var up)) return false;
+        if (_regionLayout is null) return false;
+        if (!EffectiveNavLayout().TryGetTransform(up.NodeGuid, out var m)) return false;
+        world = Vector3.Transform(up.Local, m);
+        return true;
+    }
+
+    /// <summary>Nearest resolvable use point of a lever, measured from
+    /// <paramref name="refPos"/>. False when the lever authors none (or none
+    /// resolve) — callers fall back to plain lever-origin range.</summary>
+    private bool TryNearestLeverUsePoint(StaticPropInstance lever, Vector3 refPos, out Vector3 world)
+    {
+        world = default;
+        float best = float.MaxValue;
+        foreach (var s in lever.LeverUsePointScids)
+        {
+            if (!TryGetUsePointWorld(s, out var w)) continue;
+            float d = Vector3.DistanceSquared(w, refPos);
+            if (d < best) { best = d; world = w; }
+        }
+        return best < float.MaxValue;
+    }
+
+    /// <summary>LMB on a lever = walk up and pull. Selection is ray-based:
+    /// the click ray must pass within a hand's width of the lever PROP —
+    /// clicking the floor near a lever is just a move (the old floor-point
+    /// radius turned ordinary walk clicks by the farm winch into "send the
+    /// elevator away", stranding the player topside). Floor-mounted levers
+    /// keep a tight floor-hit fallback for clicks at their base. The pull
+    /// fires from TickElevators once the player reaches the lever's authored
+    /// use point (or plain use range when none authored).</summary>
+    private void RequestLeverUseNear(Vector3 rayOrigin, Vector3 rayDir, Vector3 floorHit)
     {
         if (_leverProps.Count == 0) return;
+        var dir = rayDir;
+        float dlen = dir.Length();
+        if (dlen > 1e-6f) dir /= dlen;
         StaticPropInstance? best = null;
-        float bestD2 = 2.0f * 2.0f;
+        float bestScore = float.MaxValue;
         foreach (var l in _leverProps)
         {
             if (l.IsDestroyed) continue;
             var lp = l.World.Translation;
-            float dx = lp.X - worldPoint.X, dz = lp.Z - worldPoint.Z;
-            // Loose vertical gate — the click Y is the floor under the cursor,
-            // the lever origin sits wall-mounted above it.
-            if (MathF.Abs(lp.Y - worldPoint.Y) > 6f) continue;
-            float dd = dx * dx + dz * dz;
-            if (dd < bestD2) { bestD2 = dd; best = l; }
+            // Primary: click ray passes close to the lever prop itself
+            // (covers wall/ceiling mounts like the winch — the nav-mesh hit
+            // under them is meaningless for selection).
+            var toL = lp - rayOrigin;
+            float t = Vector3.Dot(toL, dir);
+            if (t > 0f && t < 120f)
+            {
+                float rd = Vector3.Distance(rayOrigin + dir * t, lp);
+                if (rd <= 0.9f && rd < bestScore) { bestScore = rd; best = l; continue; }
+            }
+            // Fallback: floor-mounted levers whose origin sits at the hit.
+            float dx = lp.X - floorHit.X, dz = lp.Z - floorHit.Z;
+            float dxz = MathF.Sqrt(dx * dx + dz * dz);
+            if (dxz <= 1.0f && MathF.Abs(lp.Y - floorHit.Y) <= 2.0f && dxz < bestScore)
+            { bestScore = dxz; best = l; }
         }
         _pendingLeverUse = best;
     }
@@ -16011,14 +16170,21 @@ void main()
         // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
         // still walks to the click point, so you approach and pass through).
         OpenDoorNear(hit);
-        // SC-ELEVATOR — clicking on/near a lever queues a walk-up-and-pull;
-        // a click that lands away from every lever clears any pending pull.
-        RequestLeverUseNear(hit);
+        // SC-ELEVATOR — clicking ON a lever prop (ray hit) queues a
+        // walk-up-and-pull; a click that misses every lever clears any
+        // pending pull.
+        RequestLeverUseNear(near, dir, hit);
         // ALPHA-2C — same walk-up pattern for chests.
         RequestChestUseNear(hit);
         // ALPHA-2E — and for locked usables (Star Device).
         RequestLockedUseNear(hit);
         _playerFollower.SetTarget(hit);
+        // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
+        // authored stand spot (the farm winch's is ON the elevator grate, so
+        // the player rides down with the car), not to the raw click point.
+        if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
+            TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
+            _playerFollower.SetTarget(upw);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
@@ -22597,6 +22763,7 @@ void main()
         // SC-ELEVATOR — elevators + levers are per-region-load state.
         _leverProps.Clear();
         _pendingLeverUse = null;
+        _usePointsByScid.Clear();
         _elevators.Clear();
         _elevatorsByScid.Clear();
         _elevatorNodeOverrides.Clear();

@@ -2445,9 +2445,14 @@ echo  - Console at load: [elevator] 0x06A00036 ... parked at stop1 and two
 echo    [lever] registration lines.
 echo  - Grate platform sits flush at the TOP of the shaft; the wall lever
 echo    should read as mounted, not floating (report if still floating).
-echo  - CLICK the lever: player walks over + pulls ([lever] pulled line),
+echo  - CLICK the winch lever ITSELF (ray-picked): player walks to the
+echo    authored use point ON THE GRATE, then pulls ([lever] pulled line);
 echo    grate descends ~12u over 5s WITH you standing on it; the authored
 echo    cutaway fades swap surface/basement sections mid-ride.
+echo  - Ordinary move-clicks on the floor NEAR the winch must NOT pull it
+echo    (the old bug: elevator left without you + player froze topside).
+echo  - If you somehow stand over the open shaft when the car is away, a
+echo    [nav-rescue] line nudges you to the landing edge instead of freezing.
 echo  - At the bottom: walk OFF onto the cellar floor (nav rebuilds on
 echo    arrival - console prints a nav mesh rebuild line).
 echo  - Pull the basement lever to ride back UP; fades reverse on arrival.
