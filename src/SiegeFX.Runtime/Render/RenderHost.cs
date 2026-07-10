@@ -136,10 +136,18 @@ public sealed class RenderHost : IDisposable
     // init failed or Sound.dsres was absent — TryRegisterSfx no-ops the
     // pitch lookup in that case.
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.SedDescriptor>? _sedStore;
-    private (Vector3 OriginXZ, string RegionPath)[] _snodeRegionLookup =
+    private (Vector3 Origin, string RegionPath)[] _snodeRegionLookup =
         Array.Empty<(Vector3, string)>();
     private float _regionCheckAccumulator;
     private const float RegionCheckIntervalSec = 0.5f;
+    // Region-membership hysteresis: a candidate region must win the nearest-
+    // snode vote on two CONSECUTIVE checks (1s at the 0.5s cadence) before we
+    // commit the change. Stacked regions (farmhouse over its basement) put
+    // both regions' snodes near the player on stairs; committing on a single
+    // vote flapped fh_r1↔hc_r1 several times per descent, and every flap
+    // re-applied the mood and restarted its music track.
+    private string? _pendingRegionCandidate;
+    private int _pendingRegionStreak;
     // Phase 21a-3 — kept past LoadPlayActors so PreloadAroundRegion can
     // call Spawn() again with new neighbor instances. The spawner's caches
     // (mesh/clip/skrit) are reused across calls; only the RegionLayout
@@ -6344,8 +6352,12 @@ void main()
             if (regionGuid != 0) _regionGraphsByGuid[regionGuid] = g;
             foreach (var n in g.Nodes)
             {
+                // Full 3D origin — Y matters. With Y zeroed, a player on the
+                // farmhouse floor was "nearest" to basement snodes directly
+                // below as often as to the surface ones, flapping the region
+                // vote on every staircase in the game.
                 if (world.Transforms.TryGetValue(n.Guid, out var xf))
-                    lookup.Add((new Vector3(xf.M41, 0f, xf.M43), rp));
+                    lookup.Add((new Vector3(xf.M41, xf.M42, xf.M43), rp));
                 _snodeFadeKeys[n.Guid] = (regionGuid, n.NodeSection, n.NodeLevel, n.NodeObject);
             }
         }
@@ -13464,9 +13476,10 @@ void main()
         for (int i = 0; i < _snodeRegionLookup.Length; i++)
         {
             var entry = _snodeRegionLookup[i];
-            float dx = entry.OriginXZ.X - worldPos.X;
-            float dz = entry.OriginXZ.Z - worldPos.Z;
-            float sq = dx * dx + dz * dz;
+            float dx = entry.Origin.X - worldPos.X;
+            float dy = entry.Origin.Y - worldPos.Y;
+            float dz = entry.Origin.Z - worldPos.Z;
+            float sq = dx * dx + dy * dy + dz * dz;
             if (sq < bestSq) { bestSq = sq; best = entry.RegionPath; }
         }
         return best;
@@ -13979,7 +13992,28 @@ void main()
                 var here = RegionAtWorldPos(_player.CurrentTransform.Translation);
                 if (here is not null && !string.Equals(here, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
                 {
-                    OnPlayerRegionChanged(here);
+                    // Hysteresis — commit only when the same candidate wins
+                    // two consecutive votes. A single borderline vote on a
+                    // staircase between stacked regions must not re-mood /
+                    // restart music (see _pendingRegionCandidate note).
+                    if (string.Equals(here, _pendingRegionCandidate, StringComparison.OrdinalIgnoreCase))
+                        _pendingRegionStreak++;
+                    else
+                    {
+                        _pendingRegionCandidate = here;
+                        _pendingRegionStreak = 1;
+                    }
+                    if (_pendingRegionStreak >= 2)
+                    {
+                        _pendingRegionCandidate = null;
+                        _pendingRegionStreak = 0;
+                        OnPlayerRegionChanged(here);
+                    }
+                }
+                else
+                {
+                    _pendingRegionCandidate = null;
+                    _pendingRegionStreak = 0;
                 }
             }
         }
