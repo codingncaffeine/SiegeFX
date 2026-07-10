@@ -119,6 +119,10 @@
                                         ToolTip="Start the region: the anchor node everything else connects to"/>
                                 <Button Content="Connect to selected node" Command="{Binding ConnectCommand}" Margin="0,3" Padding="8,5"
                                         ToolTip="Join the palette door above to the free door picked on the selected node (Inspector, right)"/>
+                                <CheckBox Content="🖌 Paint terrain (click/drag in viewport)" IsChecked="{Binding PaintMode, Mode=TwoWay}" Margin="0,5,0,2"
+                                          ToolTip="ED-5 — brush mode: each click (or every ~50px of a drag) chains this mesh onto the free door nearest the cursor. No manual door pairing; every step is one undo."/>
+                                <Button Content="Replace mesh on selected node" Command="{Binding ReplaceNodeMeshCommand}" Margin="0,3" Padding="8,5"
+                                        ToolTip="Swap the selected node's mesh for this one IN PLACE — guid, door connections, and everything anchored to the node survive. Needs matching door ids on the new mesh."/>
                             </StackPanel>
                             <ListBox DockPanel.Dock="Bottom" MaxHeight="110" Margin="0,2,0,0" ItemsSource="{Binding TargetDoors}"
                                      SelectedItem="{Binding SelectedTargetDoor, Mode=TwoWay}"

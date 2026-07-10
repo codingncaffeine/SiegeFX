@@ -1625,6 +1625,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OrthoCommand = new RelayCommand(_ => { _ortho = !_ortho; OnPropertyChanged(nameof(OrthoLabel)); Render(); });
         StoreBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) StoreBookmark(i); });
         RecallBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) RecallBookmark(i); });
+        ReplaceNodeMeshCommand = new RelayCommand(_ => ReplaceNodeMesh(),
+            _ => _selectedNode is not null && _selectedMesh is not null);
         AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
         AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
         DistributeXCommand = new RelayCommand(_ => DistributeSelected(0), _ => _multiSel.Count >= 3);
@@ -2005,6 +2007,117 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         b.Doors.Add(new BuilderDoor(bDoor, a.Guid, aDoor));
         AfterModelChanged($"Linked {_catalog?.NameOf(a.MeshGuid)} door {aDoor} ↔ {_selectedOtherDoor.Mesh} door {bDoor} (loop closed).");
         SelectNode(a.Guid);
+    }
+
+    // ═══ ED-5 — terrain painting ══════════════════════════════════════
+    // Paint mode turns terrain layout into a brush: each click (or drag
+    // step) chains the palette's selected mesh onto the free door nearest
+    // the cursor — no manual door pairing per node. The nearest-door rule
+    // means dragging along the ground naturally extends the path.
+
+    private bool _paintMode;
+    public bool PaintMode
+    {
+        get => _paintMode;
+        set
+        {
+            if (!SetProperty(ref _paintMode, value)) return;
+            Status = value
+                ? "Paint mode — pick a node mesh, then click/drag on terrain: each step chains it onto the nearest free door. Every step is one undo."
+                : "Paint mode off.";
+        }
+    }
+
+    /// <summary>One paint step. Returns true when handled (even on a miss with
+    /// a helpful status), so the caller doesn't fall through to grab/orbit.</summary>
+    public bool TryPaint(double sx, double sy)
+    {
+        if (!_paintMode) return false;
+        if (_selectedMesh is null) { Status = "Paint: pick a node mesh in the Nodes palette first."; return true; }
+        if (_catalog is null || _pickVerts.Length < 3) return true;
+
+        uint guid = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
+        if (guid == 0) return true; // clicked past the terrain — ignore quietly (drag steps do this)
+        if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, guid, _vw, _vh,
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var hit, _ortho)) return true;
+
+        // Nearest FREE door anywhere in the region — painting near a region
+        // edge grabs the edge door even when the click lands mid-floor.
+        BuilderNode? bestNode = null;
+        int bestDoor = -1, bestHot = 0;
+        float bestD = float.MaxValue;
+        foreach (var n in _region.Nodes)
+        {
+            if (!_nodeWorld.TryGetValue(n.Guid, out var nw)) continue;
+            var sno = _catalog.Resolve(n.MeshGuid);
+            if (sno is null) continue;
+            foreach (var d in sno.Doors)
+            {
+                if (n.UsesDoor((int)d.Id)) continue;
+                float dist = Vector3.DistanceSquared(Vector3.Transform(d.Transform.Translation, nw), hit);
+                if (dist < bestD) { bestD = dist; bestNode = n; bestDoor = (int)d.Id; bestHot = d.HotSpots.Length; }
+            }
+        }
+        if (bestNode is null) { Status = "Paint: no free doors left — every door in the region is already connected."; return true; }
+
+        var target = _catalog.Resolve(_selectedMesh.MeshGuid);
+        if (target is null || target.Doors.Length == 0)
+        {
+            Status = $"Paint: {_selectedMesh.Name} has no doors, so it can't chain. Pick a tile mesh.";
+            return true;
+        }
+        // Prefer a target door with the same hotspot width as the source door —
+        // same-size doors join seamlessly (how retail tile sets are authored).
+        int tgtDoor = (int)target.Doors[0].Id;
+        foreach (var d in target.Doors)
+            if (d.HotSpots.Length == bestHot) { tgtDoor = (int)d.Id; break; }
+
+        PushUndo();
+        PushRecent(RecentMeshes, _selectedMesh.Name);
+        var guidNew = NextGuid();
+        var newNode = new BuilderNode
+        {
+            Guid = guidNew, MeshGuid = _selectedMesh.MeshGuid,
+            TexsetAbbr = bestNode.TexsetAbbr, // visual continuity with the tile it grows from
+        };
+        bestNode.Doors.Add(new BuilderDoor(bestDoor, guidNew, tgtDoor));
+        newNode.Doors.Add(new BuilderDoor(tgtDoor, bestNode.Guid, bestDoor));
+        _region.Nodes.Add(newNode);
+        _usedGuids.Add(guidNew);
+        AfterModelChanged($"Painted {_selectedMesh.Name} (door {bestDoor} ↔ {tgtDoor}). {_region.Nodes.Count} node(s).");
+        return true;
+    }
+
+    /// <summary>ED-5 — swap the selected node's mesh for the palette's selected
+    /// mesh IN PLACE: guid, door edges, texset, and everything anchored to the
+    /// node (objects, emitters, lights…) survive. Requires every connected
+    /// door id to exist on the new mesh.</summary>
+    public RelayCommand ReplaceNodeMeshCommand { get; }
+
+    private void ReplaceNodeMesh()
+    {
+        if (_selectedNode is null || _selectedMesh is null || _catalog is null) return;
+        var node = _region.Find(_selectedNode.Guid);
+        if (node is null) return;
+        if (node.MeshGuid == _selectedMesh.MeshGuid) { Status = "Replace: the node already uses that mesh."; return; }
+        var sno = _catalog.Resolve(_selectedMesh.MeshGuid);
+        if (sno is null) { Status = $"Replace: {_selectedMesh.Name} doesn't resolve."; return; }
+
+        var have = new HashSet<int>();
+        foreach (var d in sno.Doors) have.Add((int)d.Id);
+        var missing = new List<int>();
+        foreach (var bd in node.Doors) if (!have.Contains(bd.LocalId)) missing.Add(bd.LocalId);
+        if (missing.Count > 0)
+        {
+            Status = $"Replace: connected door(s) {string.Join(", ", missing)} don't exist on {_selectedMesh.Name} — disconnect them first or pick a mesh with matching doors.";
+            return;
+        }
+
+        PushUndo();
+        node.MeshGuid = _selectedMesh.MeshGuid;
+        AfterModelChanged($"Replaced node mesh with {_selectedMesh.Name} — doors and anchored content kept.");
+        SelectNode(node.Guid);
     }
 
     private void DeleteSelectedNode()

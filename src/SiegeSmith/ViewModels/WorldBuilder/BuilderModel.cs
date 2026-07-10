@@ -26,7 +26,9 @@ public sealed class BuilderRegion
 public sealed class BuilderNode
 {
     public required uint Guid { get; init; }
-    public required uint MeshGuid { get; init; }
+    // set: ED-5 replace-mesh-in-place swaps the mesh while keeping the guid
+    // and door edges, so everything anchored to the node survives the swap.
+    public required uint MeshGuid { get; set; }
     public string TexsetAbbr { get; set; } = "";
     public List<BuilderDoor> Doors { get; } = new();
 

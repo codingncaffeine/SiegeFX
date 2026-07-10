@@ -15,6 +15,9 @@ public partial class WorldBuilderWindow : Window
     private bool _panning;
     private bool _spinning;
     private bool _movingObject;
+    private bool _painting;
+    private Point _lastPaint;
+    private const double PaintStepPx = 48; // cursor travel between drag-paint steps
     private Point _last;
 
     private readonly System.Windows.Threading.DispatcherTimer _flyTimer;
@@ -63,6 +66,19 @@ public partial class WorldBuilderWindow : Window
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
 
+        // ED-5 — paint mode: click lays a node; holding and dragging keeps
+        // laying them every PaintStepPx of cursor travel.
+        if (_vm.PaintMode && (Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        {
+            if (_vm.TryPaint(p.X, p.Y))
+            {
+                _painting = true;
+                _lastPaint = p;
+                Viewport.CaptureMouse();
+                return;
+            }
+        }
+
         // ED-1b — Ctrl+click toggles pieces in/out of the multi-selection. A
         // Ctrl+click that misses keeps the set and just starts an orbit.
         if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
@@ -92,6 +108,7 @@ public partial class WorldBuilderWindow : Window
     {
         _dragging = false;
         _movingObject = false;
+        _painting = false;
         if (!_panning) Viewport.ReleaseMouseCapture();
     }
 
@@ -138,6 +155,14 @@ public partial class WorldBuilderWindow : Window
             return;
         }
         if (_spinning) { _spinning = false; if (!_dragging && !_panning) Viewport.ReleaseMouseCapture(); }
+
+        // ED-5 — drag-paint: lay another node every PaintStepPx of travel.
+        if (_painting)
+        {
+            if ((p - _lastPaint).Length >= PaintStepPx && _vm.TryPaint(p.X, p.Y))
+                _lastPaint = p;
+            return;
+        }
 
         if (!_dragging && !_panning && !_movingObject) return;
         if (_movingObject)
