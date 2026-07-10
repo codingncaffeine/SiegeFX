@@ -17,16 +17,49 @@ public partial class WorldBuilderWindow : Window
     private bool _movingObject;
     private Point _last;
 
+    private readonly System.Windows.Threading.DispatcherTimer _flyTimer;
+
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
     {
         InitializeComponent();
         _vm = new WorldBuilderViewModel(tankPaths);
         DataContext = _vm;
-        Closed += (_, _) => _vm.Dispose();
+
+        // ED-2 — WASD/QE fly while the cursor is over the viewport (Shift =
+        // fast, Ctrl = slow). Polled at ~30fps; never steals keys from a
+        // focused text box.
+        _flyTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = System.TimeSpan.FromMilliseconds(33),
+        };
+        _flyTimer.Tick += (_, _) => FlyTick();
+        _flyTimer.Start();
+
+        Closed += (_, _) =>
+        {
+            _flyTimer.Stop();
+            _vm.Dispose();
+        };
+    }
+
+    private void FlyTick()
+    {
+        if (!IsActive || !Viewport.IsMouseOver) return;
+        if (Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase) return;
+        float f = (Keyboard.IsKeyDown(Key.W) ? 1 : 0) - (Keyboard.IsKeyDown(Key.S) ? 1 : 0);
+        float s = (Keyboard.IsKeyDown(Key.D) ? 1 : 0) - (Keyboard.IsKeyDown(Key.A) ? 1 : 0);
+        float v = (Keyboard.IsKeyDown(Key.E) ? 1 : 0) - (Keyboard.IsKeyDown(Key.Q) ? 1 : 0);
+        if (f == 0 && s == 0 && v == 0) return;
+        _vm.Fly(f, s, v,
+            (Keyboard.Modifiers & ModifierKeys.Shift) != 0,
+            (Keyboard.Modifiers & ModifierKeys.Control) != 0);
     }
 
     private void OnViewportMouseDown(object sender, MouseButtonEventArgs e)
     {
+        // ED-2 — clicking the viewport pulls keyboard focus out of any text
+        // box so WASD flying and single-key shortcuts (F, 1-4) work at once.
+        Viewport.Focus();
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
         if (_vm.TryGrabObject(p.X, p.Y))       // grabbed a placed object — drag moves it (Shift-drag rotates)

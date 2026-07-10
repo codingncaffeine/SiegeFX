@@ -47,7 +47,8 @@ public static class SoftwareRenderer
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
-        bool wireframe, DirLight[]? lights = null, int[]? triColor = null)
+        bool wireframe, DirLight[]? lights = null, int[]? triColor = null,
+        bool ortho = false)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -65,7 +66,12 @@ public static class SoftwareRenderer
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        // ED-2 — orthographic option: the ortho frustum height matches what
+        // the perspective view would span at the orbit distance, so toggling
+        // projections keeps roughly the same framing.
+        var proj = ortho
+            ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
+            : Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
 
         int n = verts.Length;
@@ -160,7 +166,8 @@ public static class SoftwareRenderer
         Vector3[] verts, Vector3[] normals, Vector2[] uvs, int[] triTexture, Texture[] textures,
         int width, int height,
         Vector3 center, float radius,
-        float yaw, float pitch, float dist, DirLight[]? lights = null, int[]? triColor = null)
+        float yaw, float pitch, float dist, DirLight[]? lights = null, int[]? triColor = null,
+        bool ortho = false)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -177,7 +184,9 @@ public static class SoftwareRenderer
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var proj = ortho
+            ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
+            : Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
 
         int n = verts.Length;
@@ -463,7 +472,8 @@ public static class SoftwareRenderer
     /// <paramref name="verts"/> is flattened (3 per triangle, world space); <paramref name="triId"/>
     /// is one id per triangle (e.g. a node GUID). Depth-sorted so the front-most surface wins.</summary>
     public static uint PickTriangle(Vector3[] verts, uint[] triId, int width, int height,
-        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy)
+        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy,
+        bool ortho = false)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -478,7 +488,9 @@ public static class SoftwareRenderer
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var proj = ortho
+            ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
+            : Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
 
         int triCount = verts.Length / 3;
@@ -519,7 +531,8 @@ public static class SoftwareRenderer
     /// triangle whose id equals <paramref name="wantId"/> (0 = any). Drops a placed object onto its
     /// own node's surface: pass the node guid as wantId so the object slides along that node.</summary>
     public static bool PickPoint(Vector3[] verts, uint[] triId, uint wantId, int width, int height,
-        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy, out Vector3 hit)
+        Vector3 center, float radius, float yaw, float pitch, float dist, double sx, double sy, out Vector3 hit,
+        bool ortho = false)
     {
         hit = default;
         width = Math.Max(1, width);
@@ -535,7 +548,9 @@ public static class SoftwareRenderer
         float aspect = width / (float)height;
         float near = MathF.Max(0.01f, radius * 0.05f);
         float far = dist + radius * 6f + 1f;
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
+        var proj = ortho
+            ? Matrix4x4.CreateOrthographic(dist * 0.828f * aspect, dist * 0.828f, near, far)
+            : Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, aspect, near, far);
         var vp = view * proj;
 
         int triCount = verts.Length / 3;

@@ -14,6 +14,14 @@
         <KeyBinding Key="F" Command="{Binding FocusSelectedCommand}"/>
         <KeyBinding Key="C" Modifiers="Control" Command="{Binding CopyCommand}"/>
         <KeyBinding Key="V" Modifiers="Control" Command="{Binding PasteCommand}"/>
+        <KeyBinding Key="D1" Modifiers="Control" Command="{Binding StoreBookmarkCommand}" CommandParameter="0"/>
+        <KeyBinding Key="D2" Modifiers="Control" Command="{Binding StoreBookmarkCommand}" CommandParameter="1"/>
+        <KeyBinding Key="D3" Modifiers="Control" Command="{Binding StoreBookmarkCommand}" CommandParameter="2"/>
+        <KeyBinding Key="D4" Modifiers="Control" Command="{Binding StoreBookmarkCommand}" CommandParameter="3"/>
+        <KeyBinding Key="D1" Command="{Binding RecallBookmarkCommand}" CommandParameter="0"/>
+        <KeyBinding Key="D2" Command="{Binding RecallBookmarkCommand}" CommandParameter="1"/>
+        <KeyBinding Key="D3" Command="{Binding RecallBookmarkCommand}" CommandParameter="2"/>
+        <KeyBinding Key="D4" Command="{Binding RecallBookmarkCommand}" CommandParameter="3"/>
     </Window.InputBindings>
 
     <Grid>
@@ -46,8 +54,13 @@
                             ToolTip="Toggle wireframe"/>
                     <Button Content="{Binding LiveFxLabel}" Command="{Binding LiveFxCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Animate fire/smoke emitters live in the preview (pause on very large regions if it feels heavy)"/>
-                    <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,4" Margin="0,0,12,0"
+                    <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,4" Margin="0,0,6,0"
                             ToolTip="Frame the whole region at the default angle"/>
+                    <Button Content="{Binding OrthoLabel}" Command="{Binding OrthoCommand}" Padding="10,4" Margin="0,0,6,0"
+                            ToolTip="Toggle orthographic / perspective projection (picking follows the same projection)"/>
+                    <TextBlock Text="Speed" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox Width="62" ItemsSource="{Binding CamSpeeds}" SelectedItem="{Binding CamSpeed, Mode=TwoWay}" Margin="0,0,12,0"
+                              ToolTip="WASD fly speed multiplier (hold Shift for 3×, Ctrl for slow)"/>
                     <Button Content="↶ Undo" Command="{Binding UndoCommand}" Padding="10,4" Margin="0,0,6,0" ToolTip="Undo (Ctrl+Z)"/>
                     <Button Content="↷ Redo" Command="{Binding RedoCommand}" Padding="10,4" ToolTip="Redo (Ctrl+Y)"/>
                 </StackPanel>
@@ -352,7 +365,7 @@
 
             <!-- ── Viewport ── -->
             <Grid Grid.Column="2">
-                <Border x:Name="Viewport" Background="#FF141416" ClipToBounds="True" Cursor="SizeAll"
+                <Border x:Name="Viewport" Background="#FF141416" ClipToBounds="True" Cursor="SizeAll" Focusable="True"
                         MouseLeftButtonDown="OnViewportMouseDown" MouseLeftButtonUp="OnViewportMouseUp"
                         MouseRightButtonDown="OnViewportRightDown" MouseRightButtonUp="OnViewportRightUp"
                         MouseDown="OnViewportMiddleDown" MouseUp="OnViewportMiddleUp"
@@ -361,7 +374,7 @@
                     <Image Source="{Binding Image}" Stretch="Fill"/>
                 </Border>
 
-                <TextBlock Text="Pick a node mesh in the Nodes palette, then Place as anchor to begin your world.&#x0a;&#x0a;Left-drag orbit · right-drag pan · middle-drag spin · wheel zoom&#x0a;Click a node/marker/object to select · drag to move · Shift-drag to rotate objects"
+                <TextBlock Text="Pick a node mesh in the Nodes palette, then Place as anchor to begin your world.&#x0a;&#x0a;Left-drag orbit · right-drag pan · middle-drag spin · wheel zoom · WASD/QE fly (Shift fast)&#x0a;Click to select · drag to move · Shift-drag rotates objects · F focus · Ctrl+D duplicate&#x0a;Ctrl+C/V copy/paste · Ctrl+1-4 save camera bookmark · 1-4 recall"
                            Foreground="{StaticResource Brush.Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
                            TextWrapping="Wrap" MaxWidth="420" TextAlignment="Center"
                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVis}}"/>

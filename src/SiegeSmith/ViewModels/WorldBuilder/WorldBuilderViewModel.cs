@@ -889,6 +889,53 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasRecentProps));
     }
 
+    // ═══ ED-2 — navigation ═══════════════════════════════════════════
+
+    /// <summary>Orthographic projection toggle — render AND picking share the
+    /// same projection, so clicks stay accurate in both modes.</summary>
+    private bool _ortho;
+    public string OrthoLabel => _ortho ? "Perspective" : "Orthographic";
+    public RelayCommand OrthoCommand { get; }
+
+    /// <summary>Fly-speed multiplier for WASD movement (toolbar combo).</summary>
+    public double[] CamSpeeds { get; } = { 0.25, 0.5, 1.0, 2.0, 4.0 };
+    private double _camSpeed = 1.0;
+    public double CamSpeed { get => _camSpeed; set => SetProperty(ref _camSpeed, value); }
+
+    /// <summary>WASD/QE fly: moves the orbit target along the camera basis.
+    /// Shift = 3×, Ctrl = 0.3×. Called from the view's fly timer while the
+    /// cursor is over the viewport.</summary>
+    public void Fly(float forward, float strafe, float vertical, bool fast, bool slow)
+    {
+        var toEye = new Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch));
+        var fwd = -toEye; // view direction
+        var right = Vector3.Normalize(Vector3.Cross(new Vector3(0, 0, 1), toEye));
+        float step = (float)_camSpeed * MathF.Max(_dist, _radius * 0.25f) * 0.035f
+                   * (fast ? 3f : slow ? 0.3f : 1f);
+        _pan += fwd * forward * step + right * (-strafe) * step + new Vector3(0, 0, 1) * vertical * step;
+        Render();
+    }
+
+    /// <summary>Camera bookmarks: Ctrl+1..4 stores the current view, 1..4
+    /// recalls it — pan, angles, and zoom all round-trip.</summary>
+    private readonly (Vector3 Pan, float Yaw, float Pitch, float Dist)?[] _bookmarks = new (Vector3, float, float, float)?[4];
+    public RelayCommand StoreBookmarkCommand { get; }
+    public RelayCommand RecallBookmarkCommand { get; }
+
+    private void StoreBookmark(int slot)
+    {
+        _bookmarks[slot] = (_pan, _yaw, _pitch, _dist);
+        Status = $"Camera bookmark {slot + 1} saved (press {slot + 1} to return here).";
+    }
+
+    private void RecallBookmark(int slot)
+    {
+        if (_bookmarks[slot] is not { } b) { Status = $"No bookmark {slot + 1} yet — Ctrl+{slot + 1} saves the current view."; return; }
+        (_pan, _yaw, _pitch, _dist) = (b.Pan, b.Yaw, b.Pitch, b.Dist);
+        Render();
+        Status = $"Camera bookmark {slot + 1}.";
+    }
+
     /// <summary>ED-2 — F: frame the selection. Pans the orbit target onto the
     /// selected piece and pulls the camera in, Unity/Unreal-style.</summary>
     public RelayCommand FocusSelectedCommand { get; }
@@ -1163,6 +1210,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         PasteCommand = new RelayCommand(_ => PasteClipboard(), _ => _clipboard is not null);
         ToggleFavoriteMeshCommand = new RelayCommand(_ => ToggleFavorite(FavoriteMeshes, _selectedMesh?.Name, "node mesh"));
         ToggleFavoritePropCommand = new RelayCommand(_ => ToggleFavorite(FavoriteProps, _selectedProp?.Name, "template"));
+        OrthoCommand = new RelayCommand(_ => { _ortho = !_ortho; OnPropertyChanged(nameof(OrthoLabel)); Render(); });
+        StoreBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) StoreBookmark(i); });
+        RecallBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) RecallBookmark(i); });
         LoadWorldBuilderPrefs();
         AddQuestCommand = new RelayCommand(_ =>
         {
@@ -3193,9 +3243,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var triColorArr = triColor.ToArray();
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr, _ortho)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr, _ortho);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -3452,7 +3502,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         if (_pickVerts.Length < 3) return false;
         uint guid = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
-            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy);
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
         if (guid == 0) return false;
         if (_selectedNode?.Guid != guid) SelectNode(guid);
         return true;
@@ -3465,7 +3515,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     {
         if (_pickVerts.Length < 3) return false;
         uint scid = SoftwareRenderer.PickTriangle(_pickVerts, _pickScid, _vw, _vh,
-            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy);
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
         if (scid == 0) return false;
 
         _dragEffect = null;
@@ -3526,7 +3576,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             uint node = EffectNode(_dragEffect);
             if (!_nodeWorld.TryGetValue(node, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
             if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, node, _vw, _vh,
-                    _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit)) return;
+                    _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit, _ortho)) return;
             SetEffectPos(_dragEffect, Vector3.Transform(worldHit, inv));
             Render();
             return;
@@ -3536,7 +3586,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (o is null) return;
         if (!_nodeWorld.TryGetValue(o.NodeGuid, out var nw2) || !Matrix4x4.Invert(nw2, out var inv2)) return;
         if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, o.NodeGuid, _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit2)) return;
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit2, _ortho)) return;
         o.LocalPos = Vector3.Transform(worldHit2, inv2);
         RaiseObjTransform();
         Render();
