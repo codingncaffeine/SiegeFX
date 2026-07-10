@@ -104,6 +104,19 @@ public static class SoftwareRenderer
             fn = Vector3.Normalize(fn);
 
             int ov = triColor is not null && t < triColor.Length ? triColor[t] : -1;
+            // GAME-1 — triColor's high byte is particle alpha (0 = opaque
+            // marker, back-compat; -1 = untinted). Effect particles render
+            // self-lit and alpha-blended with no z-write, so fire/smoke
+            // reads as wisps. High-alpha values make the int negative, so
+            // the sentinel test is explicitly against -1.
+            int pa = ov != -1 ? (int)((uint)ov >> 24) : 0;
+            if (pa > 0)
+            {
+                RasterTriangleBlend(px, zbuf, width, height,
+                    sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
+                    (byte)((ov >> 16) & 0xFF), (byte)((ov >> 8) & 0xFF), (byte)(ov & 0xFF), pa / 255f);
+                continue;
+            }
             byte cr, cg, cb;
             if (ov >= 0)
             {
@@ -211,6 +224,15 @@ public static class SoftwareRenderer
             else
             {
                 int ov = triColor is not null && t < triColor.Length ? triColor[t] : -1;
+                int pa = ov != -1 ? (int)((uint)ov >> 24) : 0;
+                if (pa > 0)
+                {
+                    // GAME-1 — self-lit alpha-blended effect particle.
+                    RasterTriangleBlend(px, zbuf, width, height,
+                        sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
+                        (byte)((ov >> 16) & 0xFF), (byte)((ov >> 8) & 0xFF), (byte)(ov & 0xFF), pa / 255f);
+                    continue;
+                }
                 if (ov >= 0)
                     RasterTriangle(px, zbuf, width, height,
                         sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
@@ -283,6 +305,46 @@ public static class SoftwareRenderer
 
     private static float Edge(float ax, float ay, float bx, float by, float px, float py) =>
         (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+
+    /// <summary>GAME-1 — alpha-blended triangle for effect particles: z-TESTED
+    /// against the scene but never z-written, so wisps overlap each other and
+    /// still hide behind terrain. dst = src·a + dst·(1−a).</summary>
+    private static void RasterTriangleBlend(byte[] px, float[] z, int w, int h,
+        float x0, float y0, float d0, float x1, float y1, float d1, float x2, float y2, float d2,
+        byte r, byte g, byte b, float alpha)
+    {
+        float area = Edge(x0, y0, x1, y1, x2, y2);
+        if (MathF.Abs(area) < 1e-6f) return;
+        float inv = 1f / area;
+
+        int minX = Math.Max(0, (int)MathF.Floor(Math.Min(x0, Math.Min(x1, x2))));
+        int maxX = Math.Min(w - 1, (int)MathF.Ceiling(Math.Max(x0, Math.Max(x1, x2))));
+        int minY = Math.Max(0, (int)MathF.Floor(Math.Min(y0, Math.Min(y1, y2))));
+        int maxY = Math.Min(h - 1, (int)MathF.Ceiling(Math.Max(y0, Math.Max(y1, y2))));
+
+        float a = Math.Clamp(alpha, 0f, 1f);
+        float ia = 1f - a;
+        for (int py = minY; py <= maxY; py++)
+        {
+            for (int pxi = minX; pxi <= maxX; pxi++)
+            {
+                float fx = pxi + 0.5f, fy = py + 0.5f;
+                float w0 = Edge(x1, y1, x2, y2, fx, fy) * inv;
+                float w1 = Edge(x2, y2, x0, y0, fx, fy) * inv;
+                float w2 = Edge(x0, y0, x1, y1, fx, fy) * inv;
+                if (w0 < 0f || w1 < 0f || w2 < 0f) continue;
+
+                float depth = w0 * d0 + w1 * d1 + w2 * d2;
+                int zi = py * w + pxi;
+                if (depth >= z[zi]) continue; // test only — no write
+                int pi = zi * 4;
+                px[pi]     = (byte)(b * a + px[pi] * ia);
+                px[pi + 1] = (byte)(g * a + px[pi + 1] * ia);
+                px[pi + 2] = (byte)(r * a + px[pi + 2] * ia);
+                px[pi + 3] = 0xFF;
+            }
+        }
+    }
 
     private static void RasterTriangle(byte[] px, float[] z, int w, int h,
         float x0, float y0, float d0, float x1, float y1, float d1, float x2, float y2, float d2,

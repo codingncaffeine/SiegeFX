@@ -2527,7 +2527,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         // Every node-anchored placeable that has no mesh of its own previews as a colour-coded, grabbable
         // marker cube — particles/logic/decals don't render in the software renderer, but you can still see,
         // select, and drag each one. Selected marker uses the accent colour so you can tell what you're editing.
-        void Marker(uint nodeGuid, Vector3 localPos, uint scid, int color, object item)
+        void Marker(uint nodeGuid, Vector3 localPos, uint scid, int color, object item, float sizeScale = 1f)
         {
             if (!layout.TryGetTransform(nodeGuid, out var nw)) return;
             var w = Matrix4x4.CreateTranslation(localPos) * nw;
@@ -2536,13 +2536,16 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     || ReferenceEquals(item, _selectedLight);
             // Selection brightens the TYPE colour instead of replacing it —
             // a selected fire emitter still reads as fire, just lit up.
-            AppendMarkerCube(w, MarkerSize(_radius), verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
+            AppendMarkerCube(w, MarkerSize(_radius) * sizeScale, verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
                 scid, sel ? Brighten(color) : color, ref min, ref max);
             if (scid != 0) _markers[scid] = item;
         }
 
+        // With live FX the flames ARE the preview — the emitter's cube
+        // shrinks to a small base handle for grabbing.
         foreach (var em in Emitters)
-            Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em);
+            Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em,
+                sizeScale: _liveFx ? 0.45f : 1f);
         foreach (var tg in Triggers)
             Marker(tg.NodeGuid, tg.LocalPos, tg.Scid, MarkerTrigger, tg);
         foreach (var pl in Lights)
@@ -2686,7 +2689,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
         List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
     {
-        int count = Math.Clamp(em.Count / 2, 6, 36); // preview budget — the engine shows the full count
+        int count = Math.Clamp(em.Count, 10, 48); // preview budget — the engine shows the full count
         float life = MathF.Max(0.4f, em.Fade);
         float size0 = MathF.Max(0.06f, em.ParticleSize * 0.5f);
         float grow = MathF.Max(0f, em.Growth);
@@ -2703,14 +2706,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var p = basePos + new Vector3(MathF.Cos(ang) * rad, MathF.Sin(ang) * rad, 0.05f + rise);
             float flick = em.Smoke ? 1f : 0.8f + 0.4f * Hash01(seed ^ (uint)(t * 24f));
             float s = size0 * (0.45f + phase * (0.8f + grow * 0.35f)) * flick;
-            int color = em.Smoke
+            int rgb = em.Smoke
                 ? LerpRgb(0x9A9AA2, 0x3A3A40, phase)
                 : phase < 0.35f
                     ? LerpRgb(0xFFE08A, 0xF07A28, phase / 0.35f)
                     : LerpRgb(0xF07A28, 0x6E1F0A, (phase - 0.35f) / 0.65f);
-            var r = right * s;
-            var u = up * s;
-            AppendQuad(p - r - u, p + r - u, p + r + u, p - r + u, -1, color, 0u,
+            // Soft wisps: alpha rides the phase (dense young, fading out),
+            // packed in triColor's high byte for the blend raster path.
+            float alpha = em.Smoke ? 0.50f - 0.30f * phase : 0.75f - 0.55f * phase;
+            int color = (Math.Clamp((int)(alpha * 255f), 0x18, 0xF0) << 24) | rgb;
+            // Diamond billboard on per-particle rotated axes — never reads
+            // as a box, and the slow spin sells the churn.
+            float rot = h1 * (MathF.PI * 2f) + t * (em.Smoke ? 0.6f : 1.7f) * (h2 > 0.5f ? 1f : -1f);
+            float cs = MathF.Cos(rot), sn = MathF.Sin(rot);
+            var rr = (right * cs + up * sn) * s;
+            var uu = (up * cs - right * sn) * s;
+            AppendQuad(p - rr, p - uu, p + rr, p + uu, -1, color, 0u,
                 verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
         }
     }
