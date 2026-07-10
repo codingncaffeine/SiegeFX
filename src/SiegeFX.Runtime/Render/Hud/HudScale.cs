@@ -35,12 +35,12 @@ public static class HudScale
         return (raw < BaseMax ? raw : BaseMax) * User;
     }
 
-    /// <summary>Modal-dialog scale: shrinks with the user knob but never
-    /// grows past the fit bound (a modal scaled above min(vh/480, vw/640)
-    /// would overflow the window).</summary>
+    /// <summary>Modal-dialog scale (Options menu, Quest Log): the SAME
+    /// shared baseline × knob as every HUD panel — "everything matches" —
+    /// with a width-fit cap purely as an overflow guard so a narrow or
+    /// portrait window can't crop the 640-wide authored dialog. (The
+    /// original form built on raw vh/480, which left dialogs rendering
+    /// nearly double the rest of the interface at 1440p/4K.)</summary>
     public static float Modal(int viewportW, int viewportH)
-    {
-        float fit = MathF.Min(viewportH / 480f, viewportW / 640f);
-        return MathF.Min(viewportH / 480f * User, fit);
-    }
+        => MathF.Min(Hud(viewportH), viewportW / 640f);
 }
