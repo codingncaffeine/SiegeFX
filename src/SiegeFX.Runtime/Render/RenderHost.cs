@@ -3465,11 +3465,16 @@ void main() { FragColor = vec4(vColor, 1.0); }";
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aUv;
+// ALPHA-2 RADIOSITY — SNO meshes bind DS1's baked per-vertex lighting at
+// location 3 (SnoMesh has always uploaded it). Meshes without the attribute
+// (ASP props) read the GL default constant; they never take the baked path.
+layout (location = 3) in vec4 aColor;
 uniform mat4 uViewProj;
 uniform mat4 uModel;
 out vec3 vNormal;
 out vec2 vUv;
 out vec3 vWorldPos;
+out vec4 vColor;
 void main()
 {
     vec4 wp = uModel * vec4(aPos, 1.0);
@@ -3477,6 +3482,7 @@ void main()
     vNormal = mat3(uModel) * aNormal;
     vUv = aUv;
     vWorldPos = wp.xyz;
+    vColor = aColor;
 }";
 
     // Skinning vertex shader. Same per-vertex output contract as MeshVertexSource (vNormal,
@@ -3499,8 +3505,13 @@ uniform mat4 uBones[64];
 out vec3 vNormal;
 out vec2 vUv;
 out vec3 vWorldPos;
+out vec4 vColor;
 void main()
 {
+    // ALPHA-2 RADIOSITY — skinned meshes carry no baked lighting; emit a
+    // neutral constant so the shared fragment's interface stays satisfied
+    // (location 3 is bone weights here).
+    vColor = vec4(1.0);
     mat4 skin = aWeights.x * uBones[aBones.x]
               + aWeights.y * uBones[aBones.y]
               + aWeights.z * uBones[aBones.z]
@@ -3539,6 +3550,7 @@ void main()
 in  vec3 vNormal;
 in  vec2 vUv;
 in  vec3 vWorldPos;
+in  vec4 vColor;
 out vec4 FragColor;
 // SC-WEATHER-D — DS1 mood fog. Linear camera-distance fog (D3DFOG_LINEAR
 // equivalence: every shipped mood authors fog_near_dist/fog_far_dist; the
@@ -3613,6 +3625,12 @@ uniform int       uPointCount;
 uniform vec3      uPointPos[16];
 uniform vec3      uPointColor[16];
 uniform vec3      uPointRange[16];
+// ALPHA-2 RADIOSITY — 1 for SNO terrain draws: lighting comes from DS1's
+// baked per-vertex radiosity (sun, shade AND interior torch pools are all
+// baked in — this is how retail lights every dungeon). D3DCOLOR byte order
+// (vColor.bgr) with the fixed-function MODULATE2X convention: 128 = neutral,
+// which is why a plain multiply once read 'uniformly darker'.
+uniform int       uUseBakedLight;
 // SC-TERRAIN-UV — the 8 dihedral symmetries of a square tile.
 vec2 orientUv(vec2 uv, int o)
 {
@@ -3678,19 +3696,27 @@ void main()
     }
 
     vec3 N = normalize(vNormal);
-    vec3 lighting = vec3(uAmbient);
-    for (int i = 0; i < uDirCount; ++i) {
-        float ndl = max(dot(N, uDirDir[i]), 0.0);
-        lighting += uDirColor[i] * ndl;
-    }
-    // ALPHA-2 POINT LIGHTS — smooth inner→outer falloff, soft wrap shading.
-    for (int i = 0; i < uPointCount; ++i) {
-        vec3 toL = uPointPos[i] - vWorldPos;
-        float dist = length(toL);
-        float att = 1.0 - smoothstep(uPointRange[i].x, max(uPointRange[i].y, uPointRange[i].x + 0.01), dist);
-        if (att <= 0.001) continue;
-        float ndl = max(dot(N, toL / max(dist, 0.001)), 0.0);
-        lighting += uPointColor[i] * att * (0.35 + 0.65 * ndl);
+    vec3 lighting;
+    if (uUseBakedLight != 0) {
+        // Terrain: authored radiosity is the whole story (double-lighting it
+        // with our dynamic sources would wash outdoor sun and re-add torch
+        // pools the bake already contains).
+        lighting = clamp(vColor.bgr * 2.0, 0.0, 1.0);
+    } else {
+        lighting = vec3(uAmbient);
+        for (int i = 0; i < uDirCount; ++i) {
+            float ndl = max(dot(N, uDirDir[i]), 0.0);
+            lighting += uDirColor[i] * ndl;
+        }
+        // ALPHA-2 POINT LIGHTS — actors/props near torches pick up the pools.
+        for (int i = 0; i < uPointCount; ++i) {
+            vec3 toL = uPointPos[i] - vWorldPos;
+            float dist = length(toL);
+            float att = 1.0 - smoothstep(uPointRange[i].x, max(uPointRange[i].y, uPointRange[i].x + 0.01), dist);
+            if (att <= 0.001) continue;
+            float ndl = max(dot(N, toL / max(dist, 0.001)), 0.0);
+            lighting += uPointColor[i] * att * (0.35 + 0.65 * ndl);
+        }
     }
     // Phase 21c-4 — clamp combined irradiance to 1.0. fh_r1 ships two
     // directionals (warm-white key + cool-blue fill) plus 0.20 ambient;
@@ -10468,6 +10494,9 @@ void main()
             shader.SetVec3Array("uPointColor", _framePointColor.AsSpan(0, _framePointCount));
             shader.SetVec3Array("uPointRange", _framePointRange.AsSpan(0, _framePointCount));
         }
+        // ALPHA-2 RADIOSITY — dynamic path by default; the terrain draw
+        // sites flip this to 1 right after calling us.
+        shader.SetInt("uUseBakedLight", 0);
         // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
         // so both world shaders (static + skinned) stay in sync with the
         // weather state without a separate dirty-tracking pass. Lightning
@@ -19987,6 +20016,7 @@ void main()
             _meshShader.SetInt("uFlipV", 1);
             _meshShader.SetInt("uUvOrient", _terrainUvOrient);
             ApplyLightingUniforms(_meshShader);
+            _meshShader.SetInt("uUseBakedLight", 1); // ALPHA-2 RADIOSITY
             _meshShader.SetInt("uAlbedo2", 1);
             for (var i = 0; i < _sno.Subsets.Count; i++)
             {
@@ -20697,6 +20727,7 @@ void main()
             _meshShader.SetInt("uFlipV", 1);
             _meshShader.SetInt("uUvOrient", _terrainUvOrient);
             ApplyLightingUniforms(_meshShader);
+            _meshShader.SetInt("uUseBakedLight", 1); // ALPHA-2 RADIOSITY — terrain = authored bake
             _meshShader.SetInt("uAlbedo2", 1);
             // SC-TSD-ANIM draw-order — split the region pass in two: pass 1
             // draws every subset that resolves to a single-layer TSD (or has
