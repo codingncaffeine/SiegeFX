@@ -2974,6 +2974,30 @@ public sealed class RenderHost : IDisposable
     // down in DrawDataBar; nonzero = render the red book overlay.
     private float _questIndicatorFlashRemaining;
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles DS1's in_game_menu
+    private readonly SaveGameDialog _saveDialog = new(); // DS1 Save Game window
+
+    // Top-of-screen save-confirmation banner ("Game 'X' saved successfully") —
+    // DS1's post-save feedback. Ticks down like the level-up toast.
+    private float _saveToastRemaining;
+    private string _saveToastText = "";
+    private const float SaveToastDuration = 3.5f;
+
+    /// <summary>Gameplay freezes while a pausing modal is up. DS1 explicitly
+    /// pauses for the Adventurer's Handbook; the Save window also holds the
+    /// world still while the player types a name. ORs with the manual
+    /// pause-button toggle (<see cref="_isPaused"/>).</summary>
+    private bool SimFrozen => _isPaused || _saveDialog.IsOpen || _handbook.IsOpen;
+
+    // Adventurer's Handbook (world tips). Tips load lazily off the play map
+    // tank; the cadence auto-pops the next ordered tip as the player advances
+    // through the early game until all are seen or the player disables them.
+    private readonly HandbookPanel _handbook = new();
+    private bool _handbookTipsLoaded;
+    private int _nextTipIndex;      // 0-based index of the next tip to auto-pop
+    private bool _tipsDisabled;     // "Disable tips" — persisted in the save
+    private Vector3 _tipLastPos;
+    private bool _tipTracking;
+    private float _tipTravel, _tipTimer;
 
     /// <summary>Phase 27 — route a click on the DS1 in-game (Escape) menu.
     /// RESUME closes it; OPTIONS opens the Options dialog; SAVE/LOAD reuse the
@@ -2986,7 +3010,7 @@ public sealed class RenderHost : IDisposable
         {
             case PauseMenu.Action.Resume:   _pauseMenu.Close(); break;
             case PauseMenu.Action.Options:  _pauseMenu.Close(); OpenOptionsMenu(); break;
-            case PauseMenu.Action.SaveGame: _pauseMenu.Close(); DoQuickSave(); break;
+            case PauseMenu.Action.SaveGame: _pauseMenu.Close(); OpenSaveDialog(); break;
             case PauseMenu.Action.LoadGame: _pauseMenu.Close(); DoQuickLoad(); break;
             case PauseMenu.Action.ExitGame: _window.Close(); break;
         }
@@ -3008,6 +3032,171 @@ public sealed class RenderHost : IDisposable
         catch (Exception ex)
         {
             Console.Error.WriteLine($"  save: failed -- {ex.Message}");
+        }
+    }
+
+    /// <summary>Open DS1's Save Game window. Enumerates existing saves for the
+    /// list and pre-fills the name box with the day's date (DS1's default),
+    /// prefixed with the hero name when one is known.</summary>
+    private void OpenSaveDialog()
+    {
+        var saves = SiegeFX.Core.Save.SaveStore.ListSaves();
+        // DS1 pre-fills the name box with the day's date; the player types over
+        // it if they want a custom label.
+        string def = DateTime.Now.ToString("MMM d, yyyy");
+        _saveDialog.Open(saves, def);
+    }
+
+    /// <summary>Write a named save from the Save Game window and raise the
+    /// "Game 'X' saved successfully" banner. Unlike <see cref="DoQuickSave"/>
+    /// (one fixed slot) this mints a timestamped file so many named saves
+    /// coexist in the list.</summary>
+    private void PerformNamedSave(string name)
+    {
+        var label = string.IsNullOrWhiteSpace(name)
+            ? DateTime.Now.ToString("MMM d, yyyy") : name.Trim();
+        var path = SiegeFX.Core.Save.SaveStore.NamedSavePath(label, DateTime.Now);
+        try
+        {
+            var save = CaptureSave();
+            save.DisplayName = label;
+            SiegeFX.Core.Save.SaveStore.Save(path, save);
+            Console.WriteLine($"  save: wrote '{label}' ({save.Actors.Count} actors) -> {path}");
+            _saveToastText = $"Game '{label}' saved successfully.";
+            _saveToastRemaining = SaveToastDuration;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  save: failed -- {ex.Message}");
+            _saveToastText = "Save failed.";
+            _saveToastRemaining = SaveToastDuration;
+        }
+    }
+
+    /// <summary>Act on the Save Game window's button result. Save writes +
+    /// closes + banners; Delete removes the highlighted file and refreshes the
+    /// list in place; Cancel just closes.</summary>
+    private void HandleSaveDialogResult(SaveGameDialog.Result r)
+    {
+        switch (r)
+        {
+            case SaveGameDialog.Result.Save:
+                PerformNamedSave(_saveDialog.NameText);
+                _saveDialog.Close();
+                break;
+            case SaveGameDialog.Result.Delete:
+                if (_saveDialog.Selected is { } slot)
+                {
+                    SiegeFX.Core.Save.SaveStore.Delete(slot.Path);
+                    // Re-open against the fresh list so the deleted row vanishes;
+                    // keep whatever the player had typed in the name box.
+                    _saveDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), _saveDialog.NameText);
+                }
+                break;
+            case SaveGameDialog.Result.Cancel:
+                _saveDialog.Close();
+                break;
+        }
+    }
+
+    // --- Adventurer's Handbook -------------------------------------------------
+
+    /// <summary>Lazily load the ordered world tips off the play map tank the
+    /// first time gameplay ticks in a region. One-shot even on failure (a map
+    /// with no info/tips.gas simply never pops the handbook).</summary>
+    private void LoadWorldTips()
+    {
+        _handbookTipsLoaded = true;
+        if (_playMapTank is null || string.IsNullOrEmpty(_regionPath)) return;
+        var tipsPath = SiegeFX.Core.Assets.WorldTips.TipsPathForRegion(_regionPath);
+        if (tipsPath is null) return;
+        try
+        {
+            var reader = new SiegeFX.Core.Tank.TankReader(_playMapTank);
+            var tips = SiegeFX.Core.Assets.WorldTips.Load(reader, tipsPath);
+            _handbook.SetTips(tips);
+            _handbook.Disabled = _tipsDisabled;
+            Console.WriteLine($"[handbook] loaded {tips.Count} tips from {tipsPath}");
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[handbook] load failed: {ex.Message}"); }
+    }
+
+    /// <summary>Auto-pop the next ordered tip as the player advances. The first
+    /// tip greets the player a few seconds after they gain control; later tips
+    /// pop after some travel or time, so they "come up as you play through the
+    /// beginning" (DS1's own trigger cadence is engine-internal — this is the
+    /// faithful clean-room stand-in). Stops once every tip has been seen or the
+    /// player ticks "Disable tips".</summary>
+    private void TickHandbookCadence(float dt)
+    {
+        if (!_handbookTipsLoaded) LoadWorldTips();
+        if (_handbook.Count == 0 || _tipsDisabled) return;
+        if (_nextTipIndex >= _handbook.Count) return;
+        if (_player is null || _bootMode) return;
+        // Only while the player actually has control of the world.
+        if (_handbook.IsOpen || _saveDialog.IsOpen || _pauseMenu.IsOpen || _optionsMenu.IsOpen
+            || _creator.IsOpen || _dialogue.IsOpen || _vendor.IsOpen || _inventoryOpen
+            || _questLogOpen) return;
+        if (_nisPhase != NisPhase.Off) return;
+
+        var pos = _player.CurrentTransform.Translation;
+        if (!_tipTracking) { _tipLastPos = pos; _tipTracking = true; _tipTravel = 0f; _tipTimer = 0f; }
+        var d = pos - _tipLastPos; d.Y = 0f;
+        float step = d.Length();
+        // Ignore teleport-scale jumps (zone transitions) so a warp doesn't
+        // instant-fire the next tip.
+        if (step < 15f) _tipTravel += step;
+        _tipLastPos = pos;
+        _tipTimer += dt;
+
+        bool fire = _nextTipIndex == 0
+            ? _tipTimer > 3f
+            : (_tipTravel > 40f || _tipTimer > 60f);
+        if (fire)
+        {
+            _handbook.OpenAuto(_nextTipIndex);
+            Console.WriteLine($"[handbook] auto-pop tip {_nextTipIndex + 1}/{_handbook.Count}");
+        }
+    }
+
+    /// <summary>F12 recall: open the handbook in browse mode (Prev/Next through
+    /// the whole set) at the last-shown tip, or close it if already open.</summary>
+    private void ToggleHandbook()
+    {
+        if (!_handbookTipsLoaded) LoadWorldTips();
+        if (_handbook.Count == 0) return;
+        if (_handbook.IsOpen) { OnHandbookClosed(); return; }
+        int start = Math.Clamp((_nextTipIndex > 0 ? _nextTipIndex : 1) - 1, 0, _handbook.Count - 1);
+        _handbook.OpenBrowse(start);
+    }
+
+    /// <summary>Escape / Resume path. Auto-pops advance the cadence to the next
+    /// tip on dismissal; browse (F12) recalls don't.</summary>
+    private void CloseHandbook() => OnHandbookClosed();
+
+    private void OnHandbookClosed()
+    {
+        if (!_handbook.BrowseMode)
+        {
+            _nextTipIndex = Math.Min(_handbook.Count, _nextTipIndex + 1);
+            _tipTravel = 0f; _tipTimer = 0f; _tipTracking = false;
+        }
+        _handbook.Close();
+    }
+
+    private void HandleHandbookResult(HandbookPanel.Result r)
+    {
+        switch (r)
+        {
+            case HandbookPanel.Result.Close:
+                OnHandbookClosed();
+                break;
+            case HandbookPanel.Result.ToggledDisable:
+                // The checkbox toggled; keep the panel open. Persist the flag
+                // via the next CaptureSave (mirrored on the panel).
+                _tipsDisabled = _handbook.Disabled;
+                Console.WriteLine($"[handbook] tips {(_tipsDisabled ? "disabled" : "enabled")}");
+                break;
         }
     }
 
@@ -3898,6 +4087,7 @@ void main()
             kb.KeyChar += (_, c) =>
             {
                 if (_creator.IsOpen) _creator.OnChar(c);
+                else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
             };
             kb.KeyDown += (_, key, _) =>
             {
@@ -3916,6 +4106,32 @@ void main()
                 // Esc isn't trapped — gives the user a back-out path even
                 // though there's no formal "creator pause" state.
                 if (_creator.IsOpen) return;
+                // Save Game window owns the keyboard while open: Backspace edits
+                // the name box, Enter confirms the save (== clicking Save),
+                // Escape backs out. Every other world hotkey is suppressed so
+                // typing a save name can't fire one.
+                if (_saveDialog.IsOpen)
+                {
+                    if (key == Key.Backspace) { _saveDialog.OnChar('\b'); return; }
+                    if (key == Key.Enter || key == Key.KeypadEnter)
+                    {
+                        PerformNamedSave(_saveDialog.NameText);
+                        _saveDialog.Close();
+                        return;
+                    }
+                    if (key == Key.Escape) { _saveDialog.Close(); return; }
+                    return;
+                }
+                // Adventurer's Handbook owns the keyboard while open: Escape /
+                // Resume close it; navigation keys page through tips. F12 is
+                // handled below (it both opens and, if already open, is a no-op).
+                if (_handbook.IsOpen)
+                {
+                    if (key == Key.Escape) { CloseHandbook(); return; }
+                    if (key == Key.Left)  { _handbook.Prev(); return; }
+                    if (key == Key.Right) { _handbook.Next(); return; }
+                    if (key != Key.F12) return;
+                }
                 // Phase 23-SC-OPTIONS-FOLD — same suppression while
                 // the Options dialog is up: F5 quicksave / F9 quickload
                 // / F11 / B / I / L / H / Q / W / [ / ] / \ all fire
@@ -4237,6 +4453,10 @@ void main()
                 // CaptureSave still produces a file but ApplySave's region
                 // check would refuse it on the next F9 anyway.
                 else if (key == Key.F5) DoQuickSave();
+                // Adventurer's Handbook — F12 recalls it any time (DS1's
+                // "press F12" binding). Opens in browse mode (Next/Prev page
+                // through all tips); a second F12 closes it.
+                else if (key == Key.F12) ToggleHandbook();
                 // SC-DECAL-DIAG — live decal-layer toggle (dev knob; strip
                 // before v1.0). Confirms/clears decals for any "floating
                 // flat image" report in one keypress, no rebuild.
@@ -4380,6 +4600,21 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _optionsMenu.OnRightClickWidget((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
+                // Save Game window / Adventurer's Handbook eat LMB while open
+                // (topmost modals; the pause menu is already closed when either
+                // opens). Framebuffer coords match their Draw viewport.
+                if (_saveDialog.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    _saveDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    return;
+                }
+                if (_handbook.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    _handbook.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
                     return;
                 }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
@@ -5085,6 +5320,20 @@ void main()
                     _diffMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_saveDialog.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    HandleSaveDialogResult(
+                        _saveDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                    return;
+                }
+                if (_handbook.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    HandleHandbookResult(
+                        _handbook.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                    return;
+                }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
                     HandleInGameMenuAction(_pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y));
@@ -5275,6 +5524,16 @@ void main()
                 // hover. Cheap rect tests; no-op when the menu is closed.
                 if (_pauseMenu.IsOpen)
                     _pauseMenu.OnMouseMove((int)pos.X, (int)pos.Y);
+                if (_saveDialog.IsOpen)
+                {
+                    var fb = _window.FramebufferSize;
+                    _saveDialog.OnMouseMove((int)pos.X, (int)pos.Y, fb.X, fb.Y);
+                }
+                if (_handbook.IsOpen)
+                {
+                    var fb = _window.FramebufferSize;
+                    _handbook.OnMouseMove((int)pos.X, (int)pos.Y, fb.X, fb.Y);
+                }
                 if (_dialogue.IsOpen)
                     _dialogue.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (_vendor.IsOpen)
@@ -5366,6 +5625,10 @@ void main()
             // so wheel events feel right inside the inventory/spellbook/vendor.
             mouse.Scroll += (_, wheel) =>
             {
+                // Save Game list scrolls with the wheel; consume it so the
+                // camera doesn't also zoom behind the modal.
+                if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
+                if (_handbook.IsOpen) return;
                 if (_cameraMode != CameraMode.Chase) return;
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
                     _pauseMenu.IsOpen || _creator.IsOpen || _optionsMenu.IsOpen) return;
@@ -13586,8 +13849,13 @@ void main()
         // tick sees so brain / particle / sfx / audio-glitter all halt. Menu
         // drain still fires above this point so resume / unpause still
         // dispatch correctly. Camera + input still tick (rendering continues
-        // and the player can interact with HUD buttons).
-        if (_isPaused) dt = 0.0;
+        // and the player can interact with HUD buttons). SimFrozen also folds
+        // in the Save window + Adventurer's Handbook (both pause the world).
+        if (SimFrozen) dt = 0.0;
+        // Adventurer's Handbook auto-popup cadence. Runs on the gated dt so it
+        // freezes with the world (no tip fires mid-pause); the early-outs inside
+        // also skip while any menu owns the screen.
+        TickHandbookCadence((float)dt);
         // Phase 21d-2a-viii-b — drain the creator's confirm/cancel edge here
         // so the spawn happens on the main thread (input callbacks fire from
         // the Silk dispatcher; ActorSpawner + GL resource creation expect the
@@ -20673,6 +20941,7 @@ void main()
         if (_diagMode) DiagRecordFrame(dt);
         ReconcileTradeInventory();
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
+        if (_saveToastRemaining > 0f) _saveToastRemaining -= (float)dt;
         // Phase 18c — listener follows the PC every frame. We use camera
         // forward (not _playerFacing) so the audio image rotates with
         // the camera instead of the body — matches what the user is
@@ -20744,7 +21013,7 @@ void main()
         // integration etc.) use `simDt` which is zero when paused. Audio
         // and UI tweens fall on the music side; anything that mutates
         // world state falls on the sim side.
-        float simDt = _isPaused ? 0f : (float)dt;
+        float simDt = SimFrozen ? 0f : (float)dt;
         // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
         // hostile NPC is engaging the player; revert to standard_track
         // after CombatExitDelay seconds without aggro. Cheap loop over
@@ -22126,6 +22395,27 @@ void main()
                 }
             }
 
+            // DS1 save-confirmation banner — a dark status bar near the top
+            // ("Game 'X' saved successfully."), the same slot DS1 uses for
+            // journal notices. Times out with a short fade; independent of
+            // _player so it also shows on a viewer-mode save.
+            if (_saveToastRemaining > 0f && _barRenderer is not null && _saveToastText.Length > 0)
+            {
+                float hs = Hud.HudScale.Hud(size.Y);
+                int fscale = Math.Max(1, (int)MathF.Round(hs));
+                int tw = _textRenderer.MeasureWidth(_saveToastText, fscale);
+                int th = _textRenderer.LineHeight * fscale;
+                int padX = 18 * fscale, padY = 5 * fscale;
+                int boxW = tw + padX * 2, boxH = th + padY * 2;
+                int boxX = (size.X - boxW) / 2;
+                int boxY = (int)MathF.Round(12 * hs);
+                float a = MathF.Min(1f, _saveToastRemaining / 0.8f); // fade last 0.8s
+                _barRenderer.DrawRect (size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(0.03f, 0.03f, 0.04f, 0.82f * a));
+                _barRenderer.DrawBorder(size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(0.45f, 0.40f, 0.28f, a));
+                _textRenderer.DrawString(size.X, size.Y, _saveToastText, boxX + padX, boxY + padY,
+                                         new Vector4(0.95f, 0.90f, 0.72f, a), fscale);
+            }
+
             // Phase 22-A SC-HUD-DATABAR — DS1's always-on bottom-row HUD
             // button strip. Drawn at the same z-tier as the mini-HUD vials
             // so both share the always-on layer; modal panels below this
@@ -22183,6 +22473,19 @@ void main()
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
                 _pauseMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
+            }
+            // DS1 Save Game window + Adventurer's Handbook — self-contained
+            // modals opened from the pause menu / F12. Drawn above pause so
+            // either owns the screen; both tick their own blink/animation off
+            // render dt (gameplay dt is frozen while they're up).
+            if (_saveDialog.IsOpen && _barRenderer is not null)
+            {
+                _saveDialog.Tick((float)dt);
+                _saveDialog.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
+            }
+            if (_handbook.IsOpen && _barRenderer is not null)
+            {
+                _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
             }
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
             // menu so a future "open Options from pause" hookup stacks
@@ -22972,6 +23275,8 @@ void main()
             SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
             SavedAt       = DateTime.UtcNow,
             RegionPath    = _regionPath ?? "",
+            NextTipIndex  = _nextTipIndex,
+            TipsDisabled  = _tipsDisabled,
         };
 
         // ALPHA-2G — cross-region world state a long run accumulates.
@@ -23148,6 +23453,15 @@ void main()
                 $"  load: region mismatch — save was '{save.RegionPath}', live region is '{_regionPath}'");
             return;
         }
+
+        // Adventurer's Handbook progress rides the save: resume the auto-popup
+        // sequence where the player left off, and restore the "Disable tips"
+        // choice (mirrored onto the panel's checkbox). Reset the travel/time
+        // accumulator so the next tip doesn't fire the instant a load lands.
+        _nextTipIndex = save.NextTipIndex;
+        _tipsDisabled = save.TipsDisabled;
+        _handbook.Disabled = _tipsDisabled;
+        _tipTracking = false;
 
         // Phase 22-SC-MUSIC-FOLD — clear runtime music state so the
         // post-load region apply re-fires the mood + standard track.

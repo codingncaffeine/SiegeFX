@@ -36,12 +36,16 @@ public sealed class SaveFile
     ///              usables, lever states, message-broken props, cleared
     ///              path blockers, elevator stops) and
     ///              <see cref="QuestSnapshot.DialogueLog"/>.
+    ///   v10 -> v11: added <see cref="DisplayName"/> (the player-typed save
+    ///              label shown in the Save Game window's list) and
+    ///              <see cref="NextTipIndex"/>/<see cref="TipsDisabled"/>
+    ///              (Adventurer's Handbook auto-popup progress).
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v9 file loads as a v10 with the new fields zero-initialized.
+    /// so any v1..v10 file loads as a v11 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 10;
+    public const int CurrentSchemaVersion = 11;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -50,6 +54,24 @@ public sealed class SaveFile
     /// <summary>Wall-clock time the save was written. Surfaced in save-pick
     /// UI later; today it just helps debug "which save am I looking at".</summary>
     public DateTime SavedAt { get; set; }
+
+    /// <summary>v11 — the player-typed label shown in the Save Game window's
+    /// list (e.g. "My hero"). Empty on pre-v11 saves and on quicksaves, in
+    /// which case the UI falls back to the file stem. The list row renders as
+    /// <c>DisplayName (SavedAt)</c>.</summary>
+    public string DisplayName { get; set; } = "";
+
+    /// <summary>v11 — Adventurer's Handbook progress: index of the next
+    /// ordered tip (1..14) that should auto-pop as the player advances through
+    /// the early game. 0 = intro not started; 15+ = all tips shown. Defaults
+    /// to 0 so pre-v11 saves resume the handbook from the top (harmless — the
+    /// player can dismiss or disable it). See RenderHost handbook wiring.</summary>
+    public int NextTipIndex { get; set; }
+
+    /// <summary>v11 — the "Disable tips" checkbox state, persisted so an
+    /// annoyed player never sees an auto-popup again after ticking it. F12
+    /// still recalls the handbook manually regardless.</summary>
+    public bool TipsDisabled { get; set; }
 
     /// <summary>Region path this save is anchored to (e.g.
     /// <c>world/maps/multiplayer_world/regions/town_center</c>). Loader

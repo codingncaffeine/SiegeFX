@@ -10105,8 +10105,40 @@ static int DispatchUi(string[] a)
     return a[0].ToLowerInvariant() switch
     {
         "mesh-info" => CmdUiMeshInfo(a[1..]),
+        "tips"      => CmdUiTips(a[1..]),
         _           => UnknownCommand("ui " + a[0]),
     };
+}
+
+// Receipt for the Adventurer's Handbook: load + parse the ordered world tips
+// exactly as the runtime does (map tank -> info/tips.gas -> WorldTips.Parse)
+// and print each tip's bullets + icons. Verifies the clean-room parser against
+// the user's own DS1 data end to end.
+static int CmdUiTips(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx ui tips <World.dsmap> <regionPath>");
+        Console.Error.WriteLine("  e.g. siegefx ui tips World.dsmap /world/maps/map_world/regions/fh_r1");
+        return 1;
+    }
+    using var mapTank = TankFile.Open(a[0]);
+    var reader = new TankReader(mapTank);
+    var tipsPath = SiegeFX.Core.Assets.WorldTips.TipsPathForRegion(a[1]);
+    if (tipsPath is null) { Console.Error.WriteLine($"can't derive tips path from region '{a[1]}'"); return 1; }
+    Console.WriteLine($"tips file: {tipsPath}");
+    var tips = SiegeFX.Core.Assets.WorldTips.Load(reader, tipsPath);
+    Console.WriteLine($"ordered tips: {tips.Count}");
+    foreach (var tip in tips)
+    {
+        Console.WriteLine($"\n--- Tip {tip.Order} ({tip.Bullets.Count} bullet(s)) ---");
+        foreach (var b in tip.Bullets)
+        {
+            var preview = b.Text.Length > 90 ? b.Text[..90] + "..." : b.Text;
+            Console.WriteLine($"  [{b.IconTexture}] {preview}");
+        }
+    }
+    return 0;
 }
 
 static int CmdTemplateAttrDump(string[] a)
