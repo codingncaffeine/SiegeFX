@@ -132,8 +132,16 @@
                                 </ListBox.ItemTemplate>
                             </ListBox>
                             <TextBlock DockPanel.Dock="Bottom" Text="DOORS ON PALETTE MESH" Style="{StaticResource Header.Section}"/>
+                            <!-- ED-7 — thumbnail still of the selected mesh -->
+                            <Border DockPanel.Dock="Bottom" Margin="10,4,10,0" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                    Visibility="{Binding HasMeshThumb, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Preview of the selected mesh — drag any list entry into the viewport to place it">
+                                <Image Source="{Binding MeshThumb}" Height="132" Stretch="Uniform"/>
+                            </Border>
                             <ListBox ItemsSource="{Binding Palette}" SelectedItem="{Binding SelectedMesh, Mode=TwoWay}"
-                                     VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
+                                     PreviewMouseLeftButtonDown="OnPaletteMouseDown" PreviewMouseMove="OnPaletteMouseMove"
+                                     VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                     ToolTip="Drag a mesh into the viewport: first drop = anchor, later drops paint it onto the nearest free door">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate><TextBlock Text="{Binding Name}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                 </ListBox.ItemTemplate>
@@ -152,11 +160,15 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0" Margin="0,0,4,0"
                                          Text="{Binding PropSearchText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
                                          ToolTip="Filter the template catalog"/>
-                                <Button Grid.Column="1" Content="★" Padding="8,2" Command="{Binding ToggleFavoritePropCommand}"
+                                <ComboBox Grid.Column="1" Width="86" Margin="0,0,4,0" ItemsSource="{Binding PropTags}"
+                                          SelectedItem="{Binding SelectedPropTag, Mode=TwoWay}"
+                                          ToolTip="ED-7 — tag filter: template-name families (tree, barrel, krug, …) derived from this install's catalog"/>
+                                <Button Grid.Column="2" Content="★" Padding="8,2" Command="{Binding ToggleFavoritePropCommand}"
                                         ToolTip="Star/unstar the selected template — favorites persist between sessions"/>
                             </Grid>
                             <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasFavoriteProps, Converter={StaticResource BoolToVis}}">
@@ -202,8 +214,16 @@
                                 <CheckBox Content="Random facing" IsChecked="{Binding ScatterRandomYaw, Mode=TwoWay}" Margin="0,3,0,0"
                                           ToolTip="Give every scattered copy a random yaw so the patch doesn't look stamped"/>
                             </StackPanel>
+                            <!-- ED-7 — thumbnail still of the selected template's model -->
+                            <Border DockPanel.Dock="Bottom" Margin="10,4,10,0" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                    Visibility="{Binding HasPropThumb, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="Preview of the selected template's model — drag any list entry into the viewport to place it at the drop point">
+                                <Image Source="{Binding PropThumb}" Height="132" Stretch="Uniform"/>
+                            </Border>
                             <ListBox ItemsSource="{Binding PropPalette}" SelectedItem="{Binding SelectedProp, Mode=TwoWay}"
-                                     VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling">
+                                     PreviewMouseLeftButtonDown="OnPaletteMouseDown" PreviewMouseMove="OnPaletteMouseMove"
+                                     VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling"
+                                     ToolTip="Drag a template into the viewport to place it exactly where it lands">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate><TextBlock Text="{Binding Name}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                 </ListBox.ItemTemplate>
@@ -398,7 +418,8 @@
                         MouseRightButtonDown="OnViewportRightDown" MouseRightButtonUp="OnViewportRightUp"
                         MouseDown="OnViewportMiddleDown" MouseUp="OnViewportMiddleUp"
                         MouseMove="OnViewportMouseMove" MouseWheel="OnViewportMouseWheel"
-                        SizeChanged="OnViewportSizeChanged">
+                        SizeChanged="OnViewportSizeChanged"
+                        AllowDrop="True" Drop="OnViewportDrop">
                     <Image Source="{Binding Image}" Stretch="Fill"/>
                 </Border>
 

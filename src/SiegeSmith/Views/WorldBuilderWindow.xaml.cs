@@ -187,4 +187,32 @@ public partial class WorldBuilderWindow : Window
         if (e.NewValue is not null and not ViewModels.WorldBuilder.OutlineGroup)
             _vm.SelectFromOutliner(e.NewValue);
     }
+
+    // ED-7 — drag a palette entry into the viewport to place it at the drop
+    // point. Drag starts only from a real list item (never the scrollbar).
+    private Point _paletteDragStart;
+
+    private void OnPaletteMouseDown(object sender, MouseButtonEventArgs e) =>
+        _paletteDragStart = e.GetPosition(null);
+
+    private void OnPaletteMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+        var d = e.GetPosition(null) - _paletteDragStart;
+        if (System.Math.Abs(d.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            System.Math.Abs(d.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        if (sender is not System.Windows.Controls.ListBox { SelectedItem: not null } lb) return;
+        if (System.Windows.Controls.ItemsControl.ContainerFromElement(lb, e.OriginalSource as DependencyObject)
+            is not System.Windows.Controls.ListBoxItem) return;
+        DragDrop.DoDragDrop(lb, new DataObject(lb.SelectedItem.GetType(), lb.SelectedItem), DragDropEffects.Copy);
+    }
+
+    private void OnViewportDrop(object sender, DragEventArgs e)
+    {
+        var p = e.GetPosition(Viewport);
+        if (e.Data.GetData(typeof(SiegeSmith.Services.PropTemplate)) is SiegeSmith.Services.PropTemplate tpl)
+            _vm.DropObjectAt(p.X, p.Y, tpl);
+        else if (e.Data.GetData(typeof(SiegeSmith.Services.SnoMeshEntry)) is SiegeSmith.Services.SnoMeshEntry mesh)
+            _vm.DropMeshAt(p.X, p.Y, mesh);
+    }
 }

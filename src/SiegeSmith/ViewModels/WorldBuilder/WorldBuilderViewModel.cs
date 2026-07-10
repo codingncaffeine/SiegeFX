@@ -106,7 +106,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private string _propSearch = "";
     public string PropSearchText { get => _propSearch; set { if (SetProperty(ref _propSearch, value)) RefreshPropPalette(); } }
     private PropTemplate? _selectedProp;
-    public PropTemplate? SelectedProp { get => _selectedProp; set { if (SetProperty(ref _selectedProp, value)) RaiseCommands(); } }
+    public PropTemplate? SelectedProp { get => _selectedProp; set { if (SetProperty(ref _selectedProp, value)) { UpdatePropThumb(); RaiseCommands(); } } }
 
     // Toggle: the one palette lists inert props (→ non_interactive.gas) or spawnable actors (→ actor.gas).
     private bool _placingActors;
@@ -119,6 +119,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             SelectedProp = null;
             OnPropertyChanged(nameof(PaletteHint));
             OnPropertyChanged(nameof(PlacingModeLabel));
+            RebuildPropTags(); // ED-7 — actor tags differ from prop tags
             RefreshPropPalette();
         }
     }
@@ -1855,6 +1856,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             foreach (var p in props.Props) _templateModel[p.Name] = p.Model;
             foreach (var a in props.Actors) _templateModel[a.Name] = a.Model; // actors preview via the same mesh path
             RefreshPalette();
+            RebuildPropTags(); // ED-7 — tag combo derives from the loaded catalog
             RefreshPropPalette();
             foreach (var r in cat.Regions) InstallRegions.Add(r);
             IsLoading = false;
@@ -1900,6 +1902,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     TargetDoors.Add(new DoorRow((int)d.Id, true, null));
             if (TargetDoors.Count > 0) SelectedTargetDoor = TargetDoors[0];
         }
+        UpdateMeshThumb(); // ED-7 — preview still of the selected mesh
         RaiseCommands();
     }
 
@@ -2034,6 +2037,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public bool TryPaint(double sx, double sy)
     {
         if (!_paintMode) return false;
+        return PaintStepAt(sx, sy);
+    }
+
+    /// <summary>The paint step itself — also invoked directly by ED-7 mesh
+    /// drag-drop, which paints one node at the drop point without the mode.</summary>
+    private bool PaintStepAt(double sx, double sy)
+    {
         if (_selectedMesh is null) { Status = "Paint: pick a node mesh in the Nodes palette first."; return true; }
         if (_catalog is null || _pickVerts.Length < 3) return true;
 
@@ -2235,6 +2245,190 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         Status = $"Scattered {placed}× {_selectedProp.Name} (radius {_scatterRadius:0.#}u, spacing {_scatterSpacing:0.#}u). One undo removes them all.";
         RaiseCommands();
         return true;
+    }
+
+    // ═══ ED-7 — palette thumbnails, tags, drag-drop ═══════════════════
+
+    // Selected-item thumbnails: a small software-rendered still of the mesh
+    // or template model under each palette, so you see what you're placing
+    // before you place it. Rendered off the UI thread; a version counter
+    // discards stale results while scrolling.
+    private int _meshThumbVer, _propThumbVer;
+    private System.Windows.Media.ImageSource? _meshThumb, _propThumb;
+    public System.Windows.Media.ImageSource? MeshThumb
+    {
+        get => _meshThumb;
+        private set { if (SetProperty(ref _meshThumb, value)) OnPropertyChanged(nameof(HasMeshThumb)); }
+    }
+    public bool HasMeshThumb => _meshThumb is not null;
+    public System.Windows.Media.ImageSource? PropThumb
+    {
+        get => _propThumb;
+        private set { if (SetProperty(ref _propThumb, value)) OnPropertyChanged(nameof(HasPropThumb)); }
+    }
+    public bool HasPropThumb => _propThumb is not null;
+
+    private async void UpdateMeshThumb()
+    {
+        int ver = ++_meshThumbVer;
+        var mesh = _selectedMesh;
+        var cat = _catalog;
+        if (mesh is null || cat is null) { MeshThumb = null; return; }
+        BitmapSource? bmp = null;
+        try
+        {
+            bmp = await Task.Run(() =>
+            {
+                var sno = cat.Resolve(mesh.MeshGuid);
+                return sno is null ? null : RenderSnoThumb(sno, 236, 132);
+            });
+        }
+        catch { /* a thumbnail is never worth an error dialog */ }
+        if (ver == _meshThumbVer) MeshThumb = bmp;
+    }
+
+    private async void UpdatePropThumb()
+    {
+        int ver = ++_propThumbVer;
+        var prop = _selectedProp;
+        var asp = _asp;
+        string? model = prop is not null && _templateModel.TryGetValue(prop.Name, out var m) ? m : null;
+        if (model is null || asp is null) { PropThumb = null; return; }
+        BitmapSource? bmp = null;
+        try
+        {
+            bmp = await Task.Run(() =>
+            {
+                var mesh = asp.Resolve(model);
+                return mesh is null || mesh.TriangleIndices.Length < 3 ? null : RenderAspThumb(mesh, 236, 132);
+            });
+        }
+        catch { }
+        if (ver == _propThumbVer) PropThumb = bmp;
+    }
+
+    private static BitmapSource? RenderThumbCore(Vector3[] v, Vector3[] n, int w, int h)
+    {
+        if (v.Length < 3) return null;
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+        foreach (var p in v) { min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
+        var c = (min + max) * 0.5f;
+        float r = MathF.Max((max - min).Length() * 0.5f, 0.001f);
+        var bgra = SoftwareRenderer.Render(v, n, w, h, c, r, yaw: -2.35f, pitch: 0.5f, dist: r * 2.2f, wireframe: false);
+        var bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);
+        bmp.Freeze(); // rendered off-thread; frozen bitmaps cross to the UI thread safely
+        return bmp;
+    }
+
+    private static BitmapSource? RenderSnoThumb(SnoModel sno, int w, int h)
+    {
+        var stand = Matrix4x4.CreateRotationX(MathF.PI / 2f); // SNO art is Y-up; the thumb camera is Z-up
+        var verts = new List<Vector3>();
+        var norms = new List<Vector3>();
+        foreach (var s in sno.Surfaces)
+        {
+            var idx = s.TriangleIndices;
+            for (int k = 0; k + 2 < idx.Length; k += 3)
+            {
+                int g0 = (int)s.StartCorner + idx[k];
+                int g1 = (int)s.StartCorner + idx[k + 1];
+                int g2 = (int)s.StartCorner + idx[k + 2];
+                if ((uint)g0 >= (uint)sno.Corners.Length || (uint)g1 >= (uint)sno.Corners.Length || (uint)g2 >= (uint)sno.Corners.Length)
+                    continue;
+                Span<int> tri = stackalloc int[3] { g0, g1, g2 };
+                foreach (var g in tri)
+                {
+                    verts.Add(Vector3.Transform(sno.Corners[g].Position, stand));
+                    norms.Add(Vector3.TransformNormal(sno.Corners[g].Normal, stand));
+                }
+            }
+        }
+        return RenderThumbCore(verts.ToArray(), norms.ToArray(), w, h);
+    }
+
+    private static BitmapSource? RenderAspThumb(AspMesh mesh, int w, int h)
+    {
+        int mtc = mesh.TriangleIndices.Length / 3;
+        var verts = new List<Vector3>(mtc * 3);
+        var norms = new List<Vector3>(mtc * 3);
+        for (int t = 0; t < mtc; t++)
+            for (int e = 0; e < 3; e++)
+            {
+                var corner = mesh.Corners[mesh.TriangleIndices[t * 3 + e]];
+                verts.Add(mesh.Positions[corner.VertexIndex]);
+                norms.Add(corner.Normal);
+            }
+        return RenderThumbCore(verts.ToArray(), norms.ToArray(), w, h);
+    }
+
+    // Tag filter for the Objects palette — tags are the template-name prefix
+    // (tree_, barrel_, krug_, …), derived from the loaded catalog so it always
+    // matches the install (mods included). "(all)" = no tag filter.
+    public ObservableCollection<string> PropTags { get; } = new();
+    private string _propTag = "(all)";
+    public string SelectedPropTag
+    {
+        get => _propTag;
+        set { if (SetProperty(ref _propTag, value ?? "(all)")) RefreshPropPalette(); }
+    }
+
+    private void RebuildPropTags()
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in _placingActors ? _allActors : _allProps)
+        {
+            int us = p.Name.IndexOf('_');
+            if (us <= 0) continue;
+            var tok = p.Name[..us];
+            counts[tok] = counts.TryGetValue(tok, out var c) ? c + 1 : 1;
+        }
+        var keep = new List<string>();
+        foreach (var (tok, c) in counts) if (c >= 3) keep.Add(tok.ToLowerInvariant());
+        keep.Sort(StringComparer.OrdinalIgnoreCase);
+        PropTags.Clear();
+        PropTags.Add("(all)");
+        foreach (var t in keep) PropTags.Add(t);
+        if (!PropTags.Contains(_propTag)) { _propTag = "(all)"; OnPropertyChanged(nameof(SelectedPropTag)); RefreshPropPalette(); }
+    }
+
+    /// <summary>ED-7 — drag-drop from the Objects palette: place the dragged
+    /// template exactly where it lands on the terrain.</summary>
+    public void DropObjectAt(double sx, double sy, PropTemplate tpl)
+    {
+        if (_pickVerts.Length < 3) { Status = "Place a terrain node first — objects need ground to stand on."; return; }
+        uint g = SoftwareRenderer.PickTriangle(_pickVerts, _pickGuid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
+        if (g == 0) { Status = "Drop it on terrain — that point is off the region."; return; }
+        if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, g, _vw, _vh,
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var hit, _ortho)) return;
+        if (!_nodeWorld.TryGetValue(g, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
+
+        PushUndo();
+        PushRecent(RecentProps, tpl.Name);
+        SelectedProp = tpl;
+        var o = new PlacedObject
+        {
+            Scid = NextScid(), Template = tpl.Name, NodeGuid = g,
+            LocalPos = Vector3.Transform(hit, inv),
+            File = _placingActors ? "actor.gas" : "non_interactive.gas",
+        };
+        _objects.Add(o);
+        RebuildPlacedRows();
+        foreach (var r in PlacedObjects) if (r.Scid == o.Scid) { SelectedPlacedObject = r; break; }
+        Render();
+        Status = $"Placed {tpl.Name} where you dropped it.";
+        RaiseCommands();
+    }
+
+    /// <summary>ED-7 — drag-drop from the Nodes palette: an empty region gets
+    /// its anchor; otherwise one paint step chains the mesh onto the free door
+    /// nearest the drop point.</summary>
+    public void DropMeshAt(double sx, double sy, SnoMeshEntry mesh)
+    {
+        SelectedMesh = mesh;
+        if (IsEmpty) { PlaceAnchor(); return; }
+        PaintStepAt(sx, sy);
     }
 
     private void DeleteSelectedNode()
@@ -2981,6 +3175,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         foreach (var p in _placingActors ? _allActors : _allProps)
         {
             if (q.Length > 0 && p.Name.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
+            // ED-7 — tag filter (template-name prefix)
+            if (_propTag != "(all)" && !p.Name.StartsWith(_propTag + "_", StringComparison.OrdinalIgnoreCase)) continue;
             PropPalette.Add(p);
             if (++shown >= MaxPropResults) break;
         }
