@@ -139,7 +139,8 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
                 var bytes = _doc.Reader.ExtractToMemory(file.FullPath);
                 var ext = Path.GetExtension(file.Name).ToLowerInvariant();
                 var textures = ext is ".asp" or ".sno" ? EnsureTextures() : null;
-                CurrentViewer = ViewerFactory.Create(file.Name, bytes, textures);
+                var rig = ext == ".prs" ? ResolveRigMesh : (Func<string, SiegeFX.Core.Assets.AspMesh?>?)null;
+                CurrentViewer = ViewerFactory.Create(file.Name, bytes, textures, rig);
             }
             catch (Exception ex)
             {
@@ -151,6 +152,44 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
         {
             CurrentViewer = null;
         }
+    }
+
+    // ED-15 — bare-name → path index over the open tank's .asp files, so a
+    // .prs preview can find its paired rig (a_* clip → m_* mesh). Built lazily
+    // on the first animation preview.
+    private Dictionary<string, string>? _aspIndex;
+
+    private SiegeFX.Core.Assets.AspMesh? ResolveRigMesh(string bareName)
+    {
+        try
+        {
+            if (_aspIndex is null)
+            {
+                _aspIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var p in _doc.Reader.ListFiles())
+                {
+                    if (!p.EndsWith(".asp", StringComparison.OrdinalIgnoreCase)) continue;
+                    var bare = Path.GetFileNameWithoutExtension(p);
+                    _aspIndex[bare] = p; // last wins — names are unique in practice
+                }
+            }
+            if (!_aspIndex.TryGetValue(bareName, out var path))
+            {
+                // Prefix fallback — mesh names can be LONGER than the clip stem
+                // (droog clips are a_c_eam_dg_* but the mesh is m_c_eam_dg_pos_a1).
+                // Only species-specific candidates (≥4 segments) may prefix-match,
+                // and the shortest matching name wins (base body over variants).
+                if (bareName.Split('_').Length < 4) return null;
+                string? bestBare = null;
+                foreach (var (bare, p) in _aspIndex)
+                    if (bare.StartsWith(bareName + "_", StringComparison.OrdinalIgnoreCase)
+                        && (bestBare is null || bare.Length < bestBare.Length))
+                    { bestBare = bare; path = p; }
+                if (bestBare is null) return null;
+            }
+            return SiegeFX.Core.Assets.AspMesh.Load(_doc.Reader.ExtractToMemory(path));
+        }
+        catch { return null; }
     }
 
     /// <summary>Builds (once) the texture resolver used to show 3D assets as they look in-game:

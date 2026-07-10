@@ -10,7 +10,8 @@ namespace SiegeSmith.Services;
 /// so the shell can template it by concrete view-model type.</summary>
 public static class ViewerFactory
 {
-    public static object Create(string name, byte[] bytes, TextureResolver? textures = null)
+    public static object Create(string name, byte[] bytes, TextureResolver? textures = null,
+        Func<string, AspMesh?>? rigResolver = null)
     {
         var ext = Path.GetExtension(name).ToLowerInvariant();
 
@@ -49,7 +50,8 @@ public static class ViewerFactory
 
         if (ext == ".prs")
         {
-            try { return new PrsAnimationViewerViewModel(name, PrsAnimation.Load(bytes)); }
+            // ED-15 — with a rig resolver the clip PLAYS on its paired .asp.
+            try { return new PrsAnimationViewerViewModel(name, PrsAnimation.Load(bytes), rigResolver); }
             catch { /* fall through to hex */ }
         }
 

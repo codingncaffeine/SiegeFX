@@ -465,12 +465,27 @@
                                 </DockPanel>
                             </DataTemplate>
 
-                            <!-- PRS skeletal animation (structural inspector) -->
+                            <!-- PRS skeletal animation (structural inspector + ED-15 live playback) -->
                             <DataTemplate DataType="{x:Type viewers:PrsAnimationViewerViewModel}">
                                 <DockPanel Margin="16">
                                     <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
                                         <TextBlock Text="{Binding Name}" FontSize="16" Foreground="{StaticResource Brush.Foreground}"/>
                                         <TextBlock Text="{Binding Info}" Foreground="{StaticResource Brush.Muted}" Margin="0,6,0,0"/>
+                                        <TextBlock Text="{Binding RigInfo}" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,2,0,0"/>
+                                    </StackPanel>
+                                    <!-- ED-15 — the clip playing on its resolved rig -->
+                                    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12"
+                                                Visibility="{Binding HasRig, Converter={StaticResource BoolToVis}}">
+                                        <Border BorderBrush="{StaticResource Brush.Border}" BorderThickness="1" HorizontalAlignment="Left">
+                                            <Image Source="{Binding Frame}" Width="460" Height="340" Stretch="Uniform"/>
+                                        </Border>
+                                        <DockPanel Margin="0,6,0,0" MaxWidth="460" HorizontalAlignment="Left">
+                                            <Button DockPanel.Dock="Left" Content="{Binding PlayLabel}" Command="{Binding PlayCommand}" Padding="12,4" Margin="0,0,8,0"
+                                                    ToolTip="Loop the clip on the rig (CPU-skinned with the engine's own animation runtime)"/>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding TimeText}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                            <Slider Minimum="0" Maximum="1" Value="{Binding ScrubPos, Mode=TwoWay}" VerticalAlignment="Center"
+                                                    ToolTip="Scrub through the clip"/>
+                                        </DockPanel>
                                     </StackPanel>
                                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                                         <ItemsControl ItemsSource="{Binding Sections}">
