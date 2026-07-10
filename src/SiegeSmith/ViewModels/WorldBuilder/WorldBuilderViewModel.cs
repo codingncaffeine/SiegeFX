@@ -1216,6 +1216,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         LoadWorldBuilderPrefs();
         AddQuestCommand = new RelayCommand(_ =>
         {
+            PushUndo();
             var q = new MapQuest { Key = $"quest_custom_{MapQuests.Count + 1:00}" };
             MapQuests.Add(q);
             SelectedQuest = q;
@@ -1224,6 +1225,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         DeleteQuestCommand = new RelayCommand(_ =>
         {
             if (_selectedQuest is null) return;
+            PushUndo();
             MapQuests.Remove(_selectedQuest);
             SelectedQuest = null;
             OnPropertyChanged(nameof(QuestKeys));
@@ -1243,26 +1245,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         DeleteDecalCommand = new RelayCommand(_ => DeleteDecal(), _ => _selectedDecal is not null);
         AddSoundCommand = new RelayCommand(_ => AddSound(), _ => IsReady && _selectedNode is not null && !string.IsNullOrWhiteSpace(_soundTemplate));
         AddTriggerCommand = new RelayCommand(_ => AddTrigger(), _ => IsReady && _selectedNode is not null);
-        DeleteTriggerCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { Triggers.Remove(_selectedTrigger); SelectedTrigger = null; Render(); } }, _ => _selectedTrigger is not null);
-        AddTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { var r = NewTriggerRow(); _selectedTrigger.Rows.Add(r); SelectedTriggerRow = r; } }, _ => _selectedTrigger is not null);
-        DeleteTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null && _selectedTriggerRow is not null) { _selectedTrigger.Rows.Remove(_selectedTriggerRow); SelectedTriggerRow = _selectedTrigger.Rows.Count > 0 ? _selectedTrigger.Rows[0] : null; } }, _ => _selectedTriggerRow is not null);
-        AddConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { var c = new TriggerCall { Verb = RegionTrigger.Conditions[0] }; _selectedTriggerRow.Conditions.Add(c); SelectedCondition = c; } }, _ => _selectedTriggerRow is not null);
-        DeleteConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedCondition is not null) { _selectedTriggerRow.Conditions.Remove(_selectedCondition); SelectedCondition = _selectedTriggerRow.Conditions.Count > 0 ? _selectedTriggerRow.Conditions[0] : null; } }, _ => _selectedCondition is not null);
-        AddActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { var a = new TriggerCall { Verb = RegionTrigger.Actions[0] }; _selectedTriggerRow.Actions.Add(a); SelectedAction = a; } }, _ => _selectedTriggerRow is not null);
-        DeleteActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedAction is not null) { _selectedTriggerRow.Actions.Remove(_selectedAction); SelectedAction = _selectedTriggerRow.Actions.Count > 0 ? _selectedTriggerRow.Actions[0] : null; } }, _ => _selectedAction is not null);
+        DeleteTriggerCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { PushUndo(); Triggers.Remove(_selectedTrigger); SelectedTrigger = null; Render(); } }, _ => _selectedTrigger is not null);
+        AddTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { PushUndo(); var r = NewTriggerRow(); _selectedTrigger.Rows.Add(r); SelectedTriggerRow = r; } }, _ => _selectedTrigger is not null);
+        DeleteTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null && _selectedTriggerRow is not null) { PushUndo(); _selectedTrigger.Rows.Remove(_selectedTriggerRow); SelectedTriggerRow = _selectedTrigger.Rows.Count > 0 ? _selectedTrigger.Rows[0] : null; } }, _ => _selectedTriggerRow is not null);
+        AddConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { PushUndo(); var c = new TriggerCall { Verb = RegionTrigger.Conditions[0] }; _selectedTriggerRow.Conditions.Add(c); SelectedCondition = c; } }, _ => _selectedTriggerRow is not null);
+        DeleteConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedCondition is not null) { PushUndo(); _selectedTriggerRow.Conditions.Remove(_selectedCondition); SelectedCondition = _selectedTriggerRow.Conditions.Count > 0 ? _selectedTriggerRow.Conditions[0] : null; } }, _ => _selectedCondition is not null);
+        AddActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { PushUndo(); var a = new TriggerCall { Verb = RegionTrigger.Actions[0] }; _selectedTriggerRow.Actions.Add(a); SelectedAction = a; } }, _ => _selectedTriggerRow is not null);
+        DeleteActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedAction is not null) { PushUndo(); _selectedTriggerRow.Actions.Remove(_selectedAction); SelectedAction = _selectedTriggerRow.Actions.Count > 0 ? _selectedTriggerRow.Actions[0] : null; } }, _ => _selectedAction is not null);
         AddCommandCommand = new RelayCommand(_ => AddCommand(), _ => IsReady && _selectedNode is not null);
-        DeleteCommandCommand = new RelayCommand(_ => { if (_selectedCommand is not null) { Commands.Remove(_selectedCommand); SelectedCommand = null; Render(); } }, _ => _selectedCommand is not null);
+        DeleteCommandCommand = new RelayCommand(_ => { if (_selectedCommand is not null) { PushUndo(); Commands.Remove(_selectedCommand); SelectedCommand = null; Render(); } }, _ => _selectedCommand is not null);
         AddConversationCommand = new RelayCommand(_ => AddConversation(), _ => IsReady);
-        DeleteConversationCommand = new RelayCommand(_ => { if (_selectedConversation is not null) { Conversations.Remove(_selectedConversation); SelectedConversation = null; } }, _ => _selectedConversation is not null);
+        DeleteConversationCommand = new RelayCommand(_ => { if (_selectedConversation is not null) { PushUndo(); Conversations.Remove(_selectedConversation); SelectedConversation = null; } }, _ => _selectedConversation is not null);
         AddDialogueCommand = new RelayCommand(_ => AddDialogue(), _ => _selectedConversation is not null);
-        DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
+        DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { PushUndo(); _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
         BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null && _selectedPlacedObject is not null);
         ImportSiblingCommand = new RelayCommand(_ => ImportSibling());
         RemoveSiblingCommand = new RelayCommand(_ => RemoveSibling(), _ => _selectedSibling is not null);
         CreateStitchCommand = new RelayCommand(_ => CreateStitch(), _ => _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null);
         DeleteStitchCommand = new RelayCommand(_ => DeleteStitch(), _ => _selectedStitch is not null);
         AddNavFlagCommand = new RelayCommand(_ => AddNavFlag(), _ => IsReady && _selectedNode is not null);
-        DeleteNavFlagCommand = new RelayCommand(_ => { if (_selectedFlag is not null) { LogicalFlags.Remove(_selectedFlag); SelectedFlag = null; } }, _ => _selectedFlag is not null);
+        DeleteNavFlagCommand = new RelayCommand(_ => { if (_selectedFlag is not null) { PushUndo(); LogicalFlags.Remove(_selectedFlag); SelectedFlag = null; } }, _ => _selectedFlag is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
@@ -1726,8 +1728,49 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     }
 
     // ── undo / redo ─────────────────────────────────────────────
-    private const string SnapSep = "\nOBJECTS\n"; // separates the nodes.gas half from the placed-objects half
-    private string Snapshot() => (IsEmpty ? "" : NodesGasWriter.Write(_region)) + SnapSep + SerializeObjects();
+    // ED-3 — the undo snapshot covers EVERY authored family, not just nodes
+    // and objects. JSON with IncludeFields (the models and Vector3/Quaternion
+    // use public fields); stitches/siblings are world-scope wiring over live
+    // region graphs and stay outside the undo stack by design.
+    private sealed class UndoState
+    {
+        public string NodesGas { get; set; } = "";
+        public string ObjectsTsv { get; set; } = "";
+        public List<RegionEmitter> Emitters { get; set; } = new();
+        public List<RegionDecal> Decals { get; set; } = new();
+        public List<AuthoredLight> Lights { get; set; } = new();
+        public List<RegionTrigger> Triggers { get; set; } = new();
+        public List<CommandPlacement> Commands { get; set; } = new();
+        public List<Conversation> Conversations { get; set; } = new();
+        public List<LogicalFlag> Flags { get; set; } = new();
+        public List<MapQuest> Quests { get; set; } = new();
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions UndoJson = new()
+    {
+        IncludeFields = true,
+        // Populate get-only collection properties (trigger Rows, conversation
+        // Nodes) instead of silently skipping them on deserialize.
+        PreferredObjectCreationHandling = System.Text.Json.Serialization.JsonObjectCreationHandling.Populate,
+    };
+
+    private string Snapshot()
+    {
+        var s = new UndoState
+        {
+            NodesGas = IsEmpty ? "" : NodesGasWriter.Write(_region),
+            ObjectsTsv = SerializeObjects(),
+            Emitters = new List<RegionEmitter>(Emitters),
+            Decals = new List<RegionDecal>(Decals),
+            Lights = new List<AuthoredLight>(Lights),
+            Triggers = new List<RegionTrigger>(Triggers),
+            Commands = new List<CommandPlacement>(Commands),
+            Conversations = new List<Conversation>(Conversations),
+            Flags = new List<LogicalFlag>(LogicalFlags),
+            Quests = new List<MapQuest>(MapQuests),
+        };
+        return System.Text.Json.JsonSerializer.Serialize(s, UndoJson);
+    }
 
     private string SerializeObjects()
     {
@@ -1796,14 +1839,46 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private void LoadSnapshot(string snap, string status)
     {
-        int sep = snap.IndexOf(SnapSep, StringComparison.Ordinal);
-        string nodesPart = sep < 0 ? snap : snap[..sep];
-        string objPart = sep < 0 ? "" : snap[(sep + SnapSep.Length)..];
-        var region = nodesPart.Length > 0 ? NodesGasReader.Read(GasDocument.Parse(nodesPart)) : new BuilderRegion();
+        UndoState s;
+        try { s = System.Text.Json.JsonSerializer.Deserialize<UndoState>(snap, UndoJson) ?? new UndoState(); }
+        catch (Exception ex) { Status = "Undo state unreadable: " + ex.Message; return; }
+        var region = s.NodesGas.Length > 0 ? NodesGasReader.Read(GasDocument.Parse(s.NodesGas)) : new BuilderRegion();
         ReplaceRegion(region);
-        DeserializeObjects(objPart);
+        DeserializeObjects(s.ObjectsTsv);
         RebuildPlacedRows();
+
+        SelectedEmitter = null; SelectedDecal = null; SelectedLight = null;
+        SelectedTrigger = null; SelectedCommand = null; SelectedConversation = null;
+        SelectedFlag = null; SelectedQuest = null;
+        Refill(Emitters, s.Emitters);
+        Refill(Decals, s.Decals);
+        Refill(Lights, s.Lights);
+        Refill(Triggers, s.Triggers);
+        Refill(Commands, s.Commands);
+        Refill(Conversations, s.Conversations);
+        Refill(LogicalFlags, s.Flags);
+        Refill(MapQuests, s.Quests);
+        BumpScidCounters();
+        OnPropertyChanged(nameof(QuestKeys));
         AfterModelChanged(status);
+    }
+
+    private static void Refill<T>(ObservableCollection<T> target, List<T> items)
+    {
+        target.Clear();
+        foreach (var i in items) target.Add(i);
+    }
+
+    /// <summary>After restoring a snapshot, push the SCID allocators past
+    /// every restored id so a subsequent Add can never collide.</summary>
+    private void BumpScidCounters()
+    {
+        foreach (var o in _objects) if (o.Scid >= _nextScid) _nextScid = o.Scid + 1;
+        foreach (var l in Lights) if (l.Scid >= _nextLightScid) _nextLightScid = l.Scid + 1;
+        foreach (var e in Emitters) if (e.Scid >= _nextEffectScid) _nextEffectScid = e.Scid + 1;
+        foreach (var d in Decals) if (d.Scid >= _nextEffectScid) _nextEffectScid = d.Scid + 1;
+        foreach (var t in Triggers) if (t.Scid >= _nextLogicScid) _nextLogicScid = t.Scid + 1;
+        foreach (var c in Commands) if (c.Scid >= _nextLogicScid) _nextLogicScid = c.Scid + 1;
     }
 
     private void RaiseUndoRedo()
@@ -2249,6 +2324,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     // ── lighting & mood (LE-6) ──────────────────────────────────
     private void AddLight(AuthoredLightKind kind)
     {
+        PushUndo();
         var l = new AuthoredLight { Kind = kind, Scid = _nextLightScid++ };
         if (kind == AuthoredLightKind.Point && _selectedNode is not null)
         {
@@ -2266,6 +2342,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void DeleteLight()
     {
         if (_selectedLight is null) return;
+        PushUndo();
         Lights.Remove(_selectedLight);
         SelectedLight = null;
         Render();
@@ -2372,6 +2449,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void DeleteEmitter()
     {
         if (_selectedEmitter is null) return;
+        PushUndo();
         Emitters.Remove(_selectedEmitter);
         SelectedEmitter = null;
         Render();
@@ -2380,6 +2458,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AddDecal()
     {
         if (_selectedNode is null) return;
+        PushUndo();
         var d = new RegionDecal
         {
             Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid, OriginLocal = LocalCenter(_selectedNode.Guid),
@@ -2392,6 +2471,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void DeleteDecal()
     {
         if (_selectedDecal is null) return;
+        PushUndo();
         Decals.Remove(_selectedDecal);
         SelectedDecal = null;
     }
@@ -2421,6 +2501,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AddTrigger()
     {
         if (_selectedNode is null) return;
+        PushUndo();
         var t = new RegionTrigger
         {
             Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
@@ -2435,6 +2516,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AddCommand()
     {
         if (_selectedNode is null) return;
+        PushUndo();
         var c = new CommandPlacement
         {
             Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
@@ -2447,6 +2529,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private void AddConversation()
     {
+        PushUndo();
         var c = new Conversation { Key = $"custom_{Conversations.Count + 1}" };
         c.Nodes.Add(new DialogueLine { Order = 1, ScreenText = "Hello, traveler." });
         Conversations.Add(c);
@@ -2457,6 +2540,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AddDialogue()
     {
         if (_selectedConversation is null) return;
+        PushUndo();
         int order = _selectedConversation.Nodes.Count + 1;
         var n = new DialogueLine { Order = order, ScreenText = "" };
         _selectedConversation.Nodes.Add(n);
@@ -2711,6 +2795,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private void AddNavFlag()
     {
         if (_selectedNode is null) return;
+        PushUndo();
         foreach (var f in LogicalFlags)
             if (f.SnodeGuid == _selectedNode.Guid && f.Lnode == 0) { SelectedFlag = f; Status = "This node already has a nav flag (lnode 0)."; return; }
         var flag = new LogicalFlag { SnodeGuid = _selectedNode.Guid, Lnode = 0 };
