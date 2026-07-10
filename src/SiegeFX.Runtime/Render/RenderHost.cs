@@ -9261,7 +9261,7 @@ void main()
     // companion-inventory tile row; dragging moves it, releasing locks the
     // spot into prefs.json (normalized fractions, resolution-independent).
     // While shift is held, a click on a piece bypasses its buttons.
-    private enum HudDragPiece { None, Compass, Inventory, CompanionInv }
+    private enum HudDragPiece { None, Compass, Inventory, CompanionInv, Awp, TeamStrip }
     private HudDragPiece _hudDrag = HudDragPiece.None;
     private int _hudDragOffX, _hudDragOffY;
     private (int X, int Y, int W, int H) _companionRowRect; // stashed by the draw pass
@@ -9316,6 +9316,36 @@ void main()
                 return true;
             }
         }
+        // Companion portrait strip (below the AWP; only with followers).
+        // Checked before the AWP because the strip's authored top (y=56)
+        // brushes the AWP cluster's authored bottom (y=58).
+        int followers = _party.Count - 1;
+        if (followers > 0)
+        {
+            float ts = Hud.TeamPortraits.Scale(vh);
+            int tx = _teamPortraits.OffsetX;
+            int ty = (int)MathF.Round(Hud.TeamPortraits.CellTop0 * ts) + _teamPortraits.OffsetY;
+            int tw = (int)MathF.Round(150 * ts);
+            int th = (int)MathF.Round(followers * Hud.TeamPortraits.CellStep * ts);
+            if (mx >= tx && mx < tx + tw && my >= ty && my < ty + th)
+            {
+                _hudDrag = HudDragPiece.TeamStrip;
+                _hudDragOffX = mx - tx; _hudDragOffY = my - ty;
+                return true;
+            }
+        }
+        // Player AWP cluster (portrait + HP/MP + slots + inventory button).
+        {
+            float aws = Hud.CharacterAwp.Scale(vh);
+            int ax = _characterAwp.OffsetX, ay = _characterAwp.OffsetY;
+            int aw = (int)MathF.Round(150 * aws), ah = (int)MathF.Round(58 * aws);
+            if (mx >= ax && mx < ax + aw && my >= ay && my < ay + ah)
+            {
+                _hudDrag = HudDragPiece.Awp;
+                _hudDragOffX = mx - ax; _hudDragOffY = my - ay;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -9332,7 +9362,26 @@ void main()
             case HudDragPiece.Compass:      s.CompassPosX = nx;      s.CompassPosY = ny;      break;
             case HudDragPiece.Inventory:    s.InventoryPosX = nx;    s.InventoryPosY = ny;    break;
             case HudDragPiece.CompanionInv: s.CompanionInvPosX = nx; s.CompanionInvPosY = ny; break;
+            case HudDragPiece.Awp:          s.AwpPosX = nx;          s.AwpPosY = ny;          break;
+            case HudDragPiece.TeamStrip:    s.TeamPosX = nx;         s.TeamPosY = ny;         break;
         }
+        ApplyHudPieceOffsets();
+    }
+
+    /// <summary>SC-HUD-DRAG — convert the persisted normalized positions
+    /// into the AWP/portrait-strip pixel offsets. Called per frame from
+    /// the HUD draw (window/scale can change) and on every drag move so
+    /// the piece tracks the cursor live.</summary>
+    private void ApplyHudPieceOffsets()
+    {
+        int vw = _window.Size.X, vh = _window.Size.Y;
+        var s = _optionsMenu.Live;
+        _characterAwp.OffsetX = s.AwpPosX >= 0f ? (int)MathF.Round(s.AwpPosX * vw) : 0;
+        _characterAwp.OffsetY = s.AwpPosY >= 0f ? (int)MathF.Round(s.AwpPosY * vh) : 0;
+        float ts = Hud.TeamPortraits.Scale(vh);
+        int stripTop = (int)MathF.Round(Hud.TeamPortraits.CellTop0 * ts);
+        _teamPortraits.OffsetX = s.TeamPosX >= 0f ? (int)MathF.Round(s.TeamPosX * vw) : 0;
+        _teamPortraits.OffsetY = s.TeamPosY >= 0f ? (int)MathF.Round(s.TeamPosY * vh) - stripTop : 0;
     }
 
     private void DrawCompass(int viewportW, int viewportH)
@@ -16903,6 +16952,9 @@ void main()
     private void DrawCharacterAwp(int viewportW, int viewportH)
     {
         if (_player is null || _iconRenderer is null || _barRenderer is null || _textRenderer is null) return;
+        // SC-HUD-DRAG — refresh the AWP + portrait-strip offsets from the
+        // persisted (or in-drag) positions before either piece draws.
+        ApplyHudPieceOffsets();
         if (!_awpLoaded)
         {
             _awpLoaded = true;

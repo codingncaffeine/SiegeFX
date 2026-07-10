@@ -31,6 +31,12 @@ public sealed class CharacterAwp
     public const int RefRes = 480;
     public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
+    /// <summary>SC-HUD-DRAG — pixel offset of the whole AWP cluster from its
+    /// authored top-left dock. Set by the host from the user's shift-dragged
+    /// position; (0,0) = the authored layout. Draw and HitTest both honor it
+    /// so visuals and clicks can never desync.</summary>
+    public int OffsetX, OffsetY;
+
     /// <summary>Action IDs returned from a click on the AWP. RenderHost
     /// dispatches each to the corresponding host-side toggle (per gas's
     /// [messages] notify keys).</summary>
@@ -56,6 +62,9 @@ public sealed class CharacterAwp
     public HitTarget HitTest(int x, int y, int viewportH, bool railOpen)
     {
         float s = Scale(viewportH);
+        // SC-HUD-DRAG — transform the point into the un-offset frame so
+        // every authored rect below stays valid at any dragged position.
+        x -= OffsetX; y -= OffsetY;
         // Portrait (always-on, character_1 group)
         if (Hit(x, y, s, 13, 6, 39, 46)) return HitTarget.Portrait;
         // DS1 min-mode behavior (rail open): slot 1 stays visible as
@@ -121,8 +130,8 @@ public sealed class CharacterAwp
         // "nifty boxes" around the bars. Without this layer the bars
         // and portrait appear to float on the world background.
         {
-            int wx = (int)Math.Round(0  * s);
-            int wy = (int)Math.Round(3  * s);
+            int wx = (int)Math.Round(0  * s) + OffsetX;
+            int wy = (int)Math.Round(3  * s) + OffsetY;
             int ww = (int)Math.Round(65 * s);
             int wh = (int)Math.Round(52 * s);
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
@@ -142,8 +151,8 @@ public sealed class CharacterAwp
         // when the rail is open.
         if (!railOpen)
         {
-            int wx = (int)Math.Round(64  * s);
-            int wy = (int)Math.Round(3   * s);
+            int wx = (int)Math.Round(64  * s) + OffsetX;
+            int wy = (int)Math.Round(3   * s) + OffsetY;
             int ww = (int)Math.Round(84  * s); // 148-64
             int wh = (int)Math.Round(37  * s); // 40-3
             iconRenderer.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
@@ -155,12 +164,12 @@ public sealed class CharacterAwp
         // HP bar — gas rect 2,6,11,52 (W=9, H=46), uv 0.007813,0.226563,
         // 0.042969,0.585938. dynamic_edge=top means fill from BOTTOM up;
         // visible height = h * frac, rendered at (y + h - fillH).
-        DrawVerticalBar(iconRenderer, barRenderer, viewportW, viewportH, s,
+        DrawVerticalBar(iconRenderer, barRenderer, viewportW, viewportH, s, OffsetX, OffsetY,
             2, 6, 9, 46, hpFrac,
             0.007813f, 0.226563f, 0.042969f, 0.585938f, awpAtlas);
         // MP bar — gas rect 54,6,63,52 (W=9, H=46), uv 0.210938,0.226563,
         // 0.246095,0.585938.
-        DrawVerticalBar(iconRenderer, barRenderer, viewportW, viewportH, s,
+        DrawVerticalBar(iconRenderer, barRenderer, viewportW, viewportH, s, OffsetX, OffsetY,
             54, 6, 9, 46, mpFrac,
             0.210938f, 0.226563f, 0.246095f, 0.585938f, awpAtlas);
 
@@ -175,8 +184,8 @@ public sealed class CharacterAwp
         //   3. (future) death / health_warning / unconscious overlays —
         //      SC-AUTH-CHAR-AWP-STATES.
         {
-            int px = (int)Math.Round(13 * s);
-            int py = (int)Math.Round(6  * s);
+            int px = (int)Math.Round(13 * s) + OffsetX;
+            int py = (int)Math.Round(6  * s) + OffsetY;
             int pw = (int)Math.Round(39 * s);
             int ph = (int)Math.Round(46 * s);
             // Frame (selection texture) — drawn first so the icon sits inside.
@@ -219,8 +228,8 @@ public sealed class CharacterAwp
         for (int i = 0; i < maxSlot; i++)
         {
             int gasX = 68 + i * 20; // slots at 68, 88, 108, 128
-            int sx = (int)Math.Round(gasX * s);
-            int sy = (int)Math.Round(6 * s);
+            int sx = (int)Math.Round(gasX * s) + OffsetX;
+            int sy = (int)Math.Round(6 * s) + OffsetY;
             int sw = (int)Math.Round(16 * s);
             int sh = (int)Math.Round(32 * s);
             // INFORAIL skill progress — per gas bar_slot_N_skill_1
@@ -315,8 +324,8 @@ public sealed class CharacterAwp
             if (railOpen)
             {
                 // Close ⟵ arrow (min mode), uv 0.820313,0,1,1.
-                int bx = (int)Math.Round(64 * s);
-                int by = (int)Math.Round(40 * s);
+                int bx = (int)Math.Round(64 * s) + OffsetX;
+                int by = (int)Math.Round(40 * s) + OffsetY;
                 int bw = (int)Math.Round(23 * s); // 87-64
                 int bh = (int)Math.Round(16 * s); // 56-40
                 iconRenderer.DrawIcon(viewportW, viewportH, atlas,
@@ -326,8 +335,8 @@ public sealed class CharacterAwp
             else
             {
                 // Wide Inventory button (max mode), uv 0,0.0625,0.65625,1.
-                int bx = (int)Math.Round(64 * s);
-                int by = (int)Math.Round(40 * s);
+                int bx = (int)Math.Round(64 * s) + OffsetX;
+                int by = (int)Math.Round(40 * s) + OffsetY;
                 int bw = (int)Math.Round(84 * s); // 148-64
                 int bh = (int)Math.Round(15 * s); // 55-40
                 iconRenderer.DrawIcon(viewportW, viewportH, atlas,
@@ -339,13 +348,13 @@ public sealed class CharacterAwp
 
     private static void DrawVerticalBar(
         IconRenderer iconRenderer, BarRenderer barRenderer,
-        int viewportW, int viewportH, float scale,
+        int viewportW, int viewportH, float scale, int offX, int offY,
         int gasX, int gasY, int gasW, int gasH, float frac,
         float gasU0, float gasV0, float gasU1, float gasV1,
         GlTexture atlas)
     {
-        int x = (int)Math.Round(gasX * scale);
-        int y = (int)Math.Round(gasY * scale);
+        int x = (int)Math.Round(gasX * scale) + offX;
+        int y = (int)Math.Round(gasY * scale) + offY;
         int w = (int)Math.Round(gasW * scale);
         int h = (int)Math.Round(gasH * scale);
         // Background — full bar at dim tint

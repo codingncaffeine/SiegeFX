@@ -19,8 +19,15 @@ public sealed class TeamPortraits
     public const int RefRes = 480;
     public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
+    /// <summary>SC-HUD-DRAG — pixel offset of the whole strip from its
+    /// authored left-dock. Set by the host from the user's shift-dragged
+    /// position; (0,0) = the authored layout. Draw and HitTest both honor
+    /// it so visuals and clicks can never desync.</summary>
+    public int OffsetX, OffsetY;
+
     // First follower cell top + per-cell vertical stride (640×480 ref).
-    const int CellTop0 = 56, CellStep = 53;
+    // Public: the host derives the strip's default top for drag pickup.
+    public const int CellTop0 = 56, CellStep = 53;
 
     public readonly record struct Member(
         GlTexture? Portrait, float HpFrac, float MpFrac, bool Dead, bool Selected,
@@ -41,6 +48,9 @@ public sealed class TeamPortraits
     public HitResult HitTest(int x, int y, int viewportH, int followerCount)
     {
         float s = Scale(viewportH);
+        // SC-HUD-DRAG — transform the point into the un-offset frame so
+        // every authored rect below stays valid at any dragged position.
+        x -= OffsetX; y -= OffsetY;
         for (int i = 0; i < followerCount; i++)
         {
             int top = CellTop0 + i * CellStep;
@@ -76,24 +86,24 @@ public sealed class TeamPortraits
             //   slot chrome: window_slots_panel 64,3,148,40 uv 0.25,0.710938,0.578125,1
             //   4 slots: x 68/88/108/128, y6, 16×32 (slot1 melee … slot4 spell)
             //   chevron: awp_buttons 64,40,148,55
-            DrawWeaponStrip(icons, viewportW, viewportH, s, top, m, awpAtlas, chevronTex);
+            DrawWeaponStrip(icons, viewportW, viewportH, s, OffsetX, OffsetY, top, m, awpAtlas, chevronTex);
 
             // Chrome frame behind the bars + portrait (gas window_portait_panel
             // uv 0,0.59375,0.253907,1; V-flipped for the bottom-up RAW).
-            int wx = (int)MathF.Round(0 * s), wy = (int)MathF.Round(top * s);
+            int wx = (int)MathF.Round(0 * s) + OffsetX, wy = (int)MathF.Round(top * s) + OffsetY;
             int ww = (int)MathF.Round(65 * s), wh = (int)MathF.Round(52 * s);
             icons.DrawIcon(viewportW, viewportH, awpAtlas, wx, wy, ww, wh, Vector4.One,
                 0f, 1f - 1f, 0.253907f, 1f - 0.59375f);
 
             // HP (left) + MP (right) vertical bars.
-            DrawVerticalBar(icons, bars, viewportW, viewportH, s, 2, top + 3, 9, 46, m.HpFrac,
+            DrawVerticalBar(icons, bars, viewportW, viewportH, s, OffsetX, OffsetY, 2, top + 3, 9, 46, m.HpFrac,
                 0.007813f, 0.226563f, 0.042969f, 0.585938f, awpAtlas);
-            DrawVerticalBar(icons, bars, viewportW, viewportH, s, 54, top + 3, 9, 46, m.MpFrac,
+            DrawVerticalBar(icons, bars, viewportW, viewportH, s, OffsetX, OffsetY, 54, top + 3, 9, 46, m.MpFrac,
                 0.210938f, 0.226563f, 0.246095f, 0.585938f, awpAtlas);
 
             // Portrait: frame first (uv 0.050781..0.203125), then the face,
             // then the death mask / selection ring.
-            int px = (int)MathF.Round(13 * s), py = (int)MathF.Round((top + 3) * s);
+            int px = (int)MathF.Round(13 * s) + OffsetX, py = (int)MathF.Round((top + 3) * s) + OffsetY;
             int pw = (int)MathF.Round(39 * s), ph = (int)MathF.Round(46 * s);
             icons.DrawIcon(viewportW, viewportH, awpAtlas, px, py, pw, ph, Vector4.One,
                 0.050781f, 1f - 0.585938f, 0.203125f, 1f - 0.226563f);
@@ -121,11 +131,12 @@ public sealed class TeamPortraits
     // the same widgets character_awp draws for the leader, offset to this cell.
     private static void DrawWeaponStrip(
         IconRenderer icons, int viewportW, int viewportH, float s,
+        int offX, int offY,
         int top, in Member m, GlTexture awpAtlas, GlTexture? chevronTex)
     {
         // Slot chrome (the wide 4-slot box): leader window_slots_panel
         // 64,3,148,40 → here (64, top, 84, 37). uv V-flipped for the RAW.
-        int sx = (int)MathF.Round(64 * s), sy = (int)MathF.Round(top * s);
+        int sx = (int)MathF.Round(64 * s) + offX, sy = (int)MathF.Round(top * s) + offY;
         int sw = (int)MathF.Round(84 * s), sh = (int)MathF.Round(37 * s);
         icons.DrawIcon(viewportW, viewportH, awpAtlas, sx, sy, sw, sh, Vector4.One,
             0.25f, 1f - 1f, 0.578125f, 1f - 0.710938f);
@@ -136,7 +147,7 @@ public sealed class TeamPortraits
         var slots = new[] { m.Slot1, m.Slot2, m.Slot3, m.Slot4 };
         for (int k = 0; k < 4; k++)
         {
-            int slx = (int)MathF.Round((68 + k * 20) * s), sly = (int)MathF.Round((top + 3) * s);
+            int slx = (int)MathF.Round((68 + k * 20) * s) + offX, sly = (int)MathF.Round((top + 3) * s) + offY;
             int slw = (int)MathF.Round(16 * s), slh = (int)MathF.Round(32 * s);
             var slotTex = slots[k];
             if (slotTex is not null)
@@ -154,7 +165,7 @@ public sealed class TeamPortraits
         // (uv 0,0.0625,0.65625,1), same texture and region the player uses.
         if (chevronTex is not null)
         {
-            int chx = (int)MathF.Round(64 * s), chy = (int)MathF.Round((top + 37) * s);
+            int chx = (int)MathF.Round(64 * s) + offX, chy = (int)MathF.Round((top + 37) * s) + offY;
             int chw = (int)MathF.Round(84 * s), chh = (int)MathF.Round(15 * s);
             icons.DrawIcon(viewportW, viewportH, chevronTex, chx, chy, chw, chh, Vector4.One,
                 0f, 0.0625f, 0.65625f, 1f);
@@ -164,10 +175,11 @@ public sealed class TeamPortraits
     // Verbatim from CharacterAwp — vertical bar with dynamic_edge=top fill.
     private static void DrawVerticalBar(
         IconRenderer icons, BarRenderer bars, int viewportW, int viewportH, float scale,
+        int offX, int offY,
         int gasX, int gasY, int gasW, int gasH, float frac,
         float gasU0, float gasV0, float gasU1, float gasV1, GlTexture atlas)
     {
-        int x = (int)MathF.Round(gasX * scale), y = (int)MathF.Round(gasY * scale);
+        int x = (int)MathF.Round(gasX * scale) + offX, y = (int)MathF.Round(gasY * scale) + offY;
         int w = (int)MathF.Round(gasW * scale), h = (int)MathF.Round(gasH * scale);
         bars.DrawRect(viewportW, viewportH, x, y, w, h, new Vector4(0.05f, 0.05f, 0.05f, 0.7f));
         float f = Math.Clamp(frac, 0f, 1f);

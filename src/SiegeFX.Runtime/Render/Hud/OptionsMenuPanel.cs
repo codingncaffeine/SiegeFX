@@ -108,6 +108,8 @@ internal sealed class OptionsMenuPanel
         public float CompassPosX = -1f, CompassPosY = -1f;
         public float InventoryPosX = -1f, InventoryPosY = -1f;
         public float CompanionInvPosX = -1f, CompanionInvPosY = -1f;
+        public float AwpPosX = -1f, AwpPosY = -1f;   // player portrait + slots cluster
+        public float TeamPosX = -1f, TeamPosY = -1f; // companion portrait strip
 
         // Advanced — ALPHA-2V modern-GPU tab (new; DS1 had no equivalent).
         // All vendor-neutral GL features. MSAA needs a window rebuild so it
