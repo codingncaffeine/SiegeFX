@@ -4422,6 +4422,10 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    // SC-HUD-DRAG — Shift+LMB on the compass / inventory /
+                    // companion row grabs it for repositioning; the piece's
+                    // own buttons are bypassed while shift is held.
+                    if (ShiftHeld() && TryBeginHudDrag(mx, my)) return;
                     // Compass hide/show toggle (top-right) — only live while the
                     // dial is actually on screen (NIS off).
                     if (_nisPhase == NisPhase.Off &&
@@ -4885,6 +4889,14 @@ void main()
             };
             mouse.MouseUp += (m, btn) =>
             {
+                // SC-HUD-DRAG — releasing the button locks the dragged HUD
+                // piece where it sits and persists the spot immediately.
+                if (btn == MouseButton.Left && _hudDrag != HudDragPiece.None)
+                {
+                    _hudDrag = HudDragPiece.None;
+                    Hud.OptionsPrefs.Save(_optionsMenu.Live);
+                    return;
+                }
                 if (btn == MouseButton.Left) _awpPressed = Hud.CharacterAwp.HitTarget.None;
                 // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold per
                 // character_awp.gas.
@@ -5171,6 +5183,13 @@ void main()
                 // is RMB-camera-specific and gets nulled on RMB release; a
                 // separate _currentMousePos stays valid for the whole session.
                 _currentMousePos = new Vector2(pos.X, pos.Y);
+                // SC-HUD-DRAG — an active drag owns the cursor; the piece
+                // follows and nothing below gets hover churn.
+                if (_hudDrag != HudDragPiece.None)
+                {
+                    MoveHudDrag((int)pos.X, (int)pos.Y);
+                    return;
+                }
                 // Phase 22-A SC-HUD-DATABAR — keep hover state fresh so per-
                 // button textures swap to _hov on rollover. Per-frame cost is
                 // 7 rect tests; negligible.
@@ -9237,15 +9256,94 @@ void main()
             Console.WriteLine("[compass] cover texture unresolved — compass hidden");
     }
 
+    // ================= SC-HUD-DRAG — shift-drag HUD repositioning ==========
+    // QoL: Shift+LMB grabs the compass, the player inventory panel, or the
+    // companion-inventory tile row; dragging moves it, releasing locks the
+    // spot into prefs.json (normalized fractions, resolution-independent).
+    // While shift is held, a click on a piece bypasses its buttons.
+    private enum HudDragPiece { None, Compass, Inventory, CompanionInv }
+    private HudDragPiece _hudDrag = HudDragPiece.None;
+    private int _hudDragOffX, _hudDragOffY;
+    private (int X, int Y, int W, int H) _companionRowRect; // stashed by the draw pass
+
+    private bool ShiftHeld()
+    {
+        var kbs = _input?.Keyboards;
+        if (kbs is null || kbs.Count == 0) return false;
+        return kbs[0].IsKeyPressed(Key.ShiftLeft) || kbs[0].IsKeyPressed(Key.ShiftRight);
+    }
+
+    /// <summary>Compass dial's top-left + size — honors the user's dragged
+    /// position, else the authored top-right dock. Shared by draw, the
+    /// toggle hit-test, and drag pickup so they can never disagree.</summary>
+    private (int X, int Y, int Size) CompassRect(int viewportW, int viewportH)
+    {
+        float scale = Hud.HudScale.Hud(viewportH);
+        int size = (int)(108 * scale);
+        var s = _optionsMenu.Live;
+        if (s.CompassPosX >= 0f && s.CompassPosY >= 0f)
+            return ((int)MathF.Round(s.CompassPosX * viewportW),
+                    (int)MathF.Round(s.CompassPosY * viewportH), size);
+        return (viewportW - size - (int)(6 * scale), (int)(6 * scale), size);
+    }
+
+    private bool TryBeginHudDrag(int mx, int my)
+    {
+        int vw = _window.Size.X, vh = _window.Size.Y;
+        var (cxr, cyr, csz) = CompassRect(vw, vh);
+        if (mx >= cxr && mx < cxr + csz && my >= cyr && my < cyr + csz)
+        {
+            _hudDrag = HudDragPiece.Compass;
+            _hudDragOffX = mx - cxr; _hudDragOffY = my - cyr;
+            return true;
+        }
+        // Companion row before the player panel — it can tile over/near it.
+        var cr = _companionRowRect;
+        if (cr.W > 0 && mx >= cr.X && mx < cr.X + cr.W && my >= cr.Y && my < cr.Y + cr.H)
+        {
+            _hudDrag = HudDragPiece.CompanionInv;
+            _hudDragOffX = mx - cr.X; _hudDragOffY = my - cr.Y;
+            return true;
+        }
+        if (_inventoryOpen)
+        {
+            int pw = Hud.InventoryPanel.PanelWidth(vh), ph = Hud.InventoryPanel.PanelHeight(vh);
+            int ix = _inventoryPanel.OriginX, iy = _inventoryPanel.OriginY;
+            if (mx >= ix && mx < ix + pw && my >= iy && my < iy + ph)
+            {
+                _hudDrag = HudDragPiece.Inventory;
+                _hudDragOffX = mx - ix; _hudDragOffY = my - iy;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void MoveHudDrag(int mx, int my)
+    {
+        int vw = _window.Size.X, vh = _window.Size.Y;
+        if (vw <= 0 || vh <= 0) return;
+        // Clamp so a piece can't be flung entirely off-screen and lost.
+        float nx = Math.Clamp((mx - _hudDragOffX) / (float)vw, 0f, 0.95f);
+        float ny = Math.Clamp((my - _hudDragOffY) / (float)vh, 0f, 0.95f);
+        var s = _optionsMenu.Live;
+        switch (_hudDrag)
+        {
+            case HudDragPiece.Compass:      s.CompassPosX = nx;      s.CompassPosY = ny;      break;
+            case HudDragPiece.Inventory:    s.InventoryPosX = nx;    s.InventoryPosY = ny;    break;
+            case HudDragPiece.CompanionInv: s.CompanionInvPosX = nx; s.CompanionInvPosY = ny; break;
+        }
+    }
+
     private void DrawCompass(int viewportW, int viewportH)
     {
         if (_iconRenderer is null) return;
         EnsureCompassTextures();
         if (_compassCover is null) return;
         float scale = Hud.HudScale.Hud(viewportH); // ALPHA-2V — shared HUD baseline + UI-scale knob
-        int size = (int)(108 * scale);
-        int cx = viewportW - size / 2 - (int)(6 * scale);
-        int cy = size / 2 + (int)(6 * scale);
+        var (rx, ry, size) = CompassRect(viewportW, viewportH);
+        int cx = rx + size / 2;
+        int cy = ry + size / 2;
         var tint = new Vector4(1f, 1f, 1f, 1f);
 
         // Collapsed: the dial folds down to the small compass-star show button.
@@ -9310,9 +9408,9 @@ void main()
     {
         if (_compassCover is null) return false;
         float scale = Hud.HudScale.Hud(viewportH); // ALPHA-2V — shared HUD baseline + UI-scale knob
-        int size = (int)(108 * scale);
-        int cx = viewportW - size / 2 - (int)(6 * scale);
-        int cy = size / 2 + (int)(6 * scale);
+        var (dialX, dialY, size) = CompassRect(viewportW, viewportH);
+        int cx = dialX + size / 2;
+        int cy = dialY + size / 2;
         var (rx, ry, rw, rh) = _compassHidden ? CompassShowRect(cx, cy, scale)
                                               : CompassHideRect(cx, cy, scale);
         if (px < rx || px >= rx + rw || py < ry || py >= ry + rh) return false;
@@ -21282,12 +21380,19 @@ void main()
                         uv.u0, uv.v0, uv.u1, uv.v1);
                 }
             }
+            _companionRowRect = default; // SC-HUD-DRAG — rebuilt below when tiles are open
             if (_inventoryOpen && _barRenderer is not null)
             {
                 // INFORAIL-B: max mode (paperdoll open) → x=253; min mode
                 // (paperdoll closed) → x=89 per hud_inventory.gas.
-                _inventoryPanel.OriginX     = _charPanelOpen ? inventoryMaxX : inventoryMinX;
-                _inventoryPanel.OriginY     = panelTopY;
+                // SC-HUD-DRAG — a user-dragged position overrides the dock.
+                var hudPos = _optionsMenu.Live;
+                _inventoryPanel.OriginX     = hudPos.InventoryPosX >= 0f
+                    ? (int)MathF.Round(hudPos.InventoryPosX * size.X)
+                    : (_charPanelOpen ? inventoryMaxX : inventoryMinX);
+                _inventoryPanel.OriginY     = hudPos.InventoryPosY >= 0f
+                    ? (int)MathF.Round(hudPos.InventoryPosY * size.Y)
+                    : panelTopY;
                 _inventoryPanel.DimBackdrop = false;
                 _inventoryPanel.Gold        = _progression?.Gold ?? 0;
                 // Phase 22-AUTH-INV — DS1-authentic chrome assets loaded
@@ -21329,7 +21434,19 @@ void main()
                 if (_openInventoryMembers.Count > 0)
                 {
                     int stride = InventoryPanel.PanelWidth(size.Y);
-                    int slot = 1;
+                    // SC-HUD-DRAG — the row of companion tiles moves as ONE
+                    // piece: a dragged base replaces "right of the player's
+                    // panel"; tiles still stride rightward from the base.
+                    int compBaseX = hudPos.CompanionInvPosX >= 0f
+                        ? (int)MathF.Round(hudPos.CompanionInvPosX * size.X)
+                        : _inventoryPanel.OriginX + stride;
+                    int compBaseY = hudPos.CompanionInvPosY >= 0f
+                        ? (int)MathF.Round(hudPos.CompanionInvPosY * size.Y)
+                        : panelTopY;
+                    _companionRowRect = (compBaseX, compBaseY,
+                        _openInventoryMembers.Count * stride,
+                        InventoryPanel.PanelHeight(size.Y));
+                    int slot = 0;
                     foreach (var pidx in _openInventoryMembers.OrderBy(x => x))
                     {
                         // That companion's own face in the header, so the player
@@ -21337,8 +21454,8 @@ void main()
                         var member = _party.FirstOrDefault(mm => mm.PartyIndex == pidx);
                         var memberPortrait = member is not null
                             ? ResolveMemberPortrait(member.Actor.Template) : null;
-                        _companionInvPanel.OriginX     = _inventoryPanel.OriginX + slot * stride;
-                        _companionInvPanel.OriginY     = panelTopY;
+                        _companionInvPanel.OriginX     = compBaseX + slot * stride;
+                        _companionInvPanel.OriginY     = compBaseY;
                         _companionInvPanel.DimBackdrop = false;
                         _companionInvPanel.Gold        = 0;
                         _companionInvPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,

@@ -102,6 +102,13 @@ internal sealed class OptionsMenuPanel
         public string BloodColor = "Red";    // Red/Green/Disabled
         public bool Dismemberment = true;
 
+        // SC-HUD-DRAG — user-positioned HUD pieces (Shift+LMB drag; QoL
+        // addition). Normalized viewport fractions of each piece's top-left
+        // corner; -1 = the built-in layout. Persist with everything else.
+        public float CompassPosX = -1f, CompassPosY = -1f;
+        public float InventoryPosX = -1f, InventoryPosY = -1f;
+        public float CompanionInvPosX = -1f, CompanionInvPosY = -1f;
+
         // Advanced — ALPHA-2V modern-GPU tab (new; DS1 had no equivalent).
         // All vendor-neutral GL features. MSAA needs a window rebuild so it
         // applies at next launch; everything else applies on OK.
