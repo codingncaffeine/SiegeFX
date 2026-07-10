@@ -60,12 +60,14 @@ public partial class MainWindow : Window
     {
         var ver = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "dev";
         MessageBox.Show(this,
-            $"SiegeSmith {ver}\n\n" +
+            $"SiegeSmith v{ver} — early alpha\n\n" +
             "The Dungeon Siege modding studio and world builder,\n" +
             "built on the SiegeFX engine's own readers and writers —\n" +
             "what the editor shows is what the engine loads.\n\n" +
-            "Part of the SiegeFX project:\n" +
-            "github.com/codingncaffeine/SiegeFX",
+            "Not yet field-tested — expect rough edges,\n" +
+            "and please report what breaks.\n\n" +
+            "Manual: github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith\n" +
+            "Project: github.com/codingncaffeine/SiegeFX",
             "About SiegeSmith", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
