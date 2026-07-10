@@ -6505,6 +6505,23 @@ void main()
             if (mapStore.Count > 0) Console.WriteLine($"  map templates: {mapStore.Count} custom template(s)");
         }
         catch (Exception ex) { Console.WriteLine($"  map template load failed: {ex.Message}"); }
+        // SS-CUSTOM (GAME-4) — map-local quests: world/maps/<map>/quests/quests.gas
+        // (the retail per-map quest file). Custom maps carry their own journal
+        // entries this way; missing file = shipped catalog only.
+        try
+        {
+            var norm = regionPath.Replace('\\', '/');
+            int cut = norm.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (cut > 0)
+            {
+                var questsPath = norm[..cut] + "/quests/quests.gas";
+                var qBytes = mapReader.ExtractToMemory(questsPath);
+                var qDoc = SiegeFX.Core.Assets.GasDocument.Load(qBytes);
+                int merged = SiegeFX.Core.Actors.QuestCatalog.MergeFromGas(qDoc);
+                if (merged > 0) Console.WriteLine($"  map quests: {merged} custom quest definition(s)");
+            }
+        }
+        catch { /* no map-local quests — the shipped catalog stands */ }
         var (instances, instDiags) = SiegeFX.Core.Assets.RegionObjects.LoadActors(mapReader, regionPath);
 
         // Phase 21a-2 — when LoadNeighborTerrain stashed a world layout +

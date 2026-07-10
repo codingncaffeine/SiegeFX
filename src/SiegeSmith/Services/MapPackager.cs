@@ -38,7 +38,8 @@ public static class MapPackager
         IReadOnlyList<Conversation>? conversations = null,
         uint sourceGuid = 0, IReadOnlyList<RegionStitch>? stitches = null,
         IReadOnlyList<StitchRegionRef>? siblings = null,
-        IReadOnlyList<LogicalFlag>? logicalFlags = null)
+        IReadOnlyList<LogicalFlag>? logicalFlags = null,
+        string? questsGas = null)
     {
         string map = "map_" + Sanitize(mapName, "custom");
         string region = Sanitize(regionName, "region_r1");
@@ -63,6 +64,14 @@ public static class MapPackager
             string infoDir = Path.Combine(mapDir, "info");
             Directory.CreateDirectory(infoDir);
             File.WriteAllText(Path.Combine(infoDir, "start_positions.gas"), BuildStartPositions(s));
+        }
+
+        // GAME-4 — map-local quest catalog (retail quests/quests.gas shape).
+        if (!string.IsNullOrWhiteSpace(questsGas))
+        {
+            string questsDir = Path.Combine(mapDir, "quests");
+            Directory.CreateDirectory(questsDir);
+            File.WriteAllText(Path.Combine(questsDir, "quests.gas"), questsGas);
         }
         // Every placed object (props + the seed actor) is written through the one placement writer,
         // grouped into its objects/<file>.gas bucket.

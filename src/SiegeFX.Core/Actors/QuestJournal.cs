@@ -392,6 +392,45 @@ public static class QuestCatalog
     //    -> ...) is NOT wired here — that ordering ships as activate_quest
     //    on each subsequent NPC's dialogue tree, so DS1 dialogue authors
     //    drive the chain naturally without us hard-coding chapter order.
+    /// <summary>SS-CUSTOM (GAME-4) — merge quest definitions from a map-local
+    /// <c>quests/quests.gas</c> (the retail per-map quest file shape: a
+    /// <c>[quests]</c> root whose children are quest blocks with
+    /// <c>screen_name</c> and ordered <c>[*]</c> description states). Custom
+    /// maps authored in SiegeSmith carry their own quests this way; merged
+    /// entries overwrite same-key catalog rows so a total conversion can even
+    /// re-text a shipped key. Returns the number of quests merged.</summary>
+    public static int MergeFromGas(SiegeFX.Core.Assets.GasDocument doc)
+    {
+        static string Unquote(string s) => s.Trim().Trim('"');
+        int merged = 0;
+        foreach (var root in doc.Roots)
+        {
+            if (!root.Header.Equals("quests", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var q in root.Children)
+            {
+                if (string.IsNullOrWhiteSpace(q.Header)) continue;
+                string screen = "", objective = "";
+                foreach (var a in q.Attributes)
+                    if (a.Name.Equals("screen_name", StringComparison.OrdinalIgnoreCase)) screen = Unquote(a.Value);
+                foreach (var state in q.Children)
+                {
+                    foreach (var a in state.Attributes)
+                        if (a.Name.Equals("description", StringComparison.OrdinalIgnoreCase) && objective.Length == 0)
+                            objective = Unquote(a.Value);
+                    if (objective.Length > 0) break;
+                }
+                _defs[q.Header] = new QuestDefinition
+                {
+                    Key = q.Header,
+                    ScreenName = screen.Length > 0 ? screen : q.Header,
+                    ObjectiveText = objective,
+                };
+                merged++;
+            }
+        }
+        return merged;
+    }
+
     static readonly Dictionary<string, QuestDefinition> _defs =
         new(StringComparer.OrdinalIgnoreCase)
         {

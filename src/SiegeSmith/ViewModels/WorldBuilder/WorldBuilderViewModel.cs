@@ -313,7 +313,20 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private uint _nextLogicScid = 0x04000001;
     public string[] ConditionVerbs => RegionTrigger.Conditions;
     public string[] ActionVerbs => RegionTrigger.Actions;
-    public string[] QuestKeys => QuestCatalogKeys.Keys;
+    // GAME-4 — dialogue's activate_quest suggestions = shipped catalog keys
+    // PLUS this map's own quests, so custom stories wire up as easily as
+    // DS1's. The combo stays editable for anything else.
+    public string[] QuestKeys
+    {
+        get
+        {
+            if (MapQuests.Count == 0) return QuestCatalogKeys.Keys;
+            var list = new List<string>(MapQuests.Count + QuestCatalogKeys.Keys.Length);
+            foreach (var q in MapQuests) list.Add(q.Key);
+            list.AddRange(QuestCatalogKeys.Keys);
+            return list.ToArray();
+        }
+    }
     public string[] DialogueChoices => DialogueLine.Choices;
     public CmdKind[] CommandKinds { get; } = (CmdKind[])System.Enum.GetValues(typeof(CmdKind));
 
@@ -639,6 +652,61 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand DeleteSelectedAnyCommand { get; }
     public RelayCommand ImportTextureCommand { get; }
     public RelayCommand CreateTemplateCommand { get; }
+    public RelayCommand AddQuestCommand { get; }
+    public RelayCommand DeleteQuestCommand { get; }
+
+    // GAME-4 — map-local quests (journal entries of the custom game).
+    public ObservableCollection<MapQuest> MapQuests { get; } = new();
+    private MapQuest? _selectedQuest;
+    public MapQuest? SelectedQuest
+    {
+        get => _selectedQuest;
+        set { if (SetProperty(ref _selectedQuest, value)) { OnPropertyChanged(nameof(HasSelectedQuest)); RaiseQuestProps(); RaiseCommands(); } }
+    }
+    public bool HasSelectedQuest => _selectedQuest is not null;
+    public string QuestKey
+    {
+        get => _selectedQuest?.Key ?? "";
+        set { if (_selectedQuest is not null) { _selectedQuest.Key = TemplateAuthor.SanitizeName(value); RefreshQuestItem(); OnPropertyChanged(nameof(QuestKeys)); } }
+    }
+    public string QuestScreenName
+    {
+        get => _selectedQuest?.ScreenName ?? "";
+        set { if (_selectedQuest is not null) { _selectedQuest.ScreenName = value ?? ""; RefreshQuestItem(); } }
+    }
+    public string QuestDescription
+    {
+        get => _selectedQuest?.Description ?? "";
+        set { if (_selectedQuest is not null) _selectedQuest.Description = value ?? ""; }
+    }
+    public string QuestOrder
+    {
+        get => _selectedQuest?.Order.ToString(CultureInfo.InvariantCulture) ?? "";
+        set { if (_selectedQuest is not null && int.TryParse(value, out var o)) { _selectedQuest.Order = o; RefreshQuestItem(); } }
+    }
+    private string _chapterName = "Chapter 1";
+    public string ChapterName { get => _chapterName; set => SetProperty(ref _chapterName, value); }
+    private string _chapterIntro = "";
+    public string ChapterIntro { get => _chapterIntro; set => SetProperty(ref _chapterIntro, value); }
+
+    private void RaiseQuestProps()
+    {
+        OnPropertyChanged(nameof(QuestKey));
+        OnPropertyChanged(nameof(QuestScreenName));
+        OnPropertyChanged(nameof(QuestDescription));
+        OnPropertyChanged(nameof(QuestOrder));
+    }
+
+    private void RefreshQuestItem()
+    {
+        if (_selectedQuest is null) return;
+        int i = MapQuests.IndexOf(_selectedQuest);
+        if (i >= 0) MapQuests[i] = _selectedQuest; // replace-in-place → Label/Detail recompute
+    }
+
+    /// <summary>The quests gas for packaging, or null when the map has none.</summary>
+    private string? ComposeQuests() =>
+        MapQuests.Count == 0 ? null : QuestAuthor.Compose(_chapterName, _chapterIntro, MapQuests);
 
     // GAME-3 — custom template authoring (items / monsters / NPCs).
     public string[] TemplateKinds { get; } = { "Weapon", "Armor / shield", "Monster", "NPC" };
@@ -729,6 +797,20 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
         ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
         CreateTemplateCommand = new RelayCommand(_ => CreateTemplate(), _ => _assetsFolder is not null);
+        AddQuestCommand = new RelayCommand(_ =>
+        {
+            var q = new MapQuest { Key = $"quest_custom_{MapQuests.Count + 1:00}" };
+            MapQuests.Add(q);
+            SelectedQuest = q;
+            OnPropertyChanged(nameof(QuestKeys));
+        });
+        DeleteQuestCommand = new RelayCommand(_ =>
+        {
+            if (_selectedQuest is null) return;
+            MapQuests.Remove(_selectedQuest);
+            SelectedQuest = null;
+            OnPropertyChanged(nameof(QuestKeys));
+        }, _ => _selectedQuest is not null);
         GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
@@ -793,6 +875,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             new OutlineGroup("Triggers",      Triggers,      "#33C2A6"),
             new OutlineGroup("Commands",      Commands,      "#4C8DF0"),
             new OutlineGroup("Conversations", Conversations, "#C77DD8"),
+            new OutlineGroup("Quests",        MapQuests,     "#E0709A"),
             new OutlineGroup("Nav flags",     LogicalFlags,  "#7FBF7F"),
         };
 
@@ -870,7 +953,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
-                logicalFlags: new List<LogicalFlag>(LogicalFlags));
+                logicalFlags: new List<LogicalFlag>(LogicalFlags),
+                questsGas: ComposeQuests());
             _lastAutosaveFingerprint = fp;
             Status = "Autosaved to " + outDir + ".";
         }
@@ -892,6 +976,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 SelectMarker(item); break;
             case Conversation c: SelectedConversation = c; break;
             case LogicalFlag f: SelectedFlag = f; break;
+            case MapQuest mq: SelectedQuest = mq; break;
         }
     }
 
@@ -903,6 +988,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (_selectedTrigger is not null) { DeleteTriggerCommand.Execute(null); return; }
         if (_selectedCommand is not null) { DeleteCommandCommand.Execute(null); return; }
         if (_selectedConversation is not null) { DeleteConversationCommand.Execute(null); return; }
+        if (_selectedQuest is not null) { DeleteQuestCommand.Execute(null); return; }
         if (_selectedFlag is not null) { DeleteNavFlagCommand.Execute(null); return; }
         if (_selectedPlacedObject is not null) { DeleteObjectCommand.Execute(null); return; }
         if (_selectedNode is not null && DeleteNodeCommand.CanExecute(null)) DeleteNodeCommand.Execute(null);
@@ -1339,7 +1425,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
-                logicalFlags: new List<LogicalFlag>(LogicalFlags));
+                logicalFlags: new List<LogicalFlag>(LogicalFlags),
+                questsGas: ComposeQuests());
             RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath);
             Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).";
         }
@@ -1373,7 +1460,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
                 stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
-                logicalFlags: new List<LogicalFlag>(LogicalFlags));
+                logicalFlags: new List<LogicalFlag>(LogicalFlags),
+                questsGas: ComposeQuests());
             RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
                 onEarlyExit: (code, err) => System.Windows.Application.Current?.Dispatcher.Invoke(() =>
                 {
