@@ -32,14 +32,12 @@ public static class InfoRailLayout
     /// at a usable height while still respecting the gas-authored
     /// aspect ratios (feedback_siegefx_authentic_scalable.md
     /// scale-only deviation rule).</summary>
-    public const float MaxScale = 1.5f;
-    public static float Scale(int viewportH)
-    {
-        float raw = viewportH / (float)RefRes;
-        // ALPHA-2V — the global UI-scale knob multiplies AFTER the rail's
-        // 1.5× clamp so 100% keeps today's look and the knob still resizes.
-        return (raw < MaxScale ? raw : MaxScale) * HudScale.User;
-    }
+    // ALPHA-2V RE-BASELINE — the rail's historical 1.5× clamp folded into
+    // the shared HudScale baseline (1.6 = retail's 1024×768 GUI density)
+    // so every in-game panel scales from one source of truth + the
+    // Advanced-tab UI Scale knob.
+    public const float MaxScale = HudScale.BaseMax;
+    public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
     // ============================================================
     // PAPERDOLL / INFO PANEL — hud_character.gas

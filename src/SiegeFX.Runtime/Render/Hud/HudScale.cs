@@ -16,11 +16,13 @@ public static class HudScale
     public static float User = 1f;
 
     /// <summary>ALPHA-2V RE-BASELINE — the shared cap every in-game HUD
-    /// panel now clamps to (the info-rail trio already did; user verdict:
-    /// that group was "small and correct" while the unclamped panels read
-    /// oversized at 1440p/4K). One baseline = consistent GUI; the User
-    /// knob provides growth beyond it for those who want bigger.</summary>
-    public const float BaseMax = 1.5f;
+    /// panel now clamps to (the info-rail trio already clamped ~here; user
+    /// verdict: that group was "small and correct" while the unclamped
+    /// panels read oversized at 1440p/4K). 1.6 = retail's own maximum GUI
+    /// density: DS1 topped out at 1024×768, and 768/480 = 1.6, so capped
+    /// panels render exactly the pixel density the original game ever
+    /// reached. The User knob provides growth beyond it.</summary>
+    public const float BaseMax = 1.6f;
 
     /// <summary>Height-proportional HUD scale (the house convention:
     /// gas-authored 640×480 coords × viewportH/480) clamped to
