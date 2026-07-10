@@ -25,6 +25,12 @@ public sealed class TriggerRuntime
     /// row-level reset_duration cooldowns and per-call <c>delay(N)</c> options.</summary>
     double _now;
 
+    /// <summary>ALPHA-2 SEAM FOLD — how far a held volume condition's bounds
+    /// grow so a party member straddling a box seam doesn't flap the row
+    /// (enter → falling-edge reversal → enter …) on follower micro-steps.
+    /// Mirrors the camera_fade enter/stay hysteresis precedent.</summary>
+    const float VolumeHysteresisMargin = 0.35f;
+
     public IReadOnlyList<TriggerInstance> Instances => _instances;
     public double NowSeconds => _now;
 
@@ -291,6 +297,14 @@ public sealed class TriggerRuntime
             case "party_member_within_sphere":
             {
                 if (!TryFloatArg(cond, 0, out var radius)) return false;
+                // ALPHA-2 SEAM FOLD — sticky volumes: once a row is held,
+                // its volume grows by a small margin so follower
+                // micro-steps on a box seam can't flap enter/exit every
+                // tick. The path2crypts stair boxes were flapping
+                // hide → auto-reverse → hide per step, which yanked nav
+                // triangles out from under the player (crawl/wedge) and
+                // left the lower level half-revealed.
+                if (state.ConditionHeld) radius += VolumeHysteresisMargin;
                 return ctx.PartyMemberWithinSphere(trig.Position, radius);
             }
             case "go_within_sphere":
@@ -303,6 +317,12 @@ public sealed class TriggerRuntime
                 if (!TryFloatArg(cond, 0, out var hx)) return false;
                 if (!TryFloatArg(cond, 1, out var hy)) return false;
                 if (!TryFloatArg(cond, 2, out var hz)) return false;
+                if (state.ConditionHeld)
+                {
+                    hx += VolumeHysteresisMargin;
+                    hy += VolumeHysteresisMargin;
+                    hz += VolumeHysteresisMargin;
+                }
                 return ctx.PartyMemberWithinAabb(trig.Position, hx, hy, hz);
             }
             case "party_member_within_node":

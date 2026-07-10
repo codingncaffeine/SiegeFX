@@ -176,6 +176,7 @@ echo  103. Phase 26 - PARTY RECRUIT     - Recruit Gyorn at Stonebridge (bt_r1): 
 echo  104. SC-WEATHER                   - Mood weather audit (CLI, self-verifying) + fh_r1 storm eyes-test (rain/fog/lightning/thunder + rain loops)
 echo  105. SC-ELEVATOR                  - Ride the farmhouse grate lift (hc_r1): lever call, 5s descent with rider carry, fades, nav rebuild
 echo  106. ALPHA-1 CAMPAIGN AUDIT       - Completability sweep: unhandled components + undispatched trigger verbs across all 81 regions (CLI, self-verifying)
+echo  107. CRYPT STAIRS REPRO           - Start at path2crypts: short walk to the cr_r1 stairs (fade-flap / partial-reveal / freeze repro; F7 = fade diag)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -288,6 +289,7 @@ if /i "%CHOICE%"=="103" goto T103
 if /i "%CHOICE%"=="104" goto T104
 if /i "%CHOICE%"=="105" goto T105
 if /i "%CHOICE%"=="106" goto T106
+if /i "%CHOICE%"=="107" goto T107
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2466,6 +2468,31 @@ echo.
 "%TOOL%" world campaign-audit "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Logic.dsres"
 echo.
 "%TOOL%" region nav-components "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" all --top=5
+echo.
+pause
+goto MENU
+
+:T107
+echo.
+echo --- CRYPT STAIRS REPRO: path2crypts to cr_r1 descent ---
+echo [Starts the run rooted at path2crypts so the crypt stairs are a short
+echo  walk instead of the full trek from the farm. This is the spot where
+echo  the fade seam was flapping (hide/auto-reverse/hide on every step):
+echo  half-revealed lower level, crawling descent, control wedge.
+echo  Fixes to verify this run:
+echo  - No stair click-fight: descend in ONE click from top to bottom.
+echo  - No [fade_nodes] out/in pairs spamming per step in the console
+echo    (seam hysteresis now holds a crossed boundary for +0.35u).
+echo  - Lower level reveals fully on descent; going back up restores the
+echo    upper level.
+echo  - No hijacked movement (patrol chains never target the hero now).
+echo  IF the reveal still breaks: press F7 while it looks wrong - the
+echo  per-section fade diagnostic prints + writes siegefx_fade_diag.log.]
+echo.
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test107.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/path2crypts
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test107.log
 echo.
 pause
 goto MENU
