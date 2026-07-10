@@ -4422,10 +4422,14 @@ void main()
                 if (btn == MouseButton.Left && _player is not null)
                 {
                     int mx = (int)m.Position.X, my = (int)m.Position.Y;
-                    // SC-HUD-DRAG — Shift+LMB on the compass / inventory /
-                    // companion row grabs it for repositioning; the piece's
-                    // own buttons are bypassed while shift is held.
-                    if (ShiftHeld() && TryBeginHudDrag(mx, my)) return;
+                    // SC-HUD-DRAG — Shift+LMB on a movable HUD piece grabs it
+                    // for repositioning; the piece's own buttons are bypassed
+                    // while shift is held.
+                    if (ShiftHeld() && TryBeginHudDrag(mx, my))
+                    {
+                        Console.WriteLine($"[hud-drag] grabbed {_hudDrag} at {mx},{my}");
+                        return;
+                    }
                     // Compass hide/show toggle (top-right) — only live while the
                     // dial is actually on screen (NIS off).
                     if (_nisPhase == NisPhase.Off &&
@@ -9359,23 +9363,14 @@ void main()
             BeginRailDrag(HudDragPiece.Paperdoll, mx, my, pr.X, pr.Y);
             return true;
         }
-        // Companion portrait strip (below the AWP; only with followers).
-        // Checked before the AWP because the strip's authored top (y=56)
-        // brushes the AWP cluster's authored bottom (y=58).
-        int followers = _party.Count - 1;
-        if (followers > 0)
+        // Companion portrait strip (below the AWP) — tested against its
+        // ACTUAL last-drawn bounds so pickup can't disagree with pixels.
+        var tr = _teamPortraits.LastDrawnRect;
+        if (tr.W > 0 && mx >= tr.X && mx < tr.X + tr.W && my >= tr.Y && my < tr.Y + tr.H)
         {
-            float ts = Hud.TeamPortraits.Scale(vh);
-            int tx = _teamPortraits.OffsetX;
-            int ty = (int)MathF.Round(Hud.TeamPortraits.CellTop0 * ts) + _teamPortraits.OffsetY;
-            int tw = (int)MathF.Round(150 * ts);
-            int th = (int)MathF.Round(followers * Hud.TeamPortraits.CellStep * ts);
-            if (mx >= tx && mx < tx + tw && my >= ty && my < ty + th)
-            {
-                _hudDrag = HudDragPiece.TeamStrip;
-                _hudDragOffX = mx - tx; _hudDragOffY = my - ty;
-                return true;
-            }
+            _hudDrag = HudDragPiece.TeamStrip;
+            _hudDragOffX = mx - tr.X; _hudDragOffY = my - tr.Y;
+            return true;
         }
         // Player AWP cluster (portrait + HP/MP + slots + inventory button).
         {

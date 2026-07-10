@@ -25,6 +25,11 @@ public sealed class TeamPortraits
     /// it so visuals and clicks can never desync.</summary>
     public int OffsetX, OffsetY;
 
+    /// <summary>SC-HUD-DRAG — the strip's actual on-screen bounds from the
+    /// last Draw. The host's drag pickup tests THIS (not re-derived math)
+    /// so grabbing can never disagree with what's on screen.</summary>
+    public (int X, int Y, int W, int H) LastDrawnRect { get; private set; }
+
     // First follower cell top + per-cell vertical stride (640×480 ref).
     // Public: the host derives the strip's default top for drag pickup.
     public const int CellTop0 = 56, CellStep = 53;
@@ -75,6 +80,12 @@ public sealed class TeamPortraits
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
+        LastDrawnRect = members.Count == 0
+            ? default
+            : (OffsetX,
+               (int)MathF.Round(CellTop0 * s) + OffsetY,
+               (int)MathF.Round(150 * s),
+               (int)MathF.Round(members.Count * CellStep * s));
         for (int i = 0; i < members.Count; i++)
         {
             var m = members[i];
