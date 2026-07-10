@@ -176,7 +176,7 @@ echo  103. Phase 26 - PARTY RECRUIT     - Recruit Gyorn at Stonebridge (bt_r1): 
 echo  104. SC-WEATHER                   - Mood weather audit (CLI, self-verifying) + fh_r1 storm eyes-test (rain/fog/lightning/thunder + rain loops)
 echo  105. SC-ELEVATOR                  - Ride the farmhouse grate lift (hc_r1): lever call, 5s descent with rider carry, fades, nav rebuild
 echo  106. ALPHA-1 CAMPAIGN AUDIT       - Completability sweep: unhandled components + undispatched trigger verbs across all 81 regions (CLI, self-verifying)
-echo  107. CRYPT STAIRS REPRO           - Start at path2crypts: short walk to the cr_r1 stairs (fade-flap / partial-reveal / freeze repro; F7 = fade diag)
+echo  107. CRYPT STAIRS REPRO           - Spawn AT the cr_r1 stairs (path2crypts root, SIEGEFX_DEBUG_SPAWN); fade-flap / reveal / freeze repro; F7 = fade diag
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -2474,11 +2474,13 @@ goto MENU
 
 :T107
 echo.
-echo --- CRYPT STAIRS REPRO: path2crypts to cr_r1 descent ---
-echo [Starts the run rooted at path2crypts so the crypt stairs are a short
-echo  walk instead of the full trek from the farm. This is the spot where
-echo  the fade seam was flapping (hide/auto-reverse/hide on every step):
-echo  half-revealed lower level, crawling descent, control wedge.
+echo --- CRYPT STAIRS REPRO: spawn AT the cr_r1 stair descent ---
+echo [Spawns the PC directly at the top of the crypt stairs (path2crypts
+echo  frame 150.1,-4.0,307.5 = the fh-frame spot from the crash logs,
+echo  mapped through `world map-point` because the stitch is rotated).
+echo  This is the spot where the fade seam was flapping (hide/auto-
+echo  reverse/hide on every step): half-revealed lower level, crawling
+echo  descent, control wedge.
 echo  Fixes to verify this run:
 echo  - No stair click-fight: descend in ONE click from top to bottom.
 echo  - No [fade_nodes] out/in pairs spamming per step in the console
@@ -2489,8 +2491,10 @@ echo  - No hijacked movement (patrol chains never target the hero now).
 echo  IF the reveal still breaks: press F7 while it looks wrong - the
 echo  per-section fade diagnostic prints + writes siegefx_fade_diag.log.]
 echo.
+set "SIEGEFX_DEBUG_SPAWN=150.1,-4.0,307.5"
 set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test107.log"
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/path2crypts
+set "SIEGEFX_DEBUG_SPAWN="
 set "SIEGEFX_DEBUG_LOG_FILE="
 echo Log written to: %TEMP%\siegefx_diag\test107.log
 echo.

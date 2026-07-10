@@ -1271,8 +1271,87 @@ static int DispatchWorld(string[] a)
         "path"   => CmdWorldPath(a[1..]),
         "follow" => CmdWorldFollow(a[1..]),
         "campaign-audit" => CmdWorldCampaignAudit(a[1..]),
+        "map-point" => CmdWorldMapPoint(a[1..]),
         _        => UnknownCommand("world " + a[0]),
     };
+}
+
+// ALPHA — convert a world-space point between two region-rooted frames.
+// Region stitches carry ROTATION, so translation-only mapping of a spawn
+// coordinate from (say) an fh_r1-rooted play session into a path2crypts
+// -rooted one lands off-mesh. This builds the full world layout rooted at
+// <from-root>, reads <to-root>'s 4x4 offset, and inverse-transforms the
+// point — the exact number SIEGEFX_DEBUG_SPAWN needs when a test entry
+// roots at a different region than the one the coordinate was logged in.
+static int CmdWorldMapPoint(string[] a)
+{
+    if (a.Length != 5 || !TryParseVec3(a[4], out var point))
+    {
+        Console.Error.WriteLine("usage: siegefx world map-point <map-tank> <terrain-tank> <from-root-region> <to-root-region> <x,y,z>");
+        return 1;
+    }
+
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+
+    static string Norm(string rp)
+    {
+        rp = rp.Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        return rp.TrimEnd('/');
+    }
+    var fromRoot = Norm(a[2]);
+    var toRoot = Norm(a[3]);
+
+    var entries = new List<WorldLayout.RegionEntry>();
+    foreach (var path in mapReader.ListFiles())
+    {
+        if (!path.EndsWith("/terrain_nodes/nodes.gas", StringComparison.OrdinalIgnoreCase)) continue;
+        var regionPath = path[..^"/terrain_nodes/nodes.gas".Length];
+        try
+        {
+            var graph = RegionGraph.Load(mapReader.ExtractToMemory(path));
+            var layout = RegionLayout.Build(graph, Resolve);
+            RegionStitchHelper? stitches = null;
+            var stitchPath = regionPath + "/editor/stitch_helper.gas";
+            if (mapReader.TryGetFile(stitchPath, out _))
+                try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(stitchPath)); } catch { }
+            entries.Add(new WorldLayout.RegionEntry(regionPath, graph, layout, stitches));
+        }
+        catch { }
+    }
+    var world = WorldLayout.Build(entries, Resolve, fromRoot);
+    if (!world.RegionOffsets.TryGetValue(toRoot, out var toXf))
+    {
+        Console.Error.WriteLine($"to-root '{toRoot}' not placed in the {fromRoot}-rooted layout");
+        return 2;
+    }
+    if (!System.Numerics.Matrix4x4.Invert(toXf, out var inv))
+    {
+        Console.Error.WriteLine("to-root transform not invertible");
+        return 2;
+    }
+    var mapped = System.Numerics.Vector3.Transform(point, inv);
+    Console.WriteLine($"from {fromRoot} frame: ({point.X:F2},{point.Y:F2},{point.Z:F2})");
+    Console.WriteLine($"to   {toRoot} frame: ({mapped.X:F2},{mapped.Y:F2},{mapped.Z:F2})");
+    Console.WriteLine($"SIEGEFX_DEBUG_SPAWN={mapped.X:F1},{mapped.Y:F1},{mapped.Z:F1}");
+    return 0;
 }
 
 // ALPHA-1 — campaign completability sweep. The elevator lesson generalized:
