@@ -2473,17 +2473,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         var stand = Matrix4x4.CreateRotationX(MathF.PI / 2f); // SNO art is Y-up; the thumb camera is Z-up
         var verts = new List<Vector3>();
         var norms = new List<Vector3>();
+        Span<int> tri = stackalloc int[3];
         foreach (var s in sno.Surfaces)
         {
             var idx = s.TriangleIndices;
             for (int k = 0; k + 2 < idx.Length; k += 3)
             {
-                int g0 = (int)s.StartCorner + idx[k];
-                int g1 = (int)s.StartCorner + idx[k + 1];
-                int g2 = (int)s.StartCorner + idx[k + 2];
-                if ((uint)g0 >= (uint)sno.Corners.Length || (uint)g1 >= (uint)sno.Corners.Length || (uint)g2 >= (uint)sno.Corners.Length)
+                tri[0] = (int)s.StartCorner + idx[k];
+                tri[1] = (int)s.StartCorner + idx[k + 1];
+                tri[2] = (int)s.StartCorner + idx[k + 2];
+                if ((uint)tri[0] >= (uint)sno.Corners.Length || (uint)tri[1] >= (uint)sno.Corners.Length || (uint)tri[2] >= (uint)sno.Corners.Length)
                     continue;
-                Span<int> tri = stackalloc int[3] { g0, g1, g2 };
                 foreach (var g in tri)
                 {
                     verts.Add(Vector3.Transform(sno.Corners[g].Position, stand));

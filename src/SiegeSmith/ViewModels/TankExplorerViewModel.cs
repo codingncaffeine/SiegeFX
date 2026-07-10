@@ -187,6 +187,7 @@ public sealed class TankExplorerViewModel : ObservableObject, IDisposable
                     { bestBare = bare; path = p; }
                 if (bestBare is null) return null;
             }
+            if (path is null) return null;
             return SiegeFX.Core.Assets.AspMesh.Load(_doc.Reader.ExtractToMemory(path));
         }
         catch { return null; }
