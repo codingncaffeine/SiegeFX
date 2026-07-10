@@ -449,6 +449,17 @@
                     <!-- Scene Outliner -->
                     <DockPanel Grid.Row="0">
                         <TextBlock DockPanel.Dock="Top" Text="OUTLINER" Style="{StaticResource Header.Section}"/>
+                        <!-- ED-9 — analysis overlays: translucent volumes/radii/bounds in the viewport -->
+                        <WrapPanel DockPanel.Dock="Top" Margin="10,0,6,4">
+                            <CheckBox Content="Volumes" IsChecked="{Binding OverlayTriggerVolumes, Mode=TwoWay}" Margin="0,0,8,2" FontSize="11"
+                                      ToolTip="Show every trigger's activation volume (from its bounding-box condition; 1u default) as a translucent teal box"/>
+                            <CheckBox Content="Radii" IsChecked="{Binding OverlayLightRadii, Mode=TwoWay}" Margin="0,0,8,2" FontSize="11"
+                                      ToolTip="Show each point light's inner/outer radius as ground discs in the light's colour"/>
+                            <CheckBox Content="Nav" IsChecked="{Binding OverlayNavFlags, Mode=TwoWay}" Margin="0,0,8,2" FontSize="11"
+                                      ToolTip="Mark nodes that carry a nav flag (logical_flags.gas) with a green cube at the node origin"/>
+                            <CheckBox Content="Bounds" IsChecked="{Binding OverlayNodeBounds, Mode=TwoWay}" Margin="0,0,0,2" FontSize="11"
+                                      ToolTip="Show every terrain node's bounding box — spot overlaps and gaps at a glance"/>
+                        </WrapPanel>
                         <TreeView ItemsSource="{Binding OutlineGroups}" SelectedItemChanged="OnOutlinerSelected"
                                   BorderThickness="0" Background="Transparent">
                             <TreeView.Resources>
@@ -457,6 +468,10 @@
                                         <Border Width="8" Height="8" CornerRadius="2" Margin="0,0,6,0" VerticalAlignment="Center"
                                                 Background="{Binding DotBrush}"/>
                                         <TextBlock Text="{Binding Header}" Foreground="{StaticResource Brush.Foreground}" FontSize="12"/>
+                                        <!-- ED-9 — the family's visibility eye (spatial families only) -->
+                                        <CheckBox IsChecked="{Binding Visible, Mode=TwoWay}" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                  Visibility="{Binding CanHide, Converter={StaticResource BoolToVis}}"
+                                                  ToolTip="Show/hide this whole family in the viewport — hidden pieces can't be clicked either"/>
                                     </StackPanel>
                                     <HierarchicalDataTemplate.ItemTemplate>
                                         <DataTemplate>

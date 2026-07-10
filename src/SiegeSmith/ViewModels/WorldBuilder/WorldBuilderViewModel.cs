@@ -1745,16 +1745,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OutlineGroups = new[]
         {
             new OutlineGroup("Nodes",         Nodes,         "#8A8F98"),
-            new OutlineGroup("Objects",       PlacedObjects, "#B0A890"),
-            new OutlineGroup("Emitters",      Emitters,      "#F07A28"),
-            new OutlineGroup("Decals",        Decals,        "#D8A24B"),
-            new OutlineGroup("Lights",        Lights,        "#F2D24C"),
-            new OutlineGroup("Triggers",      Triggers,      "#33C2A6"),
-            new OutlineGroup("Commands",      Commands,      "#4C8DF0"),
+            new OutlineGroup("Objects",       PlacedObjects, "#B0A890", canHide: true),
+            new OutlineGroup("Emitters",      Emitters,      "#F07A28", canHide: true),
+            new OutlineGroup("Decals",        Decals,        "#D8A24B", canHide: true),
+            new OutlineGroup("Lights",        Lights,        "#F2D24C", canHide: true),
+            new OutlineGroup("Triggers",      Triggers,      "#33C2A6", canHide: true),
+            new OutlineGroup("Commands",      Commands,      "#4C8DF0", canHide: true),
             new OutlineGroup("Conversations", Conversations, "#C77DD8"),
             new OutlineGroup("Quests",        MapQuests,     "#E0709A"),
             new OutlineGroup("Nav flags",     LogicalFlags,  "#7FBF7F"),
         };
+        foreach (var g in OutlineGroups) g.VisibilityChanged = Render; // eyes re-render
 
         // GAME-1 — the live-FX clock: ~15fps re-render while emitters exist
         // and FX are live. Deterministic particle time, so toggling live/
@@ -2468,6 +2469,93 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SelectedMesh = mesh;
         if (IsEmpty) { PlaceAnchor(); return; }
         PaintStepAt(sx, sy);
+    }
+
+    // ═══ ED-9 — analysis overlays & per-family visibility ═════════════
+    // Translucent geometry the software renderer alpha-blends over the
+    // scene: trigger activation volumes, light radii, nav-flag markers,
+    // and node bounding boxes. None of it is pickable or counts toward
+    // the camera's scene bounds.
+
+    private bool _ovTriggers, _ovRadii, _ovNav, _ovBounds;
+    public bool OverlayTriggerVolumes { get => _ovTriggers; set { if (SetProperty(ref _ovTriggers, value)) Render(); } }
+    public bool OverlayLightRadii { get => _ovRadii; set { if (SetProperty(ref _ovRadii, value)) Render(); } }
+    public bool OverlayNavFlags { get => _ovNav; set { if (SetProperty(ref _ovNav, value)) Render(); } }
+    public bool OverlayNodeBounds { get => _ovBounds; set { if (SetProperty(ref _ovBounds, value)) Render(); } }
+
+    private bool GroupVisible(string header)
+    {
+        if (OutlineGroups is null) return true;
+        foreach (var g in OutlineGroups) if (g.Header == header) return g.Visible;
+        return true;
+    }
+
+    /// <summary>The trigger's activation half-extents — from its first
+    /// bounding-box condition when authored, else a 1u default so every
+    /// trigger still shows a volume under the overlay.</summary>
+    private static Vector3 TriggerHalfExtents(RegionTrigger tg)
+    {
+        foreach (var row in tg.Rows)
+            foreach (var c in row.Conditions)
+            {
+                if (c.Verb is null || c.Verb.IndexOf("bounding_box", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                var parts = (c.Args ?? "").Split(',');
+                if (parts.Length >= 3
+                    && float.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var x)
+                    && float.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var y)
+                    && float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var z))
+                    return new Vector3(MathF.Abs(x), MathF.Abs(y), MathF.Abs(z));
+            }
+        return new Vector3(1f, 1f, 1f);
+    }
+
+    /// <summary>ED-9 — translucent overlay box: 12 alpha-blended triangles,
+    /// self-lit, not pickable, excluded from scene bounds.</summary>
+    private static void AppendBoxBlend(Matrix4x4 world, Vector3 half, int rgb, byte alpha,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    {
+        var c = new Vector3[8];
+        for (int i = 0; i < 8; i++)
+            c[i] = Vector3.Transform(new Vector3(
+                ((i & 1) == 0 ? -half.X : half.X),
+                ((i & 2) == 0 ? -half.Y : half.Y),
+                ((i & 4) == 0 ? -half.Z : half.Z)), world);
+        int packed = (alpha << 24) | (rgb & 0xFFFFFF);
+        void Tri(int i, int j, int k)
+        {
+            verts.Add(c[i]); verts.Add(c[j]); verts.Add(c[k]);
+            normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ);
+            uvs.Add(default); uvs.Add(default); uvs.Add(default);
+            triTex.Add(-1); triColor.Add(packed);
+            pickGuid.Add(0u); pickScid.Add(0u);
+        }
+        void Quad(int a, int b, int cc, int d) { Tri(a, b, cc); Tri(a, cc, d); }
+        Quad(0, 1, 3, 2); Quad(4, 6, 7, 5);
+        Quad(0, 4, 5, 1); Quad(2, 3, 7, 6);
+        Quad(0, 2, 6, 4); Quad(1, 5, 7, 3);
+    }
+
+    /// <summary>ED-9 — translucent horizontal disc (light radii).</summary>
+    private static void AppendDiscBlend(Vector3 center, float radius, int rgb, byte alpha,
+        List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid)
+    {
+        if (radius <= 0f) return;
+        const int Seg = 20;
+        int packed = (alpha << 24) | (rgb & 0xFFFFFF);
+        var prev = center + new Vector3(radius, 0, 0);
+        for (int s = 1; s <= Seg; s++)
+        {
+            float a = s * MathF.PI * 2f / Seg;
+            var cur = center + new Vector3(MathF.Cos(a) * radius, MathF.Sin(a) * radius, 0);
+            verts.Add(center); verts.Add(prev); verts.Add(cur);
+            normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ); normals.Add(Vector3.UnitZ);
+            uvs.Add(default); uvs.Add(default); uvs.Add(default);
+            triTex.Add(-1); triColor.Add(packed);
+            pickGuid.Add(0u); pickScid.Add(0u);
+            prev = cur;
+        }
     }
 
     private void DeleteSelectedNode()
@@ -4148,6 +4236,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
         // Placed objects — render each prop's .asp mesh at its composed world transform. Same Z-up
         // convention as terrain, so no bind-pose flip: world = R(orient) · T(localPos) · nodeWorld.
+        // ED-9 — hidden families (Outliner eye) neither render nor pick.
+        if (GroupVisible("Objects"))
         foreach (var o in _objects)
         {
             if (!layout.TryGetTransform(o.NodeGuid, out var nodeWorld)) continue;
@@ -4225,22 +4315,28 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         }
 
         // With live FX the flames ARE the preview — the emitter's cube
-        // shrinks to a small base handle for grabbing.
-        foreach (var em in Emitters)
-            Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em,
-                sizeScale: _liveFx ? 0.45f : 1f);
-        foreach (var tg in Triggers)
-            Marker(tg.NodeGuid, tg.LocalPos, tg.Scid, MarkerTrigger, tg);
-        foreach (var pl in Lights)
-            if (pl.Kind == AuthoredLightKind.Point)
-                Marker(pl.NodeGuid, pl.Position, pl.Scid, MarkerLight, pl);
-        foreach (var cm in Commands)
-            Marker(cm.NodeGuid, cm.LocalPos, cm.Scid, MarkerCommand, cm);
+        // shrinks to a small base handle for grabbing. ED-9 — each family's
+        // Outliner eye gates its markers (hidden = invisible + unpickable).
+        if (GroupVisible("Emitters"))
+            foreach (var em in Emitters)
+                Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em,
+                    sizeScale: _liveFx ? 0.45f : 1f);
+        if (GroupVisible("Triggers"))
+            foreach (var tg in Triggers)
+                Marker(tg.NodeGuid, tg.LocalPos, tg.Scid, MarkerTrigger, tg);
+        if (GroupVisible("Lights"))
+            foreach (var pl in Lights)
+                if (pl.Kind == AuthoredLightKind.Point)
+                    Marker(pl.NodeGuid, pl.Position, pl.Scid, MarkerLight, pl);
+        if (GroupVisible("Commands"))
+            foreach (var cm in Commands)
+                Marker(cm.NodeGuid, cm.LocalPos, cm.Scid, MarkerCommand, cm);
 
         // GAME-1 — decals preview as REAL textured quads on the surface
         // (world-absolute basis per the decal contract; origin node-local).
         // The quad carries the decal's scid, so clicking the art selects it.
         // A small marker cube stays only while the texture doesn't resolve.
+        if (GroupVisible("Decals"))
         foreach (var dc in Decals)
         {
             int slot = string.IsNullOrWhiteSpace(dc.Texture) ? -1 : ResolveSlot(dc.Texture, "", texSlot, texList);
@@ -4262,7 +4358,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         // state). Excluded from the scene bounds so the camera never
         // "breathes" with the flames; not pickable (the marker cube is the
         // grab handle). The FX toolbar toggle pauses this for huge regions.
-        if (_liveFx && Emitters.Count > 0)
+        if (_liveFx && Emitters.Count > 0 && GroupVisible("Emitters"))
         {
             var fxDir = new Vector3(MathF.Cos(_pitch) * MathF.Cos(_yaw), MathF.Cos(_pitch) * MathF.Sin(_yaw), MathF.Sin(_pitch));
             var fxRight = Vector3.Normalize(Vector3.Cross(new Vector3(0, 0, 1), fxDir));
@@ -4274,6 +4370,38 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
             }
         }
+
+        // ═══ ED-9 — analysis overlays (translucent, unpickable, no bounds) ═══
+        if (_ovTriggers && GroupVisible("Triggers"))
+            foreach (var tg in Triggers)
+                if (layout.TryGetTransform(tg.NodeGuid, out var tvw))
+                    AppendBoxBlend(Matrix4x4.CreateTranslation(tg.LocalPos) * tvw, TriggerHalfExtents(tg),
+                        MarkerTrigger, 0x30, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+        if (_ovRadii && GroupVisible("Lights"))
+            foreach (var pl in Lights)
+                if (pl.Kind == AuthoredLightKind.Point && layout.TryGetTransform(pl.NodeGuid, out var lvw))
+                {
+                    var lc = Vector3.Transform(pl.Position, lvw);
+                    int rgb = (int)(pl.Color & 0xFFFFFF);
+                    AppendDiscBlend(lc, pl.OuterRadius, rgb, 0x22, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+                    AppendDiscBlend(lc, pl.InnerRadius, rgb, 0x44, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+                }
+        if (_ovNav)
+            foreach (var f in LogicalFlags)
+                if (layout.TryGetTransform(f.SnodeGuid, out var fvw))
+                    AppendBoxBlend(fvw, new Vector3(0.5f, 0.5f, 0.5f),
+                        0x7FBF7F, 0x60, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+        if (_ovBounds && _catalog is not null)
+            foreach (var node in _region.Nodes)
+            {
+                if (!layout.TryGetTransform(node.Guid, out var bvw)) continue;
+                var bs = _catalog.Resolve(node.MeshGuid);
+                if (bs is null) continue;
+                var ctr = (bs.MinBounds + bs.MaxBounds) * 0.5f;
+                var half = (bs.MaxBounds - bs.MinBounds) * 0.5f;
+                AppendBoxBlend(Matrix4x4.CreateTranslation(ctr) * bvw, half,
+                    0x8A8F98, 0x16, verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+            }
 
         if (verts.Count < 3)
         {
@@ -4759,11 +4887,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 /// <summary>A row in the placed-node list.</summary>
 /// <summary>SC-UX1 — one Scene Outliner group: a fixed header + colour dot
 /// over one of the builder's live collections.</summary>
-public sealed class OutlineGroup
+public sealed class OutlineGroup : System.ComponentModel.INotifyPropertyChanged
 {
-    public OutlineGroup(string header, System.Collections.IEnumerable items, string dot)
+    public OutlineGroup(string header, System.Collections.IEnumerable items, string dot, bool canHide = false)
     {
-        Header = header; Items = items;
+        Header = header; Items = items; CanHide = canHide;
         var b = new System.Windows.Media.SolidColorBrush(
             (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(dot));
         b.Freeze();
@@ -4772,6 +4900,24 @@ public sealed class OutlineGroup
     public string Header { get; }
     public System.Collections.IEnumerable Items { get; }
     public System.Windows.Media.Brush DotBrush { get; }
+
+    // ED-9 — per-family visibility eye. Hidden families neither render nor
+    // pick; only spatial families offer the toggle (CanHide).
+    public bool CanHide { get; }
+    private bool _visible = true;
+    public bool Visible
+    {
+        get => _visible;
+        set
+        {
+            if (_visible == value) return;
+            _visible = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Visible)));
+            VisibilityChanged?.Invoke();
+        }
+    }
+    public System.Action? VisibilityChanged;
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
 }
 
 public sealed record NodeRow(uint Guid, string Mesh, int DoorCount, bool IsAnchor)
