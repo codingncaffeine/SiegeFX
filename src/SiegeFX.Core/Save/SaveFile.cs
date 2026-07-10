@@ -31,12 +31,17 @@ public sealed class SaveFile
     ///              that should stay gone across save-reload).
     ///   v8 -> v9 : added <see cref="QuestSnapshot.PickupProgress"/>
     ///              (SC-QUEST-OBJ-C pickup-objective counter).
+    ///   v9 -> v10: added <see cref="World"/> (ALPHA-2G: named world bools,
+    ///              accumulate-trigger progress, opened chests, unlocked
+    ///              usables, lever states, message-broken props, cleared
+    ///              path blockers, elevator stops) and
+    ///              <see cref="QuestSnapshot.DialogueLog"/>.
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v8 file loads as a v9 with the new fields zero-initialized.
+    /// so any v1..v9 file loads as a v10 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 10;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -64,6 +69,38 @@ public sealed class SaveFile
     /// <summary>Loot piles still on the ground at save time. Re-spawned in
     /// place on load so an unpicked drop doesn't vanish.</summary>
     public List<LootPileSnapshot> LootPiles { get; set; } = new();
+
+    /// <summary>ALPHA-2G — cross-region world state that a 20h+ campaign run
+    /// accumulates: quest-gating booleans, one-shot gizmo progress, opened
+    /// containers, unlocked mechanisms, cleared blockers, lift positions.
+    /// Null in pre-v10 saves.</summary>
+    public WorldStateSnapshot? World { get; set; }
+}
+
+/// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
+public sealed class WorldStateSnapshot
+{
+    public Dictionary<string, bool> Bools { get; set; } = new();
+    public List<AccumSnapshot> Accumulators { get; set; } = new();
+    public List<uint> OpenedChests { get; set; } = new();
+    public List<uint> UnlockedUsables { get; set; } = new();
+    public List<uint> LeversOn { get; set; } = new();
+    public List<uint> BrokenProps { get; set; } = new();
+    public List<uint> ClearedBlockers { get; set; } = new();
+    public List<ElevatorStopSnapshot> Elevators { get; set; } = new();
+}
+
+public sealed class AccumSnapshot
+{
+    public uint Scid { get; set; }
+    public int Count { get; set; }
+    public bool Fired { get; set; }
+}
+
+public sealed class ElevatorStopSnapshot
+{
+    public uint Scid { get; set; }
+    public int AtStop { get; set; } = 1;
 }
 
 /// <summary>One unpicked loot pile. Position + the same template-ref + slot
@@ -207,6 +244,9 @@ public sealed class QuestSnapshot
 {
     public string     Key          { get; set; } = "";
     public QuestState State        { get; set; } = QuestState.Active;
+    /// <summary>ALPHA-2G — the journal's recorded giver conversation for the
+    /// Show Dialogue view; previously session-only.</summary>
+    public List<string> DialogueLog { get; set; } = new();
     public int        KillProgress { get; set; }
 
     /// <summary>SC-QUEST-OBJ-A — persisted talk-to-NPC counter. Mirrors

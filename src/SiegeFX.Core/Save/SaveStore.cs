@@ -55,7 +55,9 @@ public static class SaveStore
         // get rejected below. Forgetting to extend this whitelist when bumping
         // CurrentSchemaVersion silently breaks every prior save with an
         // InvalidDataException — caught by the SC-SCROLL-G review pass.
-        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8)
+        //   v9 -> v10: added SaveFile.World (ALPHA-2G world state) +
+        //              QuestSnapshot.DialogueLog — both default-friendly.
+        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }

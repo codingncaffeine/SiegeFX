@@ -21956,6 +21956,23 @@ void main()
             RegionPath    = _regionPath ?? "",
         };
 
+        // ALPHA-2G — cross-region world state a long run accumulates.
+        var world = new SiegeFX.Core.Save.WorldStateSnapshot();
+        foreach (var kv in _worldBools) world.Bools[kv.Key] = kv.Value;
+        foreach (var lg in _logicGizmos.Values)
+            if (lg.Def.Kind == SiegeFX.Core.Assets.LogicGizmoKind.Accumulate && (lg.Count > 0 || lg.Fired))
+                world.Accumulators.Add(new SiegeFX.Core.Save.AccumSnapshot { Scid = lg.Def.Scid, Count = lg.Count, Fired = lg.Fired });
+        foreach (var c in _chestProps) if (c.ChestOpened) world.OpenedChests.Add(c.Scid);
+        foreach (var lu in _lockedUsables) if (lu.Unlocked) world.UnlockedUsables.Add(lu.Prop.Scid);
+        foreach (var lv in _leverProps) if (lv.LeverOn) world.LeversOn.Add(lv.Scid);
+        foreach (var kv in _breakingByScid) if (kv.Value.IsDestroyed) world.BrokenProps.Add(kv.Key);
+        foreach (var b in _blockingGizmos) if (!b.Active) world.ClearedBlockers.Add(b.Scid);
+        foreach (var el in _elevators)
+            if (el.AtStop != 1 || el.Moving)
+                world.Elevators.Add(new SiegeFX.Core.Save.ElevatorStopSnapshot
+                { Scid = el.Def.Scid, AtStop = el.Moving ? el.TargetStop : el.AtStop });
+        save.World = world;
+
         foreach (var s in _actors)
         {
             // CurrentTransform tracks the live position (brain / follower
@@ -22067,6 +22084,7 @@ void main()
                         KillProgress   = entry.KillProgress,
                         TalkProgress   = entry.TalkProgress,
                         PickupProgress = entry.PickupProgress,
+                        DialogueLog    = new List<string>(entry.DialogueLog), // ALPHA-2G
                     });
                 p.Gold = _progression.Gold;
             }
@@ -22219,6 +22237,56 @@ void main()
             AssignPatrolRoutes();
         }
 
+        // ALPHA-2G — restore the cross-region world state. Registries were
+        // rebuilt from region data above/at load; the snapshot patches their
+        // drift. Structural changes (broken props, blockers, lift stops)
+        // finish with one nav re-bake.
+        if (save.World is { } ws)
+        {
+            _worldBools.Clear();
+            foreach (var kv in ws.Bools) _worldBools[kv.Key] = kv.Value;
+            foreach (var a in ws.Accumulators)
+                if (_logicGizmos.TryGetValue(a.Scid, out var lg))
+                { lg.Count = a.Count; lg.Fired = a.Fired; }
+            foreach (var scid in ws.OpenedChests)
+                foreach (var c in _chestProps)
+                    if (c.Scid == scid) { c.ChestOpened = true; break; }
+            foreach (var scid in ws.UnlockedUsables)
+                foreach (var lu in _lockedUsables)
+                    if (lu.Prop.Scid == scid) { lu.Unlocked = true; break; }
+            foreach (var scid in ws.LeversOn)
+                foreach (var lv in _leverProps)
+                    if (lv.Scid == scid) { lv.LeverOn = true; break; }
+            bool structural = false;
+            foreach (var scid in ws.BrokenProps)
+                if (_breakingByScid.TryGetValue(scid, out var bp) && !bp.IsDestroyed)
+                { bp.IsDestroyed = true; structural = true; }
+            foreach (var scid in ws.ClearedBlockers)
+                foreach (var b in _blockingGizmos)
+                    if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
+            foreach (var es in ws.Elevators)
+            {
+                if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) continue;
+                if (el.AtStop == es.AtStop) continue;
+                el.AtStop = es.AtStop;
+                el.Moving = false;
+                el.T = 0f;
+                var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
+                el.PrevCarPos = pose.Translation;
+                _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
+                UpdateElevatorCarInstance(el, pose);
+                structural = true;
+            }
+            if (structural)
+            {
+                var nav = RebuildNavMesh();
+                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); }
+            }
+            Console.WriteLine($"  load: world state — {ws.Bools.Count} bool(s), {ws.Accumulators.Count} accum, " +
+                              $"{ws.OpenedChests.Count} chest(s), {ws.UnlockedUsables.Count} unlock(s), " +
+                              $"{ws.BrokenProps.Count} broken, {ws.ClearedBlockers.Count} blocker(s), {ws.Elevators.Count} lift(s)");
+        }
+
         if (save.Player is not null && _player is not null)
         {
             var ps = save.Player;
@@ -22247,6 +22315,13 @@ void main()
                 _progression.RestoreFromSave(ps.TotalXp, ps.Level);
                 _progression.Journal.RestoreFromSave(
                     ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress, q.PickupProgress)));
+                // ALPHA-2G — the Show Dialogue chronicle survives reload.
+                foreach (var q in ps.Quests)
+                {
+                    if (q.DialogueLog.Count == 0) continue;
+                    if (_progression.Journal.TryGet(q.Key, out var je) && je is not null && je.DialogueLog.Count == 0)
+                        je.DialogueLog.AddRange(q.DialogueLog);
+                }
                 _progression.RestoreGoldFromSave(ps.Gold);
             }
             _playerFacing = ps.Facing.ToVector3();
