@@ -1987,6 +1987,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var rows = new List<ValidationRow>();
         if (IsEmpty) { rows.Add(new ValidationRow(false, "Region is empty — place at least one node.")); return rows; }
 
+        // ED-12 — contents statistics up front, so the scale of the region is
+        // always visible next to its health.
+        rows.Add(new ValidationRow(true,
+            $"Contents: {_region.Nodes.Count} node(s) · {_objects.Count} object(s) · {Emitters.Count} emitter(s) · "
+            + $"{Decals.Count} decal(s) · {Lights.Count} light(s) · {Triggers.Count} trigger(s) · {Commands.Count} command(s) · "
+            + $"{Conversations.Count} conversation(s) · {MapQuests.Count} quest(s) · {LogicalFlags.Count} nav flag(s)."));
+
         RegionGraph? graph = null;
         try
         {
@@ -2024,6 +2031,51 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 badObj == 0
                     ? $"All {_objects.Count} placed object(s) anchored — {props} prop(s), {actors} actor(s)."
                     : $"{badObj} placed object(s) reference a missing node."));
+
+            // ED-12 — template resolution: every placement's template must be
+            // a known catalog entry or a created custom template, or the
+            // engine spawns nothing there.
+            int badTpl = 0;
+            var badTplNames = new List<string>();
+            foreach (var o in _objects)
+                if (!string.IsNullOrEmpty(o.Template) && !_templateModel.ContainsKey(o.Template)
+                    && !o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase))
+                { badTpl++; if (badTplNames.Count < 3) badTplNames.Add(o.Template); }
+            rows.Add(new ValidationRow(badTpl == 0,
+                badTpl == 0 ? "Every placed template resolves in the catalog."
+                            : $"{badTpl} placement(s) use an unknown template ({string.Join(", ", badTplNames)}…)."));
+        }
+
+        // ED-12 — duplicate SCIDs anywhere = two things claiming one identity;
+        // triggers/commands/quests would misfire silently in-engine.
+        {
+            var seen = new HashSet<uint>();
+            int dup = 0;
+            void Check(uint scid) { if (scid != 0 && !seen.Add(scid)) dup++; }
+            foreach (var o in _objects) Check(o.Scid);
+            foreach (var e in Emitters) Check(e.Scid);
+            foreach (var d in Decals) Check(d.Scid);
+            foreach (var l in Lights) Check(l.Scid);
+            foreach (var t in Triggers) Check(t.Scid);
+            foreach (var c in Commands) Check(c.Scid);
+            rows.Add(new ValidationRow(dup == 0,
+                dup == 0 ? "All SCIDs unique across every family."
+                         : $"{dup} duplicate SCID(s) — two pieces claim one identity; delete and re-add the duplicates."));
+        }
+
+        // ED-12 — dialogue quest references must resolve (map-local quests
+        // count; a typo'd key silently never journals).
+        {
+            int badQuestRef = 0;
+            var known = new HashSet<string>(QuestKeys, StringComparer.OrdinalIgnoreCase);
+            foreach (var c in Conversations)
+                foreach (var n in c.Nodes)
+                    if (!string.IsNullOrWhiteSpace(n.ActivateQuest) && !known.Contains(n.ActivateQuest.Split(',')[0].Trim()))
+                        badQuestRef++;
+            if (Conversations.Count > 0 || MapQuests.Count > 0)
+                rows.Add(new ValidationRow(badQuestRef == 0,
+                    badQuestRef == 0 ? "All dialogue quest references resolve (shipped + this map's quests)."
+                                     : $"{badQuestRef} dialogue line(s) activate an unknown quest key."));
         }
 
         if (graph is not null && _catalog is not null)
@@ -2059,10 +2111,19 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             rows.Add(new ValidationRow(true, $"{Emitters.Count} particle emitter(s) → emitter.gas (live in SiegeFX)."));
         if (Decals.Count > 0)
         {
-            int noTex = 0;
-            foreach (var d in Decals) if (string.IsNullOrWhiteSpace(d.Texture)) noTex++;
-            rows.Add(new ValidationRow(noTex == 0,
-                noTex == 0 ? $"{Decals.Count} decal(s) → decals.gas." : $"{noTex} decal(s) missing a texture name."));
+            // ED-12 — beyond "has a name": the texture must actually RESOLVE
+            // (install tanks or imported custom art) or the decal is invisible.
+            int noTex = 0, unresolved = 0;
+            foreach (var d in Decals)
+            {
+                if (string.IsNullOrWhiteSpace(d.Texture)) { noTex++; continue; }
+                if (_textures?.Resolve(d.Texture) is not { Valid: true })
+                    unresolved++;
+            }
+            rows.Add(new ValidationRow(noTex == 0 && unresolved == 0,
+                noTex == 0 && unresolved == 0
+                    ? $"{Decals.Count} decal(s) → decals.gas, textures resolve."
+                    : $"Decals: {noTex} missing a texture name, {unresolved} texture(s) don't resolve (typo, or import it in the Custom tab)."));
         }
         int soundCount = 0;
         foreach (var o in _objects) if (o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase)) soundCount++;
