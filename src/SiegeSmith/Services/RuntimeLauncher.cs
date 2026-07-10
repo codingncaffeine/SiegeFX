@@ -12,9 +12,11 @@ namespace SiegeSmith.Services;
 /// var or in-game menu can reach a custom map.</summary>
 public static class RuntimeLauncher
 {
-    /// <summary>Finds the built SiegeFX.Runtime by walking up from this app's directory to the
-    /// sibling <c>SiegeFX.Runtime/bin/&lt;cfg&gt;/net11.0/</c> output. Returns the .exe if present, else
-    /// the .dll (run via <c>dotnet</c>), else null.</summary>
+    /// <summary>Finds the built engine by walking up from this app's directory to the
+    /// sibling <c>SiegeFX.Runtime/bin/&lt;cfg&gt;/net11.0/</c> output. The assembly ships as
+    /// <c>SiegeFX</c> (alpha packaging rename); <c>SiegeFX.Runtime</c> is probed second so
+    /// a stale pre-rename build still launches. Returns the .exe if present, else the
+    /// .dll (run via <c>dotnet</c>), else null.</summary>
     public static string? FindRuntime()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -24,9 +26,12 @@ public static class RuntimeLauncher
             if (!Directory.Exists(bin)) continue;
             foreach (var cfg in new[] { "Release", "Debug" })
             {
-                var baseName = Path.Combine(bin, cfg, "net11.0", "SiegeFX.Runtime");
-                if (File.Exists(baseName + ".exe")) return baseName + ".exe";
-                if (File.Exists(baseName + ".dll")) return baseName + ".dll";
+                foreach (var asm in new[] { "SiegeFX", "SiegeFX.Runtime" })
+                {
+                    var baseName = Path.Combine(bin, cfg, "net11.0", asm);
+                    if (File.Exists(baseName + ".exe")) return baseName + ".exe";
+                    if (File.Exists(baseName + ".dll")) return baseName + ".dll";
+                }
             }
         }
         return null;

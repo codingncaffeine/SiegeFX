@@ -20,17 +20,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <!-- Phase 24-MAINMENU step 7. Distributable single-file publish.
-         Default build keeps the SiegeFX.Runtime.dll/exe naming so
-         test-all.bat and the existing dev workflow stay unchanged.
-         For a release artifact run:
-           dotnet publish src/SiegeFX.Runtime -c Release -r win-x64
-                  ==self==contained ==p:PublishSingleFile=true
-         (replace the placeholder leading dashes; literal double
-         hyphens are illegal inside an MSBuild XML comment).
-         The PropertyGroup below activates the bundling knobs so
-         Silk.NET's GLFW + OpenAL Soft natives ride inside the
-         single .exe and auto-extract on first launch. -->
+    <!-- ALPHA PACKAGING — the game ships (and builds) as SiegeFX.exe /
+         SiegeFX.dll; "SiegeFX.Runtime" stays the project/folder name only.
+         test-all.bat's RUN path and SiegeSmith's RuntimeLauncher probe both
+         track the assembly name. Release artifacts come from
+         publish-alpha.bat (single-file self-contained; the conditioned
+         PropertyGroup below bundles Silk.NET's GLFW + OpenAL Soft natives
+         inside the .exe, self-extracting on first launch). -->
+    <AssemblyName>SiegeFX</AssemblyName>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(PublishSingleFile)' == 'true' ">

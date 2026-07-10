@@ -32,4 +32,15 @@
     <Resource Include="Assets\logo.png" />
   </ItemGroup>
 
+  <!-- ALPHA PACKAGING — activated by publish-alpha.bat (or any publish with
+       PublishSingleFile=true): one self-contained SiegeSmith.exe, WPF natives
+       riding inside. Normal dev builds are untouched. -->
+  <PropertyGroup Condition=" '$(PublishSingleFile)' == 'true' ">
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+
 </Project>

@@ -14276,11 +14276,11 @@ void main()
             };
             if (runningUnderDotnet)
             {
-                // Find SiegeFX.Runtime.dll alongside the running assembly.
+                // Find the game assembly (SiegeFX.dll) alongside the running host.
                 string asmPath = typeof(RenderHost).Assembly.Location;
                 if (string.IsNullOrEmpty(asmPath) || !System.IO.File.Exists(asmPath))
                 {
-                    Console.Error.WriteLine("SC-DIFF-LAUNCH: can't locate SiegeFX.Runtime.dll for dotnet relaunch");
+                    Console.Error.WriteLine("SC-DIFF-LAUNCH: can't locate the game assembly for dotnet relaunch");
                     return;
                 }
                 psi.ArgumentList.Add(asmPath);

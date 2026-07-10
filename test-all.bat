@@ -9,7 +9,7 @@ REM   test-all.bat --ds1=D:\GOG\DS --refs=my_refs
 REM Pass --help (or -h, /?) to print the parameter list.
 set "DS1=D:\GOG Games\Dungeon Siege"
 set "TOOL=src\SiegeFX.Tools\bin\Release\net11.0\siegefx.exe"
-set "RUN=src\SiegeFX.Runtime\bin\Release\net11.0\SiegeFX.Runtime.dll"
+set "RUN=src\SiegeFX.Runtime\bin\Release\net11.0\SiegeFX.dll"
 set "REFS=_ds1refs"
 
 :parseargs
@@ -51,7 +51,7 @@ echo Usage: test-all.bat [--ds1=PATH] [--tool=PATH] [--run=PATH] [--refs=PATH]
 echo.
 echo   --ds1=PATH   Dungeon Siege install root (default: %DS1%)
 echo   --tool=PATH  siegefx.exe path           (default: %TOOL%)
-echo   --run=PATH   SiegeFX.Runtime.dll path   (default: %RUN%)
+echo   --run=PATH   SiegeFX.dll path   (default: %RUN%)
 echo   --refs=PATH  local reference assets dir (default: %REFS%)
 echo.
 echo Quote paths that contain spaces, e.g.:
@@ -522,7 +522,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -542,7 +542,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -562,7 +562,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -585,7 +585,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -605,7 +605,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -637,7 +637,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -658,7 +658,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -688,7 +688,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -708,7 +708,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -729,7 +729,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -749,7 +749,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -769,7 +769,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -790,7 +790,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -808,7 +808,7 @@ echo.
 dotnet "%RUN%" --selftest-save
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 pause
 goto MENU
 
@@ -826,7 +826,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -857,7 +857,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -877,7 +877,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -897,7 +897,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -918,7 +918,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -942,7 +942,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -964,7 +964,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -988,7 +988,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1009,7 +1009,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1 --diag
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1047,7 +1047,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1228,7 +1228,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1266,7 +1266,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1305,7 +1305,7 @@ set SIEGEFX_HERO_BODY=
 set SIEGEFX_HERO_SKIN=
 set SIEGEFX_HERO_PANTS=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1390,7 +1390,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set "SIEGEFX_DEBUG_DROP="
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1813,7 +1813,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_DEBUG_SPELLS=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1854,7 +1854,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_DEBUG_SPELLS=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1944,7 +1944,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_DEBUG_SPELLS=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1969,7 +1969,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_CREATOR=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -1995,7 +1995,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_CREATOR=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -2019,7 +2019,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -2059,7 +2059,7 @@ echo.
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/fh_r1
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -2149,7 +2149,7 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set EXITCODE=%ERRORLEVEL%
 set SIEGEFX_CREATOR=
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
@@ -2185,14 +2185,14 @@ echo  -LOADGAME pending for now.]
 echo.
 echo [Esc on splash skips ahead to main menu. Esc on main menu quits.]
 echo.
-echo [Distributable: dotnet publish src/SiegeFX.Runtime -c Release -r win-x64]
-echo [               --self-contained -p:PublishSingleFile=true]
-echo [Produces a single ~36 MB SiegeFX.Runtime.exe under publish/win-x64/]
+echo [Distributable: run publish-alpha.bat [version] at the repo root:]
+echo [ single-file SiegeFX.exe + SiegeSmith.exe + zips under publish]
+echo [ (see the script for the underlying dotnet publish flags).]
 echo.
 dotnet "%RUN%"
 set EXITCODE=%ERRORLEVEL%
 echo.
-echo === SiegeFX.Runtime exited with code %EXITCODE% ===
+echo === SiegeFX exited with code %EXITCODE% ===
 for %%F in ("%~dp0src\SiegeFX.Runtime\bin\Release\net11.0\siegefx_crash.log") do if exist "%%~F" (
   echo --- crash log ---
   type "%%~F"
