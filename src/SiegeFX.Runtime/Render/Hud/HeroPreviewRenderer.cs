@@ -283,6 +283,20 @@ internal sealed class HeroPreviewRenderer : IDisposable
         _skinShader.SetVec3Array("uDirDir[0]", new[] { lightDir });
         _skinShader.SetVec3Array("uDirColor[0]", new[] { new Vector3(0.85f, 0.85f, 0.80f) });
         _skinShader.SetFloat("uAmbient", 0.45f);
+        // The preview hand-rolls its lighting and never routes through
+        // ApplyLightingUniforms, so it must set every world-lighting uniform
+        // the shared skin fragment shader reads — otherwise it inherits the
+        // GL default (0) or stale play-region state. uGamma is the load-bearing
+        // one: the shader's final `pow(lit, 1/max(uGamma,0.1))` becomes
+        // pow(lit, 10) at the default uGamma=0, crushing the hero to near-black
+        // with only red-dominant highlights surviving. 1.0 = neutral (matches
+        // the look before options-gamma existed). The rest force a clean,
+        // fog-free, single-directional lighting state regardless of whether a
+        // play region drew earlier.
+        _skinShader.SetFloat("uGamma", 1.0f);
+        _skinShader.SetInt("uUseBakedLight", 0);
+        _skinShader.SetInt("uPointCount", 0);
+        _skinShader.SetInt("uFogOn", 0);
 
         // Skin matrices — replicate DS1's select_fidget skrit by alternating
         // between dff (subtle stand) and dff-02 (head-look-around) every
