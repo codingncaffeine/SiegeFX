@@ -52,9 +52,17 @@ public sealed class DialoguePanel
 
     private readonly MenuButton _accept   = new("Accept",   0, 0, 10, 10);
     private readonly MenuButton _decline  = new("Decline",  0, 0, 10, 10);
-    private readonly MenuButton _more     = new("Continue", 0, 0, 10, 10);
+    private readonly MenuButton _more     = new("More...",  0, 0, 10, 10);
     private readonly MenuButton _continue = new("Continue", 0, 0, 10, 10);
     private readonly MenuButton _closeX   = new("X",        0, 0, 10, 10);
+    // ALPHA-2H — retail's text panel carries a right-edge scrollbar (the
+    // authored RText column stops at 545 inside a 564-wide RTextBg for
+    // exactly this reason). Arrows page one line; the thumb tracks.
+    private readonly MenuButton _scrollUp   = new("-", 0, 0, 10, 10);
+    private readonly MenuButton _scrollDown = new("+", 0, 0, 10, 10);
+    private int _scroll;
+    private int _visibleLines = 1;
+    private int _totalLines = 1;
 
     static float Scale(int viewportH) => viewportH / 480f;
     static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r, float s, int originX)
@@ -87,6 +95,7 @@ public sealed class DialoguePanel
         _ = speakerName;
         _conv = conv;
         _index = 0;
+        _scroll = 0;
         PendingQuestActivation = null;
         PendingRecruit = false;
         LastQuestConversation = null;
@@ -128,12 +137,17 @@ public sealed class DialoguePanel
         Place(_continue, closeBtn);
         Place(_closeX,   Px(RCloseX, s, originX));
 
-        // DS1 has no paging button — the whole speech scrolls. We page by
-        // node, so the bottom-right button reads "Continue" mid-thread and
-        // "Close" on the last line.
+        // Retail wording: mid-thread advance reads "More...", the final line
+        // reads "Close" (reference screenshot, conversation.bmp).
         bool last = _conv is null || _index >= _conv.Nodes.Count - 1;
-        _continue.Label = last ? "Close" : "Continue";
-        _more.Label = "Continue";
+        _continue.Label = last ? "Close" : "More...";
+        _more.Label = "More...";
+
+        // ALPHA-2H — scrollbar arrows hug the text panel's right column.
+        var bg = Px(RTextBg, s, originX);
+        int sbW = Math.Max(10, (int)MathF.Round(14 * s));
+        Place(_scrollUp,   (bg.x + bg.w - sbW, bg.y, sbW, sbW));
+        Place(_scrollDown, (bg.x + bg.w - sbW, bg.y + bg.h - sbW, sbW, sbW));
     }
 
     public void OnMouseMove(int px, int py)
@@ -160,6 +174,8 @@ public sealed class DialoguePanel
     {
         if (!IsOpen) return false;
         _closeX.TryPress(px, py);
+        _scrollUp.TryPress(px, py);
+        _scrollDown.TryPress(px, py);
         var node = CurrentNode;
         if (node is { IsChoiceFork: true })
         {
@@ -183,6 +199,9 @@ public sealed class DialoguePanel
         // Corner X — always dismisses the conversation (a fork closed this
         // way counts as no answer: no recruit, no quest activation).
         if (_closeX.Release(px, py)) { Close(); return true; }
+        // ALPHA-2H — scrollbar arrows page one wrapped line.
+        if (_scrollUp.Release(px, py)) { _scroll = Math.Max(0, _scroll - 1); return true; }
+        if (_scrollDown.Release(px, py)) { _scroll = Math.Min(Math.Max(0, _totalLines - _visibleLines), _scroll + 1); return true; }
         var node = CurrentNode;
 
         if (node is { IsChoiceFork: true })
@@ -220,6 +239,7 @@ public sealed class DialoguePanel
     {
         if (_conv is null) { Close(); return; }
         _index++;
+        _scroll = 0; // fresh node starts at the top
         if (_index >= _conv.Nodes.Count) Close();
     }
 
@@ -268,40 +288,56 @@ public sealed class DialoguePanel
         int originX = (viewportW - (int)MathF.Round(640f * s)) / 2;
         var ink = new Vector4(0.90f, 0.86f, 0.74f, 1f);
 
-        // cpbox nine-slice frame + recessed text panel — DS1's dialogue_main_bg
-        // / dialogue_text_bg (both common_template = cpbox). Falls back to a
-        // flat panel when the chrome textures aren't resolvable so the box is
-        // still legible in the texture-load diagnostic case.
-        void Cpbox((int x0, int y0, int x1, int y1) r)
+        // ALPHA-2H — retail chrome (reference: conversation.bmp): a near-black
+        // slightly-translucent panel with a thin two-tone gold border, NOT the
+        // parchment cpbox (the earlier cpbox read as scaffolding against the
+        // reference). Same authored geometry, restyled fills.
+        _ = icons; _ = guiTex;
+        void DarkPanel((int x0, int y0, int x1, int y1) r, bool recessed)
         {
             var p = Px(r, s, originX);
-            if (icons is not null && guiTex is not null)
-                NinePatch.DrawCpbox(icons, guiTex, viewportW, viewportH, p.x, p.y, p.w, p.h, Vector4.One);
-            else
-            {
-                bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.08f, 0.08f, 0.10f, 0.96f));
-                bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h, new Vector4(0.667f, 0.655f, 0.557f, 1f));
-            }
+            bars.DrawRect(viewportW, viewportH, p.x, p.y, p.w, p.h,
+                recessed ? new Vector4(0.015f, 0.015f, 0.02f, 0.92f)
+                         : new Vector4(0.05f, 0.05f, 0.06f, 0.94f));
+            bars.DrawBorder(viewportW, viewportH, p.x, p.y, p.w, p.h,
+                recessed ? new Vector4(0.35f, 0.31f, 0.20f, 1f)
+                         : new Vector4(0.62f, 0.55f, 0.36f, 1f));
         }
 
-        Cpbox(RFrame);
-        Cpbox(RTextBg);
+        DarkPanel(RFrame, recessed: false);
+        DarkPanel(RTextBg, recessed: true);
 
-        // Left-justified, word-wrapped speech inside the recessed panel
-        // (DS1's text_box: justify = left, copperplate-light).
+        // Left-justified, word-wrapped speech with a working scroll window.
         var tr = Px(RText, s, originX);
         int lineH = (text.HasFont ? text.Font!.Height : 14) + 2;
-        int maxLines = Math.Max(1, tr.h / lineH);
-        int line = 0;
+        _visibleLines = Math.Max(1, tr.h / lineH);
+        var wrapped = new List<string>();
         foreach (var rawLine in node.Text.Replace("\\n", "\n").Split('\n'))
+            wrapped.AddRange(WrapLine(rawLine, text, tr.w));
+        _totalLines = Math.Max(1, wrapped.Count);
+        _scroll = Math.Clamp(_scroll, 0, Math.Max(0, _totalLines - _visibleLines));
+        for (int line = 0; line < _visibleLines && _scroll + line < wrapped.Count; line++)
+            text.DrawString(viewportW, viewportH, wrapped[_scroll + line], tr.x, tr.y + line * lineH, ink);
+
+        // ALPHA-2H — right-edge scrollbar (arrows + track + proportional
+        // thumb), matching retail's text panel column.
         {
-            foreach (var visual in WrapLine(rawLine, text, tr.w))
-            {
-                if (line >= maxLines) break;
-                text.DrawString(viewportW, viewportH, visual, tr.x, tr.y + line * lineH, ink);
-                line++;
-            }
-            if (line >= maxLines) break;
+            var bg = Px(RTextBg, s, originX);
+            int sbW = Math.Max(10, (int)MathF.Round(14 * s));
+            int trackX = bg.x + bg.w - sbW;
+            int trackY = bg.y + sbW;
+            int trackH = Math.Max(1, bg.h - 2 * sbW);
+            bars.DrawRect(viewportW, viewportH, trackX, trackY, sbW, trackH, new Vector4(0.09f, 0.09f, 0.10f, 1f));
+            bars.DrawBorder(viewportW, viewportH, trackX, trackY, sbW, trackH, new Vector4(0.35f, 0.31f, 0.20f, 1f));
+            int span = Math.Max(1, _totalLines);
+            int thumbH = Math.Max(8, trackH * _visibleLines / span);
+            int scrollMax = Math.Max(1, _totalLines - _visibleLines);
+            int thumbY = trackY + (trackH - thumbH) * Math.Min(_scroll, scrollMax) / scrollMax;
+            if (_totalLines <= _visibleLines) { thumbH = trackH; thumbY = trackY; }
+            bars.DrawRect(viewportW, viewportH, trackX + 1, thumbY + 1, sbW - 2, Math.Max(1, thumbH - 2),
+                new Vector4(0.42f, 0.37f, 0.24f, 1f));
+            _scrollUp.Draw(bars, text, viewportW, viewportH);
+            _scrollDown.Draw(bars, text, viewportW, viewportH);
         }
 
         // Context buttons — Accept/Decline for a recruit or quest fork
