@@ -177,6 +177,10 @@ echo  104. SC-WEATHER                   - Mood weather audit (CLI, self-verifyin
 echo  105. SC-ELEVATOR                  - Ride the farmhouse grate lift (hc_r1): lever call, 5s descent with rider carry, fades, nav rebuild
 echo  106. ALPHA-1 CAMPAIGN AUDIT       - Completability sweep: unhandled components + undispatched trigger verbs across all 81 regions (CLI, self-verifying)
 echo  107. CRYPT STAIRS REPRO           - Spawn AT the cr_r1 stairs (path2crypts root, SIEGEFX_DEBUG_SPAWN); fade-flap / reveal / freeze repro; F7 = fade diag
+echo  108. ALPHA-2: TOWN + DIALOGUE     - Stonebridge (bt_r1): retail dialogue chrome w/ Gyorn+Adwana, vendors, recruit, save/load soak (F5/F9)
+echo  109. ALPHA-2: CRATES + SHRINE     - path2crypts: trapped crates spring, chests open+loot, life shrine heals, world gold credits
+echo  110. ALPHA-2: DWARVEN GATE        - path2sd: stuck use-toggle gate shows authored text on click; opens only via its quest message
+echo  111. ALPHA-2: STAR DEVICE         - gd_a_r1: locked usable reports Locked. without key_glb_star; crypt doors chain msg_scid_opening
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -290,6 +294,10 @@ if /i "%CHOICE%"=="104" goto T104
 if /i "%CHOICE%"=="105" goto T105
 if /i "%CHOICE%"=="106" goto T106
 if /i "%CHOICE%"=="107" goto T107
+if /i "%CHOICE%"=="108" goto T108
+if /i "%CHOICE%"=="109" goto T109
+if /i "%CHOICE%"=="110" goto T110
+if /i "%CHOICE%"=="111" goto T111
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2497,6 +2505,86 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set "SIEGEFX_DEBUG_SPAWN="
 set "SIEGEFX_DEBUG_LOG_FILE="
 echo Log written to: %TEMP%\siegefx_diag\test107.log
+echo.
+pause
+goto MENU
+
+:T108
+echo.
+echo --- ALPHA-2: TOWN + DIALOGUE (Stonebridge, bt_r1) ---
+echo [Spawn = town. TEST LIST:
+echo  1. DIALOGUE CHROME: right-click Gyorn - dark panel + gold border +
+echo     gold text, More... mid-thread, Close on the last line, corner X,
+echo     scrollbar arrows page long lines (vs conversation.bmp reference).
+echo  2. RECRUIT: Gyorn join offer shows Accept/Decline; Accept = follows.
+echo  3. VENDOR: right-click Adwana - shop opens, buy a potion, sell it.
+echo  4. SAVE SOAK: F5 quicksave, kill something, open a chest if you see
+echo     one, F9 load - gold/kills/chest state should match the save
+echo     (console prints "load: world state - N bool(s), ...").]
+echo.
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test108.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/bt_r1
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test108.log
+echo.
+pause
+goto MENU
+
+:T109
+echo.
+echo --- ALPHA-2: CRATES + SHRINE (path2crypts) ---
+echo [Spawn = region start. TEST LIST:
+echo  1. TRAPPED CRATES: smash crates along the path - some spring traps
+echo     (console [trap] ... fires; effect + damage numbers float).
+echo  2. CHESTS: click a locker/chest - walk up, it opens once, loot
+echo     tumbles out ([chest] 0x... opened in console). No smashing chests.
+echo  3. LIFE SHRINE: find the glowing shrine spot - stepping into its
+echo     trigger heals to full ([shrine] ... restored) + fx loop pulses.
+echo  4. WORLD GOLD: coin piles credit +N gold on pickup, not a ghost item.
+echo  5. FLOOR TRAPS: crypt-side fire jets trip on proximity w/ authored
+echo     reload pauses ([trap] trp_firetrap fires).]
+echo.
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test109.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/path2crypts
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test109.log
+echo.
+pause
+goto MENU
+
+:T110
+echo.
+echo --- ALPHA-2: DWARVEN GATE (path2sd) ---
+echo [Spawn = region start; walk to the big dwarven gate. TEST LIST:
+echo  1. Clicking the stuck gate does NOT open it - the authored line
+echo     floats ("This door seems to be stuck.") + console [door] refused.
+echo  2. Regular doors nearby still click-open normally.
+echo  3. If the area quest event fires (clear its trigger), the gate opens
+echo     by message ([door] 0x... opened by message).]
+echo.
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test110.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/path2sd
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test110.log
+echo.
+pause
+goto MENU
+
+:T111
+echo.
+echo --- ALPHA-2: STAR DEVICE (gd_a_r1, late-game Glitterdelve) ---
+echo [Spawn = region start. TEST LIST:
+echo  1. Find the Star Device (console printed [locked] 0x... at load with
+echo     its position context). Clicking it without key_glb_star floats
+echo     "Locked." - it must NOT unlock.
+echo  2. Crypt-style doors here author msg_scid_opening: opening one prints
+echo     [door] chaining + downstream trigger lines.
+echo  3. Elevators in this region ride like the farmhouse grate did.]
+echo.
+set "SIEGEFX_DEBUG_LOG_FILE=%TEMP%\siegefx_diag\test111.log"
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/gd_a_r1
+set "SIEGEFX_DEBUG_LOG_FILE="
+echo Log written to: %TEMP%\siegefx_diag\test111.log
 echo.
 pause
 goto MENU
