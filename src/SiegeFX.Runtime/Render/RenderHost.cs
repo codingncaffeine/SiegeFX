@@ -3603,6 +3603,16 @@ uniform int       uDirCount;
 uniform vec3      uDirDir[4];
 uniform vec3      uDirColor[4];
 uniform float     uAmbient;
+// ALPHA-2 POINT LIGHTS — DS1 lights every interior (crypts, mines, cellars)
+// with authored point sources (torch/brazier pools from lights/lights.gas);
+// without them dungeons render ambient-only = near-black. The host uploads
+// the nearest sources each frame; color is pre-multiplied by intensity and
+// range.x/y = inner/outer falloff radii. Soft wrap term (0.35 + 0.65*ndl)
+// keeps torch pools readable on floors without hard normal cutoffs.
+uniform int       uPointCount;
+uniform vec3      uPointPos[16];
+uniform vec3      uPointColor[16];
+uniform vec3      uPointRange[16];
 // SC-TERRAIN-UV — the 8 dihedral symmetries of a square tile.
 vec2 orientUv(vec2 uv, int o)
 {
@@ -3672,6 +3682,15 @@ void main()
     for (int i = 0; i < uDirCount; ++i) {
         float ndl = max(dot(N, uDirDir[i]), 0.0);
         lighting += uDirColor[i] * ndl;
+    }
+    // ALPHA-2 POINT LIGHTS — smooth inner→outer falloff, soft wrap shading.
+    for (int i = 0; i < uPointCount; ++i) {
+        vec3 toL = uPointPos[i] - vWorldPos;
+        float dist = length(toL);
+        float att = 1.0 - smoothstep(uPointRange[i].x, max(uPointRange[i].y, uPointRange[i].x + 0.01), dist);
+        if (att <= 0.001) continue;
+        float ndl = max(dot(N, toL / max(dist, 0.001)), 0.0);
+        lighting += uPointColor[i] * att * (0.35 + 0.65 * ndl);
     }
     // Phase 21c-4 — clamp combined irradiance to 1.0. fh_r1 ships two
     // directionals (warm-white key + cool-blue fill) plus 0.20 ambient;
@@ -7258,6 +7277,7 @@ void main()
         LoadAutoTraps(allLoaded);
         LoadShrines(allLoaded);
         LoadBlockingGizmos(allLoaded);
+        LoadPointLights(allLoaded);
         AssignPatrolRoutes();
 
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
@@ -7490,6 +7510,7 @@ void main()
         LoadAutoTraps(newlyLoaded);
         LoadShrines(newlyLoaded);
         LoadBlockingGizmos(newlyLoaded);
+        LoadPointLights(newlyLoaded);
         AssignPatrolRoutes();
     }
 
@@ -10353,6 +10374,82 @@ void main()
         Console.WriteLine($"  region lighting: {count} directional(s) from {regionPath}/lights/lights.gas");
     }
 
+    // ALPHA-2 POINT LIGHTS — every interior in DS1 is lit by authored point
+    // sources; the directional-only pipeline left dungeons ambient-only
+    // (the "crypt room is pitch black" report — F7 proved zero fade groups
+    // covered it). All loaded regions' point lights live in _pointLights
+    // (world-space, color pre-multiplied by intensity); each frame the
+    // nearest MaxPointLights to the camera go to the shader.
+    private const int MaxPointLights = 16;
+    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer)> _pointLights = new();
+    private readonly HashSet<string> _pointLightRegionsLoaded = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Vector3[] _framePointPos = new Vector3[MaxPointLights];
+    private readonly Vector3[] _framePointColor = new Vector3[MaxPointLights];
+    private readonly Vector3[] _framePointRange = new Vector3[MaxPointLights];
+    private int _framePointCount;
+
+    private void LoadPointLights(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null || _regionLayout is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var norm = rp.TrimEnd('/');
+            if (!_pointLightRegionsLoaded.Add(norm)) continue;
+            var (lights, _) = SiegeFX.Core.Assets.RegionLights.Load(mapReader, norm);
+            foreach (var l in lights)
+            {
+                if (l.Kind != SiegeFX.Core.Assets.RegionLightKind.Point) continue;
+                if (l.OuterRadius <= 0.01f) continue;
+                var world = l.DirectionOrPosition;
+                if (l.NodeGuid != 0 && _regionLayout.TryGetTransform(l.NodeGuid, out var nodeXf))
+                    world = Vector3.Transform(l.DirectionOrPosition, nodeXf);
+                else if (l.NodeGuid != 0) continue; // anchor not streamed; retried next stream pass
+                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius));
+                added++;
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  point lights: {added} placed ({_pointLights.Count} total)");
+    }
+
+    /// <summary>Pick the nearest point lights to the camera for this frame.
+    /// Cheap linear scan (a few hundred entries at most in the densest
+    /// dungeon scope).</summary>
+    private void PickFramePointLights()
+    {
+        _framePointCount = 0;
+        if (_pointLights.Count == 0) return;
+        var eye = _camera.Position;
+        // Partial selection: track the current worst slot; replace when closer.
+        Span<float> dist = stackalloc float[MaxPointLights];
+        for (int i = 0; i < _pointLights.Count; i++)
+        {
+            var (pos, color, inner, outer) = _pointLights[i];
+            float d2 = Vector3.DistanceSquared(pos, eye);
+            // Skip sources far beyond their own reach + a generous view range.
+            float reach = outer + 80f;
+            if (d2 > reach * reach) continue;
+            if (_framePointCount < MaxPointLights)
+            {
+                dist[_framePointCount] = d2;
+                _framePointPos[_framePointCount] = pos;
+                _framePointColor[_framePointCount] = color;
+                _framePointRange[_framePointCount] = new Vector3(inner, outer, 0f);
+                _framePointCount++;
+                continue;
+            }
+            int worst = 0;
+            for (int j = 1; j < MaxPointLights; j++) if (dist[j] > dist[worst]) worst = j;
+            if (d2 >= dist[worst]) continue;
+            dist[worst] = d2;
+            _framePointPos[worst] = pos;
+            _framePointColor[worst] = color;
+            _framePointRange[worst] = new Vector3(inner, outer, 0f);
+        }
+    }
+
     /// <summary>Uploads the current directional-light state to whichever shader
     /// is currently bound. Cheap (a handful of uniform sets, all GL queries
     /// are name-cached at the driver level), so we just call it next to every
@@ -10363,6 +10460,14 @@ void main()
         shader.SetFloat("uAmbient", _ambientLevel);
         shader.SetVec3Array("uDirDir",   _dirLightDirs.AsSpan(0, _dirLightCount));
         shader.SetVec3Array("uDirColor", _dirLightColors.AsSpan(0, _dirLightCount));
+        // ALPHA-2 POINT LIGHTS — this frame's nearest sources.
+        shader.SetInt("uPointCount", _framePointCount);
+        if (_framePointCount > 0)
+        {
+            shader.SetVec3Array("uPointPos",   _framePointPos.AsSpan(0, _framePointCount));
+            shader.SetVec3Array("uPointColor", _framePointColor.AsSpan(0, _framePointCount));
+            shader.SetVec3Array("uPointRange", _framePointRange.AsSpan(0, _framePointCount));
+        }
         // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
         // so both world shaders (static + skinned) stay in sync with the
         // weather state without a separate dirty-tracking pass. Lightning
@@ -19804,6 +19909,9 @@ void main()
                     count: batch);
             }
         }
+        // ALPHA-2 POINT LIGHTS — select this frame's nearest sources once;
+        // every ApplyLightingUniforms call this frame uploads the same set.
+        PickFramePointLights();
         // SC-WEATHER-D — with mood fog active, the void beyond loaded nodes
         // clears to the fog color (retail's linear fog fades the world edge
         // into the same tone, so unloaded space must match or the horizon
@@ -21705,6 +21813,10 @@ void main()
         _blockingGizmos.Clear();
         // ALPHA-2 FADE-GRACE — pending hides die with the region.
         _pendingOutFades.Clear();
+        // ALPHA-2 POINT LIGHTS — per-region-load state.
+        _pointLights.Clear();
+        _pointLightRegionsLoaded.Clear();
+        _framePointCount = 0;
         // SC-WEATHER-F — sound emitters are per-region-load; stop any live
         // positional loops before dropping the state that tracks them.
         _audio?.StopAllLoops();
