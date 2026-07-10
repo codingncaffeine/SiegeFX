@@ -62,6 +62,18 @@ public partial class WorldBuilderWindow : Window
         Viewport.Focus();
         var p = e.GetPosition(Viewport);
         if (_vm.TrySnapView(p.X, p.Y)) return; // clicked the gizmo — snapped the view, don't orbit
+
+        // ED-1b — Ctrl+click toggles pieces in/out of the multi-selection. A
+        // Ctrl+click that misses keeps the set and just starts an orbit.
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            _vm.TryToggleMultiSelect(p.X, p.Y);
+            _dragging = true;
+            _last = p;
+            Viewport.CaptureMouse();
+            return;
+        }
+
         if (_vm.TryGrabObject(p.X, p.Y))       // grabbed a placed object — drag moves it (Shift-drag rotates)
         {
             _movingObject = true;
@@ -69,6 +81,7 @@ public partial class WorldBuilderWindow : Window
             Viewport.CaptureMouse();
             return;
         }
+        _vm.ClearMultiSelect();                // plain click on empty space = deselect the set
         _vm.TryPick(p.X, p.Y);                 // click-to-select the node under the cursor (drag still orbits)
         _dragging = true;
         _last = p;

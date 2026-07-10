@@ -61,6 +61,8 @@
                     <TextBlock Text="Speed" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <ComboBox Width="62" ItemsSource="{Binding CamSpeeds}" SelectedItem="{Binding CamSpeed, Mode=TwoWay}" Margin="0,0,12,0"
                               ToolTip="WASD fly speed multiplier (hold Shift for 3×, Ctrl for slow)"/>
+                    <CheckBox Content="15° rot snap" IsChecked="{Binding SnapAngle, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,12,0"
+                              ToolTip="Snap Shift-drag rotation to 15° steps — exact right angles and clean diagonals without eyeballing"/>
                     <Button Content="↶ Undo" Command="{Binding UndoCommand}" Padding="10,4" Margin="0,0,6,0" ToolTip="Undo (Ctrl+Z)"/>
                     <Button Content="↷ Redo" Command="{Binding RedoCommand}" Padding="10,4" ToolTip="Redo (Ctrl+Y)"/>
                 </StackPanel>
@@ -374,7 +376,7 @@
                     <Image Source="{Binding Image}" Stretch="Fill"/>
                 </Border>
 
-                <TextBlock Text="Pick a node mesh in the Nodes palette, then Place as anchor to begin your world.&#x0a;&#x0a;Left-drag orbit · right-drag pan · middle-drag spin · wheel zoom · WASD/QE fly (Shift fast)&#x0a;Click to select · drag to move · Shift-drag rotates objects · F focus · Ctrl+D duplicate&#x0a;Ctrl+C/V copy/paste · Ctrl+1-4 save camera bookmark · 1-4 recall"
+                <TextBlock Text="Pick a node mesh in the Nodes palette, then Place as anchor to begin your world.&#x0a;&#x0a;Left-drag orbit · right-drag pan · middle-drag spin · wheel zoom · WASD/QE fly (Shift fast)&#x0a;Click to select · Ctrl+click multi-select · drag to move · Shift-drag rotates · F focus&#x0a;Ctrl+D duplicate · Ctrl+C/V copy/paste · Ctrl+1-4 save camera bookmark · 1-4 recall"
                            Foreground="{StaticResource Brush.Muted}" HorizontalAlignment="Center" VerticalAlignment="Center"
                            TextWrapping="Wrap" MaxWidth="420" TextAlignment="Center"
                            Visibility="{Binding IsEmpty, Converter={StaticResource BoolToVis}}"/>
@@ -431,6 +433,24 @@
                             <StackPanel Margin="10,4,10,10">
                                 <TextBlock Text="Select a node, object, or marker — in the viewport or the Outliner — to edit it here."
                                            Foreground="{StaticResource Brush.Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,6"/>
+
+                                <!-- ED-1b — multi-selection group tools -->
+                                <StackPanel Visibility="{Binding IsMultiSelect, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8">
+                                    <TextBlock Text="Selection" Style="{StaticResource Header.Section}" Margin="0,0,0,0"/>
+                                    <TextBlock Text="{Binding MultiText}" FontWeight="SemiBold" Margin="0,2,0,4"/>
+                                    <TextBlock Text="Drag any member to move the whole group; Shift-drag orbits it about the centre. Ctrl+D duplicates everything, Del deletes everything — each as one undo step."
+                                               Foreground="{StaticResource Brush.Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                    <UniformGrid Columns="2">
+                                        <Button Content="Align X" Command="{Binding AlignXCommand}" Margin="0,0,3,3" Padding="6,3"
+                                                ToolTip="Move every selected piece to the group's average world-X (straightens a row running north–south)"/>
+                                        <Button Content="Align Y" Command="{Binding AlignYCommand}" Margin="3,0,0,3" Padding="6,3"
+                                                ToolTip="Move every selected piece to the group's average world-Y (straightens a row running east–west)"/>
+                                        <Button Content="Distribute X" Command="{Binding DistributeXCommand}" Margin="0,0,3,0" Padding="6,3"
+                                                ToolTip="Space the selection evenly along world X — the two outermost pieces stay put (needs 3+)"/>
+                                        <Button Content="Distribute Y" Command="{Binding DistributeYCommand}" Margin="3,0,0,0" Padding="6,3"
+                                                ToolTip="Space the selection evenly along world Y — the two outermost pieces stay put (needs 3+)"/>
+                                    </UniformGrid>
+                                </StackPanel>
 
                                 <!-- Emitter -->
                                 <StackPanel Visibility="{Binding HasSelectedEmitter, Converter={StaticResource BoolToVis}}" Margin="0,0,0,8">
@@ -737,7 +757,9 @@
                                         <TextBox Grid.Column="1" Text="{Binding ObjYawDeg, UpdateSourceTrigger=LostFocus}"
                                                  ToolTip="Rotation about the vertical axis, in degrees (Shift-drag in the viewport does the same)"/>
                                     </Grid>
-                                    <TextBlock Text="Drag in the viewport to move · Shift-drag to rotate." Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,4"/>
+                                    <TextBlock Text="{Binding ObjWorldText}" Foreground="{StaticResource Brush.Muted}" FontFamily="Consolas" FontSize="10" Margin="0,0,0,4"
+                                               ToolTip="World-space position (local values above are relative to the node this object sits on)"/>
+                                    <TextBlock Text="Drag in the viewport to move · Shift-drag to rotate (15° snap in the toolbar) · Ctrl+click others to group." Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
                                     <Button Content="Delete object" Command="{Binding DeleteObjectCommand}" Padding="8,4"/>
                                 </StackPanel>
 

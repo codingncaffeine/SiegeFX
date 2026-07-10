@@ -170,12 +170,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         };
         Render();
     }
+    /// <summary>ED-1b — read-only world-space position of the selected object;
+    /// the editable X/Y/Z above are node-relative (local).</summary>
+    public string ObjWorldText
+    {
+        get
+        {
+            if (SelObj() is not { } o || !_nodeWorld.TryGetValue(o.NodeGuid, out var nw)) return "";
+            var w = Vector3.Transform(o.LocalPos, nw);
+            return string.Create(CultureInfo.InvariantCulture,
+                $"World: {w.X:0.##}, {w.Y:0.##}, {w.Z:0.##}  ·  node 0x{o.NodeGuid:X8}");
+        }
+    }
+
     private void RaiseObjTransform()
     {
         OnPropertyChanged(nameof(ObjPosX));
         OnPropertyChanged(nameof(ObjPosY));
         OnPropertyChanged(nameof(ObjPosZ));
         OnPropertyChanged(nameof(ObjYawDeg));
+        OnPropertyChanged(nameof(ObjWorldText));
     }
 
     // ── lighting & mood (LE-6) ──────────────────────────────────
@@ -889,6 +903,331 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(HasRecentProps));
     }
 
+    // ═══ ED-1b — multi-select ════════════════════════════════════════
+    // Ctrl+click builds a selection SET across every positionable family
+    // (objects, emitters, decals, point lights, triggers, commands).
+    // Dragging any member moves the whole group; Shift-drag orbits the
+    // group about its centroid; Ctrl+D duplicates all; Del deletes all.
+
+    private readonly List<object> _multiSel = new();
+    public bool IsMultiSelect => _multiSel.Count > 1;
+    public string MultiText => $"{_multiSel.Count} pieces selected";
+    public RelayCommand AlignXCommand { get; }
+    public RelayCommand AlignYCommand { get; }
+    public RelayCommand DistributeXCommand { get; }
+    public RelayCommand DistributeYCommand { get; }
+
+    /// <summary>15°-step rotation snap for Shift-drag (toolbar toggle).</summary>
+    private bool _snapAngle;
+    public bool SnapAngle { get => _snapAngle; set => SetProperty(ref _snapAngle, value); }
+
+    private void RaiseMulti()
+    {
+        OnPropertyChanged(nameof(IsMultiSelect));
+        OnPropertyChanged(nameof(MultiText));
+        AlignXCommand?.RaiseCanExecuteChanged();
+        AlignYCommand?.RaiseCanExecuteChanged();
+        DistributeXCommand?.RaiseCanExecuteChanged();
+        DistributeYCommand?.RaiseCanExecuteChanged();
+    }
+
+    private object? PrimaryPiece() =>
+        (object?)SelObj() ?? _selectedEmitter ?? _selectedDecal
+        ?? (_selectedLight is { Kind: AuthoredLightKind.Point } ? _selectedLight : null)
+        ?? (object?)_selectedTrigger ?? _selectedCommand;
+
+    private object? PieceByScid(uint scid) =>
+        (object?)_objects.Find(x => x.Scid == scid)
+        ?? (_markers.TryGetValue(scid, out var m) ? m : null);
+
+    private static uint PieceNode(object item) => item is PlacedObject p ? p.NodeGuid : EffectNode(item);
+
+    private static Vector3 GetPieceLocal(object item) => item switch
+    {
+        PlacedObject p => p.LocalPos,
+        RegionEmitter e => e.LocalPos,
+        RegionTrigger t => t.LocalPos,
+        CommandPlacement c => c.LocalPos,
+        RegionDecal d => d.OriginLocal,
+        AuthoredLight l => l.Position,
+        _ => default,
+    };
+
+    private void SetPieceLocal(object item, Vector3 p)
+    {
+        if (item is PlacedObject po) po.LocalPos = p;
+        else SetEffectPos(item, p);
+    }
+
+    private bool PieceAlive(object m) => m switch
+    {
+        PlacedObject p => _objects.Contains(p),
+        RegionEmitter e => Emitters.Contains(e),
+        RegionDecal d => Decals.Contains(d),
+        AuthoredLight l => Lights.Contains(l),
+        RegionTrigger t => Triggers.Contains(t),
+        CommandPlacement c => Commands.Contains(c),
+        _ => false,
+    };
+
+    /// <summary>Drops members that a per-family delete or an undo restore
+    /// removed from the region, so group operations never touch ghosts.</summary>
+    private void PruneMulti() => _multiSel.RemoveAll(m => !PieceAlive(m));
+
+    /// <summary>Ctrl+click — toggles the piece under the cursor in/out of the
+    /// multi-selection. The first Ctrl+click seeds the set with the current
+    /// selection, so "select one, Ctrl+click the next" just works.</summary>
+    public bool TryToggleMultiSelect(double sx, double sy)
+    {
+        if (_pickVerts.Length < 3) return false;
+        uint scid = SoftwareRenderer.PickTriangle(_pickVerts, _pickScid, _vw, _vh,
+            _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, _ortho);
+        if (scid == 0) return false;
+        var piece = PieceByScid(scid);
+        if (piece is null) return false;
+
+        if (_multiSel.Count == 0 && PrimaryPiece() is { } primary && !ReferenceEquals(primary, piece))
+            _multiSel.Add(primary);
+
+        if (_multiSel.Remove(piece))
+            Status = $"Removed from selection — {_multiSel.Count} left.";
+        else
+        {
+            _multiSel.Add(piece);
+            SelectPiece(piece);
+            Status = $"{_multiSel.Count} selected — drag any member to move the group, "
+                   + "Shift-drag rotates it, Ctrl+D duplicates all, Del deletes all.";
+        }
+        RaiseMulti();
+        Render();
+        return true;
+    }
+
+    /// <summary>Plain click on empty terrain drops the multi-selection —
+    /// the same "click away to deselect" every editor teaches.</summary>
+    public void ClearMultiSelect()
+    {
+        if (_multiSel.Count == 0) return;
+        _multiSel.Clear();
+        RaiseMulti();
+        Render();
+    }
+
+    private void KeepOrClearMulti(object? piece)
+    {
+        if (piece is not null && _multiSel.Contains(piece)) return; // grabbing a member drags the group
+        if (_multiSel.Count == 0) return;
+        _multiSel.Clear();
+        RaiseMulti();
+    }
+
+    /// <summary>Routes a piece model to the matching single-selection so the
+    /// Inspector always shows the last piece added to the set.</summary>
+    private void SelectPiece(object piece)
+    {
+        if (piece is PlacedObject po)
+        {
+            foreach (var r in PlacedObjects) if (r.Scid == po.Scid) { SelectedPlacedObject = r; break; }
+            SelectedEmitter = null; SelectedDecal = null; SelectedLight = null;
+            SelectedTrigger = null; SelectedCommand = null;
+        }
+        else SelectMarker(piece);
+    }
+
+    /// <summary>Moves every other member of the group by the same world-space
+    /// delta the dragged anchor just moved. Members stay anchored to their own
+    /// nodes — the group slides as one, whatever it spans.</summary>
+    private void ApplyGroupDelta(object anchor, Vector3 deltaWorld)
+    {
+        if (_multiSel.Count < 2 || !_multiSel.Contains(anchor) || deltaWorld == Vector3.Zero) return;
+        PruneMulti();
+        foreach (var m in _multiSel)
+        {
+            if (ReferenceEquals(m, anchor)) continue;
+            if (!_nodeWorld.TryGetValue(PieceNode(m), out var nw) || !Matrix4x4.Invert(nw, out var inv)) continue;
+            SetPieceLocal(m, Vector3.Transform(Vector3.Transform(GetPieceLocal(m), nw) + deltaWorld, inv));
+        }
+    }
+
+    // Shift-drag rotation is a GESTURE: orientations and world positions are
+    // captured at grab time and recomputed from the accumulated angle every
+    // move — so 15° snapping quantizes cleanly instead of fighting the deltas.
+    private float _rotAccum;
+    private List<(object Item, Quaternion Orient, Vector3 World)>? _rotStart;
+    private Vector3 _rotCentroid;
+
+    private void BeginRotateGesture(object anchor)
+    {
+        _rotAccum = 0f;
+        _rotStart = null;
+        PruneMulti();
+        var members = _multiSel.Count > 1 && _multiSel.Contains(anchor)
+            ? (IReadOnlyList<object>)_multiSel : new[] { anchor };
+        var list = new List<(object, Quaternion, Vector3)>();
+        var sum = Vector3.Zero;
+        foreach (var m in members)
+        {
+            if (!_nodeWorld.TryGetValue(PieceNode(m), out var nw)) continue;
+            var w = Vector3.Transform(GetPieceLocal(m), nw);
+            list.Add((m, (m as PlacedObject)?.Orientation ?? Quaternion.Identity, w));
+            sum += w;
+        }
+        if (list.Count == 0) return;
+        _rotCentroid = sum / list.Count;
+        _rotStart = list;
+    }
+
+    /// <summary>Align the multi-selection on a world axis (0=X, 1=Y) — every
+    /// member moves to the group's average coordinate, so the row straightens
+    /// without anything jumping far.</summary>
+    private void AlignSelected(int axis)
+    {
+        PruneMulti();
+        if (_multiSel.Count < 2) { Status = "Ctrl+click at least two pieces to align."; return; }
+        PushUndo();
+        var worlds = new List<(object Item, Vector3 W, Matrix4x4 Inv)>();
+        float sum = 0;
+        foreach (var m in _multiSel)
+        {
+            if (!_nodeWorld.TryGetValue(PieceNode(m), out var nw) || !Matrix4x4.Invert(nw, out var inv)) continue;
+            var w = Vector3.Transform(GetPieceLocal(m), nw);
+            worlds.Add((m, w, inv));
+            sum += axis == 0 ? w.X : w.Y;
+        }
+        if (worlds.Count < 2) return;
+        float target = sum / worlds.Count;
+        foreach (var (item, w, inv) in worlds)
+            SetPieceLocal(item, Vector3.Transform(
+                axis == 0 ? new Vector3(target, w.Y, w.Z) : new Vector3(w.X, target, w.Z), inv));
+        RaiseObjTransform();
+        Render();
+        Status = $"Aligned {worlds.Count} pieces on world {(axis == 0 ? "X" : "Y")}.";
+    }
+
+    /// <summary>Distribute the multi-selection evenly along a world axis —
+    /// the two outermost members stay put, everything between spaces out.</summary>
+    private void DistributeSelected(int axis)
+    {
+        PruneMulti();
+        if (_multiSel.Count < 3) { Status = "Ctrl+click at least three pieces to distribute."; return; }
+        PushUndo();
+        var worlds = new List<(object Item, Vector3 W, Matrix4x4 Inv)>();
+        foreach (var m in _multiSel)
+        {
+            if (!_nodeWorld.TryGetValue(PieceNode(m), out var nw) || !Matrix4x4.Invert(nw, out var inv)) continue;
+            worlds.Add((m, Vector3.Transform(GetPieceLocal(m), nw), inv));
+        }
+        if (worlds.Count < 3) return;
+        worlds.Sort((a, b) => (axis == 0 ? a.W.X : a.W.Y).CompareTo(axis == 0 ? b.W.X : b.W.Y));
+        float lo = axis == 0 ? worlds[0].W.X : worlds[0].W.Y;
+        float hi = axis == 0 ? worlds[^1].W.X : worlds[^1].W.Y;
+        for (int i = 1; i < worlds.Count - 1; i++)
+        {
+            float t = lo + (hi - lo) * i / (worlds.Count - 1);
+            var w = worlds[i].W;
+            SetPieceLocal(worlds[i].Item, Vector3.Transform(
+                axis == 0 ? new Vector3(t, w.Y, w.Z) : new Vector3(w.X, t, w.Z), worlds[i].Inv));
+        }
+        RaiseObjTransform();
+        Render();
+        Status = $"Distributed {worlds.Count} pieces evenly along world {(axis == 0 ? "X" : "Y")}.";
+    }
+
+    /// <summary>Del with a multi-selection — one undo step removes every
+    /// member across every family.</summary>
+    private bool DeleteMultiIfAny()
+    {
+        PruneMulti();
+        if (_multiSel.Count < 2) return false;
+        PushUndo();
+        int n = _multiSel.Count;
+        foreach (var m in _multiSel.ToArray())
+            switch (m)
+            {
+                case PlacedObject p: _objects.Remove(p); break;
+                case RegionEmitter e: Emitters.Remove(e); break;
+                case RegionDecal d: Decals.Remove(d); break;
+                case AuthoredLight l: Lights.Remove(l); break;
+                case RegionTrigger t: Triggers.Remove(t); break;
+                case CommandPlacement c: Commands.Remove(c); break;
+            }
+        _multiSel.Clear();
+        SelectedPlacedObject = null;
+        SelectedEmitter = null; SelectedDecal = null; SelectedLight = null;
+        SelectedTrigger = null; SelectedCommand = null;
+        RebuildPlacedRows();
+        RaiseMulti();
+        Render();
+        Status = $"Deleted {n} pieces (Ctrl+Z restores all of them).";
+        return true;
+    }
+
+    /// <summary>Clones one piece beside itself with a fresh SCID and registers
+    /// it in its family collection (multi-duplicate building block).</summary>
+    private object? ClonePiece(object src)
+    {
+        switch (src)
+        {
+            case PlacedObject p:
+            {
+                var c = new PlacedObject
+                {
+                    Scid = _nextScid++, Template = p.Template, NodeGuid = p.NodeGuid,
+                    LocalPos = p.LocalPos + DupOffset, Orientation = p.Orientation, File = p.File,
+                };
+                _objects.Add(c); return c;
+            }
+            case RegionEmitter e:
+            {
+                var c = new RegionEmitter
+                {
+                    Scid = _nextEffectScid++, Template = e.Template, NodeGuid = e.NodeGuid,
+                    LocalPos = e.LocalPos + DupOffset, Smoke = e.Smoke,
+                    Count = e.Count, Fade = e.Fade, ParticleSize = e.ParticleSize, Growth = e.Growth,
+                };
+                Emitters.Add(c); return c;
+            }
+            case RegionDecal d:
+            {
+                var c = new RegionDecal
+                {
+                    Scid = _nextEffectScid++, NodeGuid = d.NodeGuid, OriginLocal = d.OriginLocal + DupOffset,
+                    Normal = d.Normal, AxisH = d.AxisH, AxisV = d.AxisV,
+                    HorizExtent = d.HorizExtent, VertExtent = d.VertExtent, Texture = d.Texture,
+                };
+                Decals.Add(c); return c;
+            }
+            case AuthoredLight l:
+            {
+                var c = new AuthoredLight
+                {
+                    Scid = _nextLightScid++, Kind = AuthoredLightKind.Point, NodeGuid = l.NodeGuid,
+                    Position = l.Position + DupOffset, Color = l.Color, Intensity = l.Intensity,
+                    InnerRadius = l.InnerRadius, OuterRadius = l.OuterRadius,
+                    DrawShadow = l.DrawShadow, AffectsActors = l.AffectsActors,
+                    AffectsItems = l.AffectsItems, AffectsTerrain = l.AffectsTerrain,
+                };
+                Lights.Add(c); return c;
+            }
+            case RegionTrigger t:
+            {
+                var c = new RegionTrigger { Scid = _nextLogicScid++, Template = t.Template, NodeGuid = t.NodeGuid, LocalPos = t.LocalPos + DupOffset };
+                Triggers.Add(c); return c;
+            }
+            case CommandPlacement cm:
+            {
+                var c = new CommandPlacement
+                {
+                    Scid = _nextLogicScid++, Kind = cm.Kind, NodeGuid = cm.NodeGuid, LocalPos = cm.LocalPos + DupOffset,
+                    NextScid = cm.NextScid, Target1 = cm.Target1, Target2 = cm.Target2,
+                    ClientScid = cm.ClientScid, Duration = cm.Duration, Order = cm.Order,
+                };
+                Commands.Add(c); return c;
+            }
+        }
+        return null;
+    }
+
     // ═══ ED-2 — navigation ═══════════════════════════════════════════
 
     /// <summary>Orthographic projection toggle — render AND picking share the
@@ -974,6 +1313,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private void DuplicateSelected()
     {
+        // ED-1b — with a multi-selection, Ctrl+D clones every member in one
+        // undo step; the copies become the new selection, ready to drag away.
+        PruneMulti();
+        if (_multiSel.Count > 1)
+        {
+            PushUndo();
+            var copies = new List<object>();
+            foreach (var m in _multiSel) if (ClonePiece(m) is { } c) copies.Add(c);
+            _multiSel.Clear();
+            _multiSel.AddRange(copies);
+            RebuildPlacedRows();
+            RaiseMulti();
+            Render();
+            Status = $"Duplicated {copies.Count} pieces — the copies are now the selection; drag any one to move them all.";
+            return;
+        }
         if (_selectedPlacedObject is not null)
         {
             var src = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
@@ -1213,6 +1568,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         OrthoCommand = new RelayCommand(_ => { _ortho = !_ortho; OnPropertyChanged(nameof(OrthoLabel)); Render(); });
         StoreBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) StoreBookmark(i); });
         RecallBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) RecallBookmark(i); });
+        AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
+        AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
+        DistributeXCommand = new RelayCommand(_ => DistributeSelected(0), _ => _multiSel.Count >= 3);
+        DistributeYCommand = new RelayCommand(_ => DistributeSelected(1), _ => _multiSel.Count >= 3);
         LoadWorldBuilderPrefs();
         AddQuestCommand = new RelayCommand(_ =>
         {
@@ -1401,6 +1760,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
     private void DeleteSelectedAny()
     {
+        if (DeleteMultiIfAny()) return; // ED-1b — Del removes the whole set in one undo step
         if (_selectedEmitter is not null) { DeleteEmitterCommand.Execute(null); return; }
         if (_selectedDecal is not null) { DeleteDecalCommand.Execute(null); return; }
         if (_selectedLight is not null) { DeleteLightCommand.Execute(null); return; }
@@ -1850,6 +2210,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SelectedEmitter = null; SelectedDecal = null; SelectedLight = null;
         SelectedTrigger = null; SelectedCommand = null; SelectedConversation = null;
         SelectedFlag = null; SelectedQuest = null;
+        _multiSel.Clear(); // ED-1b — restored collections hold NEW instances; old refs are ghosts
+        RaiseMulti();
         Refill(Emitters, s.Emitters);
         Refill(Decals, s.Decals);
         Refill(Lights, s.Lights);
@@ -3257,12 +3619,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                       * Matrix4x4.CreateTranslation(o.LocalPos)
                       * nodeWorld;
 
+            bool objSel = _selectedPlacedObject?.Scid == o.Scid || _multiSel.Contains(o);
             AspMesh? mesh = _templateModel.TryGetValue(o.Template, out var model) ? _asp?.Resolve(model) : null;
             if (mesh is null || mesh.TriangleIndices.Length < 3)
             {
                 // No mesh resolved — draw a marker cube so the placement is always visible + grabbable.
                 AppendMarkerCube(world, MarkerSize(_radius), verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
-                    o.Scid, -1, ref min, ref max);
+                    o.Scid, objSel ? Brighten(MarkerObject) : -1, ref min, ref max);
                 continue;
             }
 
@@ -3297,6 +3660,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 pickGuid.Add(0u);
                 pickScid.Add(o.Scid);
             }
+
+            // ED-1b — a bright base puck marks selected mesh objects (the CPU
+            // renderer can't outline a textured mesh) and doubles as a grab
+            // handle; multi-selection members all get one.
+            if (objSel)
+                AppendMarkerCube(world, MarkerSize(_radius) * 0.55f, verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
+                    o.Scid, Brighten(MarkerObject), ref min, ref max);
         }
 
         // Every node-anchored placeable that has no mesh of its own previews as a colour-coded, grabbable
@@ -3308,7 +3678,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             var w = Matrix4x4.CreateTranslation(localPos) * nw;
             bool sel = ReferenceEquals(item, _selectedEmitter) || ReferenceEquals(item, _selectedTrigger)
                     || ReferenceEquals(item, _selectedCommand) || ReferenceEquals(item, _selectedDecal)
-                    || ReferenceEquals(item, _selectedLight);
+                    || ReferenceEquals(item, _selectedLight)
+                    || _multiSel.Contains(item); // ED-1b — every set member lights up
             // Selection brightens the TYPE colour instead of replacing it —
             // a selected fire emitter still reads as fire, just lit up.
             AppendMarkerCube(w, MarkerSize(_radius) * sizeScale, verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
@@ -3570,6 +3941,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     // Editor marker palette — every placeable reads at a glance instead of an anonymous beige box.
     // Selection brightens the type colour (see Brighten) rather than swapping to an accent, so a
     // selected fire emitter still reads as fire.
+    internal const int MarkerObject   = 0xC9A063;
     internal const int MarkerFire     = 0xF07A28;
     internal const int MarkerSmoke    = 0xBFBFC8;
     internal const int MarkerTrigger  = 0x33C2A6;
@@ -3666,13 +4038,23 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 
         _dragEffect = null;
         foreach (var r in PlacedObjects)
-            if (r.Scid == scid) { SelectedPlacedObject = r; PushUndo(); return true; }
+            if (r.Scid == scid)
+            {
+                SelectedPlacedObject = r;
+                var model = _objects.Find(x => x.Scid == scid);
+                KeepOrClearMulti(model);
+                PushUndo();
+                if (model is not null) BeginRotateGesture(model);
+                return true;
+            }
 
         if (_markers.TryGetValue(scid, out var item))
         {
             SelectMarker(item);
             _dragEffect = item;
+            KeepOrClearMulti(item);
             PushUndo(); // one undo entry per grab covers the whole move gesture
+            BeginRotateGesture(item);
             return true;
         }
         return false;
@@ -3723,7 +4105,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (!_nodeWorld.TryGetValue(node, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
             if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, node, _vw, _vh,
                     _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit, _ortho)) return;
+            var before = Vector3.Transform(GetPieceLocal(_dragEffect), nw);
             SetEffectPos(_dragEffect, Vector3.Transform(worldHit, inv));
+            ApplyGroupDelta(_dragEffect, worldHit - before); // ED-1b — the set moves as one
             Render();
             return;
         }
@@ -3733,21 +4117,39 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (!_nodeWorld.TryGetValue(o.NodeGuid, out var nw2) || !Matrix4x4.Invert(nw2, out var inv2)) return;
         if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, o.NodeGuid, _vw, _vh,
                 _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit2, _ortho)) return;
+        var before2 = Vector3.Transform(o.LocalPos, nw2);
         o.LocalPos = Vector3.Transform(worldHit2, inv2);
+        ApplyGroupDelta(o, worldHit2 - before2); // ED-1b — the set moves as one
         RaiseObjTransform();
         Render();
     }
 
-    /// <summary>Spins the selected object about its vertical axis (yaw). Shift-drag while moving. Markers
-    /// have no orientation, so this is a no-op for them.</summary>
+    /// <summary>Shift-drag: spins the grabbed object about its vertical axis. ED-1b — as a GESTURE
+    /// recomputed from grab-time state: a lone object yaws in place (15°-snapped when the toolbar
+    /// toggle is on), a multi-selection orbits its centroid while each object also spins. A lone
+    /// marker has no orientation, so single-marker rotation stays a no-op.</summary>
     public void RotateSelectedObject(double dx)
     {
-        if (_dragEffect is not null) return;
-        if (_selectedPlacedObject is null) return;
-        var o = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
-        if (o is null) return;
-        o.Orientation = Quaternion.Normalize(
-            Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), (float)dx * 0.02f) * o.Orientation);
+        if (_rotStart is not { Count: > 0 } start) return;
+        if (start.Count == 1 && start[0].Item is not PlacedObject) return;
+        _rotAccum += (float)dx * 0.02f;
+        float ang = _rotAccum;
+        if (_snapAngle)
+        {
+            const float step = 15f * MathF.PI / 180f;
+            ang = MathF.Round(ang / step) * step;
+        }
+        var rot = Quaternion.CreateFromAxisAngle(new Vector3(0, 0, 1), ang);
+        bool group = start.Count > 1;
+        foreach (var (item, orient0, world0) in start)
+        {
+            if (item is PlacedObject o) o.Orientation = Quaternion.Normalize(rot * orient0);
+            if (group)
+            {
+                if (!_nodeWorld.TryGetValue(PieceNode(item), out var nw) || !Matrix4x4.Invert(nw, out var inv)) continue;
+                SetPieceLocal(item, Vector3.Transform(_rotCentroid + Vector3.Transform(world0 - _rotCentroid, rot), inv));
+            }
+        }
         RaiseObjTransform();
         Render();
     }
