@@ -47,7 +47,13 @@ src/
   SiegeSmith         modding studio & world builder built on the same parsers
 ```
 
-**[SiegeSmith](https://github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith)** deserves its own mention: a WPF IDE covering the whole modding loop — tank browsing, format viewers, GAS editing with live validation, Skrit compilation diagnostics, tank packaging, mod projects with build-install-launch, and a door-stitch World Builder in active development.
+## SiegeSmith
+
+<img src="src/SiegeSmith/Assets/logo.png" alt="SiegeSmith" width="220"/>
+
+The repository also ships **SiegeSmith** — the modding studio and world builder built on the same parsers as the engine. One tool covers the whole loop: browse and view every DS1 format (textures, models, **animations with live playback**, scripts with compile diagnostics), edit GAS with live validation, package and install mods — and a full **World Builder** that goes from door-stitched terrain through scatter brushes, patrol routes, triggers, dialogue, quests, weather, and custom imported art, to a one-click playable `.dsmap`. You can mod Dungeon Siege with it, or build an entirely new game.
+
+**Start here: the [SiegeSmith wiki section](https://github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith)** — with the full [World Builder Guide](https://github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith-World-Builder-Guide), the [Making a Game from Scratch](https://github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith-Making-a-Game) walkthrough, and the [Modder's Guide](https://github.com/codingncaffeine/SiegeFX/wiki/SiegeSmith-Modders-Guide).
 
 ## Build
 
