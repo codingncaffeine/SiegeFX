@@ -220,6 +220,32 @@
 
                         <TextBlock Text="Effects — emitters · decals · sound (place on selected node)" Foreground="{StaticResource Brush.Muted}"
                                    FontSize="11" Margin="0,12,0,3" TextWrapping="Wrap"/>
+                        <TextBlock Text="Click a marker in the 3D view to select it; drag to move. Colours by type:"
+                                   Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2" TextWrapping="Wrap"/>
+                        <WrapPanel Margin="0,0,0,4">
+                            <WrapPanel.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="Width" Value="9"/>
+                                    <Setter Property="Height" Value="9"/>
+                                    <Setter Property="CornerRadius" Value="2"/>
+                                    <Setter Property="Margin" Value="0,0,3,0"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Foreground" Value="{StaticResource Brush.Muted}"/>
+                                    <Setter Property="FontSize" Value="10"/>
+                                    <Setter Property="Margin" Value="0,0,9,0"/>
+                                    <Setter Property="VerticalAlignment" Value="Center"/>
+                                </Style>
+                            </WrapPanel.Resources>
+                            <Border Background="#F07A28"/><TextBlock Text="fire"/>
+                            <Border Background="#BFBFC8"/><TextBlock Text="smoke"/>
+                            <Border Background="#33C2A6"/><TextBlock Text="trigger"/>
+                            <Border Background="#4C8DF0"/><TextBlock Text="command"/>
+                            <Border Background="#D8A24B"/><TextBlock Text="decal"/>
+                            <Border Background="#F2D24C"/><TextBlock Text="light"/>
+                            <TextBlock Text="(selected = brighter)"/>
+                        </WrapPanel>
                         <Grid Margin="0,0,0,3">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -245,6 +271,45 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                         <Button Content="Delete selected emitter" Command="{Binding DeleteEmitterCommand}" Margin="0,0,0,3" Padding="8,4"/>
+                        <StackPanel Visibility="{Binding HasSelectedEmitter, Converter={StaticResource BoolToVis}}" Margin="0,0,0,4">
+                            <CheckBox Content="Smoke plume (off = fire)" IsChecked="{Binding SelectedEmitterSmoke, Mode=TwoWay}"
+                                      Foreground="{StaticResource Brush.Foreground}" Margin="0,2,0,4"
+                                      ToolTip="Smoke ships a dark plume; fire ships a red/orange column. Changes the marker colour and emitter.gas dark flag."/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Count" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedEmitterCount, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Particles per burst (1–500)"/>
+                                <TextBlock Grid.Column="2" Text="Size" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedEmitterSize, UpdateSourceTrigger=LostFocus}" ToolTip="Particle size"/>
+                            </Grid>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Fade" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedEmitterFade, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0" ToolTip="Seconds a particle lives before fading"/>
+                                <TextBlock Grid.Column="2" Text="Grow" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedEmitterGrowth, UpdateSourceTrigger=LostFocus}" ToolTip="Growth rate as particles rise"/>
+                            </Grid>
+                            <TextBlock Text="Offset from node (drag the marker in 3D, or type):" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,2,0,2"/>
+                            <Grid Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="X" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="1" Text="{Binding SelectedEmitterOffsetX, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                <TextBlock Grid.Column="2" Text="Y" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="3" Text="{Binding SelectedEmitterOffsetY, UpdateSourceTrigger=LostFocus}" Margin="0,0,6,0"/>
+                                <TextBlock Grid.Column="4" Text="Z" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBox Grid.Column="5" Text="{Binding SelectedEmitterOffsetZ, UpdateSourceTrigger=LostFocus}"/>
+                            </Grid>
+                        </StackPanel>
                         <ListBox ItemsSource="{Binding Decals}" SelectedItem="{Binding SelectedDecal, Mode=TwoWay}"
                                  MaxHeight="70" Margin="0,0,0,3">
                             <ListBox.ItemTemplate>

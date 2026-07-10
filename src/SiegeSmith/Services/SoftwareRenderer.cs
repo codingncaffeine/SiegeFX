@@ -39,12 +39,15 @@ public static class SoftwareRenderer
     private static byte ClampByte(float v) => (byte)Math.Clamp(v, 0f, 255f);
 
     /// <summary>Renders to a fresh BGRA byte buffer of length <c>width*height*4</c>.</summary>
+    /// <summary><paramref name="triColor"/>, when supplied, is one packed 0xRRGGBB per triangle (-1 = the
+    /// default terrain tint). Used to colour-code editor markers (fire/smoke/trigger/command) so they're
+    /// distinguishable at a glance instead of an anonymous beige box.</summary>
     public static byte[] Render(
         Vector3[] verts, Vector3[] normals,
         int width, int height,
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
-        bool wireframe, DirLight[]? lights = null)
+        bool wireframe, DirLight[]? lights = null, int[]? triColor = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -99,8 +102,22 @@ public static class SoftwareRenderer
             var fn = Vector3.Cross(verts[b] - verts[a], verts[c] - verts[a]);
             if (fn.LengthSquared() < 1e-12f) continue;
             fn = Vector3.Normalize(fn);
-            var (lr, lg, lb) = Lighting(fn, lights, 0.22f, 0.78f); // two-sided
-            byte cr = ClampByte(210 * lr), cg = ClampByte(202 * lg), cb = ClampByte(188 * lb);
+
+            int ov = triColor is not null && t < triColor.Length ? triColor[t] : -1;
+            byte cr, cg, cb;
+            if (ov >= 0)
+            {
+                // Marker: brighter ambient so the colour reads, but keep some shading so it's a 3D cube.
+                var (mlr, mlg, mlb) = Lighting(fn, lights, 0.62f, 0.38f);
+                cr = ClampByte(((ov >> 16) & 0xFF) * mlr);
+                cg = ClampByte(((ov >> 8) & 0xFF) * mlg);
+                cb = ClampByte((ov & 0xFF) * mlb);
+            }
+            else
+            {
+                var (lr, lg, lb) = Lighting(fn, lights, 0.22f, 0.78f); // two-sided
+                cr = ClampByte(210 * lr); cg = ClampByte(202 * lg); cb = ClampByte(188 * lb);
+            }
 
             RasterTriangle(px, zbuf, width, height,
                 sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
@@ -130,7 +147,7 @@ public static class SoftwareRenderer
         Vector3[] verts, Vector3[] normals, Vector2[] uvs, int[] triTexture, Texture[] textures,
         int width, int height,
         Vector3 center, float radius,
-        float yaw, float pitch, float dist, DirLight[]? lights = null)
+        float yaw, float pitch, float dist, DirLight[]? lights = null, int[]? triColor = null)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -192,9 +209,17 @@ public static class SoftwareRenderer
                     sx[c], sy[c], sz[c], iw[c], uw[c], vw[c],
                     tex, sr, sg, sb);
             else
-                RasterTriangle(px, zbuf, width, height,
-                    sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
-                    ClampByte(190 * sr), ClampByte(182 * sg), ClampByte(170 * sb));
+            {
+                int ov = triColor is not null && t < triColor.Length ? triColor[t] : -1;
+                if (ov >= 0)
+                    RasterTriangle(px, zbuf, width, height,
+                        sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
+                        ClampByte(((ov >> 16) & 0xFF) * sr), ClampByte(((ov >> 8) & 0xFF) * sg), ClampByte((ov & 0xFF) * sb));
+                else
+                    RasterTriangle(px, zbuf, width, height,
+                        sx[a], sy[a], sz[a], sx[b], sy[b], sz[b], sx[c], sy[c], sz[c],
+                        ClampByte(190 * sr), ClampByte(182 * sg), ClampByte(170 * sb));
+            }
         }
         DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;

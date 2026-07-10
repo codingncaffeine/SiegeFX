@@ -153,7 +153,76 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private uint _nextEffectScid = 0x03000001;
     public ObservableCollection<RegionEmitter> Emitters { get; } = new();
     private RegionEmitter? _selectedEmitter;
-    public RegionEmitter? SelectedEmitter { get => _selectedEmitter; set { if (SetProperty(ref _selectedEmitter, value)) RaiseCommands(); } }
+    public RegionEmitter? SelectedEmitter
+    {
+        get => _selectedEmitter;
+        set { if (!SetProperty(ref _selectedEmitter, value)) return; RaiseEmitterProps(); RaiseCommands(); Render(); }
+    }
+    public bool HasSelectedEmitter => _selectedEmitter is not null;
+    public bool SelectedEmitterSmoke
+    {
+        get => _selectedEmitter?.Smoke ?? false;
+        set { if (_selectedEmitter is null || _selectedEmitter.Smoke == value) return; _selectedEmitter.Smoke = value; OnPropertyChanged(); RefreshEmitterItem(); Render(); }
+    }
+    public string SelectedEmitterCount
+    {
+        get => _selectedEmitter?.Count.ToString(CultureInfo.InvariantCulture) ?? "";
+        set { if (_selectedEmitter is not null && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) { _selectedEmitter.Count = System.Math.Clamp(v, 1, 500); OnPropertyChanged(); RefreshEmitterItem(); } }
+    }
+    public string SelectedEmitterSize
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.ParticleSize.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _selectedEmitter.ParticleSize = System.Math.Clamp(v, 0.05f, 8f); OnPropertyChanged(); } }
+    }
+    public string SelectedEmitterFade
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.Fade.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _selectedEmitter.Fade = System.Math.Clamp(v, 0.1f, 10f); OnPropertyChanged(); RefreshEmitterItem(); } }
+    }
+    public string SelectedEmitterGrowth
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.Growth.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _selectedEmitter.Growth = v; OnPropertyChanged(); } }
+    }
+    public string SelectedEmitterOffsetX
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.LocalPos.X.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var p = _selectedEmitter.LocalPos; _selectedEmitter.LocalPos = new Vector3(v, p.Y, p.Z); OnPropertyChanged(); Render(); } }
+    }
+    public string SelectedEmitterOffsetY
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.LocalPos.Y.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var p = _selectedEmitter.LocalPos; _selectedEmitter.LocalPos = new Vector3(p.X, v, p.Z); OnPropertyChanged(); Render(); } }
+    }
+    public string SelectedEmitterOffsetZ
+    {
+        get => _selectedEmitter is null ? "" : _selectedEmitter.LocalPos.Z.ToString("0.0##", CultureInfo.InvariantCulture);
+        set { if (_selectedEmitter is not null && float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { var p = _selectedEmitter.LocalPos; _selectedEmitter.LocalPos = new Vector3(p.X, p.Y, v); OnPropertyChanged(); Render(); } }
+    }
+    private void RaiseEmitterProps()
+    {
+        OnPropertyChanged(nameof(HasSelectedEmitter));
+        OnPropertyChanged(nameof(SelectedEmitterSmoke));
+        OnPropertyChanged(nameof(SelectedEmitterCount));
+        OnPropertyChanged(nameof(SelectedEmitterSize));
+        OnPropertyChanged(nameof(SelectedEmitterFade));
+        OnPropertyChanged(nameof(SelectedEmitterGrowth));
+        OnPropertyChanged(nameof(SelectedEmitterOffsetX));
+        OnPropertyChanged(nameof(SelectedEmitterOffsetY));
+        OnPropertyChanged(nameof(SelectedEmitterOffsetZ));
+    }
+    private bool _refreshingEmitterItem;
+    private void RefreshEmitterItem()
+    {
+        if (_selectedEmitter is null || _refreshingEmitterItem) return;
+        int i = Emitters.IndexOf(_selectedEmitter);
+        if (i < 0) return;
+        _refreshingEmitterItem = true;             // re-fire the item template so Label/Detail recompute
+        var keep = _selectedEmitter;
+        Emitters[i] = _selectedEmitter;
+        SelectedEmitter = keep;                    // Replace can drop the ListBox selection; restore it
+        _refreshingEmitterItem = false;
+    }
 
     public ObservableCollection<RegionDecal> Decals { get; } = new();
     private RegionDecal? _selectedDecal;
@@ -393,6 +462,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     private Vector3[] _pickVerts = System.Array.Empty<Vector3>(); // world-space tris (3/verts) for click-picking
     private uint[] _pickGuid = System.Array.Empty<uint>();         // node GUID per pick triangle
     private uint[] _pickScid = System.Array.Empty<uint>();         // placed-object SCID per pick triangle (0 = terrain)
+
+    // Unified selectable-marker registry, rebuilt each Render: every node-anchored placeable that has no
+    // mesh of its own — emitter, trigger, command, decal, point light — keyed by its SCID, so one
+    // click-select + drag path covers all of them (a level editor lets you grab every piece).
+    private readonly Dictionary<uint, object> _markers = new();
+    private object? _dragEffect; // the marker Item under an active drag, or null when dragging a placed object
     private readonly Dictionary<uint, Matrix4x4> _nodeWorld = new(); // node GUID → world transform, for object drag
     private float _radius = 1f;
     private int _vw = 800, _vh = 600;
@@ -2139,9 +2214,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         var normals = new List<Vector3>();
         var uvs = new List<Vector2>();
         var triTex = new List<int>();
+        var triColor = new List<int>();  // packed 0xRRGGBB per triangle (-1 = default), colour-codes markers
         var pickGuid = new List<uint>(); // node GUID per triangle, for click-picking
         var pickScid = new List<uint>(); // placed-object SCID per triangle (0 = terrain), for object grabbing
         _nodeWorld.Clear();
+        _markers.Clear();
         var texList = new List<SoftwareRenderer.Texture>();
         var texSlot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase); // dedup textures across nodes/surfaces
         var min = new Vector3(float.MaxValue);
@@ -2170,6 +2247,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     min = Vector3.Min(min, Vector3.Min(p0, Vector3.Min(p1, p2)));
                     max = Vector3.Max(max, Vector3.Max(p0, Vector3.Max(p1, p2)));
                     triTex.Add(slot);
+                    triColor.Add(-1);
                     pickGuid.Add(node.Guid);
                     pickScid.Add(0u);
                 }
@@ -2190,8 +2268,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
             if (mesh is null || mesh.TriangleIndices.Length < 3)
             {
                 // No mesh resolved — draw a marker cube so the placement is always visible + grabbable.
-                AppendMarkerCube(world, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid,
-                    o.NodeGuid, o.Scid, ref min, ref max);
+                AppendMarkerCube(world, MarkerSize(_radius), verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
+                    o.Scid, -1, ref min, ref max);
                 continue;
             }
 
@@ -2218,31 +2296,44 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                     max = Vector3.Max(max, p);
                 }
                 triTex.Add(subsetTex[t]);
-                pickGuid.Add(o.NodeGuid);
+                triColor.Add(-1);
+                // pickGuid stays 0 for placed meshes: the drag projection
+                // (PickPoint by node guid) must only see the node's TERRAIN,
+                // or a dragged object hits its own faces and crawls toward
+                // the camera. Grabbing/selection rides pickScid instead.
+                pickGuid.Add(0u);
                 pickScid.Add(o.Scid);
             }
         }
 
-        // Emitters preview as marker cubes — particles don't render in the software renderer.
+        // Every node-anchored placeable that has no mesh of its own previews as a colour-coded, grabbable
+        // marker cube — particles/logic/decals don't render in the software renderer, but you can still see,
+        // select, and drag each one. Selected marker uses the accent colour so you can tell what you're editing.
+        void Marker(uint nodeGuid, Vector3 localPos, uint scid, int color, object item)
+        {
+            if (!layout.TryGetTransform(nodeGuid, out var nw)) return;
+            var w = Matrix4x4.CreateTranslation(localPos) * nw;
+            bool sel = ReferenceEquals(item, _selectedEmitter) || ReferenceEquals(item, _selectedTrigger)
+                    || ReferenceEquals(item, _selectedCommand) || ReferenceEquals(item, _selectedDecal)
+                    || ReferenceEquals(item, _selectedLight);
+            // Selection brightens the TYPE colour instead of replacing it —
+            // a selected fire emitter still reads as fire, just lit up.
+            AppendMarkerCube(w, MarkerSize(_radius), verts, normals, uvs, triTex, triColor, pickGuid, pickScid,
+                scid, sel ? Brighten(color) : color, ref min, ref max);
+            if (scid != 0) _markers[scid] = item;
+        }
+
         foreach (var em in Emitters)
-        {
-            if (!layout.TryGetTransform(em.NodeGuid, out var enw)) continue;
-            var ew = Matrix4x4.CreateTranslation(em.LocalPos) * enw;
-            AppendMarkerCube(ew, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, em.NodeGuid, 0u, ref min, ref max);
-        }
-        // Triggers & command gizmos preview as marker cubes too (no mesh of their own).
+            Marker(em.NodeGuid, em.LocalPos, em.Scid, em.Smoke ? MarkerSmoke : MarkerFire, em);
         foreach (var tg in Triggers)
-        {
-            if (!layout.TryGetTransform(tg.NodeGuid, out var tnw)) continue;
-            var tw = Matrix4x4.CreateTranslation(tg.LocalPos) * tnw;
-            AppendMarkerCube(tw, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, tg.NodeGuid, 0u, ref min, ref max);
-        }
+            Marker(tg.NodeGuid, tg.LocalPos, tg.Scid, MarkerTrigger, tg);
+        foreach (var dc in Decals)
+            Marker(dc.NodeGuid, dc.OriginLocal, dc.Scid, MarkerDecal, dc);
+        foreach (var pl in Lights)
+            if (pl.Kind == AuthoredLightKind.Point)
+                Marker(pl.NodeGuid, pl.Position, pl.Scid, MarkerLight, pl);
         foreach (var cm in Commands)
-        {
-            if (!layout.TryGetTransform(cm.NodeGuid, out var cnw)) continue;
-            var cw = Matrix4x4.CreateTranslation(cm.LocalPos) * cnw;
-            AppendMarkerCube(cw, MarkerSize(_radius), verts, normals, uvs, triTex, pickGuid, pickScid, cm.NodeGuid, 0u, ref min, ref max);
-        }
+            Marker(cm.NodeGuid, cm.LocalPos, cm.Scid, MarkerCommand, cm);
 
         if (verts.Count < 3)
         {
@@ -2263,11 +2354,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         bool useTex = _textured && !_wireframe && texList.Count > 0
                       && uvs.Count == verts.Count && triTex.Count == verts.Count / 3;
         var lights = BuildPreviewLights(); // authored directional lights → the software renderer
+        var triColorArr = triColor.ToArray();
         var bgra = useTex
             ? SoftwareRenderer.RenderTextured(verts.ToArray(), normals.ToArray(), uvs.ToArray(), triTex.ToArray(), texList.ToArray(),
-                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights)
+                _vw, _vh, _center + _pan, _radius, _yaw, _pitch, _dist, lights, triColorArr)
             : SoftwareRenderer.Render(verts.ToArray(), normals.ToArray(), _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights);
+                _center + _pan, _radius, _yaw, _pitch, _dist, _wireframe, lights, triColorArr);
         var bmp = BitmapSource.Create(_vw, _vh, 96, 96, PixelFormats.Bgra32, null, bgra, _vw * 4);
         bmp.Freeze();
         Image = bmp;
@@ -2303,7 +2395,19 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         return p;
     }
 
-    private static float MarkerSize(float radius) => MathF.Max(radius * 0.03f, 0.3f);
+    // Absolute-ish marker size: scales gently with the region but clamps hard —
+    // the old unclamped radius*0.03 made markers enormous in big regions.
+    private static float MarkerSize(float radius) => Math.Clamp(radius * 0.015f, 0.25f, 0.6f);
+
+    /// <summary>Selection highlight: lerp the packed 0xRRGGBB ~45% toward white,
+    /// so a selected marker stays recognisably its type colour, just lit.</summary>
+    private static int Brighten(int rgb)
+    {
+        if (rgb < 0) rgb = 0xB0A890; // default beige
+        int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+        r += (255 - r) * 45 / 100; g += (255 - g) * 45 / 100; b += (255 - b) * 45 / 100;
+        return (r << 16) | (g << 8) | b;
+    }
 
     private static readonly Vector3[] CubeCorners =
     {
@@ -2316,11 +2420,16 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         3,2,6, 3,6,7,  1,5,6, 1,6,2,  0,3,7, 0,7,4,
     };
 
-    /// <summary>Appends a small flat-shaded cube at <paramref name="world"/>'s origin as a placeholder
-    /// for a placed object whose mesh didn't resolve — so it's still visible and grabbable.</summary>
+    /// <summary>Appends a small flat-shaded cube at <paramref name="world"/>'s origin — a marker for a
+    /// placeable that has no mesh of its own (emitter/trigger/command/decal/light) or whose mesh didn't
+    /// resolve. <paramref name="color"/> (packed 0xRRGGBB, -1 = default beige) colour-codes it by type;
+    /// <paramref name="scid"/> makes it grabbable/selectable like any placed object. Marker tris carry
+    /// pickGuid 0 (NOT the anchor node) so the drag projection — which targets the node's terrain —
+    /// can never hit the marker's own faces (the old self-hit made dragged markers jitter/teleport).</summary>
     private static void AppendMarkerCube(Matrix4x4 world, float size,
         List<Vector3> verts, List<Vector3> normals, List<Vector2> uvs,
-        List<int> triTex, List<uint> pickGuid, List<uint> pickScid, uint nodeGuid, uint scid,
+        List<int> triTex, List<int> triColor, List<uint> pickGuid, List<uint> pickScid,
+        uint scid, int color,
         ref Vector3 min, ref Vector3 max)
     {
         for (int i = 0; i < CubeTris.Length; i += 3)
@@ -2335,10 +2444,21 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
                 max = Vector3.Max(max, p);
             }
             triTex.Add(-1);
-            pickGuid.Add(nodeGuid);
+            triColor.Add(color);
+            pickGuid.Add(0u);
             pickScid.Add(scid);
         }
     }
+
+    // Editor marker palette — every placeable reads at a glance instead of an anonymous beige box.
+    // Selection brightens the type colour (see Brighten) rather than swapping to an accent, so a
+    // selected fire emitter still reads as fire.
+    internal const int MarkerFire     = 0xF07A28;
+    internal const int MarkerSmoke    = 0xBFBFC8;
+    internal const int MarkerTrigger  = 0x33C2A6;
+    internal const int MarkerCommand  = 0x4C8DF0;
+    internal const int MarkerDecal    = 0xD8A24B;
+    internal const int MarkerLight    = 0xF2D24C;
 
     // ── camera (driven by the view's mouse handlers) ────────────
     public void SetViewport(int width, int height)
@@ -2417,36 +2537,94 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    /// <summary>Grabs the placed object under the cursor (selecting it) so a drag moves it. Returns
-    /// true when an object was hit — the caller should move (or Shift-rotate) instead of orbiting.</summary>
+    /// <summary>Grabs whatever is under the cursor — a placed object OR any node-anchored marker (emitter,
+    /// trigger, command, decal, point light) — selecting it so a drag moves it. Returns true on a hit, so
+    /// the caller drags instead of orbiting. A good level editor lets you grab every piece in the scene.</summary>
     public bool TryGrabObject(double sx, double sy)
     {
-        if (_pickVerts.Length < 3 || _objects.Count == 0) return false;
+        if (_pickVerts.Length < 3) return false;
         uint scid = SoftwareRenderer.PickTriangle(_pickVerts, _pickScid, _vw, _vh,
             _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy);
         if (scid == 0) return false;
+
+        _dragEffect = null;
         foreach (var r in PlacedObjects)
-            if (r.Scid == scid) { SelectedPlacedObject = r; break; }
-        PushUndo(); // one undo entry per grab covers the whole move/rotate gesture
-        return true;
+            if (r.Scid == scid) { SelectedPlacedObject = r; PushUndo(); return true; }
+
+        if (_markers.TryGetValue(scid, out var item))
+        {
+            SelectMarker(item);
+            _dragEffect = item;
+            PushUndo(); // one undo entry per grab covers the whole move gesture
+            return true;
+        }
+        return false;
     }
 
-    /// <summary>Slides the selected object along its node's surface to follow the cursor.</summary>
+    /// <summary>Selects a marker in its own editor panel/list, so clicking it in the viewport and picking it
+    /// from the side list are the same selection. Setting the matching kind and nulling the rest means
+    /// exactly one piece is highlighted/edited at a time.</summary>
+    private void SelectMarker(object item)
+    {
+        SelectedEmitter = item as RegionEmitter;
+        SelectedTrigger = item as RegionTrigger;
+        SelectedCommand = item as CommandPlacement;
+        SelectedDecal   = item as RegionDecal;
+        SelectedLight   = item as AuthoredLight;
+        Render(); // reflect the selection highlight even on a click without a drag
+    }
+
+    private static uint EffectNode(object item) => item switch
+    {
+        RegionEmitter em => em.NodeGuid,
+        RegionTrigger tg => tg.NodeGuid,
+        CommandPlacement cm => cm.NodeGuid,
+        RegionDecal dc => dc.NodeGuid,
+        AuthoredLight pl => pl.NodeGuid,
+        _ => 0u,
+    };
+
+    private void SetEffectPos(object item, Vector3 p)
+    {
+        switch (item)
+        {
+            case RegionEmitter em: em.LocalPos = p; RaiseEmitterProps(); break;
+            case RegionTrigger tg: tg.LocalPos = p; break;
+            case CommandPlacement cm: cm.LocalPos = p; break;
+            case RegionDecal dc: dc.OriginLocal = p; break;
+            case AuthoredLight pl: pl.Position = p; break;
+        }
+    }
+
+    /// <summary>Slides the selected piece (placed object or marker) along its node's surface to follow the
+    /// cursor.</summary>
     public void MoveSelectedObject(double sx, double sy)
     {
+        if (_dragEffect is not null)
+        {
+            uint node = EffectNode(_dragEffect);
+            if (!_nodeWorld.TryGetValue(node, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
+            if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, node, _vw, _vh,
+                    _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit)) return;
+            SetEffectPos(_dragEffect, Vector3.Transform(worldHit, inv));
+            Render();
+            return;
+        }
         if (_selectedPlacedObject is null) return;
         var o = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
         if (o is null) return;
-        if (!_nodeWorld.TryGetValue(o.NodeGuid, out var nw) || !Matrix4x4.Invert(nw, out var inv)) return;
+        if (!_nodeWorld.TryGetValue(o.NodeGuid, out var nw2) || !Matrix4x4.Invert(nw2, out var inv2)) return;
         if (!SoftwareRenderer.PickPoint(_pickVerts, _pickGuid, o.NodeGuid, _vw, _vh,
-                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit)) return;
-        o.LocalPos = Vector3.Transform(worldHit, inv);
+                _center + _pan, _radius, _yaw, _pitch, _dist, sx, sy, out var worldHit2)) return;
+        o.LocalPos = Vector3.Transform(worldHit2, inv2);
         Render();
     }
 
-    /// <summary>Spins the selected object about its vertical axis (yaw). Shift-drag while moving.</summary>
+    /// <summary>Spins the selected object about its vertical axis (yaw). Shift-drag while moving. Markers
+    /// have no orientation, so this is a no-op for them.</summary>
     public void RotateSelectedObject(double dx)
     {
+        if (_dragEffect is not null) return;
         if (_selectedPlacedObject is null) return;
         var o = _objects.Find(x => x.Scid == _selectedPlacedObject.Scid);
         if (o is null) return;
