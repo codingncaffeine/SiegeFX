@@ -199,8 +199,10 @@
                                     <Button Grid.Column="0" Content="Set assets folder…" Command="{Binding SetAssetsFolderCommand}" Margin="0,0,3,0" Padding="8,5"/>
                                     <Button Grid.Column="1" Content="Open" Command="{Binding OpenAssetsFolderCommand}" Padding="8,5"/>
                                 </Grid>
-                                <Button Content="Import mesh (OBJ / glTF) → .asp…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,10" Padding="8,5"
+                                <Button Content="Import mesh (OBJ / glTF) → .asp…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,3" Padding="8,5"
                                         ToolTip="Convert a Wavefront OBJ or glTF 2.0 model to a static DS1 .asp (Y-up→Z-up), verify it against the engine reader, and drop it in art/meshes so it bundles into the map"/>
+                                <Button Content="Import texture (PNG / JPG…) → .raw…" Command="{Binding ImportTextureCommand}" Margin="0,0,0,10" Padding="8,5"
+                                        ToolTip="Convert any image to a DS1 .raw (BGRA, power-of-two ≤512, full mip chain), verified by the engine reader — usable by decals, custom terrain tiles, and templates"/>
 
                                 <TextBlock Text="Custom terrain tile (.sno)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
                                 <Grid Margin="0,0,0,3">

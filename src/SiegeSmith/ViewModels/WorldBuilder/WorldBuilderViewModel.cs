@@ -637,6 +637,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     /// routed to the matching per-type delete (markers first, then placed
     /// object, then node). One key, every piece.</summary>
     public RelayCommand DeleteSelectedAnyCommand { get; }
+    public RelayCommand ImportTextureCommand { get; }
 
     /// <summary>SC-UX1 — the Scene Outliner's fixed groups. Each group wraps
     /// one of the live ObservableCollections, so the tree stays current with
@@ -650,6 +651,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
+        ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
         GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
@@ -2175,7 +2177,42 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         if (folder is null) return;
         AssetsFolder = folder;
         OpenAssetsFolderCommand.RaiseCanExecuteChanged();
+        ImportTextureCommand.RaiseCanExecuteChanged();
         Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
+    }
+
+    /// <summary>GAME-2 — import any WIC-decodable image (PNG/JPG/BMP/GIF/TIFF)
+    /// as a DS1 <c>.raw</c> with a full mip chain, verified by the engine's own
+    /// reader before it lands in the assets folder. The basename becomes the
+    /// texture name usable by decals, custom terrain texsets, and templates.</summary>
+    private void ImportTexture()
+    {
+        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*",
+            Title = "Import an image as a DS1 .raw texture",
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
+                new Uri(dlg.FileName),
+                System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+            var raw = RawWriter.Write(decoder.Frames[0]);
+            var img = SiegeFX.Core.Assets.RawImage.Load(raw); // the engine reader is the acceptance test
+            var sb = new StringBuilder();
+            foreach (var ch in Path.GetFileNameWithoutExtension(dlg.FileName).ToLowerInvariant())
+                sb.Append(char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '_');
+            var name = sb.Length > 0 ? sb.ToString() : "texture";
+            var dir = Path.Combine(_assetsFolder, "art", "bitmaps");
+            Directory.CreateDirectory(dir);
+            File.WriteAllBytes(Path.Combine(dir, name + ".raw"), raw);
+            Status = $"Imported {name}.raw — {img.Width}×{img.Height}, {img.SurfaceCount} mips, engine-verified. " +
+                     $"Use '{name}' wherever a texture name is asked (decals, custom tiles, templates).";
+        }
+        catch (Exception ex) { Status = "Texture import failed: " + ex.Message; }
     }
 
     private void OpenAssetsFolder()
