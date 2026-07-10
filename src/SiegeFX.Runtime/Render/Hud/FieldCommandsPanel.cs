@@ -24,7 +24,7 @@ namespace SiegeFX.Runtime.Render.Hud;
 public sealed class FieldCommandsPanel
 {
     public const int RefRes = 480;
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
     // The whole cluster is lifted by this many reference pixels so its bottom
     // row (bag / minimize) clears the data_bar buttons docked at the very

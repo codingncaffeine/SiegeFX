@@ -38,12 +38,18 @@ void main() { vUv = aUv; gl_Position = uViewProj * vec4(aPos, 1.0); }";
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha;
+uniform float uGamma;
 out vec4 frag;
 void main() {
     vec4 t = texture(uTex, vUv);
     if (t.a <= 0.004) discard;
+    t.rgb = pow(t.rgb, vec3(1.0 / max(uGamma, 0.1))); // ALPHA-2V options gamma
     frag = vec4(t.rgb, t.a * uAlpha);
 }";
+
+    /// <summary>ALPHA-2V — Options → Video → Gamma, mirrored from the world
+    /// shader so decals stay tonally glued to the surfaces they sit on.</summary>
+    public float Gamma = 1f;
 
     private readonly GL _gl;
     private readonly Shader _shader;
@@ -181,6 +187,7 @@ void main() {
         _shader.SetMatrix4("uViewProj", viewProj);
         _shader.SetInt("uTex", 0);
         _shader.SetFloat("uAlpha", 1.0f);
+        _shader.SetFloat("uGamma", Gamma);
 
         _gl.BindVertexArray(_vao);
         foreach (var b in _batches)

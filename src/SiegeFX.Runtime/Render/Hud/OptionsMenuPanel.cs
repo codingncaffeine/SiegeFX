@@ -32,7 +32,7 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// <see cref="DrawTabContent"/> branch points.</para></summary>
 internal sealed class OptionsMenuPanel
 {
-    public enum Tab { Video, Audio, Input, Game }
+    public enum Tab { Video, Audio, Input, Game, Advanced }
 
     /// <summary>Phase 23-SC-OPTIONS-B/C/D/F — staged settings buffer.
     /// Edits in the menu mutate this; OK commits to the live engine
@@ -44,13 +44,23 @@ internal sealed class OptionsMenuPanel
     /// values currently round-trip within a session only.</summary>
     public sealed class Settings
     {
-        // Video — placeholders that persist to prefs.gas in a future
-        // slice. Defaults from /config/options.gas.
-        public string Resolution = "1920x1080x32";
+        // Video — ALPHA-2V all runtime-wired. Defaults from /config/options.gas
+        // (modernized: resolution drops DS1's bpp suffix; fullscreen is a new
+        // checkbox — DS1 was always fullscreen, SiegeFX defaults windowed).
+        // Resolution = the fullscreen mode + a windowed resize preset; free
+        // window resizing stays allowed and the last size persists via
+        // WindowW/WindowH (not shown in the UI).
+        public string Resolution = "1920x1080";
+        public bool Fullscreen = false;
         public string Shadows = "complex_party";
         public string TextureFiltering = "trilinear";
         public float Gamma = 1.0f;          // 0..2 (UI 0..100 step 10)
         public float ObjectDetail = 1.0f;   // 0..1 (UI 0..10 step 1)
+
+        // Last windowed size — recorded on every user resize while windowed,
+        // restored at boot and when the fullscreen checkbox is cleared.
+        public int WindowW = 1280;
+        public int WindowH = 720;
 
         // Audio — Master + Music apply live; SFX caps per-Play gain;
         // Sound off mutes everything via master. Ambient + Voice
@@ -91,6 +101,16 @@ internal sealed class OptionsMenuPanel
         public bool ShowTooltips = true;
         public string BloodColor = "Red";    // Red/Green/Disabled
         public bool Dismemberment = true;
+
+        // Advanced — ALPHA-2V modern-GPU tab (new; DS1 had no equivalent).
+        // All vendor-neutral GL features. MSAA needs a window rebuild so it
+        // applies at next launch; everything else applies on OK.
+        public bool VSync = true;
+        public string FpsCap = "Unlimited";  // Unlimited/30/60/120/144/240
+        public string Anisotropy = "8x";     // 2x/4x/8x/16x (pairs with texture filtering = anisotropic)
+        public string Msaa = "Off";          // Off/2x/4x/8x — next launch
+        public int PointLightBudget = 16;    // 4..32 per-frame point-light cap
+        public int UiScalePercent = 100;     // 50..150 global HUD scale
 
         public Settings Clone() => (Settings)MemberwiseClone();
     }
@@ -182,13 +202,14 @@ internal sealed class OptionsMenuPanel
     static readonly (int X, int Y, int W, int H) RectInner   = (117,  86, 407, 259);
     static readonly (int X, int Y, int W, int H) RectTitle   = (200,  38, 240,  20);
     static readonly (int X, int Y, int W, int H) RectTabRow  = (118,  67, 406,  16);
-    // Each tab is ~100×16. The active tab in DS1 is shifted down 3px to
-    // overlap the panel edge — slice A doesn't reproduce that yet (no
-    // border to overlap until A2 lands the 9-slice chrome).
-    static readonly (int X, int Y, int W, int H) RectTabVideo = (118, 67, 100, 16);
-    static readonly (int X, int Y, int W, int H) RectTabAudio = (219, 67, 102, 16);
-    static readonly (int X, int Y, int W, int H) RectTabInput = (322, 67, 101, 16);
-    static readonly (int X, int Y, int W, int H) RectTabGame  = (424, 67, 100, 16);
+    // ALPHA-2V — DS1's four ~100px tabs re-split five ways across the same
+    // authored 118..524 span to fit the new Advanced tab. The active tab in
+    // DS1 is shifted down 3px to overlap the panel edge — not reproduced.
+    static readonly (int X, int Y, int W, int H) RectTabVideo    = (118, 67, 81, 16);
+    static readonly (int X, int Y, int W, int H) RectTabAudio    = (199, 67, 81, 16);
+    static readonly (int X, int Y, int W, int H) RectTabInput    = (280, 67, 81, 16);
+    static readonly (int X, int Y, int W, int H) RectTabGame     = (361, 67, 81, 16);
+    static readonly (int X, int Y, int W, int H) RectTabAdvanced = (442, 67, 82, 16);
     static readonly (int X, int Y, int W, int H) RectOk       = (200, 358, 110, 16);
     static readonly (int X, int Y, int W, int H) RectCancel   = (330, 358, 110, 16);
     static readonly (int X, int Y, int W, int H) RectDefaults = (361, 318, 140, 16);
@@ -199,7 +220,7 @@ internal sealed class OptionsMenuPanel
     // Live (post-Layout) viewport-pixel rects so input handlers and the
     // draw loop share one source of truth.
     (int X, int Y, int W, int H) _outer, _inner, _title, _tabRow;
-    (int X, int Y, int W, int H) _tabVideo, _tabAudio, _tabInput, _tabGame;
+    (int X, int Y, int W, int H) _tabVideo, _tabAudio, _tabInput, _tabGame, _tabAdvanced;
     (int X, int Y, int W, int H) _ok, _cancel, _defaults, _more;
     Tab? _hoveredTab;
     enum Btn { None, Ok, Cancel, Defaults }
@@ -301,7 +322,9 @@ internal sealed class OptionsMenuPanel
         // Phase 23-SC-OPTIONS-FOLD — clamp to viewportW too so a
         // portrait-orientation window (vh > vw) doesn't push the
         // 640×480-aspect panel past the viewport edges with negative dx.
-        scale = MathF.Min(viewportH / 480f, viewportW / 640f);
+        // ALPHA-2V — modal scale honors the UI-scale knob (shrink only;
+        // growth is fit-capped so the dialog can't overflow the window).
+        scale = HudScale.Modal(viewportW, viewportH);
         int scaledBaseW = (int)MathF.Round(640 * scale);
         int scaledBaseH = (int)MathF.Round(480 * scale);
         int dx = (viewportW - scaledBaseW) / 2; // center horizontally
@@ -315,10 +338,11 @@ internal sealed class OptionsMenuPanel
         _inner    = Scale(RectInner,    dx, dy, scale);
         _title    = Scale(RectTitle,    dx, dy, scale);
         _tabRow   = Scale(RectTabRow,   dx, dy, scale);
-        _tabVideo = Scale(RectTabVideo, dx, dy, scale);
-        _tabAudio = Scale(RectTabAudio, dx, dy, scale);
-        _tabInput = Scale(RectTabInput, dx, dy, scale);
-        _tabGame  = Scale(RectTabGame,  dx, dy, scale);
+        _tabVideo    = Scale(RectTabVideo,    dx, dy, scale);
+        _tabAudio    = Scale(RectTabAudio,    dx, dy, scale);
+        _tabInput    = Scale(RectTabInput,    dx, dy, scale);
+        _tabGame     = Scale(RectTabGame,     dx, dy, scale);
+        _tabAdvanced = Scale(RectTabAdvanced, dx, dy, scale);
         _ok       = Scale(RectOk,       dx, dy, scale);
         _cancel   = Scale(RectCancel,   dx, dy, scale);
         _defaults = Scale(RectDefaults, dx, dy, scale);
@@ -349,10 +373,11 @@ internal sealed class OptionsMenuPanel
         if (!IsOpen) return;
         Layout(viewportW, viewportH, out _);
         _hoveredTab =
-            Hits(_tabVideo, px, py) ? Tab.Video :
-            Hits(_tabAudio, px, py) ? Tab.Audio :
-            Hits(_tabInput, px, py) ? Tab.Input :
-            Hits(_tabGame,  px, py) ? Tab.Game  :
+            Hits(_tabVideo,    px, py) ? Tab.Video :
+            Hits(_tabAudio,    px, py) ? Tab.Audio :
+            Hits(_tabInput,    px, py) ? Tab.Input :
+            Hits(_tabGame,     px, py) ? Tab.Game  :
+            Hits(_tabAdvanced, px, py) ? Tab.Advanced :
             null;
         _hoveredBtn =
             Hits(_ok,       px, py) ? Btn.Ok       :
@@ -401,6 +426,7 @@ internal sealed class OptionsMenuPanel
         else if (Hits(_tabAudio, px, py)) { ActiveTab = Tab.Audio; tabSwapped = true; }
         else if (Hits(_tabInput, px, py)) { ActiveTab = Tab.Input; tabSwapped = true; }
         else if (Hits(_tabGame,  px, py)) { ActiveTab = Tab.Game;  tabSwapped = true; }
+        else if (Hits(_tabAdvanced, px, py)) { ActiveTab = Tab.Advanced; tabSwapped = true; }
         if (tabSwapped)
         {
             _gamePage = 0;
@@ -527,6 +553,7 @@ internal sealed class OptionsMenuPanel
         DrawTab(bars, text, viewportW, viewportH, _tabAudio, "AUDIO", Tab.Audio);
         DrawTab(bars, text, viewportW, viewportH, _tabInput, "INPUT", Tab.Input);
         DrawTab(bars, text, viewportW, viewportH, _tabGame,  "GAME",  Tab.Game);
+        DrawTab(bars, text, viewportW, viewportH, _tabAdvanced, "ADVANCED", Tab.Advanced);
 
         // Inner content panel.
         bars.DrawRect(viewportW, viewportH, _inner.X, _inner.Y, _inner.W, _inner.H, InnerBg);
@@ -774,6 +801,7 @@ internal sealed class OptionsMenuPanel
             case Tab.Audio: LayoutAudio(bars, text, vw, vh); break;
             case Tab.Input: LayoutInput(bars, text, vw, vh); break;
             case Tab.Game:  LayoutGame (bars, text, vw, vh); break;
+            case Tab.Advanced: LayoutAdvanced(bars, text, vw, vh); break;
         }
     }
 
@@ -804,15 +832,23 @@ internal sealed class OptionsMenuPanel
         return idx;
     }
 
+    /// <summary>ALPHA-2V — the host seeds this with the monitor's actual
+    /// video modes at load (distinct WxH, ascending). Null falls back to
+    /// a common-list so headless/test bootstrap still lays out.</summary>
+    public string[]? ResolutionOptions;
+    static readonly string[] FallbackResolutions =
+        { "1280x720", "1600x900", "1920x1080", "2560x1440", "3440x1440", "3840x2160" };
+
     void LayoutVideo(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
-        var resOptions = new[] { "1280x720x32", "1600x900x32", "1920x1080x32",
-                                  "2560x1440x32", "3440x1440x32", "3840x2160x32" };
+        var resOptions = ResolutionOptions is { Length: > 0 } ro ? ro : FallbackResolutions;
         var shadows = new[] { "none", "simple_party", "complex_party" };
-        var filter  = new[] { "bilinear", "trilinear" };
+        var filter  = new[] { "bilinear", "trilinear", "anisotropic" };
         int r = 0;
         CycleField(bars, text, vw, vh, r++, "Resolution",
             () => _staged.Resolution, v => _staged.Resolution = v, resOptions, dropdown: true);
+        CheckboxField(bars, text, vw, vh, r++, "Fullscreen",
+            () => _staged.Fullscreen, v => _staged.Fullscreen = v);
         CycleField(bars, text, vw, vh, r++, "Shadows",
             () => _staged.Shadows, v => _staged.Shadows = v, shadows, dropdown: true);
         CycleField(bars, text, vw, vh, r++, "Texture Filtering",
@@ -821,6 +857,59 @@ internal sealed class OptionsMenuPanel
             () => _staged.Gamma / 2f, t => _staged.Gamma = t * 2f, 0, 100);
         FloatSlider(bars, text, vw, vh, r++, "Object Detail",
             () => _staged.ObjectDetail, t => _staged.ObjectDetail = t, 0, 10);
+    }
+
+    /// <summary>ALPHA-2V — themed checkbox row (the Fullscreen toggle). DS1
+    /// ships b_gui_cmn_checkbox / b_gui_cmn_checkbox_x 16×16 raws that its
+    /// own Options screens never used; they're exactly the house style, so
+    /// the modernized row stays in-theme. Falls back to a bordered square
+    /// with an X glyph when the art isn't resolvable.</summary>
+    void CheckboxField(BarRenderer bars, TextRenderer text, int vw, int vh,
+                       int rowIdx, string label, Func<bool> get, Action<bool> set)
+    {
+        RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
+        int labelTextW = text.MeasureWidth(label, _fontScale);
+        text.DrawString(vw, vh, label,
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
+
+        // Square box docked at the widget column's left edge, sized to the row.
+        var boxR = (X: widgetR.X, Y: widgetR.Y, W: widgetR.H, H: widgetR.H);
+        int widgetIdx = _widgets.Count;
+        bool hover = _hoveredWidget == widgetIdx;
+        bool drew = false;
+        if (_chrome is not null && _icons is not null)
+        {
+            var t = _chrome("b_gui_cmn_" + (get() ? "checkbox_x" : "checkbox"));
+            if (t is not null)
+            {
+                _icons.DrawIcon(_vw, _vh, t, boxR.X, boxR.Y, boxR.W, boxR.H,
+                    hover ? new Vector4(1.15f, 1.12f, 1.05f, 1f) : Vector4.One);
+                drew = true;
+            }
+        }
+        if (!drew)
+        {
+            bars.DrawRect(vw, vh, boxR.X, boxR.Y, boxR.W, boxR.H,
+                hover ? BtnHover : BtnIdle);
+            DrawBorder(bars, vw, vh, boxR, Border);
+            if (get())
+            {
+                int xw = text.MeasureWidth("X", _fontScale);
+                text.DrawString(vw, vh, "X",
+                    boxR.X + (boxR.W - xw) / 2, boxR.Y + (boxR.H - 12 * _fontScale) / 2,
+                    Ink, _fontScale);
+            }
+        }
+        // State readout beside the box, matching the cycle buttons' value ink.
+        text.DrawString(vw, vh, get() ? "On" : "Off",
+            boxR.X + boxR.W + 6 * _fontScale, widgetR.Y + 1, Ink, _fontScale);
+
+        _widgets.Add(new W
+        {
+            Rect = boxR,
+            OnClick = () => set(!get()),
+            OnRightClick = () => set(!get()),
+        });
     }
 
     void LayoutAudio(BarRenderer bars, TextRenderer text, int vw, int vh)
@@ -908,6 +997,31 @@ internal sealed class OptionsMenuPanel
         }
     }
 
+    /// <summary>ALPHA-2V — the Advanced tab: modern vendor-neutral GPU
+    /// features DS1 never exposed. VSync / FPS cap / UI scale / point-light
+    /// budget apply live on OK; anisotropy degree pairs with the Video tab's
+    /// texture filtering set to "anisotropic"; MSAA rebuilds the GL surface
+    /// so it takes effect at the next launch (persisted immediately).</summary>
+    void LayoutAdvanced(BarRenderer bars, TextRenderer text, int vw, int vh)
+    {
+        var fps   = new[] { "Unlimited", "30", "60", "120", "144", "240" };
+        var aniso = new[] { "2x", "4x", "8x", "16x" };
+        var msaa  = new[] { "Off", "2x", "4x", "8x" };
+        int r = 0;
+        BoolCycle(bars, text, vw, vh, r++, "VSync",
+            () => _staged.VSync, v => _staged.VSync = v);
+        CycleField(bars, text, vw, vh, r++, "Frame Rate Cap",
+            () => _staged.FpsCap, v => _staged.FpsCap = v, fps, dropdown: true);
+        CycleField(bars, text, vw, vh, r++, "Anisotropy",
+            () => _staged.Anisotropy, v => _staged.Anisotropy = v, aniso);
+        CycleField(bars, text, vw, vh, r++, "MSAA (next launch)",
+            () => _staged.Msaa, v => _staged.Msaa = v, msaa);
+        IntSlider(bars, text, vw, vh, r++, "Point Light Budget",
+            () => _staged.PointLightBudget, v => _staged.PointLightBudget = v, 4, 32);
+        IntSlider(bars, text, vw, vh, r++, "UI Scale %",
+            () => _staged.UiScalePercent, v => _staged.UiScalePercent = v, 50, 150);
+    }
+
     void DrawPageButton(BarRenderer bars, TextRenderer text, int vw, int vh,
                         string label, Action onClick)
     {
@@ -938,17 +1052,18 @@ internal sealed class OptionsMenuPanel
                     Func<string> get, Action<string> set, string[] options,
                     bool dropdown = false)
     {
+        // ALPHA-2V — a value outside the option list (e.g. a freely-resized
+        // window's WxH) displays as-is instead of masquerading as the first
+        // preset; the first click steps onto the preset list.
         int idx = Array.IndexOf(options, get());
-        if (idx < 0) idx = 0;
+        var displayOpts = idx >= 0 ? options : new[] { get() };
         CycleButton(bars, text, vw, vh, rowIdx, _widgets.Count, label,
-            () => idx, _ => { }, options, dropdown);
+            () => idx >= 0 ? idx : 0, _ => { }, displayOpts, dropdown);
         AddCycleWidget(rowIdx,
             () => { var i = Array.IndexOf(options, get());
-                    if (i < 0) i = 0;
-                    set(options[(i + 1) % options.Length]); },
+                    set(i < 0 ? options[0] : options[(i + 1) % options.Length]); },
             () => { var i = Array.IndexOf(options, get());
-                    if (i < 0) i = 0;
-                    set(options[(i - 1 + options.Length) % options.Length]); },
+                    set(i < 0 ? options[^1] : options[(i - 1 + options.Length) % options.Length]); },
             vw, vh);
     }
 
@@ -1060,6 +1175,11 @@ internal sealed class OptionsMenuPanel
     /// will replace `Live` first then call this.</summary>
     public void SyncStagedFromLive() { _staged = Live.Clone(); _gamePage = 0; _hotkeysOpen = false; }
 
+    /// <summary>ALPHA-2V — replace the live settings wholesale (prefs.json
+    /// load at boot). Staged re-syncs so a menu opened right after boot
+    /// shows the persisted values.</summary>
+    public void SetLive(Settings s) { Live = s; _staged = s.Clone(); }
+
     /// <summary>Commit staged → live + apply runtime hooks. Slice C
     /// wires audio volumes; the rest persist-only until further
     /// runtime knobs land. Caller invokes when ConfirmedThisFrame
@@ -1082,6 +1202,7 @@ internal sealed class OptionsMenuPanel
         {
             case Tab.Video:
                 _staged.Resolution = d.Resolution;
+                _staged.Fullscreen = d.Fullscreen;
                 _staged.Shadows = d.Shadows;
                 _staged.TextureFiltering = d.TextureFiltering;
                 _staged.Gamma = d.Gamma;
@@ -1116,6 +1237,14 @@ internal sealed class OptionsMenuPanel
                 _staged.ShowTooltips = d.ShowTooltips;
                 _staged.BloodColor = d.BloodColor;
                 _staged.Dismemberment = d.Dismemberment;
+                break;
+            case Tab.Advanced:
+                _staged.VSync = d.VSync;
+                _staged.FpsCap = d.FpsCap;
+                _staged.Anisotropy = d.Anisotropy;
+                _staged.Msaa = d.Msaa;
+                _staged.PointLightBudget = d.PointLightBudget;
+                _staged.UiScalePercent = d.UiScalePercent;
                 break;
         }
     }

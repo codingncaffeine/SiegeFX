@@ -29,7 +29,7 @@ namespace SiegeFX.Runtime.Render.Hud;
 public sealed class CharacterAwp
 {
     public const int RefRes = 480;
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
     /// <summary>Action IDs returned from a click on the AWP. RenderHost
     /// dispatches each to the corresponding host-side toggle (per gas's

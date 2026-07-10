@@ -313,6 +313,13 @@ public sealed class RenderHost : IDisposable
     // region load from decals/decals.gas; drawn over the world each frame. Null
     // until a region carrying decals loads.
     private DecalRenderer? _decalRenderer;
+    // ALPHA-2V — Options → Video runtime state: shader gamma (uploaded at
+    // every ApplyLightingUniforms site), the shadows mode string from the
+    // menu (none / simple_party / complex_party), and the blob renderer
+    // (created lazily on the first shadowed frame).
+    private float _gammaLevel = 1f;
+    private string _shadowMode = "complex_party";
+    private BlobShadowRenderer? _blobShadows;
 
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
     // terrain RegionInstance AABB centers in that region). Computed once
@@ -2946,7 +2953,7 @@ public sealed class RenderHost : IDisposable
         switch (action)
         {
             case PauseMenu.Action.Resume:   _pauseMenu.Close(); break;
-            case PauseMenu.Action.Options:  _pauseMenu.Close(); _optionsMenu.Open(); break;
+            case PauseMenu.Action.Options:  _pauseMenu.Close(); OpenOptionsMenu(); break;
             case PauseMenu.Action.SaveGame: _pauseMenu.Close(); DoQuickSave(); break;
             case PauseMenu.Action.LoadGame: _pauseMenu.Close(); DoQuickLoad(); break;
             case PauseMenu.Action.ExitGame: _window.Close(); break;
@@ -3638,9 +3645,13 @@ uniform float     uAmbient;
 // range.x/y = inner/outer falloff radii. Soft wrap term (0.35 + 0.65*ndl)
 // keeps torch pools readable on floors without hard normal cutoffs.
 uniform int       uPointCount;
-uniform vec3      uPointPos[16];
-uniform vec3      uPointColor[16];
-uniform vec3      uPointRange[16];
+uniform vec3      uPointPos[32];
+uniform vec3      uPointColor[32];
+uniform vec3      uPointRange[32];
+// ALPHA-2V — Options → Video → Gamma. Applied to the final lit color
+// (after fog) so the whole world scene shares one response curve;
+// HUD shaders stay untouched. 1.0 = neutral.
+uniform float     uGamma;
 // ALPHA-2 RADIOSITY — 1 for SNO terrain draws: lighting comes from DS1's
 // baked per-vertex radiosity (sun, shade AND interior torch pools are all
 // baked in — this is how retail lights every dungeon). D3DCOLOR byte order
@@ -3750,6 +3761,7 @@ void main()
             float fogF = clamp((fogD - uFogNear) / max(uFogFar - uFogNear, 0.001), 0.0, 1.0);
             lit = mix(lit, uFogColor, fogF);
         }
+        lit = pow(lit, vec3(1.0 / max(uGamma, 0.1))); // ALPHA-2V options gamma
         FragColor = vec4(lit, 1.0);
     }
 }";
@@ -3790,11 +3802,33 @@ void main()
         _bootMode = bootMode;
         _ds1ResourcesDir = ds1ResourcesDir;
         _noVideo = noVideo;
+        // ALPHA-2V — persisted options load BEFORE window creation so the
+        // last windowed size (or fullscreen mode), vsync, and MSAA surface
+        // apply from the first frame. No prefs file = the historical
+        // defaults, byte-for-byte.
+        var prefs = OptionsPrefs.Load();
+        if (prefs is not null) _optionsMenu.SetLive(prefs);
+        var live = _optionsMenu.Live;
+        int winW = width, winH = height;
+        var winState = WindowState.Normal;
+        if (prefs is not null)
+        {
+            winW = Math.Max(640, live.WindowW);
+            winH = Math.Max(480, live.WindowH);
+            if (live.Fullscreen && TryParseResolution(live.Resolution, out var fw, out var fh))
+            {
+                (winW, winH) = (fw, fh);
+                winState = WindowState.Fullscreen;
+            }
+        }
+        int msaa = ParseMsaa(live.Msaa);
         var opts = WindowOptions.Default with
         {
             Title = title,
-            Size = new Vector2D<int>(width, height),
-            VSync = true,
+            Size = new Vector2D<int>(winW, winH),
+            VSync = live.VSync,
+            WindowState = winState,
+            Samples = msaa > 0 ? msaa : null,
         };
         _window = Window.Create(opts);
         _window.Load    += OnLoad;
@@ -4192,7 +4226,7 @@ void main()
                     // /config/input_bindings.gas. Toggle: a second F10
                     // closes the menu (treated as Cancel).
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
-                    else _optionsMenu.Open();
+                    else OpenOptionsMenu();
                 }
                 else if (key == Key.F9) DoQuickLoad();
                 else if (key == Key.F7)
@@ -5387,6 +5421,16 @@ void main()
         if (_animAspPath is not null && _skritPath is not null && _skritClipPaths is not null)
             DiagTime("skrit", () => LoadSkrit(_animAspPath, _skritPath, _skritClipPaths, _animTexturePath));
 
+        // ALPHA-2V — push persisted options into the live engine now that GL,
+        // the window, and (in play modes) the audio engine exist. Window
+        // size/state/vsync/MSAA were already baked into WindowOptions at
+        // construction; this covers gamma / filtering / shadows / detail /
+        // point budget / UI scale / fps cap plus the audio + input knobs.
+        SeedResolutionOptions();
+        ApplyGraphicsRuntime();
+        ApplyOptionsAudio();
+        ApplyOptionsRuntime();
+
         if (_diagMode)
         {
             _diagBootStopwatch.Stop();
@@ -5704,6 +5748,7 @@ void main()
                 if (File.Exists(voicesPath)) _playVoicesTank = TankFile.Open(voicesPath);
                 _audio = SiegeFX.Audio.AudioEngine.TryCreate();
                 _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
+                ApplyOptionsAudio(); // ALPHA-2V — persisted volumes apply from first sound
                 // Phase 24-POLISH-C — register the frontend button click
                 // cues. Skipped silently when the audio device is missing.
                 if (_audio is not null)
@@ -6901,6 +6946,7 @@ void main()
                 // call below null-checks so the runtime stays playable
                 // without music.
                 _music = SiegeFX.Audio.MusicPlayer.TryCreate(_audio);
+                ApplyOptionsAudio(); // ALPHA-2V — persisted volumes apply from first sound
                 if (_audio is not null)
                 {
                     // Phase 21d-2a-xii — load DS1's SED (sound effect descriptor)
@@ -10447,7 +10493,11 @@ void main()
     // covered it). All loaded regions' point lights live in _pointLights
     // (world-space, color pre-multiplied by intensity); each frame the
     // nearest MaxPointLights to the camera go to the shader.
-    private const int MaxPointLights = 16;
+    // ALPHA-2V — 32 is the shader array cap; _pointLightBudget (Options →
+    // Advanced → Point Light Budget, default 16 = the pre-options behavior)
+    // is the per-frame slice actually uploaded.
+    private const int MaxPointLights = 32;
+    private int _pointLightBudget = 16;
     private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer)> _pointLights = new();
     private readonly HashSet<string> _pointLightRegionsLoaded = new(StringComparer.OrdinalIgnoreCase);
     private readonly Vector3[] _framePointPos = new Vector3[MaxPointLights];
@@ -10498,7 +10548,8 @@ void main()
             // Skip sources far beyond their own reach + a generous view range.
             float reach = outer + 80f;
             if (d2 > reach * reach) continue;
-            if (_framePointCount < MaxPointLights)
+            int budget = Math.Clamp(_pointLightBudget, 1, MaxPointLights);
+            if (_framePointCount < budget)
             {
                 dist[_framePointCount] = d2;
                 _framePointPos[_framePointCount] = pos;
@@ -10508,7 +10559,7 @@ void main()
                 continue;
             }
             int worst = 0;
-            for (int j = 1; j < MaxPointLights; j++) if (dist[j] > dist[worst]) worst = j;
+            for (int j = 1; j < budget; j++) if (dist[j] > dist[worst]) worst = j;
             if (d2 >= dist[worst]) continue;
             dist[worst] = d2;
             _framePointPos[worst] = pos;
@@ -10538,6 +10589,8 @@ void main()
         // ALPHA-2 RADIOSITY — dynamic path by default; the terrain draw
         // sites flip this to 1 right after calling us.
         shader.SetInt("uUseBakedLight", 0);
+        // ALPHA-2V — options gamma rides the same every-draw-site hook.
+        shader.SetFloat("uGamma", _gammaLevel);
         // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
         // so both world shaders (static + skinned) stay in sync with the
         // weather state without a separate dirty-tracking pass. Lightning
@@ -13391,7 +13444,7 @@ void main()
             case MainMenuPanel.Action.None:
                 break;
             case MainMenuPanel.Action.Options:
-                _optionsMenu.Open();
+                OpenOptionsMenu();
                 break;
             case MainMenuPanel.Action.About:
                 _aboutOpen = true;
@@ -13664,6 +13717,11 @@ void main()
             _optionsMenu.CommitStaged();
             ApplyOptionsAudio();
             ApplyOptionsRuntime();
+            // ALPHA-2V — Video + Advanced apply on OK (window mode last so a
+            // resolution/fullscreen switch happens after the cheap knobs),
+            // then the whole settings object persists to prefs.json.
+            ApplyOptionsVideo();
+            OptionsPrefs.Save(_optionsMenu.Live);
             _optionsMenu.ClearEdgeFlags();
         }
         else if (_optionsMenu.CancelledThisFrame)
@@ -13685,6 +13743,12 @@ void main()
             if (_optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Input
                 || _optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Game)
                 ApplyOptionsRuntime();
+            // ALPHA-2V — Video/Advanced Defaults live-apply the cheap
+            // graphics knobs (same precedent); the window mode still
+            // waits for OK so Defaults can't yank the display around.
+            if (_optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Video
+                || _optionsMenu.ActiveTab == OptionsMenuPanel.Tab.Advanced)
+                ApplyGraphicsRuntime();
             _optionsMenu.ClearEdgeFlags();
         }
     }
@@ -13701,6 +13765,134 @@ void main()
     /// contract — Defaults must take effect immediately for the user to
     /// understand the click did anything. After CommitStaged on the OK
     /// path, Staged == Live, so reading either is equivalent there.</summary>
+    // ==================== ALPHA-2V — Video + Advanced tabs ====================
+
+    static bool TryParseResolution(string? s, out int w, out int h)
+    {
+        w = h = 0;
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        var parts = s.Split('x', 'X');
+        // Tolerates the legacy "WxHxbpp" form by ignoring trailing segments.
+        return parts.Length >= 2
+            && int.TryParse(parts[0].Trim(), out w)
+            && int.TryParse(parts[1].Trim(), out h)
+            && w >= 320 && h >= 240;
+    }
+
+    static int ParseMsaa(string? s) => s switch { "2x" => 2, "4x" => 4, "8x" => 8, _ => 0 };
+
+    /// <summary>Fill the Resolution dropdown with the monitor's real modes
+    /// (covers 21:9 ultrawide + 4K natively). Distinct WxH ≥ 1024×720,
+    /// smallest→largest; the panel's fallback list stands in when the
+    /// monitor can't be queried (headless test bootstrap).</summary>
+    private void SeedResolutionOptions()
+    {
+        try
+        {
+            var mon = _window.Monitor;
+            if (mon is null) return;
+            var modes = mon.GetAllVideoModes()
+                .Select(m => m.Resolution)
+                .Where(r => r.HasValue && r.Value.X >= 1024 && r.Value.Y >= 720)
+                .Select(r => (r!.Value.X, r.Value.Y))
+                .Distinct()
+                .OrderBy(t => (long)t.Item1 * t.Item2)
+                .Select(t => $"{t.Item1}x{t.Item2}")
+                .ToArray();
+            if (modes.Length > 0) _optionsMenu.ResolutionOptions = modes;
+        }
+        catch { /* fallback list stays */ }
+    }
+
+    /// <summary>Every Video/Advanced knob EXCEPT the window mode: gamma,
+    /// texture filtering (+ anisotropy degree), shadows mode, object detail
+    /// (particle density), point-light budget, UI scale, vsync, fps cap.
+    /// Reads Staged per the ApplyOptionsRuntime contract (Defaults updates
+    /// Staged only; post-commit Staged == Live so either reads the same).</summary>
+    private void ApplyGraphicsRuntime()
+    {
+        var s = _optionsMenu.Staged;
+        _gammaLevel = Math.Clamp(s.Gamma <= 0f ? 0.25f : s.Gamma, 0.25f, 2f);
+        if (_decalRenderer is not null) _decalRenderer.Gamma = _gammaLevel;
+        if (_particles is not null) _particles.Gamma = _gammaLevel;
+        // Object Detail 0..1 → particle density 0.25..1.0 (floor keeps
+        // minimum-detail effects readable; functional singles never scale).
+        ParticleSystem.DetailScale = Math.Clamp(0.25f + 0.75f * s.ObjectDetail, 0.25f, 1f);
+        _shadowMode = s.Shadows;
+        _pointLightBudget = Math.Clamp(s.PointLightBudget, 4, MaxPointLights);
+        HudScale.User = Math.Clamp(s.UiScalePercent, 50, 150) / 100f;
+        if (_gl is not null)
+        {
+            var mode = s.TextureFiltering switch
+            {
+                "bilinear"    => GlTexture.FilterMode.Bilinear,
+                "anisotropic" => GlTexture.FilterMode.Anisotropic,
+                _             => GlTexture.FilterMode.Trilinear,
+            };
+            float aniso = s.Anisotropy switch { "2x" => 2f, "4x" => 4f, "16x" => 16f, _ => 8f };
+            GlTexture.SetFilterMode(mode, aniso);
+        }
+        _window.VSync = s.VSync;
+        // Silk: 0 = uncapped. VSync effectively overrides a higher cap.
+        _window.FramesPerSecond = double.TryParse(s.FpsCap, out var cap) && cap > 0 ? cap : 0.0;
+    }
+
+    /// <summary>Resolution + fullscreen, applied on OK only (mid-menu mode
+    /// switches are jarring). Windowed = free resize, remembered via
+    /// OnResize; the dropdown doubles as a windowed preset. Fullscreen =
+    /// display mode at the dropdown's WxH; unchecking restores the last
+    /// windowed size. Reads Live — the OK path commits before calling.</summary>
+    private void ApplyWindowMode()
+    {
+        var s = _optionsMenu.Live;
+        bool isFs = _window.WindowState == WindowState.Fullscreen;
+        bool haveRes = TryParseResolution(s.Resolution, out int rw, out int rh);
+        if (s.Fullscreen)
+        {
+            if (!isFs)
+            {
+                // Remember the windowed size for the return trip.
+                s.WindowW = _window.Size.X;
+                s.WindowH = _window.Size.Y;
+                _window.WindowState = WindowState.Fullscreen;
+            }
+            // In fullscreen, resizing the window switches the display mode.
+            if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
+                _window.Size = new Vector2D<int>(rw, rh);
+        }
+        else
+        {
+            if (isFs)
+            {
+                _window.WindowState = WindowState.Normal;
+                _window.Size = new Vector2D<int>(Math.Max(640, s.WindowW), Math.Max(480, s.WindowH));
+            }
+            else if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
+            {
+                // Windowed preset picked from the dropdown.
+                _window.Size = new Vector2D<int>(rw, rh);
+                s.WindowW = rw;
+                s.WindowH = rh;
+            }
+        }
+    }
+
+    private void ApplyOptionsVideo()
+    {
+        ApplyGraphicsRuntime();
+        ApplyWindowMode();
+    }
+
+    /// <summary>ALPHA-2V — all four Open() sites route here so the Resolution
+    /// dropdown surfaces the CURRENT window size when windowed (free resize
+    /// means the truth lives on the window, not in the last-picked preset).</summary>
+    private void OpenOptionsMenu()
+    {
+        if (_window.WindowState == WindowState.Normal)
+            _optionsMenu.Live.Resolution = $"{_window.Size.X}x{_window.Size.Y}";
+        _optionsMenu.Open();
+    }
+
     private void ApplyOptionsRuntime()
     {
         var s = _optionsMenu.Staged;
@@ -16477,7 +16669,7 @@ void main()
                 // the existing Options dialog here.
                 if (_player is not null && !_optionsMenu.IsOpen)
                 {
-                    _optionsMenu.Open();
+                    OpenOptionsMenu();
                     _audio?.Play(SfxGuiInventory);
                 }
                 break;
@@ -20867,6 +21059,31 @@ void main()
         // before v1.0). One keypress answers "is that floating thing a decal?".
         if (_decalsVisible) _decalRenderer?.Draw(vp);
 
+        // ALPHA-2V — blob drop-shadows under actors (Options → Video →
+        // Shadows: simple_party = party only, complex_party = everyone).
+        // Drawn after the world + actors with depth-write off, so actor
+        // meshes correctly occlude their own splat. ~90u camera cull.
+        if (_shadowMode != "none" && _actors.Count > 0 && _gl is not null)
+        {
+            _blobShadows ??= new BlobShadowRenderer(_gl);
+            _blobShadows.Begin();
+            bool partyOnly = _shadowMode == "simple_party";
+            var shadowEye = _camera.Position;
+            foreach (var a in _actors)
+            {
+                if (a.Hidden || a.IsDead) continue;
+                if (partyOnly && !(a.IsPlayer || a.IsPartyMember)) continue;
+                var feet = a.CurrentTransform.Translation;
+                if (Vector3.DistanceSquared(feet, shadowEye) > 90f * 90f) continue;
+                // Actor scale rides the world matrix's X basis length.
+                float sx = new Vector3(a.CurrentTransform.M11,
+                                       a.CurrentTransform.M12,
+                                       a.CurrentTransform.M13).Length();
+                _blobShadows.Add(feet, 0.55f * Math.Clamp(sx, 0.4f, 3f));
+            }
+            _blobShadows.Draw(vp);
+        }
+
         // Phase 17-SC-E — billboard particles. Sit above the world scene
         // (depth-tested against actors + props) but below the HUD ortho
         // pass so smoke columns get occluded by the farmhouse correctly.
@@ -21845,7 +22062,18 @@ void main()
         }
     }
 
-    private void OnResize(Vector2D<int> size) => _gl?.Viewport(size);
+    private void OnResize(Vector2D<int> size)
+    {
+        _gl?.Viewport(size);
+        // ALPHA-2V — remember the last windowed size (free-resize freedom;
+        // restored at boot + when leaving fullscreen). Fullscreen sizes are
+        // display modes, not window memory, so they don't record.
+        if (_window.WindowState == WindowState.Normal && size.X >= 320 && size.Y >= 240)
+        {
+            _optionsMenu.Live.WindowW = size.X;
+            _optionsMenu.Live.WindowH = size.Y;
+        }
+    }
 
     private bool _glDisposed;
 
@@ -21856,6 +22084,12 @@ void main()
         // post-context and would crash on DeleteTexture/DeleteBuffer.
         if (_glDisposed) return;
         _glDisposed = true;
+
+        // ALPHA-2V — capture the final windowed size (recorded by OnResize
+        // into Live) so the next launch opens at the same size.
+        OptionsPrefs.Save(_optionsMenu.Live);
+        _blobShadows?.Dispose();
+        _blobShadows = null;
 
         foreach (var tex in _snoTextures.Values) tex.Dispose();
         _snoTextures.Clear();

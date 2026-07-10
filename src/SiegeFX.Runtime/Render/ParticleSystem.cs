@@ -196,6 +196,19 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         return _boltCandidates[_boltCandidateIndex].name;
     }
 
+    /// <summary>ALPHA-2V — Options → Video → Object Detail. Scales the DENSITY
+    /// of decorative particle spawns (fire licks, smoke puffs, sparks, weather
+    /// precipitation) without touching functional singles (projectile heads,
+    /// bolts, tracers stay). 1.0 = authored counts; the Options slider maps
+    /// its 0..1 detail to a 0.25..1.0 floor so minimum detail still reads.</summary>
+    public static float DetailScale = 1f;
+    static int Detail(int n) => n <= 1 || DetailScale >= 0.999f
+        ? n : Math.Max(1, (int)MathF.Round(n * DetailScale));
+
+    /// <summary>ALPHA-2V — Options → Video → Gamma, mirrored from the world
+    /// shader so glow effects track the scene's response curve.</summary>
+    public float Gamma = 1f;
+
     private readonly List<Particle>        _particles   = new(2048);
     private readonly List<LightningBolt>   _bolts       = new(64);
     // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive, drawn via the
@@ -309,7 +322,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _rainCarry += rainPerSec * dt;
             int n = (int)_rainCarry;
             _rainCarry -= n;
-            for (int i = 0; i < n && _rainDrops.Count < MaxRainDrops; i++)
+            for (int i = 0, dn = Detail(n); i < dn && _rainDrops.Count < MaxRainDrops; i++)
             {
                 var (dx, dz) = RandomInDisc(22f);
                 _rainDrops.Add(new RainDropP
@@ -329,7 +342,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _snowCarry += snowPerSec * dt;
             int n = (int)_snowCarry;
             _snowCarry -= n;
-            for (int i = 0; i < n && _snowFlakes.Count < MaxSnowFlakes; i++)
+            for (int i = 0, dn = Detail(n); i < dn && _snowFlakes.Count < MaxSnowFlakes; i++)
             {
                 var (dx, dz) = RandomInDisc(20f);
                 float fall = 0.9f + (float)_wxRng.NextDouble() * 0.8f;
@@ -503,7 +516,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void SpawnFire(Vector3 position, Vector4 color, float scale, float duration, int count = 12)
     {
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             var jitter = new Vector3(Rand(-0.15f, 0.15f), 0f, Rand(-0.15f, 0.15f)) * scale;
             _particles.Add(new Particle
@@ -525,7 +538,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void SpawnSmoke(Vector3 position, Vector4 color, float scale, float duration, int count = 8)
     {
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             var jitter = new Vector3(Rand(-0.2f, 0.2f), 0f, Rand(-0.2f, 0.2f)) * scale;
             _particles.Add(new Particle
@@ -547,7 +560,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void SpawnSteam(Vector3 position, Vector4 color, float scale, float duration, int count = 8)
     {
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             _particles.Add(new Particle
             {
@@ -580,7 +593,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                              float scale, float duration, int count)
     {
         if (count <= 0) return;
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             float ang = Rand(0f, MathF.Tau);
             float r   = MathF.Sqrt(Rand(0f, 1f)) * footprintRadius; // uniform-area sample
@@ -701,7 +714,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         Vector3 perp1 = Vector3.Normalize(Vector3.Cross(fwd, up));
         Vector3 perp2 = Vector3.Cross(fwd, perp1);
 
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             float ang = Rand(0f, MathF.Tau);
             // Lerp lower→upper radius along the particle's life (proxy:
@@ -824,7 +837,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// angles + amp phase per particle; common authored rates.</summary>
     public void SpawnFlurry(in FlurrySpec spec)
     {
-        for (int i = 0; i < spec.Count; i++)
+        for (int i = 0, dn = Detail(spec.Count); i < dn; i++)
         {
             _flurry.Add(new FlurryP
             {
@@ -851,7 +864,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void SpawnSpark(Vector3 position, Vector4 color, float scale, float duration, int count = 16)
     {
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             float ang = Rand(0f, MathF.Tau);
             float vy  = Rand(0.2f, 1.0f);
@@ -889,7 +902,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         // (the rest of the lifetime continues outward into a thinning
         // shell, which reads as a brief bloom).
         float speed = MathF.Max(0.1f, radius / MathF.Max(0.05f, duration * 0.5f));
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             // Uniformly-random unit vector via the (z, theta) trick:
             // z ∈ [-1,1] uniform, theta ∈ [0, 2π) uniform → uniform
@@ -967,7 +980,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     void EmitExplosion(in ExplosionSpec spec, int n)
     {
-        for (int i = 0; i < n; i++)
+        for (int i = 0, dn = Detail(n); i < dn; i++)
         {
             // Direction: omni_dir = uniform sphere (the (z, theta) trick);
             // directional default = up, per the doc's "explode in a set
@@ -1074,7 +1087,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     {
         float budget = carry + rate * dt;
         int n = (int)budget;
-        for (int i = 0; i < n; i++)
+        for (int i = 0, dn = Detail(n); i < dn; i++)
         {
             var jitter = new Vector3(Rand(-0.04f, 0.04f), Rand(0f, 0.03f), Rand(-0.04f, 0.04f)) * scale;
             // Longer-lived, gentler-rising licks so the flame breathes slowly
@@ -1122,7 +1135,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// two-sine average; nothing to integrate here beyond age.</summary>
     public void SpawnSpe(in SpeSpec spec)
     {
-        for (int i = 0; i < spec.Count; i++)
+        for (int i = 0, dn = Detail(spec.Count); i < dn; i++)
             _spes.Add(new SpeP { Spec = spec, Index = i, Age = 0f });
     }
 
@@ -1131,7 +1144,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// second; yvel is the only motion.</summary>
     public void SpawnSparkles(in SparklesSpec spec)
     {
-        for (int i = 0; i < spec.Count; i++)
+        for (int i = 0, dn = Detail(spec.Count); i < dn; i++)
         {
             float z  = Rand(-1f, 1f);
             float th = Rand(0f, MathF.Tau);
@@ -1155,7 +1168,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// a center particle grows toward centersize.</summary>
     public void SpawnCharge(in ChargeSpec spec)
     {
-        for (int i = 0; i < spec.Count; i++)
+        for (int i = 0, dn = Detail(spec.Count); i < dn; i++)
         {
             float z  = Rand(-1f, 1f);
             float th = Rand(0f, MathF.Tau);
@@ -1219,7 +1232,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 + MathF.Sin(s.SinPos + s.SinSpeed * age) * MathF.Max(0f, cap - s.MaxRadius),
                 s.MinRadius, cap);
         }
-        for (int i = 0; i < n; i++)
+        for (int i = 0, dn = Detail(n); i < dn; i++)
         {
             Vector3 pos;
             if (s.Line)
@@ -1289,7 +1302,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         float budget = carry + rate * dt;
         int n = (int)budget;
         float r = MathF.Max(0.05f, radius);
-        for (int i = 0; i < n; i++)
+        for (int i = 0, dn = Detail(n); i < dn; i++)
         {
             float ang = Rand(0f, MathF.Tau);
             float dy  = Rand(-0.4f, 0.4f) * r;
@@ -1803,6 +1816,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _shader.Use();
         _shader.SetMatrix4("uView", view);
         _shader.SetMatrix4("uProj", proj);
+        _shader.SetFloat("uGamma", Gamma);
         _shader.SetInt("uTex0", 0);
         _shader.SetInt("uTex1", 1);
         _shader.SetInt("uTex2", 2);
@@ -2173,6 +2187,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _ribbonShader.Use();
         _ribbonShader.SetMatrix4("uView", view);
         _ribbonShader.SetMatrix4("uProj", proj);
+        _ribbonShader.SetFloat("uGamma", Gamma);
         for (int i = 0; i < _textures.Length; i++)
             _ribbonShader.SetInt("uTex" + i, i);
         for (int slot = 0; slot < _textures.Length; slot++)
@@ -2203,7 +2218,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     public void SpawnPolyExplosion(in SiegeFX.Core.Sfx.PolyExplosionSpec spec)
     {
         int count = Math.Clamp(spec.Count, 1, 400);
-        for (int i = 0; i < count; i++)
+        for (int i = 0, dn = Detail(count); i < dn; i++)
         {
             float ang = Rand(0f, MathF.Tau);
             float rad = Rand(0f, MathF.Max(0.02f, spec.Radius));
@@ -2435,6 +2450,7 @@ uniform sampler2D uTex5;
 uniform sampler2D uTex6;
 uniform sampler2D uTex7;
 uniform sampler2D uTex8;
+uniform float uGamma;
 out vec4 frag;
 void main(){
   vec4 tex;
@@ -2455,6 +2471,7 @@ void main(){
   if (vAdditive > 0.5) {
     c.rgb *= 1.8;
   }
+  c.rgb = pow(c.rgb, vec3(1.0 / max(uGamma, 0.1))); // ALPHA-2V options gamma
   frag = c;
 }";
 
@@ -2491,6 +2508,7 @@ uniform int uSlot;
 uniform sampler2D uTex9;
 uniform sampler2D uTex10;
 uniform sampler2D uTex11;
+uniform float uGamma;
 out vec4 frag;
 void main(){
   vec4 tex;
@@ -2509,6 +2527,7 @@ void main(){
   else                 tex = texture(uTex11, vUv);
   vec4 c = tex * vColor;
   c.rgb *= 1.8; // ribbons always read as additive bright glow
+  c.rgb = pow(c.rgb, vec3(1.0 / max(uGamma, 0.1))); // ALPHA-2V options gamma
   frag = c;
 }";
 }

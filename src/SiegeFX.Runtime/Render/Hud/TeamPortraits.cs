@@ -17,7 +17,7 @@ namespace SiegeFX.Runtime.Render.Hud;
 public sealed class TeamPortraits
 {
     public const int RefRes = 480;
-    public static float Scale(int viewportH) => viewportH / (float)RefRes;
+    public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
     // First follower cell top + per-cell vertical stride (640×480 ref).
     const int CellTop0 = 56, CellStep = 53;

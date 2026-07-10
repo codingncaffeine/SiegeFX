@@ -36,7 +36,9 @@ public static class InfoRailLayout
     public static float Scale(int viewportH)
     {
         float raw = viewportH / (float)RefRes;
-        return raw < MaxScale ? raw : MaxScale;
+        // ALPHA-2V — the global UI-scale knob multiplies AFTER the rail's
+        // 1.5× clamp so 100% keeps today's look and the knob still resizes.
+        return (raw < MaxScale ? raw : MaxScale) * HudScale.User;
     }
 
     // ============================================================

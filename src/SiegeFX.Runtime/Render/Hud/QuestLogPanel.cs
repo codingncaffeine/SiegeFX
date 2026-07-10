@@ -136,7 +136,7 @@ public sealed class QuestLogPanel
         // viewportW clamp keeps portrait-orientation windows from pushing
         // the panel past the edges. Centered both ways like the options
         // dialog (dy only kicks in when the window is wider than 4:3).
-        _scale = MathF.Min(viewportH / 480f, viewportW / 640f);
+        _scale = HudScale.Modal(viewportW, viewportH);
         _dx = (viewportW - (int)MathF.Round(640 * _scale)) / 2;
         _dy = (viewportH - (int)MathF.Round(480 * _scale)) / 2;
         // Integer font scale keeps the bitmap font crisp (no bilinear

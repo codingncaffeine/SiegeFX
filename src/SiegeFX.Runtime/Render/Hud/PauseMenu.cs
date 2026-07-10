@@ -50,7 +50,9 @@ public sealed class PauseMenu
 
     private void Layout(int viewportW, int viewportH)
     {
-        float s = viewportH / (float)RefH;
+        // ALPHA-2V RE-BASELINE — shared HUD baseline + UI-scale knob
+        // (RefH is 480, the same convention HudScale.Hud clamps).
+        float s = HudScale.Hud(viewportH);
         int originX = (int)MathF.Round((viewportW - RefW * s) / 2f);
         for (int i = 0; i < _buttons.Length; i++)
         {

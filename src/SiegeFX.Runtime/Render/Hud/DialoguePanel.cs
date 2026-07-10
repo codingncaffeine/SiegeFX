@@ -64,7 +64,7 @@ public sealed class DialoguePanel
     private int _visibleLines = 1;
     private int _totalLines = 1;
 
-    static float Scale(int viewportH) => viewportH / 480f;
+    static float Scale(int viewportH) => HudScale.Hud(viewportH);
     static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r, float s, int originX)
         => (originX + (int)MathF.Round(r.x0 * s), (int)MathF.Round(r.y0 * s),
             (int)MathF.Round((r.x1 - r.x0) * s), (int)MathF.Round((r.y1 - r.y0) * s));

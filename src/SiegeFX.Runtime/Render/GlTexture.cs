@@ -11,6 +11,52 @@ namespace SiegeFX.Runtime.Render;
 /// </summary>
 public sealed class GlTexture : IDisposable
 {
+    /// <summary>ALPHA-2V — Options → Video → Texture Filtering. Mip-mapped
+    /// (world) textures register themselves at creation so a filter change
+    /// re-applies to every live texture; single-mip UI/cursor textures are
+    /// unaffected (no mip chain = nothing for the mode to change).</summary>
+    public enum FilterMode { Bilinear, Trilinear, Anisotropic }
+
+    static readonly HashSet<GlTexture> MipTextures = new();
+    static FilterMode _filterMode = FilterMode.Trilinear;
+    static float _anisoLevel = 8f;
+    static float _maxAnisoSupported = -1f; // lazy driver query; 1 = unsupported
+
+    /// <summary>Set the global filter mode and re-apply it to every live
+    /// mip-mapped texture. Must run on the GL thread. New textures pick the
+    /// mode up at creation. Anisotropic implies trilinear underneath.</summary>
+    public static void SetFilterMode(FilterMode mode, float anisoLevel = 8f)
+    {
+        _filterMode = mode;
+        _anisoLevel = Math.Max(1f, anisoLevel);
+        foreach (var t in MipTextures)
+        {
+            t._gl.BindTexture(GLEnum.Texture2D, t.Handle);
+            t.ApplyCurrentFilter();
+        }
+    }
+
+    void ApplyCurrentFilter()
+    {
+        // Bilinear = nearest-mip picks (DS1's low setting); trilinear blends
+        // between mips; anisotropic stacks the EXT sharpening on trilinear.
+        var min = _filterMode == FilterMode.Bilinear
+            ? GLEnum.LinearMipmapNearest : GLEnum.LinearMipmapLinear;
+        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)min);
+        if (_maxAnisoSupported < 0f)
+        {
+            try { _gl.GetFloat(GLEnum.MaxTextureMaxAnisotropy, out _maxAnisoSupported); }
+            catch { _maxAnisoSupported = 1f; }
+            if (_maxAnisoSupported < 1f) _maxAnisoSupported = 1f;
+        }
+        if (_maxAnisoSupported > 1f)
+        {
+            float amount = _filterMode == FilterMode.Anisotropic
+                ? Math.Min(_anisoLevel, _maxAnisoSupported) : 1f;
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMaxAnisotropy, amount);
+        }
+    }
+
     private readonly GL _gl;
     public uint Handle { get; }
     public int Width  { get; }
@@ -55,11 +101,18 @@ public sealed class GlTexture : IDisposable
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureBaseLevel, 0);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMaxLevel, image.SurfaceCount - 1);
 
-        var minFilter = image.SurfaceCount > 1 ? GLEnum.LinearMipmapLinear : GLEnum.Linear;
-        _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)minFilter);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapS,     (int)GLEnum.Repeat);
         _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureWrapT,     (int)GLEnum.Repeat);
+        if (image.SurfaceCount > 1)
+        {
+            ApplyCurrentFilter();
+            MipTextures.Add(this);
+        }
+        else
+        {
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+        }
 
         _gl.BindTexture(GLEnum.Texture2D, 0);
 
@@ -134,5 +187,9 @@ public sealed class GlTexture : IDisposable
         _gl.BindTexture(GLEnum.Texture2D, Handle);
     }
 
-    public void Dispose() => _gl.DeleteTexture(Handle);
+    public void Dispose()
+    {
+        MipTextures.Remove(this);
+        _gl.DeleteTexture(Handle);
+    }
 }
