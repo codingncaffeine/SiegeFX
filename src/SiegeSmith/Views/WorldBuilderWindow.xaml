@@ -359,6 +359,26 @@
                                 <Button Content="Import audio (WAV / MP3)…" Command="{Binding ImportAudioCommand}" Margin="0,0,0,10" Padding="8,5"
                                         ToolTip="WAV (engine-verified PCM) → sound/ for sound-emitter cues; MP3 → music/ for mood ambient/standard/battle tracks"/>
 
+                                <!-- ED-16 — prefab shelf (per-user, works across maps) -->
+                                <TextBlock Text="Prefabs (reusable groups)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
+                                <TextBlock Text="Save any multi-selection as a prefab from the Inspector's Selection page; place it here — everything lands on the selected node with fresh ids, grouped and ready to drag."
+                                           Foreground="{StaticResource Brush.Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                                <ListBox MaxHeight="120" ItemsSource="{Binding Prefabs}" SelectedItem="{Binding SelectedPrefab, Mode=TwoWay}" Margin="0,0,0,3"
+                                         Visibility="{Binding HasPrefabs, Converter={StaticResource BoolToVis}}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0" Content="Place prefab on selected node" Command="{Binding PlacePrefabCommand}" Margin="0,0,4,0" Padding="8,4"
+                                            ToolTip="Instantiate every piece of the prefab centred on the selected node — the copies become the selection"/>
+                                    <Button Grid.Column="1" Content="🗑" Command="{Binding DeletePrefabCommand}" Padding="8,4"
+                                            ToolTip="Delete the selected prefab from your library"/>
+                                </Grid>
+
                                 <TextBlock Text="Custom templates (items · monsters · NPCs)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
                                 <TextBlock Text="Specialize a shipped template — the base supplies mesh, animation, sounds, and AI; you set the identity and stats. Bundles into the map and loads in-engine."
                                            Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
@@ -571,6 +591,16 @@
                                     <!-- ED-13 — batch template swap -->
                                     <Button Content="Set template from palette" Command="{Binding ApplyTemplateToSelectionCommand}" Margin="0,4,0,0" Padding="6,3"
                                             ToolTip="Every placed object in the selection takes the template currently picked in the Objects palette — swap 20 pines for oaks in one undo"/>
+                                    <!-- ED-16 — save the selection as a reusable prefab -->
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding PrefabName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,4,0"
+                                                 ToolTip="Prefab name (e.g. campfire_scene)"/>
+                                        <Button Grid.Column="1" Content="💾 Save prefab" Command="{Binding SavePrefabCommand}" Padding="6,3"
+                                                ToolTip="Save the whole selection as a reusable group — positions stored relative to its centre. Place it in ANY region from the Custom tab."/>
+                                    </Grid>
                                 </StackPanel>
 
                                 <!-- Emitter -->
@@ -1291,6 +1321,15 @@
                         </StackPanel>
                         <DockPanel Grid.Column="4">
                             <TextBlock DockPanel.Dock="Top" Text="Validation checklist" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,0,0,3"/>
+                            <!-- ED-16 — world diff + dependency report share this list -->
+                            <WrapPanel DockPanel.Dock="Top" Margin="0,0,0,4">
+                                <Button Content="📸 Baseline" Command="{Binding TakeBaselineCommand}" Padding="6,2" Margin="0,0,4,2" FontSize="11"
+                                        ToolTip="Snapshot the region as-is — 'Diff' then lists everything that changed since"/>
+                                <Button Content="Diff" Command="{Binding CompareBaselineCommand}" Padding="6,2" Margin="0,0,4,2" FontSize="11"
+                                        ToolTip="Compare the region to the baseline snapshot: added / removed / moved per family"/>
+                                <Button Content="Dependencies" Command="{Binding DependenciesCommand}" Padding="6,2" Margin="0,0,0,2" FontSize="11"
+                                        ToolTip="List everything this region reaches for — templates, textures, audio tracks — with resolution status"/>
+                            </WrapPanel>
                             <ScrollViewer VerticalScrollBarVisibility="Auto">
                                 <ItemsControl ItemsSource="{Binding ValidationRows}">
                                     <ItemsControl.ItemTemplate>

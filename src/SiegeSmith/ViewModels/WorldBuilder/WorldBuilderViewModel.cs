@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
@@ -1672,6 +1673,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ApplyTemplateToSelectionCommand = new RelayCommand(_ => ApplyTemplateToSelection(),
             _ => _multiSel.Count >= 2 && _selectedProp is not null);
         ToggleHotkeysCommand = new RelayCommand(_ => ShowHotkeys = !ShowHotkeys);
+        SavePrefabCommand = new RelayCommand(_ => SavePrefab(), _ => _multiSel.Count >= 2);
+        PlacePrefabCommand = new RelayCommand(_ => PlacePrefab(),
+            _ => _selectedPrefab is not null && _selectedNode is not null);
+        DeletePrefabCommand = new RelayCommand(_ => DeletePrefab(), _ => _selectedPrefab is not null);
+        TakeBaselineCommand = new RelayCommand(_ => TakeBaseline());
+        CompareBaselineCommand = new RelayCommand(_ => CompareBaseline(), _ => _diffBaseline is not null);
+        DependenciesCommand = new RelayCommand(_ => ShowDependencies());
+        RefreshPrefabs();
         AlignXCommand = new RelayCommand(_ => AlignSelected(0), _ => _multiSel.Count >= 2);
         AlignYCommand = new RelayCommand(_ => AlignSelected(1), _ => _multiSel.Count >= 2);
         DistributeXCommand = new RelayCommand(_ => DistributeSelected(0), _ => _multiSel.Count >= 3);
@@ -2824,6 +2833,305 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         + $"description = {_mapDescription}\r\n"
         + $"built = {DateTime.Now:yyyy-MM-dd HH:mm}\r\n"
         + "tool = SiegeSmith (SiegeFX)\r\n";
+
+    // ═══ ED-16 — prefabs, world diff, dependency report ═══════════════
+
+    /// <summary>Prefab payload: pieces stored with positions RELATIVE to the
+    /// selection centroid (world space), so placement re-anchors everything
+    /// onto the target node in one drop. Serialized with the undo options
+    /// (fields + Populate) — the exact semantics the headless suite verified.</summary>
+    private sealed class PrefabData
+    {
+        public List<PlacedObject> Objects = new();
+        public List<RegionEmitter> Emitters = new();
+        public List<RegionDecal> Decals = new();
+        public List<AuthoredLight> Lights = new();
+        public List<RegionTrigger> Triggers = new();
+        public List<CommandPlacement> Commands = new();
+        public int Count => Objects.Count + Emitters.Count + Decals.Count + Lights.Count + Triggers.Count + Commands.Count;
+    }
+
+    private static string PrefabDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SiegeSmith", "prefabs");
+
+    public ObservableCollection<string> Prefabs { get; } = new();
+    private string? _selectedPrefab;
+    public string? SelectedPrefab { get => _selectedPrefab; set { if (SetProperty(ref _selectedPrefab, value)) RaiseCommands(); } }
+    private string _prefabName = "";
+    public string PrefabName { get => _prefabName; set => SetProperty(ref _prefabName, value); }
+    public RelayCommand SavePrefabCommand { get; }
+    public RelayCommand PlacePrefabCommand { get; }
+    public RelayCommand DeletePrefabCommand { get; }
+    public bool HasPrefabs => Prefabs.Count > 0;
+
+    private void RefreshPrefabs()
+    {
+        Prefabs.Clear();
+        try
+        {
+            if (Directory.Exists(PrefabDir))
+                foreach (var f in Directory.GetFiles(PrefabDir, "*.json"))
+                    Prefabs.Add(Path.GetFileNameWithoutExtension(f));
+        }
+        catch { /* the prefab shelf is a convenience — never block */ }
+        OnPropertyChanged(nameof(HasPrefabs));
+    }
+
+    /// <summary>Save the multi-selection as a named prefab — a reusable group
+    /// (camp fire + logs + light + trigger…) stored per-user, placeable in any
+    /// region of any map.</summary>
+    private void SavePrefab()
+    {
+        PruneMulti();
+        if (_multiSel.Count < 2) { Status = "Ctrl+click at least two pieces — a prefab is a reusable GROUP."; return; }
+        var name = SanitizeFileName(_prefabName);
+        if (name.Length == 0) { Status = "Give the prefab a name first (box beside Save)."; return; }
+
+        var worlds = new List<(object Item, Vector3 W)>();
+        var sum = Vector3.Zero;
+        foreach (var m in _multiSel)
+        {
+            if (!_nodeWorld.TryGetValue(PieceNode(m), out var nw)) continue;
+            var w = Vector3.Transform(GetPieceLocal(m), nw);
+            worlds.Add((m, w));
+            sum += w;
+        }
+        if (worlds.Count < 2) return;
+        var centroid = sum / worlds.Count;
+
+        var data = new PrefabData();
+        foreach (var (item, w) in worlds)
+        {
+            var rel = w - centroid;
+            switch (item)
+            {
+                case PlacedObject p: { var c = p.Clone(); c.LocalPos = rel; c.NodeGuid = 0; c.InitialCommand = 0; data.Objects.Add(c); break; }
+                case RegionEmitter e: data.Emitters.Add((RegionEmitter)ClonePieceDetached(e, rel)); break;
+                case RegionDecal d: data.Decals.Add((RegionDecal)ClonePieceDetached(d, rel)); break;
+                case AuthoredLight l: data.Lights.Add((AuthoredLight)ClonePieceDetached(l, rel)); break;
+                case RegionTrigger t:
+                {
+                    var c = (RegionTrigger)ClonePieceDetached(t, rel);
+                    foreach (var r in t.Rows) CopyRowInto(c, r);
+                    data.Triggers.Add(c);
+                    break;
+                }
+                case CommandPlacement cm: data.Commands.Add((CommandPlacement)ClonePieceDetached(cm, rel)); break;
+            }
+        }
+        try
+        {
+            Directory.CreateDirectory(PrefabDir);
+            File.WriteAllText(Path.Combine(PrefabDir, name + ".json"),
+                System.Text.Json.JsonSerializer.Serialize(data, UndoJson));
+            RefreshPrefabs();
+            SelectedPrefab = name;
+            Status = $"Prefab '{name}' saved ({data.Count} pieces) — place it in any region from the Custom tab.";
+        }
+        catch (Exception ex) { Status = "Prefab save failed: " + ex.Message; }
+    }
+
+    /// <summary>A detached copy of a marker piece: prefab-relative position,
+    /// no node anchor, no scid (both re-assigned at placement).</summary>
+    private static object ClonePieceDetached(object src, Vector3 rel) => src switch
+    {
+        RegionEmitter e => new RegionEmitter { Template = e.Template, LocalPos = rel, Smoke = e.Smoke, Count = e.Count, Fade = e.Fade, ParticleSize = e.ParticleSize, Growth = e.Growth },
+        RegionDecal d => new RegionDecal { OriginLocal = rel, Normal = d.Normal, AxisH = d.AxisH, AxisV = d.AxisV, HorizExtent = d.HorizExtent, VertExtent = d.VertExtent, Texture = d.Texture },
+        AuthoredLight l => new AuthoredLight { Kind = AuthoredLightKind.Point, Position = rel, Color = l.Color, Intensity = l.Intensity, InnerRadius = l.InnerRadius, OuterRadius = l.OuterRadius, DrawShadow = l.DrawShadow, AffectsActors = l.AffectsActors, AffectsItems = l.AffectsItems, AffectsTerrain = l.AffectsTerrain },
+        RegionTrigger t => new RegionTrigger { Template = t.Template, LocalPos = rel },
+        CommandPlacement c => new CommandPlacement { Kind = c.Kind, LocalPos = rel, Duration = c.Duration, Order = c.Order },
+        _ => throw new InvalidOperationException("not a prefab-able piece"),
+    };
+
+    private static void CopyRowInto(RegionTrigger target, TriggerRow src)
+    {
+        var row = new TriggerRow
+        {
+            SingleShot = src.SingleShot, FlipFlop = src.FlipFlop, StartActive = src.StartActive,
+            ResetDuration = src.ResetDuration, OccupantsGroup = src.OccupantsGroup,
+        };
+        foreach (var cd in src.Conditions) row.Conditions.Add(cd.Clone());
+        foreach (var ac in src.Actions) row.Actions.Add(ac.Clone());
+        target.Rows.Add(row);
+    }
+
+    /// <summary>Place the selected prefab onto the selected node, centred on
+    /// it — every piece re-anchors there with fresh SCIDs, and the placed
+    /// pieces become the multi-selection so one drag moves the group.</summary>
+    private void PlacePrefab()
+    {
+        if (_selectedPrefab is null || _selectedNode is null) return;
+        PrefabData? data;
+        try
+        {
+            data = System.Text.Json.JsonSerializer.Deserialize<PrefabData>(
+                File.ReadAllText(Path.Combine(PrefabDir, _selectedPrefab + ".json")), UndoJson);
+        }
+        catch (Exception ex) { Status = "Prefab load failed: " + ex.Message; return; }
+        if (data is null || data.Count == 0) { Status = "Prefab is empty."; return; }
+        uint node = _selectedNode.Guid;
+        if (!_nodeWorld.TryGetValue(node, out var nw) || !Matrix4x4.Invert(nw, out var inv))
+        { Status = "Selected node has no transform yet — render once first."; return; }
+
+        PushUndo();
+        var centerWorld = Vector3.Transform(LocalCenter(node), nw);
+        Vector3 Local(Vector3 rel) => Vector3.Transform(centerWorld + rel, inv);
+        _multiSel.Clear();
+        foreach (var p in data.Objects)
+        {
+            var c = p.Clone(); c.Scid = _nextScid++; c.NodeGuid = node; c.LocalPos = Local(p.LocalPos);
+            _objects.Add(c); _multiSel.Add(c);
+        }
+        foreach (var e in data.Emitters)
+        {
+            var c = (RegionEmitter)ClonePieceDetached(e, Local(e.LocalPos)); c.Scid = _nextEffectScid++; c.NodeGuid = node;
+            Emitters.Add(c); _multiSel.Add(c);
+        }
+        foreach (var d in data.Decals)
+        {
+            var c = (RegionDecal)ClonePieceDetached(d, Local(d.OriginLocal)); c.Scid = _nextEffectScid++; c.NodeGuid = node;
+            Decals.Add(c); _multiSel.Add(c);
+        }
+        foreach (var l in data.Lights)
+        {
+            var c = (AuthoredLight)ClonePieceDetached(l, Local(l.Position)); c.Scid = _nextLightScid++; c.NodeGuid = node;
+            Lights.Add(c); _multiSel.Add(c);
+        }
+        foreach (var t in data.Triggers)
+        {
+            var c = (RegionTrigger)ClonePieceDetached(t, Local(t.LocalPos)); c.Scid = _nextLogicScid++; c.NodeGuid = node;
+            foreach (var r in t.Rows) CopyRowInto(c, r);
+            Triggers.Add(c); _multiSel.Add(c);
+        }
+        foreach (var cm in data.Commands)
+        {
+            var c = (CommandPlacement)ClonePieceDetached(cm, Local(cm.LocalPos)); c.Scid = _nextLogicScid++; c.NodeGuid = node;
+            Commands.Add(c); _multiSel.Add(c);
+        }
+        RebuildPlacedRows();
+        RaiseMulti();
+        Render();
+        Status = $"Placed prefab '{_selectedPrefab}' ({data.Count} pieces) on the selected node — drag any member to move the whole group.";
+    }
+
+    private void DeletePrefab()
+    {
+        if (_selectedPrefab is null) return;
+        try
+        {
+            File.Delete(Path.Combine(PrefabDir, _selectedPrefab + ".json"));
+            Status = $"Prefab '{_selectedPrefab}' deleted.";
+            RefreshPrefabs();
+        }
+        catch (Exception ex) { Status = "Prefab delete failed: " + ex.Message; }
+    }
+
+    private static string SanitizeFileName(string raw)
+    {
+        var sb = new StringBuilder();
+        foreach (var ch in (raw ?? "").Trim())
+            sb.Append(char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_');
+        return sb.ToString();
+    }
+
+    // World diff — a session baseline you can compare against at any time:
+    // "what changed since I snapshotted?" per family, plus moved pieces.
+    private string? _diffBaseline;
+    public RelayCommand TakeBaselineCommand { get; }
+    public RelayCommand CompareBaselineCommand { get; }
+
+    private void TakeBaseline()
+    {
+        _diffBaseline = Snapshot();
+        CompareBaselineCommand?.RaiseCanExecuteChanged();
+        Status = "Baseline snapshot taken — 'Diff vs baseline' lists everything that changes from here.";
+    }
+
+    private void CompareBaseline()
+    {
+        if (_diffBaseline is null) return;
+        UndoState baseline;
+        try { baseline = System.Text.Json.JsonSerializer.Deserialize<UndoState>(_diffBaseline, UndoJson) ?? new UndoState(); }
+        catch (Exception ex) { Status = "Baseline unreadable: " + ex.Message; return; }
+
+        var rows = new List<ValidationRow> { new(true, "── Diff vs baseline ──") };
+        void DiffScids(string family, IEnumerable<(uint Scid, Vector3 Pos)> before, IEnumerable<(uint Scid, Vector3 Pos)> now)
+        {
+            var b = new Dictionary<uint, Vector3>();
+            foreach (var (s, p) in before) b[s] = p;
+            int added = 0, moved = 0;
+            var seen = new HashSet<uint>();
+            foreach (var (s, p) in now)
+            {
+                seen.Add(s);
+                if (!b.TryGetValue(s, out var bp)) added++;
+                else if (Vector3.DistanceSquared(bp, p) > 0.0001f) moved++;
+            }
+            int removed = 0;
+            foreach (var s in b.Keys) if (!seen.Contains(s)) removed++;
+            if (added + removed + moved > 0)
+                rows.Add(new ValidationRow(true, $"{family}: +{added} added · −{removed} removed · {moved} moved"));
+        }
+
+        var beforeObjs = new List<(uint, Vector3)>();
+        foreach (var line in baseline.ObjectsTsv.Split('\n'))
+        {
+            var f = line.Split('\t');
+            if (f.Length >= 11) beforeObjs.Add((ParseHexU(f[0]), new Vector3(PF(f[3]), PF(f[4]), PF(f[5]))));
+        }
+        DiffScids("Objects", beforeObjs, _objects.Select(o => (o.Scid, o.LocalPos)));
+        DiffScids("Emitters", baseline.Emitters.Select(e => (e.Scid, e.LocalPos)), Emitters.Select(e => (e.Scid, e.LocalPos)));
+        DiffScids("Decals", baseline.Decals.Select(d => (d.Scid, d.OriginLocal)), Decals.Select(d => (d.Scid, d.OriginLocal)));
+        DiffScids("Lights", baseline.Lights.Select(l => (l.Scid, l.Position)), Lights.Select(l => (l.Scid, l.Position)));
+        DiffScids("Triggers", baseline.Triggers.Select(t => (t.Scid, t.LocalPos)), Triggers.Select(t => (t.Scid, t.LocalPos)));
+        DiffScids("Commands", baseline.Commands.Select(c => (c.Scid, c.LocalPos)), Commands.Select(c => (c.Scid, c.LocalPos)));
+        int baselineNodes = 0;
+        try
+        {
+            if (baseline.NodesGas.Length > 0)
+                baselineNodes = NodesGasReader.Read(GasDocument.Parse(baseline.NodesGas)).Nodes.Count;
+        }
+        catch { /* unreadable baseline terrain — report content families only */ }
+        int nodeDelta = _region.Nodes.Count - baselineNodes;
+        if (nodeDelta != 0) rows.Add(new ValidationRow(true, $"Terrain: {(nodeDelta > 0 ? "+" : "")}{nodeDelta} node(s)"));
+        if (rows.Count == 1) rows.Add(new ValidationRow(true, "No differences from the baseline."));
+
+        ValidationRows.Clear();
+        foreach (var r in rows) ValidationRows.Add(r);
+        Status = $"Diff complete — see the Map tab list ({rows.Count - 1} line(s)).";
+    }
+
+    /// <summary>Dependency report — everything this region reaches for:
+    /// templates (with resolution status), decal textures, mood tracks,
+    /// quests, the custom-asset folder. Lands in the Map tab's checklist.</summary>
+    public RelayCommand DependenciesCommand { get; }
+
+    private void ShowDependencies()
+    {
+        var rows = new List<ValidationRow> { new(true, "── Dependencies ──") };
+        var templates = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var o in _objects) if (!string.IsNullOrEmpty(o.Template)) templates.Add(o.Template);
+        foreach (var t in templates)
+        {
+            bool ok = _templateModel.ContainsKey(t);
+            rows.Add(new ValidationRow(ok, $"template  {t}" + (ok ? "" : "  — UNRESOLVED")));
+        }
+        var textures = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in Decals) if (!string.IsNullOrWhiteSpace(d.Texture)) textures.Add(d.Texture);
+        foreach (var t in textures)
+        {
+            bool ok = _textures?.Resolve(t) is { Valid: true };
+            rows.Add(new ValidationRow(ok, $"texture   {t}" + (ok ? "" : "  — UNRESOLVED")));
+        }
+        foreach (var tr in new[] { _moodAmbient, _moodStandard, _moodBattle })
+            if (!string.IsNullOrWhiteSpace(tr)) rows.Add(new ValidationRow(true, $"audio     {tr.Trim()}"));
+        if (MapQuests.Count > 0) rows.Add(new ValidationRow(true, $"{MapQuests.Count} map quest(s)"));
+        if (_assetsFolder is not null) rows.Add(new ValidationRow(true, $"custom assets: {_assetsFolder}"));
+        if (rows.Count == 1) rows.Add(new ValidationRow(true, "No external dependencies yet — place something first."));
+        ValidationRows.Clear();
+        foreach (var r in rows) ValidationRows.Add(r);
+        Status = $"Dependency report: {templates.Count} template(s), {textures.Count} texture(s) — see the Map tab list.";
+    }
 
     private void DeleteSelectedNode()
     {
