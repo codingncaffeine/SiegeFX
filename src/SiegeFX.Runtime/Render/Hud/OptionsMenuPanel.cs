@@ -116,6 +116,7 @@ internal sealed class OptionsMenuPanel
         public bool RailLocked = true;
         public float PaperdollPosX = -1f, PaperdollPosY = -1f;
         public float SpellbookPosX = -1f, SpellbookPosY = -1f;
+        public float FieldCmdPosX = -1f, FieldCmdPosY = -1f; // field-commands cluster
 
         // Advanced — ALPHA-2V modern-GPU tab (new; DS1 had no equivalent).
         // All vendor-neutral GL features. MSAA needs a window rebuild so it

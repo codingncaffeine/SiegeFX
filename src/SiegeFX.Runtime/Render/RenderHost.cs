@@ -9277,7 +9277,7 @@ void main()
     // companion-inventory tile row; dragging moves it, releasing locks the
     // spot into prefs.json (normalized fractions, resolution-independent).
     // While shift is held, a click on a piece bypasses its buttons.
-    private enum HudDragPiece { None, Compass, Inventory, CompanionInv, Awp, TeamStrip, Paperdoll, Spellbook }
+    private enum HudDragPiece { None, Compass, Inventory, CompanionInv, Awp, TeamStrip, Paperdoll, Spellbook, FieldCmd }
     private HudDragPiece _hudDrag = HudDragPiece.None;
     private int _hudDragOffX, _hudDragOffY;
     private (int X, int Y, int W, int H) _companionRowRect; // stashed by the draw pass
@@ -9379,6 +9379,14 @@ void main()
             _hudDragOffX = mx - tr.X; _hudDragOffY = my - tr.Y;
             return true;
         }
+        // Field-commands cluster (party orders, bottom-right by default).
+        var fr = _fieldPanel.LastDrawnRect;
+        if (fr.W > 0 && mx >= fr.X && mx < fr.X + fr.W && my >= fr.Y && my < fr.Y + fr.H)
+        {
+            _hudDrag = HudDragPiece.FieldCmd;
+            _hudDragOffX = mx - fr.X; _hudDragOffY = my - fr.Y;
+            return true;
+        }
         // Player AWP cluster (portrait + HP/MP + slots + inventory button).
         {
             float aws = Hud.CharacterAwp.Scale(vh);
@@ -9411,8 +9419,22 @@ void main()
             case HudDragPiece.TeamStrip:    s.TeamPosX = nx;         s.TeamPosY = ny;         break;
             case HudDragPiece.Paperdoll:    s.PaperdollPosX = nx;    s.PaperdollPosY = ny;    break;
             case HudDragPiece.Spellbook:    s.SpellbookPosX = nx;    s.SpellbookPosY = ny;    break;
+            case HudDragPiece.FieldCmd:     s.FieldCmdPosX = nx;     s.FieldCmdPosY = ny;     break;
         }
         ApplyHudPieceOffsets();
+    }
+
+    /// <summary>Field-commands cluster's DEFAULT top-left (authored envelope
+    /// origin at the bottom-right dock) — shared by the offset applier and
+    /// the home-snap so they can't drift apart.</summary>
+    private (int X, int Y) FieldCmdDefaultTopLeft(int vw, int vh)
+    {
+        float fs = Hud.FieldCommandsPanel.Scale(vh);
+        int x = vw - (int)MathF.Round(640f * fs) + (int)MathF.Round(428 * fs);
+        int y = vh - (int)MathF.Round(480f * fs)
+                   - (int)MathF.Round(Hud.FieldCommandsPanel.LiftPx * fs)
+                   + (int)MathF.Round(332 * fs);
+        return (x, y);
     }
 
     /// <summary>SC-HUD-DRAG — magnetic release: when a dropped rail panel's
@@ -9435,6 +9457,7 @@ void main()
             HudDragPiece.TeamStrip    => s.TeamPosX >= 0f ? (s.TeamPosX, s.TeamPosY) : null,
             HudDragPiece.Paperdoll    => s.PaperdollPosX >= 0f ? (s.PaperdollPosX, s.PaperdollPosY) : null,
             HudDragPiece.Spellbook    => s.SpellbookPosX >= 0f ? (s.SpellbookPosX, s.SpellbookPosY) : null,
+            HudDragPiece.FieldCmd     => s.FieldCmdPosX >= 0f ? (s.FieldCmdPosX, s.FieldCmdPosY) : null,
             _ => null,
         };
         void Set(HudDragPiece p, float px, float py)
@@ -9448,6 +9471,7 @@ void main()
                 case HudDragPiece.TeamStrip:    s.TeamPosX = px;         s.TeamPosY = py;         break;
                 case HudDragPiece.Paperdoll:    s.PaperdollPosX = px;    s.PaperdollPosY = py;    break;
                 case HudDragPiece.Spellbook:    s.SpellbookPosX = px;    s.SpellbookPosY = py;    break;
+                case HudDragPiece.FieldCmd:     s.FieldCmdPosX = px;     s.FieldCmdPosY = py;     break;
             }
         }
 
@@ -9468,6 +9492,8 @@ void main()
             HudDragPiece.CompanionInv => (_companionRowRect.W, _companionRowRect.H,
                                           _inventoryPanel.OriginX + Hud.InventoryPanel.PanelWidth(vh), 0),
             HudDragPiece.Awp       => ((int)MathF.Round(150 * aws), (int)MathF.Round(58 * aws), 0, 0),
+            HudDragPiece.FieldCmd  => (_fieldPanel.LastDrawnRect.W, _fieldPanel.LastDrawnRect.H,
+                                       FieldCmdDefaultTopLeft(vw, vh).X, FieldCmdDefaultTopLeft(vw, vh).Y),
             HudDragPiece.TeamStrip => ((int)MathF.Round(150 * Hud.TeamPortraits.Scale(vh)),
                                        _party.Count > 1 ? (int)MathF.Round((_party.Count - 1) * Hud.TeamPortraits.CellStep * Hud.TeamPortraits.Scale(vh)) : 0,
                                        0, (int)MathF.Round(Hud.TeamPortraits.CellTop0 * Hud.TeamPortraits.Scale(vh))),
@@ -9532,6 +9558,9 @@ void main()
         int stripTop = (int)MathF.Round(Hud.TeamPortraits.CellTop0 * ts);
         _teamPortraits.OffsetX = s.TeamPosX >= 0f ? (int)MathF.Round(s.TeamPosX * vw) : 0;
         _teamPortraits.OffsetY = s.TeamPosY >= 0f ? (int)MathF.Round(s.TeamPosY * vh) - stripTop : 0;
+        var (fcDefX, fcDefY) = FieldCmdDefaultTopLeft(vw, vh);
+        _fieldPanel.OffsetX = s.FieldCmdPosX >= 0f ? (int)MathF.Round(s.FieldCmdPosX * vw) - fcDefX : 0;
+        _fieldPanel.OffsetY = s.FieldCmdPosY >= 0f ? (int)MathF.Round(s.FieldCmdPosY * vh) - fcDefY : 0;
     }
 
     private void DrawCompass(int viewportW, int viewportH)

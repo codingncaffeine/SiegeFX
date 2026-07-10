@@ -26,6 +26,25 @@ public sealed class FieldCommandsPanel
     public const int RefRes = 480;
     public static float Scale(int viewportH) => HudScale.Hud(viewportH);
 
+    /// <summary>SC-HUD-DRAG — pixel offset of the whole cluster from its
+    /// bottom-right dock. Set by the host from the user's shift-dragged
+    /// position; (0,0) = the docked layout. Draw and HitTest both honor it.</summary>
+    public int OffsetX, OffsetY;
+
+    /// <summary>SC-HUD-DRAG — the cluster's actual on-screen bounds from the
+    /// last Draw (authored envelope 428,332..636,445). Drag pickup tests
+    /// THIS so grabbing can't disagree with the pixels.</summary>
+    public (int X, int Y, int W, int H) LastDrawnRect { get; private set; }
+
+    /// <summary>Shared origin math: right edge maps the authored 640-wide
+    /// canvas to the window's right; BOTTOM edge maps the authored 480-high
+    /// canvas to the window's bottom (raw-scale legacy put y at authored×s,
+    /// which only reached the bottom when the scale filled the full height —
+    /// at a clamped/reduced UI scale the panel stranded mid-screen).</summary>
+    (int originX, int originY) Origin(int viewportW, int viewportH, float s)
+        => (viewportW - (int)MathF.Round(640f * s) + OffsetX,
+            viewportH - (int)MathF.Round(480f * s) - (int)MathF.Round(LiftPx * s) + OffsetY);
+
     // The whole cluster is lifted by this many reference pixels so its bottom
     // row (bag / minimize) clears the data_bar buttons docked at the very
     // bottom of the screen (DS1 leaves a visible gap there). Tunable.
@@ -117,8 +136,7 @@ public sealed class FieldCommandsPanel
                           bool minimized, bool commandsCollapsed)
     {
         float s = Scale(viewportH);
-        int originX = viewportW - (int)MathF.Round(640f * s);
-        int originY = -(int)MathF.Round(LiftPx * s);
+        var (originX, originY) = Origin(viewportW, viewportH, s);
 
         // Minimized: only the loot bag and the maximize button are live.
         if (minimized)
@@ -186,8 +204,9 @@ public sealed class FieldCommandsPanel
         if (icons is null || guiTex is null) return;
 
         float s = Scale(viewportH);
-        int originX = viewportW - (int)MathF.Round(640f * s);
-        int originY = -(int)MathF.Round(LiftPx * s);
+        var (originX, originY) = Origin(viewportW, viewportH, s);
+        // SC-HUD-DRAG — the authored envelope, in live pixels, for pickup.
+        LastDrawnRect = Px((428, 332, 636, 445), s, originX, originY);
         int fontScale = System.Math.Max(1, (int)MathF.Round(s));
         var ink = new Vector4(0.88f, 0.84f, 0.70f, 1f);
 
