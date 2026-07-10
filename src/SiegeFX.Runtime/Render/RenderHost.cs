@@ -10900,8 +10900,29 @@ void main()
     /// is currently bound. Cheap (a handful of uniform sets, all GL queries
     /// are name-cached at the driver level), so we just call it next to every
     /// existing <c>SetInt("uFlipV", …)</c> site rather than tracking dirty bits.</summary>
+    // ALPHA-PERF — lights/fog/gamma are per-FRAME state; only uUseBakedLight
+    // is per-draw. The full upload (incl. up to 3×32 vec3 array elements at
+    // the maxed point-light budget) was re-sent at every draw site, which
+    // hitched at maxed Advanced settings. Stamps gate the heavy part to
+    // once per shader per frame.
+    private ulong _frameStamp;
+    private ulong _meshLightingStamp = ulong.MaxValue, _skinLightingStamp = ulong.MaxValue;
+
     private void ApplyLightingUniforms(Shader shader)
     {
+        // Per-draw reset — the two terrain draw sites flip this to 1 right
+        // after calling us, so every other draw must see it back at 0.
+        shader.SetInt("uUseBakedLight", 0);
+        if (shader == _meshShader)
+        {
+            if (_meshLightingStamp == _frameStamp) return;
+            _meshLightingStamp = _frameStamp;
+        }
+        else if (shader == _skinShader)
+        {
+            if (_skinLightingStamp == _frameStamp) return;
+            _skinLightingStamp = _frameStamp;
+        }
         shader.SetInt("uDirCount", _dirLightCount);
         shader.SetFloat("uAmbient", _ambientLevel);
         shader.SetVec3Array("uDirDir",   _dirLightDirs.AsSpan(0, _dirLightCount));
@@ -10914,10 +10935,8 @@ void main()
             shader.SetVec3Array("uPointColor", _framePointColor.AsSpan(0, _framePointCount));
             shader.SetVec3Array("uPointRange", _framePointRange.AsSpan(0, _framePointCount));
         }
-        // ALPHA-2 RADIOSITY — dynamic path by default; the terrain draw
-        // sites flip this to 1 right after calling us.
-        shader.SetInt("uUseBakedLight", 0);
-        // ALPHA-2V — options gamma rides the same every-draw-site hook.
+        // ALPHA-2V — options gamma (uUseBakedLight's per-draw reset moved
+        // to the top of this method, ahead of the per-frame gate).
         shader.SetFloat("uGamma", _gammaLevel);
         // SC-WEATHER-D — fog rides the same every-draw-site hook as lighting
         // so both world shaders (static + skinned) stay in sync with the
@@ -14161,8 +14180,12 @@ void main()
             GlTexture.SetFilterMode(mode, aniso);
         }
         _window.VSync = s.VSync;
-        // Silk: 0 = uncapped. VSync effectively overrides a higher cap.
-        _window.FramesPerSecond = double.TryParse(s.FpsCap, out var cap) && cap > 0 ? cap : 0.0;
+        // ALPHA-PERF — with VSync ON the software frame limiter must stay
+        // OFF: Silk's cap sleeps on the coarse Windows timer and fights the
+        // swap-interval pacing, which reads as constant micro-hitching. The
+        // cap only applies when vsync is off.
+        _window.FramesPerSecond = !s.VSync && double.TryParse(s.FpsCap, out var cap) && cap > 0
+            ? cap : 0.0;
     }
 
     /// <summary>Resolution + fullscreen, applied on OK only (mid-menu mode
@@ -20313,6 +20336,7 @@ void main()
     private void OnRender(double dt)
     {
         if (_gl is null) return;
+        _frameStamp++; // ALPHA-PERF — gates once-per-frame uniform uploads
         if (_diagMode) DiagRecordFrame(dt);
         ReconcileTradeInventory();
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;

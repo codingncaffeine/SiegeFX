@@ -114,17 +114,23 @@ void main() {
         _quadCount++;
     }
 
+    // ALPHA-PERF — reused upload buffer; ToArray() per frame was a
+    // per-frame GC allocation for no benefit.
+    private float[] _uploadBuf = Array.Empty<float>();
+
     public void Draw(Matrix4x4 viewProj)
     {
         if (_disposed || _quadCount == 0) return;
 
-        var data = _verts.ToArray();
+        if (_uploadBuf.Length < _verts.Count)
+            _uploadBuf = new float[Math.Max(_verts.Count, _uploadBuf.Length * 2)];
+        _verts.CopyTo(_uploadBuf);
         _gl.BindVertexArray(_vao);
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vbo);
         unsafe
         {
-            fixed (float* p = data)
-                _gl.BufferData(GLEnum.ArrayBuffer, (nuint)(data.Length * sizeof(float)),
+            fixed (float* p = _uploadBuf)
+                _gl.BufferData(GLEnum.ArrayBuffer, (nuint)(_verts.Count * sizeof(float)),
                     p, GLEnum.DynamicDraw);
         }
 

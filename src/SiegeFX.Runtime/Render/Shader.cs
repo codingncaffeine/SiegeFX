@@ -56,7 +56,7 @@ public sealed class Shader : IDisposable
 
     public unsafe void SetMatrix4(string name, Matrix4x4 m)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.UniformMatrix4(loc, 1, false, (float*)&m);
     }
@@ -68,7 +68,7 @@ public sealed class Shader : IDisposable
     public unsafe void SetMatrix4Array(string name, ReadOnlySpan<Matrix4x4> matrices)
     {
         if (matrices.Length == 0) return;
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         fixed (Matrix4x4* p = matrices)
             _gl.UniformMatrix4(loc, (uint)matrices.Length, false, (float*)p);
@@ -76,35 +76,35 @@ public sealed class Shader : IDisposable
 
     public void SetVec2(string name, Vector2 v)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.Uniform2(loc, v.X, v.Y);
     }
 
     public void SetVec3(string name, Vector3 v)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.Uniform3(loc, v.X, v.Y, v.Z);
     }
 
     public void SetVec4(string name, float x, float y, float z, float w)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.Uniform4(loc, x, y, z, w);
     }
 
     public void SetInt(string name, int value)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.Uniform1(loc, value);
     }
 
     public void SetFloat(string name, float value)
     {
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         _gl.Uniform1(loc, value);
     }
@@ -116,10 +116,26 @@ public sealed class Shader : IDisposable
     public unsafe void SetVec3Array(string name, ReadOnlySpan<Vector3> vectors)
     {
         if (vectors.Length == 0) return;
-        var loc = _gl.GetUniformLocation(Handle, name);
+        var loc = Loc(name);
         if (loc < 0) return;
         fixed (Vector3* p = vectors)
             _gl.Uniform3(loc, (uint)vectors.Length, (float*)p);
+    }
+
+    // ALPHA-PERF — uniform locations are immutable after link, but every
+    // setter was calling glGetUniformLocation (a string-marshalled driver
+    // round-trip) on EVERY set. The world draw path sets a dozen uniforms
+    // per draw call across hundreds of draws per frame, so those lookups
+    // alone were tens of thousands of driver calls per frame. One-time
+    // lookup, cached per shader.
+    private readonly Dictionary<string, int> _uniformLocs = new();
+
+    private int Loc(string name)
+    {
+        if (_uniformLocs.TryGetValue(name, out var loc)) return loc;
+        loc = _gl.GetUniformLocation(Handle, name);
+        _uniformLocs[name] = loc;
+        return loc;
     }
 
     public void Dispose() => _gl.DeleteProgram(Handle);
