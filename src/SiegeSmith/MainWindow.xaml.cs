@@ -17,12 +17,24 @@ public partial class MainWindow : Window
     private void OnBuildTank(object sender, RoutedEventArgs e) =>
         new BuildTankWindow { Owner = this }.ShowDialog();
 
+    private WorldBuilderWindow? _worldBuilder;
+
     private void OnWorldBuilder(object sender, RoutedEventArgs e)
     {
+        // SC-UX1 — the World Builder is a full editor, not a dialog: open it
+        // NON-modal so the studio shell (tank explorer, viewers) stays usable
+        // alongside; re-activate the existing window instead of stacking.
+        if (_worldBuilder is { IsLoaded: true })
+        {
+            _worldBuilder.Activate();
+            return;
+        }
         var paths = new List<string>();
         if (DataContext is MainViewModel vm)
             foreach (var t in vm.Tanks) paths.Add(t.FullPath);
-        new WorldBuilderWindow(paths) { Owner = this }.ShowDialog();
+        _worldBuilder = new WorldBuilderWindow(paths) { Owner = this };
+        _worldBuilder.Closed += (_, _) => _worldBuilder = null;
+        _worldBuilder.Show();
     }
 
     private void OnProjectFiles(object sender, RoutedEventArgs e)
@@ -42,6 +54,19 @@ public partial class MainWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (DataContext is MainViewModel vm) vm.PromptForInstallIfMissing();
+    }
+
+    private void OnAbout(object sender, RoutedEventArgs e)
+    {
+        var ver = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "dev";
+        MessageBox.Show(this,
+            $"SiegeSmith {ver}\n\n" +
+            "The Dungeon Siege modding studio and world builder,\n" +
+            "built on the SiegeFX engine's own readers and writers —\n" +
+            "what the editor shows is what the engine loads.\n\n" +
+            "Part of the SiegeFX project:\n" +
+            "github.com/codingncaffeine/SiegeFX",
+            "About SiegeSmith", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     /// <summary>WPF's TreeView.SelectedItem is read-only, so we push tree selection into the

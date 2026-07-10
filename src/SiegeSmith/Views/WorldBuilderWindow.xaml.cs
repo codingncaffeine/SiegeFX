@@ -108,4 +108,12 @@ public partial class WorldBuilderWindow : Window
 
     private void OnViewportSizeChanged(object sender, SizeChangedEventArgs e) =>
         _vm.SetViewport((int)e.NewSize.Width, (int)e.NewSize.Height);
+
+    /// <summary>SC-UX1 — Scene Outliner click routes to the same selection the
+    /// viewport and Inspector use (group headers themselves are not selections).</summary>
+    private void OnOutlinerSelected(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (e.NewValue is not null and not ViewModels.WorldBuilder.OutlineGroup)
+            _vm.SelectFromOutliner(e.NewValue);
+    }
 }

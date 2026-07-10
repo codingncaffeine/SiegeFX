@@ -44,7 +44,7 @@
                 <MenuItem Header="Open _World Builder…" Click="OnWorldBuilder"/>
             </MenuItem>
             <MenuItem Header="_Help">
-                <MenuItem Header="_About SiegeSmith" IsEnabled="False"/>
+                <MenuItem Header="_About SiegeSmith" Click="OnAbout"/>
             </MenuItem>
         </Menu>
 
@@ -104,8 +104,6 @@
                                   Visibility="{Binding Explorer.HasSearch, Converter={StaticResource InverseBoolToVis}}">
                             <TreeView.ContextMenu>
                                 <ContextMenu>
-                                    <MenuItem Header="Preview" IsEnabled="False"/>
-                                    <Separator/>
                                     <MenuItem Header="Extract file…"
                                               Command="{Binding PlacementTarget.DataContext.Explorer.ExtractSelectedCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"/>
                                     <MenuItem Header="Extract folder / tank…"

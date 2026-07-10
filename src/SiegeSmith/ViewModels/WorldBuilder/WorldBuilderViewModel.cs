@@ -64,7 +64,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     // ── placed nodes ────────────────────────────────────────────
     public ObservableCollection<NodeRow> Nodes { get; } = new();
     private NodeRow? _selectedNode;
-    public NodeRow? SelectedNode { get => _selectedNode; set { if (SetProperty(ref _selectedNode, value)) OnNodeSelected(); } }
+    public NodeRow? SelectedNode { get => _selectedNode; set { if (SetProperty(ref _selectedNode, value)) { OnPropertyChanged(nameof(HasSelectedNode)); OnNodeSelected(); } } }
+    public bool HasSelectedNode => _selectedNode is not null;
 
     public ObservableCollection<DoorRow> SourceDoors { get; } = new();
     private DoorRow? _selectedSourceDoor;
@@ -127,7 +128,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         : "Props — inert scenery, placed into non_interactive.gas.";
     public ObservableCollection<PlacedObjectRow> PlacedObjects { get; } = new();
     private PlacedObjectRow? _selectedPlacedObject;
-    public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) RaiseCommands(); } }
+    public PlacedObjectRow? SelectedPlacedObject { get => _selectedPlacedObject; set { if (SetProperty(ref _selectedPlacedObject, value)) { OnPropertyChanged(nameof(HasSelectedPlacedObject)); RaiseCommands(); } } }
+    public bool HasSelectedPlacedObject => _selectedPlacedObject is not null;
 
     // ── lighting & mood (LE-6) ──────────────────────────────────
     public ObservableCollection<AuthoredLight> Lights { get; } = new();
@@ -584,6 +586,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
     public RelayCommand DeleteStitchCommand { get; }
     public RelayCommand AddNavFlagCommand { get; }
     public RelayCommand DeleteNavFlagCommand { get; }
+    /// <summary>Del key — deletes whatever piece is currently selected,
+    /// routed to the matching per-type delete (markers first, then placed
+    /// object, then node). One key, every piece.</summary>
+    public RelayCommand DeleteSelectedAnyCommand { get; }
+
+    /// <summary>SC-UX1 — the Scene Outliner's fixed groups. Each group wraps
+    /// one of the live ObservableCollections, so the tree stays current with
+    /// zero extra bookkeeping; the colour dot matches the viewport marker.</summary>
+    public OutlineGroup[] OutlineGroups { get; }
 
     public WorldBuilderViewModel(IReadOnlyList<string> tankPaths)
     {
@@ -644,8 +655,50 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
         ImportNodesCommand = new RelayCommand(_ => ImportNodes(), _ => IsReady);
         ResetViewCommand = new RelayCommand(_ => ResetView());
         WireframeCommand = new RelayCommand(_ => { _wireframe = !_wireframe; OnPropertyChanged(nameof(WireframeLabel)); Render(); });
+        DeleteSelectedAnyCommand = new RelayCommand(_ => DeleteSelectedAny());
+
+        OutlineGroups = new[]
+        {
+            new OutlineGroup("Nodes",         Nodes,         "#8A8F98"),
+            new OutlineGroup("Objects",       PlacedObjects, "#B0A890"),
+            new OutlineGroup("Emitters",      Emitters,      "#F07A28"),
+            new OutlineGroup("Decals",        Decals,        "#D8A24B"),
+            new OutlineGroup("Lights",        Lights,        "#F2D24C"),
+            new OutlineGroup("Triggers",      Triggers,      "#33C2A6"),
+            new OutlineGroup("Commands",      Commands,      "#4C8DF0"),
+            new OutlineGroup("Conversations", Conversations, "#C77DD8"),
+            new OutlineGroup("Nav flags",     LogicalFlags,  "#7FBF7F"),
+        };
 
         LoadCatalogAsync(tankPaths);
+    }
+
+    /// <summary>Outliner click → the same selection the side panels and the
+    /// viewport use, so all three stay in lock-step.</summary>
+    public void SelectFromOutliner(object item)
+    {
+        switch (item)
+        {
+            case NodeRow n: SelectedNode = n; break;
+            case PlacedObjectRow p: SelectedPlacedObject = p; SelectMarker(p); break;
+            case RegionEmitter or RegionTrigger or CommandPlacement or RegionDecal or AuthoredLight:
+                SelectMarker(item); break;
+            case Conversation c: SelectedConversation = c; break;
+            case LogicalFlag f: SelectedFlag = f; break;
+        }
+    }
+
+    private void DeleteSelectedAny()
+    {
+        if (_selectedEmitter is not null) { DeleteEmitterCommand.Execute(null); return; }
+        if (_selectedDecal is not null) { DeleteDecalCommand.Execute(null); return; }
+        if (_selectedLight is not null) { DeleteLightCommand.Execute(null); return; }
+        if (_selectedTrigger is not null) { DeleteTriggerCommand.Execute(null); return; }
+        if (_selectedCommand is not null) { DeleteCommandCommand.Execute(null); return; }
+        if (_selectedConversation is not null) { DeleteConversationCommand.Execute(null); return; }
+        if (_selectedFlag is not null) { DeleteNavFlagCommand.Execute(null); return; }
+        if (_selectedPlacedObject is not null) { DeleteObjectCommand.Execute(null); return; }
+        if (_selectedNode is not null && DeleteNodeCommand.CanExecute(null)) DeleteNodeCommand.Execute(null);
     }
 
     private async void LoadCatalogAsync(IReadOnlyList<string> tankPaths)
@@ -2696,6 +2749,23 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable
 }
 
 /// <summary>A row in the placed-node list.</summary>
+/// <summary>SC-UX1 — one Scene Outliner group: a fixed header + colour dot
+/// over one of the builder's live collections.</summary>
+public sealed class OutlineGroup
+{
+    public OutlineGroup(string header, System.Collections.IEnumerable items, string dot)
+    {
+        Header = header; Items = items;
+        var b = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(dot));
+        b.Freeze();
+        DotBrush = b;
+    }
+    public string Header { get; }
+    public System.Collections.IEnumerable Items { get; }
+    public System.Windows.Media.Brush DotBrush { get; }
+}
+
 public sealed record NodeRow(uint Guid, string Mesh, int DoorCount, bool IsAnchor)
 {
     public string Label => (IsAnchor ? "★ " : "") + Mesh;
