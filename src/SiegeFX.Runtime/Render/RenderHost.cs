@@ -59,6 +59,80 @@ public sealed class RenderHost : IDisposable
     // (standalone test regions); LoadPlayActors then falls back to single-region
     // behavior.
     private readonly List<(string Path, RegionGraph Graph, SiegeFX.Core.Assets.RegionStitchHelper? Stitches)> _worldRegionGraphs = new();
+
+    // SC-DECALS-STREAM — accumulated decal geometry + the terrain-drape
+    // sampler state, kept alive across region streaming so newly-loaded
+    // regions can register their decals too (they were launch-time-only).
+    private readonly List<DecalRenderer.DecalQuad> _decalQuadsAll = new();
+    private readonly List<DecalRenderer.DecalTri> _decalTrisAll = new();
+    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno)> _drapeNodes = new();
+    private readonly Dictionary<uint, SnoModel?> _drapeSnoCache = new();
+    private SnoMeshIndex? _drapeIndex;
+    private TankFile? _drapeTerrainTank;
+    private Func<Vector3, float?>? _decalSampleWorldHeight;
+    private Func<Vector3, float, List<(Vector3 A, Vector3 B, Vector3 C)>>? _decalCollectWorldTris;
+
+    // SC-PERSIST-STREAM — the loaded save's kill list + world prop state,
+    // retained so regions streamed in after the load apply the same history.
+    // Session kills append so the set stays authoritative for the whole run.
+    private readonly HashSet<uint> _persistedDeadScids = new();
+    private SiegeFX.Core.Save.WorldStateSnapshot? _persistedWorldState;
+
+    /// <summary>SC-PERSIST-STREAM — apply the snapshot's prop flags (opened /
+    /// unlocked / levered / broken / cleared) to whatever props are currently
+    /// registered. Idempotent; returns true when a structural change (broken
+    /// prop, cleared blocker) needs an obstacle/nav refresh. Shared by the
+    /// load path and the streamed-region re-apply.</summary>
+    private bool ApplyWorldPropState(SiegeFX.Core.Save.WorldStateSnapshot ws)
+    {
+        foreach (var scid in ws.OpenedChests)
+            foreach (var c in _chestProps)
+                if (c.Scid == scid) { c.ChestOpened = true; break; }
+        foreach (var scid in ws.UnlockedUsables)
+            foreach (var lu in _lockedUsables)
+                if (lu.Prop.Scid == scid) { lu.Unlocked = true; break; }
+        foreach (var scid in ws.LeversOn)
+            foreach (var lv in _leverProps)
+                if (lv.Scid == scid) { lv.LeverOn = true; break; }
+        bool structural = false;
+        foreach (var scid in ws.BrokenProps)
+            if (_breakingByScid.TryGetValue(scid, out var bp) && !bp.IsDestroyed)
+            { bp.IsDestroyed = true; structural = true; }
+        foreach (var scid in ws.ClearedBlockers)
+            foreach (var b in _blockingGizmos)
+                if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
+        return structural;
+    }
+
+    /// <summary>SC-DECALS-STREAM — add drape-sampler entries for region
+    /// graphs' nodes. <paramref name="onlyRegions"/> null = all loaded graphs
+    /// (boot); a set = just the freshly-streamed ones (incremental).</summary>
+    private void ExtendDrapeNodes(IReadOnlyCollection<string>? onlyRegions)
+    {
+        if (_drapeIndex is null || _regionLayout is null) return;
+        foreach (var (path, g, _) in _worldRegionGraphs)
+        {
+            if (onlyRegions is not null &&
+                !onlyRegions.Contains(path, StringComparer.OrdinalIgnoreCase)) continue;
+            foreach (var n in g.Nodes)
+            {
+                if (!_regionLayout.TryGetTransform(n.Guid, out var xf)) continue;
+                if (!_drapeSnoCache.TryGetValue(n.MeshGuid, out var sno))
+                {
+                    sno = null;
+                    var b = _drapeIndex.LoadSnoBytes(n.MeshGuid);
+                    if (b is not null)
+                    {
+                        try { sno = SnoModel.Load(b); }
+                        catch { sno = null; }
+                    }
+                    _drapeSnoCache[n.MeshGuid] = sno;
+                }
+                if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
+                _drapeNodes.Add((inv, xf, sno));
+            }
+        }
+    }
     private WorldLayout? _worldLayout;
     // Phase 21a-3 — rolling preload state. _loadedRegions caches every
     // (graph, layout, stitches) entry the loader has parsed so far so the
@@ -3182,11 +3256,20 @@ public sealed class RenderHost : IDisposable
             return;
         }
         // Cross-region / from the frontend: boot the save's region fresh, then
-        // apply. Needs the DS1 resources dir (only present under a boot launch).
+        // apply. The DS1 resources dir (boot launch) supplies the tanks; a
+        // --play-region session reuses its own launch tanks so in-game
+        // cross-region loads work there too.
         if (_ds1ResourcesDir is not null)
         {
             _loadDialog.Close();
             LaunchRegionForLoad(_ds1ResourcesDir, slot.Path);
+        }
+        else if (_regionMapTankPath is not null && _regionTerrainTankPath is not null
+              && _playLogicTankPath is not null && _playObjectsTankPath is not null)
+        {
+            _loadDialog.Close();
+            LaunchRegionForLoadWithTanks(_regionMapTankPath, _regionTerrainTankPath,
+                _playLogicTankPath, _playObjectsTankPath, slot.Path);
         }
         else
         {
@@ -7219,48 +7302,28 @@ void main()
         // registers them; we kick the message below so the rows fire.
         var emitterPlacementCount = 0;
         var legacyParticleCount = 0;
-        var decalQuads = new List<DecalRenderer.DecalQuad>();
-        // SC-DECAL-DRAPE — world-space surface sampler so ground decals conform
-        // to the terrain instead of bridging its dips as rigid quads. Decals are
-        // BIGGER than terrain nodes (fh_r1's tree shades are 6×7m over a grid of
-        // 4m tiles), so sampling only the anchor node's SNO leaves most corners
-        // hanging at the authored projector height (~1m up, per the shipped
-        // near/far planes) — the sampler therefore spans EVERY loaded node,
-        // bounds-filtered per query. Map tank indexed first so bundled custom
-        // tiles resolve; terrain last = stock authoritative (same convention as
-        // the nav build below).
-        TankFile? drapeTerrainTank = null;
-        Func<Vector3, float?>? sampleWorldHeight = null;
-        Func<Vector3, float, List<(Vector3 A, Vector3 B, Vector3 C)>>? collectWorldTris = null;
+        // SC-DECALS-STREAM — decal + drape-sampler state lives in fields now
+        // so regions streamed in later (OnPlayerRegionChanged) can extend the
+        // sampler, append their decals, and re-set the renderer; ~76/81
+        // regions were decal-less because only the launch-time set ever
+        // registered.
+        _decalQuadsAll.Clear();
+        _decalTrisAll.Clear();
+        _drapeNodes.Clear();
+        _drapeSnoCache.Clear();
+        _decalSampleWorldHeight = null;
+        _decalCollectWorldTris = null;
+        _drapeTerrainTank?.Dispose();
+        _drapeTerrainTank = null;
+        _drapeIndex = null;
         if (_regionTerrainTankPath is not null && _regionLayout is not null)
         {
             try
             {
-                drapeTerrainTank = TankFile.Open(_regionTerrainTankPath);
-                var drapeIndex = SnoMeshIndex.Build(mapReader, new TankReader(drapeTerrainTank));
-                var drapeSnoCache = new Dictionary<uint, SnoModel?>();
-                var drapeNodes = new List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno)>();
-                foreach (var (_, g, _) in _worldRegionGraphs)
-                {
-                    foreach (var n in g.Nodes)
-                    {
-                        if (!_regionLayout.TryGetTransform(n.Guid, out var xf)) continue;
-                        if (!drapeSnoCache.TryGetValue(n.MeshGuid, out var sno))
-                        {
-                            sno = null;
-                            var b = drapeIndex.LoadSnoBytes(n.MeshGuid);
-                            if (b is not null)
-                            {
-                                try { sno = SnoModel.Load(b); }
-                                catch { sno = null; }
-                            }
-                            drapeSnoCache[n.MeshGuid] = sno;
-                        }
-                        if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
-                        drapeNodes.Add((inv, xf, sno));
-                    }
-                }
-                if (drapeNodes.Count > 0)
+                _drapeTerrainTank = TankFile.Open(_regionTerrainTankPath);
+                _drapeIndex = SnoMeshIndex.Build(mapReader, new TankReader(_drapeTerrainTank));
+                ExtendDrapeNodes(onlyRegions: null);
+                if (_drapeNodes.Count > 0)
                 {
                     // SC-DECAL-PROJECT — world-triangle collector for WALL
                     // decals: every SNO + static-prop triangle within reach of
@@ -7269,11 +7332,11 @@ void main()
                     // (tilted leaves, one pushed in / one pushed out), not the
                     // wall plane. Evaluated lazily at decal-build time, which
                     // runs after LoadStaticProps so _staticProps is populated.
-                    collectWorldTris = (centerW, radius) =>
+                    _decalCollectWorldTris = (centerW, radius) =>
                     {
                         var list = new List<(Vector3 A, Vector3 B, Vector3 C)>();
                         float r2 = radius * radius;
-                        foreach (var (inv, xf, sno) in drapeNodes)
+                        foreach (var (inv, xf, sno) in _drapeNodes)
                         {
                             var lc = Vector3.Transform(centerW, inv);
                             if (lc.X < sno.MinBounds.X - radius || lc.X > sno.MaxBounds.X + radius ||
@@ -7313,12 +7376,12 @@ void main()
                         return list;
                     };
 
-                    sampleWorldHeight = worldPos =>
+                    _decalSampleWorldHeight = worldPos =>
                     {
                         float bestDelta = 2.0f;
                         float bestY = 0f;
                         bool found = false;
-                        foreach (var (inv, xf, sno) in drapeNodes)
+                        foreach (var (inv, xf, sno) in _drapeNodes)
                         {
                             var lp = Vector3.Transform(worldPos, inv);
                             if (lp.X < sno.MinBounds.X - 0.25f || lp.X > sno.MaxBounds.X + 0.25f ||
@@ -7333,13 +7396,14 @@ void main()
                         }
                         return found ? bestY : null;
                     };
-                    Console.WriteLine($"  [decals] drape sampler: {drapeNodes.Count} node SNOs across {_worldRegionGraphs.Count} region(s)");
+                    Console.WriteLine($"  [decals] drape sampler: {_drapeNodes.Count} node SNOs across {_worldRegionGraphs.Count} region(s)");
                 }
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"  [decals] drape sampler build failed: {ex.Message}");
-                sampleWorldHeight = null;
+                _decalSampleWorldHeight = null;
+                _decalCollectWorldTris = null;
             }
         }
         foreach (var rp in triggerRegions)
@@ -8031,16 +8095,18 @@ void main()
         // SC-DECALS — build the region's decal layer. Runs AFTER the static
         // props so wall-decal projection can clip against prop geometry (the
         // barn chars land on the broken door meshes, tilted as authored).
-        var decalTris = new List<DecalRenderer.DecalTri>();
+        // SC-DECALS-STREAM — _drapeTerrainTank stays OPEN after this: regions
+        // streamed in later extend the sampler + register their decals via
+        // OnPlayerRegionChanged.
         foreach (var rp in triggerRegions)
-            RegisterRegionDecals(mapReader, rp, decalQuads, decalTris, sampleWorldHeight, collectWorldTris);
-        drapeTerrainTank?.Dispose();
-        if (decalQuads.Count > 0 || decalTris.Count > 0)
+            RegisterRegionDecals(mapReader, rp, _decalQuadsAll, _decalTrisAll,
+                                 _decalSampleWorldHeight, _decalCollectWorldTris);
+        if (_decalQuadsAll.Count > 0 || _decalTrisAll.Count > 0)
         {
             _decalRenderer ??= new DecalRenderer(_gl);
-            _decalRenderer.SetDecals(decalQuads, decalTris, LoadDecalTexture);
+            _decalRenderer.SetDecals(_decalQuadsAll, _decalTrisAll, LoadDecalTexture);
             Console.WriteLine($"  decals: {_decalRenderer.DecalCount} pieces " +
-                              $"({decalQuads.Count} quads + {decalTris.Count} projected tris)");
+                              $"({_decalQuadsAll.Count} quads + {_decalTrisAll.Count} projected tris)");
         }
 
         // Phase 20a (follow-up) — print every talkable NPC's name + world
@@ -8210,6 +8276,16 @@ void main()
         // an old region's wall on the new mesh is closed.
         MarkAllObstacles();
 
+        // SC-PERSIST-STREAM — actors the save (or this session) already killed
+        // don't respawn when their region streams in.
+        if (_persistedDeadScids.Count > 0)
+        {
+            int before = newInstances.Count;
+            newInstances.RemoveAll(i => _persistedDeadScids.Contains(i.Scid));
+            if (newInstances.Count != before)
+                Console.WriteLine($"  rolling spawn: {before - newInstances.Count} dead actor(s) withheld (persisted kills)");
+        }
+
         // Spawn new actors and attach them to the render/tick lists with the
         // new nav mesh so their wander followers see the freshly-streamed floor.
         var newActors = _actorSpawner.Spawn(newInstances);
@@ -8260,6 +8336,35 @@ void main()
         LoadBlockingGizmos(newlyLoaded);
         LoadPointLights(newlyLoaded);
         AssignPatrolRoutes();
+
+        // SC-DECALS-STREAM — extend the drape sampler with the new regions'
+        // nodes and register their decals (after LoadStaticProps so wall
+        // decals can project onto the new props). Previously only the
+        // launch-time region set ever registered decals, leaving ~76/81
+        // regions decal-less.
+        if (_drapeIndex is not null && _gl is not null)
+        {
+            ExtendDrapeNodes(newlyLoaded);
+            int q0 = _decalQuadsAll.Count, t0 = _decalTrisAll.Count;
+            foreach (var rp in newlyLoaded)
+                RegisterRegionDecals(mapReader, rp, _decalQuadsAll, _decalTrisAll,
+                                     _decalSampleWorldHeight, _decalCollectWorldTris);
+            if (_decalQuadsAll.Count > q0 || _decalTrisAll.Count > t0)
+            {
+                _decalRenderer ??= new DecalRenderer(_gl);
+                _decalRenderer.SetDecals(_decalQuadsAll, _decalTrisAll, LoadDecalTexture);
+                Console.WriteLine($"  decals: +{_decalQuadsAll.Count - q0} quads " +
+                                  $"+{_decalTrisAll.Count - t0} tris (streamed) => {_decalRenderer.DecalCount} total");
+            }
+        }
+
+        // SC-PERSIST-STREAM — the streamed regions' fresh props re-apply the
+        // loaded save's world history (looted chests stay open, broken
+        // barrels stay broken — closes the reload-and-refarm loop).
+        if (_persistedWorldState is { } pws)
+        {
+            if (ApplyWorldPropState(pws)) MarkAllObstacles();
+        }
     }
 
     /// <summary>Phase 21c — resolve and cache the albedo texture for an actor or
@@ -8607,12 +8712,12 @@ void main()
         if (_gl is null || _playResolver is null || _templateStore is null
             || _regionLayout is null || _playMapTank is null) return;
 
-        // Phase 21c-3 — refresh global lighting from the player region's
-        // lights.gas before populating props so the very first prop pass uses
-        // the right colors. Re-fired by OnPlayerRegionChanged when the player
-        // crosses into a neighbor with different time-of-day baking.
-        var firstRegion = regionPaths.FirstOrDefault();
-        if (firstRegion is not null) LoadRegionLighting(firstRegion);
+        // Phase 21c-3 — refresh global lighting from the PLAYER's region, not
+        // the first path in the list: when OnPlayerRegionChanged streams a
+        // neighbor ring, regionPaths holds the newly-loaded NEIGHBORS, and
+        // keying off .First() lit the world with a region the player isn't in.
+        var lightRegion = _currentPlayerRegion ?? regionPaths.FirstOrDefault();
+        if (lightRegion is not null) LoadRegionLighting(lightRegion);
 
         var mapReader = new TankReader(_playMapTank);
         int considered = 0, spawned = 0, missingTemplate = 0, missingModel = 0,
@@ -15019,6 +15124,23 @@ void main()
     /// changes between saves).</summary>
     private void LaunchRegionForLoad(string ds1ResourcesDir, string savePath)
     {
+        string installRoot = System.IO.Path.GetDirectoryName(ds1ResourcesDir.TrimEnd('\\', '/'))
+                             ?? ds1ResourcesDir;
+        LaunchRegionForLoadWithTanks(
+            System.IO.Path.Combine(installRoot, "Maps", "World.dsmap"),
+            System.IO.Path.Combine(ds1ResourcesDir, "Terrain.dsres"),
+            System.IO.Path.Combine(ds1ResourcesDir, "Logic.dsres"),
+            System.IO.Path.Combine(ds1ResourcesDir, "Objects.dsres"),
+            savePath);
+    }
+
+    /// <summary>SC-LOAD-INGAME-CROSSREGION — tank-path relaunch core. The
+    /// frontend path derives tanks from the DS1 install dir; a --play-region
+    /// session (no install dir) reuses its OWN launch tanks, so cross-region
+    /// loads work from inside the game too (previously "cannot load here").</summary>
+    private void LaunchRegionForLoadWithTanks(string mapTank, string terrain,
+        string logic, string objects, string savePath)
+    {
         try
         {
             SiegeFX.Core.Save.SaveFile save;
@@ -15036,13 +15158,6 @@ void main()
                 _saveToastText = "Load failed."; _saveToastRemaining = SaveToastDuration;
                 return;
             }
-
-            string installRoot = System.IO.Path.GetDirectoryName(ds1ResourcesDir.TrimEnd('\\', '/'))
-                                 ?? ds1ResourcesDir;
-            string mapTank = System.IO.Path.Combine(installRoot, "Maps", "World.dsmap");
-            string terrain = System.IO.Path.Combine(ds1ResourcesDir, "Terrain.dsres");
-            string logic   = System.IO.Path.Combine(ds1ResourcesDir, "Logic.dsres");
-            string objects = System.IO.Path.Combine(ds1ResourcesDir, "Objects.dsres");
 
             string? exePath = Environment.ProcessPath;
             if (exePath is null)
@@ -19500,6 +19615,9 @@ void main()
         // quest-gate listeners) key on exactly this message.
         if (scid != 0 && _triggerRuntime is not null)
             _triggerRuntime.PostInboundMessage(scid, "we_killed");
+        // SC-PERSIST-STREAM — session kills join the persisted set so future
+        // stream-ins (and, later, unload/reload cycles) never respawn them.
+        if (scid != 0 && scid < 0xFE000000) _persistedDeadScids.Add(scid);
         // SC-GEN-IN-OBJECT — template-embedded death spawns (gom ->
         // emitter_gom_die -> Gom_Super two-phase chain).
         if (_templateStore is not null && _templateStore.TryGet(templateName, out var deadTemplate))
@@ -24448,22 +24566,7 @@ void main()
             foreach (var a in ws.Accumulators)
                 if (_logicGizmos.TryGetValue(a.Scid, out var lg))
                 { lg.Count = a.Count; lg.Fired = a.Fired; }
-            foreach (var scid in ws.OpenedChests)
-                foreach (var c in _chestProps)
-                    if (c.Scid == scid) { c.ChestOpened = true; break; }
-            foreach (var scid in ws.UnlockedUsables)
-                foreach (var lu in _lockedUsables)
-                    if (lu.Prop.Scid == scid) { lu.Unlocked = true; break; }
-            foreach (var scid in ws.LeversOn)
-                foreach (var lv in _leverProps)
-                    if (lv.Scid == scid) { lv.LeverOn = true; break; }
-            bool structural = false;
-            foreach (var scid in ws.BrokenProps)
-                if (_breakingByScid.TryGetValue(scid, out var bp) && !bp.IsDestroyed)
-                { bp.IsDestroyed = true; structural = true; }
-            foreach (var scid in ws.ClearedBlockers)
-                foreach (var b in _blockingGizmos)
-                    if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
+            bool structural = ApplyWorldPropState(ws);
             foreach (var es in ws.Elevators)
             {
                 if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) continue;
@@ -24486,6 +24589,15 @@ void main()
                               $"{ws.OpenedChests.Count} chest(s), {ws.UnlockedUsables.Count} unlock(s), " +
                               $"{ws.BrokenProps.Count} broken, {ws.ClearedBlockers.Count} blocker(s), {ws.Elevators.Count} lift(s)");
         }
+
+        // SC-PERSIST-STREAM — retain the save's kill list + prop state so
+        // regions streamed in LATER (OnPlayerRegionChanged) apply the same
+        // world history. Without this, walking back into a region loaded
+        // after the save respawned its dead enemies and re-armed its
+        // looted/broken containers.
+        _persistedDeadScids.Clear();
+        foreach (var snap in save.Actors) if (snap.IsDead) _persistedDeadScids.Add(snap.Scid);
+        _persistedWorldState = save.World;
 
         if (save.Player is not null && _player is not null)
         {
