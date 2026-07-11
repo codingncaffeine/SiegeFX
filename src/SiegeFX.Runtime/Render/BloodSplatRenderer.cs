@@ -32,7 +32,10 @@ void main() {
     vec4 t = texture(uTex, vUv);
     float a = t.a * vAlpha;
     if (a <= 0.004) discard;
-    frag = vec4(t.rgb, a);
+    // The authored splat RAWs are dark (avg 84,2,2); the original renders
+    // them as a vivid bright red (user's blood.bmp reference). 2.5x lift
+    // reproduces that read, preserving the texture's shiny variation.
+    frag = vec4(min(t.rgb * 2.5, vec3(1.0)), a);
 }";
 
     public readonly record struct Splat(
@@ -98,8 +101,13 @@ void main() {
         if (_disposed || _splats.Count == 0) return;
 
         bool blendWas = _gl.IsEnabled(GLEnum.Blend);
+        bool cullWas = _gl.IsEnabled(GLEnum.CullFace);
         _gl.Enable(EnableCap.Blend);
         _gl.BlendFunc(GLEnum.SrcAlpha, GLEnum.OneMinusSrcAlpha);
+        // Ground quads must not be winding-culled (same rule as
+        // SelectionFxRenderer) — with culling left on, every splat was
+        // invisible from the normal camera side.
+        _gl.Disable(EnableCap.CullFace);
         _gl.DepthMask(false);
         _gl.Enable(EnableCap.PolygonOffsetFill);
         _gl.PolygonOffset(-2.0f, -2.0f);
@@ -149,6 +157,7 @@ void main() {
         _gl.PolygonOffset(0f, 0f);
         _gl.Disable(EnableCap.PolygonOffsetFill);
         _gl.DepthMask(true);
+        if (cullWas) _gl.Enable(EnableCap.CullFace);
         if (!blendWas) _gl.Disable(EnableCap.Blend);
     }
 
