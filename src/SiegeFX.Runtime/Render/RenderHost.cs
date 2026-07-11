@@ -65,7 +65,7 @@ public sealed class RenderHost : IDisposable
     // regions can register their decals too (they were launch-time-only).
     private readonly List<DecalRenderer.DecalQuad> _decalQuadsAll = new();
     private readonly List<DecalRenderer.DecalTri> _decalTrisAll = new();
-    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno)> _drapeNodes = new();
+    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno, uint Guid, bool BoundsCamera)> _drapeNodes = new();
     private readonly Dictionary<uint, SnoModel?> _drapeSnoCache = new();
     private SnoMeshIndex? _drapeIndex;
     private TankFile? _drapeTerrainTank;
@@ -106,7 +106,10 @@ public sealed class RenderHost : IDisposable
 
     /// <summary>SC-DECALS-STREAM — add drape-sampler entries for region
     /// graphs' nodes. <paramref name="onlyRegions"/> null = all loaded graphs
-    /// (boot); a set = just the freshly-streamed ones (incremental).</summary>
+    /// (boot); a set = just the freshly-streamed ones (incremental).
+    /// SC-CAMERA-BOUNDS — the tuples also carry the snode guid + authored
+    /// bounds_camera flag; the chase camera's constraint ray-cast walks the
+    /// same list.</summary>
     private void ExtendDrapeNodes(IReadOnlyCollection<string>? onlyRegions)
     {
         if (_drapeIndex is null || _regionLayout is null) return;
@@ -129,7 +132,7 @@ public sealed class RenderHost : IDisposable
                     _drapeSnoCache[n.MeshGuid] = sno;
                 }
                 if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
-                _drapeNodes.Add((inv, xf, sno));
+                _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera));
             }
         }
     }
@@ -3688,6 +3691,215 @@ public sealed class RenderHost : IDisposable
     private const float ChasePitchMin = 0.05f;          // ~3°
     private const float ChasePitchMax = (MathF.PI / 2f) - 0.05f; // ~87°
 
+    // SC-CAMERA-GAS — authored camera config, parsed from /config/camera.gas
+    // ([camera_settings]) + /ui/config/character_camera/character_camera.gas
+    // ([character_camera]) at world load. Defaults mirror the shipped values
+    // so a missing file degrades to canon.
+    private float _camAzimuthDefault   = 0.24799f; // character_camera azimuth (rad above horizontal)
+    private float _camDistanceDefault  = 8.38f;    // character_camera distance (m)
+    private float _camTrackHeight      = 1.51f;    // camera_settings tracking_height_offset
+    private float _camTiltTime         = 0.75f;    // camera_tilt_time — blocked this long → tilt
+    private float _camTiltReturnTime   = 2.0f;     // camera_tilt_return_time — clear this long → untilt
+    private float _camAzimuthRate      = 40f * MathF.PI / 180f; // azimuth_degrees_per_second
+    private float _camReturnRate       = 20f * MathF.PI / 180f; // return_degrees_per_second
+
+    // SC-CAMERA-BOUNDS — dynamic constraint state: how long the view ray has
+    // been blocked / clear, the extra tilt currently applied on top of the
+    // user's azimuth, and the pulled-in distance from the avoid pass.
+    private float _camBlockedTimer, _camClearTimer, _camTiltExtra;
+
+    // SC-DEVMODE — free dev camera (the pre-authentic behavior): legacy
+    // 36° slope framing + RMB-drag pitch, and NO bounds_camera constraints.
+    // Toggled from the tilde console; default OFF = authentic DS1 camera.
+    private bool _devFreeCamera;
+
+    /// <summary>SC-CAMERA-GAS — parse the two authored camera files. Missing
+    /// files or attributes keep the shipped defaults above.</summary>
+    private void LoadCameraSettings(SiegeFX.Core.Tank.TankReader logicReader)
+    {
+        float ReadAttr(SiegeFX.Core.Assets.GasNode? node, string name, float fallback)
+        {
+            if (node is null) return fallback;
+            foreach (var a in node.Attributes)
+                if (a.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                    && float.TryParse(a.Value.Trim().TrimEnd('f', 'F'),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var v))
+                    return v;
+            return fallback;
+        }
+        SiegeFX.Core.Assets.GasNode? Root(string path, string header)
+        {
+            try
+            {
+                var doc = SiegeFX.Core.Assets.GasDocument.Load(logicReader.ExtractToMemory(path));
+                foreach (var r in doc.Roots)
+                    if (r.Header.Equals(header, StringComparison.OrdinalIgnoreCase)) return r;
+            }
+            catch { /* keep defaults */ }
+            return null;
+        }
+        var cs = Root("/config/camera.gas", "camera_settings");
+        var cc = Root("/ui/config/character_camera/character_camera.gas", "character_camera");
+        _camTrackHeight    = ReadAttr(cs, "tracking_height_offset", _camTrackHeight);
+        _camTiltTime       = ReadAttr(cs, "camera_tilt_time", _camTiltTime);
+        _camTiltReturnTime = ReadAttr(cs, "camera_tilt_return_time", _camTiltReturnTime);
+        _camAzimuthRate    = ReadAttr(cs, "azimuth_degrees_per_second", _camAzimuthRate * 180f / MathF.PI) * MathF.PI / 180f;
+        _camReturnRate     = ReadAttr(cs, "return_degrees_per_second", _camReturnRate * 180f / MathF.PI) * MathF.PI / 180f;
+        _camAzimuthDefault = ReadAttr(cc, "azimuth", _camAzimuthDefault);
+        _camDistanceDefault = ReadAttr(cc, "distance", _camDistanceDefault);
+        Console.WriteLine($"  camera: azimuth {_camAzimuthDefault * 180f / MathF.PI:F1}°, " +
+                          $"distance {_camDistanceDefault:F2}, track +{_camTrackHeight:F2}m, " +
+                          $"tilt {_camTiltTime:F2}s/return {_camTiltReturnTime:F2}s");
+    }
+
+    /// <summary>SC-CAMERA-GAS — snap the chase camera to the authored resting
+    /// framing (spawn, load, and leaving the dev camera).</summary>
+    private void ApplyAuthenticCameraDefaults()
+    {
+        _chasePitch = _camAzimuthDefault;
+        _chaseDistance = _camDistanceDefault;
+        _camTiltExtra = 0f;
+        _camBlockedTimer = _camClearTimer = 0f;
+    }
+
+    /// <summary>SC-CAMERA-BOUNDS — nearest hit distance of the target→camera
+    /// ray against the SNO geometry of nodes whose <c>bounds_camera</c> flag
+    /// is set (nodes.gas authors it true on ~99% of nodes; the false ones are
+    /// structure pieces the camera must see through, e.g. the farmhouse over
+    /// Edgaar's cellar; trigger flips via set_bounds_camera_node override).
+    /// Returns float.MaxValue when clear. AABB-rejects per node, then
+    /// Möller–Trumbore per triangle.</summary>
+    private float CameraBoundsHitDistance(Vector3 origin, Vector3 dir, float maxDist)
+    {
+        float best = float.MaxValue;
+        foreach (var (inv, _, sno, guid, boundsFlag) in _drapeNodes)
+        {
+            bool bounds = _boundsCameraOverrides.TryGetValue(guid, out var ov) ? ov : boundsFlag;
+            if (!bounds) continue;
+            var lo = Vector3.Transform(origin, inv);
+            var ld = Vector3.TransformNormal(dir, inv);
+            // Slab test against the node bounds, generous by 0.25m.
+            float t0 = 0f, t1 = MathF.Min(maxDist, best);
+            bool reject = false;
+            for (int axis = 0; axis < 3 && !reject; axis++)
+            {
+                float o = axis == 0 ? lo.X : axis == 1 ? lo.Y : lo.Z;
+                float d = axis == 0 ? ld.X : axis == 1 ? ld.Y : ld.Z;
+                float mn = (axis == 0 ? sno.MinBounds.X : axis == 1 ? sno.MinBounds.Y : sno.MinBounds.Z) - 0.25f;
+                float mx = (axis == 0 ? sno.MaxBounds.X : axis == 1 ? sno.MaxBounds.Y : sno.MaxBounds.Z) + 0.25f;
+                if (MathF.Abs(d) < 1e-6f) { if (o < mn || o > mx) reject = true; continue; }
+                float ta = (mn - o) / d, tb = (mx - o) / d;
+                if (ta > tb) (ta, tb) = (tb, ta);
+                t0 = MathF.Max(t0, ta); t1 = MathF.Min(t1, tb);
+                if (t0 > t1) reject = true;
+            }
+            if (reject) continue;
+
+            foreach (var surf in sno.Surfaces)
+            {
+                var tris = surf.TriangleIndices;
+                for (int t = 0; t + 2 < tris.Length; t += 3)
+                {
+                    var a = sno.Corners[surf.StartCorner + tris[t]].Position;
+                    var b = sno.Corners[surf.StartCorner + tris[t + 1]].Position;
+                    var c = sno.Corners[surf.StartCorner + tris[t + 2]].Position;
+                    // Möller–Trumbore, double-sided.
+                    var e1 = b - a; var e2 = c - a;
+                    var p = Vector3.Cross(ld, e2);
+                    float det = Vector3.Dot(e1, p);
+                    if (MathF.Abs(det) < 1e-8f) continue;
+                    float invDet = 1f / det;
+                    var s = lo - a;
+                    float u = Vector3.Dot(s, p) * invDet;
+                    if (u < 0f || u > 1f) continue;
+                    var q = Vector3.Cross(s, e1);
+                    float v = Vector3.Dot(ld, q) * invDet;
+                    if (v < 0f || u + v > 1f) continue;
+                    float thit = Vector3.Dot(e2, q) * invDet;
+                    if (thit > 0.35f && thit < best && thit < maxDist) best = thit;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>SC-CAMERA-BOUNDS — DS1's dynamic camera constraint, per the
+    /// authored [camera_settings] timings: when bounds_camera geometry blocks
+    /// the target→camera ray, the camera first pulls IN along the ray (the
+    /// "avoid" pass, camera_avoid_time≈0 so effectively immediate); if it
+    /// stays blocked past camera_tilt_time the camera TILTS up (azimuth
+    /// climbs at azimuth_degrees_per_second) until the ray clears — the
+    /// basement/interior behavior that steers the view (and clicks) from
+    /// above. After camera_tilt_return_time of clear ray the tilt eases back
+    /// at return_degrees_per_second. Returns the constrained distance and the
+    /// tilted pitch.</summary>
+    private float TickCameraBounds(Vector3 target, float pitch, float dt, out float pitchOut)
+    {
+        if (_devFreeCamera || _drapeNodes.Count == 0)
+        {
+            _camTiltExtra = 0f;
+            pitchOut = pitch;
+            return _chaseDistance;
+        }
+
+        Vector3 OffsetFor(float p) =>
+            new Vector3(MathF.Sin(_chaseYaw) * MathF.Cos(p), MathF.Sin(p), MathF.Cos(_chaseYaw) * MathF.Cos(p));
+
+        float tilted = Math.Clamp(pitch + _camTiltExtra, ChasePitchMin, ChasePitchMax);
+        var dir = OffsetFor(tilted);
+        float hit = CameraBoundsHitDistance(target, dir, _chaseDistance);
+        bool blocked = hit < _chaseDistance;
+
+        if (blocked)
+        {
+            _camBlockedTimer += dt;
+            _camClearTimer = 0f;
+            // Tilt after the authored buffer: climb toward top-down until the
+            // ray reaches full distance (or the clamp).
+            if (_camBlockedTimer >= _camTiltTime && tilted < ChasePitchMax - 0.01f)
+            {
+                float step = _camAzimuthRate * dt;
+                float probe = Math.Clamp(tilted + step, ChasePitchMin, ChasePitchMax);
+                _camTiltExtra += probe - tilted;
+                tilted = probe;
+                dir = OffsetFor(tilted);
+                hit = CameraBoundsHitDistance(target, dir, _chaseDistance);
+            }
+        }
+        else
+        {
+            _camBlockedTimer = 0f;
+            if (_camTiltExtra > 0f)
+            {
+                _camClearTimer += dt;
+                if (_camClearTimer >= _camTiltReturnTime)
+                {
+                    // Ease home, but never tilt back INTO a blocked ray.
+                    float step = _camReturnRate * dt;
+                    float lower = MathF.Max(0f, _camTiltExtra - step);
+                    float probePitch = Math.Clamp(pitch + lower, ChasePitchMin, ChasePitchMax);
+                    var probeDir = OffsetFor(probePitch);
+                    if (CameraBoundsHitDistance(target, probeDir, _chaseDistance) >= _chaseDistance)
+                    {
+                        _camTiltExtra = lower;
+                        tilted = probePitch;
+                        hit = float.MaxValue;
+                    }
+                    else
+                    {
+                        _camClearTimer = 0f; // still blocked below — stay tilted
+                    }
+                }
+            }
+        }
+
+        pitchOut = tilted;
+        // Avoid pass — pull in to just inside the hit so the camera never
+        // sits inside bounds geometry.
+        return hit < _chaseDistance ? MathF.Max(1.25f, hit - 0.35f) : _chaseDistance;
+    }
+
     private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid, bool CameraFade, Vector3 WorldAabbMin, Vector3 WorldAabbMax, string RegionPath);
 
     /// <summary>DS1 SNO surfaces often hold a <c>_xxx_</c> placeholder that per-snode
@@ -4653,20 +4865,9 @@ void main()
                 // DS1's manual reserves backtick for MP-team-label
                 // toggle which SP-only SiegeFX doesn't use, so the key
                 // is free.
-                else if (key == Key.GraveAccent)
-                {
-                    _devCamUnclampedPitch = !_devCamUnclampedPitch;
-                    if (!_devCamUnclampedPitch)
-                    {
-                        // Reset pitch to the DS1-faithful default when
-                        // returning to authentic mode so a fresh toggle
-                        // starts from the canonical framing rather than
-                        // wherever the user left the tilt.
-                        _chasePitch = MathF.Atan(ChasePitchSlope);
-                    }
-                    Console.WriteLine($"[dev-cam] unclamped chase pitch = {_devCamUnclampedPitch}");
-                    _audio?.Play(SfxGuiInventory);
-                }
+                // (backtick previously toggled the unclamped dev pitch; the
+                // tilde dev console owns the key now and its DEV CAMERA
+                // button carries the toggle.)
                 // Phase 22-A SC-HUD-DATABAR — Space toggles pause/play to mirror
                 // the data_bar's pause button. ONLY in Chase camera mode — Fly
                 // cam (dev free-cam) polls Space at line 5612 for vertical-up
@@ -5928,13 +6129,11 @@ void main()
                         // so chase mode and first-person mode share the same
                         // sensitivity/invert formula.
                         _chaseYaw += _camera.YawIncrement(dx);
-                        // SC-CAM-DEV-TOPDOWN — when the dev unclamped-pitch
-                        // toggle is ON, RMB-drag-Y adjusts chase pitch too.
-                        // Lets the user tilt the camera all the way down to
-                        // peek into dungeons / inspect from above. OFF keeps
-                        // the DS1-faithful behavior (yaw only, pitch derived
-                        // from the slope).
-                        if (_devCamUnclampedPitch)
+                        // SC-CAM-DEV-TOPDOWN — with the dev camera ON,
+                        // RMB-drag-Y adjusts chase pitch (tilt to top-down for
+                        // dungeon inspection). Authentic mode is yaw-only;
+                        // bounds_camera tilt drives the pitch there.
+                        if (_devFreeCamera && _devCamUnclampedPitch)
                         {
                             // Reuse the camera's sensitivity-aware delta path;
                             // PitchIncrement returns a signed radians value
@@ -7373,7 +7572,7 @@ void main()
                     {
                         var list = new List<(Vector3 A, Vector3 B, Vector3 C)>();
                         float r2 = radius * radius;
-                        foreach (var (inv, xf, sno) in _drapeNodes)
+                        foreach (var (inv, xf, sno, _, _) in _drapeNodes)
                         {
                             var lc = Vector3.Transform(centerW, inv);
                             if (lc.X < sno.MinBounds.X - radius || lc.X > sno.MaxBounds.X + radius ||
@@ -7418,7 +7617,7 @@ void main()
                         float bestDelta = 2.0f;
                         float bestY = 0f;
                         bool found = false;
-                        foreach (var (inv, xf, sno) in _drapeNodes)
+                        foreach (var (inv, xf, sno, _, _) in _drapeNodes)
                         {
                             var lp = Vector3.Transform(worldPos, inv);
                             if (lp.X < sno.MinBounds.X - 0.25f || lp.X > sno.MaxBounds.X + 0.25f ||
@@ -7522,6 +7721,10 @@ void main()
         Console.WriteLine($"  combat: difficulty={_difficulty} " +
             $"(player x{SiegeFX.Core.Actors.CombatResolver.PlayerDamageMultiplier:F2}, " +
             $"computer x{SiegeFX.Core.Actors.CombatResolver.ComputerDamageMultiplier:F2})");
+
+        // SC-CAMERA-GAS — authored chase-camera config + resting framing.
+        LoadCameraSettings(logicReader);
+        if (!_devFreeCamera) ApplyAuthenticCameraDefaults();
 
         // Phase 20a — load the region's conversation pool. Region-scoped (one
         // gas file per region) so the dictionary stays small. Missing file is
@@ -9690,17 +9893,30 @@ void main()
     /// where the player is now rather than the stale pre-NIS pose.</summary>
     private void ComputeChasePose(out Vector3 pos, out float yaw, out float pitch)
     {
-        var target = (_player?.CurrentTransform.Translation ?? Vector3.Zero) + new Vector3(0, ChaseLookTargetY, 0);
         float horiz, height;
-        if (_devCamUnclampedPitch)
+        Vector3 target;
+        if (_devFreeCamera)
         {
-            horiz = _chaseDistance * MathF.Cos(_chasePitch);
-            height = _chaseDistance * MathF.Sin(_chasePitch);
+            target = (_player?.CurrentTransform.Translation ?? Vector3.Zero) + new Vector3(0, ChaseLookTargetY, 0);
+            if (_devCamUnclampedPitch)
+            {
+                horiz = _chaseDistance * MathF.Cos(_chasePitch);
+                height = _chaseDistance * MathF.Sin(_chasePitch);
+            }
+            else
+            {
+                horiz = _chaseDistance;
+                height = _chaseDistance * ChasePitchSlope;
+            }
         }
         else
         {
-            horiz = _chaseDistance;
-            height = _chaseDistance * ChasePitchSlope;
+            // SC-CAMERA-GAS — authored framing (current tilt included so a
+            // NIS leave lands where the live camera actually sits).
+            target = (_player?.CurrentTransform.Translation ?? Vector3.Zero) + new Vector3(0, _camTrackHeight, 0);
+            float p = Math.Clamp(_chasePitch + _camTiltExtra, ChasePitchMin, ChasePitchMax);
+            horiz = _chaseDistance * MathF.Cos(p);
+            height = _chaseDistance * MathF.Sin(p);
         }
         var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * horiz;
         pos = target + offset + new Vector3(0, height, 0);
@@ -14443,27 +14659,34 @@ void main()
         UpdateSubtitles((float)dt);
         if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off)
         {
-            var target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
-            float horiz, height;
-            if (_devCamUnclampedPitch)
+            float horiz, height, camDist;
+            Vector3 target;
+            if (_devFreeCamera)
             {
-                // SC-CAM-DEV-TOPDOWN — orbit-around-player with the
-                // user-driven pitch. As pitch climbs toward straight-
-                // down, the horizontal radius shrinks and the height
-                // grows; total distance stays constant so the framing
-                // doesn't whip in/out as the user tilts.
-                horiz = _chaseDistance * MathF.Cos(_chasePitch);
-                height = _chaseDistance * MathF.Sin(_chasePitch);
+                // SC-DEVMODE — the pre-authentic camera, preserved verbatim
+                // as a testing option: legacy slope framing by default, RMB
+                // pitch drag when the user tilts, no bounds constraints.
+                target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
+                if (_devCamUnclampedPitch)
+                {
+                    horiz = _chaseDistance * MathF.Cos(_chasePitch);
+                    height = _chaseDistance * MathF.Sin(_chasePitch);
+                }
+                else
+                {
+                    horiz = _chaseDistance;
+                    height = _chaseDistance * ChasePitchSlope;
+                }
             }
             else
             {
-                // DS1-faithful default: bit-identical to pre-dev-cam
-                // framing. Phase 21-SC-ZOOM — height tracks distance so
-                // zoom slides along the view ray (dolly), not just
-                // horizontal radius. Without this the camera arcs to a
-                // flatter pitch as you zoom out.
-                horiz = _chaseDistance;
-                height = _chaseDistance * ChasePitchSlope;
+                // SC-CAMERA-GAS — authored framing: azimuth 14.2° at 8.38m,
+                // tracking the torso at +1.51m, with the bounds_camera
+                // avoid/tilt dynamics steering through interiors.
+                target = _player.CurrentTransform.Translation + new Vector3(0, _camTrackHeight, 0);
+                camDist = TickCameraBounds(target, _chasePitch, (float)dt, out float pitch);
+                horiz = camDist * MathF.Cos(pitch);
+                height = camDist * MathF.Sin(pitch);
             }
             var offset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * horiz;
             _camera.Position = target + offset + new Vector3(0, height, 0);
@@ -15356,6 +15579,22 @@ void main()
                 case "kill":
                     DevKillNearby();
                     break;
+                case "devcam":
+                    _devFreeCamera = !_devFreeCamera;
+                    _devCamUnclampedPitch = _devFreeCamera;
+                    if (_devFreeCamera)
+                    {
+                        // The pre-authentic testing camera: legacy framing +
+                        // free RMB pitch, no bounds constraints.
+                        _chasePitch = MathF.Atan(ChasePitchSlope);
+                        _chaseDistance = 9f;
+                    }
+                    else
+                    {
+                        ApplyAuthenticCameraDefaults();
+                    }
+                    Console.WriteLine($"[dev] free camera {(_devFreeCamera ? "ON" : "off — authentic DS1 camera")}");
+                    break;
                 case "spawn":
                     DevSpawnItem(_devItemText);
                     break;
@@ -15472,7 +15711,7 @@ void main()
         int w = 280;
         int x = 12, y = 72;
         int visRegions = Math.Min(12, Math.Max(0, (_devRegionList?.Count ?? 0)));
-        int h = pad + 16 + (rowH * 4) + 30 + 22 + (visRegions * 18) + pad + 20;
+        int h = pad + 16 + (rowH * 5) + 30 + 22 + (visRegions * 18) + pad + 20;
         _devPanelRect = (x, y, w, h);
 
         _barRenderer.DrawRect(vw, vh, x, y, w, h, new Vector4(0.05f, 0.06f, 0.08f, 0.92f));
@@ -15501,6 +15740,8 @@ void main()
         cy += rowH;
         Button("level", "LEVEL UP", x + pad, 130);
         Button("kill",  "KILL NEARBY", x + pad + 138, 126);
+        cy += rowH;
+        Button("devcam", _devFreeCamera ? "DEV CAMERA: ON" : "DEV CAMERA: off", x + pad, 264, _devFreeCamera);
         cy += rowH;
 
         // Item spawn: text field + button.
