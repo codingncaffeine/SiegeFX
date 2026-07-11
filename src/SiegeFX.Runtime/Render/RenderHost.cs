@@ -5434,6 +5434,11 @@ void main()
                     if (!_bootMode) OpenLoadDialog(mainMenuStyle: false);
                 }
                 else if (Is("toggle_quest_log")) _questLogOpen = !_questLogOpen;
+                else if (Is("toggle_mini_map"))
+                {
+                    ToggleMegaMap();
+                    _audio?.Play(SfxGuiInventory);
+                }
                 else if (Is("toggle_player_labels"))
                 {
                     _charLabelsVisible = !_charLabelsVisible;
@@ -10668,8 +10673,38 @@ void main()
     /// <summary>The chase-camera pose for the player's current position — the
     /// same framing the live chase update produces. Used to re-aim a NIS leave at
     /// where the player is now rather than the stale pre-NIS pose.</summary>
+    // SC-MEGAMAP — TAB overview state. Height tunable; toggling back
+    // restores the ordinary chase framing automatically (the pose is
+    // recomputed every frame; no camera state is mutated).
+    private bool _megaMapActive;
+    private const float MegaMapHeight = 55f;
+
+    private void ToggleMegaMap()
+    {
+        if (_player is null) return;
+        _megaMapActive = !_megaMapActive;
+        Console.WriteLine($"[map] mega map {(_megaMapActive ? "ON" : "off")}");
+    }
+
     private void ComputeChasePose(out Vector3 pos, out float yaw, out float pitch)
     {
+        // SC-MEGAMAP — TAB overview: DS1's mega map is a live zoomed-out
+        // overhead of the same scene (no separate authored map UI ships in
+        // Logic.dsres). While active, the chase pose becomes a near-vertical
+        // high view centered on the player; yaw is preserved so the world
+        // doesn't spin. All camera consumers (bounds, NIS gates) see a
+        // normal chase pose, just far away.
+        if (_megaMapActive && !_devFreeCamera)
+        {
+            var mmTarget = (_player?.CurrentTransform.Translation ?? Vector3.Zero);
+            float mmDist = MegaMapHeight;
+            var mmOffset = new Vector3(MathF.Sin(_chaseYaw), 0f, MathF.Cos(_chaseYaw)) * (mmDist * 0.18f);
+            pos = mmTarget + mmOffset + new Vector3(0f, mmDist, 0f);
+            var mmDir = Vector3.Normalize(mmTarget - pos);
+            yaw = MathF.Atan2(mmDir.X, -mmDir.Z);
+            pitch = MathF.Asin(Math.Clamp(mmDir.Y, -0.999f, 0.999f));
+            return;
+        }
         float horiz, height;
         Vector3 target;
         if (_devFreeCamera)
@@ -20741,9 +20776,8 @@ void main()
                 DrinkLowestPotion(isHealth: false);
                 break;
             case Hud.DataBar.ButtonId.MegaMap:
-                // Phase 22-A — button renders disabled (grey tint, see
-                // ResolveDataBarTexture) until SC-HUD-MEGAMAP wires the full-
-                // screen map. Click is a no-op rather than a logspam.
+                ToggleMegaMap();
+                _audio?.Play(SfxGuiInventory);
                 break;
             case Hud.DataBar.ButtonId.QuestLog:
                 _questLogOpen = !_questLogOpen;
