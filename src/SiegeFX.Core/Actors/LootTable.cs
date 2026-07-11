@@ -53,11 +53,19 @@ public sealed class LootBucket
     /// leaf buckets.</summary>
     public IReadOnlyList<LootBucket> Children { get; }
 
-    public LootBucket(float chance, IReadOnlyList<LootEntry> entries, IReadOnlyList<LootBucket> children)
+    /// <summary>SC-LOOT-ALL — a <c>[all*]</c> bucket: emits EVERY entry and
+    /// EVERY child (each child still gated by its own chance) instead of
+    /// picking one. DS1 uses it for guaranteed multi-item drops (boss loot,
+    /// trap-generator payloads).</summary>
+    public bool EmitAll { get; }
+
+    public LootBucket(float chance, IReadOnlyList<LootEntry> entries, IReadOnlyList<LootBucket> children,
+                      bool emitAll = false)
     {
         Chance = chance;
         Entries = entries;
         Children = children;
+        EmitAll = emitAll;
     }
 }
 
@@ -103,10 +111,10 @@ public sealed class LootTable
                 // Phase 21-SC-BARREL-FOLD — krug.gas + heroes.gas put [gold*]
                 // directly under [pcontent] (no enclosing [oneof*]). Without
                 // accepting Gold here those gold drops were silently dropped
-                // on the floor. [all*] is still pre-existing-unsupported (see
-                // splinter SC-LOOT-ALL); accepting it would over-emit since
-                // ParseBucket reads it as a oneof — separate slice.
-                if (!IsOneof(bucket.Header) && !IsGold(bucket.Header)) continue;
+                // on the floor. SC-LOOT-ALL — [all*] buckets now parse with
+                // emit-everything semantics (boss guaranteed / multi-item
+                // drops).
+                if (!IsOneof(bucket.Header) && !IsGold(bucket.Header) && !IsAll(bucket.Header)) continue;
                 var parsed = ParseBucket(bucket);
                 if (parsed is null) continue;
                 if (IsEquippedBucket(parsed)) equipped.Add(parsed);
@@ -132,6 +140,10 @@ public sealed class LootTable
     static bool IsGold(string header) =>
         header.Equals("gold", StringComparison.OrdinalIgnoreCase) ||
         header.Equals("gold*", StringComparison.OrdinalIgnoreCase);
+
+    static bool IsAll(string header) =>
+        header.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+        header.Equals("all*", StringComparison.OrdinalIgnoreCase);
 
     static LootBucket? ParseBucket(GasNode node)
     {
@@ -177,13 +189,13 @@ public sealed class LootTable
         var children = new List<LootBucket>();
         foreach (var child in node.Children)
         {
-            if (!IsOneof(child.Header) && !IsGold(child.Header)) continue;
+            if (!IsOneof(child.Header) && !IsGold(child.Header) && !IsAll(child.Header)) continue;
             var parsed = ParseBucket(child);
             if (parsed is not null) children.Add(parsed);
         }
 
         if (entries.Count == 0 && children.Count == 0) return null;
-        return new LootBucket(chance, entries, children);
+        return new LootBucket(chance, entries, children, emitAll: IsAll(node.Header));
     }
 
     static bool IsEquippedBucket(LootBucket bucket)

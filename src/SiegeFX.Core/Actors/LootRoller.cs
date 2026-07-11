@@ -73,6 +73,17 @@ public static class LootRoller
     /// distribution (60-70% empty / 20-25% gold / 5-10% potions).</summary>
     static void EmitFromBucket(LootBucket bucket, Random rng, List<LootEntry> results)
     {
+        // SC-LOOT-ALL — [all*] buckets emit EVERYTHING: every entry plus
+        // every child (each child still gated by its own chance). DS1 uses
+        // this shape for guaranteed boss drops and multi-item payloads.
+        if (bucket.EmitAll)
+        {
+            foreach (var e in bucket.Entries) results.Add(e);
+            foreach (var child in bucket.Children)
+                if (RollChance(child.Chance, rng))
+                    EmitFromBucket(child, rng, results);
+            return;
+        }
         if (bucket.Children.Count > 0)
         {
             foreach (var child in bucket.Children)

@@ -675,6 +675,30 @@ public sealed class InventoryPanel
                 occupied[(row + dr) * GridCols + (col + dc)] = true;
     }
 
+    /// <summary>SC-INV-OVERFLOW — feasibility check: can every item in
+    /// <paramref name="items"/> land on a fresh first-fit pack of the grid?
+    /// The pickup path uses this to REFUSE items that don't fit (DS1's "no
+    /// room" behavior) instead of silently keeping them unrendered.</summary>
+    public static bool CanFitAll(IReadOnlyList<LootEntry> items,
+                                 Func<string, (int W, int H)>? resolveGridSize)
+    {
+        Span<bool> occupied = stackalloc bool[GridCols * GridRows];
+        foreach (var it in items)
+        {
+            var (w, h) = ResolveGrid(it.Reference, resolveGridSize);
+            bool placed = false;
+            for (int r = 0; r <= GridRows - h && !placed; r++)
+                for (int c = 0; c <= GridCols - w && !placed; c++)
+                {
+                    if (!FootprintClear(occupied, r, c, w, h)) continue;
+                    MarkOccupied(occupied, r, c, w, h);
+                    placed = true;
+                }
+            if (!placed) return false;
+        }
+        return true;
+    }
+
     private static (int W, int H) ResolveGrid(string reference,
                                               Func<string, (int W, int H)>? resolveGridSize)
     {

@@ -17547,7 +17547,26 @@ void main()
         }
 
         int effPower = power > 0 ? power : EstimateItemPower(tpl);
-        return Math.Max(1, (long)MathF.Round(10f + effPower * effPower * 0.35f));
+        long value = Math.Max(1, (long)MathF.Round(10f + effPower * effPower * 0.35f));
+
+        // SC-ECON-ENCHANT — enchanted gear without an authored gold_value
+        // carries a premium per alteration point (Lloyd's-ring-class items
+        // author 220 for +3 armor ≈ 70/point; use a conservative 50/point
+        // for the provisional curve so unpriced enchanted drops aren't
+        // sold for pocket change).
+        if (tpl is not null && _templateStore is not null
+            && _templateStore.GetSection(tpl, "magic", "enchantments") is { } ench)
+        {
+            float points = 0f;
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            foreach (var e in ench.Children)
+                foreach (var a in e.Attributes)
+                    if (a.Name.Equals("value", StringComparison.OrdinalIgnoreCase)
+                        && float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float, ci, out var pv))
+                        points += MathF.Abs(pv);
+            if (points > 0f) value += (long)MathF.Round(points * 50f);
+        }
+        return value;
     }
 
     /// <summary>Phase 25-fold G — intrinsic power estimate off a
@@ -21746,35 +21765,55 @@ void main()
         // template name at pickup, so the inventory grid sees the same name
         // the pile rendered on the ground. The shared spec cache means the
         // mesh, icon, and stored ref all agree.
+        // SC-INV-OVERFLOW — items that don't fit the grid are REFUSED (DS1's
+        // "no room" behavior): they stay in the pile on the ground instead of
+        // silently living unrendered in the list.
         var parts = new List<string>(pile.Items.Count);
-        foreach (var it in pile.Items)
+        var accepted = new List<SiegeFX.Core.Actors.LootEntry>(pile.Items.Count);
+        var working = new List<SiegeFX.Core.Actors.LootEntry>(_playerInventory);
+        int refused = 0;
+        for (int ii = pile.Items.Count - 1; ii >= 0; ii--)
         {
+            var it = pile.Items[ii];
             var resolved = ResolveItemRef(it.Reference);
             var entry = resolved == it.Reference ? it : it with { Reference = resolved };
+            working.Add(entry);
+            if (!Hud.InventoryPanel.CanFitAll(working, TryGetItemGridSize))
+            {
+                working.RemoveAt(working.Count - 1);
+                refused++;
+                continue;
+            }
             _playerInventory.Add(entry);
             _inventoryPanel.NotifyItemAdded();
+            accepted.Add(entry);
             parts.Add(entry.IsEquipped ? $"[{entry.Slot}] {entry.Reference}" : entry.Reference);
+            pile.Items.RemoveAt(ii);
         }
         if (parts.Count > 0)
             Console.WriteLine(
                 $"  pickup: acquired {string.Join(", ", parts)}  (inventory: {_playerInventory.Count})");
+        if (refused > 0)
+        {
+            Console.WriteLine($"  pickup: {refused} item(s) refused — no room in inventory");
+            AddFloatingText("No room", pile.Position + new Vector3(0f, 1.4f, 0f),
+                            new Vector4(1f, 0.45f, 0.30f, 1f));
+        }
         // SC-QUEST-OBJ-C — credit any active pickup objective whose target
-        // template matches one of the items we just added. Walks the parts
-        // list above to mirror the same template names that landed in the
-        // inventory. Substring match on RegisterPickup absorbs pcontent
-        // resolutions ("#weapon/9" -> "wpn_axe_001" etc).
+        // template matches one of the items we just added. Substring match on
+        // RegisterPickup absorbs pcontent resolutions ("#weapon/9" -> "wpn_axe_001").
         if (_progression is not null)
         {
-            foreach (var it in pile.Items)
+            foreach (var entry in accepted)
             {
-                var resolved = ResolveItemRef(it.Reference);
-                var completed = _progression.Journal.RegisterPickup(resolved);
+                var completed = _progression.Journal.RegisterPickup(entry.Reference);
                 foreach (var key in completed)
-                    Console.WriteLine($"[quest] pickup objective complete: {key} (acquired {resolved})");
+                    Console.WriteLine($"[quest] pickup objective complete: {key} (acquired {entry.Reference})");
                 if (completed.Count > 0) FlashQuestIndicator();
             }
         }
-        _audio?.PlayAt(SfxGuiPickup, pile.Position);
+        if (accepted.Count > 0 || pileGold > 0)
+            _audio?.PlayAt(SfxGuiPickup, pile.Position);
 
         // Phase 14c — auto-equip dropped weapons. If the loot entry came from
         // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
@@ -21783,7 +21822,7 @@ void main()
         // visible without a real inventory UI.
         bool weaponSwapped = false;
         bool nonWeaponSwapped = false;
-        foreach (var it in pile.Items)
+        foreach (var it in accepted)
         {
             if (!it.IsEquipped) continue;
             if (!IsWeaponUpgrade(it)) continue;
@@ -21800,6 +21839,10 @@ void main()
         if (nonWeaponSwapped && _player is not null)
             TryLoadPlayerEquipment(_player.Actor.Template);
         if (weaponSwapped || nonWeaponSwapped) RefreshPlayerStance();
+
+        // SC-INV-OVERFLOW — a pile with refused items stays on the ground
+        // (the pcontent source counts as consumed only when it empties).
+        if (pile.Items.Count > 0) return accepted.Count > 0 || pileGold > 0;
 
         // SC-WORLD-INVENTORY-CONSUMED — record the source SCID before removing
         // so the pile doesn't respawn on next region stream / save-reload.
