@@ -5091,10 +5091,16 @@ void main()
                 }
                 // SC-DEVMODE — tilde toggles the developer console (in-game
                 // only; boot menus and text-entry modals keep the key).
+                // ALPHA-PACKAGING — testers don't get god/spawn/teleport by
+                // default: the console requires SIEGEFX_DEV=1 (dev builds
+                // set it; the published zip doesn't).
                 if (key == Key.GraveAccent && !_bootMode && _player is not null
                     && !_saveDialog.IsOpen && !_creator.IsOpen)
                 {
-                    ToggleDevConsole();
+                    if (Environment.GetEnvironmentVariable("SIEGEFX_DEV") == "1")
+                        ToggleDevConsole();
+                    else
+                        Console.WriteLine("[dev] console disabled (set SIEGEFX_DEV=1 to enable)");
                     return;
                 }
                 // SC-DEFEAT — Esc answers the defeat question with "No" (the
