@@ -1006,8 +1006,12 @@ public sealed class SfxRuntime
                                : 0f,
                 ThetaRate    = isOrbiter ? handle.OrbitTheta : 0f,
                 VDisplace    = handle.VDisplace,
-                Speed        = handle.HasVel ? handle.Velocity
-                               : (isTrackball ? 5.0f : 8.0f),
+                // SC-SPELLFX-TS — ts() scales the motion clock: fireshot's
+                // ts(1.35) trackball flies 1.35× the base rate. Applied to
+                // the launch speed (accel/max scale implicitly through it).
+                Speed        = (handle.HasVel ? handle.Velocity
+                               : (isTrackball ? 5.0f : 8.0f))
+                               * (handle.TsScale > 0.001f ? handle.TsScale : 1f),
                 AccelRate    = isTrackball
                                ? (handle.HasAccelScalar ? handle.AccelScalar : 2.5f)
                                : 0f,
@@ -2629,8 +2633,14 @@ public sealed class SfxRuntime
 
         // ts(N) — DS1's "time scale" / particle lifetime. Turn into a
         // particles-per-second budget for persistent emitters.
+        // SC-SPELLFX-TS — motion handles also read it as their clock
+        // multiplier (fireshot's trackball authors ts(1.35) + accel(0);
+        // ignoring it left the ball at the bare 5 u/s default crawl).
         if (TryReadFloat(raw, "ts", out var ts) && ts > 0.001f)
+        {
             h.Rate = Math.Clamp(20f / ts, 4f, 120f);
+            h.TsScale = ts;
+        }
 
         // color0(R,G,B[,A]) — start tint.
         if (TryReadVec4(raw, "color0", out var c0)) h.Color = c0;
@@ -3293,6 +3303,10 @@ public sealed class SfxRuntime
         public float       Duration;     // bolt_life / dur
         public float       Displace;     // maxdisplace amplitude
         public int         BurstCount;   // explosion/sparkles count(N)
+        /// <summary>SC-SPELLFX-TS — ts(N) time-scale as authored; motion
+        /// handles multiply their clock/speed by it (fireshot's ts(1.35)
+        /// trackball). 0 = unauthored (readers treat as 1).</summary>
+        public float       TsScale;
         public EmitterMode Mode;
         // Phase 21-SC-SPELL-VISUAL-H — authored texture name from the
         // create's `texture(b_sfx_xxx)` param. null when the script
