@@ -15793,6 +15793,43 @@ void main()
     /// difficulty are forwarded via env vars (HeroVariantPicker.FromEnv
     /// already reads SIEGEFX_HERO_*; SIEGEFX_DIFFICULTY is new but
     /// safely ignored by older code paths).</summary>
+    /// <summary>SC-DEFEAT — restart the runtime in boot mode (splash → main
+    /// menu). Same exe/dotnet resolution as the region relaunch; the current
+    /// window closes once the new process is off.</summary>
+    private void RelaunchToMainMenu()
+    {
+        try
+        {
+            string? exePath = Environment.ProcessPath;
+            if (exePath is null || _window is null)
+            {
+                Console.Error.WriteLine("SC-DEFEAT: can't resolve ProcessPath; closing instead");
+                _window?.Close();
+                return;
+            }
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = false,
+            };
+            if (string.Equals(System.IO.Path.GetFileNameWithoutExtension(exePath), "dotnet",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                string asmPath = typeof(RenderHost).Assembly.Location;
+                if (!string.IsNullOrEmpty(asmPath) && System.IO.File.Exists(asmPath))
+                    psi.ArgumentList.Add(asmPath);
+            }
+            System.Diagnostics.Process.Start(psi);
+            Console.WriteLine("[defeat] returning to main menu (relaunch)");
+            _window.Close();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SC-DEFEAT relaunch failed: {ex.Message}");
+            _window?.Close();
+        }
+    }
+
     private void LaunchRegionViaRelaunch(string ds1ResourcesDir)
     {
         try
@@ -16068,7 +16105,10 @@ void main()
                 OpenLoadDialog(mainMenuStyle: false);
                 break;
             case "no":
+                // SC-DEFEAT — "No" returns to the main menu (DS1's defeat
+                // question is "load a save? no = quit to the shell").
                 _defeatPhase = DefeatPhase.DialogClosed;
+                RelaunchToMainMenu();
                 break;
             case "help":
                 _defeatPhase = DefeatPhase.DialogClosed;
@@ -21129,6 +21169,10 @@ void main()
         public ActorRenderState? Target;
         public StaticPropInstance? Prop;
         public required SiegeFX.Core.Actors.ActorStats Attacker;
+        // A retarget clicked DURING this iteration: honored only after the
+        // current attack finishes (the user's stated DS1 rule — same-target
+        // clicks are ignored, a target switch waits for the swing).
+        public ActorRenderState? NextTarget;
     }
     private PlayerSwingState? _playerSwing;
 
@@ -21144,6 +21188,9 @@ void main()
         public ActorRenderState? Target;
         public StaticPropInstance? Prop;
         public float MagicLevel;
+        // Retarget clicked during this cast — honored after the release
+        // cycle completes, same rule as melee.
+        public ActorRenderState? NextTarget;
     }
     private PlayerCastState? _playerCast;
 
@@ -21156,7 +21203,15 @@ void main()
         StaticPropInstance? prop, float magicLevel)
     {
         if (_player is null || _playerSpellbook is null) return;
-        if (_playerCast is not null || _playerSwing is not null) return;
+        if (_playerCast is not null)
+        {
+            // Same-target click spam is ignored; a different target queues
+            // the retarget for after the current cast cycle.
+            if (best is not null && !ReferenceEquals(_playerCast.Target, best))
+                _playerCast.NextTarget = best;
+            return;
+        }
+        if (_playerSwing is not null) return;
         // Don't wind up a cast that the spellbook will refuse at release.
         float cd = slot == SiegeFX.Core.Actors.SpellSlot.Primary
             ? _playerSpellbook.PrimaryCooldownRemaining
@@ -21216,7 +21271,8 @@ void main()
             // an engaged living target keeps getting casts while it stays
             // inside the spell's range. Stops on death, out-of-range, a
             // move click (which retargets), or switching slots.
-            if (pc.Target is { } tgt && !tgt.IsDead
+            var castCont = pc.NextTarget is { IsDead: false } sw ? sw : pc.Target;
+            if (castCont is { } tgt && !tgt.IsDead
                 && pc.Spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
                 && _player is not null && !_player.IsDead
                 && SpellSlotActive)
@@ -21257,12 +21313,18 @@ void main()
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
-        // One swing per iteration — click spam while a swing is in flight
-        // is a no-op (DS1 locks the player to one swing per animation).
+        // One swing per iteration — same-target click spam is a no-op; a
+        // click on a DIFFERENT enemy queues the retarget for after the
+        // current attack finishes (the DS1 rule).
+        if (_playerSwing is not null)
+        {
+            if (!ReferenceEquals(_playerSwing.Target, best))
+                _playerSwing.NextTarget = best;
+            return;
+        }
         // Phase 19 — an in-flight cast also blocks a swing (one action at
         // a time, either machine).
-        if (_playerSwing is not null || _playerCast is not null
-            || _player.Actor.Host.IsOverrideActive) return;
+        if (_playerCast is not null || _player.Actor.Host.IsOverrideActive) return;
         SnapPlayerFacingTo(best.CurrentTransform.Translation);
         StartPlayerSwing(target: best, prop: null, attacker);
     }
@@ -21321,7 +21383,10 @@ void main()
             // stepped out re-queues the walk-up-and-swing so the hero
             // chases and re-engages. Stops naturally on death, on a new
             // click (TryClickToMove clears _pendingAttackTarget), or S.
-            if (ps.Target is { } tgt && !tgt.IsDead && _player is not null && !_player.IsDead)
+            // A mid-iteration retarget click switches now; otherwise the
+            // engaged target continues (auto-attack).
+            var cont = ps.NextTarget is { IsDead: false } sw ? sw : ps.Target;
+            if (cont is { } tgt && !tgt.IsDead && _player is not null && !_player.IsDead)
             {
                 var pp = _player.CurrentTransform.Translation;
                 var tp = tgt.CurrentTransform.Translation;
