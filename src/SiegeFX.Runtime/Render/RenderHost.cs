@@ -885,6 +885,44 @@ public sealed class RenderHost : IDisposable
     // the dagger draws at the weapon ASP's mesh origin, which is nowhere near
     // the grip — blade tip usually, judging by how DS1 weapons are authored.
     private Matrix4x4 _weaponBindInv = Matrix4x4.Identity;
+    // SC-CAST-STOW — true when es_weapon_hand holds an ac_staff weapon.
+    // Selecting a spell slot stows every other weapon (DS1 casts in fs0
+    // unarmed or fs5 staff only): the mesh stops drawing and the stance
+    // flips to the casting stance until a weapon slot is selected again.
+    private bool _weaponIsStaff;
+    private bool SpellSlotActive => _activeAbilityIdx is 2 or 3;
+
+    /// <summary>SC-CAST-STOW — single funnel for active-slot changes: on a
+    /// weapon↔spell boundary the stance re-resolves (fs0/fs5 casting vs the
+    /// equipped weapon's stance) and the in-hand mesh visibility follows.
+    /// Entering casting also plays the stance's <c>dfs</c> "fists up" beat
+    /// once before the fidget idle takes over — the transition DS1 shows.</summary>
+    private void SetActiveAbilitySlot(int slot)
+    {
+        bool wasSpell = SpellSlotActive;
+        _activeAbilityIdx = slot;
+        if (wasSpell == SpellSlotActive) return;
+        RefreshPlayerStance();
+        if (SpellSlotActive && _player is not null && !_player.IsDead
+            && _actorSpawner is not null && _playerSwing is null)
+        {
+            int stance = _weaponIsStaff
+                ? SiegeFX.Core.Actors.WeaponStance.Staff
+                : SiegeFX.Core.Actors.WeaponStance.Unarmed;
+            var dfs = _actorSpawner.LoadStanceClip(_player.Actor, stance, "dfs");
+            int atkIdx = _player.Actor.GetClipIndex("chore_attack");
+            if (dfs is not null && atkIdx >= 0)
+            {
+                // Ride the chore_attack override slot (the established swap
+                // pattern): the dfs beat plays once, the override drains,
+                // and the stance's dff fidget idle resumes. The next real
+                // swing/cast re-publishes the slot anyway.
+                _player.Actor.Clips[atkIdx] = dfs;
+                _player.Actor.PlayChoreOnce("chore_attack",
+                    dfs.AnimLength > 0f ? dfs.AnimLength : 0.8f);
+            }
+        }
+    }
     // Phase 9-SC-7 — item-mesh cache for ground loot. Keyed by item template name
     // (e.g. "dg_g_d_1h_fun"). Each entry is the loaded ASP mesh + optional first-
     // texture binding; tracked for sentinel "no mesh authored" so we don't keep
@@ -5099,7 +5137,7 @@ void main()
                 // clicking, not by a cast key.
                 else if (Is("rotate_selected_slots") && _player is not null && !_player.IsDead)
                 {
-                    _activeAbilityIdx = (_activeAbilityIdx + 1) % 4;
+                    SetActiveAbilitySlot((_activeAbilityIdx + 1) % 4);
                     _audio?.Play(SfxGuiInventory);
                     Console.WriteLine($"[cmd] active slot -> {_activeAbilityIdx}");
                 }
@@ -5118,9 +5156,9 @@ void main()
                 else if ((Is("get_awp_01") || Is("get_awp_02") || Is("get_awp_03") || Is("get_awp_04"))
                          && _player is not null && !_player.IsDead)
                 {
-                    _activeAbilityIdx = Is("get_awp_01") ? 0
-                                      : Is("get_awp_02") ? 1
-                                      : Is("get_awp_03") ? 2 : 3;
+                    SetActiveAbilitySlot(Is("get_awp_01") ? 0
+                                       : Is("get_awp_02") ? 1
+                                       : Is("get_awp_03") ? 2 : 3);
                     _audio?.Play(SfxGuiInventory);
                 }
                 // Collect Loot — authored [collect_loot] (default Z): vacuum
@@ -6007,7 +6045,7 @@ void main()
                         }
                         else
                         {
-                            _activeAbilityIdx = slot;
+                            SetActiveAbilitySlot(slot);
                             _audio?.Play(SfxGuiInventory);
                         }
                     }
@@ -6287,15 +6325,26 @@ void main()
                             // cues as the LMB context dispatch: cast cue for
                             // spell cells, attack chime when the tap lands
                             // an attack order.
+                            // SC-CAST-GATE — offensive casts need a real
+                            // target (enemy or breakable) under the cursor,
+                            // matching the LMB context dispatch; self-heals
+                            // are the exception. No more casting at the
+                            // open ground.
                             switch (_activeAbilityIdx)
                             {
                                 case 2:
-                                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
-                                    _audio?.Play(SfxOrderCast);
+                                    if (CanCastAtCursor(SiegeFX.Core.Actors.SpellSlot.Primary, _rmbDownPos))
+                                    {
+                                        TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
+                                        _audio?.Play(SfxOrderCast);
+                                    }
                                     break;
                                 case 3:
-                                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
-                                    _audio?.Play(SfxOrderCast);
+                                    if (CanCastAtCursor(SiegeFX.Core.Actors.SpellSlot.Secondary, _rmbDownPos))
+                                    {
+                                        TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
+                                        _audio?.Play(SfxOrderCast);
+                                    }
                                     break;
                                 default:
                                     if (TryClickToAttack(_rmbDownPos))
@@ -18082,6 +18131,12 @@ void main()
         // put bows in the STAFF stance (5; bows are 6) and never selected the
         // shield (2), two-handed (3/4), staff (5), or shield-only (8) sets.
         if (_templateStore is null || slots is null) return null;
+        // SC-CAST-STOW — a selected spell slot casts in fs5 with a staff,
+        // fs0 otherwise (the only stances magic is rigged in); every other
+        // weapon is stowed for the duration.
+        if (SpellSlotActive)
+            return _weaponIsStaff ? SiegeFX.Core.Actors.WeaponStance.Staff
+                                  : SiegeFX.Core.Actors.WeaponStance.Unarmed;
         SiegeFX.Core.Assets.Template? weaponTpl = null;
         if (slots.TryGetValue("es_weapon_hand", out var weaponRef)
             && !string.IsNullOrWhiteSpace(weaponRef))
@@ -18348,6 +18403,11 @@ void main()
         // so the click-attack hit cue can pick the matching impact WAV family.
         var material = _templateStore.GetAttribute(tpl!, "aspect", "material");
         if (!string.IsNullOrEmpty(material)) _playerWeaponMaterial = material!;
+        // SC-CAST-STOW — staves are the one weapon that stays in hand while
+        // casting (magic is rigged only in fs0 unarmed and fs5 staff).
+        _weaponIsStaff = string.Equals(
+            (_templateStore.GetAttribute(tpl!, "attack", "attack_class") ?? "").Trim(),
+            "ac_staff", StringComparison.OrdinalIgnoreCase);
         if (!_playResolver.TryLoadModel(modelName, out var aspBytes))
         {
             Console.WriteLine($"  weapon: model '{modelName}.asp' not in any tank");
@@ -19143,6 +19203,20 @@ void main()
         if (!TryClickToAttack(pos)) return false;
         _audio?.Play(SfxOrderAttack);
         return true;
+    }
+
+    /// <summary>SC-CAST-GATE — may this spell slot fire at the cursor?
+    /// Self-heals always may (they target the caster); offensive spells
+    /// need a live enemy or breakable under the cursor, same rule the LMB
+    /// context dispatch applies.</summary>
+    private bool CanCastAtCursor(SiegeFX.Core.Actors.SpellSlot slot, Vector2 cursorPx)
+    {
+        if (_playerSpellbook is null) return false;
+        var spell = slot == SiegeFX.Core.Actors.SpellSlot.Primary
+            ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
+        if (spell is null) return false;
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal) return true;
+        return HasCombatTargetAt(cursorPx);
     }
 
     /// <summary>True when a live enemy or breakable prop sits within the click
@@ -24255,7 +24329,9 @@ void main()
                 AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t, _boneWorldsScratch);
             }
 
-            if (gripIdx < pcBones)
+            // SC-CAST-STOW — a selected spell slot puts the weapon away
+            // (DS1 casts unarmed or with a staff; the staff stays in hand).
+            if (gripIdx < pcBones && !(SpellSlotActive && !_weaponIsStaff))
             {
                 var gripLocal = _boneWorldsScratch[gripIdx];
                 // weaponBindInv cancels the weapon ASP's own grip-bone bind offset

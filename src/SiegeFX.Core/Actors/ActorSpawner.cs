@@ -465,6 +465,17 @@ public sealed class ActorSpawner
     static bool IsQffg(string? key) =>
         string.Equals(key, "qffg", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>SC-CAST-STOW — load a single stance clip by suffix outside
+    /// the chore dictionary (e.g. the fs0 <c>dfs</c> "fists up" default
+    /// fighting stance that DS1 shows for a beat when switching to casting
+    /// before the fidget takes over). Cached like every other clip.</summary>
+    public PrsAnimation? LoadStanceClip(Actor actor, int stance, string suffix)
+    {
+        var chorePrefix = _store.GetAttribute(actor.Template, "body", "chore_dictionary", "chore_prefix");
+        if (string.IsNullOrEmpty(chorePrefix)) return null;
+        return TryLoadAnyStanceClip(chorePrefix, new[] { stance }, suffix, actor.Instance);
+    }
+
     /// <summary>Phase 10-SC-2 — load a representative PRS clip for one chore_* section.
     /// Walks every <c>[anim_files]</c> entry and stops at the first that resolves; returns
     /// null if none load. Two filename strategies depending on the section's
