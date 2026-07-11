@@ -70,8 +70,11 @@ public sealed class PaperdollPanel
         // recovered (it's the same region).
         new("melee",     92, 354, 134, 443,
             "b_gui_ig_mnu_cp_ghost_sword",    new Uv(0f, 0.304688f, 0.65625f, 1f)),
-        // Ranged weapon — ghost line 597 rect 103,232,125,322.
-        new("ranged",   103, 232, 125, 322,
+        // Ranged weapon — HIT rect is the authored itemslot ranged_weapon
+        // 90,232,135,323 (character.gas), not the narrower ghost-art rect
+        // (103..125): that 22px sliver ate clicks the drawn bow ghost
+        // invited, reading as "equipping the bow does nothing".
+        new("ranged",    90, 232, 135, 323,
             "b_gui_ig_mnu_cp_ghost_bow",      new Uv(0f, 0.296875f, 0.6875f, 1f)),
         // Shield — ghost line 667 rect 210,366,247,434.
         new("shield",   210, 366, 247, 434,

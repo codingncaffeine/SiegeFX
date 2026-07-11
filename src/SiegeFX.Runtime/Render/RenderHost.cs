@@ -24930,6 +24930,32 @@ void main()
         if (accepted.Count > 0 || pileGold > 0)
             _audio?.PlayAt(SfxGuiPickup, pile.Position);
 
+        // SC-PAPERDOLL-EQUIP — a picked-up PROJECTILE weapon auto-fills the
+        // EMPTY ranged box (per the user's DS1 recall: first bow goes
+        // straight onto the paperdoll; later bows land in the pack).
+        bool rangedAutoEquipped = false;
+        if (!_playerEquipment.TryGetValue("es_ranged_weapon", out var curRanged)
+            || string.IsNullOrWhiteSpace(curRanged))
+        {
+            for (int ai = 0; ai < accepted.Count; ai++)
+            {
+                var it = accepted[ai];
+                if (it.IsEquipped || _templateStore is null) continue;
+                if (!_templateStore.TryGet(it.Reference, out var wtpl) || wtpl is null) continue;
+                if (!string.Equals(_templateStore.GetAttribute(wtpl, "attack", "is_projectile")?.Trim(),
+                        "true", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!MeetsEquipRequirements(it.Reference, _player!.Actor.Stats, out _)) continue;
+                _playerEquipment["es_ranged_weapon"] = it.Reference;
+                _playerInventory.Remove(it);
+                _inventoryPanel.NotifyItemRemoved(_playerInventory.Count);
+                ApplyEquipmentChange("es_ranged_weapon");
+                rangedAutoEquipped = true;
+                Console.WriteLine($"  pickup: auto-equipped {it.Reference} into the ranged box");
+                break;
+            }
+        }
+        _ = rangedAutoEquipped;
+
         // Phase 14c — auto-equip dropped weapons. If the loot entry came from
         // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
         // and the new item has a non-zero damage_max, swap it into the PC's
@@ -26147,7 +26173,10 @@ void main()
                 if (pile.DisplayOverride.Length > 0)
                     itemMesh = TryGetItemMesh(pile.DisplayOverride);
                 for (var i = 0; itemMesh is null && i < pile.Items.Count; i++)
-                    itemMesh = TryGetItemMesh(pile.Items[i].Reference);
+                    // SC-GOLD-PILES — synthetic gold entries ("7-7") have no
+                    // template; render the authored coin mesh (gold →
+                    // m_i_glb_coin-01) so dropped gold isn't a placeholder box.
+                    itemMesh = TryGetItemMesh(pile.Items[i].IsGold ? "gold" : pile.Items[i].Reference);
 
                 if (itemMesh is not null)
                 {
