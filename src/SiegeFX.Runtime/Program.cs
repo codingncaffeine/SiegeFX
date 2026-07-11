@@ -17,23 +17,40 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     catch { }
 };
 
-// Console tee — when SIEGEFX_DEBUG_LOG_FILE is set, mirror all Console.Out to
-// that file so I can read the diag log directly instead of asking the user to
-// paste it. Auto-flush on every write so a forced quit still leaves a valid
-// log. test-all.bat sets this for the slices where I'm actively diagnosing.
+// Console tee — ALWAYS mirror Console.Out into a rotating session log at
+// %LOCALAPPDATA%\SiegeFX\logs\session-<stamp>.log (alpha-plan Piece 3; until
+// now a closed window took its console output with it, so live bug reports
+// had no evidence trail). Newest 8 sessions are kept. SIEGEFX_DEBUG_LOG_FILE
+// still overrides the target path for directed diagnosis. Auto-flush on every
+// write so a forced quit still leaves a valid log.
 var teePath = System.Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_LOG_FILE");
-if (!string.IsNullOrWhiteSpace(teePath))
+if (string.IsNullOrWhiteSpace(teePath))
 {
+    var logDir = System.IO.Path.Combine(
+        System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+        "SiegeFX", "logs");
+    teePath = System.IO.Path.Combine(logDir, $"session-{DateTime.Now:yyyyMMdd-HHmmss}.log");
     try
     {
-        var dir = System.IO.Path.GetDirectoryName(teePath);
-        if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
-        var fs = new System.IO.FileStream(teePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
-        var fileWriter = new System.IO.StreamWriter(fs) { AutoFlush = true };
-        Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter));
+        System.IO.Directory.CreateDirectory(logDir);
+        foreach (var f in new System.IO.DirectoryInfo(logDir).GetFiles("session-*.log")
+                     .OrderByDescending(f => f.LastWriteTimeUtc).Skip(7))
+        {
+            try { f.Delete(); } catch { }
+        }
     }
-    catch (Exception ex) { Console.WriteLine($"  tee log: failed to open '{teePath}': {ex.Message}"); }
+    catch { }
 }
+try
+{
+    var teeDir = System.IO.Path.GetDirectoryName(teePath);
+    if (!string.IsNullOrEmpty(teeDir)) System.IO.Directory.CreateDirectory(teeDir);
+    var fs = new System.IO.FileStream(teePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
+    var fileWriter = new System.IO.StreamWriter(fs) { AutoFlush = true };
+    Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter));
+    Console.WriteLine($"[log] session log: {teePath}");
+}
+catch (Exception ex) { Console.WriteLine($"  tee log: failed to open '{teePath}': {ex.Message}"); }
 
 // Invocation shapes:
 //   SiegeFX.Runtime                                          → boot to main menu (Phase 24)

@@ -1137,6 +1137,12 @@ public sealed class RenderHost : IDisposable
     // so an idle PC keeps his last heading instead of snapping to +Z each tick.
     private Vector3 _playerFacing = Vector3.UnitZ;
     private double _actorTickAccumulator;
+    // SC-PERF-SLOWMO — sim-behind-real-time self-report counters (see the
+    // accumulator clamp in the actor tick block).
+    private double _simClampLostSec;
+    private int _simClampFrames;
+    private double _simClampWindowSec;
+    private int _simClampWindowFrames;
 
     // Phase 9-SC-10b — render-state interpolation for the PC. The actor runtime
     // ticks at 20 Hz (50 ms steps) but render runs at 60+ fps; without smoothing
@@ -15188,7 +15194,38 @@ void main()
         if (_actorRuntime is not null && _actorBus is not null && _actors.Count > 0)
         {
             const double stepSec = 1.0 / SkritInstance.FramesPerSecond;
-            _actorTickAccumulator = Math.Min(_actorTickAccumulator + dt, stepSec * 5);
+            // SC-PERF-SLOWMO — the 5-tick backlog cap protects against burst
+            // hitches, but when EVERY frame exceeds 250ms of sim demand the
+            // clamp silently discards sim time and the world runs in slow
+            // motion (reported in a mob swarm). Count the clamped time and
+            // self-report once per 2s with the load numbers, so a session
+            // log carries the evidence.
+            double preClamp = _actorTickAccumulator + dt;
+            _actorTickAccumulator = Math.Min(preClamp, stepSec * 5);
+            if (preClamp > stepSec * 5)
+            {
+                _simClampLostSec += preClamp - stepSec * 5;
+                _simClampFrames++;
+            }
+            _simClampWindowSec += dt;
+            _simClampWindowFrames++;
+            if (_simClampWindowSec >= 2.0)
+            {
+                if (_simClampLostSec > 0.05)
+                {
+                    Console.WriteLine(
+                        $"[perf] SIM BEHIND REAL TIME: lost {_simClampLostSec:F2}s over " +
+                        $"{_simClampFrames}/{_simClampWindowFrames} frames " +
+                        $"(avg frame {(_simClampWindowSec / Math.Max(1, _simClampWindowFrames)) * 1000.0:F0}ms, " +
+                        $"actors={_actors.Count}, party={_party.Count}, " +
+                        $"particles={_particles?.LiveParticleCount ?? 0}, " +
+                        $"gameSpeed=x{_gameSpeed:F2})");
+                }
+                _simClampLostSec = 0;
+                _simClampFrames = 0;
+                _simClampWindowSec = 0;
+                _simClampWindowFrames = 0;
+            }
             while (_actorTickAccumulator >= stepSec)
             {
                 _actorTickAccumulator -= stepSec;
