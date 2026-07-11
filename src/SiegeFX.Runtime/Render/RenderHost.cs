@@ -11390,6 +11390,16 @@ void main()
                 }
                 if (_playerFollower is not null)
                 {
+                    // SC-NIS-TELEPORT fix — after an Esc-skip the player is
+                    // ALREADY placed at the run's endpoint, but the drained
+                    // move-hero message arrives via the bus one tick later
+                    // and was re-targeting him back onto the walk chain (the
+                    // "still running to the bridge after Esc" report).
+                    if (_introNisSkipped)
+                    {
+                        Console.WriteLine($"[cmd] move hero 0x{scid:X8} ignored — intro skipped, player already placed");
+                        break;
+                    }
                     // SC-NIS-TELEPORT — the original does NOT walk the hero
                     // across the farm: the intro TELEPORTS him near each
                     // scripted spot (Esc-skip = instantly there; watching it
