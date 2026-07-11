@@ -20,7 +20,8 @@ namespace SiegeFX.Runtime.Render;
 public static class SfxFilmstripHost
 {
     public static int Run(string logicTankPath, string objectsTankPath, string spellFilter,
-                          string outDir, int frames, int stripCount, int seed, int size)
+                          string outDir, int frames, int stripCount, int seed, int size,
+                          float targetDist = 4f)
     {
         int exit = 0;
         var opts = WindowOptions.Default with
@@ -33,7 +34,7 @@ public static class SfxFilmstripHost
         var window = Window.Create(opts);
         window.Load += () =>
         {
-            try { exit = RenderAll(window, logicTankPath, objectsTankPath, spellFilter, outDir, frames, stripCount, seed, size); }
+            try { exit = RenderAll(window, logicTankPath, objectsTankPath, spellFilter, outDir, frames, stripCount, seed, size, targetDist); }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"filmstrip: {ex}");
@@ -46,7 +47,7 @@ public static class SfxFilmstripHost
     }
 
     static int RenderAll(IWindow window, string logicTankPath, string objectsTankPath, string spellFilter,
-                         string outDir, int frames, int stripCount, int seed, int size)
+                         string outDir, int frames, int stripCount, int seed, int size, float targetDist)
     {
         var gl = GL.GetApi(window);
 
@@ -85,16 +86,20 @@ public static class SfxFilmstripHost
         using var particles = new ParticleSystem(gl);
         particles.LoadTextures(objectsReader);
 
-        // Same anchor constants as the timeline goldens (23b): caster feet
-        // at origin, target 4u east, weapon bone at hand height.
+        // Caster feet at origin, target `targetDist` u east (default 4u,
+        // matching the 23b timeline goldens; pass --target-dist to fly a
+        // projectile a realistic distance and expose moving-fire trails),
+        // weapon bone at hand height.
         var src    = new Vector3(0f, 0f, 0f);
-        var tgt    = new Vector3(4f, 0f, 0f);
+        var tgt    = new Vector3(targetDist, 0f, 0f);
         var weapon = new Vector3(0.3f, 1.2f, 0f);
         var ctx = new SfxContext(src, tgt, weapon);
 
-        // Side-on camera framing both endpoints.
-        var lookAt = new Vector3(2f, 0.9f, 0f);
-        var camPos = new Vector3(2f, 2.0f, 6.5f);
+        // Side-on camera framing both endpoints; pull back proportional to the
+        // flight length so a long shot still fits the frame.
+        float mid = targetDist * 0.5f;
+        var lookAt = new Vector3(mid, 0.9f, 0f);
+        var camPos = new Vector3(mid, targetDist * 0.5f + 1.0f, targetDist * 1.6f + 2.5f);
         var view = Matrix4x4.CreateLookAt(camPos, lookAt, Vector3.UnitY);
         var proj = Matrix4x4.CreatePerspectiveFieldOfView(MathF.PI / 4f, 1f, 0.1f, 100f);
 

@@ -153,6 +153,7 @@ else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
     }
     string fsOut = System.IO.Path.Combine("goldens", "sfx-filmstrips");
     int fsFrames = 40, fsStrip = 8, fsSeed = 1, fsSize = 256;
+    float fsTargetDist = 4f;   // caster→target distance; longer exposes moving-projectile trails
     for (int i = 4; i < args.Length; i++)
     {
         if (args[i].StartsWith("--out=", StringComparison.Ordinal)) fsOut = args[i]["--out=".Length..];
@@ -160,8 +161,9 @@ else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
         else if (args[i].StartsWith("--strip=", StringComparison.Ordinal) && int.TryParse(args[i]["--strip=".Length..], out var v2)) fsStrip = v2;
         else if (args[i].StartsWith("--seed=", StringComparison.Ordinal) && int.TryParse(args[i]["--seed=".Length..], out var v3)) fsSeed = v3;
         else if (args[i].StartsWith("--size=", StringComparison.Ordinal) && int.TryParse(args[i]["--size=".Length..], out var v4)) fsSize = v4;
+        else if (args[i].StartsWith("--target-dist=", StringComparison.Ordinal) && float.TryParse(args[i]["--target-dist=".Length..], System.Globalization.CultureInfo.InvariantCulture, out var v5)) fsTargetDist = v5;
     }
-    return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize);
+    return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize, fsTargetDist);
 }
 else if (args.Length >= 1 && args[0] == "--selftest-save")
 {
