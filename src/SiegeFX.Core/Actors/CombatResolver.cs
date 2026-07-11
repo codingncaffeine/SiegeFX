@@ -77,6 +77,53 @@ public static class CombatResolver
         return new AttackResult(true, MathF.Max(MinChipDamage, mitigated), chance);
     }
 
+    // ---- session combat configuration ---------------------------------------
+    // One difficulty + one loaded [combat_constants] per session. Configure()
+    // is called at world load (with the tank-parsed constants) and whenever a
+    // difficulty is chosen; every live swing/cast resolves through it so the
+    // authored difficulty_easy/medium/hard multipliers actually bite.
+
+    /// <summary>The session's active combat constants (tank-parsed when
+    /// available; retail defaults otherwise).</summary>
+    public static CombatConstants Active { get; private set; } = CombatConstants.Ds1Default;
+
+    /// <summary>Multiplier applied to damage dealt BY the party (player +
+    /// companions) at the session difficulty. Easy 1.35 / Medium 1.0 / Hard 0.85.</summary>
+    public static float PlayerDamageMultiplier { get; private set; } = 1f;
+
+    /// <summary>Multiplier applied to damage dealt BY computer-controlled
+    /// attackers. Easy 0.5 / Medium 1.0 / Hard 1.45.</summary>
+    public static float ComputerDamageMultiplier { get; private set; } = 1f;
+
+    /// <summary>Install the session's constants + difficulty tier. Idempotent;
+    /// call again when either changes.</summary>
+    public static void Configure(in CombatConstants cc, CombatDifficulty difficulty)
+    {
+        Active = cc;
+        (PlayerDamageMultiplier, ComputerDamageMultiplier) = cc.DifficultyFor(difficulty);
+    }
+
+    /// <summary>Session-configured resolution for live swings: to-hit + damage
+    /// roll through <see cref="Active"/> with the party/computer difficulty
+    /// multiplier picked by <paramref name="attackerIsPlayer"/> (companions
+    /// count as the player side — DS1's difficulty scales party-dealt damage
+    /// as a whole). Same RNG consumption pattern as <see cref="Resolve"/>
+    /// (one draw per miss, two per landed swing). Returns post-mitigation
+    /// damage, or 0 on a miss.</summary>
+    public static float RollDamage(ActorStats attacker, ActorStats target, Random rng,
+        bool attackerIsPlayer, bool ranged = false)
+    {
+        if (attacker.DamageMax <= 0f) return 0f;
+        float chance = HitChance(attacker, target, Active, ranged);
+        if (rng.NextDouble() * 100.0 >= chance) return 0f;
+        float min = attacker.DamageMin, max = attacker.DamageMax;
+        if (min > max) (min, max) = (max, min);
+        float raw = min + (float)rng.NextDouble() * (max - min);
+        float mult = attackerIsPlayer ? PlayerDamageMultiplier : ComputerDamageMultiplier;
+        float mitigated = raw * mult - target.Defense * Active.ArmorScalar / ArmorDivisor;
+        return MathF.Max(MinChipDamage, mitigated);
+    }
+
     /// <summary>Back-compat float entry point used by the live call sites (player /
     /// follower / monster swings). Resolves against the shipped <c>[combat_constants]</c>
     /// at medium difficulty and returns the post-mitigation damage, or 0 on a miss

@@ -103,6 +103,35 @@ public sealed class PlayerProgression
         _formulas = formulas;
     }
 
+    // Fractional XP carry — the authentic per-damage model produces non-integer
+    // awards (damage × XP/MaxLife); the fraction accumulates here so nothing is
+    // lost to rounding across many small hits.
+    double _xpCarry;
+
+    /// <summary>DS1's authentic per-damage XP award: a hit that removes
+    /// <paramref name="lifeRemoved"/> HP from a victim worth
+    /// <paramref name="victimXpValue"/> XP grants
+    /// <c>lifeRemoved × (victimXpValue / victimMaxLife)</c> — killing a monster
+    /// yields exactly its authored <c>experience_value</c> in total across
+    /// however many hits it took, with NO separate kill bonus. Each award is
+    /// then capped by <c>[experience_limiting_factors]</c> (10% of the next
+    /// level's XP delta at level 1, 2.5% afterwards) so one huge hit on a
+    /// high-value monster can't vault multiple levels. Fractions carry.</summary>
+    public bool AwardDamageXp(float lifeRemoved, float victimXpValue, float victimMaxLife, SkillKind skill)
+    {
+        if (lifeRemoved <= 0f || victimXpValue <= 0f) return false;
+        double xp = lifeRemoved * (double)victimXpValue / Math.Max(1f, victimMaxLife);
+
+        double factor = Level <= 1 ? _formulas.XpFirstLevelFactor : _formulas.XpLaterLevelsFactor;
+        double levelSpan = _formulas.XpForLevel(Level + 1) - _formulas.XpForLevel(Level);
+        if (levelSpan > 0) xp = Math.Min(xp, factor * levelSpan);
+
+        xp += _xpCarry;
+        long whole = (long)xp;
+        _xpCarry = xp - whole;
+        return AwardXp(whole, skill);
+    }
+
     /// <summary>Add XP and apply level-ups. <paramref name="amount"/> is the raw
     /// number from the combat resolver — typically the damage dealt, plus the
     /// dying actor's <see cref="ActorStats.ExperienceValue"/> on the killing

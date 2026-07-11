@@ -171,7 +171,9 @@ public sealed class PlayerSpellbook
         if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
 
         float spent = _player.Combat.SpendMana(cost);
-        float damage = spell.RollDamage(dmgCtx, _rng);
+        // Session difficulty scales player-dealt spell damage the same as
+        // melee (difficulty_easy/medium/hard_player from [combat_constants]).
+        float damage = spell.RollDamage(dmgCtx, _rng) * CombatResolver.PlayerDamageMultiplier;
         float dealt  = damage > 0f ? target.Combat.ApplyDamage(damage) : 0f;
         bool killed  = target.Combat.IsDead;
 
@@ -208,7 +210,7 @@ public sealed class PlayerSpellbook
         if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
 
         float spent = _player.Combat.SpendMana(cost);
-        float damage = spell.RollDamage(ctx, _rng);
+        float damage = spell.RollDamage(ctx, _rng) * CombatResolver.PlayerDamageMultiplier;
         StartCooldown(slot, spell.CastReloadDelay);
         return new CastResult(CastOutcome.Cast, spell, spent, damage, 0f, false);
     }

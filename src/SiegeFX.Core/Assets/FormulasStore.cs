@@ -58,6 +58,13 @@ public sealed class FormulasStore
     /// to-hit curve, armor scalar, difficulty multipliers. Consumed by CombatResolver.</summary>
     public CombatConstants Combat { get; }
 
+    /// <summary>DS1 <c>[experience_limiting_factors]</c> — a single XP award is
+    /// capped to this fraction of the XP delta between the character's current
+    /// and next level. Shipped: 0.10 while at level 1, 0.025 afterwards. Keeps
+    /// one huge hit on a high-value monster from vaulting multiple levels.</summary>
+    public float XpFirstLevelFactor { get; private set; } = 0.10f;
+    public float XpLaterLevelsFactor { get; private set; } = 0.025f;
+
     private FormulasStore(
         float maxLifeBase, float maxLifeConstant, float maxLifeStr, float maxLifeDex, float maxLifeInt,
         float maxManaBase, float maxManaConstant, float maxManaStr, float maxManaDex, float maxManaInt,
@@ -200,11 +207,16 @@ public sealed class FormulasStore
         var xp = ParseXpTable(xpTbl);
         var cc = ParseCombat(combat);
 
-        return new FormulasStore(
+        var store = new FormulasStore(
             lifeBase, lifeConst, lifeStr, lifeDex, lifeInt,
             manaBase, manaConst, manaStr, manaDex, manaInt,
             death, lrUnit, lrPeriod, mrUnit, mrPeriod,
             gains, xp, cc);
+
+        var limits = FindBlock(doc.Roots, "experience_limiting_factors");
+        store.XpFirstLevelFactor  = ReadFloat(limits, "first_level",  store.XpFirstLevelFactor);
+        store.XpLaterLevelsFactor = ReadFloat(limits, "later_levels", store.XpLaterLevelsFactor);
+        return store;
     }
 
     /// <summary>Parse the <c>[combat_constants]</c> block. The attack/defend rating
@@ -234,7 +246,11 @@ public sealed class FormulasStore
             ReadFloat(combat, "defender_hit_cap", d.DefenderHitCap),
             ReadFloat(combat, "armor_scalar", d.ArmorScalar),
             ReadFloat(combat, "difficulty_medium_player", d.DifficultyPlayer),
-            ReadFloat(combat, "difficulty_medium_computer", d.DifficultyComputer));
+            ReadFloat(combat, "difficulty_medium_computer", d.DifficultyComputer),
+            ReadFloat(combat, "difficulty_easy_player", d.DifficultyEasyPlayer),
+            ReadFloat(combat, "difficulty_easy_computer", d.DifficultyEasyComputer),
+            ReadFloat(combat, "difficulty_hard_player", d.DifficultyHardPlayer),
+            ReadFloat(combat, "difficulty_hard_computer", d.DifficultyHardComputer));
     }
 
     private static GasNode? FindBlock(IReadOnlyList<GasNode> roots, string header)

@@ -127,6 +127,11 @@ public sealed class ActorBrain
     float _swingCooldown;
     Vector3? _attackFacing;
 
+    /// <summary>True for recruited party followers — their swings/casts scale
+    /// by the session's PLAYER difficulty multiplier (the party is the player
+    /// side in DS1's difficulty model); monsters use the computer multiplier.</summary>
+    public bool PartyAligned { get; set; }
+
     public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed,
                       Actor? selfActor = null, Assets.SpellTemplate? castSpell = null)
     {
@@ -240,7 +245,8 @@ public sealed class ActorBrain
                         _swingCooldown = SwingPeriod;
                         if (targetStats is not null)
                         {
-                            float raw = CombatResolver.RollMeleeDamage(_selfStats, targetStats, _swingRng);
+                            float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
+                                attackerIsPlayer: PartyAligned);
                             targetCombat!.ApplyDamage(raw);
                         }
                         // Phase 12-SC-2 — play the swing chore for ~85% of the cooldown
@@ -264,7 +270,8 @@ public sealed class ActorBrain
                         _swingCooldown = SwingPeriod;
                         if (targetStats is not null)
                         {
-                            float raw = CombatResolver.RollMeleeDamage(_selfStats, targetStats, _swingRng);
+                            float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
+                                attackerIsPlayer: PartyAligned, ranged: true);
                             targetCombat!.ApplyDamage(raw);
                         }
                         _selfActor?.PlayChoreOnce("chore_attack", SwingPeriod * 0.85f);
@@ -307,7 +314,9 @@ public sealed class ActorBrain
             life:    targetCombat.CurrentLife,
             srcMana: self.Combat.CurrentMana,
             srcLife: self.Combat.CurrentLife);
-        float damage = spell.RollDamage(dmgCtx, _swingRng);
+        float damage = spell.RollDamage(dmgCtx, _swingRng)
+            * (PartyAligned ? CombatResolver.PlayerDamageMultiplier
+                            : CombatResolver.ComputerDamageMultiplier);
         if (damage > 0f) targetCombat.ApplyDamage(damage);
 
         _swingCooldown = MathF.Max(0.75f, spell.CastReloadDelay);

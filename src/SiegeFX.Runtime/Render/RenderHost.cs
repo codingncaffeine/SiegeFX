@@ -1345,7 +1345,12 @@ public sealed class RenderHost : IDisposable
             npc.Brain = new SiegeFX.Core.Actors.ActorBrain(
                 wander, combatStats,
                 rngSeed: (int)npc.Actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
-                selfActor: npc.Actor, castSpell: spell);
+                selfActor: npc.Actor, castSpell: spell)
+            {
+                // Followers are the player side of the difficulty model — their
+                // damage scales by difficulty_*_player, not _computer.
+                PartyAligned = true,
+            };
             npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
         }
         else
@@ -1670,8 +1675,12 @@ public sealed class RenderHost : IDisposable
             LogLootDrop(s.Actor, s.CurrentTransform.Translation);
             OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
             CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
-            // Party shares the kill's XP (the follower dealt the blow).
-            AwardCombatXp(0, s.Actor.Stats.ExperienceValue, SiegeFX.Core.Assets.SkillKind.Melee);
+            // Party shares the kill's XP (the follower dealt the blow). Our
+            // progression is a single hero pool, so a follower kill credits the
+            // victim's full authored value — passing lifeRemoved = MaxLife makes
+            // the damage-proportional model yield exactly experience_value,
+            // routed through the same limiting-factor cap as hero hits.
+            AwardCombatXp(s.Actor.Stats.MaxLife, s.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
         }
     }
 
@@ -7392,6 +7401,24 @@ void main()
         try { _formulas = SiegeFX.Core.Assets.FormulasStore.LoadFromTank(logicReader); }
         catch (Exception ex) { Console.WriteLine($"  formulas.gas load failed: {ex.Message} (regen disabled)"); }
 
+        // Combat pack — install the session's combat constants + difficulty so
+        // every live swing/cast resolves through the authored multipliers.
+        // Region relaunches forward the frontend's choice via SIEGEFX_DIFFICULTY.
+        var diffEnv = Environment.GetEnvironmentVariable("SIEGEFX_DIFFICULTY");
+        if (!string.IsNullOrEmpty(diffEnv) && Enum.TryParse<GameDifficulty>(diffEnv, true, out var envDiff))
+            _difficulty = envDiff;
+        SiegeFX.Core.Actors.CombatResolver.Configure(
+            _formulas?.Combat ?? SiegeFX.Core.Assets.CombatConstants.Ds1Default,
+            _difficulty switch
+            {
+                GameDifficulty.Easy => SiegeFX.Core.Assets.CombatDifficulty.Easy,
+                GameDifficulty.Hard => SiegeFX.Core.Assets.CombatDifficulty.Hard,
+                _                   => SiegeFX.Core.Assets.CombatDifficulty.Medium,
+            });
+        Console.WriteLine($"  combat: difficulty={_difficulty} " +
+            $"(player x{SiegeFX.Core.Actors.CombatResolver.PlayerDamageMultiplier:F2}, " +
+            $"computer x{SiegeFX.Core.Actors.CombatResolver.ComputerDamageMultiplier:F2})");
+
         // Phase 20a — load the region's conversation pool. Region-scoped (one
         // gas file per region) so the dictionary stays small. Missing file is
         // graceful-fail: the dialogue panel just never opens.
@@ -12510,10 +12537,13 @@ void main()
     /// <summary>[trapped] { trap = trp_generator_* } — the generator's
     /// [inventory][delayed_pcontent] rolls a chance-gated trap effect
     /// (trp_explosion / trp_fireball / trp_flame / ...) whose payload is an
-    /// effect_script our SFX runtime already executes. Damage numbers are
-    /// NOT authored on the effect templates (retail computes them engine
-    /// -side); magnitude×4 within radius is an INFERRED placeholder flagged
-    /// for the DS1 side-by-side pass.</summary>
+    /// effect_script our SFX runtime already executes. Damage is AUTHORED on
+    /// the container itself: trapped.skrit rolls
+    /// <c>RandomFloat(owner.Go.Attack.DamageMin, DamageMax)</c> — the regional
+    /// container templates ship real numbers (e.g. barrel_cav_01_cf_r1 authors
+    /// [attack] 61..113) — and posts it to the trap effect, whose skrit passes
+    /// it into Physics.CreateExplosion (magnitude is expansion SPEED, not
+    /// damage).</summary>
     private void FireContainerTrap(StaticPropInstance prop)
     {
         if (_templateStore is null) return;
@@ -12525,6 +12555,16 @@ void main()
             Console.WriteLine($"[trap] generator template '{trapGenName}' missing");
             return;
         }
+
+        // trapped.skrit: damage rolls from the CONTAINER's own [attack] block.
+        float dmgMin = 1f, dmgMax = 1f;
+        if (float.TryParse(_templateStore.GetAttribute(tpl!, "attack", "damage_min"),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var tmin)) dmgMin = tmin;
+        if (float.TryParse(_templateStore.GetAttribute(tpl!, "attack", "damage_max"),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var tmax)) dmgMax = tmax;
+        if (dmgMin > dmgMax) (dmgMin, dmgMax) = (dmgMax, dmgMin);
 
         // delayed_pcontent: [oneof*] { [all*] { chance = 0.15; il_main = trp_x; } }
         var dp = _templateStore.GetSection(trapGen!, "inventory", "delayed_pcontent");
@@ -12549,20 +12589,27 @@ void main()
         var origin = prop.World.Translation;
         int seed = unchecked(BitConverter.SingleToInt32Bits(origin.X) * 31 ^
                              BitConverter.SingleToInt32Bits(origin.Z) * 17 ^ (int)prop.Scid);
-        if (new Random(seed).NextDouble() > chance) return; // not trapped this time
+        var trapRng = new Random(seed);
+        if (trapRng.NextDouble() > chance) return; // not trapped this time
 
-        FireTrapEffect(effectTemplate, origin);
+        float damage = dmgMin + (float)trapRng.NextDouble() * (dmgMax - dmgMin);
+        FireTrapEffect(effectTemplate, origin, damage);
     }
 
     /// <summary>Fire one trap-effect template at a position: play its
-    /// effect_script through the SFX runtime and apply the (inferred)
-    /// radius damage to party members.</summary>
-    private void FireTrapEffect(string effectTemplate, Vector3 origin)
+    /// effect_script through the SFX runtime and apply the authored radius
+    /// damage to party members. <paramref name="rolledDamage"/> carries the
+    /// container's [attack] roll (trapped.skrit semantics); when the caller
+    /// has no container (placed auto-traps), the firetrap's own authored
+    /// damage_min_hit/damage_max_hit roll (trp_firetrap.skrit defaults 7-10)
+    /// applies.</summary>
+    private void FireTrapEffect(string effectTemplate, Vector3 origin, float rolledDamage = -1f)
     {
         if (_templateStore is null || !_templateStore.TryGet(effectTemplate, out var trp)) return;
 
         string script = "";
-        float magnitude = 2f, radius = 2.5f;
+        float radius = 2.5f;
+        float hitMin = 7f, hitMax = 10f; // trp_firetrap.skrit authored defaults
         foreach (var section in new[] { "trp_explosion", "trp_trackball", "trp_particle", "trp_launch", "trp_firetrap" })
         {
             var s = _templateStore.GetSection(trp!, section);
@@ -12570,12 +12617,15 @@ void main()
             foreach (var a in s.Attributes)
             {
                 if (a.Name.Equals("effect_script", StringComparison.OrdinalIgnoreCase)) script = a.Value.Trim().Trim('"');
-                if (a.Name.Equals("magnitude", StringComparison.OrdinalIgnoreCase) &&
-                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
-                        System.Globalization.CultureInfo.InvariantCulture, out var m)) magnitude = m;
                 if (a.Name.Equals("radius", StringComparison.OrdinalIgnoreCase) &&
                     float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out var r)) radius = r;
+                if (a.Name.Equals("damage_min_hit", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var hmin)) hitMin = hmin;
+                if (a.Name.Equals("damage_max_hit", StringComparison.OrdinalIgnoreCase) &&
+                    float.TryParse(a.Value.Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var hmax)) hitMax = hmax;
             }
             break;
         }
@@ -12586,11 +12636,16 @@ void main()
             script = "flame_trap";
         }
 
+        float dmg = rolledDamage > 0f
+            ? rolledDamage
+            : hitMin + (float)new Random().NextDouble() * (MathF.Max(hitMin, hitMax) - hitMin);
+        dmg = MathF.Max(1f, dmg);
+
         Console.WriteLine($"[trap] {effectTemplate} fires at ({origin.X:F1},{origin.Y:F1},{origin.Z:F1}) " +
-                          $"script='{script}' r={radius:F1} (damage INFERRED mag×4)");
+                          $"script='{script}' r={radius:F1} dmg={dmg:F0} " +
+                          (rolledDamage > 0f ? "(container [attack] roll)" : "(trap authored hit roll)"));
         OnTriggerCallSfxScript(script, null, origin);
 
-        float dmg = MathF.Max(1f, magnitude * 4f); // INFERRED — no authored source; flag for side-by-side
         float r2 = radius * radius;
         void Hurt(ActorRenderState? m)
         {
@@ -17632,14 +17687,14 @@ void main()
         // swing rather than always one-shotting.
         var rng = new Random();
         float raw = MathF.Max(1f,
-            SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
+            SiegeFX.Core.Actors.CombatResolver.RollDamage(
                 attacker,
                 new SiegeFX.Core.Actors.ActorStats(
                     MaxLife: prop.MaxLife, MaxMana: 0,
                     DamageMin: 0, DamageMax: 0, Defense: 0,
                     AttackRange: 0, WalkSpeed: 0, ExperienceValue: 0,
                     Strength: 0, Dexterity: 0, Intelligence: 0),
-                rng));
+                rng, attackerIsPlayer: true));
         prop.Life = MathF.Max(0f, prop.Life - raw);
         Console.WriteLine(
             $"click-break: hit {prop.Template} for {raw:F0} " +
@@ -17755,7 +17810,8 @@ void main()
         prop.Life = MathF.Max(0f, prop.Life - dealt);
         AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(dealt)}",
                         anchor + new Vector3(0f, 1.4f, 0f), elemColor);
-        AwardCombatXp((long)dealt, 0, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+        // No XP for breakable props — DS1 experience comes only from actors
+        // with an authored experience_value (damage × XP/MaxLife model).
         Console.WriteLine(
             $"cast {spell.ScreenName}: hit {prop.Template} for {dealt:F0} " +
             $"({prop.Life:F0}/{prop.MaxLife:F0})" +
@@ -18304,6 +18360,13 @@ void main()
     // equip/unequip mutate a copy without touching the shared template.
     private readonly Dictionary<int, Dictionary<string, string>> _memberEquipment = new();
 
+    // Companion armor-mitigation baseline: worn-armor sum at seed time + the
+    // template-authored Defense at seed time. A companion's authored [defense]
+    // already reflects their STARTING gear, so live Defense = authored base +
+    // (current worn armor − initial worn armor) — a delta fold, not an
+    // absolute replace like the hero (whose base Defense is authored 0).
+    private readonly Dictionary<int, (float BaseDefense, int InitialArmor)> _memberArmorBaseline = new();
+
     private Dictionary<string, string> GetEquipmentDict(int partyIndex)
     {
         if (partyIndex <= 0) return _playerEquipment;
@@ -18324,7 +18387,29 @@ void main()
                 }
         }
         _memberEquipment[partyIndex] = dict;
+        if (member is not null && !_memberArmorBaseline.ContainsKey(partyIndex))
+            _memberArmorBaseline[partyIndex] = (member.Actor.Stats.Defense, ComputeArmorRating(dict));
         return dict;
+    }
+
+    /// <summary>Companion counterpart of <see cref="SyncPlayerArmorDefense"/> —
+    /// republishes live combat Defense as authored base + the worn-armor delta
+    /// since recruit-time gear. ResyncStats only reclamps caps, so this never
+    /// heals or alters life/mana.</summary>
+    private void SyncMemberArmorDefense(int partyIndex)
+    {
+        if (partyIndex <= 0) { SyncPlayerArmorDefense(); return; }
+        var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+        if (member is null) return;
+        var dict = GetEquipmentDict(partyIndex);
+        if (!_memberArmorBaseline.TryGetValue(partyIndex, out var baseline)) return;
+        float total = MathF.Max(0f, baseline.BaseDefense + (ComputeArmorRating(dict) - baseline.InitialArmor));
+        var s = member.Actor.Stats;
+        if (MathF.Abs(s.Defense - total) > 0.01f)
+        {
+            member.Actor.ResyncStats(s with { Defense = total });
+            Console.WriteLine($"  companion[{partyIndex}]: defense -> {total:F0} (base {baseline.BaseDefense:F0} + armor delta)");
+        }
     }
 
     // The equipment/inventory the on-screen character sheet reads and mutates —
@@ -18637,6 +18722,11 @@ void main()
         _paperdollEquipCache.Clear();
         if (partyIndex > 0)
         {
+            // Companion armor mitigation — fold worn [armor][defense] changes
+            // into the member's live combat Defense (mirrors the player's
+            // SyncPlayerArmorDefense; CombatResolver mitigates by target
+            // Defense, so without this companion armor was display-only).
+            SyncMemberArmorDefense(partyIndex);
             // Companion: rebuild their combat brain from the LIVE equipped weapon
             // so damage / range / attack mode track the gear you just put on them
             // (non-weapon slots only refresh the icon caches cleared above).
@@ -19248,8 +19338,8 @@ void main()
         // bare-fisted swings. DS1 hero templates author damage=0 because the real
         // number is the weapon's own attack.damage_min/max.
         var rng = new Random();
-        float raw = SiegeFX.Core.Actors.CombatResolver.RollMeleeDamage(
-            attacker, best.Actor.Stats, rng);
+        float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
+            attacker, best.Actor.Stats, rng, attackerIsPlayer: true);
         float dealt = best.Actor.Combat.ApplyDamage(raw);
         float life = best.Actor.Combat.CurrentLife;
         float maxLife = best.Actor.Stats.MaxLife;
@@ -19280,11 +19370,10 @@ void main()
         }
         else            _audio?.PlayAt(SfxMeleeMiss, hitPos);
 
-        // Phase 16d — XP per damage point + kill bonus from aspect.experience_value.
-        // Melee skill is hardcoded for now (the only swing flavor we have); when
-        // ranged/spells land they pick their own SkillKind at the call site.
-        AwardCombatXp((long)dealt, best.Actor.Combat.IsDead ? best.Actor.Stats.ExperienceValue : 0,
-                       SiegeFX.Core.Assets.SkillKind.Melee);
+        // Authentic XP model: damage × (experience_value / max_life) per hit —
+        // killing a monster yields exactly its authored XP value across all
+        // hits, with no separate kill bonus (see PlayerProgression.AwardDamageXp).
+        AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
 
         if (best.Actor.Combat.ConsumeJustDied())
         {
@@ -20719,8 +20808,8 @@ void main()
                     // Heals award NatureMagic XP proportional to HP restored,
                     // matching DS1's "cast_experience grows with effect" rule.
                     // Without this the heal slot is progression-dead.
-                    AwardCombatXp((long)result.HealAmount, 0,
-                                  SiegeFX.Core.Assets.SkillKind.NatureMagic);
+                    AwardRawXp((long)result.HealAmount,
+                               SiegeFX.Core.Assets.SkillKind.NatureMagic);
                 }
                 else
                 {
@@ -20858,8 +20947,7 @@ void main()
                     AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
                                     anchor + new Vector3(0f, 1.8f, 0f),
                                     elemColor);
-                    AwardCombatXp((long)result.Damage,
-                                  result.TargetKilled ? best.Actor.Stats.ExperienceValue : 0,
+                    AwardCombatXp(result.Damage, best.Actor.Stats,
                                   SiegeFX.Core.Assets.SkillKind.CombatMagic);
                     if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
                     {
@@ -20919,13 +21007,34 @@ void main()
     /// progression. Pulled out so the click-attack and F-key debug paths share
     /// identical XP awarding (and the eventual ranged/spell attacks just call
     /// in with their own <see cref="SiegeFX.Core.Assets.SkillKind"/>).</summary>
-    private void AwardCombatXp(long damageXp, int killBonus, SiegeFX.Core.Assets.SkillKind skill)
+    /// <summary>Authentic DS1 per-damage XP: <paramref name="lifeRemoved"/> HP
+    /// taken from <paramref name="victim"/> awards
+    /// <c>lifeRemoved × experience_value / max_life</c>, capped by
+    /// [experience_limiting_factors] (see PlayerProgression.AwardDamageXp).
+    /// A monster is worth exactly its authored experience_value in total —
+    /// there is no separate kill bonus.</summary>
+    private void AwardCombatXp(float lifeRemoved, in SiegeFX.Core.Actors.ActorStats victim,
+                               SiegeFX.Core.Assets.SkillKind skill)
     {
         if (_progression is null) return;
-        long total = damageXp + killBonus;
-        if (total <= 0) return;
         int oldLevel = _progression.Level;
-        _progression.AwardXp(total, skill);
+        _progression.AwardDamageXp(lifeRemoved, victim.ExperienceValue, victim.MaxLife, skill);
+        AnnounceLevelUp(oldLevel);
+    }
+
+    /// <summary>Non-victim XP awards (heal casts credit NatureMagic by HP
+    /// restored). Same toast handling as the combat path.</summary>
+    private void AwardRawXp(long amount, SiegeFX.Core.Assets.SkillKind skill)
+    {
+        if (_progression is null || amount <= 0) return;
+        int oldLevel = _progression.Level;
+        _progression.AwardXp(amount, skill);
+        AnnounceLevelUp(oldLevel);
+    }
+
+    private void AnnounceLevelUp(int oldLevel)
+    {
+        if (_progression is null) return;
         if (_progression.Level > oldLevel)
         {
             // Level-up announce: console line for diagnostics + on-screen banner
@@ -23622,6 +23731,7 @@ void main()
         _openInventoryMembers.Clear();
         _companionInventories.Clear();
         _memberEquipment.Clear();
+        _memberArmorBaseline.Clear();
         _storeDefs.Clear();      // Phase 25b — shop shelves are per-region-load
         // Phase 21c — release prop GL resources. Texture cache is shared with the
         // actor draw path so it covers both populations in one sweep.
