@@ -19472,6 +19472,33 @@ void main()
     // 1-3 profile to keep the kill loop playable until the stat fix lands in
     // Phase 13e.
     private const float ClickAttackRadius = 3f;
+    // SC-CURSOR-ARBITRATION — breakable props are small stationary targets
+    // (a barrel body is ~0.5-1u); picking them with the full 3u combat
+    // radius let a barrel across the table steal clicks and the cursor
+    // from loot sitting at the hero's feet.
+    private const float ClickBreakableRadius = 1.8f;
+    // SC-CURSOR-ARBITRATION — pile pick radius shared by the hover cursor
+    // and the click probe so the grab hand shows exactly where a click
+    // would loot.
+    private const float PileHoverRadius = 1.2f;
+
+    /// <summary>SC-CURSOR-ARBITRATION — squared XZ distance from a ground
+    /// point to the nearest settled (not mid-throw) loot pile, or
+    /// float.MaxValue when none. The click paths compare their candidate
+    /// against this so a pile closer to the click than the enemy/barrel
+    /// wins the click — same nearest-wins rule the cursor preview uses.</summary>
+    private float NearestSettledPileD2(Vector3 groundHit)
+    {
+        float best = float.MaxValue;
+        foreach (var pile in _lootPiles)
+        {
+            if (pile.Throw is not null && pile.Throw.Elapsed < pile.Throw.Duration) continue;
+            float dx = pile.Position.X - groundHit.X, dz = pile.Position.Z - groundHit.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < best) best = d2;
+        }
+        return best;
+    }
     // Phase 12-SC-1 — drop-back reach when the PC template doesn't author one
     // (hero baseline ships AttackRange=0.5u which is wrist-length, too tight
     // to land a swing on a 1.8u-radius krug bubble). 2u mirrors ActorBrain's
@@ -19564,12 +19591,17 @@ void main()
         {
             // Phase 17-SC-K — no live combatant under the cursor; try a
             // breakable static prop (barrels, crates, jugs). DS1 lets the
-            // player smash these for a frag burst — same pick radius, same
-            // reach gate as actor combat. PerformPropBreak handles the hit.
-            // Quiet on a full miss — the LMB context dispatch probes this
-            // on every ground click before falling through to move.
+            // player smash these for a frag burst — same reach gate as
+            // actor combat. PerformPropBreak handles the hit. Quiet on a
+            // full miss — the LMB context dispatch probes this on every
+            // ground click before falling through to move.
             return TryClickToBreakProp(groundHit);
         }
+        // SC-CURSOR-ARBITRATION — a settled pile closer to the click than
+        // the enemy wins it (nearest-wins, matching the cursor preview):
+        // decline so the dispatch falls through to the move path, whose
+        // pickup probe loots / walks to the item.
+        if (NearestSettledPileD2(groundHit) < bestDist * bestDist) return false;
 
         // Phase 12-SC-1 — gate by player→target reach, not just click-pick
         // tolerance. ClickAttackRadius=3u is just "did you click on this guy
@@ -19669,21 +19701,29 @@ void main()
         float t = (_player.CurrentTransform.Translation.Y - near.Y) / dir.Y;
         if (t < 0f) return false;
         var hit = near + dir * t;
+        // SC-CURSOR-ARBITRATION — nearest-wins here too: an offensive-spell
+        // click only counts as "on a combat target" if no settled pile sits
+        // closer to the click point (props also use their tighter radius).
+        // Matches the cursor preview and the melee click path.
+        float bestD2 = float.MaxValue;
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || !s.Actor.Stats.IsCombatant) continue;
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
-            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < ClickAttackRadius * ClickAttackRadius && d2 < bestD2) bestD2 = d2;
         }
         foreach (var prop in _staticProps)
         {
             if (!prop.IsBreakable || prop.IsDestroyed) continue;
             var p = prop.World.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
-            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < ClickBreakableRadius * ClickBreakableRadius && d2 < bestD2) bestD2 = d2;
         }
-        return false;
+        if (bestD2 == float.MaxValue) return false;
+        return NearestSettledPileD2(hit) >= bestD2;
     }
 
     static Vector3 ComputeApproachPoint(Vector3 from, Vector3 toCenter, float stopShortBy)
@@ -19715,7 +19755,9 @@ void main()
     {
         if (_player is null) return false;
         StaticPropInstance? best = null;
-        float bestDist = ClickAttackRadius;
+        // SC-CURSOR-ARBITRATION — props pick with their own tighter radius
+        // (see ClickBreakableRadius) instead of the 3u combat radius.
+        float bestDist = ClickBreakableRadius;
         foreach (var prop in _staticProps)
         {
             if (!prop.IsBreakable || prop.IsDestroyed) continue;
@@ -19726,6 +19768,9 @@ void main()
             if (d < bestDist) { bestDist = d; best = prop; }
         }
         if (best is null) return false;
+        // SC-CURSOR-ARBITRATION — a pile closer to the click than the
+        // barrel wins it; decline so the pickup probe loots it instead.
+        if (NearestSettledPileD2(groundHit) < bestDist * bestDist) return false;
 
         var attackerStats = GetPlayerAttackStats();
         float reach = PlayerMeleeReach(attackerStats);
@@ -21316,13 +21361,20 @@ void main()
         if (t < 0f) return;
         var groundHit = near + dir * t;
 
-        float r2 = ClickAttackRadius * ClickAttackRadius;
-        // 1) enemy under cursor → red sword (melee/ranged) or blue-glow
-        //    sword (spell-mode). Active ability slot drives the swap:
-        //    0=melee, 1=ranged → cursor_attack; 2=spell-Q, 3=spell-W →
-        //    cursor_cast_attack. Mirrors the DS1 cursors.gas split
-        //    between b_gui_c_attack1 and b_gui_c_magic3.
+        // SC-CURSOR-ARBITRATION — nearest-wins across categories. The old
+        // fixed priority (enemy > breakable > pile) with one shared 3u
+        // radius let a barrel 2.5u away steal the cursor from a spell page
+        // at the hero's feet — with ground clutter next to breakables the
+        // cursor sat on Smash over everything. Each category now has its
+        // own pick radius (props and piles are small stationary targets)
+        // and the CLOSEST candidate under the cursor wins; the click paths
+        // apply the same comparisons so the cursor stays an honest preview.
+        // 1) enemy → red sword (melee/ranged) or blue glow (spell-mode);
+        //    active ability slot drives the swap, mirroring cursors.gas's
+        //    b_gui_c_attack1 / b_gui_c_magic split.
         bool spellMode = _activeAbilityIdx >= 2;
+        float bestEnemyD2 = ClickAttackRadius * ClickAttackRadius;
+        bool hasEnemy = false;
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer) continue;
@@ -21330,38 +21382,49 @@ void main()
             if (!s.Actor.Stats.IsCombatant) continue;
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
-            if (dx * dx + dz * dz < r2)
-            {
-                _cursorState = spellMode ? CursorState.CastAttack : CursorState.Attack;
-                return;
-            }
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestEnemyD2) { bestEnemyD2 = d2; hasEnemy = true; }
         }
-        // 2) live breakable static prop under cursor → hammer.
+        // 2) live breakable static prop → hammer.
+        float bestPropD2 = ClickBreakableRadius * ClickBreakableRadius;
+        bool hasProp = false;
         foreach (var prop in _staticProps)
         {
             if (!prop.IsBreakable || prop.IsDestroyed) continue;
             var pos = prop.World.Translation;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
-            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Smash; return; }
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestPropD2) { bestPropD2 = d2; hasProp = true; }
         }
-        // 3) loot pile under cursor → grab hand. Skip piles that are still
-        //    in their throw-tumble (auto-pickup is gated on the same flag).
-        //    Phase 22 — the hovered pile is captured for the bottom-center
-        //    readout, and gold/spells additionally mark themselves for the
-        //    flat blue hover triangle.
+        // 3) settled loot pile → grab hand. Skip piles still in their
+        //    throw-tumble (auto-pickup is gated on the same flag).
+        //    Phase 22 — the hovered pile feeds the bottom-center readout,
+        //    and gold/spells mark themselves for the blue hover triangle.
+        float bestPileD2 = PileHoverRadius * PileHoverRadius;
+        LootPile? bestPile = null;
         foreach (var pile in _lootPiles)
         {
             if (pile.Throw is not null && pile.Throw.Elapsed < pile.Throw.Duration) continue;
             var pos = pile.Position;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
-            if (dx * dx + dz * dz < r2)
-            {
-                _cursorState = CursorState.Grab;
-                _hoverPile = pile;
-                _hoverPileIsGoldOrSpell = PileIsGoldOrSpell(pile);
-                return;
-            }
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestPileD2) { bestPileD2 = d2; bestPile = pile; }
         }
+        // Winner by distance; exact ties break enemy > pile > breakable
+        // (combat stays clickable; a deliberate item pick beats prop smash).
+        if (hasEnemy && bestEnemyD2 <= bestPropD2 && bestEnemyD2 <= bestPileD2)
+        {
+            _cursorState = spellMode ? CursorState.CastAttack : CursorState.Attack;
+            return;
+        }
+        if (bestPile is not null && bestPileD2 <= bestPropD2)
+        {
+            _cursorState = CursorState.Grab;
+            _hoverPile = bestPile;
+            _hoverPileIsGoldOrSpell = PileIsGoldOrSpell(bestPile);
+            return;
+        }
+        if (hasProp) { _cursorState = CursorState.Smash; return; }
         // 4) talkable NPC inside the wider talk radius → talk marker.
         if (_conversations is not null && _conversations.Count > 0)
         {
@@ -24204,7 +24267,9 @@ void main()
     private bool TryClickPickupAt(Vector3 clickPos)
     {
         if (_lootPiles.Count == 0) return false;
-        const float clickRadius = 1.0f;
+        // SC-CURSOR-ARBITRATION — same radius the Grab cursor hovers with,
+        // so the hand shows exactly where a click will loot.
+        const float clickRadius = PileHoverRadius;
         const float radiusSq = clickRadius * clickRadius;
         int bestIdx = -1;
         float bestDistSq = radiusSq;
