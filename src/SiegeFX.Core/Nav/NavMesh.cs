@@ -900,6 +900,61 @@ public sealed class NavMesh
         return triIndex >= 0;
     }
 
+    /// <summary>SC-NAV-GROUND-DIP — continuity-preferring standing probe for
+    /// walkers. Where walkable layers stack in XZ and converge vertically
+    /// (a bridge deck over the stream bed it spans, a ramp over a floor),
+    /// plain smallest-|dy| selection can flip a mid-stride walker onto the
+    /// OTHER layer — the visible "actor dips into the ground" glitch. This
+    /// variant only accepts candidates within <paramref name="maxDy"/> of
+    /// the query Y and ranks them: the triangle the walker already stands
+    /// on wins, then a direct adjacency-neighbor of it, then anything else;
+    /// |dy| breaks ties inside a rank. Blocked triangles rank below every
+    /// unblocked candidate but stay eligible (an actor standing on ground
+    /// that got obstacle-marked after spawn still needs a bind).</summary>
+    public bool TryFindTriangleNear(Vector3 worldPos, int nearTri, float maxDy,
+                                    bool includeFadeHidden, out int triIndex)
+    {
+        triIndex = -1;
+        if (TriangleCount == 0) return false;
+        int cx = (int)MathF.Floor((worldPos.X - _gridMinX) / GridCellSize);
+        int cz = (int)MathF.Floor((worldPos.Z - _gridMinZ) / GridCellSize);
+        if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return false;
+        var bucket = _grid[cz * _gridCellsX + cx];
+        if (bucket is null) return false;
+
+        bool IsNeighborOfNear(int t)
+        {
+            if (nearTri < 0) return false;
+            return Neighbors[3 * nearTri + 0] == t
+                || Neighbors[3 * nearTri + 1] == t
+                || Neighbors[3 * nearTri + 2] == t;
+        }
+
+        int bestTri = -1, bestRank = int.MaxValue;
+        float bestDy = float.PositiveInfinity;
+        for (int i = 0; i < bucket.Length; i++)
+        {
+            int t = bucket[i];
+            var a = Vertices[Indices[3 * t + 0]];
+            var b = Vertices[Indices[3 * t + 1]];
+            var c = Vertices[Indices[3 * t + 2]];
+            if (!PointInTriangleXZ(worldPos, a, b, c)) continue;
+            if (!includeFadeHidden && FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+            float dy = MathF.Abs(InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c) - worldPos.Y);
+            if (dy > maxDy) continue;
+            int rank = t == nearTri ? 0 : IsNeighborOfNear(t) ? 1 : 2;
+            if (Blocked is not null && t < Blocked.Length && Blocked[t]) rank += 3;
+            if (rank < bestRank || (rank == bestRank && dy < bestDy))
+            {
+                bestRank = rank;
+                bestDy = dy;
+                bestTri = t;
+            }
+        }
+        triIndex = bestTri;
+        return triIndex >= 0;
+    }
+
     /// <summary>SC-CLICK-RAY-PICK — nearest ray hit against the nav mesh.
     /// Walks the XZ lookup grid along the ray (Amanatides–Woo DDA) and
     /// intersects bucket triangles (Möller–Trumbore), skipping fade-hidden

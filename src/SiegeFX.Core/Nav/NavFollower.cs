@@ -106,15 +106,20 @@ public sealed class NavFollower
     // while rejecting cross-layer snaps (stacked floors are 3u+ apart).
     private const float MaxRebindDy = 2.0f;
 
-    /// <summary>Standing-triangle probe: <see cref="NavMesh.TryFindTriangle(Vector3, out int, bool)"/>
+    /// <summary>Standing-triangle probe: <see cref="NavMesh.TryFindTriangleNear"/>
     /// including fade-hidden ground (it's physical), but only accepting a
     /// triangle within <see cref="MaxRebindDy"/> of the walker's current Y.
     /// A far-vertical hit means the walkable floor here has a hole — treat
-    /// as off-mesh so the swept clamp / stuck recovery handles it.</summary>
+    /// as off-mesh so the swept clamp / stuck recovery handles it.
+    /// SC-NAV-GROUND-DIP — the probe prefers the CURRENT triangle and its
+    /// direct neighbors among vertically stacked candidates (bridge deck
+    /// over a stream bed converging at the banks), so a walker's Y can't
+    /// flicker onto the other layer mid-stride and read as "dipping into
+    /// the ground".</summary>
     private bool TryFindStandTriangle(Vector3 pos, out int tri)
     {
-        if (Mesh.TryFindTriangle(pos, out tri, includeFadeHidden: true) &&
-            MathF.Abs(Mesh.SampleYOnTriangle(tri, pos) - pos.Y) <= MaxRebindDy)
+        if (Mesh.TryFindTriangleNear(pos, CurrentTriangle, MaxRebindDy,
+                includeFadeHidden: true, out tri))
             return true;
         tri = -1;
         return false;
@@ -193,8 +198,29 @@ public sealed class NavFollower
         // than re-bind the walker to a vertically unrelated surface.
         if (!TryFindStandTriangle(Position, out var startTri))
         {
-            PathBlocked = true;
-            return;
+            // SC-NAV-GROUND-DIP — un-strand fallback. A walker whose Y has
+            // ended up outside the rebind gate of EVERY surface (sunk into
+            // the ground by a bad snap, or parked over a coverage hole) can
+            // never satisfy the gated probe again: every SetTarget fails and
+            // the actor is permanently stuck. A fresh player click is an
+            // explicit "get me out of here" — accept the nearest-Y surface
+            // regardless of vertical distance and lift the walker onto it.
+            if (Mesh.TryFindTriangle(Position, out startTri, includeFadeHidden: true))
+            {
+                float y = Mesh.SampleYOnTriangle(startTri, Position);
+                if (DiagnosticLogging)
+                    System.Console.WriteLine(
+                        $"[nav-rebind] gated stand probe failed at " +
+                        $"({Position.X:F1},{Position.Y:F1},{Position.Z:F1}); " +
+                        $"lifting onto tri {startTri} (Y {y:F1})");
+                Position = new Vector3(Position.X, y, Position.Z);
+                CurrentTriangle = startTri;
+            }
+            else
+            {
+                PathBlocked = true;
+                return;
+            }
         }
         if (!Mesh.TryFindTriangle(Target, out var goalTri))
         {
@@ -289,7 +315,7 @@ public sealed class NavFollower
                                 Position.X + ex * EscapeStepDist,
                                 Position.Y,
                                 Position.Z + ez * EscapeStepDist);
-                            if (TryFindStandTriangle(escape, out _))
+                            if (TryFindStandTriangle(escape, out var escapeTri))
                             {
                                 if (DiagnosticLogging)
                                 {
@@ -297,9 +323,16 @@ public sealed class NavFollower
                                         $"[nav-stuck] perpendicular escape attempt {_stuckRecoveryAttempts} " +
                                         $"({(ccw ? "CCW" : "CW")}) at pos=({Position.X:F1},{Position.Z:F1})");
                                 }
+                                // SC-NAV-GROUND-DIP — sample Y on the triangle the
+                                // escape point actually landed on. Sampling on the
+                                // stale _path[_pathIdx] plane EXTRAPOLATED at an
+                                // outside point could drop the walker under the
+                                // floor; sunk past MaxRebindDy every later probe
+                                // failed and the actor was stranded in the ground.
                                 Position = new Vector3(escape.X,
-                                    Mesh.SampleYOnTriangle(_path[_pathIdx], escape),
+                                    Mesh.SampleYOnTriangle(escapeTri, escape),
                                     escape.Z);
+                                CurrentTriangle = escapeTri;
                             }
                             Replan();
                         }
