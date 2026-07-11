@@ -4107,8 +4107,17 @@ public sealed class RenderHost : IDisposable
         // flip — a compensation shaped for the vertical fall — reversed their
         // flow, running the current back upstream toward the waterfall. Keep
         // their authored +V so the river runs downstream, away from the fall.
-        float vSign = textureName.Contains("rvr", StringComparison.OrdinalIgnoreCase)
-                   && !textureName.Contains("fall", StringComparison.OrdinalIgnoreCase) ? 1f : -1f;
+        // SC-WATER-WHEELFALL — the mill waterfall by the fh_r1 bridge
+        // (b_t_grs01_wheelfallstatic-01/02) authors the SAME +0.5 rvr_dynamic
+        // layer-2 scroll as the flat river tiles, and its node UVs share the
+        // river's orientation — the "fall" flip ran that cascade uphill. It
+        // rides the river's authored +V; the rvr_fall cascade/mist keep the
+        // flip that makes them fall/rise correctly.
+        bool riverOriented =
+            (textureName.Contains("rvr", StringComparison.OrdinalIgnoreCase)
+             && !textureName.Contains("fall", StringComparison.OrdinalIgnoreCase))
+            || textureName.Contains("wheelfall", StringComparison.OrdinalIgnoreCase);
+        float vSign = riverOriented ? 1f : -1f;
         l1Off = new Vector2(l1Off.X, vSign * l1Off.Y);
         l2Off = new Vector2(l2Off.X, vSign * l2Off.Y);
         if (_snoTextures.TryGetValue(l1, out var t1))
