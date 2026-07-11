@@ -22189,8 +22189,8 @@ void main()
                 shot.StuckAge += dt;
                 // Stuck-in-body arrows follow the victim (or drop with the
                 // corpse pose); ground arrows just sit.
-                if (shot.StuckInActor is { } victim)
-                    shot.Pos = victim.CurrentTransform.Translation + shot.StuckOffset;
+                if (shot.StuckInActor is { } stuckHost)
+                    shot.Pos = stuckHost.CurrentTransform.Translation + shot.StuckOffset;
                 if (shot.StuckAge > (shot.StuckInActor is null ? 4f : 3f))
                     _rangedShots.RemoveAt(i);
                 continue;
