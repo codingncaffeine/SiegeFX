@@ -417,6 +417,127 @@ public sealed class RenderHost : IDisposable
     // multi-select, and the bottom-center hover status line
     // ("WOOT: Health 49/49, Mana 30/30").
     private SelectionFxRenderer? _selectionFx;
+    // Phase 21 — combat blood: authored melee_hit_2 model (red mist burst at
+    // the hit + particles that splat into ground decals; textures
+    // b_sfx_blood_001-003 red / 004-006 green; #NO_BLOOD/#RED_BLOOD flags =
+    // the Options Blood Color knob). Splats stream through BloodSplatRenderer.
+    private BloodSplatRenderer? _bloodSplats;
+    private readonly GlTexture?[] _bloodTextures = new GlTexture?[6];
+    private bool _bloodTexturesLoaded;
+    private readonly Random _bloodRng = new(0x1B10);
+    private readonly Dictionary<string, bool> _bloodByTemplate = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Phase 21 — one blood hit on a victim: the translucent
+    /// dark-red (or green) mist puff at the wound + 2-3 ground splats.
+    /// Gated by the Options Blood Color knob (Disabled = nothing), the
+    /// victim template's [guts_manager] effect (melee_hit_1 authors sparks,
+    /// not blood — skeletons etc.), and the authored ~1s per-actor throttle
+    /// (frames_before_next_guts_spew = 20).</summary>
+    private void SpawnBloodHit(ActorRenderState victim)
+    {
+        var mode = _optionsMenu.Live.BloodColor;
+        if (string.Equals(mode, "Disabled", StringComparison.OrdinalIgnoreCase)) return;
+        bool green = string.Equals(mode, "Green", StringComparison.OrdinalIgnoreCase);
+        // Per-template guts gate.
+        var tplName = victim.Actor.Template.Name;
+        if (!_bloodByTemplate.TryGetValue(tplName, out bool bleeds))
+        {
+            var fx = (_templateStore?.GetAttribute(victim.Actor.Template, "guts_manager", "effect_name") ?? "")
+                .Trim().Trim('"');
+            // Unauthored defaults to bleeding (most flesh actors author
+            // melee_hit_2; the explicit non-blood effects opt out).
+            bleeds = fx.Length == 0 || fx.Contains("melee_hit_2", StringComparison.OrdinalIgnoreCase);
+            _bloodByTemplate[tplName] = bleeds;
+        }
+        if (!bleeds) return;
+        int now = Environment.TickCount;
+        if (unchecked(now - victim.NextBloodOkMs) < 0) return;
+        victim.NextBloodOkMs = unchecked(now + 1000);
+
+        var pos = victim.CurrentTransform.Translation;
+        // Mid-air: the light translucent mist at the wound (authored
+        // explosion colors color0(0.4,0.1,0.1) red / (0.1,0.4,0.1) green,
+        // alphastart 0.76, dark()).
+        var mist = green
+            ? new Vector4(0.10f, 0.40f, 0.10f, 0.55f)
+            : new Vector4(0.40f, 0.10f, 0.10f, 0.55f);
+        _particles?.SpawnSmoke(pos + new Vector3(0f, 0.9f, 0f), mist, 0.55f, 0.8f, 10);
+
+        // Ground: 2-3 splats scattered under the victim (authored splat
+        // textures at splatscaleup 1.95 over particle scale .175-.275).
+        if (_bloodSplats is null || _navMesh is null) return;
+        EnsureBloodTextures();
+        int texBase = green ? 3 : 0;
+        int count = 2 + _bloodRng.Next(2);
+        for (int i = 0; i < count; i++)
+        {
+            float ang = (float)(_bloodRng.NextDouble() * Math.PI * 2);
+            float r = (float)(_bloodRng.NextDouble() * 0.7);
+            var sp = new Vector3(pos.X + MathF.Cos(ang) * r, pos.Y, pos.Z + MathF.Sin(ang) * r);
+            if (!_navMesh.TryFindTriangle(sp, out var tri, includeFadeHidden: true)) continue;
+            sp.Y = _navMesh.SampleYOnTriangle(tri, sp);
+            _bloodSplats.Add(sp,
+                size: 0.22f + (float)_bloodRng.NextDouble() * 0.22f,
+                rotRad: (float)(_bloodRng.NextDouble() * Math.PI * 2),
+                texIdx: texBase + _bloodRng.Next(3));
+        }
+    }
+
+    /// <summary>Phase 21 — auto-defend: when a monster lands a hit on an
+    /// IDLE hero (no swing/cast in flight, no queued attack, no move order
+    /// under way), engage the nearest hostile that's actively fighting the
+    /// party, using the active method — the walk-up melee loop, or
+    /// auto-cast when a spell slot is selected.</summary>
+    private void TryAutoDefend()
+    {
+        if (_player is null || _player.IsDead || _playerFollower is null) return;
+        if (_playerSwing is not null || _playerCast is not null
+            || _pendingAttackTarget is not null) return;
+        if (!_playerFollower.ReachedGoal) return; // an active move order wins
+        var pp = _player.CurrentTransform.Translation;
+        ActorRenderState? foe = null;
+        float bestD2 = 8f * 8f;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Brain is null) continue;
+            if (s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Attack
+                && s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Chase) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - pp.X, dz = p.Z - pp.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; foe = s; }
+        }
+        if (foe is null) return;
+        if (SpellSlotActive && _playerSpellbook is not null)
+        {
+            var slot = _activeAbilityIdx == 2
+                ? SiegeFX.Core.Actors.SpellSlot.Primary
+                : SiegeFX.Core.Actors.SpellSlot.Secondary;
+            var spell = slot == SiegeFX.Core.Actors.SpellSlot.Primary
+                ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
+            if (spell is not null && spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal)
+            {
+                Console.WriteLine($"[auto-defend] casting at {foe.Actor.Template.Name}");
+                BeginPlayerCast(slot, spell, foe, prop: null, _progression?.Level ?? 1);
+                return;
+            }
+        }
+        Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name}");
+        _pendingAttackTarget = foe; // the walk-up drive swings + auto-attacks
+    }
+
+    private void EnsureBloodTextures()
+    {
+        if (_bloodTexturesLoaded || _gl is null || _playResolver is null) return;
+        _bloodTexturesLoaded = true;
+        for (int i = 0; i < 6; i++)
+        {
+            var name = $"b_sfx_blood_{i + 1:000}.raw";
+            if (!_playResolver.TryLoadByBasename(name, out var bytes)) continue;
+            try { _bloodTextures[i] = new GlTexture(_gl, RawImage.Load(bytes)); }
+            catch (Exception ex) { Console.WriteLine($"  blood: '{name}' load failed: {ex.Message}"); }
+        }
+    }
     private Vector3? _moveMarkerPos;
     private float _moveMarkerAge;
     private const float MoveMarkerLife = 1.1f;
@@ -1236,6 +1357,10 @@ public sealed class RenderHost : IDisposable
         // intro scripting can find them, but must not draw as visible NPCs. Hidden
         // actors are skipped in the draw pass and can't be clicked/talked to.
         public bool Hidden;
+
+        // Phase 21 — per-actor blood throttle (guts_manager's authored
+        // frames_before_next_guts_spew = 20 frames ≈ 1s). TickCount-based.
+        public int NextBloodOkMs;
 
         // Phase 11d — actors that spawn over the nav mesh get a brain (wander + aggro)
         // and roam/chase. Those that land off-mesh (pens inside buildings, props) have
@@ -15031,6 +15156,8 @@ void main()
         // Phase 19 fix — casting idle follows engagement (guard up in
         // combat, relaxed stand only out of it).
         TickCastingIdle();
+        // Phase 21 — age combat blood splats (hold + fade).
+        _bloodSplats?.Tick((float)dt);
         // SC-MOUSE-FX — destination-marker fade + hover pick.
         TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
@@ -16353,6 +16480,9 @@ void main()
                 new Vector4(0.05f, 0.72f, 0.10f, 0.75f * fade));
         }
         _selectionFx.Draw(vp);
+        // Phase 21 — combat blood splats ride the same world pass.
+        _bloodSplats ??= _gl is not null ? new BloodSplatRenderer(_gl) : null;
+        _bloodSplats?.Draw(vp, _bloodTextures);
     }
 
     /// <summary>HUD pass: the thin green drag marquee + the bottom-center
@@ -21506,6 +21636,8 @@ void main()
                 PlayHitVoiceSfx(best.Actor.Template,
                                 best.CurrentTransform.Translation,
                                 dmg, best.Actor.Stats.MaxLife);
+            // Phase 21 — blood on the wounded (and on the lethal blow).
+            SpawnBloodHit(best);
         }
         else            _audio?.PlayAt(SfxMeleeMiss, hitPos);
 
@@ -22755,8 +22887,16 @@ void main()
             // we don't double-fire. Skipped on lethal hit — death cue
             // owns that frame.
             if (!s.Actor.Combat.IsDead && s.Actor.Combat.ConsumeJustHit(out var dmg))
+            {
                 PlayHitVoiceSfx(s.Actor.Template, s.CurrentTransform.Translation,
                                 dmg, s.Actor.Stats.MaxLife);
+                // Phase 21 — blood on any damaged NPC (covers spell hits and
+                // brain-on-brain); party members also get the flesh-contact
+                // squish the player-dealt path plays inline.
+                SpawnBloodHit(s);
+                if (s.IsPartyMember)
+                    PlayMeleeHit(s.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f));
+            }
         }
         _aggroPrevFrame.Clear();
         foreach (var scid in aggroThisFrame) _aggroPrevFrame.Add(scid);
@@ -22772,6 +22912,13 @@ void main()
             PlayHitVoiceSfx(_player.Actor.Template,
                             _player.CurrentTransform.Translation,
                             playerDmg, _player.Actor.Stats.MaxLife);
+            // Phase 21 — the flesh-contact squish + blood when the PLAYER
+            // takes the hit (previously only player-dealt hits had impact
+            // audio), then auto-defend: an idle hero fights back with
+            // whatever's active — melee or magic.
+            PlayMeleeHit(_player.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f));
+            SpawnBloodHit(_player);
+            TryAutoDefend();
         }
         if (_activeMood is null) return;
         if (nowInCombat)

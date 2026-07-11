@@ -1086,7 +1086,7 @@ internal sealed class OptionsMenuPanel
             // rather than pretending (same convention as Ambient Volume).
             BoolCycle(bars, text, vw, vh, r++, "Show Rollover Help",
                 () => _staged.ShowTooltips, v => _staged.ShowTooltips = v);
-            CycleField(bars, text, vw, vh, r++, "Blood Color (inactive)",
+            CycleField(bars, text, vw, vh, r++, "Blood Color",
                 () => _staged.BloodColor, v => _staged.BloodColor = v, blood);
             BoolCycle(bars, text, vw, vh, r++, "Dismemberment (inactive)",
                 () => _staged.Dismemberment, v => _staged.Dismemberment = v);
