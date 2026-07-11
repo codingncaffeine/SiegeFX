@@ -386,7 +386,41 @@ public sealed class ActorSpawner
             // attack duration (GetBaseDuration's data source).
             if (name.Equals("chore_attack", StringComparison.OrdinalIgnoreCase))
                 LoadAttackSet(chorePrefix, section, actor, preferredStance);
+            // Phase 19 — same treatment for chore_magic (mg + mg-02 variants;
+            // no qffg entry exists on magic chores). chore_magic authors
+            // stances 0,5 only — the loader's fallback walk finds them from
+            // any preferred weapon stance.
+            if (name.Equals("chore_magic", StringComparison.OrdinalIgnoreCase))
+                actor.MagicVariants = LoadChoreVariantsAtOneStance(chorePrefix, section, actor.Instance, preferredStance);
         }
+    }
+
+    /// <summary>Phase 19 — every sub-anim of a chore section resolved at ONE
+    /// coherent stance (preferred first, then the authored list). Null when
+    /// nothing loads.</summary>
+    PrsAnimation[]? LoadChoreVariantsAtOneStance(string prefix, GasNode section, ActorInstance inst, int? preferredStance)
+    {
+        var animFiles = TemplateStore.FindChild(section, "anim_files");
+        if (animFiles is null || animFiles.Attributes.Count == 0) return null;
+        var stancesRaw = TemplateStore.FindAttr(section, "chore_stances");
+        if (stancesRaw is not null && stancesRaw.Trim().Equals("ignore", StringComparison.OrdinalIgnoreCase))
+            return null;
+        var stances = ParseChoreStances(stancesRaw);
+        IEnumerable<int> order = stances;
+        if (preferredStance is int p)
+            order = new[] { p }.Concat(stances.Where(s => s != p));
+        foreach (var s in order)
+        {
+            var picks = new List<PrsAnimation>();
+            foreach (var attr in animFiles.Attributes)
+            {
+                if (string.IsNullOrWhiteSpace(attr.Value) || IsQffg(attr.Name)) continue;
+                var clip = TryLoadAnyStanceClip(prefix, new[] { s }, attr.Value, inst);
+                if (clip is not null) picks.Add(clip);
+            }
+            if (picks.Count > 0) return picks.ToArray();
+        }
+        return null;
     }
 
     /// <summary>Phase 18 — resolve one stance for the attack chore (preferred

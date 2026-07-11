@@ -181,4 +181,26 @@ public sealed class Actor
         Clips[idx] = AttackPadClip;
         return true;
     }
+
+    /// <summary>Phase 19 — every authored chore_magic sub-anim (farmboy: mg +
+    /// mg-02) at the resolved casting stance. Null/empty = single or no clip.</summary>
+    public PrsAnimation[]? MagicVariants { get; internal set; }
+
+    /// <summary>Phase 19 — pick the next cast clip (uniform random over the
+    /// authored mg variants), published into <c>Clips[chore_magic]</c>.
+    /// Returns null when the template ships no magic chore.</summary>
+    public PrsAnimation? PickNextCastClip()
+    {
+        int idx = GetClipIndex("chore_magic");
+        if (idx < 0) return null;
+        var variants = MagicVariants;
+        if (variants is { Length: > 0 })
+        {
+            _swingRng ??= new Random(unchecked((int)Instance.Scid ^ 0x5157_4E47));
+            var pick = variants[_swingRng.Next(variants.Length)];
+            Clips[idx] = pick;
+            return pick;
+        }
+        return Clips[idx];
+    }
 }

@@ -1682,14 +1682,32 @@ public sealed class RenderHost : IDisposable
             follower.Speed = baseGait;
 
             // Engage an enemy per the field_commands orders, else follow.
-            // HoldFire never attacks; HoldGround only engages foes already
-            // near the slot (won't leave formation to chase).
+            // Attack orders: HoldFire never attacks; Fightback (Defend) only
+            // takes foes already engaging the party (inside SelectEnemyFor);
+            // targeting orders pick closest/weakest/strongest there too.
+            // Movement orders: HoldGround only engages foes already near the
+            // slot; Engage (default) fights but won't leave the leader's
+            // side; Move Freely roams to whatever it can see.
             ActorRenderState? foe = null;
             if (m.CanFight && _fcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
             {
-                float radius = _fcMovement == Hud.FieldCommandsPanel.Action.MoveHoldGround
-                    ? 3.5f : m.Brain.AggroRadius;
+                float radius = _fcMovement switch
+                {
+                    Hud.FieldCommandsPanel.Action.MoveHoldGround => 3.5f,
+                    Hud.FieldCommandsPanel.Action.MoveFree => m.Brain.AggroRadius * 1.5f,
+                    _ => m.Brain.AggroRadius,
+                };
                 foe = SelectEnemyFor(before, radius);
+                if (foe is not null
+                    && _fcMovement == Hud.FieldCommandsPanel.Action.MoveEngage)
+                {
+                    // Engage leash — don't chase a foe that would pull the
+                    // follower far off the leader.
+                    var fp = foe.CurrentTransform.Translation;
+                    float ldx = fp.X - leaderPos.X, ldz = fp.Z - leaderPos.Z;
+                    const float EngageLeash = 16f;
+                    if (ldx * ldx + ldz * ldz > EngageLeash * EngageLeash) foe = null;
+                }
             }
             Vector3 face;
             if (foe is not null)
@@ -14965,6 +14983,8 @@ void main()
         // SC-ATTACK-SCHED (Phase 18c) — advance the player's in-flight swing
         // (BSWG whoosh, FIRE-note damage, qffg pad, auto-attack re-engage).
         TickPlayerSwing((float)dt);
+        // Phase 19 — advance the in-flight cast (FIRE-note release).
+        TickPlayerCast((float)dt);
         // SC-MOUSE-FX — destination-marker fade + hover pick.
         TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
@@ -19345,7 +19365,8 @@ void main()
     {
         if (_player is null || prop.IsDestroyed) return;
         // Phase 18c — same one-swing-per-iteration gate as PerformPlayerSwing.
-        if (_playerSwing is not null || _player.Actor.Host.IsOverrideActive) return;
+        if (_playerSwing is not null || _playerCast is not null
+            || _player.Actor.Host.IsOverrideActive) return;
         // Phase 21-SC-BARREL-FOLD — face the prop before swinging so
         // pivoting from a finished enemy to a barrel (or vice-versa)
         // doesn't swing in the stale direction.
@@ -21065,6 +21086,77 @@ void main()
     }
     private PlayerSwingState? _playerSwing;
 
+    // Phase 19 — the player's in-flight CAST iteration: initiation plays the
+    // mg clip (random variant); the release executes at the FIRE note (fs0
+    // mg authors 40%); the iteration completes at
+    // period = clip length + cast_reload_delay, gating the next cast.
+    private sealed class PlayerCastState
+    {
+        public required SiegeFX.Core.Actors.SwingSchedule Sched;
+        public required SiegeFX.Core.Actors.SpellSlot Slot;
+        public required SiegeFX.Core.Assets.SpellTemplate Spell;
+        public ActorRenderState? Target;
+        public StaticPropInstance? Prop;
+        public float MagicLevel;
+    }
+    private PlayerCastState? _playerCast;
+
+    /// <summary>Phase 19 — start a cast iteration. Plays the mg clip and
+    /// schedules the release; falls back to an immediate release when the
+    /// template ships no chore_magic (or the offensive cast has no target —
+    /// the release path owns that feedback).</summary>
+    private void BeginPlayerCast(SiegeFX.Core.Actors.SpellSlot slot,
+        SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState? best,
+        StaticPropInstance? prop, float magicLevel)
+    {
+        if (_player is null || _playerSpellbook is null) return;
+        if (_playerCast is not null || _playerSwing is not null) return;
+        // Don't wind up a cast that the spellbook will refuse at release.
+        float cd = slot == SiegeFX.Core.Actors.SpellSlot.Primary
+            ? _playerSpellbook.PrimaryCooldownRemaining
+            : _playerSpellbook.SecondaryCooldownRemaining;
+        if (cd > 0f) return;
+        if (best is not null) SnapPlayerFacingTo(best.CurrentTransform.Translation);
+        else if (prop is not null) SnapPlayerFacingTo(prop.World.Translation);
+        // No target for an offensive spell → immediate release so the
+        // "no target" feedback path still speaks; no anim wind-up.
+        bool offensiveNoTarget = spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
+                                 && best is null && prop is null;
+        var clip = offensiveNoTarget ? null : _player.Actor.PickNextCastClip();
+        if (clip is null)
+        {
+            if (prop is not null) PerformSpellOnProp(slot, spell, prop, magicLevel);
+            else ExecutePlayerCastRelease(slot, spell, best, magicLevel);
+            return;
+        }
+        float len = clip.AnimLength > 0f ? clip.AnimLength : 0.7f;
+        _player.Actor.PlayChoreOnce("chore_magic", len);
+        _playerCast = new PlayerCastState
+        {
+            Sched = new SiegeFX.Core.Actors.SwingSchedule(clip, len + MathF.Max(0f, spell.CastReloadDelay)),
+            Slot = slot,
+            Spell = spell,
+            Target = best,
+            Prop = prop,
+            MagicLevel = magicLevel,
+        };
+    }
+
+    /// <summary>Phase 19 — advance the cast clock; release at FIRE; free the
+    /// slot at period end (clip + cast_reload_delay = DS1's cast cadence).</summary>
+    private void TickPlayerCast(float dt)
+    {
+        if (_playerCast is null || _player is null) return;
+        var pc = _playerCast;
+        int fires = pc.Sched.Advance(dt, out _, out _);
+        for (int i = 0; i < fires; i++)
+        {
+            if (pc.Prop is not null) PerformSpellOnProp(pc.Slot, pc.Spell, pc.Prop, pc.MagicLevel);
+            else ExecutePlayerCastRelease(pc.Slot, pc.Spell, pc.Target, pc.MagicLevel);
+        }
+        if (pc.Sched.Complete) _playerCast = null;
+    }
+
     /// <summary>Phase 18c — the equipped weapon's authored [attack]
     /// reload_delay (the additive per-blow delay; 0 for every shipped melee
     /// weapon, 0.15-0.3 on bows). Unarmed falls back to the hero template's
@@ -21090,7 +21182,10 @@ void main()
         if (_player is null || best.IsDead) return;
         // One swing per iteration — click spam while a swing is in flight
         // is a no-op (DS1 locks the player to one swing per animation).
-        if (_playerSwing is not null || _player.Actor.Host.IsOverrideActive) return;
+        // Phase 19 — an in-flight cast also blocks a swing (one action at
+        // a time, either machine).
+        if (_playerSwing is not null || _playerCast is not null
+            || _player.Actor.Host.IsOverrideActive) return;
         SnapPlayerFacingTo(best.CurrentTransform.Translation);
         StartPlayerSwing(target: best, prop: null, attacker);
     }
@@ -22616,12 +22711,27 @@ void main()
                 }
                 if (bestProp is not null)
                 {
-                    PerformSpellOnProp(slot, spell, bestProp, magicLevel);
+                    BeginPlayerCast(slot, spell, best: null, prop: bestProp, magicLevel);
                     return;
                 }
             }
         }
 
+        // Phase 19 — authentic cast timing: the click INITIATES the cast
+        // (mg clip + facing snap); the release — mana, damage, projectile,
+        // feedback — executes when the clip's FIRE note crosses (fs0 mg
+        // authors it at 40%), inside TickPlayerCast.
+        BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
+    }
+
+    /// <summary>Phase 19 — the cast RELEASE: everything that used to happen
+    /// at click time (spellbook TryCast, projectile/VFX, feedback, XP, kill
+    /// handling), now executed at the cast clip's FIRE note.</summary>
+    private void ExecutePlayerCastRelease(SiegeFX.Core.Actors.SpellSlot slot,
+        SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState? best, float magicLevel)
+    {
+        if (_player is null || _playerSpellbook is null) return;
+        var playerPos = _player.CurrentTransform.Translation;
         SiegeFX.Core.Actors.CastResult result;
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
         {
@@ -22648,12 +22758,9 @@ void main()
         switch (result.Outcome)
         {
             case SiegeFX.Core.Actors.CastOutcome.Cast:
-                // Phase 12-SC-2 — play chore_magic on a successful cast so the
-                // PC actually performs the spell motion. 144/179 combatant
-                // templates ship one (Phase 10-SC-2 receipt); falls back
-                // silently if not. Duration matches the melee cadence so the
-                // clip plays through once and reverts.
-                _player.Actor.PlayChoreOnce("chore_magic", 0.7f);
+                // Phase 19 — the cast motion (mg clip) already started at
+                // initiation in BeginPlayerCast; this branch is the FIRE-note
+                // release, so no chore replay here.
                 if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
                     // Phase 17c — self-heal cast: no target, no bolt, green

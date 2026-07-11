@@ -205,6 +205,7 @@ public sealed class ActorBrain
     // through (DS1's CleaningUpAndExiting lets the animation finish).
     SwingSchedule? _activeSwing;
     bool _activeSwingRanged;
+    bool _activeSwingIsCast;
 
     void StartSwing(bool ranged)
     {
@@ -219,6 +220,7 @@ public sealed class ActorBrain
         float baseDur = _selfActor.AttackBaseDuration > 0f ? _selfActor.AttackBaseDuration : clipLen;
         _activeSwing = new SwingSchedule(clip, baseDur + MathF.Max(0f, _selfStats.ReloadDelay));
         _activeSwingRanged = ranged;
+        _activeSwingIsCast = false;
         _selfActor.PlayChoreOnce("chore_attack", clipLen);
         JustSwung = true;
     }
@@ -227,12 +229,17 @@ public sealed class ActorBrain
     {
         if (_activeSwing is not { } sw) return;
         int fires = sw.Advance(dt, out _, out bool pad);
-        if (pad && _selfActor?.SwapToPadClip() == true)
+        if (pad && !_activeSwingIsCast && _selfActor?.SwapToPadClip() == true)
             _selfActor.PlayChoreOnce("chore_attack", MathF.Max(0.1f, sw.Period - sw.Elapsed));
         for (; fires > 0; fires--)
         {
             if (targetPos is null || targetCombat is null || targetStats is null || targetCombat.IsDead)
                 continue;
+            if (_activeSwingIsCast)
+            {
+                ApplyCastHit(targetPos.Value, targetCombat, targetStats);
+                continue;
+            }
             if (!_activeSwingRanged)
             {
                 // The target had the whole windup to step away — out of
@@ -358,8 +365,10 @@ public sealed class ActorBrain
                 }
                 else
                 {
+                    // Phase 19 — a scheduled cast in flight gates the next
+                    // one; _swingCooldown carries only the mana-dry retry.
                     _swingCooldown -= dt;
-                    if (_swingCooldown <= 0f)
+                    if (_activeSwing is null && _swingCooldown <= 0f)
                         CastAtTarget(targetPos!.Value, targetCombat!, targetStats);
                 }
                 break;
@@ -406,6 +415,36 @@ public sealed class ActorBrain
         }
         self.Combat.SpendMana(cost);
 
+        // Phase 19 — the release rides the mg clip's FIRE note via the shared
+        // schedule; cast cadence = clip length + cast_reload_delay (additive,
+        // same shape as the melee formula). Mana was spent at initiation —
+        // DS1's cast job commits the cost when the cast starts.
+        var clip = self.PickNextCastClip();
+        if (clip is not null)
+        {
+            float len = clip.AnimLength > 0f ? clip.AnimLength : 0.7f;
+            _activeSwing = new SwingSchedule(clip, len + MathF.Max(0.75f, spell.CastReloadDelay));
+            _activeSwingRanged = false;
+            _activeSwingIsCast = true;
+            _selfActor?.PlayChoreOnce("chore_magic", len);
+            return;
+        }
+
+        // Legacy clip-less path: instant release + cooldown.
+        ApplyCastHit(targetPos, targetCombat, targetStats);
+        _swingCooldown = MathF.Max(0.75f, spell.CastReloadDelay);
+    }
+
+    /// <summary>Phase 19 — the spell actually lands (FIRE note, or instantly
+    /// on clip-less templates). Damage rolls against the CURRENT tick's
+    /// target state; the render layer's projectile/voice cues key off
+    /// <see cref="_justCast"/> here, at the release, not at wind-up.</summary>
+    void ApplyCastHit(Vector3 targetPos, ActorCombatState targetCombat, ActorStats targetStats)
+    {
+        var spell = CastSpell;
+        var self = _selfActor;
+        if (spell is null || self is null) return;
+        float magicLevel = MathF.Max(1f, _selfStats.Intelligence);
         var dmgCtx = new Assets.SpellEvalContext(magicLevel,
             maxLife: targetStats.MaxLife,
             life:    targetCombat.CurrentLife,
@@ -415,9 +454,6 @@ public sealed class ActorBrain
             * (PartyAligned ? CombatResolver.PlayerDamageMultiplier
                             : CombatResolver.ComputerDamageMultiplier);
         if (damage > 0f) targetCombat.ApplyDamage(damage);
-
-        _swingCooldown = MathF.Max(0.75f, spell.CastReloadDelay);
-        _selfActor?.PlayChoreOnce("chore_magic", _swingCooldown * 0.85f);
         // Deliberately NOT JustSwung — casts fire the authored 'cast' voice
         // state (123 DS1 templates), not the melee 'attack' cue.
         _justCast = true;
