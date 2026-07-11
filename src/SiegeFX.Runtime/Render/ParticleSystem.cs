@@ -35,6 +35,14 @@ public struct Particle
     public byte    Bounce;     // 0=off, 1=bounce, 2=splat-stick
     public float   Rebound;
     public float   GroundY;
+    /// <summary>Rigid attachment: when non-zero, this particle is pinned to a
+    /// moving anchor (a flying projectile's motion handle) — every frame its
+    /// world position is re-set to that anchor plus <see cref="LocalOffset"/>,
+    /// so the whole cluster travels as one body (a single fireball) regardless
+    /// of the projectile's speed profile. On losing its anchor it detaches and
+    /// resumes normal velocity integration.</summary>
+    public int     FollowId;
+    public Vector3 LocalOffset;
 }
 
 /// <summary>One world-space lightning bolt segment. Drawn as N small alpha
@@ -210,6 +218,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     public float Gamma = 1f;
 
     private readonly List<Particle>        _particles   = new(2048);
+    // Live world positions of attachment anchors (projectile motion handles),
+    // keyed by motion id. Refreshed each tick by the VM; attached particles
+    // re-pin to these in Tick.
+    private readonly Dictionary<int, Vector3> _followAnchors = new(8);
     private readonly List<LightningBolt>   _bolts       = new(64);
     // Phase 21-SC-SPELL-VISUAL-A — DS1 cylinder primitive, drawn via the
     // ribbon path with a different texture slot.
@@ -1201,6 +1213,21 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// steam). Population model: DS1's count is a live-particle cap and
     /// alphafade sets the fade-out speed, so steady-state spawn rate =
     /// count / life with life ≈ 1/alphafade.</summary>
+    /// <summary>VM hook: publish the current world position of an attachment
+    /// anchor (a flying projectile's motion handle) so particles pinned to it
+    /// re-pin here next Tick. Call every tick the projectile is alive.</summary>
+    public void SetFollowAnchor(int id, Vector3 pos)
+    {
+        if (id != 0) _followAnchors[id] = pos;
+    }
+
+    /// <summary>Drop an anchor so its particles detach and fly off on their
+    /// last velocity (the projectile hit or expired).</summary>
+    public void ClearFollowAnchor(int id)
+    {
+        if (id != 0) _followAnchors.Remove(id);
+    }
+
     public float MaintainPlume(in SiegeFX.Core.Sfx.PlumeSpec s, Vector3 position, float age, float dt, float carry)
     {
         float life = Math.Clamp(1f / MathF.Max(0.15f, s.AlphaFade), 0.30f, 3.5f);
@@ -1265,11 +1292,16 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 // the fireball into a spray. Ball radius = the authored displace
                 // jitter (fireshot ±1), falling back to a small radius-derived
                 // default when displace is unauthored.
-                // 0.55x the displace jitter: keeps the ball tight enough that
-                // the fireball-01 sprites overlap into ONE fused fireball
-                // rather than a loose ring of distinct blobs.
-                float jr = 0.55f * MathF.Max(MathF.Abs(s.MinDisplace), MathF.Abs(s.MaxDisplace));
-                if (jr < 0.01f) jr = MathF.Min(MathF.Max(0.2f, s.MaxRadius * 0.5f), 0.7f);
+                // Pack the cluster TIGHT. b_sfx_fireball-01 is itself a whole
+                // little fireball, so spaced-out particles read as many
+                // explosions, not one. A small spawn ball makes them fully
+                // overlap — their bright centers saturate into a single fused
+                // mass and the PARTICLE SIZE (not the spread) sets the
+                // fireball's extent. Cap hard so a big displace can't scatter
+                // the fire back into separate blobs.
+                float jr = 0.28f * MathF.Max(MathF.Abs(s.MinDisplace), MathF.Abs(s.MaxDisplace));
+                if (jr < 0.01f) jr = MathF.Max(0.12f, s.MaxRadius * 0.4f);
+                jr = MathF.Min(jr, 0.35f);
                 float z   = Rand(-1f, 1f);
                 float rho = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
                 float th  = Rand(0f, MathF.Tau);
@@ -1315,6 +1347,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 TotalLife = life,
                 TexSlot   = s.TexSlot,
                 Additive  = (byte)(s.Kind == 1 ? 0 : 1),
+                // Rigid attach to the emitter's moving anchor: the fixed local
+                // offset is exactly the tight-ball jitter, so the whole plume
+                // rides the projectile as one fireball.
+                FollowId    = s.FollowId,
+                LocalOffset = s.FollowId != 0 ? pos - position : Vector3.Zero,
             });
         }
     }
@@ -1385,6 +1422,16 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             if (p.Life <= 0f) { _particles.RemoveAt(i); continue; }
             p.Velocity += p.Accel * dt;
             p.Position += p.Velocity * dt;
+            // Rigid attachment: pin to the live anchor so the cluster rides a
+            // moving projectile as one body. If the anchor is gone (projectile
+            // hit / expired), detach and let the last velocity carry it off.
+            if (p.FollowId != 0)
+            {
+                if (_followAnchors.TryGetValue(p.FollowId, out var anchor))
+                    p.Position = anchor + p.LocalOffset;
+                else
+                    { p.FollowId = 0; p.Velocity = Vector3.Zero; } // freeze + fade at impact
+            }
             // Phase 23-fold — ground plane interaction for explosion
             // particles: bounce with rebound elasticity, or splat-stick.
             if (p.Bounce != 0 && p.Position.Y < p.GroundY && p.Velocity.Y < 0f)
@@ -1615,6 +1662,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     public void Clear()
     {
         _particles.Clear();
+        _followAnchors.Clear();
         _bolts.Clear();
         _projectiles.Clear();
         _cylinders.Clear();

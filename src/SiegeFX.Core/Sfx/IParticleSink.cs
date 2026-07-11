@@ -210,10 +210,13 @@ public struct PlumeSpec
     public System.Numerics.Vector3 Velocity;  // doc default fire (0,8,0), steam (0,5.75,0)
     public System.Numerics.Vector3 Accel;     // doc default fire (0,14,0), steam (0,4,0)
     // Velocity of the emitter itself when it rides a motion handle (trackball/
-    // orbiter). Refreshed each tick. Spawned particles inherit it so a flying
-    // fireball's fire travels WITH the ball as one body instead of stranding
-    // in world space behind it. Zero for static emitters.
+    // orbiter). Refreshed each tick. Spawned particles inherit it so on detach
+    // they fly off at the ball's last speed. Zero for static emitters.
     public System.Numerics.Vector3 CarrierVelocity;
+    // Non-zero when this emitter rides a motion handle: the anchor id its
+    // particles rigidly attach to, so the whole plume travels as one body
+    // (a single fireball) regardless of the projectile's speed profile.
+    public int FollowId;
     public float   FlameSize;    // flamesize / wispsize (doc default 1.75 / 2.25)
     public System.Numerics.Vector3 Fctrl;     // fire expansion (min, max, inc)
     public bool    HasFctrl;
@@ -283,6 +286,15 @@ public interface IParticleSink
     /// AlphaFade. Returns the leftover budget like the legacy
     /// Maintain* trio.</summary>
     float MaintainPlume(in PlumeSpec spec, Vector3 position, float age, float dt, float carry);
+
+    /// <summary>Publish an attachment anchor's live world position so plume
+    /// particles pinned to it (a flying projectile's fire) ride it as one
+    /// body. Call every tick the projectile is alive.</summary>
+    void SetFollowAnchor(int id, Vector3 pos);
+
+    /// <summary>Drop an attachment anchor so its particles detach and fly off
+    /// on their last velocity (projectile hit / expired).</summary>
+    void ClearFollowAnchor(int id);
 
     /// <summary>Phase 23d-2c — instant() volume fill: burst n plume
     /// particles at once at spawn time.</summary>

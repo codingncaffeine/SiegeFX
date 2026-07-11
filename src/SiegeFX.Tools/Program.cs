@@ -11123,6 +11123,8 @@ sealed class TimelineSink : SiegeFX.Core.Sfx.IParticleSink
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n)
         => Add($"plume!      pos={V3(p)} kind={s.Kind} n={n} (instant fill)");
+    public void SetFollowAnchor(int id, System.Numerics.Vector3 pos) { }
+    public void ClearFollowAnchor(int id) { }
     public void SpawnLineTracer(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c0, System.Numerics.Vector4 c1, float fadeRate, float tin, float tout)
         => Add($"linetracer  src={V3(s)} tgt={V3(t)} c0={V4(c0)} c1={V4(c1)} fade={F(fadeRate)} tin={F(tin)} tout={F(tout)}");
     public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e)
@@ -11174,6 +11176,8 @@ sealed class TallySink : SiegeFX.Core.Sfx.IParticleSink
         return b - k;
     }
     public void BurstPlume(in SiegeFX.Core.Sfx.PlumeSpec s, System.Numerics.Vector3 p, int n) => SpawnFireCount += n;
+    public void SetFollowAnchor(int id, System.Numerics.Vector3 pos) { }
+    public void ClearFollowAnchor(int id) { }
     public void SpawnLineTracer(System.Numerics.Vector3 s, System.Numerics.Vector3 t, System.Numerics.Vector4 c0, System.Numerics.Vector4 c1, float fadeRate, float tin, float tout) => SpawnLightningCount++;
     public void SpawnSpe(in SiegeFX.Core.Sfx.SpeSpec e) => SpawnSparkCount += e.Count;
     public void SpawnSparkles(in SiegeFX.Core.Sfx.SparklesSpec e) => SpawnSparkCount += e.Count;

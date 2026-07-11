@@ -338,6 +338,9 @@ public sealed class SfxRuntime
                 // into the emitter pass — costs one branch per emitter.
                 if (!_motionHandles.TryGetValue(e.TargetMotionId, out var motion) || motion.Done)
                 {
+                    // Projectile gone: drop its anchor so the fire detaches and
+                    // fades at the impact point instead of hanging in the air.
+                    _particles.ClearFollowAnchor(e.TargetMotionId);
                     _emitters.RemoveAt(i);
                     continue;
                 }
@@ -359,6 +362,15 @@ public sealed class SfxRuntime
                 e.Spec.CarrierVelocity = (e.HasPrevPos && dt > 1e-5f)
                     ? (e.Position - e.PrevPosition) / dt
                     : Vector3.Zero;
+                // Rigidly attach this plume's particles to the projectile it
+                // rides so the whole cluster travels as ONE fireball regardless
+                // of the ball's speed profile. Publish the live anchor each tick.
+                if (e.TargetMotionId > 0)
+                {
+                    e.Spec.FollowId = e.TargetMotionId;
+                    _particles.SetFollowAnchor(e.TargetMotionId, e.Position);
+                }
+                else e.Spec.FollowId = 0;
             }
             e.PrevPosition = e.Position;
             e.HasPrevPos = true;
