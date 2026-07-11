@@ -1000,6 +1000,11 @@ public sealed class RenderHost : IDisposable
     // es_weapon_hand change so a pickup upgrade shows up visually.
     private StaticMesh? _weaponMesh;
     private GlTexture? _weaponTexture;
+    // SC-NPC-WEAPONS — shared visual cache for NPC-held gear, keyed by ASP
+    // model name (a region's 30 club-krugs share one mesh+texture pair).
+    // Disposed with the actor mesh cache on region teardown.
+    private readonly Dictionary<string, (StaticMesh Mesh, GlTexture? Tex)> _npcGearCache =
+        new(StringComparer.OrdinalIgnoreCase);
     private int _weaponGripBoneIdx = -1;
     // Off-hand (shield_grip) bone index + a per-render override so a beat can pin the
     // weapon mesh to the other hand. -1 override = normal weapon_grip. The intro hoe
@@ -1412,6 +1417,22 @@ public sealed class RenderHost : IDisposable
         public Vector3 LastPositionXZ;
         public bool HasLastPosition;
         public bool IsMoving;
+
+        // SC-NPC-WEAPONS — resolved equipped gear, rendered attached to the
+        // skeleton's weapon/shield bones (same raw-attach rule as the player:
+        // DS1 weapon meshes are modeled with mesh space AS the hand frame).
+        // Mesh/texture objects are SHARED via _npcGearCache — never disposed
+        // per-actor. WieldedWeaponRef is the concrete template the actor is
+        // visibly holding; the death drop substitutes it for any rolled
+        // weapon-hand entry so the club you saw is the club you loot.
+        public StaticMesh? WeaponMesh;
+        public GlTexture? WeaponTexture;
+        public int WeaponBoneIdx = -1;
+        public StaticMesh? ShieldMesh;
+        public GlTexture? ShieldTexture;
+        public int ShieldBoneIdx = -1;
+        public string? WieldedWeaponRef;
+        public bool WeaponDroppedOnDeath;
     }
 
     // Phase 10-SC-1 — trigger-runtime queries route through these helpers so the
@@ -2028,7 +2049,7 @@ public sealed class RenderHost : IDisposable
             // sites can't target party members, so this sweep is the only
             // path that needs the guard.
             if (!s.IsPartyMember)
-                LogLootDrop(s.Actor, s.CurrentTransform.Translation);
+                LogLootDrop(s, s.CurrentTransform.Translation);
             OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
             CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
             // Party shares the kill's XP (the follower dealt the blow). Our
@@ -8864,7 +8885,7 @@ void main()
                 actorsOffMesh++;
             }
 
-            _actors.Add(new ActorRenderState
+            var spawnState = new ActorRenderState
             {
                 Actor             = actor,
                 GlMesh            = gl,
@@ -8875,7 +8896,10 @@ void main()
                 // The intro narrator is a King-model voice-over actor — spawned so the
                 // narration can trigger off it, but never a visible NPC in the world.
                 Hidden            = actor.Template.Name.Equals("narrator", StringComparison.OrdinalIgnoreCase),
-            });
+            };
+            _actors.Add(spawnState);
+            // SC-NPC-WEAPONS — attach the authored/rolled equipped gear.
+            ResolveNpcEquippedGear(spawnState);
         }
 
         if (navMesh is not null)
@@ -15075,7 +15099,7 @@ void main()
                 offMesh++;
             }
 
-            _actors.Add(new ActorRenderState
+            var spawnState = new ActorRenderState
             {
                 Actor             = actor,
                 GlMesh            = gl,
@@ -15084,7 +15108,10 @@ void main()
                 Brain             = brain,
                 CurrentTransform  = actor.WorldTransform,
                 Hidden            = actor.Template.Name.Equals("narrator", StringComparison.OrdinalIgnoreCase),
-            });
+            };
+            _actors.Add(spawnState);
+            // SC-NPC-WEAPONS — attach the authored/rolled equipped gear.
+            ResolveNpcEquippedGear(spawnState);
         }
         return (onMesh, offMesh);
     }
@@ -18867,6 +18894,132 @@ void main()
             $"{(_weaponTexture is null ? "untextured" : asp.TextureNames[0])})");
     }
 
+    /// <summary>SC-NPC-WEAPONS — resolve and attach an NPC's visible equipped
+    /// gear at spawn. Resolution order mirrors the loot/stance rules:
+    /// instance [inventory][equipment] es_* (the fence-krug's torch), then the
+    /// template chain's [equipment], then the [pcontent] Equipped buckets with
+    /// a scid-seeded roll (a krug's `es_weapon_hand = #club/2-3`) so the same
+    /// krug always wields the same club. Bone names honor the template's
+    /// [body][bone_translator] weapon_bone/shield_bone (krug_shaman_base swaps
+    /// them). Called for every non-player spawn; quiet no-op when the actor
+    /// authors no gear.</summary>
+    private void ResolveNpcEquippedGear(ActorRenderState s)
+    {
+        if (s.IsPlayer || _templateStore is null || _gl is null || _playResolver is null) return;
+        var store = _templateStore;
+        var tpl = s.Actor.Template;
+        var inst = s.Actor.Instance.Node;
+
+        string? FromInstanceEquipment(string slot)
+        {
+            if (SiegeFX.Core.Assets.TemplateStore.FindChild(inst, "inventory") is not { } inv) return null;
+            if (SiegeFX.Core.Assets.TemplateStore.FindChild(inv, "equipment") is not { } eq) return null;
+            return SiegeFX.Core.Assets.TemplateStore.FindAttr(eq, "es_" + slot)?.Trim();
+        }
+
+        string? weaponRef = FromInstanceEquipment("weapon_hand")
+            ?? store.GetAttribute(tpl, "inventory", "equipment", "es_weapon_hand")?.Trim();
+        string? shieldRef = FromInstanceEquipment("shield_hand")
+            ?? store.GetAttribute(tpl, "inventory", "equipment", "es_shield_hand")?.Trim();
+
+        if (weaponRef is null || shieldRef is null)
+        {
+            var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, tpl, inst);
+            if (table.Equipped.Count > 0)
+            {
+                var rng = new Random(unchecked((int)s.Actor.Instance.Scid ^ 0x057EAB));
+                void Walk(SiegeFX.Core.Actors.LootBucket bucket)
+                {
+                    if (bucket.Entries.Count > 0)
+                    {
+                        // Mirror the roller: a leaf oneof picks one entry.
+                        var e = bucket.Entries[rng.Next(bucket.Entries.Count)];
+                        if (weaponRef is null && e.Slot.Equals("weapon_hand", StringComparison.OrdinalIgnoreCase))
+                            weaponRef = e.Reference.Trim();
+                        else if (shieldRef is null && e.Slot.Equals("shield_hand", StringComparison.OrdinalIgnoreCase))
+                            shieldRef = e.Reference.Trim();
+                    }
+                    foreach (var c in bucket.Children) Walk(c);
+                }
+                foreach (var b in table.Equipped) Walk(b);
+                // Resolve #club/2-3-style specs to a concrete template with the
+                // same scid rng so the pick is stable across sessions.
+                if (weaponRef is not null && SiegeFX.Core.Actors.PcontentResolver.IsSpec(weaponRef))
+                {
+                    _pcontentResolver ??= new SiegeFX.Core.Actors.PcontentResolver(store);
+                    weaponRef = _pcontentResolver.TryResolve(weaponRef, rng, out var rolled, out _)
+                        ? rolled : null;
+                }
+                if (shieldRef is not null && SiegeFX.Core.Actors.PcontentResolver.IsSpec(shieldRef))
+                {
+                    _pcontentResolver ??= new SiegeFX.Core.Actors.PcontentResolver(store);
+                    shieldRef = _pcontentResolver.TryResolve(shieldRef, rng, out var rolled, out _)
+                        ? rolled : null;
+                }
+            }
+        }
+        if (weaponRef is null && shieldRef is null) return;
+
+        int FindBone(string name)
+        {
+            var bones = s.Actor.Mesh.BoneNames;
+            for (int i = 0; i < bones.Count; i++)
+                if (string.Equals(bones[i], name, StringComparison.OrdinalIgnoreCase)) return i;
+            return -1;
+        }
+        var weaponBone = store.GetAttribute(tpl, "body", "bone_translator", "weapon_bone")?.Trim();
+        var shieldBone = store.GetAttribute(tpl, "body", "bone_translator", "shield_bone")?.Trim();
+
+        if (weaponRef is not null && TryGetGearVisual(weaponRef, out var wVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(weaponBone) ? "weapon_grip" : weaponBone!);
+            if (idx >= 0)
+            {
+                s.WeaponMesh = wVis.Mesh;
+                s.WeaponTexture = wVis.Tex;
+                s.WeaponBoneIdx = idx;
+                s.WieldedWeaponRef = weaponRef;
+            }
+        }
+        if (shieldRef is not null && TryGetGearVisual(shieldRef, out var sVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(shieldBone) ? "shield_grip" : shieldBone!);
+            if (idx >= 0)
+            {
+                s.ShieldMesh = sVis.Mesh;
+                s.ShieldTexture = sVis.Tex;
+                s.ShieldBoneIdx = idx;
+            }
+        }
+    }
+
+    /// <summary>SC-NPC-WEAPONS — item template → cached (StaticMesh, texture)
+    /// via its [aspect] model, shared across every actor holding the same
+    /// model. Same load recipe as <see cref="TryLoadPlayerWeapon"/>.</summary>
+    private bool TryGetGearVisual(string itemRef, out (StaticMesh Mesh, GlTexture? Tex) visual)
+    {
+        visual = default;
+        if (_gl is null || _playResolver is null || _templateStore is null) return false;
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return false;
+        var modelName = _templateStore.GetAttribute(tpl, "aspect", "model")?.Trim();
+        if (string.IsNullOrEmpty(modelName)) return false;
+        if (_npcGearCache.TryGetValue(modelName!, out visual)) return true;
+        if (!_playResolver.TryLoadModel(modelName!, out var aspBytes)) return false;
+        SiegeFX.Core.Assets.AspMesh asp;
+        try { asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes); }
+        catch { return false; }
+        var mesh = new StaticMesh(_gl, asp);
+        GlTexture? tex = null;
+        if (asp.TextureNames.Count > 0 &&
+            _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+        {
+            try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); } catch { }
+        }
+        visual = (mesh, tex);
+        _npcGearCache[modelName!] = visual;
+        return true;
+    }
+
     // Phase 13c — LMB click-to-move. Unprojects the screen-space cursor to a
     // world ray, intersects it with the horizontal plane at the player's current
     // Y (cheap and accurate enough at DS1's shallow terrain slopes), confirms the
@@ -21943,7 +22096,7 @@ void main()
             BeginDeathChore(best);
             // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
             PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-            LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+            LogLootDrop(best, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
         }
@@ -23571,7 +23724,7 @@ void main()
                         BeginDeathChore(best);
                         // Phase 9-SC-2 — death scream from template's voice block.
                         PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-                        LogLootDrop(best.Actor, best.CurrentTransform.Translation);
+                        LogLootDrop(best, best.CurrentTransform.Translation);
                         OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
                         CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
                     }
@@ -23681,9 +23834,10 @@ void main()
     // a given instance's drop is stable across re-kills; the visible pile is added
     // whenever the roll produced at least one entry (which for combatants with an
     // equipped weapon is every kill — the weapon bucket has no chance gate).
-    private void LogLootDrop(SiegeFX.Core.Actors.Actor actor, Vector3 deathPos)
+    private void LogLootDrop(ActorRenderState victim, Vector3 deathPos)
     {
         if (_templateStore is null) return;
+        var actor = victim.Actor;
         // SC-INSTANCE-OVERRIDES — fold in the placement's own [inventory]
         // [pcontent] buckets (a mob authored to guarantee a specific drop).
         var table = SiegeFX.Core.Actors.LootTable.FromTemplate(_templateStore, actor.Template, actor.Instance.Node);
@@ -23744,6 +23898,17 @@ void main()
         // resolve into inventory once FromTemplate started accepting them.
         var (items, goldTotal) = SplitGoldFromDrops(drops, rng);
         ResolveSpecsAtDrop(items, rng);
+        // SC-NPC-WEAPONS — drop coherence: if the roll produced a weapon-hand
+        // entry and this actor visibly wielded a resolved weapon, drop THAT
+        // one (the club you saw is the club you loot) and take it out of the
+        // corpse's hand.
+        for (int i = 0; i < items.Count; i++)
+        {
+            if (!items[i].Slot.Equals("weapon_hand", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!string.IsNullOrEmpty(victim.WieldedWeaponRef))
+                items[i] = items[i] with { Reference = victim.WieldedWeaponRef! };
+            victim.WeaponDroppedOnDeath = true;
+        }
         var parts = new List<string>(drops.Count);
         if (goldTotal > 0) parts.Add($"{goldTotal} gold");
         foreach (var d in items)
@@ -25087,6 +25252,75 @@ void main()
                 var model = spin * Matrix4x4.CreateTranslation(f.Pos);
                 _meshShader.SetMatrix4("uModel", model);
                 f.Asset.Mesh.Draw();
+            }
+        }
+
+        // SC-NPC-WEAPONS — draw each armed NPC's held gear with the static-mesh
+        // pipeline, attached RAW to the animated weapon/shield bone (same
+        // authored-attach rule as the player's weapon below: DS1 weapon meshes
+        // are modeled with mesh space as the hand frame). Clip/time selection
+        // mirrors the skinned-body loop exactly so the club tracks the same
+        // pose the body was skinned with; dead actors hold the die-clamp pose
+        // with the weapon still in hand unless it dropped into the loot pile.
+        if (_meshShader is not null)
+        {
+            bool npcGearShaderBound = false;
+            foreach (var s in _actors)
+            {
+                if (s.IsPlayer || s.Hidden) continue;
+                if (s.WeaponMesh is null && s.ShieldMesh is null) continue;
+                if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
+                if (IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
+                var npcClips = s.Actor.Clips;
+                int npcBones = s.Actor.Mesh.BoneCount;
+                if (_boneWorldsScratch.Length < npcBones)
+                    _boneWorldsScratch = new Matrix4x4[Math.Max(npcBones, 64)];
+                if (npcClips.Length == 0)
+                {
+                    AnimationRuntime.ComputeAnimatedBoneWorlds(s.Actor.Mesh, null, 0f, _boneWorldsScratch);
+                }
+                else
+                {
+                    int cidx;
+                    if (!s.IsDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
+                        && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < npcClips.Length)
+                        cidx = s.Actor.WalkClipIndex;
+                    else
+                        cidx = Math.Min(s.Actor.CurrentClipIndex, npcClips.Length - 1);
+                    var npcClip = npcClips[cidx];
+                    float nt;
+                    if (npcClip.AnimLength <= 0f) nt = 0f;
+                    else if (s.IsDead) nt = MathF.Min((float)s.AnimTime, npcClip.AnimLength - 0.01f);
+                    else nt = (float)(s.AnimTime % npcClip.AnimLength);
+                    AnimationRuntime.ComputeAnimatedBoneWorlds(s.Actor.Mesh, npcClip, nt, _boneWorldsScratch);
+                }
+                float npcScale = s.Actor.Stats.RenderScale;
+                var actorModel = npcScale == 1f
+                    ? s.CurrentTransform
+                    : Matrix4x4.CreateScale(npcScale) * s.CurrentTransform;
+                void DrawGear(StaticMesh? gearMesh, GlTexture? gearTex, int boneIdx)
+                {
+                    if (gearMesh is null || boneIdx < 0 || boneIdx >= npcBones) return;
+                    if (!npcGearShaderBound)
+                    {
+                        _meshShader.Use();
+                        _meshShader.SetMatrix4("uViewProj", vp);
+                        _meshShader.SetInt("uAlbedo", 0);
+                        _meshShader.SetInt("uFlipV", 0);
+                        ApplyLightingUniforms(_meshShader);
+                        npcGearShaderBound = true;
+                    }
+                    _meshShader.SetMatrix4("uModel", _boneWorldsScratch[boneIdx] * actorModel);
+                    if (gearTex is not null)
+                    {
+                        gearTex.Bind(TextureUnit.Texture0);
+                        _meshShader.SetInt("uHasTexture", 1);
+                    }
+                    else _meshShader.SetInt("uHasTexture", 0);
+                    gearMesh.Draw();
+                }
+                if (!s.WeaponDroppedOnDeath) DrawGear(s.WeaponMesh, s.WeaponTexture, s.WeaponBoneIdx);
+                DrawGear(s.ShieldMesh, s.ShieldTexture, s.ShieldBoneIdx);
             }
         }
 
@@ -26612,6 +26846,13 @@ void main()
         _resolvedTexNameCache.Clear();
         foreach (var mesh in _actorMeshCache.Values) mesh.Dispose();
         _actorMeshCache.Clear();
+        // SC-NPC-WEAPONS — shared gear visuals die with the actor meshes.
+        foreach (var gear in _npcGearCache.Values)
+        {
+            gear.Mesh.Dispose();
+            gear.Tex?.Dispose();
+        }
+        _npcGearCache.Clear();
         _actorIdentityBones.Clear();
         _actors.Clear();
         _roamAuditLastPos.Clear();   // SC-MOB-ROAM-AUDIT — indices are per-load
