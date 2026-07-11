@@ -280,6 +280,14 @@ public sealed class FrontendScene : IDisposable
 
     public ScreenState State { get; private set; } = ScreenState.CharacterSelect;
 
+    /// <summary>SC-MAINMENU-LOADGAME — when the frontend Load Game window is up,
+    /// the shared SP chrome must NOT paint its "SINGLE PLAYER" title row (the
+    /// Load window draws its own "LOAD GAME" title). The ornate title-bar chrome
+    /// plate (mainmenu subset 0) still renders — only the text rows are masked —
+    /// so the scroll banner stays and the label swaps cleanly, sidestepping the
+    /// text-01/text-02 both-rows-in-slot bleed the sp2lg pose exhibits.</summary>
+    public bool SuppressSpTitleText { get; set; }
+
     public FrontendScene(GL gl, AssetResolver resolver)
     {
         _gl = gl;
@@ -614,7 +622,12 @@ public sealed class FrontendScene : IDisposable
         // mainmenu text-01 (subsets 1+2) renders the "SINGLE PLAYER"
         // title at the panel header at SP state — leave enabled.
         // text-02 (subsets 3+4, MP-tree labels) and shadows masked off.
-        var mainmenuMask = new[] { true, true, true, false, false, false };
+        // SC-MAINMENU-LOADGAME: while the Load window owns the screen, drop the
+        // text rows (keep subset 0 chrome plate) so "SINGLE PLAYER" doesn't show
+        // behind the "LOAD GAME" title the window paints.
+        var mainmenuMask = SuppressSpTitleText
+            ? new[] { true, false, false, false, false, false }
+            : new[] { true, true, true, false, false, false };
         // Phase 27-SP-FLYOUT-FIX3 — SP state menubars: render ONLY the
         // panel chrome + per-row wood buttons (subsets 0-5). Mask off
         // text subsets (6-15) so the multi-bone text quads can't bleed
@@ -1019,6 +1032,51 @@ public sealed class FrontendScene : IDisposable
         var s  = Matrix4x4.CreateScale(sx, -sy, 1f);
         var t2 = Matrix4x4.CreateTranslation(tx, ty, 0f);
         return t1 * s * t2;
+    }
+
+    /// <summary>SC-MAINMENU-LOADGAME — map an 800×600 frontend-interface point
+    /// to screen pixels using the SAME projection the 3D chrome renders through
+    /// (letterbox by the backdrop aspect + the 1.30 overscan), so 2D interface
+    /// widgets (the Load window) scale and sit in lockstep with the pillars /
+    /// title at ANY resolution — not via an independent <c>min(vw/800,vh/600)</c>
+    /// that only lines up at the authored size. The full 800×600 frame maps to
+    /// the backdrop box's projected screen rect: interface (0,0) = the box's
+    /// top-left (mesh <c>refMinX, refMaxY</c>), (800,600) = bottom-right
+    /// (<c>refMaxX, refMinY</c>). Returns false (caller falls back to the plain
+    /// interface scale) until the backdrop mesh has resolved the reference box.</summary>
+    public bool GetInterfaceMapping(int vw, int vh,
+        out float ox, out float oy, out float scaleX, out float scaleY)
+    {
+        ox = oy = 0f; scaleX = scaleY = 1f;
+        if (vw <= 0 || vh <= 0) return false;
+        EnsureReference();
+        if (!_refResolved) return false;
+
+        float refW = MathF.Max(1e-4f, _refMaxX - _refMinX);
+        float refH = MathF.Max(1e-4f, _refMaxY - _refMinY);
+        float refCx = 0.5f * (_refMinX + _refMaxX);
+        float refCy = 0.5f * (_refMinY + _refMaxY);
+        float targetAspect = refW / refH;
+        float targetW, targetH;
+        if (vw / (float)vh > targetAspect) { targetH = vh; targetW = vh * targetAspect; }
+        else                               { targetW = vw; targetH = vw / targetAspect; }
+        // Same overscan constants as BuildSharedSceneModel — keep in sync.
+        const float overscanX = 1.30f, overscanY = 1.30f;
+        float sx = (targetW / refW) * overscanX;
+        float sy = (targetH / refH) * overscanY;
+        float cx = vw * 0.5f, cy = vh * 0.5f;
+
+        // Project the backdrop box corners (matrix scales by (sx, -sy) about
+        // the ref centre, then centres on screen). Mesh is +Y up, screen +Y
+        // down, so the top edge is refMaxY.
+        float tlx = (_refMinX - refCx) * sx + cx;
+        float tly = (refCy - _refMaxY) * sy + cy;
+        float brx = (_refMaxX - refCx) * sx + cx;
+        float bry = (refCy - _refMinY) * sy + cy;
+        scaleX = (brx - tlx) / 800f;
+        scaleY = (bry - tly) / 600f;
+        ox = tlx; oy = tly;
+        return scaleX > 1e-4f && scaleY > 1e-4f;
     }
 
     /// <summary>One-shot probe of the frontend reference rect. Use backdrop

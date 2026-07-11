@@ -3081,6 +3081,16 @@ public sealed class RenderHost : IDisposable
     /// the dialog auto-highlights the first row.</summary>
     private void OpenLoadDialog(bool mainMenuStyle)
     {
+        // Give the frontend pose the chrome's own 800×600→screen projection so
+        // the Load window scales/positions in lockstep with the pillars + title
+        // at any resolution (see FrontendScene.GetInterfaceMapping).
+        _loadDialog.FrontendMap = (vw, vh) =>
+        {
+            if (_frontendScene is not null
+                && _frontendScene.GetInterfaceMapping(vw, vh, out var ox, out var oy, out var sx, out var sy))
+                return (true, ox, oy, sx, sy);
+            return (false, 0f, 0f, 0f, 0f);
+        };
         _loadDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), mainMenuStyle);
     }
 
@@ -15397,6 +15407,10 @@ void main()
             int boxYGlBottom = viewportH - boxYTop - boxH;
             _gl?.Enable(EnableCap.ScissorTest);
             _gl?.Scissor(boxX, boxYGlBottom, (uint)boxW, (uint)boxH);
+            // SC-MAINMENU-LOADGAME — drop the SP "SINGLE PLAYER" title row while
+            // the Load window is up so its own "LOAD GAME" title reads on the
+            // shared scroll (chrome plate stays).
+            _frontendScene.SuppressSpTitleText = _loadDialog.IsOpen && _loadDialog.MainMenuStyle;
             _frontendScene.Draw(viewportW, viewportH);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
