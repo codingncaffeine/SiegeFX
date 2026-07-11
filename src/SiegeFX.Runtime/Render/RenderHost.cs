@@ -21827,6 +21827,75 @@ void main()
     /// session-log path the F11 bug snapshot bundles.</summary>
     internal static string? SessionLogPath;
 
+    /// <summary>SC-TOOLTIPS — the hover stat card for backpack items. Kept
+    /// deliberately text-only (DS1's rollover_help chrome is a later polish);
+    /// content is all authored data: screen_name, [attack] damage,
+    /// [defend] defense, [magic][enchantments] description lines,
+    /// [gui] equip_requirements (red when the wearer fails them),
+    /// [aspect] gold_value.</summary>
+    private void DrawItemTooltip(int vw, int vh)
+    {
+        if (!_inventoryOpen || _templateStore is null) return;
+        if (_cursorItem is not null || _cursorScroll is not null) return;
+        int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
+        var inv = ActiveInventory;
+        int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+        if (idx < 0 || idx >= inv.Count) return;
+        var itemRef = ResolveItemRef(inv[idx].Reference);
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return;
+
+        var lines = new List<(string Text, Vector4 Color)>();
+        var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
+        var dim = new Vector4(0.75f, 0.74f, 0.68f, 1f);
+        var gold = new Vector4(1.0f, 0.9f, 0.45f, 1f);
+        var name = (_templateStore.GetAttribute(tpl, "common", "screen_name") ?? itemRef).Trim().Trim('"');
+        lines.Add((name, white));
+        var dmin = _templateStore.GetAttribute(tpl, "attack", "damage_min");
+        var dmax = _templateStore.GetAttribute(tpl, "attack", "damage_max");
+        if (float.TryParse(dmax, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var dmx) && dmx > 0f)
+            lines.Add(($"Damage: {float.Parse(dmin ?? "0", System.Globalization.CultureInfo.InvariantCulture):F0}-{dmx:F0}", dim));
+        var def = _templateStore.GetAttribute(tpl, "defend", "defense");
+        if (float.TryParse(def, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var dv) && dv > 0f)
+            lines.Add(($"Armor: {dv:F0}", dim));
+        var ench = _templateStore.GetSection(tpl, "magic", "enchantments");
+        if (ench is not null)
+            foreach (var child in ench.Children)
+            {
+                var desc = SiegeFX.Core.Assets.TemplateStore.FindAttr(child, "description")?.Trim().Trim('"');
+                if (!string.IsNullOrWhiteSpace(desc))
+                    lines.Add((desc!, new Vector4(0.55f, 0.75f, 1f, 1f)));
+            }
+        var req = _templateStore.GetAttribute(tpl, "gui", "equip_requirements")?.Trim();
+        if (!string.IsNullOrWhiteSpace(req))
+        {
+            bool meets = _player is null
+                || MeetsEquipRequirements(itemRef, _player.Actor.Stats, out _);
+            lines.Add(($"Requires {req!.Replace(":", " ").Replace(",", ", ")}",
+                meets ? dim : new Vector4(1f, 0.35f, 0.25f, 1f)));
+        }
+        var gv = _templateStore.GetAttribute(tpl, "aspect", "gold_value");
+        if (long.TryParse(gv?.Trim(), out var gvv) && gvv > 0)
+            lines.Add(($"Value: {gvv} gold", gold));
+
+        // Layout: fixed-advance estimate; clamp to the viewport.
+        const int charW = 8, lineH = 16, pad = 8;
+        int wpx = 0;
+        foreach (var (t, _) in lines) wpx = Math.Max(wpx, t.Length * charW);
+        wpx += pad * 2;
+        int hpx = lines.Count * lineH + pad * 2;
+        int x = Math.Min(mx + 18, vw - wpx - 4);
+        int y = Math.Min(my + 18, vh - hpx - 4);
+        var bg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
+        if (bg is not null && _iconRenderer is not null)
+            _iconRenderer.DrawIcon(vw, vh, bg, x, y, wpx, hpx, new Vector4(1f, 1f, 1f, 0.92f));
+        if (_textRenderer is null) return;
+        for (int li = 0; li < lines.Count; li++)
+            _textRenderer.DrawString(vw, vh, lines[li].Text, x + pad, y + pad + li * lineH,
+                lines[li].Color, 1);
+    }
+
     /// <summary>ALPHA-PACKAGING — F11: one-file bug report. Zip contains the
     /// session log so far, a state.txt (region, position, level, gold,
     /// equipment, quests), and the newest save. Non-fatal on any error.</summary>
@@ -26840,6 +26909,11 @@ void main()
                     goldBg: goldBg,
                     gridTile: gridTile,
                     headerPortrait: activePortrait);
+
+                // SC-TOOLTIPS — hovering a backpack item shows its stat card
+                // (name, damage/armor, enchant descriptions, requirements —
+                // red when the wearer fails them — and value).
+                DrawItemTooltip(size.X, size.Y);
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
