@@ -24127,8 +24127,34 @@ void main()
             if (brain.ConsumeJustCast(out var castDst) && brain.CastSpell is not null)
             {
                 var castSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.6f, 0f);
-                SpawnSpellVisual(castSrc, castDst + new Vector3(0f, 1.0f, 0f),
-                    brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
+                var castTo  = castDst + new Vector3(0f, 1.0f, 0f);
+                // SC-SPELLFX-NPC — NPC casters run the authored script through
+                // the SAME VM gate the player path uses (gargoyle spears and
+                // apprentice zap render their authored look instead of the
+                // generic element beam). Falls back to the tinted primitive
+                // when the script is missing/uncovered/visually inert.
+                bool npcNativeVisual = false;
+                if (_sfxRuntime is not null && _sfxStore is not null
+                    && !string.IsNullOrEmpty(brain.CastSpell.CastSfxScript)
+                    && _sfxStore.TryGet(brain.CastSpell.CastSfxScript, out var npcScript)
+                    && IsCastScriptFullyCovered(brain.CastSpell, npcScript))
+                {
+                    var npcCtx = new SiegeFX.Core.Sfx.SfxContext(
+                        SourcePos:     castSrc,
+                        TargetPos:     castTo,
+                        WeaponBonePos: castSrc,
+                        Resolver:      null);
+                    int partsBefore = _particles?.LiveParticleCount ?? 0;
+                    int boltsBefore = _particles?.LiveBoltCount ?? 0;
+                    bool ran = _sfxRuntime.Spawn(brain.CastSpell.CastSfxScript, npcCtx);
+                    npcNativeVisual = ran
+                        && ((_particles?.LiveParticleCount ?? 0) > partsBefore
+                            || (_particles?.LiveBoltCount ?? 0) > boltsBefore
+                            || _sfxRuntime.LivePersistentCount > 0);
+                }
+                if (!npcNativeVisual)
+                    SpawnSpellVisual(castSrc, castTo,
+                        brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
                 PlayVoiceCue(s.Actor.Template, s.CurrentTransform.Translation, "cast");
             }
             // SC-MOB-RANGED / SC-RANGED-PROJECTILE — the brain's FIRE note
@@ -24420,6 +24446,22 @@ void main()
                     // Without this the heal slot is progression-dead.
                     AwardRawXp((long)result.HealAmount,
                                SiegeFX.Core.Assets.SkillKind.NatureMagic);
+                    // SC-SPELLFX-HEAL — the authored heal script (twin blue
+                    // spiral ribbons + sparkle fountains for healing_hands)
+                    // is all VM-covered kinds; run it anchored at the caster.
+                    // Previously this branch was sound-only.
+                    if (_sfxRuntime is not null && _sfxStore is not null
+                        && !string.IsNullOrEmpty(spell.CastSfxScript)
+                        && _sfxStore.TryGet(spell.CastSfxScript, out var healScript)
+                        && IsCastScriptFullyCovered(spell, healScript))
+                    {
+                        var healCtx = new SiegeFX.Core.Sfx.SfxContext(
+                            SourcePos:     playerPos + new Vector3(0f, 0.9f, 0f),
+                            TargetPos:     playerPos + new Vector3(0f, 0.9f, 0f),
+                            WeaponBonePos: playerPos + _playerFacing * 0.3f + new Vector3(0f, 1.2f, 0f),
+                            Resolver:      ResolvePlayerBone);
+                        _sfxRuntime.Spawn(spell.CastSfxScript, healCtx);
+                    }
                 }
                 else
                 {
