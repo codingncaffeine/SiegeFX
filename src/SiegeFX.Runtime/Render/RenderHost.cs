@@ -3067,6 +3067,11 @@ public sealed class RenderHost : IDisposable
     private bool _overheadBarsVisible;
     private bool _camTracking = true;
     private bool _altComboFired;
+    // SC-OPTIONS-REBIND — the live key-binding registry (authored
+    // input_bindings.gas defaults + the user's prefs.json overrides).
+    // The KeyDown chain queries it instead of hardcoded keycodes so
+    // the Options → Input → Hotkeys editor genuinely rebinds play.
+    private readonly Hud.KeyBindingRegistry _keyBindings = new();
     // SC-AUTH-CHAR-AWP-LONGPRESS — gas wires `click_delay = 0.2` +
     // `onclickdelay = notify(list_spells)` on slots 3/4 and the active
     // slot radio button. We approximate by tracking the LMB-down moment
@@ -4516,6 +4521,11 @@ void main()
         // defaults, byte-for-byte.
         var prefs = OptionsPrefs.Load();
         if (prefs is not null) _optionsMenu.SetLive(prefs);
+        // SC-OPTIONS-REBIND — layer persisted binding overrides onto the
+        // authored defaults and hand the registry to the Options panel so
+        // its Hotkeys editor can stage edits against the live map.
+        _keyBindings.LoadOverrides(prefs?.KeyBindings);
+        _optionsMenu.Registry = _keyBindings;
         var live = _optionsMenu.Live;
         int winW = width, winH = height;
         var winState = WindowState.Normal;
@@ -4580,6 +4590,10 @@ void main()
             {
                 if (key != Key.AltLeft && key != Key.AltRight) return;
                 if (_altComboFired) { _altComboFired = false; return; }
+                // SC-OPTIONS-REBIND — this release-path only serves the
+                // authored bare-Alt binding; a rebound Item Labels key
+                // dispatches through the normal KeyDown chain instead.
+                if (!_keyBindings.IsBoundToBareAlt("toggle_item_labels")) return;
                 if (_bootMode || _creator.IsOpen || _saveDialog.IsOpen || _loadDialog.IsOpen
                     || _devConsoleOpen || _optionsMenu.IsOpen || _handbook.IsOpen) return;
                 _overheadLabelsVisible = !_overheadLabelsVisible;
@@ -4673,14 +4687,27 @@ void main()
                     if (key == Key.Right) { _handbook.Next(); return; }
                     if (key != Key.F12) return;
                 }
+                // SC-OPTIONS-REBIND — modifier state read once per keypress;
+                // the binding registry matches ctrl/alt exactly and shift
+                // only when a token requires it.
+                bool modCtrl  = kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight);
+                bool modAlt   = kb.IsKeyPressed(Key.AltLeft)     || kb.IsKeyPressed(Key.AltRight);
+                bool modShift = kb.IsKeyPressed(Key.ShiftLeft)   || kb.IsKeyPressed(Key.ShiftRight);
+                // Registry query for the dispatch chain below.
+                bool Is(string actionId) => _keyBindings.Matches(actionId, key, modCtrl, modAlt, modShift);
+                // SC-OPTIONS-REBIND — an in-progress Hotkeys capture eats the
+                // keypress (Esc cancels, lone modifiers wait, anything else
+                // becomes the binding).
+                if (_optionsMenu.IsOpen
+                    && _optionsMenu.HandleKeyForBinding(key, modCtrl, modAlt, modShift)) return;
                 // Phase 23-SC-OPTIONS-FOLD — same suppression while
-                // the Options dialog is up: F5 quicksave / F9 quickload
-                // / F11 / B / I / L / H / Q / W / [ / ] / \ all fire
-                // off this lambda and would mutate world state during
-                // an in-progress options edit. Esc still flows through
-                // (handled above by the early Options branch) so the
-                // user's back-out path works.
-                if (_optionsMenu.IsOpen && key != Key.F10) return;
+                // the Options dialog is up: quicksave / quickload
+                // / B / I / L / H / Q / W etc. all fire off this
+                // lambda and would mutate world state during
+                // an in-progress options edit. The Game Options binding
+                // (default F10) still flows through as the menu's own
+                // toggle (treated as Cancel).
+                if (_optionsMenu.IsOpen && !Is("game_options")) return;
                 // Phase 15d: Esc opens/closes the pause menu instead of slamming the
                 // window shut. Quit-from-menu still routes through _window.Close, so
                 // there's a one-button-press exit (Esc, click Quit).
@@ -4768,17 +4795,16 @@ void main()
                     else _charPanelOpen = !_charPanelOpen;
                     _audio?.Play(SfxGuiInventory);
                 }
-                // Phase 21-SC-SPELL-A: 'B' toggles the spell book pane.
-                else if (key == Key.B) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
+                // Phase 21-SC-SPELL-A: Spell Book pane (authored [magic] = b).
+                else if (Is("magic")) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
                 // SC-COMMANDS — authored default (input_bindings.gas
                 // [field_commands] input = key_f): F shows/hides the Field
                 // Commands cluster. The old dev formation-cycle hook moved
                 // to Ctrl+F (gas leaves cycle_formations = key_none; DS1
                 // cycles formations via the RMB+LMB modal, not a key).
-                else if (key == Key.F && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight))
-                         && _party.Count > 1)
+                else if (key == Key.F && modCtrl && _party.Count > 1)
                 { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
-                else if (key == Key.F && _player is not null)
+                else if (Is("field_commands") && _player is not null)
                 {
                     _fcMinimized = !_fcMinimized;
                     _audio?.Play(SfxGuiInventory);
@@ -4832,9 +4858,7 @@ void main()
                 // Attack order = Defend (fight back only) for the party —
                 // the same radio the Field Commands panel's middle attack
                 // order sets.
-                else if (key == Key.G && _player is not null
-                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight)
-                         && !kb.IsKeyPressed(Key.ControlLeft) && !kb.IsKeyPressed(Key.ControlRight))
+                else if (Is("guard") && _player is not null)
                 {
                     OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFightback);
                     Console.WriteLine("[cmd] guard (attack order -> Defend)");
@@ -4844,8 +4868,7 @@ void main()
                 // Ctrl+R force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
-                else if (key == Key.R && _player is not null
-                         && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
+                else if (key == Key.R && _player is not null && modCtrl)
                 {
                     var pp = _player.CurrentTransform.Translation;
                     ActorRenderState? best = null; float bestD2 = 12f * 12f;
@@ -4897,7 +4920,7 @@ void main()
                 //   - Otherwise opens paperdoll + inventory; spellbook
                 //     only joins if _spellbookWithI is set (per the
                 //     vertical toggle on the paperdoll, INFORAIL-F).
-                else if (key == Key.I)
+                else if (Is("inventory"))
                 {
                     bool anyOpen = _charPanelOpen || _inventoryOpen ||
                                   (_spellBookOpen && _spellbookOpenedWithI);
@@ -4929,14 +4952,21 @@ void main()
                 // (The manual's page-1 table says \ opens the Journal, but
                 // the shipped game's own bindings put the Journal on J and
                 // reserve backslash for the MP scoreboard — the gas wins.)
-                else if (key == Key.L && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
+                else if (Is("load_game"))
                 {
                     if (!_bootMode) OpenLoadDialog(mainMenuStyle: false);
                 }
-                else if (key == Key.J) _questLogOpen = !_questLogOpen;
-                else if (key == Key.L)
+                else if (Is("toggle_quest_log")) _questLogOpen = !_questLogOpen;
+                else if (Is("toggle_player_labels"))
                 {
                     _charLabelsVisible = !_charLabelsVisible;
+                    _audio?.Play(SfxGuiInventory);
+                }
+                // Item labels rebound to a NORMAL key fire here; the
+                // authored bare-Alt default keeps its KeyUp path below.
+                else if (Is("toggle_item_labels"))
+                {
+                    _overheadLabelsVisible = !_overheadLabelsVisible;
                     _audio?.Play(SfxGuiInventory);
                 }
                 // INFORAIL — Alt toggles ground-loot labels, matching the
@@ -4965,7 +4995,7 @@ void main()
                 // cam (dev free-cam) polls Space at line 5612 for vertical-up
                 // movement; the two bindings would conflict. Chase-mode is the
                 // gameplay mode the data_bar exists to serve.
-                else if (key == Key.Space && _player is not null && !_player.IsDead
+                else if (Is("game_pause") && _player is not null && !_player.IsDead
                          && _cameraMode == CameraMode.Chase)
                     TogglePause();
                 // SC-COMMANDS — the shipped game's own defaults, verbatim from
@@ -4978,23 +5008,21 @@ void main()
                 //   Alt+Z/C/X = targeting orders, Z = Collect Loot,
                 //   X = Health/Mana Bars, T = Camera Track/Hold.
                 // (The old debug 'H drains HP' hook moved to the dev console.)
-                else if (key == Key.H && _player is not null && !_player.IsDead)
+                else if (Is("party_heal_body_with_potions") && _player is not null && !_player.IsDead)
                     DrinkLowestPotion(isHealth: true);
-                else if (key == Key.M && _player is not null && !_player.IsDead)
+                else if (Is("party_heal_magic_with_potions") && _player is not null && !_player.IsDead)
                     DrinkLowestPotion(isHealth: false);
-                else if (key == Key.S && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
+                else if (Is("save_game"))
                 {
                     if (!_bootMode) OpenSaveDialog();
                 }
-                else if (key == Key.S && _player is not null && !_player.IsDead
-                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
+                else if (Is("stop") && _player is not null && !_player.IsDead)
                 {
                     _playerFollower?.SetTarget(_playerFollower.Position);
                     _pendingAttackTarget = null;
                     Console.WriteLine("[cmd] stop");
                 }
-                else if ((key == Key.E && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
-                         || (key == Key.A && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight))))
+                else if (Is("select_all_party_members"))
                 {
                     _selectedPartyIdx.Clear();
                     _selectedPartyIdx.Add(0);
@@ -5003,87 +5031,87 @@ void main()
                             _selectedPartyIdx.Add(mem.PartyIndex);
                     Console.WriteLine($"[cmd] select all ({_selectedPartyIdx.Count} member(s))");
                 }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.Q)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveFree); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.W)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveEngage); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.E)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveHoldGround); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.A)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFree); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.S)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFightback); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.D)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkHoldFire); _altComboFired = true; }
-                // Alt+Z/C/X — authored targeting orders (target_closest /
-                // target_weakest / target_strongest in input_bindings.gas).
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.Z)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtClosest); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.C)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtWeakest); _altComboFired = true; }
-                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.X)
-                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtStrongest); _altComboFired = true; }
-                // Q — authored [rotate_selected_slots] "Quick Weapon Select":
-                // cycles the Weapons Panel slot (melee / ranged / spell1 /
-                // spell2); casting happens by selecting a slot and clicking,
-                // not by a cast key.
-                else if (key == Key.Q && _player is not null && !_player.IsDead)
+                // Field-command orders — movement (authored Alt+Q/W/E),
+                // attack (Alt+A/S/D), targeting (Alt+Z/C/X). A fired combo
+                // sets _altComboFired so the Alt-release labels toggle
+                // stays put for that Alt press.
+                else if (Is("move_order_free"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveFree); _altComboFired = modAlt; }
+                else if (Is("move_order_limited"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveEngage); _altComboFired = modAlt; }
+                else if (Is("move_order_never"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveHoldGround); _altComboFired = modAlt; }
+                else if (Is("fight_order_always"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFree); _altComboFired = modAlt; }
+                else if (Is("fight_order_back_only"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFightback); _altComboFired = modAlt; }
+                else if (Is("fight_order_never"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkHoldFire); _altComboFired = modAlt; }
+                else if (Is("target_closest"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtClosest); _altComboFired = modAlt; }
+                else if (Is("target_weakest"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtWeakest); _altComboFired = modAlt; }
+                else if (Is("target_strongest"))
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtStrongest); _altComboFired = modAlt; }
+                // Quick Weapon Select — authored [rotate_selected_slots]
+                // (default Q): cycles the Weapons Panel slot (melee / ranged
+                // / spell1 / spell2); casting happens by selecting a slot and
+                // clicking, not by a cast key.
+                else if (Is("rotate_selected_slots") && _player is not null && !_player.IsDead)
                 {
                     _activeAbilityIdx = (_activeAbilityIdx + 1) % 4;
                     _audio?.Play(SfxGuiInventory);
                     Console.WriteLine($"[cmd] active slot -> {_activeAbilityIdx}");
                 }
-                // W — authored [expert_gui_mode] "Minimize/Maximize Weapons
-                // Panel": folds the AWP to the single active slot (the same
-                // authored min-mode transformation the info-rail open uses).
-                else if (key == Key.W && _player is not null)
+                // Expert GUI mode — authored [expert_gui_mode] (default W):
+                // folds the AWP to the single active slot (the same authored
+                // min-mode transformation the info-rail open uses).
+                else if (Is("expert_gui_mode") && _player is not null)
                 {
                     _awpExpertMode = !_awpExpertMode;
                     _audio?.Play(SfxGuiInventory);
                 }
-                // 1..4 select the Weapons Panel slot directly (melee, ranged,
-                // spell 1, spell 2). The gas authors 1-0 as "Recall Weapon
-                // Config. N" (saved AWP loadouts); with 4 fixed slots and no
-                // config-save system, direct slot select is the same muscle
-                // motion players know.
-                else if (key is Key.Number1 or Key.Number2 or Key.Number3 or Key.Number4
-                         && _player is not null && !_player.IsDead
-                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight)
-                         && !kb.IsKeyPressed(Key.ControlLeft) && !kb.IsKeyPressed(Key.ControlRight))
+                // Weapon-config recall — authored [get_awp_01..04] (default
+                // 1..4). The gas authors these as saved AWP loadout recalls;
+                // with 4 fixed slots and no config-save system, direct slot
+                // select is the same muscle motion players know.
+                else if ((Is("get_awp_01") || Is("get_awp_02") || Is("get_awp_03") || Is("get_awp_04"))
+                         && _player is not null && !_player.IsDead)
                 {
-                    _activeAbilityIdx = key switch
-                    {
-                        Key.Number1 => 0, Key.Number2 => 1, Key.Number3 => 2, _ => 3,
-                    };
+                    _activeAbilityIdx = Is("get_awp_01") ? 0
+                                      : Is("get_awp_02") ? 1
+                                      : Is("get_awp_03") ? 2 : 3;
                     _audio?.Play(SfxGuiInventory);
                 }
-                // Z — authored [collect_loot] "Collect Loot": vacuum ground
-                // piles near the party into the inventory (refusals stay on
-                // the ground with the "No room" notice).
-                else if (key == Key.Z && _player is not null && !_player.IsDead)
+                // Collect Loot — authored [collect_loot] (default Z): vacuum
+                // ground piles near the party into the inventory (refusals
+                // stay on the ground with the "No room" notice).
+                else if (Is("collect_loot") && _player is not null && !_player.IsDead)
                     CollectNearbyLoot();
-                // X — authored [toggle_status_bars] "Health/Mana Bars":
+                // Health/Mana Bars — authored [toggle_status_bars] (default X):
                 // overhead HP/MP indicators on characters.
-                else if (key == Key.X && _player is not null)
+                else if (Is("toggle_status_bars") && _player is not null)
                 {
                     _overheadBarsVisible = !_overheadBarsVisible;
                     _audio?.Play(SfxGuiInventory);
                 }
-                // T — authored [camera_track_toggle] "Camera: Track/Hold
-                // Toggle": hold parks the camera where it is while the party
-                // walks away; track re-snaps the chase framing.
-                else if (key == Key.T && _player is not null)
+                // Camera Track/Hold — authored [camera_track_toggle] (default
+                // T): hold parks the camera where it is while the party walks
+                // away; track re-snaps the chase framing.
+                else if (Is("camera_track_toggle") && _player is not null)
                 {
                     _camTracking = !_camTracking;
                     Console.WriteLine($"[camera] {(_camTracking ? "tracking" : "holding")}");
                     _audio?.Play(SfxGuiInventory);
                 }
-                // . , / — authored party-selection cycling ([select_next_player]
-                // key_period, [select_last_player] key_comma,
-                // [select_lead_character] key_slash).
-                else if ((key == Key.Period || key == Key.Comma) && _party.Count > 0)
-                    CyclePartySelection(forward: key == Key.Period);
-                else if (key == Key.Slash && _party.Count > 0)
+                // Party-selection cycling — authored [select_next_player]
+                // (period), [select_last_player] (comma),
+                // [select_lead_character] (slash).
+                else if (Is("select_next_player") && _party.Count > 0)
+                    CyclePartySelection(forward: true);
+                else if (Is("select_last_player") && _party.Count > 0)
+                    CyclePartySelection(forward: false);
+                else if (Is("select_lead_character") && _party.Count > 0)
                 {
                     _selectedPartyIdx.Clear();
                     _selectedPartyIdx.Add(0);
@@ -5097,12 +5125,12 @@ void main()
                 // we don't have). The old F11 particle-burst dev receipt is
                 // retired (the sfx_script interpreter has driven the
                 // particle backend from data since SC-F/SC-G).
-                else if (key == Key.F9 || key == Key.F5) DoQuickSave();
-                else if (key == Key.F11) DoQuickLoad();
-                // Adventurer's Handbook — F12 recalls it any time (DS1's
-                // "press F12" binding). Opens in browse mode (Next/Prev page
-                // through all tips); a second F12 closes it.
-                else if (key == Key.F12) ToggleHandbook();
+                else if (Is("quick_save") || (key == Key.F5 && !modCtrl && !modAlt)) DoQuickSave();
+                else if (Is("quick_load")) DoQuickLoad();
+                // Adventurer's Handbook — authored [tutorial_tips] (default
+                // F12). Opens in browse mode (Next/Prev page through all
+                // tips); a second press closes it.
+                else if (Is("tutorial_tips")) ToggleHandbook();
                 // SC-DECAL-DIAG — live decal-layer toggle (dev knob; strip
                 // before v1.0). Confirms/clears decals for any "floating
                 // flat image" report in one keypress, no rebuild.
@@ -5111,12 +5139,12 @@ void main()
                     _decalsVisible = !_decalsVisible;
                     Console.WriteLine($"[decals] layer {(_decalsVisible ? "ON" : "OFF")} (F6)");
                 }
-                else if (key == Key.F10 && _player is not null)
+                else if (Is("game_options") && _player is not null)
                 {
-                    // Phase 23-SC-OPTIONS-A — F10 opens the Options Menu.
-                    // Matches DS1's `[game_options] input = key_f10` in
-                    // /config/input_bindings.gas. Toggle: a second F10
-                    // closes the menu (treated as Cancel).
+                    // Phase 23-SC-OPTIONS-A — the Game Options binding
+                    // (authored [game_options] = key_f10) opens the Options
+                    // Menu. Toggle: a second press closes it (treated as
+                    // Cancel).
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     else OpenOptionsMenu();
                 }
@@ -6379,6 +6407,14 @@ void main()
                 // camera doesn't also zoom behind the modal.
                 if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
                 if (_loadDialog.IsOpen) { _loadDialog.OnScroll(wheel.Y); return; }
+                // SC-OPTIONS-REBIND — the Hotkeys bindings list scrolls
+                // with the wheel while the Options menu is up.
+                if (_optionsMenu.IsOpen)
+                {
+                    var fb = _window!.FramebufferSize;
+                    _optionsMenu.OnScroll(wheel.Y, fb.X, fb.Y);
+                    return;
+                }
                 if (_handbook.IsOpen) return;
                 if (_cameraMode != CameraMode.Chase) return;
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
@@ -14878,15 +14914,15 @@ void main()
             const float zoomRate = 6.5f;  // m/s
             foreach (var kb in _input.Keyboards)
             {
-                if (kb.IsKeyPressed(Key.Left))  _chaseYaw += rotRate * (float)dt;
-                if (kb.IsKeyPressed(Key.Right)) _chaseYaw -= rotRate * (float)dt;
-                if (kb.IsKeyPressed(Key.Up))
+                if (_keyBindings.AnyPressed("camera_rotate_left", kb))  _chaseYaw += rotRate * (float)dt;
+                if (_keyBindings.AnyPressed("camera_rotate_right", kb)) _chaseYaw -= rotRate * (float)dt;
+                if (_keyBindings.AnyPressed("camera_rotate_up", kb))
                     _chasePitch = Math.Clamp(_chasePitch + tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
-                if (kb.IsKeyPressed(Key.Down))
+                if (_keyBindings.AnyPressed("camera_rotate_down", kb))
                     _chasePitch = Math.Clamp(_chasePitch - tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
-                if (kb.IsKeyPressed(Key.Minus))
+                if (_keyBindings.AnyPressed("camera_zoom_out", kb))
                     _chaseDistance = Math.Clamp(_chaseDistance + zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
-                if (kb.IsKeyPressed(Key.Equal))
+                if (_keyBindings.AnyPressed("camera_zoom_in", kb))
                     _chaseDistance = Math.Clamp(_chaseDistance - zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
             }
         }
@@ -16374,6 +16410,10 @@ void main()
         if (_optionsMenu.ConfirmedThisFrame)
         {
             _optionsMenu.CommitStaged();
+            // SC-OPTIONS-REBIND — the committed binding map goes live on
+            // the registry before anything persists, so the next keypress
+            // already follows the new layout.
+            _keyBindings.Apply(_optionsMenu.Live.KeyBindings);
             ApplyOptionsAudio();
             ApplyOptionsRuntime();
             // ALPHA-2V — Video + Advanced apply on OK (window mode last so a

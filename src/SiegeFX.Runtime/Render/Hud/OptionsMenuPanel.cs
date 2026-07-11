@@ -102,6 +102,11 @@ internal sealed class OptionsMenuPanel
         public string BloodColor = "Red";    // Red/Green/Disabled
         public bool Dismemberment = true;
 
+        // SC-OPTIONS-REBIND — persisted key bindings: action id →
+        // [primary, secondary] tokens (see KeyBindingRegistry). Empty =
+        // authored defaults. Round-trips through prefs.json with the rest.
+        public Dictionary<string, string[]> KeyBindings = new();
+
         // SC-HUD-DRAG — user-positioned HUD pieces (Shift+LMB drag; QoL
         // addition). Normalized viewport fractions of each piece's top-left
         // corner; -1 = the built-in layout. Persist with everything else.
@@ -148,43 +153,86 @@ internal sealed class OptionsMenuPanel
     public event Action? AudioStagedChanged;
     int _gamePage; // 0 = page 1, 1 = page 2 (Game tab paging via More/Back)
 
-    /// <summary>Phase 23-SC-OPTIONS-E — read-only snapshot of the
-    /// player's current key bindings, surfaced on the Hotkeys
-    /// sub-screen. SiegeFX's input is hardcoded today (key→action
-    /// mapping lives directly in RenderHost); slice E ships a
-    /// READ-ONLY listing matching DS1's bindings panel UI shape so
-    /// the menu structure is complete. Full rebinding lands when the
-    /// runtime gets a proper key-binding registry — splinter
-    /// SC-OPTIONS-REBIND.</summary>
-    public sealed record Binding(string Command, string Primary, string Secondary);
-    static readonly Binding[] DefaultBindings = new[]
-    {
-        new Binding("Pause / Open Menu",       "Esc",       "—"),
-        new Binding("Open Options",            "F10",        "—"),
-        new Binding("Quick Save",              "F5",         "—"),
-        new Binding("Quick Load",              "F9",         "—"),
-        new Binding("Move Forward",            "W",          "—"),
-        new Binding("Move Backward",           "S",          "—"),
-        new Binding("Strafe Left",             "A",          "—"),
-        new Binding("Strafe Right",            "D",          "—"),
-        new Binding("Click-to-Move",           "Left Mouse", "—"),
-        new Binding("Click-to-Attack / Talk",  "Right Mouse","—"),
-        new Binding("Cast Spell — Primary",    "Q",          "—"),
-        new Binding("Cast Spell — Secondary",  "W (RMB-mode)","—"),
-        new Binding("Toggle Inventory",        "I",          "—"),
-        new Binding("Toggle Spell Book",       "B",          "—"),
-        new Binding("Toggle Character Pane",   "C",          "—"),
-        new Binding("Camera Yaw",              "RMB-drag",   "—"),
-        new Binding("Camera Zoom",             "Wheel",      "—"),
-    };
+    /// <summary>SC-OPTIONS-REBIND — the Hotkeys sub-screen is a full
+    /// rebinding editor over <see cref="KeyBindingRegistry"/>'s authored
+    /// catalog (the complete non-dev input_bindings.gas list, grouped
+    /// Party Controls / View Controls / User Interface / Game Settings).
+    /// Layout matches DS1's options_bindings.gas: right-justified command
+    /// names, Primary + Secondary cells (LMB = capture a new key, RMB =
+    /// clear), a scrollbar, Back + Defaults. Edits stage in
+    /// <see cref="_stagedBindings"/> and commit on OK like every other
+    /// tab; Cancel discards.</summary>
+    public KeyBindingRegistry? Registry;
+    Dictionary<string, string[]> _stagedBindings = new();
     bool _hotkeysOpen; // Input tab → Hotkeys sub-screen toggle
-    // _hotkeysScroll is reserved for the rebind-system slice — DefaultBindings
-    // currently fits in one screenful at 1080p so the scroll input handler
-    // isn't wired yet. Reads default 0 in DrawHotkeysSubscreen.
-    const int _hotkeysScroll = 0;
+    int _bindScroll;
+    string _captureId = "";  // action id awaiting a keypress ("" = not capturing)
+    int _captureSlot;        // 0 = primary, 1 = secondary
+    const int BindRowsVisible = 10;
+
+    // Flattened display list: group headers + catalog rows, authored order.
+    sealed record BindRow(string? Header, KeyBindingRegistry.Def? Def);
+    static readonly List<BindRow> BindRows = BuildBindRows();
+    static List<BindRow> BuildBindRows()
+    {
+        var rows = new List<BindRow>();
+        string group = "";
+        foreach (var def in KeyBindingRegistry.Defs)
+        {
+            if (def.Group != group)
+            {
+                group = def.Group;
+                rows.Add(new BindRow(group, null));
+            }
+            rows.Add(new BindRow(null, def));
+        }
+        return rows;
+    }
 
     public void OpenSubScreenHotkeys() => _hotkeysOpen = true;
-    public void CloseSubScreenHotkeys() => _hotkeysOpen = false;
+    public void CloseSubScreenHotkeys() { _hotkeysOpen = false; _captureId = ""; }
+
+    /// <summary>Staged bindings snapshot for the host's OK-commit path.</summary>
+    public Dictionary<string, string[]> StagedBindingsSnapshot()
+    {
+        var copy = new Dictionary<string, string[]>(_stagedBindings.Count);
+        foreach (var (id, slots) in _stagedBindings) copy[id] = (string[])slots.Clone();
+        return copy;
+    }
+
+    /// <summary>Key routing while the menu is open. Returns true when the
+    /// keypress was consumed by an in-progress binding capture: Esc
+    /// cancels, a lone modifier keeps waiting, anything mappable becomes
+    /// the new token (stealing it from any other action that held it —
+    /// the conflict resolution DS1 uses).</summary>
+    public bool HandleKeyForBinding(Silk.NET.Input.Key key, bool ctrl, bool alt, bool shift)
+    {
+        if (!IsOpen || !_hotkeysOpen || _captureId.Length == 0) return false;
+        if (key == Silk.NET.Input.Key.Escape) { _captureId = ""; return true; }
+        if (key is Silk.NET.Input.Key.ControlLeft or Silk.NET.Input.Key.ControlRight
+               or Silk.NET.Input.Key.AltLeft or Silk.NET.Input.Key.AltRight
+               or Silk.NET.Input.Key.ShiftLeft or Silk.NET.Input.Key.ShiftRight
+               or Silk.NET.Input.Key.SuperLeft or Silk.NET.Input.Key.SuperRight)
+            return true; // modifier held — keep waiting for the real key
+        var token = KeyBindingRegistry.TokenFor(key, ctrl, alt, shift);
+        if (token.Length == 0) return true; // unmappable (numpad etc.) — swallow
+        // Steal the token from any other slot that holds it.
+        foreach (var slots in _stagedBindings.Values)
+            for (int i = 0; i < slots.Length; i++)
+                if (slots[i] == token) slots[i] = "";
+        if (_stagedBindings.TryGetValue(_captureId, out var mine))
+            mine[Math.Clamp(_captureSlot, 0, mine.Length - 1)] = token;
+        _captureId = "";
+        return true;
+    }
+
+    /// <summary>Mouse-wheel scroll over the bindings list.</summary>
+    public void OnScroll(float dy, int viewportW, int viewportH)
+    {
+        if (!IsOpen || !_hotkeysOpen) return;
+        int max = Math.Max(0, BindRows.Count - BindRowsVisible);
+        _bindScroll = Math.Clamp(_bindScroll - (int)MathF.Sign(dy) * 2, 0, max);
+    }
 
     public bool IsOpen { get; private set; }
     public bool QuitRequested { get; private set; }
@@ -285,6 +333,8 @@ internal sealed class OptionsMenuPanel
         ActiveTab = Tab.Video;
         _gamePage = 0;
         _hotkeysOpen = false;
+        _captureId = "";
+        _bindScroll = 0;
         ConfirmedThisFrame = false;
         CancelledThisFrame = false;
         DefaultsRequestedThisFrame = false;
@@ -401,11 +451,12 @@ internal sealed class OptionsMenuPanel
             Hits(_defaults, px, py) ? Btn.Defaults :
             Btn.None;
         _hoveredWidget = HitWidget(px, py);
-        // Drag-continue for sliders.
-        if (_activeWidget >= 0 && _activeWidget < _widgets.Count
-            && _widgets[_activeWidget].OnSliderDrag is { } drag)
+        // Drag-continue for sliders (horizontal tracks + the bindings
+        // scrollbar's vertical axis).
+        if (_activeWidget >= 0 && _activeWidget < _widgets.Count)
         {
-            drag(px);
+            if (_widgets[_activeWidget].OnSliderDrag is { } drag) drag(px);
+            if (_widgets[_activeWidget].OnSliderDragY is { } dragY) dragY(py);
         }
     }
 
@@ -421,11 +472,11 @@ internal sealed class OptionsMenuPanel
         _activeWidget = HitWidget(px, py);
         // Slider press jumps the thumb to the click point so the
         // widget feels responsive on a single click anywhere on the
-        // track. Drag continues from the same x via OnMouseMove.
-        if (_activeWidget >= 0 && _activeWidget < _widgets.Count
-            && _widgets[_activeWidget].OnSliderDrag is { } drag)
+        // track. Drag continues from the same x/y via OnMouseMove.
+        if (_activeWidget >= 0 && _activeWidget < _widgets.Count)
         {
-            drag(px);
+            if (_widgets[_activeWidget].OnSliderDrag is { } drag) drag(px);
+            if (_widgets[_activeWidget].OnSliderDragY is { } dragY) dragY(py);
         }
     }
 
@@ -812,6 +863,7 @@ internal sealed class OptionsMenuPanel
     {
         public (int X, int Y, int W, int H) Rect;
         public Action<float>? OnSliderDrag;
+        public Action<float>? OnSliderDragY; // SC-OPTIONS-REBIND — vertical scrollbar drag
         public Action? OnClick;        // cycle forward / button press
         public Action? OnRightClick;   // cycle backward
     }
@@ -819,8 +871,10 @@ internal sealed class OptionsMenuPanel
 
     void DrawTabContent(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
-        if (_hotkeysOpen) { DrawHotkeysSubscreen(bars, text, vw, vh); return; }
+        // Clear BEFORE the hotkeys branch — the sub-screen registers its
+        // cell/scroll/back widgets fresh each frame too.
         _widgets.Clear();
+        if (_hotkeysOpen) { DrawHotkeysSubscreen(bars, text, vw, vh); return; }
         switch (ActiveTab)
         {
             case Tab.Video: LayoutVideo(bars, text, vw, vh); break;
@@ -1143,66 +1197,137 @@ internal sealed class OptionsMenuPanel
         AddSliderWidget(rowIdx, displayMax, get01, set01, vw, vh);
     }
 
+    /// <summary>SC-OPTIONS-REBIND — the rebindable hotkeys editor, laid out
+    /// 1:1 from DS1's options_bindings.gas: "Primary"/"Secondary" column
+    /// headers at authored y=90; ten 20px-pitch rows at y=110..306 (command
+    /// name right-justified in 124..290, primary cell 300..395, secondary
+    /// cell 400..495); scrollbar at 500,110..306; Back bottom-left. Group
+    /// headers (Party Controls / View Controls / User Interface / Game
+    /// Settings) render as left-aligned gold rows inside the list, matching
+    /// the original screen. LMB a cell to capture a new key (Esc cancels),
+    /// RMB clears it; assigning a key steals it from whichever action held
+    /// it. Defaults (main button) resets every binding while this screen
+    /// is up.</summary>
     void DrawHotkeysSubscreen(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
-        // Read-only key-binding listing. Header row + scrolling list.
-        // Phase 23-SC-OPTIONS-FOLD2 — pre-fold this method used bare
-        // pixel constants (12/36/20/220/320 etc.) which were unscaled
-        // device pixels at 4K, leaving the header glued to the inner
-        // top edge and the columns crowded into a left strip. Multiply
-        // each authored offset by _fontScale so the layout breathes
-        // proportionally at 1080p / 1440p / 4K.
-        int innerCx = _inner.X + _inner.W / 2;
-        var header = "Hotkeys (read-only — rebinding pending splinter SC-OPTIONS-REBIND)";
-        int hW = text.MeasureWidth(header, _fontScale);
-        text.DrawString(vw, vh, header, innerCx - hW / 2, _inner.Y + 12 * _fontScale, InkDim, _fontScale);
+        Layout(vw, vh, out var s);
+        int xOff = _inner.X - (int)MathF.Round(117 * s);
+        int yOff = _inner.Y - (int)MathF.Round(86 * s);
+        (int X, int Y, int W, int H) A(int x0, int y0, int x1, int y1) => (
+            (int)MathF.Round(x0 * s) + xOff,
+            (int)MathF.Round(y0 * s) + yOff,
+            (int)MathF.Round((x1 - x0) * s),
+            (int)MathF.Round((y1 - y0) * s));
 
-        // Column headers
-        int colY = _inner.Y + 36 * _fontScale;
-        int cmdX = _inner.X + 20 * _fontScale;
-        int priX = _inner.X + 220 * _fontScale;
-        int secX = _inner.X + 320 * _fontScale;
-        text.DrawString(vw, vh, "Command",   cmdX, colY, Ink, _fontScale);
-        text.DrawString(vw, vh, "Primary",   priX, colY, Ink, _fontScale);
-        text.DrawString(vw, vh, "Secondary", secX, colY, Ink, _fontScale);
-        bars.DrawRect(vw, vh, _inner.X + 12 * _fontScale, colY + 14 * _fontScale, _inner.W - 24 * _fontScale, 1, Border);
-
-        // Phase 23-SC-OPTIONS-FOLD — scale rowH with the font so the
-        // listing reads at the same line-height proportion at every
-        // resolution. 18 authored px × _fontScale = 18/36/54/72 at
-        // 1×/2×/3×/4×.
-        int rowH = 18 * _fontScale;
-        int rowY = colY + 22 * _fontScale;
-        int maxRows = Math.Max(1, (_inner.Y + _inner.H - rowY - 50 * _fontScale) / rowH);
-        for (int i = 0; i < Math.Min(maxRows, DefaultBindings.Length - _hotkeysScroll); i++)
+        // Column headers (authored text_key0 / text_key1).
+        var priHdr = A(300, 90, 395, 106);
+        var secHdr = A(400, 90, 495, 106);
+        void Centered(string t, (int X, int Y, int W, int H) r, Vector4 ink)
         {
-            var b = DefaultBindings[i + _hotkeysScroll];
-            text.DrawString(vw, vh, b.Command,   cmdX, rowY + i * rowH, Ink,    _fontScale);
-            text.DrawString(vw, vh, b.Primary,   priX, rowY + i * rowH, InkDim, _fontScale);
-            text.DrawString(vw, vh, b.Secondary, secX, rowY + i * rowH, InkDim, _fontScale);
+            int w = text.MeasureWidth(t, _fontScale);
+            text.DrawString(vw, vh, t, r.X + (r.W - w) / 2,
+                r.Y + (r.H - 12 * _fontScale) / 2, ink, _fontScale);
+        }
+        Centered("Primary", priHdr, Ink);
+        Centered("Secondary", secHdr, Ink);
+
+        int maxScroll = Math.Max(0, BindRows.Count - BindRowsVisible);
+        _bindScroll = Math.Clamp(_bindScroll, 0, maxScroll);
+
+        var cellBg    = new Vector4(0.06f, 0.06f, 0.07f, 0.75f);
+        var cellHover = new Vector4(0.30f, 0.28f, 0.20f, 0.95f);
+        var cellSel   = new Vector4(0.45f, 0.38f, 0.16f, 1.00f);
+
+        for (int i = 0; i < BindRowsVisible; i++)
+        {
+            int rowIdx = _bindScroll + i;
+            if (rowIdx >= BindRows.Count) break;
+            var row = BindRows[rowIdx];
+            int y0 = 110 + i * 20, y1 = y0 + 16;
+            var labelR = A(124, y0, 290, y1);
+
+            if (row.Header is { } hdr)
+            {
+                // Group header — left-aligned gold, like the original.
+                text.DrawString(vw, vh, hdr, labelR.X,
+                    labelR.Y + (labelR.H - 12 * _fontScale) / 2, InkDim, _fontScale);
+                continue;
+            }
+
+            var def = row.Def!;
+            int nameW = text.MeasureWidth(def.Name, _fontScale);
+            text.DrawString(vw, vh, def.Name,
+                labelR.X + labelR.W - nameW,
+                labelR.Y + (labelR.H - 12 * _fontScale) / 2, Ink, _fontScale);
+
+            var slots = _stagedBindings.TryGetValue(def.Id, out var sl)
+                ? sl : new[] { def.DefPrimary, def.DefSecondary };
+            for (int slot = 0; slot < 2; slot++)
+            {
+                var cellR = slot == 0 ? A(300, y0, 395, y1) : A(400, y0, 495, y1);
+                bool capturing = _captureId == def.Id && _captureSlot == slot;
+                bool hover = _hoveredWidget == _widgets.Count;
+                var bg = capturing ? cellSel : hover ? cellHover : cellBg;
+                bars.DrawRect(vw, vh, cellR.X, cellR.Y, cellR.W, cellR.H, bg);
+                DrawBorder(bars, vw, vh, cellR, capturing ? Ink : Border);
+                Centered(capturing ? "press a key…" : KeyBindingRegistry.Display(slots[slot]),
+                    cellR, capturing ? Ink : InkDim);
+
+                var (id, si) = (def.Id, slot);
+                _widgets.Add(new W
+                {
+                    Rect = cellR,
+                    OnClick = () => { _captureId = id; _captureSlot = si; },
+                    OnRightClick = () =>
+                    {
+                        if (_stagedBindings.TryGetValue(id, out var mine)) mine[si] = "";
+                        if (_captureId == id && _captureSlot == si) _captureId = "";
+                    },
+                });
+            }
         }
 
-        // Back button at the bottom of the inner panel. Sized in
-        // authored × _fontScale so the click target stays comfortably
-        // hittable at 4K (was 120×22 device px = thumbnail-tiny on a
-        // 1935×1656 panel).
-        int backW = 120 * _fontScale, backH = 22 * _fontScale;
-        int backX = innerCx - backW / 2;
-        int backY = _inner.Y + _inner.H - 36 * _fontScale;
-        var bg = _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle;
-        bars.DrawRect(vw, vh, backX, backY, backW, backH, bg);
-        DrawBorder(bars, vw, vh, (backX, backY, backW, backH), Border);
-        var lbl = "← Back";
-        int lW = text.MeasureWidth(lbl, _fontScale);
-        text.DrawString(vw, vh, lbl, backX + (backW - lW) / 2, backY + (backH - 12 * _fontScale) / 2, Ink, _fontScale);
-        _widgets.Add(new W { Rect = (backX, backY, backW, backH), OnClick = () => _hotkeysOpen = false });
+        // Scrollbar (authored scroll_bindings at 500,110..306) — simple
+        // proportional thumb; click/drag anywhere on the track jumps.
+        var trackR = A(500, 110, 516, 306);
+        bars.DrawRect(vw, vh, trackR.X, trackR.Y, trackR.W, trackR.H, cellBg);
+        DrawBorder(bars, vw, vh, trackR, Border);
+        if (maxScroll > 0)
+        {
+            int thumbH = Math.Max(12, trackR.H * BindRowsVisible / BindRows.Count);
+            int thumbY = trackR.Y + (int)((trackR.H - thumbH) * (_bindScroll / (float)maxScroll));
+            bars.DrawRect(vw, vh, trackR.X + 1, thumbY, trackR.W - 2, thumbH,
+                _hoveredWidget == _widgets.Count ? BtnHover : BtnIdle);
+            _widgets.Add(new W
+            {
+                Rect = trackR,
+                OnSliderDragY = py =>
+                {
+                    float t = (py - trackR.Y - thumbH / 2f) / Math.Max(1f, trackR.H - thumbH);
+                    _bindScroll = Math.Clamp((int)MathF.Round(t * maxScroll), 0, maxScroll);
+                },
+            });
+        }
+
+        // Back — authored button_back (140,318)-(280,334); reuses the
+        // bottom-left dock rect the Hotkeys… button occupies on the way in.
+        DrawPageButton(bars, text, vw, vh, "← Back", () => { _hotkeysOpen = false; _captureId = ""; });
     }
 
     /// <summary>Called by the host on Open() to seed `_staged` from
     /// `Live` so a Cancel cleanly reverts. Slice A flow exposes
     /// this as the public entry; later slices that read prefs.gas
     /// will replace `Live` first then call this.</summary>
-    public void SyncStagedFromLive() { _staged = Live.Clone(); _gamePage = 0; _hotkeysOpen = false; }
+    public void SyncStagedFromLive()
+    {
+        _staged = Live.Clone();
+        _gamePage = 0;
+        _hotkeysOpen = false;
+        _captureId = "";
+        // SC-OPTIONS-REBIND — stage the bindings from the live registry so
+        // Cancel discards edits the same way every other tab does.
+        _stagedBindings = Registry?.Snapshot() ?? new Dictionary<string, string[]>();
+    }
 
     /// <summary>ALPHA-2V — replace the live settings wholesale (prefs.json
     /// load at boot). Staged re-syncs so a menu opened right after boot
@@ -1212,20 +1337,34 @@ internal sealed class OptionsMenuPanel
     /// <summary>Commit staged → live + apply runtime hooks. Slice C
     /// wires audio volumes; the rest persist-only until further
     /// runtime knobs land. Caller invokes when ConfirmedThisFrame
-    /// fires.</summary>
-    public void CommitStaged() { Live = _staged.Clone(); }
+    /// fires. SC-OPTIONS-REBIND — the staged key bindings ride the
+    /// same commit: Live.KeyBindings gets the full staged map (fresh
+    /// dictionary, never shared with the editor buffer) so the host
+    /// can Apply() it to the registry and persist it.</summary>
+    public void CommitStaged()
+    {
+        Live = _staged.Clone();
+        Live.KeyBindings = StagedBindingsSnapshot();
+        _staged.KeyBindings = Live.KeyBindings;
+    }
 
     /// <summary>Reset the active tab's fields to the
     /// /config/options.gas defaults. Per-tab reset matches DS1's
     /// `notify(default_options_<tab>)` behavior.</summary>
     public void ApplyDefaultsForActiveTab()
     {
-        // Phase 23-SC-OPTIONS-FOLD — Defaults pressed while the
-        // Hotkeys sub-screen is open shouldn't silently rewrite
-        // Input-tab settings; the user thinks they're resetting
-        // bindings, not invert-camera-Y. Until rebinding lands the
-        // sub-screen is read-only so Defaults is a no-op there.
-        if (_hotkeysOpen) return;
+        // SC-OPTIONS-REBIND — Defaults while the Hotkeys sub-screen is up
+        // resets every staged binding to the authored input_bindings.gas
+        // defaults (DS1's notify(default_options_bindings)), leaving the
+        // Input tab's own settings alone.
+        if (_hotkeysOpen)
+        {
+            _captureId = "";
+            _stagedBindings.Clear();
+            foreach (var def in KeyBindingRegistry.Defs)
+                _stagedBindings[def.Id] = new[] { def.DefPrimary, def.DefSecondary };
+            return;
+        }
         var d = new Settings();
         switch (ActiveTab)
         {
