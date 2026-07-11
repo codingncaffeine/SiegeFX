@@ -411,6 +411,21 @@ public sealed class RenderHost : IDisposable
     private string _shadowMode = "complex_party";
     private BlobShadowRenderer? _blobShadows;
 
+    // SC-MOUSE-FX — DS1's in-world mouse feedback (from the user's reference
+    // shots): green ring under selected characters, green inverted-tetra
+    // move marker (fades ~1.1s), thin green drag marquee for party
+    // multi-select, and the bottom-center hover status line
+    // ("WOOT: Health 49/49, Mana 30/30").
+    private SelectionFxRenderer? _selectionFx;
+    private Vector3? _moveMarkerPos;
+    private float _moveMarkerAge;
+    private const float MoveMarkerLife = 1.1f;
+    private Vector2? _lmbWorldDownPos;
+    private bool _marqueeActive;
+    private Vector2 _marqueeEnd;
+    private readonly HashSet<int> _selectedPartyIdx = new() { 0 };
+    private ActorRenderState? _hoverActor;
+
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
     // terrain RegionInstance AABB centers in that region). Computed once
     // after the world layout settles; used by the render gates to decide
@@ -5692,8 +5707,16 @@ void main()
                 // triangle, retarget the follower. Silent no-op on off-mesh clicks
                 // (clicks past the nav edge) so the user can rotate-drag + click
                 // without stray warnings.
+                // SC-MOUSE-FX — the same press arms the drag marquee: if the
+                // cursor travels >8px while held, a thin green rectangle
+                // multi-selects party members on release (the move already
+                // fired, matching DS1's move-on-press feel).
                 else if (btn == MouseButton.Left)
+                {
+                    _lmbWorldDownPos = m.Position;
+                    _marqueeActive = false;
                     TryClickToMove(m.Position);
+                }
             };
             mouse.MouseUp += (m, btn) =>
             {
@@ -5759,6 +5782,16 @@ void main()
                     }
                     return;
                 }
+                // SC-MOUSE-FX — a completed drag marquee selects the party
+                // members inside the rectangle; consumes the release.
+                if (btn == MouseButton.Left && _marqueeActive)
+                {
+                    ApplyMarqueeSelection(m.Position);
+                    _marqueeActive = false;
+                    _lmbWorldDownPos = null;
+                    return;
+                }
+                if (btn == MouseButton.Left) _lmbWorldDownPos = null;
                 // Phase 22-A SC-HUD-DATABAR — bottom-row HUD click resolves.
                 // Always-on layer: handle the data_bar click before any modal
                 // panel's MouseUp routes, so the user's press-release on a
@@ -6092,6 +6125,14 @@ void main()
                     foreach (var (id, bx, by, bw, bh) in _defeatButtons)
                         if (pos.X >= bx && pos.X < bx + bw && pos.Y >= by && pos.Y < by + bh)
                         { _defeatHover = id; break; }
+                }
+                // SC-MOUSE-FX — arm/extend the drag marquee while LMB is held.
+                if (_lmbWorldDownPos is { } dp0)
+                {
+                    _marqueeEnd = pos;
+                    if (!_marqueeActive &&
+                        (MathF.Abs(pos.X - dp0.X) > 8f || MathF.Abs(pos.Y - dp0.Y) > 8f))
+                        _marqueeActive = true;
                 }
                 if (_handbook.IsOpen)
                 {
@@ -14604,6 +14645,8 @@ void main()
         TickDevGodMode();
         // SC-DEFEAT — hero death edge + party-wipe presentation.
         TickDefeat((float)dt);
+        // SC-MOUSE-FX — destination-marker fade + hover pick.
+        TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
         // (not inside DrawBootScene) so the boot sequence keeps advancing
         // even when the render loop is paused (e.g. minimized window).
@@ -15695,6 +15738,153 @@ void main()
         DefeatButton("yes",  "Yes",  160, 276, 250, 292);
         DefeatButton("no",   "No",   263, 276, 353, 292);
         DefeatButton("help", "Help", 386, 276, 476, 292);
+    }
+
+    // ====================================================================
+    // SC-MOUSE-FX — selection/mouse feedback helpers.
+    // ====================================================================
+
+    /// <summary>Project each live party member to screen space and select the
+    /// ones inside the drag rectangle; falls back to the hero when the box
+    /// catches nobody. A single selection also retargets the character sheet.</summary>
+    private void ApplyMarqueeSelection(Vector2 up)
+    {
+        if (_window is null || _lmbWorldDownPos is not { } dp) return;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return;
+        float x0 = MathF.Min(dp.X, up.X), x1 = MathF.Max(dp.X, up.X);
+        float y0 = MathF.Min(dp.Y, up.Y), y1 = MathF.Max(dp.Y, up.Y);
+        var vp = _camera.GetViewProjection((float)size.X / size.Y);
+
+        bool InRect(ActorRenderState m)
+        {
+            var w = Vector4.Transform(new Vector4(m.CurrentTransform.Translation + new Vector3(0f, 0.9f, 0f), 1f), vp);
+            if (w.W <= 1e-4f) return false;
+            float sx = (w.X / w.W * 0.5f + 0.5f) * size.X;
+            float sy = (0.5f - w.Y / w.W * 0.5f) * size.Y;
+            return sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1;
+        }
+
+        var picked = new List<int>();
+        if (_player is not null && !_player.IsDead && InRect(_player)) picked.Add(0);
+        foreach (var m in _party)
+            if (m is not null && m.PartyIndex > 0 && m.IsPartyMember && !m.IsDead && InRect(m))
+                picked.Add(m.PartyIndex);
+
+        _selectedPartyIdx.Clear();
+        if (picked.Count == 0) { _selectedPartyIdx.Add(0); return; }
+        foreach (var i in picked) _selectedPartyIdx.Add(i);
+        if (picked.Count == 1) _paperdollTargetIndex = picked[0];
+        Console.WriteLine($"[select] marquee picked {picked.Count} member(s): {string.Join(",", picked)}");
+    }
+
+    /// <summary>Hover pick: nearest live, visible actor within ~1.3u of the
+    /// cursor's ground point — party, NPCs and monsters alike (DS1 shows the
+    /// status line for all of them).</summary>
+    private ActorRenderState? PickHoverActor()
+    {
+        if (_player is null || _window is null || _actors.Count == 0 || _cameraMode != CameraMode.Chase)
+            return null;
+        if (_mouseLookActive || _nisPhase != NisPhase.Off) return null;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return null;
+        float ndcX = (_currentMousePos.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (_currentMousePos.Y / size.Y) * 2f;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection((float)size.X / size.Y), out var invVp)) return null;
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return null;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X / farH.W, farH.Y / farH.W, farH.Z / farH.W);
+        var dir = far_ - near;
+        if (MathF.Abs(dir.Y) < 1e-4f) return null;
+        float t = (_player.CurrentTransform.Translation.Y - near.Y) / dir.Y;
+        if (t < 0f) return null;
+        var hit = near + dir * t;
+
+        ActorRenderState? best = null;
+        float bestD = 1.3f;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.Hidden || s.IsPlayer) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            float d = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestD) { bestD = d; best = s; }
+        }
+        // The hero counts too (their status line shows on self-hover).
+        {
+            var p = _player.CurrentTransform.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            float d = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestD && !_player.IsDead) best = _player;
+        }
+        return best;
+    }
+
+    /// <summary>SC-MOUSE-FX — marker aging + the per-frame hover pick.</summary>
+    private void TickMouseFx(float dt)
+    {
+        if (_moveMarkerPos is not null)
+        {
+            _moveMarkerAge += dt;
+            if (_moveMarkerAge >= MoveMarkerLife) _moveMarkerPos = null;
+        }
+        _hoverActor = PickHoverActor();
+    }
+
+    /// <summary>World-space pass: selection rings under every selected party
+    /// member + the fading destination tetra. Runs right after the blob
+    /// shadows (same depth conventions).</summary>
+    private void DrawSelectionWorldFx(Matrix4x4 vp)
+    {
+        if (_gl is null || _player is null || _cameraMode != CameraMode.Chase) return;
+        _selectionFx ??= new SelectionFxRenderer(_gl);
+        _selectionFx.Begin();
+
+        var ringColor = new Vector4(0.05f, 0.78f, 0.10f, 0.92f);
+        foreach (var idx in _selectedPartyIdx)
+        {
+            var m = idx == 0 ? _player : _party.FirstOrDefault(p => p.PartyIndex == idx);
+            if (m is null || m.IsDead) continue;
+            _selectionFx.AddRing(m.CurrentTransform.Translation, 0.62f, ringColor);
+        }
+        if (_moveMarkerPos is { } mp)
+        {
+            float fade = 1f - Math.Clamp(_moveMarkerAge / MoveMarkerLife, 0f, 1f);
+            _selectionFx.AddInvertedTetra(mp, 0.30f,
+                new Vector4(0.05f, 0.72f, 0.10f, 0.75f * fade));
+        }
+        _selectionFx.Draw(vp);
+    }
+
+    /// <summary>HUD pass: the thin green drag marquee + the bottom-center
+    /// hover status line ("Woot: Health 49/49, Mana 30/30").</summary>
+    private void DrawMouseHudFx(int vw, int vh)
+    {
+        if (_barRenderer is null || _textRenderer is null) return;
+        if (_marqueeActive && _lmbWorldDownPos is { } dp)
+        {
+            int x0 = (int)MathF.Min(dp.X, _marqueeEnd.X), x1 = (int)MathF.Max(dp.X, _marqueeEnd.X);
+            int y0 = (int)MathF.Min(dp.Y, _marqueeEnd.Y), y1 = (int)MathF.Max(dp.Y, _marqueeEnd.Y);
+            _barRenderer.DrawBorder(vw, vh, x0, y0, x1 - x0, y1 - y0,
+                new Vector4(0.10f, 0.95f, 0.15f, 0.95f));
+        }
+        if (_hoverActor is { } ha && !ha.IsDead)
+        {
+            string name = ResolveMemberName(ha);
+            var combat = ha.Actor.Combat;
+            var stats = ha.Actor.Stats;
+            bool friendly = ha.IsPlayer || ha.IsPartyMember;
+            string line = friendly && stats.MaxMana > 0
+                ? $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}, Mana {combat.CurrentMana:F0}/{stats.MaxMana:F0}"
+                : $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}";
+            int fs = Math.Max(1, (int)MathF.Round(Hud.HudScale.Modal(vw, vh)));
+            int lw = _textRenderer.MeasureWidth(line, fs);
+            _textRenderer.DrawString(vw, vh, line, (vw - lw) / 2,
+                vh - (int)(20 * fs) - _textRenderer.LineHeight * fs / 2,
+                new Vector4(0.42f, 0.95f, 0.38f, 1f), fs);
+        }
     }
 
     // ====================================================================
@@ -17939,6 +18129,10 @@ void main()
         // ALPHA-2E — and for locked usables (Star Device).
         RequestLockedUseNear(hit);
         _playerFollower.SetTarget(hit);
+        // SC-MOUSE-FX — plant the green destination marker at the accepted
+        // click point; it fades over MoveMarkerLife.
+        _moveMarkerPos = hit;
+        _moveMarkerAge = 0f;
         // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
         // authored stand spot (the farm winch's is ON the elevator grate, so
         // the player rides down with the car), not to the raw click point.
@@ -23777,6 +23971,10 @@ void main()
             _blobShadows.Draw(vp);
         }
 
+        // SC-MOUSE-FX — selection rings + the fading destination marker,
+        // right above the shadows tier so actors still occlude them.
+        DrawSelectionWorldFx(vp);
+
         // Phase 17-SC-E — billboard particles. Sit above the world scene
         // (depth-tested against actors + props) but below the HUD ortho
         // pass so smoke columns get occluded by the farmhouse correctly.
@@ -24246,6 +24444,8 @@ void main()
                 _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer,
                                TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
+            // SC-MOUSE-FX — the drag marquee + bottom-center hover status line.
+            DrawMouseHudFx(size.X, size.Y);
             // SC-DEFEAT — dim + Defeat! + the load-question dialog, above the
             // HUD but below the Load window / dev console.
             DrawDefeatOverlay(size.X, size.Y);
