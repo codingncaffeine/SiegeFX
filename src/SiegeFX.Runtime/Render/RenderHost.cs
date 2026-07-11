@@ -3279,6 +3279,7 @@ public sealed class RenderHost : IDisposable
         if (pile.DisplayOverride.Contains("gold", StringComparison.OrdinalIgnoreCase)) return true;
         foreach (var it in pile.Items)
         {
+            if (it.IsGold) return true;   // SC-GOLD-PILES — kill/prop gold entries
             var r = it.Reference ?? "";
             if (r.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) return true;
             if (r.Contains("gold", StringComparison.OrdinalIgnoreCase)) return true;
@@ -22656,13 +22657,12 @@ void main()
     private void CreditGoldFromKill(int experienceValue, Vector3 worldPos)
     {
         if (_progression is null || experienceValue <= 0) return;
-        // Proxy formula: half the XP value, +25% jitter, floored at 1. The
-        // caller already gated on "actor died this frame" so per-kill firing
-        // is implicit — no need for a kill-edge guard here.
-        long drop = Math.Max(1, experienceValue / 2);
-        _progression.CreditGold(drop);
-        AddFloatingText($"+{drop} gold", worldPos + new Vector3(0f, 1.6f, 0f),
-                        new Vector4(1.00f, 0.92f, 0.40f, 1f));
+        // SC-GOLD-PILES — RETIRED. The half-XP proxy predates working
+        // [gold*] pcontent rolls; with authored gold now landing in loot
+        // piles, the proxy was unauthored double-pay on every kill. Gold
+        // comes exclusively from the authored economy (mob/container rolls,
+        // world placements, vendors), exactly like retail.
+        _ = experienceValue; _ = worldPos;
     }
 
     /// <summary>Phase 20c — render a chevron pointing at the active quest's
@@ -24399,12 +24399,10 @@ void main()
         foreach (var d in items)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
+        // SC-GOLD-PILES — retail drops gold as a CLICKABLE pile, not an
+        // auto-credit; the pickup path credits it with the +N cue.
         if (goldTotal > 0)
-        {
-            _progression?.CreditGold(goldTotal);
-            AddFloatingText($"+{goldTotal} gold", deathPos + new Vector3(0f, 1.6f, 0f),
-                            new Vector4(1.00f, 0.92f, 0.40f, 1f));
-        }
+            items.Add(new SiegeFX.Core.Actors.LootEntry("gold", $"{goldTotal}-{goldTotal}"));
         if (items.Count == 0) return;
         // Phase 9-SC-9 — enemy drops get the same toss arc as PC drops so
         // the kill→loot moment reads as "items flew off the body" instead of
@@ -24542,12 +24540,10 @@ void main()
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {prop.Template} dropped {string.Join(", ", parts)}");
 
+        // SC-GOLD-PILES — barrel/chest gold lands as a clickable pile too;
+        // pickup credits it (LootPileNow's gold branch).
         if (goldTotal > 0)
-        {
-            _progression?.CreditGold(goldTotal);
-            AddFloatingText($"+{goldTotal} gold", origin + new Vector3(0f, 1.4f, 0f),
-                            new Vector4(1.00f, 0.92f, 0.40f, 1f));
-        }
+            items.Add(new SiegeFX.Core.Actors.LootEntry("gold", $"{goldTotal}-{goldTotal}"));
         if (items.Count == 0) return;
 
         // Short tumble out from the prop center — same throw shape as
