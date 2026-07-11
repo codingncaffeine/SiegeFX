@@ -19351,6 +19351,47 @@ void main()
         }
     }
 
+    /// <summary>SC-COMPANION-GEAR-VISUAL — rebuild a companion's rendered
+    /// held gear (weapon + shield attach) from its live equipment dict so a
+    /// paperdoll swap shows on the body immediately. Mirrors the spawn-time
+    /// tail of <see cref="ResolveNpcEquippedGear"/> but reads
+    /// <c>_memberEquipment</c> instead of the template/instance.</summary>
+    private void RefreshCompanionGearVisuals(ActorRenderState s, int partyIndex)
+    {
+        if (_templateStore is null) return;
+        var dict = GetEquipmentDict(partyIndex);
+        s.WeaponMesh = null; s.WeaponTexture = null; s.WeaponBoneIdx = -1; s.WieldedWeaponRef = null;
+        s.ShieldMesh = null; s.ShieldTexture = null; s.ShieldBoneIdx = -1;
+        int FindBone(string name)
+        {
+            var bones = s.Actor.Mesh.BoneNames;
+            for (int i = 0; i < bones.Count; i++)
+                if (string.Equals(bones[i], name, StringComparison.OrdinalIgnoreCase)) return i;
+            return -1;
+        }
+        var weaponBone = _templateStore.GetAttribute(s.Actor.Template, "body", "bone_translator", "weapon_bone")?.Trim();
+        var shieldBone = _templateStore.GetAttribute(s.Actor.Template, "body", "bone_translator", "shield_bone")?.Trim();
+        if (dict.TryGetValue("es_weapon_hand", out var wref) && !string.IsNullOrWhiteSpace(wref)
+            && TryGetGearVisual(ResolveItemRef(wref), out var wVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(weaponBone) ? "weapon_grip" : weaponBone!);
+            if (idx >= 0)
+            {
+                s.WeaponMesh = wVis.Mesh; s.WeaponTexture = wVis.Tex;
+                s.WeaponBoneIdx = idx; s.WieldedWeaponRef = ResolveItemRef(wref);
+            }
+        }
+        if (dict.TryGetValue("es_shield_hand", out var sref) && !string.IsNullOrWhiteSpace(sref)
+            && TryGetGearVisual(ResolveItemRef(sref), out var sVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(shieldBone) ? "shield_grip" : shieldBone!);
+            if (idx >= 0)
+            {
+                s.ShieldMesh = sVis.Mesh; s.ShieldTexture = sVis.Tex; s.ShieldBoneIdx = idx;
+            }
+        }
+    }
+
     /// <summary>SC-NPC-WEAPONS — item template → cached (StaticMesh, texture)
     /// via its [aspect] model, shared across every actor holding the same
     /// model. Same load recipe as <see cref="TryLoadPlayerWeapon"/>.</summary>
@@ -21548,6 +21589,11 @@ void main()
             // SyncPlayerArmorDefense; CombatResolver mitigates by target
             // Defense, so without this companion armor was display-only).
             SyncMemberArmorDefense(partyIndex);
+            // SC-COMPANION-GEAR-VISUAL — refresh the companion's rendered
+            // held gear from the LIVE dict so paperdoll swaps show on the
+            // body (spawn-time gear came from the template/instance).
+            if (_party.FirstOrDefault(m => m.PartyIndex == partyIndex) is { } visMember)
+                RefreshCompanionGearVisuals(visMember, partyIndex);
             // Companion: rebuild their combat brain from the LIVE equipped weapon
             // so damage / range / attack mode track the gear you just put on them
             // (non-weapon slots only refresh the icon caches cleared above).
