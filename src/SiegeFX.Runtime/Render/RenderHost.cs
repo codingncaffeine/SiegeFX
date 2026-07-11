@@ -4327,6 +4327,7 @@ void main()
             {
                 if (_creator.IsOpen) _creator.OnChar(c);
                 else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
+                else if (_devConsoleOpen && _devItemFocus && c != '`' && c != '~') DevConsoleChar(c);
             };
             kb.KeyDown += (_, key, _) =>
             {
@@ -4379,6 +4380,25 @@ void main()
                     }
                     if (key == Key.Escape) { CloseLoadDialog(); return; }
                     return;
+                }
+                // SC-DEVMODE — tilde toggles the developer console (in-game
+                // only; boot menus and text-entry modals keep the key).
+                if (key == Key.GraveAccent && !_bootMode && _player is not null
+                    && !_saveDialog.IsOpen && !_creator.IsOpen)
+                {
+                    ToggleDevConsole();
+                    return;
+                }
+                if (_devConsoleOpen)
+                {
+                    if (key == Key.Escape) { _devConsoleOpen = false; _devItemFocus = false; return; }
+                    if (_devItemFocus)
+                    {
+                        if (key == Key.Backspace) { DevConsoleChar('\b'); return; }
+                        if (key == Key.Enter || key == Key.KeypadEnter)
+                        { DevSpawnItem(_devItemText); _devItemFocus = false; return; }
+                        return; // field owns the keyboard while focused
+                    }
                 }
                 // Adventurer's Handbook owns the keyboard while open: Escape /
                 // Resume close it; navigation keys page through tips. F12 is
@@ -4809,6 +4829,11 @@ void main()
                     _aboutOpen = false;
                     return;
                 }
+                // SC-DEVMODE — clicks inside the dev console never reach the
+                // world (the panel handles them on mouse-up).
+                if (_devConsoleOpen && btn == MouseButton.Left
+                    && DevConsoleContains((int)m.Position.X, (int)m.Position.Y))
+                    return;
                 // SC-MAINMENU-LOADGAME — the frontend Load window is modal over
                 // the shell; intercept LMB ahead of the submenu handlers below.
                 // A click off the panel (and off the PREVIOUS/NEXT plates)
@@ -5565,6 +5590,10 @@ void main()
                     _optionsMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                // SC-DEVMODE — dev console buttons dispatch on mouse-up.
+                if (_devConsoleOpen && btn == MouseButton.Left
+                    && DevConsoleClick((int)m.Position.X, (int)m.Position.Y))
+                    return;
                 // SC-MAINMENU-LOADGAME — frontend Load window click-up commits
                 // Load/Delete (or PREVIOUS/NEXT), ahead of the submenus.
                 // Same settled-state gate as the mousedown path.
@@ -5930,6 +5959,14 @@ void main()
             // so wheel events feel right inside the inventory/spellbook/vendor.
             mouse.Scroll += (_, wheel) =>
             {
+                // SC-DEVMODE — wheel scrolls the teleport list while the
+                // cursor is over the dev console.
+                if (_devConsoleOpen && DevConsoleContains(
+                        (int)_currentMousePos.X, (int)_currentMousePos.Y))
+                {
+                    _devRegionScroll -= Math.Sign(wheel.Y) * 3;
+                    return;
+                }
                 // Save Game list scrolls with the wheel; consume it so the
                 // camera doesn't also zoom behind the modal.
                 if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
@@ -14317,6 +14354,8 @@ void main()
         // SC-QUEST-TURNIN — authored complete/deactivate edges from the
         // dialogue panel (fire when the turn-in monologue plays).
         FlushDialogueQuestEdges();
+        // SC-DEVMODE — god mode tops the hero's pools back up every tick.
+        TickDevGodMode();
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
         // (not inside DrawBootScene) so the boot sequence keeps advancing
         // even when the render loop is paused (e.g. minimized window).
@@ -15210,6 +15249,290 @@ void main()
         catch (Exception ex)
         {
             Console.Error.WriteLine($"SC-MAINMENU-LOADGAME failed: {ex.Message}");
+        }
+    }
+
+    // ====================================================================
+    // SC-DEVMODE — tilde (~) developer console. A TESTING TOOL, deliberately
+    // plain-styled (not DS1 chrome): god mode, heal, gold, level, item
+    // spawning by template name / pcontent spec, kill-nearby, and a
+    // quick-teleport list of every region in the map tank.
+    // ====================================================================
+    private bool _devConsoleOpen;
+    private bool _devGodMode;
+    private string _devItemText = "";
+    private bool _devItemFocus;
+    private int _devRegionScroll;
+    private List<string>? _devRegionList;
+    private readonly List<(string Id, int X, int Y, int W, int H)> _devButtons = new();
+    private (int X, int Y, int W, int H) _devPanelRect;
+
+    private void ToggleDevConsole()
+    {
+        _devConsoleOpen = !_devConsoleOpen;
+        _devItemFocus = false;
+        if (_devConsoleOpen && _devRegionList is null) BuildDevRegionList();
+        Console.WriteLine($"[dev] console {(_devConsoleOpen ? "open" : "closed")}");
+    }
+
+    /// <summary>Enumerate every region under the map tank's regions root so
+    /// the teleport list covers the whole campaign, not just loaded rings.</summary>
+    private void BuildDevRegionList()
+    {
+        _devRegionList = new List<string>();
+        try
+        {
+            if (_playMapTank is null || _regionPath is null) return;
+            // ".../regions/<name>" → root = everything through "/regions".
+            var norm = _regionPath.TrimEnd('/');
+            int idx = norm.LastIndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return;
+            string root = norm[..(idx + "/regions".Length)];
+            var reader = new TankReader(_playMapTank);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var dir in reader.ListDirectories())
+            {
+                if (!dir.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase)) continue;
+                var rest = dir[(root.Length + 1)..];
+                int slash = rest.IndexOf('/');
+                var name = slash >= 0 ? rest[..slash] : rest;
+                if (name.Length == 0) continue;
+                if (seen.Add(name)) _devRegionList.Add($"{root}/{name}");
+            }
+            _devRegionList.Sort(StringComparer.OrdinalIgnoreCase);
+            Console.WriteLine($"[dev] teleport list: {_devRegionList.Count} region(s)");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[dev] region list failed: {ex.Message}");
+        }
+    }
+
+    private void TickDevGodMode()
+    {
+        if (!_devGodMode || _player is null || _player.IsDead) return;
+        var st = _player.Actor.Stats;
+        _player.Actor.Combat.Heal(st.MaxLife);
+        _player.Actor.Combat.RestoreMana(st.MaxMana);
+    }
+
+    private bool DevConsoleContains(int px, int py)
+        => _devConsoleOpen && px >= _devPanelRect.X && px < _devPanelRect.X + _devPanelRect.W
+           && py >= _devPanelRect.Y && py < _devPanelRect.Y + _devPanelRect.H;
+
+    private void DevConsoleChar(char c)
+    {
+        if (c == '\b') { if (_devItemText.Length > 0) _devItemText = _devItemText[..^1]; return; }
+        if (char.IsControl(c)) return;
+        if (_devItemText.Length < 48) _devItemText += c;
+    }
+
+    private bool DevConsoleClick(int px, int py)
+    {
+        if (!_devConsoleOpen) return false;
+        foreach (var (id, x, y, w, h) in _devButtons)
+        {
+            if (px < x || px >= x + w || py < y || py >= y + h) continue;
+            switch (id)
+            {
+                case "god":
+                    _devGodMode = !_devGodMode;
+                    Console.WriteLine($"[dev] god mode {(_devGodMode ? "ON" : "off")}");
+                    break;
+                case "heal":
+                    if (_player is not null)
+                    {
+                        var st = _player.Actor.Stats;
+                        _player.Actor.Combat.Heal(st.MaxLife);
+                        _player.Actor.Combat.RestoreMana(st.MaxMana);
+                    }
+                    break;
+                case "gold1":  _progression?.CreditGold(1_000);  Console.WriteLine("[dev] +1,000 gold"); break;
+                case "gold10": _progression?.CreditGold(10_000); Console.WriteLine("[dev] +10,000 gold"); break;
+                case "level":
+                    if (_progression is not null)
+                        AwardRawXp(Math.Max(1, _progression.XpToNextLevel), SiegeFX.Core.Assets.SkillKind.Melee);
+                    break;
+                case "kill":
+                    DevKillNearby();
+                    break;
+                case "spawn":
+                    DevSpawnItem(_devItemText);
+                    break;
+                case "itemfield":
+                    _devItemFocus = true;
+                    return true;
+                default:
+                    if (id.StartsWith("rgn:", StringComparison.Ordinal))
+                        DevTeleportToRegion(id[4..]);
+                    break;
+            }
+            _devItemFocus = false;
+            return true;
+        }
+        // A click inside the panel (but off any button) just eats the event.
+        if (DevConsoleContains(px, py)) { _devItemFocus = false; return true; }
+        return false;
+    }
+
+    private void DevKillNearby()
+    {
+        if (_player is null) return;
+        var pp = _player.CurrentTransform.Translation;
+        int hit = 0;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
+            if (!s.Actor.Stats.IsCombatant) continue;
+            var d = s.CurrentTransform.Translation - pp;
+            if (d.X * d.X + d.Z * d.Z > 15f * 15f) continue;
+            s.Actor.Combat.ApplyDamage(1e9f);
+            hit++;
+        }
+        Console.WriteLine($"[dev] kill nearby: {hit} target(s)");
+    }
+
+    private void DevSpawnItem(string text)
+    {
+        text = text.Trim();
+        if (text.Length == 0 || _player is null) return;
+        if (!text.StartsWith('#') && _templateStore is not null && !_templateStore.TryGet(text, out _))
+        {
+            Console.WriteLine($"[dev] spawn: unknown template '{text}' (use a template name or #pcontent/spec)");
+            return;
+        }
+        var fwd = Vector3.TransformNormal(Vector3.UnitZ, _player.CurrentTransform);
+        if (fwd.LengthSquared() < 1e-4f) fwd = Vector3.UnitZ;
+        fwd = Vector3.Normalize(new Vector3(fwd.X, 0f, fwd.Z));
+        var dropPos = _player.CurrentTransform.Translation + fwd * 1.2f;
+        _lootPiles.Add(new LootPile(dropPos,
+            new List<SiegeFX.Core.Actors.LootEntry> { new("", text) })
+        {
+            RestPitch = ComputeLootRestPitch(text),
+        });
+        Console.WriteLine($"[dev] spawn: dropped '{text}' at ({dropPos.X:F1},{dropPos.Z:F1})");
+    }
+
+    private void DevTeleportToRegion(string regionPath)
+    {
+        string? mapTank = _regionMapTankPath, terrain = _regionTerrainTankPath,
+                logic = _playLogicTankPath, objects = _playObjectsTankPath;
+        if ((mapTank is null || terrain is null || logic is null || objects is null)
+            && _ds1ResourcesDir is not null)
+        {
+            var root = System.IO.Path.GetDirectoryName(_ds1ResourcesDir.TrimEnd('\\', '/')) ?? _ds1ResourcesDir;
+            mapTank ??= System.IO.Path.Combine(root, "Maps", "World.dsmap");
+            terrain ??= System.IO.Path.Combine(_ds1ResourcesDir, "Terrain.dsres");
+            logic   ??= System.IO.Path.Combine(_ds1ResourcesDir, "Logic.dsres");
+            objects ??= System.IO.Path.Combine(_ds1ResourcesDir, "Objects.dsres");
+        }
+        if (mapTank is null || terrain is null || logic is null || objects is null)
+        {
+            Console.WriteLine("[dev] teleport: no tank paths available in this session");
+            return;
+        }
+        try
+        {
+            string? exePath = Environment.ProcessPath;
+            if (exePath is null) { Console.WriteLine("[dev] teleport: no ProcessPath"); return; }
+            bool underDotnet = string.Equals(System.IO.Path.GetFileNameWithoutExtension(exePath),
+                "dotnet", StringComparison.OrdinalIgnoreCase);
+            var psi = new System.Diagnostics.ProcessStartInfo { FileName = exePath, UseShellExecute = false };
+            if (underDotnet)
+            {
+                string asmPath = typeof(RenderHost).Assembly.Location;
+                if (string.IsNullOrEmpty(asmPath)) { Console.WriteLine("[dev] teleport: no assembly path"); return; }
+                psi.ArgumentList.Add(asmPath);
+            }
+            psi.ArgumentList.Add("--play-region");
+            psi.ArgumentList.Add(mapTank);
+            psi.ArgumentList.Add(terrain);
+            psi.ArgumentList.Add(logic);
+            psi.ArgumentList.Add(objects);
+            psi.ArgumentList.Add(regionPath);
+            psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
+            psi.Environment["SIEGEFX_NOVIDEO"] = "1";
+            psi.Environment["SIEGEFX_CREATOR"] = "0";
+            Console.WriteLine($"[dev] teleporting: relaunch into {regionPath}");
+            System.Diagnostics.Process.Start(psi);
+            _window.Close();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[dev] teleport failed: {ex.Message}");
+        }
+    }
+
+    private void DrawDevConsole(int vw, int vh)
+    {
+        if (!_devConsoleOpen || _barRenderer is null || _textRenderer is null) return;
+        _devButtons.Clear();
+
+        const int pad = 8, rowH = 22, btnH = 20;
+        int w = 280;
+        int x = 12, y = 72;
+        int visRegions = Math.Min(12, Math.Max(0, (_devRegionList?.Count ?? 0)));
+        int h = pad + 16 + (rowH * 4) + 30 + 22 + (visRegions * 18) + pad + 20;
+        _devPanelRect = (x, y, w, h);
+
+        _barRenderer.DrawRect(vw, vh, x, y, w, h, new Vector4(0.05f, 0.06f, 0.08f, 0.92f));
+        _barRenderer.DrawBorder(vw, vh, x, y, w, h, new Vector4(0.35f, 0.75f, 0.45f, 1f));
+
+        var ink   = new Vector4(0.80f, 0.95f, 0.82f, 1f);
+        var dim   = new Vector4(0.55f, 0.65f, 0.58f, 1f);
+        var hot   = new Vector4(1f, 0.85f, 0.35f, 1f);
+        int cy = y + pad;
+        _textRenderer.DrawString(vw, vh, "DEV CONSOLE  (~)", x + pad, cy, hot, 1);
+        cy += 18;
+
+        void Button(string id, string label, int bx, int bw, bool lit = false)
+        {
+            _barRenderer.DrawRect(vw, vh, bx, cy, bw, btnH, new Vector4(0.12f, 0.16f, 0.14f, 1f));
+            _barRenderer.DrawBorder(vw, vh, bx, cy, bw, btnH, lit ? hot : new Vector4(0.30f, 0.45f, 0.35f, 1f));
+            _textRenderer.DrawString(vw, vh, label, bx + 6, cy + 4, lit ? hot : ink, 1);
+            _devButtons.Add((id, bx, cy, bw, btnH));
+        }
+
+        Button("god",  _devGodMode ? "GOD MODE: ON" : "GOD MODE: off", x + pad, 130, _devGodMode);
+        Button("heal", "HEAL FULL", x + pad + 138, 126);
+        cy += rowH;
+        Button("gold1",  "+1,000 GOLD", x + pad, 130);
+        Button("gold10", "+10,000 GOLD", x + pad + 138, 126);
+        cy += rowH;
+        Button("level", "LEVEL UP", x + pad, 130);
+        Button("kill",  "KILL NEARBY", x + pad + 138, 126);
+        cy += rowH;
+
+        // Item spawn: text field + button.
+        _barRenderer.DrawRect(vw, vh, x + pad, cy, 190, btnH, new Vector4(0.02f, 0.03f, 0.04f, 1f));
+        _barRenderer.DrawBorder(vw, vh, x + pad, cy, 190, btnH,
+            _devItemFocus ? hot : new Vector4(0.30f, 0.45f, 0.35f, 1f));
+        string shown = _devItemText.Length == 0 && !_devItemFocus ? "item template / #spec" : _devItemText;
+        _textRenderer.DrawString(vw, vh, shown + (_devItemFocus ? "_" : ""),
+            x + pad + 5, cy + 4, _devItemText.Length == 0 ? dim : ink, 1);
+        _devButtons.Add(("itemfield", x + pad, cy, 190, btnH));
+        Button("spawn", "SPAWN", x + pad + 198, 66);
+        cy += rowH + 8;
+
+        _textRenderer.DrawString(vw, vh, $"TELEPORT — wheel scrolls ({_devRegionList?.Count ?? 0})",
+            x + pad, cy, dim, 1);
+        cy += 18;
+        if (_devRegionList is { Count: > 0 })
+        {
+            _devRegionScroll = Math.Clamp(_devRegionScroll, 0, Math.Max(0, _devRegionList.Count - visRegions));
+            for (int i = 0; i < visRegions; i++)
+            {
+                int ri = _devRegionScroll + i;
+                if (ri >= _devRegionList.Count) break;
+                var path = _devRegionList[ri];
+                var name = path[(path.LastIndexOf('/') + 1)..];
+                bool current = string.Equals(path.TrimEnd('/'), _currentPlayerRegion?.TrimEnd('/'),
+                                             StringComparison.OrdinalIgnoreCase);
+                _textRenderer.DrawString(vw, vh, (current ? "> " : "  ") + name,
+                    x + pad + 4, cy + 2, current ? hot : ink, 1);
+                _devButtons.Add(($"rgn:{path}", x + pad, cy, w - pad * 2, 17));
+                cy += 18;
+            }
         }
     }
 
@@ -23460,6 +23783,8 @@ void main()
                 _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer,
                                TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
+            // SC-DEVMODE — dev console overlay (topmost among gameplay HUD).
+            DrawDevConsole(size.X, size.Y);
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
             // menu so a future "open Options from pause" hookup stacks
             // visually correctly (Options on top of Pause's dim layer).
