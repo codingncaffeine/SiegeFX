@@ -122,51 +122,63 @@ public sealed class Actor
         Host.OverrideAnimIndex(idx, durationSec);
     }
 
-    /// <summary>Phase 21-SC-BARREL-FOLD — DS1 chore_attack ships up to 5
-    /// sub-anims per stance (0mid / high / loww / extr / qffg). The Skrit
-    /// runtime's <c>select_attack</c> picks among them per swing — alternating
-    /// 0mid + high gives the "horizontal R→L / backhand L→R" cadence the
-    /// player expects. <see cref="AttackVariants"/> stores each loaded
-    /// sub-anim PRS for the player template's resolved stance, parallel to
-    /// the single-clip slot in <see cref="Clips"/>; <see cref="SwingIndex"/>
-    /// counts swings and lets PerformPlayerSwing rotate which variant to
-    /// publish into <c>Clips[chore_attack_idx]</c> before <see cref="PlayChoreOnce"/>
-    /// fires. Empty / null when the template only authored one sub-anim.</summary>
+    /// <summary>Phase 18 — every authored chore_attack sub-anim for the
+    /// resolved stance EXCLUDING the trailing <c>qffg</c> entry (the
+    /// quick-fighting fidget filler, held in <see cref="AttackPadClip"/>).
+    /// DS1 picks uniformly at random among these per swing
+    /// (job_attack_object_melee.skrit: <c>RandomInt(0, numSubAnims-2)</c>).
+    /// Null / empty when the template authored a single sub-anim.</summary>
     public PrsAnimation[]? AttackVariants { get; internal set; }
 
-    /// <summary>Phase 21-SC-BARREL-FOLD — running swing counter; rotates the
-    /// active <see cref="AttackVariants"/> entry on each successful melee
-    /// swing. Wraps modulo the variant count so the alternation stays even.</summary>
-    public int SwingIndex { get; internal set; }
+    /// <summary>Phase 18 — the chore_attack <c>qffg</c> clip (usually the
+    /// fighting-stance fidget <c>dff</c>): the filler DS1 blends in when the
+    /// weapon's reload_delay stretches the attack period past the swing
+    /// clip. Null when the template doesn't author one.</summary>
+    public PrsAnimation? AttackPadClip { get; internal set; }
 
-    /// <summary>Phase 21-SC-BARREL-FOLD — call before each swing to swap
-    /// the currently-active chore_attack clip to the next variant. No-op if
-    /// the template only loaded a single attack sub-anim. Returns the
-    /// authored AnimLength of the picked variant so the caller can pass it
-    /// straight to <see cref="PlayChoreOnce"/> (the Phase 12 hardcoded 0.6s
-    /// truncated DS1's 0.83s fs1 swing by ~27%).</summary>
-    public float PrepNextSwingClip()
+    /// <summary>Phase 18 — the authored <c>[anim_durations] fsN</c> value
+    /// for the resolved stance (heroes author these; monsters don't).
+    /// 0 = not authored, use the picked clip's own AnimLength. This is
+    /// DS1's <c>GetBaseDuration(CHORE_ATTACK, stance)</c> input to the
+    /// swing period.</summary>
+    public float AttackBaseDuration { get; internal set; }
+
+    /// <summary>Phase 18 — the fs# the attack set actually loaded at
+    /// (after preferred-stance fallback). Diagnostic.</summary>
+    public int AttackStance { get; internal set; } = -1;
+
+    // Per-actor variant RNG, seeded from the placement so a given spawn's
+    // swing sequence is stable across identical runs (same convention as
+    // the loot roller).
+    Random? _swingRng;
+
+    /// <summary>Phase 18 — pick the next attack clip DS1-style: uniform
+    /// random over the non-qffg variants, published into
+    /// <c>Clips[chore_attack]</c> for the render layer. Returns the clip
+    /// (null when the template ships no attack chore).</summary>
+    public PrsAnimation? PickNextSwingClip()
     {
-        // Pad the swing-clip duration to give the post-swing pose a beat
-        // before the override expires. NPC brains pass SwingPeriod * 0.85
-        // (≈1.28s for SwingPeriod=1.5) for the same reason — without the
-        // pad the clip plays in 0.83s and snaps straight back to idle,
-        // which reads as "sped up" because there's no follow-through.
-        // 1.5x matches the NPC cadence on a 0.83s clip (0.83 * 1.5 ≈ 1.25)
-        // and lets the per-actor advance loop hold the final frame via
-        // its non-dead end-hold path while the override drains.
-        const float RecoveryPadding = 1.5f;
         int idx = GetClipIndex("chore_attack");
-        if (idx < 0) return 0.6f;
+        if (idx < 0) return null;
         var variants = AttackVariants;
-        if (variants is not null && variants.Length > 0)
+        if (variants is { Length: > 0 })
         {
-            var pick = variants[SwingIndex % variants.Length];
-            SwingIndex++;
+            _swingRng ??= new Random(unchecked((int)Instance.Scid ^ 0x5157_4E47));
+            var pick = variants[_swingRng.Next(variants.Length)];
             Clips[idx] = pick;
-            return (pick.AnimLength > 0f ? pick.AnimLength : 0.6f) * RecoveryPadding;
+            return pick;
         }
-        var current = Clips[idx];
-        return (current.AnimLength > 0f ? current.AnimLength : 0.6f) * RecoveryPadding;
+        return Clips[idx];
+    }
+
+    /// <summary>Phase 18 — swap the active chore_attack slot to the qffg pad
+    /// clip (between-swings fighting fidget). Returns false when none is
+    /// authored — callers then just end-hold the swing clip.</summary>
+    public bool SwapToPadClip()
+    {
+        int idx = GetClipIndex("chore_attack");
+        if (idx < 0 || AttackPadClip is null) return false;
+        Clips[idx] = AttackPadClip;
+        return true;
     }
 }

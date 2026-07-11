@@ -14901,6 +14901,9 @@ void main()
         TickDevGodMode();
         // SC-DEFEAT — hero death edge + party-wipe presentation.
         TickDefeat((float)dt);
+        // SC-ATTACK-SCHED (Phase 18c) — advance the player's in-flight swing
+        // (BSWG whoosh, FIRE-note damage, qffg pad, auto-attack re-engage).
+        TickPlayerSwing((float)dt);
         // SC-MOUSE-FX — destination-marker fade + hover pick.
         TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
@@ -18074,18 +18077,22 @@ void main()
     /// shield stays in stance 1 with the existing bone-attach on shield_grip.</summary>
     private int? ComputePreferredPlayerStance(IReadOnlyDictionary<string, string>? slots)
     {
+        // Phase 18 — full CANIMCLASS mapping via WeaponStance (attack_class +
+        // is_two_handed + real-shield check). The old melee→1 / ranged→5 map
+        // put bows in the STAFF stance (5; bows are 6) and never selected the
+        // shield (2), two-handed (3/4), staff (5), or shield-only (8) sets.
         if (_templateStore is null || slots is null) return null;
-        if (!slots.TryGetValue("es_weapon_hand", out var weaponRef)
-            || string.IsNullOrWhiteSpace(weaponRef)) return null;
-        if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
-        for (var t = weaponTpl; t is not null; t = t.Specializes)
-        {
-            if (string.Equals(t.Name, "weapon_melee", StringComparison.OrdinalIgnoreCase))
-                return 1;
-            if (string.Equals(t.Name, "weapon_ranged", StringComparison.OrdinalIgnoreCase))
-                return 5;
-        }
-        return null;
+        SiegeFX.Core.Assets.Template? weaponTpl = null;
+        if (slots.TryGetValue("es_weapon_hand", out var weaponRef)
+            && !string.IsNullOrWhiteSpace(weaponRef))
+            _templateStore.TryGet(ResolveItemRef(weaponRef), out weaponTpl);
+        bool shield = false;
+        if (slots.TryGetValue("es_shield_hand", out var shieldRef)
+            && !string.IsNullOrWhiteSpace(shieldRef)
+            && _templateStore.TryGet(ResolveItemRef(shieldRef), out var shieldTpl))
+            shield = SiegeFX.Core.Actors.WeaponStance.IsShield(shieldTpl);
+        if (weaponTpl is null && !shield) return SiegeFX.Core.Actors.WeaponStance.Unarmed;
+        return SiegeFX.Core.Actors.WeaponStance.Resolve(_templateStore, weaponTpl, shield);
     }
 
     /// <summary>Phase 9-SC-10 — pick the natural ground orientation for a freshly
@@ -19251,24 +19258,21 @@ void main()
     private void PerformPropBreak(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || prop.IsDestroyed) return;
-        // Phase 21-SC-BARREL-FOLD — same one-swing-per-animation gate
-        // PerformPlayerSwing uses. Click-spam on a barrel pre-fold
-        // shattered the prop on the first click but kept firing damage
-        // / debris / loot rolls on every queued click; the gate makes
-        // that a no-op while the swing chore is in flight.
-        if (_player.Actor.Host.IsOverrideActive) return;
+        // Phase 18c — same one-swing-per-iteration gate as PerformPlayerSwing.
+        if (_playerSwing is not null || _player.Actor.Host.IsOverrideActive) return;
         // Phase 21-SC-BARREL-FOLD — face the prop before swinging so
         // pivoting from a finished enemy to a barrel (or vice-versa)
         // doesn't swing in the stale direction.
         SnapPlayerFacingTo(prop.World.Translation);
-        // Phase 21-SC-BARREL-FOLD — rotate through chore_attack sub-anims
-        // (0mid + high alternates as a R→L / L→R cadence per the user's
-        // observed DS1 behavior) and play the picked clip's full authored
-        // duration instead of the old hardcoded 0.6s — DS1's fs1 (1H melee)
-        // is 0.83s, so 0.6 was cutting the swing off at ~72%.
-        float swingDur = _player.Actor.PrepNextSwingClip();
-        _player.Actor.PlayChoreOnce("chore_attack", swingDur);
-        _audio?.Play(SfxMeleeSwingGroup);
+        // Phase 18c — the break rides the same FIRE-note schedule as combat
+        // swings: damage/debris/loot land when the blade actually arrives.
+        StartPlayerSwing(target: null, prop, attacker);
+    }
+
+    /// <summary>Phase 18c — the FIRE-note strike against a breakable.</summary>
+    private void ResolveSwingHitOnProp(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
+    {
+        if (_player is null || prop.IsDestroyed) return;
         // Single-hit shatter is the DS1 default for life=1 props; we still
         // roll real damage so heavier crates (if any) would survive a weak
         // swing rather than always one-shotting.
@@ -20960,28 +20964,141 @@ void main()
         _playerRenderFacingNext = _playerFacing;
     }
 
+    // SC-ATTACK-SCHED (Phase 18c) — the player's in-flight attack iteration.
+    // DS1's model: the swing clip plays at natural rate; the whoosh fires at
+    // the clip's BSWG note; damage lands as each FIRE note crosses (the
+    // unarmed 1-2 punch carries two); the iteration completes at
+    // period = weapon reload_delay + base attack duration, and only then can
+    // the next swing start. Target OR prop, never both.
+    private sealed class PlayerSwingState
+    {
+        public required SiegeFX.Core.Actors.SwingSchedule Sched;
+        public ActorRenderState? Target;
+        public StaticPropInstance? Prop;
+        public required SiegeFX.Core.Actors.ActorStats Attacker;
+    }
+    private PlayerSwingState? _playerSwing;
+
+    /// <summary>Phase 18c — the equipped weapon's authored [attack]
+    /// reload_delay (the additive per-blow delay; 0 for every shipped melee
+    /// weapon, 0.15-0.3 on bows). Unarmed falls back to the hero template's
+    /// own [attack] block, exactly like DS1's weapon==self path.</summary>
+    private float PlayerWeaponReloadDelay()
+    {
+        if (_templateStore is null || _player is null) return 0f;
+        SiegeFX.Core.Assets.Template? src = null;
+        if (_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef)
+            && !string.IsNullOrWhiteSpace(weaponRef))
+            _templateStore.TryGet(ResolveItemRef(weaponRef), out src);
+        src ??= _player.Actor.Template;
+        var raw = _templateStore.GetAttribute(src, "attack", "reload_delay");
+        return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0f ? v : 0f;
+    }
+
+    /// <summary>Phase 18c — begin a player attack iteration against an actor.
+    /// Damage no longer applies here — it lands when the clip's FIRE note
+    /// crosses in <see cref="TickPlayerSwing"/>.</summary>
     private void PerformPlayerSwing(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
     {
         if (_player is null || best.IsDead) return;
-        // Phase 21-SC-BARREL-FOLD — gate rapid clicks on the swing
-        // animation. Pre-fold a click-spammed RMB fired full damage +
-        // swing audio per click while the chore override silently got
-        // replaced each time, producing 5-6 audible "hits" per visible
-        // swing arc. DS1 locks the player to one swing per animation;
-        // mirroring that by ignoring the click while a chore_attack
-        // override is still draining is the simplest faithful version.
-        if (_player.Actor.Host.IsOverrideActive) return;
-        // Phase 12-SC-2 / 21-SC-BARREL-FOLD — face the target before the
-        // swing fires so finishing enemy 1 then attacking enemy 2 in the
-        // same melee position pivots the hero to face the new victim
-        // instead of swinging in the previous direction.
+        // One swing per iteration — click spam while a swing is in flight
+        // is a no-op (DS1 locks the player to one swing per animation).
+        if (_playerSwing is not null || _player.Actor.Host.IsOverrideActive) return;
         SnapPlayerFacingTo(best.CurrentTransform.Translation);
-        // Variant alternation (0mid ↔ high so the swing alternates
-        // R→L horizontal and L→R backhand) plus the clip's authored
-        // duration replace the pre-fold hardcoded 0.6s that truncated DS1's
-        // 0.83s fs1 swing.
-        float swingDur = _player.Actor.PrepNextSwingClip();
-        _player.Actor.PlayChoreOnce("chore_attack", swingDur);
+        StartPlayerSwing(target: best, prop: null, attacker);
+    }
+
+    private void StartPlayerSwing(ActorRenderState? target, StaticPropInstance? prop,
+                                  SiegeFX.Core.Actors.ActorStats attacker)
+    {
+        var clip = _player!.Actor.PickNextSwingClip();
+        if (clip is null)
+        {
+            // No authored attack chore — land the hit immediately (legacy
+            // path; shipped combatant templates all author chore_attack).
+            if (target is not null) ResolveSwingHitOnActor(target, attacker);
+            if (prop is not null) ResolveSwingHitOnProp(prop, attacker);
+            return;
+        }
+        float clipLen = clip.AnimLength > 0f ? clip.AnimLength : 0.83f;
+        // Period = authored base duration for the stance (heroes author
+        // [anim_durations]; fall back to the picked clip) + the weapon's
+        // additive reload_delay. job_attack_object_melee.skrit verbatim.
+        float baseDur = _player.Actor.AttackBaseDuration > 0f
+            ? _player.Actor.AttackBaseDuration : clipLen;
+        _playerSwing = new PlayerSwingState
+        {
+            Sched = new SiegeFX.Core.Actors.SwingSchedule(clip, baseDur + PlayerWeaponReloadDelay()),
+            Target = target,
+            Prop = prop,
+            Attacker = attacker,
+        };
+        _player.Actor.PlayChoreOnce("chore_attack", clipLen);
+    }
+
+    /// <summary>Phase 18c — advance the player's swing clock: whoosh at BSWG,
+    /// damage at each FIRE, qffg pad after the clip when the period runs
+    /// longer, slot freed at period end.</summary>
+    private void TickPlayerSwing(float dt)
+    {
+        if (_playerSwing is null || _player is null) return;
+        var ps = _playerSwing;
+        int fires = ps.Sched.Advance(dt, out bool whoosh, out bool pad);
+        if (whoosh) _audio?.Play(SfxMeleeSwingGroup);
+        if (pad && _player.Actor.SwapToPadClip())
+            _player.Actor.PlayChoreOnce("chore_attack",
+                MathF.Max(0.1f, ps.Sched.Period - ps.Sched.Elapsed));
+        for (int i = 0; i < fires; i++)
+        {
+            if (ps.Target is not null) ResolveSwingHitOnActor(ps.Target, ps.Attacker);
+            if (ps.Prop is not null) ResolveSwingHitOnProp(ps.Prop, ps.Attacker);
+        }
+        if (ps.Sched.Complete)
+        {
+            _playerSwing = null;
+            // SC-AUTO-ATTACK — DS1's attack job loops: WE_ANIM_DONE starts
+            // the next iteration against the same target. A live engaged
+            // target still in reach swings again immediately; one that
+            // stepped out re-queues the walk-up-and-swing so the hero
+            // chases and re-engages. Stops naturally on death, on a new
+            // click (TryClickToMove clears _pendingAttackTarget), or S.
+            if (ps.Target is { } tgt && !tgt.IsDead && _player is not null && !_player.IsDead)
+            {
+                var pp = _player.CurrentTransform.Translation;
+                var tp = tgt.CurrentTransform.Translation;
+                float reach = (_player.Actor.Stats.AttackRange > 0.1f ? _player.Actor.Stats.AttackRange : 2f) + 1.2f;
+                float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
+                if (dx * dx + dz * dz <= reach * reach)
+                {
+                    SnapPlayerFacingTo(tp);
+                    StartPlayerSwing(tgt, prop: null, ps.Attacker);
+                }
+                else
+                {
+                    _pendingAttackTarget = tgt;
+                }
+            }
+        }
+    }
+
+    /// <summary>Phase 18c — the strike lands (FIRE note). The target had the
+    /// whole windup to die or step away: a dead target wastes the blow; one
+    /// out of reach whiffs with the miss cue, exactly the flavor DS1's
+    /// engaged-hit processing produces.</summary>
+    private void ResolveSwingHitOnActor(ActorRenderState best, SiegeFX.Core.Actors.ActorStats attacker)
+    {
+        if (_player is null || best.IsDead) return;
+        var pp = _player.CurrentTransform.Translation;
+        var tp = best.CurrentTransform.Translation;
+        float reach = (_player.Actor.Stats.AttackRange > 0.1f ? _player.Actor.Stats.AttackRange : 2f) + 1.2f;
+        float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
+        var hitPos = tp + new Vector3(0f, 1.0f, 0f);
+        if (dx * dx + dz * dz > reach * reach)
+        {
+            _audio?.PlayAt(SfxMeleeMiss, hitPos);
+            return;
+        }
         // Phase 14c: damage derives from the equipped weapon when es_weapon_hand is
         // populated; otherwise the 1-3 HeroBaselineStats fallback stands in for
         // bare-fisted swings. DS1 hero templates author damage=0 because the real
@@ -20996,14 +21113,8 @@ void main()
             $"click-attack: hit {best.Actor.Template.Name} for {dealt:F0} " +
             $"({life:F0}/{maxLife:F0}){(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
 
-        // Phase 18b — every swing makes the swing sound; only swings that
-        // land also play the flesh-hit variant. Whiff condition (dealt <=
-        // 0) hits the miss SFX instead, which mirrors DS1's "hit/whiff
-        // pair" behavior on melee.
-        // Phase 18c — swing stays player-relative (your weapon), but the
-        // hit/miss happens at the target's chest and pans accordingly.
-        _audio?.Play(SfxMeleeSwingGroup);
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        // Phase 18b — hits land the flesh-hit variant at the target's chest;
+        // whiffs play the miss cue (the swing whoosh rode the BSWG note).
         if (dealt > 0f)
         {
             PlayMeleeHit(hitPos);

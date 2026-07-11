@@ -188,15 +188,67 @@ public sealed class ActorBrain
             AggroRadius = selfStats.SightRange;
             DisengageRadius = MathF.Max(selfStats.SightRange * 1.75f, selfStats.SightRange + 4f);
         }
-        // [attack] reload_delay is the authored swing cadence (krug_throw = 1.0s).
-        // Values under half a second are "no extra delay" markers on melee
-        // templates whose cadence DS1 derives from the animation — keep the
-        // 1.5s animation-matched default there.
-        if (selfStats.ReloadDelay >= 0.5f) SwingPeriod = selfStats.ReloadDelay;
-        // First swing fires immediately on entering Attack (no warmup), then the
-        // cooldown gates subsequent ones. Initial value is irrelevant since
-        // Attack-state entry resets it; explicit zero documents the intent.
+        // Phase 18c — [attack] reload_delay is ADDITIVE: DS1's swing period is
+        // reload_delay + the stance's base attack-anim duration
+        // (job_attack_object_melee.skrit). SwingPeriod survives only as the
+        // fallback for actors with no attack clip. The old ">= 0.5 replaces
+        // the period" reading underrated slow throwers (krug rock: 1.0
+        // authored + ~1.2s anim ≈ 2.2s true cadence, not 1.0).
         _swingCooldown = 0f;
+    }
+
+    // Phase 18c — the in-flight attack iteration (see SwingSchedule). Damage
+    // lands on the clip's FIRE note(s); the iteration completes at
+    // period = reload_delay + base attack duration, and only then can the
+    // next swing start. Advanced at the top of Tick regardless of state so
+    // a target that dies or steps away mid-swing still gets the follow-
+    // through (DS1's CleaningUpAndExiting lets the animation finish).
+    SwingSchedule? _activeSwing;
+    bool _activeSwingRanged;
+
+    void StartSwing(bool ranged)
+    {
+        var clip = _selfActor?.PickNextSwingClip();
+        if (clip is null || _selfActor is null)
+        {
+            // No attack chore authored — legacy instant cadence.
+            _activeSwing = null;
+            return;
+        }
+        float clipLen = clip.AnimLength > 0f ? clip.AnimLength : 1.0f;
+        float baseDur = _selfActor.AttackBaseDuration > 0f ? _selfActor.AttackBaseDuration : clipLen;
+        _activeSwing = new SwingSchedule(clip, baseDur + MathF.Max(0f, _selfStats.ReloadDelay));
+        _activeSwingRanged = ranged;
+        _selfActor.PlayChoreOnce("chore_attack", clipLen);
+        JustSwung = true;
+    }
+
+    void AdvanceSwing(float dt, Vector3? targetPos, ActorCombatState? targetCombat, ActorStats? targetStats)
+    {
+        if (_activeSwing is not { } sw) return;
+        int fires = sw.Advance(dt, out _, out bool pad);
+        if (pad && _selfActor?.SwapToPadClip() == true)
+            _selfActor.PlayChoreOnce("chore_attack", MathF.Max(0.1f, sw.Period - sw.Elapsed));
+        for (; fires > 0; fires--)
+        {
+            if (targetPos is null || targetCombat is null || targetStats is null || targetCombat.IsDead)
+                continue;
+            if (!_activeSwingRanged)
+            {
+                // The target had the whole windup to step away — out of
+                // reach at the FIRE moment is a whiff.
+                if (DistXZ(Wander.Position, targetPos.Value) > MeleeRange * 1.5f) continue;
+            }
+            float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
+                attackerIsPlayer: PartyAligned, ranged: _activeSwingRanged);
+            targetCombat.ApplyDamage(raw);
+            if (_activeSwingRanged)
+            {
+                _justFiredRanged = true;
+                _lastFireTarget = targetPos.Value;
+            }
+        }
+        if (sw.Complete) _activeSwing = null;
     }
 
     /// <summary>
@@ -219,6 +271,10 @@ public sealed class ActorBrain
 
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
+
+        // Phase 18c — follow the in-flight swing through regardless of state
+        // transitions (FIRE-note damage, qffg pad, iteration completion).
+        AdvanceSwing(dt, targetPos, targetCombat, targetStats);
 
         // SC-AI-FLEE — engaged + dropped under the authored life ratio →
         // break off and run flee_distance away from the target. One charge
@@ -270,48 +326,41 @@ public sealed class ActorBrain
                 float holdRange = meleeNow ? MeleeRange * 1.2f : StandoffRange * 1.15f;
                 if (distXZ > holdRange) { State = BrainState.Chase; _attackFacing = null; break; }
                 FaceTarget(targetPos!.Value);
-                _swingCooldown -= dt;
-                if (_swingCooldown <= 0f)
+                if (meleeNow || Mode != AttackMode.Magic)
                 {
-                    if (meleeNow)
+                    // Phase 18c — schedule-driven cadence: a new iteration
+                    // starts only when no swing is in flight; damage lands
+                    // on the clip's FIRE note inside AdvanceSwing. Actors
+                    // with no attack clip (rare) fall back to the legacy
+                    // instant hit on the SwingPeriod cooldown.
+                    _swingCooldown -= dt;
+                    if (_activeSwing is null && _swingCooldown <= 0f)
                     {
-                        _swingCooldown = SwingPeriod;
-                        if (targetStats is not null)
+                        StartSwing(ranged: !meleeNow);
+                        if (_activeSwing is null)
                         {
-                            float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
-                                attackerIsPlayer: PartyAligned);
-                            targetCombat!.ApplyDamage(raw);
+                            // Legacy clip-less path.
+                            _swingCooldown = SwingPeriod;
+                            if (targetStats is not null)
+                            {
+                                float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
+                                    attackerIsPlayer: PartyAligned, ranged: !meleeNow);
+                                targetCombat!.ApplyDamage(raw);
+                            }
+                            JustSwung = true;
+                            if (!meleeNow)
+                            {
+                                _justFiredRanged = true;
+                                _lastFireTarget = targetPos!.Value;
+                            }
                         }
-                        // Phase 12-SC-2 — play the swing chore for ~85% of the cooldown
-                        // so the next swing's clip swap reads as a fresh strike instead
-                        // of looping a still-running animation. Falls back silently if
-                        // the template doesn't ship a chore_attack (chickens, props).
-                        _selfActor?.PlayChoreOnce("chore_attack", SwingPeriod * 0.85f);
-                        // SC-ENEMY-AUDIO-AUDIT — surface the swing event so the
-                        // render layer can fire the attack voice cue if authored.
-                        JustSwung = true;
                     }
-                    else if (Mode == AttackMode.Magic)
-                    {
+                }
+                else
+                {
+                    _swingCooldown -= dt;
+                    if (_swingCooldown <= 0f)
                         CastAtTarget(targetPos!.Value, targetCombat!, targetStats);
-                    }
-                    else
-                    {
-                        // Ranged: same damage table as melee (the [attack] block
-                        // IS the thrown-rock damage on krug_throw), projectile
-                        // visual dispatched by the render layer off the edge.
-                        _swingCooldown = SwingPeriod;
-                        if (targetStats is not null)
-                        {
-                            float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
-                                attackerIsPlayer: PartyAligned, ranged: true);
-                            targetCombat!.ApplyDamage(raw);
-                        }
-                        _selfActor?.PlayChoreOnce("chore_attack", SwingPeriod * 0.85f);
-                        JustSwung = true;
-                        _justFiredRanged = true;
-                        _lastFireTarget = targetPos!.Value;
-                    }
                 }
                 break;
 

@@ -288,7 +288,34 @@ public sealed class ActorSpawner
         // SC-INSTANCE-OVERRIDES — the placement's own [aspect] block (life /
         // max_life / scale_multiplier) wins over the template chain.
         var stats = ActorStats.FromTemplate(_store, template, inst.Node);
-        return new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
+        var actor = new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
+        // Phase 18 — resolve the animation stance from the AUTHORED equipment
+        // when the caller didn't supply one (NPCs): an axe-armed krug idles,
+        // walks, and swings in fs1/fs3 instead of the unarmed fs0 the plain
+        // "first stance that loads" pick landed on. Also populates the
+        // attack-variant set + qffg pad + authored base duration for every
+        // spawned combatant (clip cache makes the second pass cheap).
+        RefreshMotionClips(actor, preferredStance ?? DeriveStanceFromEquipment(template));
+        return actor;
+    }
+
+    /// <summary>Phase 18 — stance from the template's authored
+    /// [inventory][equipment] block: es_weapon_hand's attack_class +
+    /// is_two_handed, and es_shield_hand only when the item really is a
+    /// shield (krug_throw carries a throwing rock there). Null when the
+    /// template authors no weapon and no shield — the authored
+    /// chore_stances order then leads, which is DS1's unarmed default.</summary>
+    int? DeriveStanceFromEquipment(Assets.Template template)
+    {
+        var weaponRef = _store.GetAttribute(template, "inventory", "equipment", "es_weapon_hand")?.Trim();
+        var shieldRef = _store.GetAttribute(template, "inventory", "equipment", "es_shield_hand")?.Trim();
+        Assets.Template? weapon = null;
+        if (!string.IsNullOrEmpty(weaponRef)) _store.TryGet(weaponRef, out weapon);
+        bool shield = false;
+        if (!string.IsNullOrEmpty(shieldRef) && _store.TryGet(shieldRef, out var sh))
+            shield = WeaponStance.IsShield(sh);
+        if (weapon is null && !shield) return null;
+        return WeaponStance.Resolve(_store, weapon, shield);
     }
 
     Matrix4x4 ComposeWorldTransform(NodePlacement p)
@@ -351,73 +378,92 @@ public sealed class ActorSpawner
             if (newClip is not null)
                 actor.Clips[clipIdx] = newClip;
 
-            // Phase 21-SC-BARREL-FOLD — for chore_attack specifically, also
-            // load every other authored sub-anim so combat can rotate
-            // between them. DS1 ships 5 (0mid/high/loww/extr/qffg) and the
-            // shipped select_attack skrit alternates among them per swing —
-            // the player perceives this as "horizontal R→L slash, then a
-            // L→R backhand" cadence. Without the variants the actor swings
-            // the same direction every time.
+            // Phase 18 — for chore_attack, load the full DS1 attack set:
+            // every non-qffg sub-anim as a swing variant (the shipped
+            // select_attack picks uniformly at random among them), the qffg
+            // entry as the between-swings pad fidget, and the authored
+            // [anim_durations] value for the resolved stance as the base
+            // attack duration (GetBaseDuration's data source).
             if (name.Equals("chore_attack", StringComparison.OrdinalIgnoreCase))
-            {
-                var variants = TryLoadAllChoreVariants(chorePrefix, section, actor.Instance, preferredStance);
-                if (variants is not null && variants.Length > 0)
-                    actor.AttackVariants = variants;
-            }
+                LoadAttackSet(chorePrefix, section, actor, preferredStance);
         }
     }
 
-    /// <summary>Phase 21-SC-BARREL-FOLD — load every sub-anim a chore section
-    /// authors, in the order they appear in [anim_files]. Returns null when
-    /// nothing resolves; otherwise an array (length 1..N) parallel to the
-    /// authored entry order so combat can rotate predictably (0,1,0,1,…)
-    /// instead of stochastic shuffling. Mirrors <see cref="TryLoadChoreClip"/>'s
-    /// stance + ignore-stance logic; only difference is "first match wins"
-    /// becomes "every match collected".</summary>
-    PrsAnimation[]? TryLoadAllChoreVariants(string prefix, GasNode section, ActorInstance inst, int? preferredStance)
+    /// <summary>Phase 18 — resolve one stance for the attack chore (preferred
+    /// first, then the authored chore_stances order), then load EVERY
+    /// [anim_files] sub-anim at that single stance: non-qffg entries become
+    /// <see cref="Actor.AttackVariants"/>, the qffg entry becomes
+    /// <see cref="Actor.AttackPadClip"/>. Also reads the optional
+    /// [anim_durations] fsN table (heroes author it; monsters don't) into
+    /// <see cref="Actor.AttackBaseDuration"/>. Resolving the stance ONCE
+    /// keeps the whole set coherent — mixing an fs1 slash with an fs0 punch
+    /// (the old per-suffix fallback) read as a glitch.</summary>
+    void LoadAttackSet(string prefix, GasNode section, Actor actor, int? preferredStance)
     {
         var animFiles = TemplateStore.FindChild(section, "anim_files");
-        if (animFiles is null || animFiles.Attributes.Count == 0) return null;
+        if (animFiles is null || animFiles.Attributes.Count == 0) return;
 
         var stancesRaw = TemplateStore.FindAttr(section, "chore_stances");
         bool ignoreStance = stancesRaw is not null
             && stancesRaw.Trim().Equals("ignore", StringComparison.OrdinalIgnoreCase);
 
-        // Cap at the first two resolved sub-anims. DS1 ships 5
-        // (0mid/high/loww/extr/qffg) but the user's observed cadence is a
-        // simple 50/50 R→L vs L→R alternation — that maps to the first two
-        // shipped sub-anims (0mid mid-swing + high overhead). Loading all 5
-        // would mix in low / extreme-reach / quaff variants the player
-        // didn't trigger by intent and reads as random/twitchy. Future
-        // SC-SELECT-ATTACK can re-introduce the longer roster with proper
-        // selection cues (target distance / height) — for now, two-way is
-        // exactly what the player sees in DS1.
-        const int VariantCap = 2;
-        var picks = new List<PrsAnimation>();
+        var variants = new List<PrsAnimation>();
+        PrsAnimation? pad = null;
+        int resolvedStance = -1;
+
         if (ignoreStance)
         {
             foreach (var attr in animFiles.Attributes)
             {
                 if (string.IsNullOrWhiteSpace(attr.Value)) continue;
-                var clip = TryLoadFullNameClip(attr.Value, inst);
-                if (clip is not null) picks.Add(clip);
-                if (picks.Count >= VariantCap) break;
+                var clip = TryLoadFullNameClip(attr.Value, actor.Instance);
+                if (clip is null) continue;
+                if (IsQffg(attr.Name)) pad ??= clip; else variants.Add(clip);
             }
         }
         else
         {
             var stances = ParseChoreStances(stancesRaw);
-            foreach (var attr in animFiles.Attributes)
+            IEnumerable<int> order = stances;
+            if (preferredStance is int p)
+                order = new[] { p }.Concat(stances.Where(s => s != p));
+            foreach (var s in order)
             {
-                var suffix = attr.Value;
-                if (string.IsNullOrWhiteSpace(suffix)) continue;
-                var clip = TryLoadAnyStanceClip(prefix, stances, suffix, inst, preferredStance);
-                if (clip is not null) picks.Add(clip);
-                if (picks.Count >= VariantCap) break;
+                foreach (var attr in animFiles.Attributes)
+                {
+                    var suffix = attr.Value;
+                    if (string.IsNullOrWhiteSpace(suffix)) continue;
+                    var clip = TryLoadAnyStanceClip(prefix, new[] { s }, suffix, actor.Instance);
+                    if (clip is null) continue;
+                    if (IsQffg(attr.Name)) pad ??= clip; else variants.Add(clip);
+                }
+                if (variants.Count > 0) { resolvedStance = s; break; }
+                pad = null; // stance had only a qffg — keep looking
             }
         }
-        return picks.Count == 0 ? null : picks.ToArray();
+
+        if (variants.Count == 0) return;
+        actor.AttackVariants = variants.ToArray();
+        actor.AttackPadClip = pad;
+        actor.AttackStance = resolvedStance;
+        actor.AttackBaseDuration = 0f;
+        if (resolvedStance >= 0 &&
+            TemplateStore.FindChild(section, "anim_durations") is { } durations)
+        {
+            foreach (var attr in durations.Attributes)
+            {
+                if (!string.Equals(attr.Name, $"fs{resolvedStance}", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (float.TryParse(attr.Value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var d) && d > 0f)
+                    actor.AttackBaseDuration = d;
+                break;
+            }
+        }
     }
+
+    static bool IsQffg(string? key) =>
+        string.Equals(key, "qffg", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Phase 10-SC-2 — load a representative PRS clip for one chore_* section.
     /// Walks every <c>[anim_files]</c> entry and stops at the first that resolves; returns
