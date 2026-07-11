@@ -82,6 +82,26 @@ internal static class SaveSelfTest
                         Position = new Vec3( 17.0f, 1.2f,   8.5f),
                         CurrentLife = 1f, CurrentMana = 0f, IsDead = false },
             },
+            // SC-PARTY-PERSIST (v13) — one recruited companion with a bag
+            // and a worn-slot delta.
+            Party = new List<CompanionSnapshot>
+            {
+                new()
+                {
+                    Scid = 0x20000001, TemplateName = "ulora", PartyIndex = 1,
+                    Position = new Vec3(-11.0f, 0.5f, 23.0f),
+                    CurrentLife = 37.5f, CurrentMana = 20f,
+                    Inventory = new List<LootEntrySnapshot>
+                    {
+                        new() { Slot = "", Reference = "book_glb_lore_azunite" },
+                        new() { Slot = "", Reference = "he_ca_le_avg" },
+                    },
+                    Equipment = new Dictionary<string, string>
+                    {
+                        ["es_weapon_hand"] = "mc_g_c_m_1h_avg",
+                    },
+                },
+            },
         };
 
         // Write twice to exercise the temp+replace branch (path already exists
@@ -154,6 +174,25 @@ internal static class SaveSelfTest
             Check(failures, $"Actors[{i}].CurrentLife",   oa.CurrentLife,  la.CurrentLife);
             Check(failures, $"Actors[{i}].CurrentMana",   oa.CurrentMana,  la.CurrentMana);
             Check(failures, $"Actors[{i}].IsDead",        oa.IsDead,       la.IsDead);
+        }
+
+        // SC-PARTY-PERSIST (v13) — companion roster round-trip.
+        Check(failures, "Party.Count", original.Party.Count, loaded.Party.Count);
+        for (int i = 0; i < Math.Min(original.Party.Count, loaded.Party.Count); i++)
+        {
+            var oc = original.Party[i]; var lc = loaded.Party[i];
+            Check(failures, $"Party[{i}].Scid",         oc.Scid,         lc.Scid);
+            Check(failures, $"Party[{i}].TemplateName", oc.TemplateName, lc.TemplateName);
+            Check(failures, $"Party[{i}].PartyIndex",   oc.PartyIndex,   lc.PartyIndex);
+            Check(failures, $"Party[{i}].Position",     oc.Position,     lc.Position);
+            Check(failures, $"Party[{i}].CurrentLife",  oc.CurrentLife,  lc.CurrentLife);
+            Check(failures, $"Party[{i}].Inventory.Count", oc.Inventory.Count, lc.Inventory.Count);
+            Check(failures, $"Party[{i}].Equipment.Count", oc.Equipment.Count, lc.Equipment.Count);
+            foreach (var kv in oc.Equipment)
+            {
+                if (!lc.Equipment.TryGetValue(kv.Key, out var v) || v != kv.Value)
+                    failures.Add($"Party[{i}].Equipment[{kv.Key}]: expected {kv.Value}, got {(lc.Equipment.TryGetValue(kv.Key, out var g) ? g : "<missing>")}");
+            }
         }
 
         // Schema-version mismatch must throw rather than silently load. Bump

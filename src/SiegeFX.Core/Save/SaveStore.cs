@@ -61,7 +61,9 @@ public static class SaveStore
         //              (handbook progress) — all default-friendly.
         //   v11 -> v12: added SaveFile.HeroName/MapName/ElapsedSeconds/Thumbnail
         //              (Load Game window preview) — all default-friendly.
-        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11)
+        //   v12 -> v13: added SaveFile.Party (SC-PARTY-PERSIST companion
+        //              roster + bags) — default-friendly empty list.
+        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11 or 12)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }

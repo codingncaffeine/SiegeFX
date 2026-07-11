@@ -45,12 +45,15 @@ public sealed class SaveFile
     ///              <see cref="ElapsedSeconds"/> (play-clock) and
     ///              <see cref="Thumbnail"/> (a small PNG screenshot captured
     ///              at save time). All default-friendly.
+    ///   v12 -> v13: added <see cref="Party"/> (SC-PARTY-PERSIST — recruited
+    ///              companions: roster order, per-companion backpack +
+    ///              equipment, vitals) so the party survives save/load.
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v11 file loads as a v12 with the new fields zero-initialized.
+    /// so any v1..v12 file loads as a v13 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 12;
+    public const int CurrentSchemaVersion = 13;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -127,6 +130,29 @@ public sealed class SaveFile
     /// containers, unlocked mechanisms, cleared blockers, lift positions.
     /// Null in pre-v10 saves.</summary>
     public WorldStateSnapshot? World { get; set; }
+
+    /// <summary>v13 SC-PARTY-PERSIST — recruited companions in roster order
+    /// (leader/player excluded; they're <see cref="Player"/>). Empty on
+    /// pre-v13 saves and solo runs. On load each entry re-recruits its
+    /// actor (matched by scid when it exists in the region, respawned from
+    /// the template when it doesn't) and restores its backpack/equipment.</summary>
+    public List<CompanionSnapshot> Party { get; set; } = new();
+}
+
+/// <summary>v13 SC-PARTY-PERSIST — one recruited companion.</summary>
+public sealed class CompanionSnapshot
+{
+    public uint   Scid          { get; set; }
+    public string TemplateName  { get; set; } = "";
+    public int    PartyIndex    { get; set; }
+    public Vec3   Position      { get; set; }
+    public float  CurrentLife   { get; set; }
+    public float  CurrentMana   { get; set; }
+    /// <summary>The companion's backpack (GetMemberInventory list).</summary>
+    public List<LootEntrySnapshot> Inventory { get; set; } = new();
+    /// <summary>Worn-slot deltas (es_* → template ref), mirroring
+    /// _memberEquipment. Empty = template defaults.</summary>
+    public Dictionary<string, string> Equipment { get; set; } = new();
 }
 
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>

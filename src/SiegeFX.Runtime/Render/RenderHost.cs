@@ -27623,7 +27623,51 @@ void main()
             }
             save.Player = p;
         }
+
+        // SC-PARTY-PERSIST (v13) — the recruited roster in order, each with
+        // its backpack + worn-slot state. Dead-but-unrevived companions are
+        // still party members in DS1 (resurrectable); capture their vitals
+        // as-is and let the actor snapshot carry the corpse pose.
+        foreach (var m in _party)
+        {
+            if (m.IsPlayer) continue;
+            var cs = new SiegeFX.Core.Save.CompanionSnapshot
+            {
+                Scid         = m.Actor.Instance.Scid,
+                TemplateName = m.Actor.Template.Name,
+                PartyIndex   = m.PartyIndex,
+                Position     = SiegeFX.Core.Save.Vec3.From(m.CurrentTransform.Translation),
+                CurrentLife  = m.Actor.Combat.CurrentLife,
+                CurrentMana  = m.Actor.Combat.CurrentMana,
+            };
+            foreach (var it in GetMemberInventory(m.PartyIndex))
+                cs.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                { Slot = it.Slot, Reference = it.Reference });
+            foreach (var kv in GetEquipmentDict(m.PartyIndex))
+                cs.Equipment[kv.Key] = kv.Value;
+            save.Party.Add(cs);
+        }
         return save;
+    }
+
+    /// <summary>SC-PARTY-PERSIST — spawn a companion actor that has no
+    /// placement in the loaded region set (recruited elsewhere, save
+    /// anchored here). Synthetic instance at the saved position, reusing the
+    /// companion's original scid so kill/loot bookkeeping stays coherent
+    /// (callers only invoke this after a scid lookup MISSED, so no
+    /// collision). Returns the attached render state, or null when the
+    /// spawner/template can't produce one.</summary>
+    private ActorRenderState? TrySpawnCompanionActor(string templateName, uint scid, Vector3 pos)
+    {
+        if (_actorSpawner is null) return null;
+        var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+            templateName, scid, pos, Quaternion.Identity);
+        var spawned = _actorSpawner.Spawn(new[] { inst });
+        if (spawned.Count == 0) return null;
+        AttachActorsToScene(spawned, _navMesh);
+        for (int i = _actors.Count - 1; i >= 0; i--)
+            if (ReferenceEquals(_actors[i].Actor, spawned[0])) return _actors[i];
+        return null;
     }
 
     // Phase 19b — patch a captured SaveFile back onto the live scene. Assumes
@@ -27947,6 +27991,52 @@ void main()
                 _heroVariant = restored;
             }
         }
+
+        // SC-PARTY-PERSIST (v13) — rebuild the recruited roster. Any live
+        // roster beyond the leader is dropped first so the save is
+        // authoritative (an F9 load must not merge post-save recruits in).
+        foreach (var m in _party)
+            if (!m.IsPlayer) { m.IsPartyMember = false; m.PartyIndex = 0; }
+        _party.RemoveAll(m => !m.IsPlayer);
+        foreach (var k in _companionInventories.Keys.Where(k => k > 0).ToList())
+            _companionInventories.Remove(k);
+        foreach (var k in _memberEquipment.Keys.Where(k => k > 0).ToList())
+            _memberEquipment.Remove(k);
+        int partyRestored = 0;
+        foreach (var cs in save.Party.OrderBy(c => c.PartyIndex))
+        {
+            ActorRenderState? npc = byScid.TryGetValue(cs.Scid, out var found) ? found : null;
+            // Recruited in a region that isn't loaded here → respawn from
+            // the template at the saved spot (synthetic instance, same scid).
+            npc ??= TrySpawnCompanionActor(cs.TemplateName, cs.Scid, cs.Position.ToVector3());
+            if (npc is null)
+            {
+                Console.Error.WriteLine($"  load: companion {cs.TemplateName} (0x{cs.Scid:x8}) " +
+                                        "could not be restored — template missing?");
+                continue;
+            }
+            if (npc.IsPartyMember) continue;   // defensive: duplicate save rows
+            npc.IsDead = false;
+            RecruitActor(npc);
+            // RecruitActor seeded the authored starting kit; the SAVE bag is
+            // authoritative — replace it wholesale, then the worn slots.
+            var bag = GetMemberInventory(npc.PartyIndex);
+            bag.Clear();
+            foreach (var e in cs.Inventory)
+                bag.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+            var eq = GetEquipmentDict(npc.PartyIndex);
+            eq.Clear();
+            foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
+            SyncMemberArmorDefense(npc.PartyIndex);
+            npc.Actor.Combat.RestoreFromSave(cs.CurrentLife, cs.CurrentMana, dead: false);
+            var cpos = cs.Position.ToVector3();
+            if (npc.Brain is not null) npc.Brain.Teleport(cpos);
+            npc.CurrentTransform = Matrix4x4.CreateTranslation(cpos);
+            npc.PartyRenderInit = false;
+            partyRestored++;
+        }
+        if (save.Party.Count > 0)
+            Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
 
         Console.WriteLine($"  load: patched {patched}/{save.Actors.Count} actor(s), " +
                           $"{(missing > 0 ? $"{missing} missing from scene, " : "")}" +
