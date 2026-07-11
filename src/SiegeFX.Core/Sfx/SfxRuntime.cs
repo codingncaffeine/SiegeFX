@@ -160,6 +160,51 @@ public sealed class SfxRuntime
         return true;
     }
 
+    /// <summary>SC-SPELLFX-IMPACT — projectile-spell classifier. True when
+    /// the script (transitively through <c>call</c>) creates a
+    /// <c>trackball</c>: DS1's flying-ball spells (fireshot family) sync
+    /// their damage to the ball's IMPACT (`waitfor collision` →
+    /// WE_SPELL_SYNC_END), not the cast release. Returns the authored
+    /// launch speed ((velocity|5) × ts) so the gameplay damage carrier can
+    /// pace the visual.</summary>
+    public static bool TryGetTrackballProfile(SfxScript script, SfxScriptStore store, out float launchSpeed)
+    {
+        launchSpeed = 0f;
+        if (script is null) return false;
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return WalkForTrackball(script, store, visited, ref launchSpeed);
+    }
+
+    static bool WalkForTrackball(SfxScript script, SfxScriptStore store,
+                                 HashSet<string> visited, ref float speed)
+    {
+        if (!visited.Add(script.Name)) return false;
+        SfxProgram prog;
+        try { prog = SfxScriptCompiler.Compile(script.Name, script.Body); }
+        catch { return false; }
+        foreach (var stmt in prog.Statements)
+        {
+            if (stmt.Kind == StatementKind.SfxCreate && stmt.Tokens.Count > 0
+                && stmt.Tokens[0].Equals("trackball", StringComparison.OrdinalIgnoreCase))
+            {
+                float vel = 5f, ts = 1f;
+                var raw = stmt.ParamString ?? "";
+                if (TryReadFloat(raw, "velocity", out var v) && v > 0f) vel = v;
+                if (TryReadFloat(raw, "ts", out var t) && t > 0.001f) ts = t;
+                speed = vel * ts;
+                return true;
+            }
+            if (stmt.Kind == StatementKind.Call && stmt.Tokens.Count > 0)
+            {
+                var callName = stmt.Tokens[0].Trim().Trim('"');
+                if (!string.IsNullOrEmpty(callName) && store.TryGet(callName, out var sub)
+                    && WalkForTrackball(sub, store, visited, ref speed))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     /// <summary>Program-only overload kept for callers that already hold a
     /// compiled <see cref="SfxProgram"/> and don't need <c>call</c>-recursion
     /// (e.g. unit tests that hand-author a single program). Production cast

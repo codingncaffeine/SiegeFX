@@ -181,6 +181,43 @@ public sealed class PlayerSpellbook
         return new CastResult(CastOutcome.Cast, spell, spent, dealt, 0f, killed);
     }
 
+    /// <summary>SC-SPELLFX-IMPACT — projectile-spell variant: identical
+    /// gating and costs to <see cref="TryCast(SpellSlot, Actor?, float, float)"/>
+    /// but the rolled damage is NOT applied — it rides the projectile and
+    /// the caller resolves it at impact (DS1's fireshot syncs damage to the
+    /// ball's collision via WE_SPELL_SYNC_END; a target that steps away is
+    /// a genuine miss).</summary>
+    public CastResult TryCastDeferred(SpellSlot slot, Actor? target, float distance, float magicLevel)
+    {
+        var spell = slot == SpellSlot.Primary ? Primary : Secondary;
+        if (spell is null) return new CastResult(CastOutcome.NoSpell, null, 0, 0, 0, false);
+        float cd = slot == SpellSlot.Primary ? PrimaryCooldownRemaining : SecondaryCooldownRemaining;
+        if (cd > 0f) return new CastResult(CastOutcome.OnCooldown, spell, 0, 0, 0, false);
+        if (spell.Kind == SpellKind.SelfHeal)
+            return TryCastSelfHeal(slot, spell, magicLevel);
+        if (target is null) return new CastResult(CastOutcome.NoTarget, spell, 0, 0, 0, false);
+        if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, spell, 0, 0, 0, false);
+        if (distance > spell.CastRange) return new CastResult(CastOutcome.OutOfRange, spell, 0, 0, 0, false);
+
+        var costCtx = new SpellEvalContext(magicLevel,
+            maxLife: _player.Stats.MaxLife,
+            life:    _player.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+        var dmgCtx = new SpellEvalContext(magicLevel,
+            maxLife: target.Stats.MaxLife,
+            life:    target.Combat.CurrentLife,
+            srcMana: _player.Combat.CurrentMana,
+            srcLife: _player.Combat.CurrentLife);
+        float cost = spell.ManaCost(costCtx);
+        if (_player.Combat.CurrentMana < cost) return new CastResult(CastOutcome.NoMana, spell, 0, 0, 0, false);
+
+        float spent = _player.Combat.SpendMana(cost);
+        float damage = spell.RollDamage(dmgCtx, _rng) * CombatResolver.PlayerDamageMultiplier;
+        StartCooldown(slot, spell.CastReloadDelay);
+        return new CastResult(CastOutcome.Cast, spell, spent, damage, 0f, false);
+    }
+
     /// <summary>Phase 21-SC-BARREL-B — cast variant for non-actor targets
     /// (breakable props). Same gating as <see cref="TryCast(SpellSlot, Actor?, float, float)"/>
     /// — cooldown / range / mana — but the damage roll uses the caster as

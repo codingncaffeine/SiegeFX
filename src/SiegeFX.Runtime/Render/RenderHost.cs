@@ -22321,6 +22321,13 @@ void main()
         // NPC-fired: pre-rolled damage payload + the victim combat sink.
         public float NpcDamage;
         public SiegeFX.Core.Actors.ActorCombatState? NpcTargetCombat;
+        // SC-SPELLFX-IMPACT — player projectile-SPELL carrier (fireshot):
+        // damage pre-rolled by TryCastDeferred rides the flight (the VM's
+        // trackball is the visual; this carrier is invisible and applies
+        // the payload at the live target, or fizzles past the snapshot).
+        public SiegeFX.Core.Assets.SpellTemplate? Spell;
+        public float SpellDamage;
+        public Vector3 SnapshotAim;
     }
     private readonly List<RangedShot> _rangedShots = new();
     // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled shaft-along-Y with
@@ -22393,6 +22400,13 @@ void main()
                 var chest = ta.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
                 if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                 {
+                    if (shot.Spell is not null)
+                    {
+                        // SC-SPELLFX-IMPACT — spell payload lands.
+                        ApplyPlayerSpellImpact(shot, ta);
+                        _rangedShots.RemoveAt(i);
+                        continue;
+                    }
                     ApplyPlayerRangedImpact(shot, ta);
                     // SC-RANGED-STICK — leave the shaft in the body a beat.
                     shot.Stuck = true;
@@ -22400,6 +22414,15 @@ void main()
                     shot.StuckOffset = shot.Pos - ta.CurrentTransform.Translation;
                     continue;
                 }
+            }
+            // SC-SPELLFX-IMPACT — a spell carrier that flew past its
+            // freeze_targets aim point missed (the target moved): fizzle.
+            if (shot.Spell is not null
+                && Vector3.Dot(shot.SnapshotAim - shot.Pos, shot.Vel) < 0f)
+            {
+                Console.WriteLine($"  cast {shot.Spell.ScreenName}: missed (target moved)");
+                _rangedShots.RemoveAt(i);
+                continue;
             }
             else if (shot.TargetProp is { IsDestroyed: false } prop)
             {
@@ -22443,6 +22466,61 @@ void main()
                 shot.Pos = shot.Pos with { Y = groundY + 0.03f };
                 shot.Stuck = true;
             }
+        }
+    }
+
+    /// <summary>SC-SPELLFX-IMPACT — per-spell projectile classifier cache:
+    /// true (with the authored launch speed) when the cast script creates a
+    /// trackball — those spells defer damage to impact.</summary>
+    private readonly Dictionary<string, (bool IsProjectile, float Speed)> _projectileSpellCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private bool IsProjectileSpell(SiegeFX.Core.Assets.SpellTemplate spell, out float speed)
+    {
+        speed = 0f;
+        if (_sfxStore is null || string.IsNullOrEmpty(spell.CastSfxScript)) return false;
+        if (_projectileSpellCache.TryGetValue(spell.Name, out var hit))
+        {
+            speed = hit.Speed;
+            return hit.IsProjectile;
+        }
+        bool isProj = _sfxStore.TryGet(spell.CastSfxScript, out var script)
+            && SiegeFX.Core.Sfx.SfxRuntime.TryGetTrackballProfile(script, _sfxStore, out speed);
+        _projectileSpellCache[spell.Name] = (isProj, speed);
+        return isProj;
+    }
+
+    /// <summary>SC-SPELLFX-IMPACT — the spell payload lands. Mirrors the
+    /// instant-cast hit handling (log, floating text, blood, XP, kill flow)
+    /// but at projectile arrival with the pre-rolled damage.</summary>
+    private void ApplyPlayerSpellImpact(RangedShot shot, ActorRenderState best)
+    {
+        if (best.IsDead || shot.Spell is not { } spell) return;
+        float dealt = best.Actor.Combat.ApplyDamage(shot.SpellDamage);
+        Console.WriteLine(
+            $"cast {spell.ScreenName}: hit {best.Actor.Template.Name} for {dealt:F0}" +
+            $"{(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")} [impact]");
+        AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(dealt)}",
+            best.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+            SpellElementColor(spell.Element));
+        if (dealt > 0f)
+        {
+            if (!best.Actor.Combat.IsDead && best.Actor.Combat.ConsumeJustHit(out var dmg))
+                PlayHitVoiceSfx(best.Actor.Template, best.CurrentTransform.Translation,
+                                dmg, best.Actor.Stats.MaxLife);
+            SpawnBloodHit(best);
+        }
+        AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+        if (best.Actor.Combat.ConsumeJustDied())
+        {
+            best.IsDead = true;
+            best.Brain = null;
+            BeginDeathChore(best);
+            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
+            LogLootDrop(best, best.CurrentTransform.Translation);
+            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
+            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+            TryActorGib(best, dealt);
         }
     }
 
@@ -24273,6 +24351,13 @@ void main()
     {
         if (_player is null || _playerSpellbook is null) return;
         var playerPos = _player.CurrentTransform.Translation;
+        // SC-SPELLFX-IMPACT — projectile spells (cast script creates a
+        // trackball: fireshot family) defer their damage to the ball's
+        // impact instead of the release note; the VM flies the visual, an
+        // invisible carrier applies the payload at arrival.
+        float projSpeed = 0f;
+        bool projectileSpell = spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
+            && best is not null && IsProjectileSpell(spell, out projSpeed);
         SiegeFX.Core.Actors.CastResult result;
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
         {
@@ -24288,7 +24373,9 @@ void main()
             float dx = best.CurrentTransform.Translation.X - playerPos.X;
             float dz = best.CurrentTransform.Translation.Z - playerPos.Z;
             float dist = MathF.Sqrt(dx * dx + dz * dz);
-            result = _playerSpellbook.TryCast(slot, best.Actor, dist, magicLevel);
+            result = projectileSpell
+                ? _playerSpellbook.TryCastDeferred(slot, best.Actor, dist, magicLevel)
+                : _playerSpellbook.TryCast(slot, best.Actor, dist, magicLevel);
         }
 
         // Cast feedback. Console line is the canonical record (matches the
@@ -24336,9 +24423,14 @@ void main()
                 }
                 else
                 {
-                    Console.WriteLine(
-                        $"cast {spell.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
-                        $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                    if (projectileSpell)
+                        Console.WriteLine(
+                            $"cast {spell.ScreenName}: loosed at {best!.Actor.Template.Name} " +
+                            $"(mana -{result.ManaSpent:F1}, damage rides the projectile)");
+                    else
+                        Console.WriteLine(
+                            $"cast {spell.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
+                            $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
                     // Phase 17b — snap PC facing toward the target so the cast
                     // at least visually originates *toward* the victim.
                     // _playerFacing normally only updates from movement deltas;
@@ -24467,23 +24559,43 @@ void main()
                     // Falls back to SfxZapCast when the wav is missing or
                     // the script has no sound (so we don't go silent).
                     _audio?.Play(ResolveSpellCastSound(spell));
-                    AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
-                                    anchor + new Vector3(0f, 1.8f, 0f),
-                                    elemColor);
-                    AwardCombatXp(result.Damage, best.Actor.Stats,
-                                  SiegeFX.Core.Assets.SkillKind.CombatMagic);
-                    if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
+                    if (projectileSpell)
                     {
-                        best.IsDead = true;
-                        best.Brain = null;
-                        // Phase 12-SC-4 — chore_die on spell-kill (mirrors the
-                        // melee-kill site).
-                        BeginDeathChore(best);
-                        // Phase 9-SC-2 — death scream from template's voice block.
-                        PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-                        LogLootDrop(best, best.CurrentTransform.Translation);
-                        OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
-                        CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+                        // SC-SPELLFX-IMPACT — the damage payload rides an
+                        // invisible carrier paced to the VM trackball's
+                        // authored speed toward the freeze_targets snapshot;
+                        // hit text/XP/kill resolve at arrival.
+                        var carrier = new RangedShot
+                        {
+                            Gravity = 0f,
+                            TargetActor = best,
+                            FromPlayer = true,
+                            Spell = spell,
+                            SpellDamage = result.Damage,
+                            SnapshotAim = dst,
+                        };
+                        SpawnRangedShot(carrier, src, dst, MathF.Max(3f, projSpeed));
+                    }
+                    else
+                    {
+                        AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(result.Damage)}",
+                                        anchor + new Vector3(0f, 1.8f, 0f),
+                                        elemColor);
+                        AwardCombatXp(result.Damage, best.Actor.Stats,
+                                      SiegeFX.Core.Assets.SkillKind.CombatMagic);
+                        if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
+                        {
+                            best.IsDead = true;
+                            best.Brain = null;
+                            // Phase 12-SC-4 — chore_die on spell-kill (mirrors the
+                            // melee-kill site).
+                            BeginDeathChore(best);
+                            // Phase 9-SC-2 — death scream from template's voice block.
+                            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
+                            LogLootDrop(best, best.CurrentTransform.Translation);
+                            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
+                            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+                        }
                     }
                 }
                 break;
