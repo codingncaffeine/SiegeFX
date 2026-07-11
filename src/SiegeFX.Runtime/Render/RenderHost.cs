@@ -7921,6 +7921,7 @@ void main()
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
+                ConfigureBrainFlee(brain, actor.Template);
                 actorsOnMesh++;
             }
             else
@@ -12230,6 +12231,50 @@ void main()
         foreach (var line in stalledLines) Console.WriteLine(line);
     }
 
+    /// <summary>SC-AI-FLEE — read the authored [mind] flee params onto a fresh
+    /// enemy brain. 9 evil template families author on_life_ratio_low_flee
+    /// (goblins/krug/golems/darkling/...); the rest keep flee disabled.
+    /// actor_life_ratio_low_threshold defaults to the engine's 0.33 when
+    /// unauthored; flee_count defaults 1; flee_distance 20.</summary>
+    private void ConfigureBrainFlee(SiegeFX.Core.Actors.ActorBrain brain, SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_templateStore is null) return;
+        var flee = _templateStore.GetAttribute(tpl, "mind", "on_life_ratio_low_flee")?.Trim();
+        if (!string.Equals(flee, "true", StringComparison.OrdinalIgnoreCase)) return;
+
+        float threshold = 0.33f;
+        int count = 1;
+        float distance = 20f;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        if (float.TryParse(_templateStore.GetAttribute(tpl, "mind", "actor_life_ratio_low_threshold"),
+                System.Globalization.NumberStyles.Float, ci, out var t)) threshold = t;
+        if (int.TryParse(_templateStore.GetAttribute(tpl, "mind", "flee_count"),
+                System.Globalization.NumberStyles.Integer, ci, out var c)) count = c;
+        if (float.TryParse(_templateStore.GetAttribute(tpl, "mind", "flee_distance"),
+                System.Globalization.NumberStyles.Float, ci, out var d)) distance = d;
+        brain.ConfigureFlee(threshold, count, distance);
+    }
+
+    /// <summary>SC-AI-TARGETING — the party member (hero included) nearest to
+    /// <paramref name="from"/> that is still alive; the hero as fallback while
+    /// solo (the party list only populates once recruiting starts). XZ
+    /// distance — same plane the aggro checks use.</summary>
+    private ActorRenderState? NearestLivePartyMember(Vector3 from)
+    {
+        ActorRenderState? best = null;
+        float bestD2 = float.MaxValue;
+        foreach (var m in _party)
+        {
+            if (m is null || m.IsDead) continue;
+            var p = m.CurrentTransform.Translation;
+            float dx = p.X - from.X, dz = p.Z - from.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; best = m; }
+        }
+        if (best is null && _player is not null && !_player.IsDead) best = _player;
+        return best;
+    }
+
     private void TickElevators(float dt)
     {
         if (dt <= 0f) return;
@@ -13996,6 +14041,7 @@ void main()
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
+                ConfigureBrainFlee(brain, actor.Template);
                 onMesh++;
             }
             else
@@ -14340,18 +14386,10 @@ void main()
                 // skrit runtime. Stepping movement inside the accumulator loop (not
                 // once per render frame) keeps translation deterministic regardless
                 // of framerate — an actor walks at exactly `speed` u/s wall-clock.
-                // The brain wraps wander + aggro: combatants get the player as a
-                // target so they chase and swing; non-combatants get null and stay
-                // in Wander forever.
-                Vector3? npcTargetPos = null;
-                SiegeFX.Core.Actors.ActorCombatState? npcTargetCombat = null;
-                SiegeFX.Core.Actors.ActorStats? npcTargetStats = null;
-                if (_player is not null && !_player.IsDead)
-                {
-                    npcTargetPos    = _player.CurrentTransform.Translation;
-                    npcTargetCombat = _player.Actor.Combat;
-                    npcTargetStats  = _player.Actor.Stats;
-                }
+                // The brain wraps wander + aggro. SC-AI-TARGETING — each hostile
+                // targets its NEAREST LIVE PARTY MEMBER (DS1 semantics), not the
+                // hero unconditionally: a krug beating on Ulora stays on Ulora
+                // instead of tunneling through her at the player.
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
@@ -14369,11 +14407,14 @@ void main()
                     // chase the player as if hostile.
                     if (s.IsPartyMember) continue;
                     bool hostile = s.Actor.Stats.IsCombatant && _nisPhase == NisPhase.Off;
+                    var quarry = hostile
+                        ? NearestLivePartyMember(s.CurrentTransform.Translation)
+                        : null;
                     s.Brain.Tick(
                         (float)stepSec,
-                        hostile ? npcTargetPos    : null,
-                        hostile ? npcTargetCombat : null,
-                        hostile ? npcTargetStats  : null);
+                        quarry?.CurrentTransform.Translation,
+                        quarry?.Actor.Combat,
+                        quarry?.Actor.Stats);
                     // Compose CurrentTransform = rotate-to-facing * translate-to-pos.
                     // We drop the authored spawn orientation once the brain owns
                     // movement; the mesh's local forward in DS1 is +Z, so facing into

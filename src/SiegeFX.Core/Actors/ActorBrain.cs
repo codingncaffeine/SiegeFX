@@ -28,8 +28,29 @@ public sealed class ActorBrain
     /// victim while pausing to swing.</summary>
     public Vector3 Facing => _attackFacing ?? Wander.Facing;
 
-    public enum BrainState { Wander, Chase, Attack }
+    public enum BrainState { Wander, Chase, Attack, Flee }
     public BrainState State { get; private set; } = BrainState.Wander;
+
+    // SC-AI-FLEE — authored [mind] flee-at-low-health. 9 evil template
+    // families author on_life_ratio_low_flee=true with flee_distance (goblin
+    // 20, krug 21) and actor_life_ratio_low_threshold (0.25-0.75; engine
+    // default 0.33). flee_count limits how many times the actor runs before
+    // it fights to the death (authored 1 everywhere it appears).
+    bool  _fleeEnabled;
+    float _fleeThreshold = 0.33f;
+    int   _fleeChargesLeft;
+    float _fleeDistance = 20f;
+    float _fleeTimer;
+
+    /// <summary>Enable the authored flee-at-low-health behavior
+    /// ([mind] on_life_ratio_low_flee). Call once at brain construction.</summary>
+    public void ConfigureFlee(float lifeRatioThreshold, int fleeCount, float fleeDistance)
+    {
+        _fleeEnabled = fleeCount > 0;
+        _fleeThreshold = Math.Clamp(lifeRatioThreshold, 0.01f, 0.95f);
+        _fleeChargesLeft = fleeCount;
+        _fleeDistance = MathF.Max(4f, fleeDistance);
+    }
 
     /// <summary>SC-MOB-CASTER / SC-MOB-RANGED — attack-mode identity,
     /// parameter-driven the way DS1's single shared brain skrit is: WP_MAGIC
@@ -199,6 +220,18 @@ public sealed class ActorBrain
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
 
+        // SC-AI-FLEE — engaged + dropped under the authored life ratio →
+        // break off and run flee_distance away from the target. One charge
+        // per authored flee_count; once spent the actor fights to the death
+        // (re-aggro after the run happens naturally through Wander).
+        if (_fleeEnabled && _fleeChargesLeft > 0 && targetAlive
+            && (State == BrainState.Chase || State == BrainState.Attack)
+            && _selfActor is not null && !_selfActor.Combat.IsDead
+            && _selfActor.Combat.CurrentLife <= _fleeThreshold * MathF.Max(1f, _selfStats.MaxLife))
+        {
+            EnterFlee(targetPos!.Value);
+        }
+
         switch (State)
         {
             case BrainState.Wander:
@@ -279,6 +312,21 @@ public sealed class ActorBrain
                         _justFiredRanged = true;
                         _lastFireTarget = targetPos!.Value;
                     }
+                }
+                break;
+
+            case BrainState.Flee:
+                // SC-AI-FLEE — keep running until arrival / a blocked path /
+                // the timer expires, then drop to Wander (which re-aggros
+                // naturally if the threat pursued; with the flee charge spent
+                // the next engagement is to the death, matching authored
+                // flee_count=1 semantics).
+                _fleeTimer -= dt;
+                Wander.Tick(dt);
+                if (_fleeTimer <= 0f || Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
+                {
+                    State = BrainState.Wander;
+                    _attackFacing = null;
                 }
                 break;
         }
@@ -425,6 +473,27 @@ public sealed class ActorBrain
         State = BrainState.Chase;
         _attackFacing = null;
         Wander.Follower.SetTarget(targetPos);
+    }
+
+    // SC-AI-FLEE — run flee_distance directly away from the attacker. The
+    // timer bounds the run (distance at gait + slack) so a blocked path
+    // can't leave the actor pinned in Flee forever.
+    void EnterFlee(Vector3 threatPos)
+    {
+        _fleeChargesLeft--;
+        State = BrainState.Flee;
+        _attackFacing = null;
+        float dx = Wander.Position.X - threatPos.X;
+        float dz = Wander.Position.Z - threatPos.Z;
+        float len = MathF.Sqrt(dx * dx + dz * dz);
+        Vector3 away = len > 1e-4f
+            ? new Vector3(dx / len, 0f, dz / len)
+            : new Vector3(MathF.Sin(_swingRng.Next(0, 628) / 100f), 0f, MathF.Cos(_swingRng.Next(0, 628) / 100f));
+        var fleePoint = Wander.Position + away * _fleeDistance;
+        Wander.Follower.SetTarget(fleePoint);
+        // Gait from stats; the +2s slack covers nav detours around obstacles.
+        float gait = _selfStats.WalkSpeed > 0.5f ? _selfStats.WalkSpeed : 4f;
+        _fleeTimer = _fleeDistance / gait + 2f;
     }
 
     void EnterAttack(Vector3 targetPos)
