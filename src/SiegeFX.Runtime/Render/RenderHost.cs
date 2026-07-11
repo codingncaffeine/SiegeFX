@@ -21149,6 +21149,15 @@ void main()
             Prop = prop,
             MagicLevel = magicLevel,
         };
+        // Phase 19 diag — one line per initiation so a broken cast visual is
+        // attributable from the session log: which clip slot, its length,
+        // variant pool size, and the scheduled release time.
+        Console.WriteLine(
+            $"cast-anim: start {spell.Name} clipLen={len:F2} " +
+            $"magicIdx={_player.Actor.GetClipIndex("chore_magic")} " +
+            $"variants={_player.Actor.MagicVariants?.Length ?? 0} " +
+            $"stance(attack)={_player.Actor.AttackStance} " +
+            $"period={_playerCast.Sched.Period:F2}");
     }
 
     /// <summary>Phase 19 — advance the cast clock; release at FIRE; free the
@@ -21163,7 +21172,29 @@ void main()
             if (pc.Prop is not null) PerformSpellOnProp(pc.Slot, pc.Spell, pc.Prop, pc.MagicLevel);
             else ExecutePlayerCastRelease(pc.Slot, pc.Spell, pc.Target, pc.MagicLevel);
         }
-        if (pc.Sched.Complete) _playerCast = null;
+        if (pc.Sched.Complete)
+        {
+            _playerCast = null;
+            // SC-AUTO-ATTACK (Phase 19) — auto-cast: like the melee loop,
+            // an engaged living target keeps getting casts while it stays
+            // inside the spell's range. Stops on death, out-of-range, a
+            // move click (which retargets), or switching slots.
+            if (pc.Target is { } tgt && !tgt.IsDead
+                && pc.Spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
+                && _player is not null && !_player.IsDead
+                && SpellSlotActive)
+            {
+                var pp = _player.CurrentTransform.Translation;
+                var tp = tgt.CurrentTransform.Translation;
+                float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
+                float range = MathF.Max(2f, pc.Spell.CastRange);
+                if (dx * dx + dz * dz <= range * range)
+                {
+                    float lvl = _progression?.Level ?? pc.MagicLevel;
+                    BeginPlayerCast(pc.Slot, pc.Spell, tgt, prop: null, lvl);
+                }
+            }
+        }
     }
 
     /// <summary>Phase 18c — the equipped weapon's authored [attack]
