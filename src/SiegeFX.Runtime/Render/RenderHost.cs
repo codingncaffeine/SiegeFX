@@ -3055,6 +3055,18 @@ public sealed class RenderHost : IDisposable
     private Hud.CharacterAwp.HitTarget _awpHover = Hud.CharacterAwp.HitTarget.None;
     private Hud.CharacterAwp.HitTarget _awpPressed = Hud.CharacterAwp.HitTarget.None;
     private bool _awpLoaded;
+    // SC-COMMANDS — authored default-binding state (input_bindings.gas):
+    //   W [expert_gui_mode]     — AWP folded to the single active slot
+    //   L [toggle_player_labels]— names over party members' heads
+    //   X [toggle_status_bars]  — HP/MP bars over characters
+    //   T [camera_track_toggle] — chase camera tracks vs holds position
+    // _altComboFired suppresses the Alt-release item-labels toggle after an
+    // Alt+key order combo consumed the same Alt press.
+    private bool _awpExpertMode;
+    private bool _charLabelsVisible = true;
+    private bool _overheadBarsVisible;
+    private bool _camTracking = true;
+    private bool _altComboFired;
     // SC-AUTH-CHAR-AWP-LONGPRESS — gas wires `click_delay = 0.2` +
     // `onclickdelay = notify(list_spells)` on slots 3/4 and the active
     // slot radio button. We approximate by tracking the LMB-down moment
@@ -4558,6 +4570,21 @@ void main()
                 else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
                 else if (_devConsoleOpen && _devItemFocus && c != '`' && c != '~') DevConsoleChar(c);
             };
+            // SC-COMMANDS — item-labels toggle rides Alt RELEASE, exactly as
+            // authored ([toggle_item_labels] input = key_alt, qualifiers =
+            // alt | key_up). Firing on release (with combo suppression) is
+            // what lets Alt double as the order-combo modifier: holding Alt
+            // and pressing Q/W/E/A/S/D/Z/C/X issues the order and marks
+            // _altComboFired so the label state doesn't flip on the way out.
+            kb.KeyUp += (_, key, _) =>
+            {
+                if (key != Key.AltLeft && key != Key.AltRight) return;
+                if (_altComboFired) { _altComboFired = false; return; }
+                if (_bootMode || _creator.IsOpen || _saveDialog.IsOpen || _loadDialog.IsOpen
+                    || _devConsoleOpen || _optionsMenu.IsOpen || _handbook.IsOpen) return;
+                _overheadLabelsVisible = !_overheadLabelsVisible;
+                _audio?.Play(SfxGuiInventory);
+            };
             kb.KeyDown += (_, key, _) =>
             {
                 // Backspace is not a printable char, so KeyChar gets the
@@ -4732,8 +4759,9 @@ void main()
                 }
                 // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
                 // chase↔fly camera flip moved to F8 so the muscle-memory C key
-                // matches the original game.
-                else if (key == Key.C)
+                // matches the original game. Alt-guarded: Alt+C is the
+                // authored "Targeting: Target Weakest" order (input_bindings.gas).
+                else if (key == Key.C && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
                 {
                     // Player's own sheet: switch back from a companion sheet, else toggle.
                     if (_paperdollTargetIndex != 0) { _paperdollTargetIndex = 0; _charPanelOpen = true; }
@@ -4742,9 +4770,19 @@ void main()
                 }
                 // Phase 21-SC-SPELL-A: 'B' toggles the spell book pane.
                 else if (key == Key.B) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
-                // Phase 27 dev hook: 'F' cycles the party formation until the
-                // field_commands panel radios drive it. No-op with no party.
-                else if (key == Key.F && _party.Count > 1) { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
+                // SC-COMMANDS — authored default (input_bindings.gas
+                // [field_commands] input = key_f): F shows/hides the Field
+                // Commands cluster. The old dev formation-cycle hook moved
+                // to Ctrl+F (gas leaves cycle_formations = key_none; DS1
+                // cycles formations via the RMB+LMB modal, not a key).
+                else if (key == Key.F && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight))
+                         && _party.Count > 1)
+                { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
+                else if (key == Key.F && _player is not null)
+                {
+                    _fcMinimized = !_fcMinimized;
+                    _audio?.Play(SfxGuiInventory);
+                }
                 // SC-TERRAIN-UV dev hook: 'U' cycles the terrain tile UV
                 // orientation (8 dihedral flips/rotations) to find the one where
                 // the ground pattern connects across tiles. Logs the mode.
@@ -4788,10 +4826,26 @@ void main()
                     _weaponGripBoneOverride = _weaponGripBoneOverride >= 0 ? -1 : _shieldGripBoneIdx;
                     PrintHoeGrip();   // reflect the hand change in the mirror file
                 }
-                // Dev hook: 'G' force-recruits the nearest hireable NPC (bypasses
+                // SC-COMMANDS — authored default (input_bindings.gas [guard]
+                // input = key_g, "Guard Character"). We don't have the modal
+                // guard-a-target cursor yet, so G maps to the guard STANCE:
+                // Attack order = Defend (fight back only) for the party —
+                // the same radio the Field Commands panel's middle attack
+                // order sets.
+                else if (key == Key.G && _player is not null
+                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight)
+                         && !kb.IsKeyPressed(Key.ControlLeft) && !kb.IsKeyPressed(Key.ControlRight))
+                {
+                    OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFightback);
+                    Console.WriteLine("[cmd] guard (attack order -> Defend)");
+                    _audio?.Play(SfxGuiInventory);
+                }
+                // Dev hook (moved off G for the authored guard binding):
+                // Ctrl+R force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
-                else if (key == Key.G && _player is not null)
+                else if (key == Key.R && _player is not null
+                         && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
                 {
                     var pp = _player.CurrentTransform.Translation;
                     ActorRenderState? best = null; float bestD2 = 12f * 12f;
@@ -4867,18 +4921,32 @@ void main()
                     }
                     _audio?.Play(SfxGuiInventory);
                 }
-                // Phase 20b: 'L' toggles the quest log overlay.
-                else if (key == Key.L || key == Key.J) _questLogOpen = !_questLogOpen;
-                // INFORAIL — Alt toggles ground-loot labels, matching
-                // the bottom-right data_bar checkbox (rollover help
-                // "Hide/Show labels for items on the ground (Hotkey:
-                // Alt)"). Single-press toggle so the user can leave
-                // labels off and use the same key to peek when needed.
-                else if (key == Key.AltLeft || key == Key.AltRight)
+                // SC-COMMANDS — authored defaults (input_bindings.gas):
+                //   J      [toggle_quest_log]      "Journal"
+                //   L      [toggle_player_labels]  "Character Labels"
+                //   Ctrl+L [load_game]             "Load Game"
+                //   Ctrl+S [save_game]             "Save Game"
+                // (The manual's page-1 table says \ opens the Journal, but
+                // the shipped game's own bindings put the Journal on J and
+                // reserve backslash for the MP scoreboard — the gas wins.)
+                else if (key == Key.L && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
                 {
-                    _overheadLabelsVisible = !_overheadLabelsVisible;
+                    if (!_bootMode) OpenLoadDialog(mainMenuStyle: false);
+                }
+                else if (key == Key.J) _questLogOpen = !_questLogOpen;
+                else if (key == Key.L)
+                {
+                    _charLabelsVisible = !_charLabelsVisible;
                     _audio?.Play(SfxGuiInventory);
                 }
+                // INFORAIL — Alt toggles ground-loot labels, matching the
+                // bottom-right data_bar checkbox (rollover help "Hide/Show
+                // labels for items on the ground (Hotkey: Alt)"). Authored
+                // as key_alt + qualifiers alt|key_up, i.e. it fires on Alt
+                // RELEASE — handled in the KeyUp hook below so holding Alt
+                // for the order combos (Alt+Q/W/E/A/S/D/Z/C/X) doesn't
+                // flicker the labels; a combo sets _altComboFired which
+                // suppresses the toggle for that Alt press.
                 // SC-CAM-DEV-TOPDOWN — backtick toggles unclamped chase
                 // pitch. OFF (default) = DS1-faithful fixed slope (zoom
                 // dollies along a fixed angle, RMB-drag yaws only). ON
@@ -4900,62 +4968,137 @@ void main()
                 else if (key == Key.Space && _player is not null && !_player.IsDead
                          && _cameraMode == CameraMode.Chase)
                     TogglePause();
-                // Phase 16b: 'H' takes 5 HP and 5 MP off the player (debug only —
-                // until enemy aggro lands in a later phase, this is the only way
-                // to drain the bars to verify regen is ticking).
+                // SC-COMMANDS — the shipped game's own defaults, verbatim from
+                // /config/input_bindings.gas (extracted from Logic.dsres; it
+                // beats the printed manual wherever the two disagree):
+                //   H = Drink Health Potion, M = Drink Mana Potion,
+                //   S = Stop, G = Guard, Ctrl+S/Ctrl+L = Save/Load Game,
+                //   E / Ctrl+A = Select All Party Members,
+                //   Alt+Q/W/E = movement orders, Alt+A/S/D = attack orders,
+                //   Alt+Z/C/X = targeting orders, Z = Collect Loot,
+                //   X = Health/Mana Bars, T = Camera Track/Hold.
+                // (The old debug 'H drains HP' hook moved to the dev console.)
                 else if (key == Key.H && _player is not null && !_player.IsDead)
+                    DrinkLowestPotion(isHealth: true);
+                else if (key == Key.M && _player is not null && !_player.IsDead)
+                    DrinkLowestPotion(isHealth: false);
+                else if (key == Key.S && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
                 {
-                    _player.Actor.Combat.ApplyDamage(5f);
-                    // Mana drain has no helper yet; nudge MP via heal-negative isn't
-                    // supported (Heal clamps), so we'll just call the formula path
-                    // when spells land. For now drain via a direct method.
-                    _player.Actor.Combat.SpendMana(5f);
+                    if (!_bootMode) OpenSaveDialog();
                 }
-                // Phase 17a — Q casts the slotted primary spell at whatever the
-                // cursor is currently pointing at. Picks the same way RMB does:
-                // unproject, find the closest combatant in XZ to the ground hit.
-                // The spellbook owns the gating (range, mana, cooldown) — the
-                // render layer just supplies the candidate target + distance.
+                else if (key == Key.S && _player is not null && !_player.IsDead
+                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
+                {
+                    _playerFollower?.SetTarget(_playerFollower.Position);
+                    _pendingAttackTarget = null;
+                    Console.WriteLine("[cmd] stop");
+                }
+                else if ((key == Key.E && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
+                         || (key == Key.A && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight))))
+                {
+                    _selectedPartyIdx.Clear();
+                    _selectedPartyIdx.Add(0);
+                    foreach (var mem in _party)
+                        if (mem is not null && mem.PartyIndex > 0 && mem.IsPartyMember && !mem.IsDead)
+                            _selectedPartyIdx.Add(mem.PartyIndex);
+                    Console.WriteLine($"[cmd] select all ({_selectedPartyIdx.Count} member(s))");
+                }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.Q)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveFree); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.W)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveEngage); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.E)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.MoveHoldGround); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.A)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFree); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.S)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkFightback); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.D)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.AtkHoldFire); _altComboFired = true; }
+                // Alt+Z/C/X — authored targeting orders (target_closest /
+                // target_weakest / target_strongest in input_bindings.gas).
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.Z)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtClosest); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.C)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtWeakest); _altComboFired = true; }
+                else if ((kb.IsKeyPressed(Key.AltLeft) || kb.IsKeyPressed(Key.AltRight)) && key == Key.X)
+                { OnFieldCommand(Hud.FieldCommandsPanel.Action.TgtStrongest); _altComboFired = true; }
+                // Q — authored [rotate_selected_slots] "Quick Weapon Select":
+                // cycles the Weapons Panel slot (melee / ranged / spell1 /
+                // spell2); casting happens by selecting a slot and clicking,
+                // not by a cast key.
                 else if (key == Key.Q && _player is not null && !_player.IsDead)
                 {
-                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
+                    _activeAbilityIdx = (_activeAbilityIdx + 1) % 4;
+                    _audio?.Play(SfxGuiInventory);
+                    Console.WriteLine($"[cmd] active slot -> {_activeAbilityIdx}");
                 }
-                // Phase 17c — W casts the secondary slot. Defaults to a self
-                // heal so a single key keeps the loop simple; when a real
-                // hotbar lands the user picks per-slot bindings.
-                else if (key == Key.W && _player is not null && !_player.IsDead)
+                // W — authored [expert_gui_mode] "Minimize/Maximize Weapons
+                // Panel": folds the AWP to the single active slot (the same
+                // authored min-mode transformation the info-rail open uses).
+                else if (key == Key.W && _player is not null)
                 {
-                    TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
+                    _awpExpertMode = !_awpExpertMode;
+                    _audio?.Play(SfxGuiInventory);
                 }
-                // Phase 17-SC-H-DBG — [ and ] cycle the Primary spell slot
-                // through SpellCatalog.All so SC-H's sfx_script wiring can be
-                // verified per element (zap, fireball, freeze, charm, …)
-                // without an inventory/learn UI. Off-element heals stay on W;
-                // self-heal spells are skipped by the cycle since Primary's
-                // click-target flow expects a live target. The full spell
-                // book panel is Phase 21-SC-SPELL.
-                else if ((key == Key.LeftBracket || key == Key.RightBracket) &&
-                         _playerSpellbook is not null && _spellCatalog is not null)
+                // 1..4 select the Weapons Panel slot directly (melee, ranged,
+                // spell 1, spell 2). The gas authors 1-0 as "Recall Weapon
+                // Config. N" (saved AWP loadouts); with 4 fixed slots and no
+                // config-save system, direct slot select is the same muscle
+                // motion players know.
+                else if (key is Key.Number1 or Key.Number2 or Key.Number3 or Key.Number4
+                         && _player is not null && !_player.IsDead
+                         && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight)
+                         && !kb.IsKeyPressed(Key.ControlLeft) && !kb.IsKeyPressed(Key.ControlRight))
                 {
-                    CyclePrimarySpell(forward: key == Key.RightBracket);
+                    _activeAbilityIdx = key switch
+                    {
+                        Key.Number1 => 0, Key.Number2 => 1, Key.Number3 => 2, _ => 3,
+                    };
+                    _audio?.Play(SfxGuiInventory);
                 }
-                // Phase 21-SC-SPELL-VFX-debug — \ cycles which DS1 streak
-                // texture the lightning-bolt renderer samples (lightray_01,
-                // _02, _04, streaks, legacy lightray01, sparkle01). Lets
-                // the user A/B candidates live to pick the authentic look.
-                else if (key == Key.BackSlash && _particles is not null)
+                // Z — authored [collect_loot] "Collect Loot": vacuum ground
+                // piles near the party into the inventory (refusals stay on
+                // the ground with the "No room" notice).
+                else if (key == Key.Z && _player is not null && !_player.IsDead)
+                    CollectNearbyLoot();
+                // X — authored [toggle_status_bars] "Health/Mana Bars":
+                // overhead HP/MP indicators on characters.
+                else if (key == Key.X && _player is not null)
                 {
-                    var name = _particles.CycleBoltTexture();
-                    Console.WriteLine($"  bolt-tex: {name} (slot {_particles.BoltTexSlot})");
+                    _overheadBarsVisible = !_overheadBarsVisible;
+                    _audio?.Play(SfxGuiInventory);
                 }
-                // Phase 19c — F5 quicksaves to a single slot under the user
-                // profile; F9 reloads the same slot. No confirmation prompt
-                // and no multi-slot UI yet — that's a save-screen job that
-                // lands when the rest of the menu system does. F5 is silent
-                // on a viewer-mode boot (no player, no region) since
-                // CaptureSave still produces a file but ApplySave's region
-                // check would refuse it on the next F9 anyway.
-                else if (key == Key.F5) DoQuickSave();
+                // T — authored [camera_track_toggle] "Camera: Track/Hold
+                // Toggle": hold parks the camera where it is while the party
+                // walks away; track re-snaps the chase framing.
+                else if (key == Key.T && _player is not null)
+                {
+                    _camTracking = !_camTracking;
+                    Console.WriteLine($"[camera] {(_camTracking ? "tracking" : "holding")}");
+                    _audio?.Play(SfxGuiInventory);
+                }
+                // . , / — authored party-selection cycling ([select_next_player]
+                // key_period, [select_last_player] key_comma,
+                // [select_lead_character] key_slash).
+                else if ((key == Key.Period || key == Key.Comma) && _party.Count > 0)
+                    CyclePartySelection(forward: key == Key.Period);
+                else if (key == Key.Slash && _party.Count > 0)
+                {
+                    _selectedPartyIdx.Clear();
+                    _selectedPartyIdx.Add(0);
+                    Console.WriteLine("[cmd] select lead");
+                }
+                // SC-COMMANDS — authored save/load row (input_bindings.gas
+                // [quick_save] key_f9, [quick_load] key_f11, [game_options]
+                // key_f10). F5 stays as an extra quicksave alias — it was
+                // this project's original quicksave key and collides with
+                // nothing real (the gas gives F5 to party group 5, a system
+                // we don't have). The old F11 particle-burst dev receipt is
+                // retired (the sfx_script interpreter has driven the
+                // particle backend from data since SC-F/SC-G).
+                else if (key == Key.F9 || key == Key.F5) DoQuickSave();
+                else if (key == Key.F11) DoQuickLoad();
                 // Adventurer's Handbook — F12 recalls it any time (DS1's
                 // "press F12" binding). Opens in browse mode (Next/Prev page
                 // through all tips); a second F12 closes it.
@@ -4968,19 +5111,6 @@ void main()
                     _decalsVisible = !_decalsVisible;
                     Console.WriteLine($"[decals] layer {(_decalsVisible ? "ON" : "OFF")} (F6)");
                 }
-                // Phase 17-SC-E — debug particle receipt. F11 spawns a
-                // burst of fire + smoke + sparks at the player's feet so
-                // the standalone backend has a visible test before the
-                // sfx_script interpreter (SC-F) and emitter wiring (SC-G)
-                // call into it from data. F10 fires a lightning bolt
-                // straight up to verify SpawnLightning + bolt quad path.
-                else if (key == Key.F11 && _particles is not null && _player is not null)
-                {
-                    var p = _player.CurrentTransform.Translation + new Vector3(0f, 0.5f, 0f);
-                    _particles.SpawnFire (p, new Vector4(1.00f, 0.55f, 0.20f, 1f), 0.8f, 1.4f, 28);
-                    _particles.SpawnSmoke(p + new Vector3(0f, 0.6f, 0f), new Vector4(0.4f, 0.4f, 0.42f, 0.6f), 0.9f, 3.0f, 16);
-                    _particles.SpawnSpark(p, new Vector4(1.00f, 0.85f, 0.30f, 1f), 1.0f, 0.8f, 24);
-                }
                 else if (key == Key.F10 && _player is not null)
                 {
                     // Phase 23-SC-OPTIONS-A — F10 opens the Options Menu.
@@ -4990,7 +5120,6 @@ void main()
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     else OpenOptionsMenu();
                 }
-                else if (key == Key.F9) DoQuickLoad();
                 else if (key == Key.F7)
                 {
                     // SC-FADE-DIAG — snapshot the live cutaway state to a log
@@ -5303,7 +5432,8 @@ void main()
                     }
                     bool railOpen = _charPanelOpen || _inventoryOpen ||
                                     (_spellBookOpen && _spellbookOpenedWithI);
-                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y, railOpen);
+                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y,
+                                                       railOpen || _awpExpertMode);
                     switch (awpHit)
                     {
                         case Hud.CharacterAwp.HitTarget.Portrait:
@@ -5322,7 +5452,16 @@ void main()
                         case Hud.CharacterAwp.HitTarget.CloseArrow:
                             // INFORAIL-C: rail-open close arrow closes ALL
                             // rail panels (mirrors I-key close behavior).
+                            // SC-COMMANDS: with the rail already closed the
+                            // arrow belongs to W's expert mode — clicking it
+                            // maximizes the Weapons Panel back to 4 slots.
                             _awpPressed = Hud.CharacterAwp.HitTarget.CloseArrow;
+                            if (!railOpen && _awpExpertMode)
+                            {
+                                _awpExpertMode = false;
+                                _audio?.Play(SfxGuiInventory);
+                                return;
+                            }
                             _paperdollTargetIndex = 0;
                             _charPanelOpen = false;
                             _inventoryOpen = false;
@@ -5702,11 +5841,10 @@ void main()
                     DropCursorItemToWorld();
                     return;
                 }
-                // Phase 13c — LMB click-to-move. Unproject the cursor onto the
-                // player's current Y plane, confirm the point lands on a nav
-                // triangle, retarget the follower. Silent no-op on off-mesh clicks
-                // (clicks past the nav edge) so the user can rotate-drag + click
-                // without stray warnings.
+                // SC-COMMANDS — DS1's context-sensitive LMB: talk when the
+                // click lands on a talkable NPC, attack/cast when it lands on
+                // an enemy (via the active ability, same dispatch the RMB tap
+                // uses), otherwise pickup/use/move through TryClickToMove.
                 // SC-MOUSE-FX — the same press arms the drag marquee: if the
                 // cursor travels >8px while held, a thin green rectangle
                 // multi-selects party members on release (the move already
@@ -5715,7 +5853,8 @@ void main()
                 {
                     _lmbWorldDownPos = m.Position;
                     _marqueeActive = false;
-                    TryClickToMove(m.Position);
+                    if (!TryClickToTalk(m.Position) && !DispatchAbilityClick(m.Position))
+                        TryClickToMove(m.Position);
                 }
             };
             mouse.MouseUp += (m, btn) =>
@@ -6088,7 +6227,7 @@ void main()
                 bool awpRailOpen = _charPanelOpen || _inventoryOpen ||
                                   (_spellBookOpen && _spellbookOpenedWithI);
                 _awpHover = _characterAwp.HitTest((int)pos.X, (int)pos.Y,
-                                                  _window.Size.Y, awpRailOpen);
+                                                  _window.Size.Y, awpRailOpen || _awpExpertMode);
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
@@ -14724,6 +14863,34 @@ void main()
         if (_cameraMode == CameraMode.Fly)
             _camera.Move(forward, strafe, vert, (float)dt, sprint);
 
+        // SC-COMMANDS — authored chase-camera keys, polled per frame since the
+        // gas marks them key_down|key_up (held = continuous):
+        //   Left/Right [camera_rotate_left/right], Up/Down [camera_rotate_up/
+        //   down], minus/equals [camera_zoom_out/in]. Suppressed while any
+        //   modal UI owns the keyboard (dialogs use arrows for list nav).
+        if (_cameraMode == CameraMode.Chase && _player is not null && !_bootMode
+            && _nisPhase == NisPhase.Off && !_isPaused && !_saveDialog.IsOpen
+            && !_loadDialog.IsOpen && !_handbook.IsOpen && !_devConsoleOpen
+            && !_optionsMenu.IsOpen)
+        {
+            const float rotRate = 1.7f;   // rad/s — matches DS1's brisk edge-rotate feel
+            const float tiltRate = 0.9f;  // rad/s
+            const float zoomRate = 6.5f;  // m/s
+            foreach (var kb in _input.Keyboards)
+            {
+                if (kb.IsKeyPressed(Key.Left))  _chaseYaw += rotRate * (float)dt;
+                if (kb.IsKeyPressed(Key.Right)) _chaseYaw -= rotRate * (float)dt;
+                if (kb.IsKeyPressed(Key.Up))
+                    _chasePitch = Math.Clamp(_chasePitch + tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
+                if (kb.IsKeyPressed(Key.Down))
+                    _chasePitch = Math.Clamp(_chasePitch - tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
+                if (kb.IsKeyPressed(Key.Minus))
+                    _chaseDistance = Math.Clamp(_chaseDistance + zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
+                if (kb.IsKeyPressed(Key.Equal))
+                    _chaseDistance = Math.Clamp(_chaseDistance - zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
+            }
+        }
+
         // Phase 13b — in chase mode, snap the camera behind the player and aim
         // at him. _chaseYaw is the orbit angle around the player's +Y axis;
         // yaw=0 puts the camera on +Z so the player is seen looking down -Z
@@ -14732,7 +14899,11 @@ void main()
         // snap below would fight the authored pans.
         UpdateNis((float)dt);
         UpdateSubtitles((float)dt);
-        if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off)
+        // SC-COMMANDS — T's track/hold toggle: when holding, the chase snap
+        // below is skipped entirely so the camera parks where it is while
+        // the party walks away (DS1's [camera_track_toggle]).
+        if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off
+            && _camTracking)
         {
             float horiz, height, camDist;
             Vector3 target;
@@ -18685,30 +18856,33 @@ void main()
     static float PlayerMeleeReach(SiegeFX.Core.Actors.ActorStats attacker) =>
         attacker.AttackRange > MeleeReachAttackRangeThreshold ? attacker.AttackRange : MeleeReachFallback;
 
-    private void TryClickToAttack(Vector2 cursorPx)
+    /// <summary>Returns true when a combatant (or breakable prop) was under
+    /// the click and an attack fired / a walk-up was queued — the LMB context
+    /// dispatch uses that to decide between attack and move.</summary>
+    private bool TryClickToAttack(Vector2 cursorPx)
     {
-        if (_nisPhase != NisPhase.Off) return; // SC-NIS input lockout
-        if (_player is null || _window is null || _actors.Count == 0) return;
-        if (_player.IsDead) return;
+        if (_nisPhase != NisPhase.Off) return false; // SC-NIS input lockout
+        if (_player is null || _window is null || _actors.Count == 0) return false;
+        if (_player.IsDead) return false;
         var size = _window.FramebufferSize;
-        if (size.X <= 0 || size.Y <= 0) return;
+        if (size.X <= 0 || size.Y <= 0) return false;
 
         float ndcX = (cursorPx.X / size.X) * 2f - 1f;
         float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
         float aspect = (float)size.X / size.Y;
-        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection(aspect), out var invVp)) return false;
 
         var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
         var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
-        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return;
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return false;
         var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
         var far_ = new Vector3(farH.X  / farH.W,  farH.Y  / farH.W,  farH.Z  / farH.W);
         var dir  = far_ - near;
-        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return;
+        if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return false;
 
         float planeY = _player.CurrentTransform.Translation.Y;
         float t = (planeY - near.Y) / dir.Y;
-        if (t < 0f) return;
+        if (t < 0f) return false;
         var groundHit = near + dir * t;
 
         // Closest-combatant-to-click in XZ. DS1's selection is more of a screen-
@@ -18735,11 +18909,9 @@ void main()
             // breakable static prop (barrels, crates, jugs). DS1 lets the
             // player smash these for a frag burst — same pick radius, same
             // reach gate as actor combat. PerformPropBreak handles the hit.
-            if (TryClickToBreakProp(groundHit)) return;
-            Console.WriteLine(
-                $"click-attack: no combatant within {ClickAttackRadius:F1}u of " +
-                $"({groundHit.X:F1}, {groundHit.Z:F1})");
-            return;
+            // Quiet on a full miss — the LMB context dispatch probes this
+            // on every ground click before falling through to move.
+            return TryClickToBreakProp(groundHit);
         }
 
         // Phase 12-SC-1 — gate by player→target reach, not just click-pick
@@ -18765,10 +18937,71 @@ void main()
             Console.WriteLine(
                 $"click-attack: approaching {best.Actor.Template.Name} " +
                 $"(dist={playerDist:F1}u, reach={reach:F1}u)");
-            return;
+            return true;
         }
 
         PerformPlayerSwing(best, attackerStats);
+        return true;
+    }
+
+    /// <summary>SC-COMMANDS — LMB context dispatch through the ACTIVE ability:
+    /// slots 2/3 cast the equipped spell (offensive spells need a target under
+    /// the cursor — a bare-ground click falls through to move; self-heals cast
+    /// anywhere), everything else melee-swings. Returns false when nothing
+    /// actionable sat under the cursor.</summary>
+    private bool DispatchAbilityClick(Vector2 pos)
+    {
+        if (_activeAbilityIdx is 2 or 3 && _playerSpellbook is not null)
+        {
+            var slot = _activeAbilityIdx == 2
+                ? SiegeFX.Core.Actors.SpellSlot.Primary
+                : SiegeFX.Core.Actors.SpellSlot.Secondary;
+            var spell = _activeAbilityIdx == 2 ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
+            if (spell is null) return TryClickToAttack(pos);
+            if (spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal && !HasCombatTargetAt(pos))
+                return false;
+            TryClickToCast(slot);
+            return true;
+        }
+        return TryClickToAttack(pos);
+    }
+
+    /// <summary>True when a live enemy or breakable prop sits within the click
+    /// radius of the cursor's ground point — the "is this click an action or a
+    /// move" probe for the context dispatch.</summary>
+    private bool HasCombatTargetAt(Vector2 cursorPx)
+    {
+        if (_player is null || _window is null) return false;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return false;
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection((float)size.X / size.Y), out var invVp)) return false;
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return false;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X / farH.W, farH.Y / farH.W, farH.Z / farH.W);
+        var dir = far_ - near;
+        if (MathF.Abs(dir.Y) < 1e-4f) return false;
+        float t = (_player.CurrentTransform.Translation.Y - near.Y) / dir.Y;
+        if (t < 0f) return false;
+        var hit = near + dir * t;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.IsPlayer || s.IsPartyMember || !s.Actor.Stats.IsCombatant) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+        }
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsBreakable || prop.IsDestroyed) continue;
+            var p = prop.World.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+        }
+        return false;
     }
 
     static Vector3 ComputeApproachPoint(Vector3 from, Vector3 toCenter, float stopShortBy)
@@ -19362,11 +19595,13 @@ void main()
     }
 
     /// <summary>Phase 27 — DS1 member_labels: each party member's screen_name
-    /// floating over their head, gated by the data_bar Labels toggle
-    /// (<see cref="_overheadLabelsVisible"/>).</summary>
+    /// floating over their head. SC-COMMANDS: gated by the authored
+    /// [toggle_player_labels] "Character Labels" binding (L key,
+    /// <see cref="_charLabelsVisible"/>) — a separate toggle from the
+    /// Alt ground-item labels.</summary>
     private void DrawMemberLabels(int viewportW, int viewportH)
     {
-        if (!_overheadLabelsVisible || _barRenderer is null || _textRenderer is null || _party.Count == 0) return;
+        if (!_charLabelsVisible || _barRenderer is null || _textRenderer is null || _party.Count == 0) return;
         var ink = new Vector4(0.92f, 0.88f, 0.76f, 1f);
         foreach (var m in _party)
         {
@@ -19379,6 +19614,51 @@ void main()
             _barRenderer.DrawRect(viewportW, viewportH, sx - lw / 2 - 2, sy - 1, lw + 4, 13,
                 new Vector4(0f, 0f, 0f, 0.55f));
             _textRenderer.DrawString(viewportW, viewportH, name, sx - lw / 2, sy, ink);
+        }
+    }
+
+    /// <summary>SC-COMMANDS — authored [toggle_status_bars] "Health/Mana
+    /// Bars" (X key): small HP (green) and MP (blue) strips floating over
+    /// each character. Party members show both pools; living hostiles in
+    /// range show HP only, so a brawl reads at a glance. Drawn just above
+    /// where the member label sits so the two toggles stack cleanly.</summary>
+    private void DrawOverheadBars(int viewportW, int viewportH)
+    {
+        if (!_overheadBarsVisible || _barRenderer is null) return;
+        var hpCol = new Vector4(0.22f, 0.78f, 0.20f, 0.92f);
+        var mpCol = new Vector4(0.25f, 0.42f, 0.90f, 0.92f);
+        var bgCol = new Vector4(0f, 0f, 0f, 0.55f);
+        var playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
+
+        void DrawBars(ActorRenderState a, bool withMana)
+        {
+            var head = a.CurrentTransform.Translation + new Vector3(0f, 2.45f, 0f);
+            if (!ProjectToScreen(head, viewportW, viewportH, out int sx, out int sy)) return;
+            var combat = a.Actor.Combat;
+            var stats = a.Actor.Stats;
+            float hp = stats.MaxLife > 0f ? Math.Clamp(combat.CurrentLife / stats.MaxLife, 0f, 1f) : 0f;
+            const int w = 30, h = 4;
+            int x = sx - w / 2;
+            _barRenderer.DrawRect(viewportW, viewportH, x - 1, sy - 1, w + 2, h + 2, bgCol);
+            _barRenderer.DrawRect(viewportW, viewportH, x, sy, (int)(w * hp), h, hpCol);
+            if (withMana)
+            {
+                float mp = stats.MaxMana > 0f ? Math.Clamp(combat.CurrentMana / stats.MaxMana, 0f, 1f) : 0f;
+                _barRenderer.DrawRect(viewportW, viewportH, x - 1, sy + h + 1, w + 2, h + 1, bgCol);
+                _barRenderer.DrawRect(viewportW, viewportH, x, sy + h + 1, (int)(w * mp), h - 1, mpCol);
+            }
+        }
+
+        foreach (var m in _party)
+            if (m is not null && !m.IsDead) DrawBars(m, withMana: true);
+        const float range2 = 40f * 40f;
+        foreach (var a in _actors)
+        {
+            if (a.IsDead || a.IsPlayer || a.IsPartyMember || !a.CanFight) continue;
+            var p = a.CurrentTransform.Translation;
+            float dx = p.X - playerPos.X, dz = p.Z - playerPos.Z;
+            if (dx * dx + dz * dz > range2) continue;
+            DrawBars(a, withMana: false);
         }
     }
 
@@ -19437,8 +19717,10 @@ void main()
         GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
         GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
 
+        // SC-COMMANDS — W's expert mode folds the AWP with the same
+        // authored min-mode transformation the open info-rail uses.
         bool railOpen = _charPanelOpen || _inventoryOpen ||
-                        (_spellBookOpen && _spellbookOpenedWithI);
+                        (_spellBookOpen && _spellbookOpenedWithI) || _awpExpertMode;
         // INFORAIL — per-slot skill progress fractions for the bottom-
         // up vertical fill behind each AWP slot icon. Slots 1/2 read
         // melee/ranged skill XP fractions; slots 3/4 mirror their
@@ -19716,7 +19998,7 @@ void main()
             case Hud.FieldCommandsPanel.Action.ToggleFollow:     _fcFollow = !_fcFollow; break;
             case Hud.FieldCommandsPanel.Action.SelectAll:        _selectedPartyIndex = -1; break; // -1 = whole party
             case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollower(); break;
-            case Hud.FieldCommandsPanel.Action.CollectLoot:      break; // TODO: party auto-loot
+            case Hud.FieldCommandsPanel.Action.CollectLoot:      CollectNearbyLoot(); break;
             case Hud.FieldCommandsPanel.Action.Chat:             break; // MP chat — no-op in single-player
 
             // The tall tab folds just the command controls; the small button
@@ -22860,6 +23142,51 @@ void main()
         return LootPileNow(_lootPiles[bestIdx], bestIdx);
     }
 
+    /// <summary>SC-COMMANDS — authored [collect_loot] (key Z, also the
+    /// data_bar Collect button): loot every settled ground pile within
+    /// reach of the party leader. Reverse iteration keeps indices valid
+    /// as emptied piles are removed; refused items stay on the ground
+    /// with the standard "No room" notice.</summary>
+    private void CollectNearbyLoot()
+    {
+        if (_player is null || _lootPiles.Count == 0) return;
+        var pp = _player.CurrentTransform.Translation;
+        const float reach = 8f;
+        int looted = 0;
+        for (int i = _lootPiles.Count - 1; i >= 0; i--)
+        {
+            var pile = _lootPiles[i];
+            if (pile.Throw is not null) continue;
+            float dx = pile.Position.X - pp.X;
+            float dz = pile.Position.Z - pp.Z;
+            if (dx * dx + dz * dz > reach * reach) continue;
+            if (LootPileNow(pile, i)) looted++;
+        }
+        if (looted > 0) Console.WriteLine($"[cmd] collect loot: {looted} pile(s)");
+    }
+
+    /// <summary>SC-COMMANDS — authored [select_next_player] (period) /
+    /// [select_last_player] (comma): step a single-member selection through
+    /// the living party, wrapping at the ends. Starts from the lowest
+    /// currently-selected index, or the leader when nothing is selected.</summary>
+    private void CyclePartySelection(bool forward)
+    {
+        var living = new List<int>();
+        foreach (var mem in _party)
+            if (mem is not null && !mem.IsDead) living.Add(mem.PartyIndex);
+        if (living.Count == 0) return;
+        living.Sort();
+        int cur = living[0];
+        foreach (var idx in living)
+            if (_selectedPartyIdx.Contains(idx)) { cur = idx; break; }
+        int pos = living.IndexOf(cur);
+        int next = living[((pos + (forward ? 1 : -1)) % living.Count + living.Count) % living.Count];
+        _selectedPartyIdx.Clear();
+        _selectedPartyIdx.Add(next);
+        _audio?.Play(SfxGuiInventory);
+        Console.WriteLine($"[cmd] select member #{next}");
+    }
+
     private void OnRender(double dt)
     {
         if (_gl is null) return;
@@ -24047,6 +24374,9 @@ void main()
             // Phase 27 — member_labels: floating party-member names over
             // their heads when the data_bar Labels toggle is on.
             DrawMemberLabels(size.X, size.Y);
+            // SC-COMMANDS — overhead HP/MP strips (X toggle), stacked
+            // above the member labels.
+            DrawOverheadBars(size.X, size.Y);
 
             // Phase 22-INFORAIL-B + anchor fold — gas-cited info-rail
             // layout. Per hud_character.gas / hud_inventory.gas /
