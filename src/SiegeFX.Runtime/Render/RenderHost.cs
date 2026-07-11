@@ -11574,6 +11574,30 @@ void main()
     private uint _playerScriptedNext;
     private readonly List<(ActorRenderState S, Vector3 To, uint Next)> _scriptedMoves = new();
 
+    /// <summary>SC-CMD-EASY — cmd_auto_save: write the rolling autosave slot
+    /// (DS1 autosaves at authored checkpoints). Non-fatal on any error;
+    /// throttled to one save per 30s so a mis-authored chain can't spam
+    /// disk writes.</summary>
+    private double _lastAutoSaveAt = -999;
+    private void TryAutoSave()
+    {
+        if (_player is null) return;
+        if (_playSeconds - _lastAutoSaveAt < 30) return;
+        _lastAutoSaveAt = _playSeconds;
+        try
+        {
+            var path = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "autosave.save");
+            var save = CaptureSave();
+            save.DisplayName = "Autosave";
+            SiegeFX.Core.Save.SaveStore.Save(path, save);
+            Console.WriteLine($"[cmd] auto_save → {path}");
+            AddFloatingText("Autosaved",
+                _player.CurrentTransform.Translation + new Vector3(0f, 2.4f, 0f),
+                new Vector4(0.75f, 0.85f, 1f, 1f));
+        }
+        catch (Exception ex) { Console.WriteLine($"[cmd] auto_save failed: {ex.Message}"); }
+    }
+
     private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd)
     {
         var t = cmd.Type.ToLowerInvariant();
@@ -11649,6 +11673,42 @@ void main()
                     break;
                 }
                 break;
+            // SC-CMD-TPATROL — targeted patrol: route the TARGET actor onto
+            // the waypoint chain (368 authored placements across 12 regions
+            // were inert). The scripted-move arrival keeps the same actor
+            // walking node-to-node, so the authored loop just runs.
+            case "cmd_ai_t_patrol":
+            case "cmd_ai_t_patrol_orient":
+                foreach (var s in _actors)
+                {
+                    if (s.Actor.Instance.Scid != cmd.Target1 || s.IsDead) continue;
+                    _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, s));
+                    _scriptedMoves.Add((s, cmd.Pos, cmd.Next));
+                    Console.WriteLine($"[cmd] t_patrol 0x{cmd.Target1:X8} onto chain @0x{scid:X8}");
+                    break;
+                }
+                break;
+            // SC-CMD-EASY — verbs whose correct behavior is small or a
+            // deliberate acknowledgment.
+            case "cmd_auto_save":
+                TryAutoSave();
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterSave))
+                    ActivateAiCommand(cmd.Next, afterSave);
+                break;
+            case "cmd_report_gameplay_screen_player":
+                // Retail telemetry ping ("player reached gameplay screen");
+                // acknowledging keeps the chain flowing.
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterReport))
+                    ActivateAiCommand(cmd.Next, afterReport);
+                break;
+            case "cmd_alignment_changer":
+                // Our hostility model treats combatant NPCs as hostile by
+                // default (the flip these author — "make krug evil" — is the
+                // live state already); acknowledge and chain.
+                Console.WriteLine($"[cmd] alignment_changer 0x{scid:X8} — combatants already hostile; chained");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAlign))
+                    ActivateAiCommand(cmd.Next, afterAlign);
+                break;
             default:
                 // ALPHA-2 CRASH FOLD — walk stubbed links ITERATIVELY with a
                 // visited set. Patrol chains cycle by design; the old
@@ -11699,7 +11759,17 @@ void main()
                 s.IsMoving = false;
                 _scriptedMoves.RemoveAt(i);
                 if (next != 0 && _commands.TryGetValue(next, out var chained))
-                    ActivateAiCommand(next, chained);
+                {
+                    // SC-CMD-TPATROL — a patrol link in the chain keeps THIS
+                    // actor walking (generic activation would misroute a
+                    // c_patrol node through the hero-move path).
+                    var ctLower = chained.Type.ToLowerInvariant();
+                    if (ctLower is "cmd_ai_c_patrol" or "cmd_ai_c_patrol_orient"
+                                or "cmd_ai_t_patrol" or "cmd_ai_t_patrol_orient")
+                        _scriptedMoves.Add((s, chained.Pos, chained.Next));
+                    else
+                        ActivateAiCommand(next, chained);
+                }
                 continue;
             }
             float step = speed * dt / dist;
@@ -15711,6 +15781,15 @@ void main()
                     // its brain so it doesn't fight the scripted walk or overwrite
                     // the pose from its own (stale) follower position.
                     if (_scriptedSmashes.Count > 0 && IsInScriptedSmash(s)) continue;
+                    // SC-CMD-TPATROL — same rule for scripted patrol/move
+                    // chains: the command owns the actor while it walks.
+                    if (_scriptedMoves.Count > 0)
+                    {
+                        bool scripted = false;
+                        for (int smi = 0; smi < _scriptedMoves.Count; smi++)
+                            if (ReferenceEquals(_scriptedMoves[smi].S, s)) { scripted = true; break; }
+                        if (scripted) continue;
+                    }
                     // Phase 26 — recruited followers run their own combat/follow
                     // loop in TickPartyFollowers; skip them here so they don't
                     // chase the player as if hostile.
