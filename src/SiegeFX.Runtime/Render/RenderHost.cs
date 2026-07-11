@@ -1664,6 +1664,47 @@ public sealed class RenderHost : IDisposable
 
         // Build the combat brain from the resolved fighting profile.
         RebuildFollowerBrain(npc, combatStats);
+
+        // SC-COMPANION-KIT — seed the recruit's backpack from its authored
+        // [inventory][other] il_main carry list (Merik's spell pages, Ulora's
+        // lore book + helm, Gyorn's mace and shield). Worn [equipment] es_*
+        // gear is already seeded lazily by GetEquipmentDict; this is the
+        // carried half the panel never saw. The paperdoll/multi-inventory UI
+        // renders whatever lands in GetMemberInventory, so no UI work needed.
+        SeedCompanionKit(npc);
+    }
+
+    /// <summary>SC-COMPANION-KIT — one-shot template [inventory][other]
+    /// il_main → companion backpack. Pcontent specs (andiemus' #staff/45-58)
+    /// resolve through the shared spec path; entries that don't fit the grid
+    /// are refused with a log line (same rule as pile pickup). Idempotent per
+    /// recruit: skips if the bag already has anything (a re-hire after a
+    /// region reload shouldn't duplicate the kit).</summary>
+    private void SeedCompanionKit(ActorRenderState npc)
+    {
+        if (_templateStore is null || npc.PartyIndex <= 0) return;
+        var bag = GetMemberInventory(npc.PartyIndex);
+        if (bag.Count > 0) return;
+        var other = _templateStore.GetSection(npc.Actor.Template, "inventory", "other");
+        if (other is null) return;
+        int seeded = 0, refused = 0;
+        foreach (var attr in other.Attributes)
+        {
+            if (!attr.Name.Equals("il_main", StringComparison.OrdinalIgnoreCase)) continue;
+            var resolved = ResolveItemRef(attr.Value.Trim());
+            var entry = new SiegeFX.Core.Actors.LootEntry("", resolved);
+            bag.Add(entry);
+            if (!Hud.InventoryPanel.CanFitAll(bag, TryGetItemGridSize))
+            {
+                bag.RemoveAt(bag.Count - 1);
+                refused++;
+                continue;
+            }
+            seeded++;
+        }
+        if (seeded > 0 || refused > 0)
+            Console.WriteLine($"party: {npc.Actor.Template.Name} kit — {seeded} item(s) seeded" +
+                              (refused > 0 ? $", {refused} refused (no room)" : ""));
     }
 
     // Build/replace a follower's combat brain from the given stats, reusing the
