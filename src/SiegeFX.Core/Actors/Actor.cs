@@ -196,10 +196,38 @@ public sealed class Actor
     /// mg-02) at the resolved casting stance. Null/empty = single or no clip.</summary>
     public PrsAnimation[]? MagicVariants { get; internal set; }
 
-    /// <summary>Phase 19 — pick the next cast clip (uniform random over the
-    /// authored mg variants), published into <c>Clips[chore_magic]</c>.
-    /// Returns null when the template ships no magic chore.</summary>
-    public PrsAnimation? PickNextCastClip()
+    /// <summary>Phase 19 fix — replace the chore_default idle clip (slot 0)
+    /// with epoch bump, so engagement can flip the casting idle between the
+    /// relaxed stand (out of combat) and the hands-up fighting fidget
+    /// (engaged) without a full stance refresh.</summary>
+    public void SetDefaultIdleClip(PrsAnimation clip)
+    {
+        if (Clips.Length == 0) return;
+        if (ReferenceEquals(Clips[0], clip)) return;
+        ClipEpoch++;
+        Clips[0] = clip;
+    }
+
+    /// <summary>Phase 19 fix — swap the active chore_magic slot to the
+    /// FIGHTING fidget (the attack set's qffg/dff, hands up) for the gap
+    /// between cast iterations while engaged: in combat the caster
+    /// alternates cast ↔ guard-up, never dropping to the relaxed idle.</summary>
+    public bool SwapCastToFightingFidget()
+    {
+        int idx = GetClipIndex("chore_magic");
+        if (idx < 0 || AttackPadClip is null) return false;
+        ClipEpoch++;
+        Clips[idx] = AttackPadClip;
+        return true;
+    }
+
+    /// <summary>Phase 19 fix — pick the cast clip by the SPELL's authored
+    /// <c>cast_sub_animation</c> index (0 = quick mg, 1 = the long
+    /// ceremonial mg-02), published into <c>Clips[chore_magic]</c>. Casting
+    /// is deterministic per spell — the random pick briefly shipped here put
+    /// zap on the 3.25s ritual clip and read as slow motion. Returns null
+    /// when the template ships no magic chore.</summary>
+    public PrsAnimation? PickNextCastClip(int castSubAnimation = 0)
     {
         int idx = GetClipIndex("chore_magic");
         if (idx < 0) return null;
@@ -207,8 +235,7 @@ public sealed class Actor
         var variants = MagicVariants;
         if (variants is { Length: > 0 })
         {
-            _swingRng ??= new Random(unchecked((int)Instance.Scid ^ 0x5157_4E47));
-            var pick = variants[_swingRng.Next(variants.Length)];
+            var pick = variants[Math.Clamp(castSubAnimation, 0, variants.Length - 1)];
             Clips[idx] = pick;
             return pick;
         }

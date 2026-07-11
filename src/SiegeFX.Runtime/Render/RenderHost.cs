@@ -891,6 +891,38 @@ public sealed class RenderHost : IDisposable
     // flips to the casting stance until a weapon slot is selected again.
     private bool _weaponIsStaff;
     private bool SpellSlotActive => _activeAbilityIdx is 2 or 3;
+    // Phase 19 fix — casting-idle engagement state: relaxed ds out of
+    // combat, hands-up fighting fidget while engaged.
+    private SiegeFX.Core.Assets.PrsAnimation? _castIdleRelaxed;
+    private bool _castIdleIsEngaged;
+
+    /// <summary>Phase 19 fix — flip the casting idle with engagement:
+    /// hands-up fighting fidget while a cast/swing is in flight or a
+    /// hostile is actively fighting the party nearby; the relaxed stand
+    /// ONLY out of engaged combat.</summary>
+    private void TickCastingIdle()
+    {
+        if (!SpellSlotActive || _player is null || _player.IsDead || _castIdleRelaxed is null)
+            return;
+        bool engaged = _playerCast is not null || _playerSwing is not null;
+        if (!engaged)
+        {
+            var pp = _player.CurrentTransform.Translation;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Brain is null) continue;
+                if (s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                    && s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Attack) continue;
+                var p = s.CurrentTransform.Translation;
+                float dx = p.X - pp.X, dz = p.Z - pp.Z;
+                if (dx * dx + dz * dz <= 12f * 12f) { engaged = true; break; }
+            }
+        }
+        if (engaged == _castIdleIsEngaged) return;
+        _castIdleIsEngaged = engaged;
+        _player.Actor.SetDefaultIdleClip(
+            engaged ? (_player.Actor.AttackPadClip ?? _castIdleRelaxed) : _castIdleRelaxed);
+    }
 
     /// <summary>SC-CAST-STOW — single funnel for active-slot changes: on a
     /// weapon↔spell boundary the stance re-resolves (fs0/fs5 casting vs the
@@ -923,16 +955,17 @@ public sealed class RenderHost : IDisposable
                 _player.Actor.Clips[atkIdx] = dfs;
                 _player.Actor.PlayChoreOnce("chore_attack", dfsLen + GuardLinger);
             }
-            // The casting IDLE is the RELAXED default stance (ds), not the
-            // fists-up fighting fidget (dff) the chore_default rebind lands
-            // on — DS1's suffix vocabulary: ds/dsf = relaxed stand + its
-            // fidgets, dfs/dff = guard up. Without this swap the fists never
-            // come down. Switching back to a weapon slot re-runs
-            // RefreshPlayerStance, whose chore_default rebind restores the
-            // weapon stance's authored idle.
-            var ds = _actorSpawner.LoadStanceClip(_player.Actor, stance, "ds");
-            if (ds is not null && _player.Actor.Clips.Length > 0)
-                _player.Actor.Clips[0] = ds;
+            // The OUT-OF-COMBAT casting idle is the RELAXED default stance
+            // (ds) — DS1's suffix vocabulary: ds/dsf = relaxed stand + its
+            // fidgets, dfs/dff = guard up. TickCastingIdle flips slot 0
+            // between this and the fighting fidget as engagement changes;
+            // relaxing only ever happens OUT of engaged combat. Switching
+            // back to a weapon slot re-runs RefreshPlayerStance, whose
+            // chore_default rebind restores the weapon stance's idle.
+            _castIdleRelaxed = _actorSpawner.LoadStanceClip(_player.Actor, stance, "ds");
+            _castIdleIsEngaged = false;
+            if (_castIdleRelaxed is not null)
+                _player.Actor.SetDefaultIdleClip(_castIdleRelaxed);
         }
     }
     // Phase 9-SC-7 — item-mesh cache for ground loot. Keyed by item template name
@@ -14995,6 +15028,9 @@ void main()
         TickPlayerSwing((float)dt);
         // Phase 19 — advance the in-flight cast (FIRE-note release).
         TickPlayerCast((float)dt);
+        // Phase 19 fix — casting idle follows engagement (guard up in
+        // combat, relaxed stand only out of it).
+        TickCastingIdle();
         // SC-MOUSE-FX — destination-marker fade + hover pick.
         TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
@@ -21223,7 +21259,8 @@ void main()
         // "no target" feedback path still speaks; no anim wind-up.
         bool offensiveNoTarget = spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
                                  && best is null && prop is null;
-        var clip = offensiveNoTarget ? null : _player.Actor.PickNextCastClip();
+        var clip = offensiveNoTarget ? null
+            : _player.Actor.PickNextCastClip(spell.CastSubAnimation);
         if (clip is null)
         {
             if (prop is not null) PerformSpellOnProp(slot, spell, prop, magicLevel);
@@ -21258,7 +21295,16 @@ void main()
     {
         if (_playerCast is null || _player is null) return;
         var pc = _playerCast;
-        int fires = pc.Sched.Advance(dt, out _, out _);
+        int fires = pc.Sched.Advance(dt, out _, out bool pad);
+        // Engaged-combat gap: after the cast clip, hold the FIGHTING fidget
+        // (hands up) until the iteration completes — mid-combat casting
+        // alternates cast ↔ guard, never the relaxed idle.
+        if (pad && pc.Target is { IsDead: false }
+            && _player.Actor.SwapCastToFightingFidget())
+        {
+            _player.Actor.PlayChoreOnce("chore_magic",
+                MathF.Max(0.1f, pc.Sched.Period - pc.Sched.Elapsed));
+        }
         for (int i = 0; i < fires; i++)
         {
             if (pc.Prop is not null) PerformSpellOnProp(pc.Slot, pc.Spell, pc.Prop, pc.MagicLevel);

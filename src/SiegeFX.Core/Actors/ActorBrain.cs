@@ -229,8 +229,18 @@ public sealed class ActorBrain
     {
         if (_activeSwing is not { } sw) return;
         int fires = sw.Advance(dt, out _, out bool pad);
-        if (pad && !_activeSwingIsCast && _selfActor?.SwapToPadClip() == true)
-            _selfActor.PlayChoreOnce("chore_attack", MathF.Max(0.1f, sw.Period - sw.Elapsed));
+        if (pad)
+        {
+            // Between-iteration filler: the fighting fidget, on whichever
+            // chore slot this iteration runs (attack or magic).
+            if (_activeSwingIsCast
+                ? _selfActor?.SwapCastToFightingFidget() == true
+                : _selfActor?.SwapToPadClip() == true)
+            {
+                _selfActor!.PlayChoreOnce(_activeSwingIsCast ? "chore_magic" : "chore_attack",
+                    MathF.Max(0.1f, sw.Period - sw.Elapsed));
+            }
+        }
         for (; fires > 0; fires--)
         {
             if (targetPos is null || targetCombat is null || targetStats is null || targetCombat.IsDead)
@@ -421,7 +431,7 @@ public sealed class ActorBrain
         // schedule; cast cadence = clip length + cast_reload_delay (additive,
         // same shape as the melee formula). Mana was spent at initiation —
         // DS1's cast job commits the cost when the cast starts.
-        var clip = self.PickNextCastClip();
+        var clip = self.PickNextCastClip(spell.CastSubAnimation);
         if (clip is not null)
         {
             float len = clip.AnimLength > 0f ? clip.AnimLength : 0.7f;

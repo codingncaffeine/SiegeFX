@@ -192,6 +192,14 @@ public sealed class SpellTemplate
     /// <summary>Phase 24a — chain descends from a base_summon_* template.</summary>
     public bool IsSummon { get; private set; }
 
+    /// <summary>Phase 19 fix — WHICH cast sub-animation this spell uses
+    /// (<c>[magic] cast_sub_animation</c>, components.gas: "Storage for what
+    /// cast animation to use to cast this spell"). 0 = the quick mg cast;
+    /// 1 = the long ceremonial mg-02. Casting is NOT a random pick — the
+    /// random variant briefly shipped here put zap on the 3.25s ritual clip
+    /// and read as slow motion.</summary>
+    public int CastSubAnimation { get; private set; }
+
     /// <summary>Phase 24a — player-acquirable = a combat/nature-school
     /// spell (monster arsenal and unknown-chain templates excluded).</summary>
     public bool PlayerAcquirable =>
@@ -234,6 +242,11 @@ public sealed class SpellTemplate
         if (!string.IsNullOrEmpty(maxStr)
             && float.TryParse(maxStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var ml))
             MaxLevel = (int)ml;
+        var subAnimStr = store.GetAttribute(template, "magic", "cast_sub_animation");
+        if (!string.IsNullOrEmpty(subAnimStr)
+            && int.TryParse(subAnimStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var csa)
+            && csa >= 0)
+            CastSubAnimation = csa;
         for (var t = template; t is not null; t = t.Specializes)
         {
             switch (t.Name.ToLowerInvariant())
