@@ -425,6 +425,7 @@ public sealed class RenderHost : IDisposable
     private readonly GlTexture?[] _bloodTextures = new GlTexture?[6];
     private bool _bloodTexturesLoaded;
     private readonly Random _bloodRng = new(0x1B10);
+    private bool _bloodSplatAlternator;
     private readonly Dictionary<string, bool> _bloodByTemplate = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Phase 21 — one blood hit on a victim: the translucent
@@ -466,6 +467,10 @@ public sealed class RenderHost : IDisposable
 
         // Ground: 2-3 splats scattered under the victim (authored splat
         // textures at splatscaleup 1.95 over particle scale .175-.275).
+        // User-tuned: decals land on every OTHER qualifying hit (the mist
+        // still plays each time) so a long fight doesn't paint the floor.
+        _bloodSplatAlternator = !_bloodSplatAlternator;
+        if (!_bloodSplatAlternator) return;
         if (_bloodSplats is null || _navMesh is null) return;
         EnsureBloodTextures();
         int texBase = green ? 3 : 0;

@@ -33,17 +33,19 @@ void main() {
     float a = t.a * vAlpha;
     if (a <= 0.004) discard;
     // The authored splat RAWs are dark (avg 84,2,2); the original renders
-    // them as a vivid bright red (user's blood.bmp reference). 2.5x lift
-    // reproduces that read, preserving the texture's shiny variation.
-    frag = vec4(min(t.rgb * 2.5, vec3(1.0)), a);
+    // them brighter (blood.bmp reference). 1.7x lift — user-tuned down
+    // from 2.5 for a darker, wetter read — still lets the baked highlight
+    // pixels pop first.
+    frag = vec4(min(t.rgb * 1.7, vec3(1.0)), a);
 }";
 
     public readonly record struct Splat(
         Vector3 Pos, float Size, float RotRad, int TexIdx, float Age);
 
     private const int MaxSplats = 64;
-    private const float HoldSec = 25f;
-    private const float FadeSec = 6f;
+    // User-tuned 2026-07-11: shorter linger + quicker fade.
+    private const float HoldSec = 8f;
+    private const float FadeSec = 4f;
 
     private readonly GL _gl;
     private readonly Shader _shader;
