@@ -1694,20 +1694,21 @@ public sealed class RenderHost : IDisposable
         _party.Add(npc);
         npc.PartyRenderInit = false;
 
+        // SC-COMPANION-KIT — seed the recruit's backpack from its authored
+        // [inventory][other] il_main carry list (Merik's spell pages, Ulora's
+        // lore book + helm, Gyorn's mace and shield). Worn [equipment] es_*
+        // gear is already seeded lazily by GetEquipmentDict; this is the
+        // carried half the panel never saw. Runs BEFORE the brain build so
+        // a kit-spell backfill (SC-COMPANION-SPELL) lands in the stats the
+        // brain resolves its cast from.
+        SeedCompanionKit(npc);
+
         // Resolve the follower's fighting profile from its starting weapon.
         var baseStats = npc.Actor.Stats;
         var combatStats = InjectFollowerWeapon(npc.Actor.Template, baseStats) ?? baseStats;
 
         // Build the combat brain from the resolved fighting profile.
         RebuildFollowerBrain(npc, combatStats);
-
-        // SC-COMPANION-KIT — seed the recruit's backpack from its authored
-        // [inventory][other] il_main carry list (Merik's spell pages, Ulora's
-        // lore book + helm, Gyorn's mace and shield). Worn [equipment] es_*
-        // gear is already seeded lazily by GetEquipmentDict; this is the
-        // carried half the panel never saw. The paperdoll/multi-inventory UI
-        // renders whatever lands in GetMemberInventory, so no UI work needed.
-        SeedCompanionKit(npc);
     }
 
     /// <summary>SC-COMPANION-KIT — one-shot template [inventory][other]
@@ -1741,6 +1742,28 @@ public sealed class RenderHost : IDisposable
         if (seeded > 0 || refused > 0)
             Console.WriteLine($"party: {npc.Actor.Template.Name} kit — {seeded} item(s) seeded" +
                               (refused > 0 ? $", {refused} refused (no room)" : ""));
+
+        // SC-COMPANION-SPELL — a recruit whose template authored no active
+        // spell but whose kit carries castable pages gets the first one as
+        // its active (selected_active_location = il_active_primary_spell),
+        // so the brain's cast path and the team strip both see it.
+        if (string.IsNullOrWhiteSpace(npc.Actor.Stats.PrimarySpell) && _spellCatalog is not null)
+        {
+            foreach (var it in bag)
+            {
+                if (!it.Reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!_spellCatalog.TryGet(it.Reference, out var sp) || sp is null) continue;
+                if (sp.Kind is not (SiegeFX.Core.Assets.SpellKind.OffensiveInstantHit
+                                    or SiegeFX.Core.Assets.SpellKind.SelfHeal)) continue;
+                npc.Actor.ResyncStats(npc.Actor.Stats with
+                {
+                    PrimarySpell = it.Reference,
+                    ActiveLocation = "il_active_primary_spell",
+                });
+                Console.WriteLine($"party: {npc.Actor.Template.Name} active spell <- {it.Reference} (from kit)");
+                break;
+            }
+        }
     }
 
     // Build/replace a follower's combat brain from the given stats, reusing the
@@ -20933,13 +20956,21 @@ void main()
                 // Clicked slot wins; otherwise default to whichever weapon they carry.
                 int mActive = _memberActiveSlot.TryGetValue(m.PartyIndex, out var ov)
                     ? ov : (mSlot1 is not null ? 0 : (mSlot2 is not null ? 1 : -1));
+                // SC-COMPANION-SPELL — slot 3 shows the companion's active
+                // spell (authored il_active_primary_spell or kit backfill).
+                GlTexture? mSpellIcon = null;
+                if (!string.IsNullOrWhiteSpace(m.Actor.Stats.PrimarySpell)
+                    && _spellCatalog is not null
+                    && _spellCatalog.TryGet(m.Actor.Stats.PrimarySpell!, out var mSp) && mSp is not null
+                    && !string.IsNullOrWhiteSpace(mSp.ActiveIcon))
+                    mSpellIcon = ResolveAwpSlotIcon(mSp.ActiveIcon);
                 cells.Add(new Hud.TeamPortraits.Member(
                     ResolveMemberPortrait(m.Actor.Template),
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
                     st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
                     m.IsDead || c.IsDead,
                     _selectedPartyIndex == m.PartyIndex,
-                    mSlot1, mSlot2, null, null, mActive));
+                    mSlot1, mSlot2, mSpellIcon, null, mActive));
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                                 _awpAtlas, cells, _awpDeathTex, _awpInvBtnTex);
