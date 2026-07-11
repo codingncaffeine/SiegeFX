@@ -1584,11 +1584,22 @@ public sealed class SfxRuntime
                 if (h.Invisible) break;
                 bool isLight = h.Mode == EmitterMode.LightSource;
                 var glowMode = isLight ? EmitterMode.Glow : EmitterMode.Fire;
+                // SC-SPELLFX-CORE — trackball bodies author DARK base tints
+                // (fireshot color0 = .33,.22,.11 — the ember core the hot
+                // attached plumes layer over). Rendered verbatim at streak
+                // scale that read as "a crawl of dim dots" (user report).
+                // Lift the streak tint toward hot and add a warm Glow halo
+                // so the ball reads as a fireball even before its plumes.
+                var coreColor = isLight ? h.Color : new Vector4(
+                    MathF.Min(1f, h.Color.X * 2.2f + 0.25f),
+                    MathF.Min(1f, h.Color.Y * 2.2f + 0.25f),
+                    MathF.Min(1f, h.Color.Z * 2.2f + 0.25f),
+                    h.Color.W <= 0f ? 1f : h.Color.W);
                 _emitters.Add(new PersistentEmitter
                 {
                     Mode     = glowMode,
                     Position = h.Anchor,
-                    Color    = h.Color,
+                    Color    = coreColor,
                     // For Glow, Scale is the halo radius; trackball keeps
                     // its 0.80x particle-scale shrink to read as a streak.
                     Scale    = isLight
@@ -1601,6 +1612,20 @@ public sealed class SfxRuntime
                     SelfName = selfName,
                     Flicker  = isLight && h.HasFlicker ? h.Flicker : 0f,
                 });
+                if (!isLight)
+                {
+                    _emitters.Add(new PersistentEmitter
+                    {
+                        Mode     = EmitterMode.Glow,
+                        Position = h.Anchor,
+                        Color    = coreColor,
+                        Scale    = MathF.Max(0.40f, h.Scale * 1.6f),
+                        Rate     = 80f,
+                        TargetMotionId = h.MotionId,
+                        SelfMotionId   = h.MotionId,
+                        Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                    });
+                }
                 break;
             }
             default:
