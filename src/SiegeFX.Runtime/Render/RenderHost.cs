@@ -24983,6 +24983,14 @@ void main()
             if (!IsWeaponUpgrade(it)) continue;
             var slotKey = "es_" + it.Slot;
             var resolvedRef = ResolveItemRef(it.Reference);
+            // SC-PAPERDOLL-EQUIP follow-up — the authored stat gate applies
+            // to auto-equip too; a too-heavy upgrade stays in the pack.
+            if (_player is not null
+                && !MeetsEquipRequirements(resolvedRef, _player.Actor.Stats, out var autoReqFail))
+            {
+                Console.WriteLine($"  equipped: [{slotKey}] {resolvedRef} refused — {autoReqFail}");
+                continue;
+            }
             _playerEquipment[slotKey] = resolvedRef;
             Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
             if (string.Equals(slotKey, "es_weapon_hand", StringComparison.OrdinalIgnoreCase))
@@ -26129,6 +26137,10 @@ void main()
                     var boneLocal = _boneWorldsScratch[att.BoneIdx];
                     bool isShield = string.Equals(att.SlotName, "es_shield_hand",
                         StringComparison.OrdinalIgnoreCase);
+                    // SC-PAPERDOLL-EQUIP follow-up — a wielded bow occupies
+                    // the shield hand (DS1's es_shield_hand rule), so the
+                    // worn shield hides while the ranged weapon is out.
+                    if (isShield && _weaponIsRanged) continue;
                     var model = isShield
                         ? att.BindInv * shieldExtraRot * shieldExtraTrans * gripPreRot * gripPreTrans * boneLocal * _player.CurrentTransform
                         : att.BindInv * gripPreRot * gripPreTrans * boneLocal * _player.CurrentTransform;
