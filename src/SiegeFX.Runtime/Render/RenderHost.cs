@@ -1075,7 +1075,17 @@ public sealed class RenderHost : IDisposable
     private void SetActiveAbilitySlot(int slot)
     {
         bool wasSpell = SpellSlotActive;
+        int wasIdx = _activeAbilityIdx;
         _activeAbilityIdx = slot;
+        // SC-PAPERDOLL-EQUIP — switching between the melee (0) and ranged
+        // (1) abilities swaps which equipped weapon is WIELDED (DS1's
+        // selected_active_location): reload the held mesh + stance so the
+        // sword goes away and the bow comes out (or vice versa).
+        if (slot != wasIdx && (slot is 0 or 1))
+        {
+            TryLoadPlayerWeapon();
+            RefreshPlayerStance();
+        }
         if (wasSpell == SpellSlotActive) return;
         RefreshPlayerStance();
         if (SpellSlotActive && _player is not null && !_player.IsDead
@@ -18654,9 +18664,14 @@ void main()
             return _weaponIsStaff ? SiegeFX.Core.Actors.WeaponStance.Staff
                                   : SiegeFX.Core.Actors.WeaponStance.Unarmed;
         SiegeFX.Core.Assets.Template? weaponTpl = null;
-        if (slots.TryGetValue("es_weapon_hand", out var weaponRef)
-            && !string.IsNullOrWhiteSpace(weaponRef))
-            _templateStore.TryGet(ResolveItemRef(weaponRef), out weaponTpl);
+        // SC-PAPERDOLL-EQUIP — the PLAYER's stance follows the WIELDED
+        // weapon (melee vs ranged box per active ability); companion dicts
+        // keep the plain weapon-hand read.
+        var weaponRef = ReferenceEquals(slots, _playerEquipment)
+            ? PlayerWieldRef()
+            : (slots.TryGetValue("es_weapon_hand", out var wr0) ? wr0 : null);
+        if (!string.IsNullOrWhiteSpace(weaponRef))
+            _templateStore.TryGet(ResolveItemRef(weaponRef!), out weaponTpl);
         bool shield = false;
         if (slots.TryGetValue("es_shield_hand", out var shieldRef)
             && !string.IsNullOrWhiteSpace(shieldRef)
@@ -18911,7 +18926,17 @@ void main()
     {
         if (_gl is null) return;
         if (_playResolver is null || _templateStore is null) return;
-        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef)) return;
+        // SC-PAPERDOLL-EQUIP — load whichever weapon is WIELDED (ability
+        // slot 1 = the ranged box); an empty wield clears the held mesh.
+        var weaponRef = PlayerWieldRef();
+        if (string.IsNullOrWhiteSpace(weaponRef))
+        {
+            _weaponMesh?.Dispose();
+            _weaponMesh = null;
+            _weaponIsRanged = false;
+            _weaponIsStaff = false;
+            return;
+        }
         if (!_templateStore.TryGet(weaponRef, out var tpl)) return;
         var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
         if (string.IsNullOrEmpty(modelName)) return;
@@ -21079,18 +21104,9 @@ void main()
         // resulting icon rendered as if the slot were empty.
         string? esTag = PaperdollSlotToEsTag(slotName);
         if (esTag is null) return null;
-        // Melee and ranged both map to es_weapon_hand; only the slot
-        // matching the equipped weapon's class should show an icon.
-        // Otherwise the same dagger icon would render in both slots.
-        if (string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase))
-        {
-            return slotName switch
-            {
-                "melee"  => ResolveWeaponSlotIcon(ActiveEquipment, "weapon_melee"),
-                "ranged" => ResolveWeaponSlotIcon(ActiveEquipment, "weapon_ranged"),
-                _ => null,
-            };
-        }
+        // SC-PAPERDOLL-EQUIP — melee and ranged store separately now
+        // (es_weapon_hand / es_ranged_weapon), so each box just reads its
+        // own key like every other slot.
         if (!ActiveEquipment.TryGetValue(esTag, out var templateName) ||
             string.IsNullOrWhiteSpace(templateName)) return null;
         string cacheKey = $"{esTag}:{templateName}";
@@ -21152,8 +21168,48 @@ void main()
         }
 
         // Cursor has an item — check class compatibility with the slot.
+        // SC-PAPERDOLL-EQUIP — every refusal is LOUD (log + floating text);
+        // the silent no-op here is exactly what read as "can't equip at all".
         var itemRef = _cursorItem.Value.Reference;
-        if (!IsItemClassMatchingSlot(itemRef, slotName)) return;
+        var wearerFx = target <= 0 ? _player : _party.FirstOrDefault(m => m.PartyIndex == target);
+        if (ItemSlotMismatchReason(itemRef, slotName) is { } mismatch)
+        {
+            Console.WriteLine($"  paperdoll[{target}]: '{itemRef}' refused on {slotName} — {mismatch}");
+            if (wearerFx is not null)
+                AddFloatingText(mismatch,
+                    wearerFx.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
+                    new Vector4(1f, 0.35f, 0.25f, 1f));
+            return;
+        }
+        // SC-PAPERDOLL-EQUIP — DS1's engine-enforced occupancy rule: a
+        // two-handed melee weapon and a shield are mutually exclusive
+        // (bows are exempt — their shield-hand occupancy applies only
+        // while wielded, and the ranged box stores separately).
+        if (_templateStore.TryGet(itemRef, out var occTpl) && occTpl is not null)
+        {
+            bool twoHanded = string.Equals(
+                _templateStore.GetAttribute(occTpl, "attack", "is_two_handed")?.Trim(),
+                "true", StringComparison.OrdinalIgnoreCase);
+            string? conflict = null;
+            if (slotName == "melee" && twoHanded
+                && equip.TryGetValue("es_shield_hand", out var sh) && !string.IsNullOrWhiteSpace(sh))
+                conflict = "Two-handed weapons can't be used with a shield";
+            else if (slotName == "shield"
+                && equip.TryGetValue("es_weapon_hand", out var wh) && !string.IsNullOrWhiteSpace(wh)
+                && _templateStore.TryGet(wh, out var whT) && whT is not null
+                && string.Equals(_templateStore.GetAttribute(whT, "attack", "is_two_handed")?.Trim(),
+                    "true", StringComparison.OrdinalIgnoreCase))
+                conflict = "A shield can't be used with a two-handed weapon";
+            if (conflict is not null)
+            {
+                Console.WriteLine($"  paperdoll[{target}]: '{itemRef}' refused — {conflict}");
+                if (wearerFx is not null)
+                    AddFloatingText(conflict,
+                        wearerFx.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
+                        new Vector4(1f, 0.35f, 0.25f, 1f));
+                return;
+            }
+        }
 
         // SC-EQUIP-REQ — authored stat gate. DS1 refuses the equip and tells
         // you why; the item stays on the cursor.
@@ -21238,7 +21294,8 @@ void main()
             }
             return;
         }
-        bool isWeapon = string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase);
+        bool isWeapon = string.Equals(esTag, "es_weapon_hand", System.StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(esTag, "es_ranged_weapon", System.StringComparison.OrdinalIgnoreCase);
         if (isWeapon)
         {
             TryLoadPlayerWeapon();
@@ -21259,15 +21316,24 @@ void main()
     /// once the surrounding code's stabilized.</summary>
     private static string? PaperdollSlotToEsTag(string slotName) => slotName switch
     {
-        "helmet"    => "es_helm",
+        // SC-PAPERDOLL-EQUIP — canonical DS1 tags: base_helm authors
+        // equip_slot=es_head and base_glove es_forearms; the old
+        // es_helm/es_gloves keys matched nothing (EquipmentResolver fell to
+        // Strategy.None → equipped helms/gauntlets never rendered).
+        "helmet"    => "es_head",
         "armor"     => "es_chest",
-        "gauntlets" => "es_gloves",
+        "gauntlets" => "es_forearms",
         "boots"     => "es_feet",
         "amulet"    => "es_amulet",
         "shield"    => "es_shield_hand",
         "spellbook" => "es_spellbook",
         "melee"     => "es_weapon_hand",
-        "ranged"    => "es_weapon_hand", // shared slot in DS1
+        // SC-PAPERDOLL-EQUIP — DS1 keeps melee AND ranged equipped at once
+        // (selected_active_location picks the wielded one); sharing
+        // es_weapon_hand made equipping a bow evict the sword. The ranged
+        // box stores under its own key; the AWP ability slot selects which
+        // one is in hand.
+        "ranged"    => "es_ranged_weapon",
         "ring1"     => "es_ring_1",
         "ring2"     => "es_ring_2",
         "ring3"     => "es_ring_3",
@@ -21296,26 +21362,54 @@ void main()
     /// slot, allow. SC-INFORAIL-SLOT-TYPE-GATE will replace this
     /// with the proper gas slot_type check.</summary>
     private bool IsItemClassMatchingSlot(string itemRef, string slotName)
+        => ItemSlotMismatchReason(itemRef, slotName) is null;
+
+    /// <summary>SC-PAPERDOLL-EQUIP — authored-data acceptance: every slot
+    /// gates on the item's [gui] equip_slot (the field DS1 itself authors:
+    /// bows are es_shield_hand + is_projectile, shields es_shield_hand
+    /// without a projectile profile, helms es_head, gloves es_forearms,
+    /// rings es_ring...). Returns null when the item fits, else a short
+    /// human reason the click path surfaces — a silent no-op paperdoll
+    /// click reads as "equipping is broken".</summary>
+    private string? ItemSlotMismatchReason(string itemRef, string slotName)
     {
-        if (_templateStore is null) return true;
-        if (!_templateStore.TryGet(itemRef, out var tpl)) return true;
-        string? marker = slotName switch
+        if (_templateStore is null) return null;
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return null;
+        var equipSlot = (_templateStore.GetAttribute(tpl, "gui", "equip_slot") ?? "")
+            .Trim().ToLowerInvariant();
+        bool isProjectile = string.Equals(
+            _templateStore.GetAttribute(tpl, "attack", "is_projectile")?.Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        bool ok = slotName switch
         {
-            "melee"  => "weapon_melee",
-            "ranged" => "weapon_ranged",
-            _ => null,
+            "melee"     => equipSlot == "es_weapon_hand",
+            // Bows author es_shield_hand (they occupy the shield hand while
+            // wielded) — the projectile profile is what marks them ranged.
+            "ranged"    => isProjectile,
+            "shield"    => equipSlot == "es_shield_hand" && !isProjectile,
+            "helmet"    => equipSlot == "es_head",
+            "armor"     => equipSlot == "es_chest",
+            "gauntlets" => equipSlot == "es_forearms",
+            "boots"     => equipSlot == "es_feet",
+            "amulet"    => equipSlot == "es_amulet",
+            "spellbook" => equipSlot == "es_spellbook",
+            "ring1" or "ring2" or "ring3" or "ring4"
+                        => equipSlot == "es_ring" || equipSlot.StartsWith("es_ring", StringComparison.Ordinal),
+            _ => true,
         };
-        if (marker is null) return true;
-        for (var t = tpl; t is not null; t = t.Specializes)
-            if (string.Equals(t.Name, marker, System.StringComparison.OrdinalIgnoreCase))
-                return true;
-        return false;
+        if (ok) return null;
+        var name = _templateStore.GetAttribute(tpl, "common", "screen_name")?.Trim('"') ?? itemRef;
+        return $"{name} doesn't fit that slot";
     }
 
     private GlTexture? ResolveAwpSlotByWeaponClass(string requiredClass)
     {
         if (_templateStore is null) return null;
-        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef) ||
+        // SC-PAPERDOLL-EQUIP — the AWP ranged button reads the dedicated
+        // ranged box; melee keeps the weapon hand.
+        var slotKey = string.Equals(requiredClass, "weapon_ranged", StringComparison.OrdinalIgnoreCase)
+            ? "es_ranged_weapon" : "es_weapon_hand";
+        if (!_playerEquipment.TryGetValue(slotKey, out var weaponRef) ||
             string.IsNullOrWhiteSpace(weaponRef)) return null;
         if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return null;
         bool classMatch = false;
@@ -22231,8 +22325,7 @@ void main()
     {
         if (_templateStore is null || _player is null) return 0f;
         SiegeFX.Core.Assets.Template? src = null;
-        if (_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef)
-            && !string.IsNullOrWhiteSpace(weaponRef))
+        if (PlayerWieldRef() is { } weaponRef && !string.IsNullOrWhiteSpace(weaponRef))
             _templateStore.TryGet(ResolveItemRef(weaponRef), out src);
         src ??= _player.Actor.Template;
         var raw = _templateStore.GetAttribute(src, "attack", "reload_delay");
@@ -24498,7 +24591,10 @@ void main()
         foreach (var kv in equip)
         {
             if (!_templateStore.TryGet(kv.Value, out var tpl) || tpl is null) continue;
-            var defStr = _templateStore.GetAttribute(tpl, "armor", "defense");
+            // SC-PAPERDOLL-EQUIP fix — armor authors defense under [defend]
+            // ([armor] exists in no shipped gas); the old section read made
+            // every piece of worn armor contribute ZERO defense.
+            var defStr = _templateStore.GetAttribute(tpl, "defend", "defense");
             if (string.IsNullOrEmpty(defStr)) continue;
             if (float.TryParse(defStr, System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out var d) && d > 0f)
@@ -24636,11 +24732,24 @@ void main()
         return true;
     }
 
+    /// <summary>SC-PAPERDOLL-EQUIP — which equipped weapon is IN HAND:
+    /// DS1's selected_active_location. The AWP ranged ability (slot 1)
+    /// wields es_ranged_weapon when one is equipped; every other ability
+    /// wields es_weapon_hand. Melee and ranged stay equipped side by side
+    /// like the authored character sheet's two weapon boxes.</summary>
+    private string? PlayerWieldRef()
+    {
+        if (_activeAbilityIdx == 1
+            && _playerEquipment.TryGetValue("es_ranged_weapon", out var r)
+            && !string.IsNullOrWhiteSpace(r)) return r;
+        return _playerEquipment.TryGetValue("es_weapon_hand", out var w) ? w : null;
+    }
+
     private SiegeFX.Core.Actors.ActorStats GetPlayerAttackStats()
     {
         if (_templateStore is null) return HeroBaselineStats;
-        if (!_playerEquipment.TryGetValue("es_weapon_hand", out var weaponRef))
-            return HeroBaselineStats;
+        var weaponRef = PlayerWieldRef();
+        if (string.IsNullOrWhiteSpace(weaponRef)) return HeroBaselineStats;
         if (!_templateStore.TryGet(weaponRef, out var weaponTpl)) return HeroBaselineStats;
 
         var dminStr = _templateStore.GetAttribute(weaponTpl!, "attack", "damage_min");
@@ -27908,6 +28017,11 @@ void main()
                 if (e.Slot.StartsWith("equipped:", StringComparison.OrdinalIgnoreCase))
                 {
                     var slotKey = "es_" + e.Slot.Substring("equipped:".Length);
+                    // SC-PAPERDOLL-EQUIP — pre-v13-era saves wrote the
+                    // non-canonical es_helm/es_gloves keys; remap so old
+                    // saves' gear lands where the resolver renders it.
+                    if (slotKey.Equals("es_helm", StringComparison.OrdinalIgnoreCase)) slotKey = "es_head";
+                    else if (slotKey.Equals("es_gloves", StringComparison.OrdinalIgnoreCase)) slotKey = "es_forearms";
                     _playerEquipment[slotKey] = e.Reference;
                 }
                 else
