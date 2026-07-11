@@ -11390,6 +11390,33 @@ void main()
                 }
                 if (_playerFollower is not null)
                 {
+                    // SC-NIS-TELEPORT — the original does NOT walk the hero
+                    // across the farm: the intro TELEPORTS him near each
+                    // scripted spot (Esc-skip = instantly there; watching it
+                    // = only a short final walk to the bridge). A far target
+                    // during the NIS snaps the player to ~6u short of it and
+                    // walks the remainder.
+                    if (_nisPhase != NisPhase.Off)
+                    {
+                        var pp = _playerFollower.Position;
+                        float tdx = cmd.Pos.X - pp.X, tdz = cmd.Pos.Z - pp.Z;
+                        float tdist = MathF.Sqrt(tdx * tdx + tdz * tdz);
+                        if (tdist > 10f)
+                        {
+                            float lead = 6f / tdist;
+                            var tp = new Vector3(cmd.Pos.X - tdx * lead, cmd.Pos.Y, cmd.Pos.Z - tdz * lead);
+                            if (_navMesh is not null && _navMesh.TryFindTriangle(tp, out var ttri, includeFadeHidden: true))
+                                tp.Y = _navMesh.SampleYOnTriangle(ttri, tp);
+                            _playerFollower.Teleport(tp);
+                            // Snap the render-interp buffers so the jump is a
+                            // cut, not a smear across the farm.
+                            _playerRenderPosPrev = tp;
+                            _playerRenderPosNext = tp;
+                            if (_player is not null)
+                                _player.CurrentTransform = Matrix4x4.CreateTranslation(tp);
+                            Console.WriteLine($"[nis] hero teleported near scripted target ({tdist:F0}u jump)");
+                        }
+                    }
                     _playerFollower.SetTarget(cmd.Pos);
                     _playerScriptedNext = cmd.Next;
                     Console.WriteLine($"[cmd] move hero -> ({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) next=0x{cmd.Next:X8}");
