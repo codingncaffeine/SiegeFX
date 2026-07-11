@@ -329,6 +329,26 @@ public sealed class QuestJournal
         return true;
     }
 
+    /// <summary>SC-QUEST-TURNIN — true once <paramref name="key"/> is in the
+    /// journal in the Completed state. Drives quest-state conversation
+    /// selection (NPCs switch to their *_quest_complete lines).</summary>
+    public bool IsCompleted(string key)
+        => !string.IsNullOrWhiteSpace(key)
+           && _entries.TryGetValue(key, out var e)
+           && e.State == QuestState.Completed;
+
+    /// <summary>SC-QUEST-TURNIN — authored <c>deactivate_quest*</c>: withdraw
+    /// the entry from the journal entirely (DS1 uses it when a quest becomes
+    /// moot, e.g. fort_kroth once events pass it by). Completed entries stay —
+    /// deactivating history would erase the log the player already earned.</summary>
+    public bool Deactivate(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return false;
+        if (!_entries.TryGetValue(key, out var e)) return false;
+        if (e.State == QuestState.Completed) return false;
+        return _entries.Remove(key);
+    }
+
     /// <summary>Clear the journal and replay a sequence of (key, state, progress)
     /// tuples. Used by SaveFile load — the in-memory journal needs to be rebuilt
     /// from scratch each time so a stray entry from a different save can't

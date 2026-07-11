@@ -15,6 +15,13 @@ public sealed class DialogueNode
     public string? VoiceSample { get; init; }
     public string Choice { get; init; } = "";   // "more" advances; "" = continue/end
     public string? ActivateQuest { get; init; } // emit on accept; Phase 20b consumes
+    /// <summary>SC-QUEST-TURNIN — authored <c>complete_quest*</c>: playing this
+    /// node IS the quest turn-in (4 quests author it: apprentice_books,
+    /// open_gate, water_dungeon + fort_kroth's deactivate).</summary>
+    public string? CompleteQuest { get; init; }
+    /// <summary>SC-QUEST-TURNIN — authored <c>deactivate_quest*</c>: the quest
+    /// is withdrawn from the journal without a completion fanfare.</summary>
+    public string? DeactivateQuest { get; init; }
     public bool IsQuestDialog { get; init; }    // "Accept" / "Decline" buttons
     public bool IsNonInteractive { get; init; } // narrator banners; auto-close on click
 
@@ -107,6 +114,7 @@ public static class ConversationStore
                 int order = -1;
                 string text = "", choice = "";
                 string? sample = null, activateQuest = null;
+                string? completeQuest = null, deactivateQuest = null;
                 bool questDialog = false, nis = false;
 
                 foreach (var attr in child.Attributes)
@@ -126,6 +134,8 @@ public static class ConversationStore
                     else if (NameEq(name, "sample"))      sample = raw.Trim();
                     else if (NameEq(name, "choice"))      choice = raw.Trim().ToLowerInvariant();
                     else if (NameEq(name, "activate_quest")) activateQuest = raw.Trim();
+                    else if (NameEq(name, "complete_quest")) completeQuest = raw.Trim();
+                    else if (NameEq(name, "deactivate_quest")) deactivateQuest = raw.Trim();
                     else if (NameEq(name, "quest_dialog"))   questDialog = ParseBool(raw);
                     else if (NameEq(name, "nis"))            nis = ParseBool(raw);
                 }
@@ -138,6 +148,8 @@ public static class ConversationStore
                     VoiceSample      = sample,
                     Choice           = choice,
                     ActivateQuest    = activateQuest,
+                    CompleteQuest    = completeQuest,
+                    DeactivateQuest  = deactivateQuest,
                     IsQuestDialog    = questDialog,
                     IsNonInteractive = nis,
                 });

@@ -97,10 +97,41 @@ public sealed class DialoguePanel
         _index = 0;
         _scroll = 0;
         PendingQuestActivation = null;
+        PendingQuestCompletion = null;
+        PendingQuestDeactivation = null;
         PendingRecruit = false;
         LastQuestConversation = null;
         IsOpen = conv.Nodes.Count > 0;
         CancelAllPresses();
+        NoteNodeShown();
+    }
+
+    // SC-QUEST-TURNIN — authored complete_quest*/deactivate_quest* fire when
+    // their text node PLAYS (the turn-in monologue is the completion moment,
+    // no Accept required). One-shot pendings; the host drains them per frame.
+    public string? PendingQuestCompletion { get; private set; }
+    public string? PendingQuestDeactivation { get; private set; }
+
+    public string? ConsumePendingQuestCompletion()
+    {
+        var q = PendingQuestCompletion;
+        PendingQuestCompletion = null;
+        return q;
+    }
+
+    public string? ConsumePendingQuestDeactivation()
+    {
+        var q = PendingQuestDeactivation;
+        PendingQuestDeactivation = null;
+        return q;
+    }
+
+    private void NoteNodeShown()
+    {
+        var n = CurrentNode;
+        if (n is null) return;
+        if (!string.IsNullOrWhiteSpace(n.CompleteQuest))   PendingQuestCompletion   = n.CompleteQuest;
+        if (!string.IsNullOrWhiteSpace(n.DeactivateQuest)) PendingQuestDeactivation = n.DeactivateQuest;
     }
 
     public void Close()
@@ -241,6 +272,7 @@ public sealed class DialoguePanel
         _index++;
         _scroll = 0; // fresh node starts at the top
         if (_index >= _conv.Nodes.Count) Close();
+        else NoteNodeShown();
     }
 
     /// <summary>Decline path: jump to the first remaining node that *isn't* a
@@ -251,7 +283,7 @@ public sealed class DialoguePanel
         if (_conv is null) { Close(); return; }
         for (int i = _index + 1; i < _conv.Nodes.Count; i++)
         {
-            if (!_conv.Nodes[i].IsChoiceFork) { _index = i; return; }
+            if (!_conv.Nodes[i].IsChoiceFork) { _index = i; NoteNodeShown(); return; }
         }
         Close();
     }

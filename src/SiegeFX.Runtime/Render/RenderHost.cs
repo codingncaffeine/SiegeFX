@@ -718,6 +718,9 @@ public sealed class RenderHost : IDisposable
     const string SfxMeleeHitGroupPrefix = "melee_hit_";
     const string SfxMeleeMiss       = "melee_miss";
     const string SfxLevelUp         = "level_up";
+    // SC-QUEST-TURNIN — DS1's quest-completion jingle (s_e_level_up_quest.wav)
+    // fires on every completion path: conversation turn-in, trigger, kill/talk.
+    const string SfxQuestComplete   = "quest_complete";
     const string SfxDoorOpen        = "door_open";
     // Phase 21d-2a-ix — GUI feedback. Surgical wires for the three call sites
     // where DS1 plays a UI cue today: inventory open/close, loot pickup, and
@@ -2593,7 +2596,7 @@ public sealed class RenderHost : IDisposable
             case "complete":
             case "completed":
                 if (_progression.Journal.MarkCompleted(key))
-                    Console.WriteLine($"[quest] trigger completed '{key}'");
+                    AnnounceQuestCompleted(key, "trigger");
                 break;
             case "deactivate":
             case "inactive":
@@ -7593,6 +7596,7 @@ void main()
                     // unconditional steelsword-only block that masqueraded as "hit_flesh_*".
                     TryRegisterSfx(soundReader, SfxMeleeMiss, "/sound/effects/s_e_miss_melee.wav");
                     TryRegisterSfx(soundReader, SfxLevelUp,   "/sound/effects/s_e_level_up_melee.wav");
+                    TryRegisterSfx(soundReader, SfxQuestComplete, "/sound/effects/s_e_level_up_quest.wav");
 
                     // Phase 21d-2a-ix — GUI cue triplet (see Sfx const block above).
                     TryRegisterSfx(soundReader, SfxGuiInventory, "/sound/effects/s_e_gui_inventory_sheet.wav");
@@ -14205,6 +14209,9 @@ void main()
         // main thread). Both branches clear the pending args.
         FlushCreator();
         FlushOptionsMenu();
+        // SC-QUEST-TURNIN — authored complete/deactivate edges from the
+        // dialogue panel (fire when the turn-in monologue plays).
+        FlushDialogueQuestEdges();
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
         // (not inside DrawBootScene) so the boot sequence keeps advancing
         // even when the render loop is paused (e.g. minimized window).
@@ -17181,6 +17188,26 @@ void main()
             if (joinHit is not null) return joinHit;
             if (offerHit is not null) return offerHit;
         }
+        // SC-QUEST-CONVO — quest-state selection: once the quest a base
+        // conversation activates is complete, the NPC's authored
+        // *_quest_complete variant takes over (Edgaar thanks you for the
+        // cleared basement instead of re-offering the favor).
+        if (_progression is not null)
+        {
+            foreach (var k in keys)
+            {
+                if (!k.EndsWith("_quest_complete", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!_conversations.TryGetValue(k, out var qc) || qc.Nodes.Count == 0) continue;
+                var baseKey = k[..^"_quest_complete".Length];
+                if (!_conversations.TryGetValue(baseKey, out var baseConv)) continue;
+                foreach (var n in baseConv.Nodes)
+                {
+                    if (!string.IsNullOrWhiteSpace(n.ActivateQuest)
+                        && _progression.Journal.IsCompleted(n.ActivateQuest!))
+                        return qc;
+                }
+            }
+        }
         foreach (var k in keys)
             if (_conversations.TryGetValue(k, out var hit) && hit.Nodes.Count > 0) return hit;
         return null;
@@ -19479,16 +19506,42 @@ void main()
             ProcessGeneratorInObject(deadTemplate, worldPos, "WE_KILLED");
         if (_progression is null || string.IsNullOrEmpty(templateName)) return;
         var completed = _progression.Journal.RegisterKill(templateName);
-        foreach (var key in completed)
-        {
-            string label = _progression.Journal.TryGet(key, out var entry) && entry?.Definition is { } d
-                ? d.ScreenName : key;
-            Console.WriteLine($"[quest] completed: {label} ({key})");
+        foreach (var key in completed) AnnounceQuestCompleted(key, "kill goal");
+    }
+
+    /// <summary>SC-QUEST-TURNIN — single completion fanfare for every path
+    /// (conversation turn-in, trigger change_quest_state, kill/talk goals):
+    /// toast + the authored s_e_level_up_quest jingle + journal flash.</summary>
+    private void AnnounceQuestCompleted(string key, string source)
+    {
+        if (_progression is null) return;
+        string label = _progression.Journal.TryGet(key, out var entry) && entry?.Definition is { } d
+            ? d.ScreenName : key;
+        Console.WriteLine($"[quest] completed: {label} ({key}) via {source}");
+        if (_player is not null)
             AddFloatingText($"Quest complete: {label}",
-                            (_player?.CurrentTransform.Translation ?? worldPos) + new Vector3(0f, 2.4f, 0f),
+                            _player.CurrentTransform.Translation + new Vector3(0f, 2.4f, 0f),
                             new Vector4(1.00f, 0.85f, 0.40f, 1f));
+        _audio?.Play(SfxQuestComplete);
+        FlashQuestIndicator();
+    }
+
+    /// <summary>SC-QUEST-TURNIN — drain the dialogue panel's one-shot
+    /// complete_quest*/deactivate_quest* edges (set when their text node
+    /// plays). Runs every update tick alongside the other menu flushes.</summary>
+    private void FlushDialogueQuestEdges()
+    {
+        if (_progression is null) return;
+        if (_dialogue.ConsumePendingQuestCompletion() is { } ck)
+        {
+            if (_progression.Journal.MarkCompleted(ck))
+                AnnounceQuestCompleted(ck, "conversation turn-in");
         }
-        if (completed.Count > 0) FlashQuestIndicator();
+        if (_dialogue.ConsumePendingQuestDeactivation() is { } dk)
+        {
+            if (_progression.Journal.Deactivate(dk))
+                Console.WriteLine($"[quest] '{dk}' deactivated (conversation)");
+        }
     }
 
     /// <summary>Phase 20d — credit a gold drop. Pulled out of the death funnel
