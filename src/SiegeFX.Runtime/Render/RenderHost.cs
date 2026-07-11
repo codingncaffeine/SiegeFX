@@ -3164,7 +3164,7 @@ public sealed class RenderHost : IDisposable
     // happen per render frame via a ground-plane raycast through the
     // mouse, mirroring TryClickToAttack / TryClickToBreakProp / TryClickToTalk
     // so cursor visual tracks 1:1 with what a click actually picks.
-    private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk }
+    private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk, NoGo }
     private CursorState _cursorState = CursorState.Pointer;
     // Phase 22 — hover + walk-up pickup state. _hoverPile feeds the
     // bottom-center item readout; gold/spells also get the flat blue hover
@@ -3209,6 +3209,7 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _cursorAttack;           // red sword (enemy under cursor in melee/ranged)
     private GlTexture? _cursorCastAttack;       // blue-glow sword (enemy under cursor in spell mode)
     private GlTexture? _cursorTalk;             // talk marker
+    private GlTexture? _cursorCant;             // red circle+slash (unwalkable terrain)
     private GlTexture[]? _cursorSmash;          // animated hammer (smash1.flm)
     private GlTexture[]? _cursorGrab;           // animated hand (grab1.flm)
     private bool _cursorTexturesAttempted;
@@ -21252,6 +21253,9 @@ void main()
         _cursorCastAttack = TryGetGuiTexture("b_gui_c_magic2")
                          ?? TryGetGuiTexture("b_gui_c_magic3");
         _cursorTalk       = TryGetGuiTexture("b_gui_c_talk");
+        // Phase 23 — cursors.gas cursor_cant: the red circle+slash shown
+        // over terrain the player can't be sent to (water, off-mesh void).
+        _cursorCant       = TryGetGuiTexture("b_gui_c_cant");
         _cursorSmash      = LoadFlmFrames("b_gui_c_smash1.flm");
         _cursorGrab       = LoadFlmFrames("b_gui_c_grab1.flm");
         Console.WriteLine(
@@ -21259,6 +21263,7 @@ void main()
             $" attack={(_cursorAttack is not null ? "ok" : "MISS")}" +
             $" castattack={(_cursorCastAttack is not null ? "ok" : "MISS")}" +
             $" talk={(_cursorTalk is not null ? "ok" : "MISS")}" +
+            $" cant={(_cursorCant is not null ? "ok" : "MISS")}" +
             $" smash={(_cursorSmash is null ? "MISS" : _cursorSmash.Length + " frames")}" +
             $" grab={(_cursorGrab is null ? "MISS" : _cursorGrab.Length + " frames")}");
     }
@@ -21380,6 +21385,47 @@ void main()
                 if (talkable) { _cursorState = CursorState.Talk; return; }
             }
         }
+        // 5) Phase 23 — nothing interactive under the cursor: is the ground
+        //    itself somewhere the player can be sent? Mirror TryClickToMove's
+        //    resolution exactly (nav-mesh ray pick, then the plane fallback)
+        //    so the red circle+slash shows precisely when a click would be
+        //    refused: water (LandOnly), off-mesh void past the walkable edge
+        //    (the stream under the bridge), obstacle-blocked slivers, and
+        //    lnodes the logical-flags gas closes to human players.
+        if (_navMesh is not null)
+        {
+            if (_navMesh.TryRaycast(near, dir, dir.Length(), out int navTri, out _))
+            {
+                if (PlayerCannotStandOn(navTri)) _cursorState = CursorState.NoGo;
+            }
+            else if (!_navMesh.TryFindTriangle(groundHit, out int planeTri))
+            {
+                _cursorState = CursorState.NoGo;
+            }
+            else if (PlayerCannotStandOn(planeTri))
+            {
+                _cursorState = CursorState.NoGo;
+            }
+        }
+    }
+
+    /// <summary>Phase 23 — can the PLAYER be ordered onto this nav triangle?
+    /// The same three gates the pathfinder applies to a goal triangle under
+    /// <see cref="SiegeFX.Core.Nav.NavTraversal.Player"/>: obstacle-blocked,
+    /// kind impassable (water is infinite-cost for land-only), and the
+    /// region's logical-flags actor-class gate.</summary>
+    private bool PlayerCannotStandOn(int tri)
+    {
+        var mesh = _navMesh;
+        if (mesh is null || tri < 0 || tri >= mesh.TriangleCount) return false;
+        if (mesh.IsBlocked(tri)) return true;
+        var player = SiegeFX.Core.Nav.NavTraversal.Player;
+        if (!player.CanEnter(mesh.Kinds[tri])) return true;
+        if (mesh.Flags is not null &&
+            !mesh.Flags.CanEnter(mesh.SourceSnodeGuid[tri],
+                (byte)mesh.SourceLnodeIndex[tri], player.Actor))
+            return true;
+        return false;
     }
 
     /// <summary>Phase 21-SC-BARREL-A1 — map the current cursor state to a
@@ -21412,6 +21458,9 @@ void main()
             }
             case CursorState.Talk when _cursorTalk is not null:
                 return (_cursorTalk, hsSmallX, hsSmallY, small);
+            case CursorState.NoGo:
+                // cursors.gas cursor_cant: 64x64, sethotspot(21,13).
+                return (_cursorCant ?? _cursorPointer, hsBigX, hsBigY, big);
             case CursorState.Pointer:
             default:
                 return (_cursorPointer, hsBigX, hsBigY, big);
