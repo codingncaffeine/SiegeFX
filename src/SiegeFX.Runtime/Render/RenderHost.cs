@@ -6283,16 +6283,23 @@ void main()
                             // distinguishes the two visually). Cells 2/3 cast
                             // the Primary/Secondary spell slot at whatever the
                             // cursor is over, mirroring Q/W keyboard casts.
+                            // SC-CLICK-AUDIO — RMB taps play the same order
+                            // cues as the LMB context dispatch: cast cue for
+                            // spell cells, attack chime when the tap lands
+                            // an attack order.
                             switch (_activeAbilityIdx)
                             {
                                 case 2:
                                     TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Primary);
+                                    _audio?.Play(SfxOrderCast);
                                     break;
                                 case 3:
                                     TryClickToCast(SiegeFX.Core.Actors.SpellSlot.Secondary);
+                                    _audio?.Play(SfxOrderCast);
                                     break;
                                 default:
-                                    TryClickToAttack(_rmbDownPos);
+                                    if (TryClickToAttack(_rmbDownPos))
+                                        _audio?.Play(SfxOrderAttack);
                                     break;
                             }
                         }
