@@ -122,13 +122,51 @@ public sealed class LootTable
             }
         }
 
+        // SC-CARRIED-INVENTORY — DS1 authors inventory in TWO sibling
+        // sub-blocks: [pcontent] (randomized rolls, handled above) and the
+        // plain hand-authored carries — [other] il_main lines (fh_r1's
+        // fence-krug carries spell_zap this way; its neighbors carry
+        // potions, a bow, leather armor) and [equipment] es_* worn gear
+        // (torch_small). Reading only pcontent silently swallowed every
+        // guaranteed authored drop. [other] items drop unconditionally
+        // (retail drops carried inventory on death); [equipment] pieces
+        // join the equipped buckets so the roller's equipped-drop chance
+        // applies. il_active_* spell lines in [other] are NOT carried
+        // loot — they stay with the drops_spellbook path.
+        void CollectCarried(GasNode? other, GasNode? equipment)
+        {
+            if (other is not null)
+            {
+                var carried = new List<LootEntry>();
+                foreach (var attr in other.Attributes)
+                    if (attr.Name.Equals("il_main", StringComparison.OrdinalIgnoreCase))
+                        carried.Add(new LootEntry("", attr.Value));
+                if (carried.Count > 0)
+                    drops.Add(new LootBucket(1f, carried, Array.Empty<LootBucket>(), emitAll: true));
+            }
+            if (equipment is not null)
+            {
+                foreach (var attr in equipment.Attributes)
+                    if (attr.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase))
+                        equipped.Add(new LootBucket(1f,
+                            new[] { new LootEntry(attr.Name[3..], attr.Value) },
+                            Array.Empty<LootBucket>()));
+            }
+        }
+
         var pcontent = store.GetSection(template, "inventory", "pcontent");
         if (pcontent is not null) Collect(pcontent);
+        CollectCarried(store.GetSection(template, "inventory", "other"),
+                       store.GetSection(template, "inventory", "equipment"));
 
         if (instance is not null
-            && TemplateStore.FindChild(instance, "inventory") is { } instInv
-            && TemplateStore.FindChild(instInv, "pcontent") is { } instPc)
-            Collect(instPc);
+            && TemplateStore.FindChild(instance, "inventory") is { } instInv)
+        {
+            if (TemplateStore.FindChild(instInv, "pcontent") is { } instPc)
+                Collect(instPc);
+            CollectCarried(TemplateStore.FindChild(instInv, "other"),
+                           TemplateStore.FindChild(instInv, "equipment"));
+        }
 
         return new LootTable(equipped, drops);
     }

@@ -45,18 +45,33 @@ public static class LootRoller
         foreach (var bucket in table.Drops) RollBucket(bucket, rng, results);
         // Equipped buckets — `es_weapon_hand = X` etc. Worn gear; gate at
         // the bucket level with EquippedDropChance so they drop sometimes.
+        // SC-CARRIED-INVENTORY — EXCEPT rare/unique-tier gear (gaspy's
+        // name-segment rule: cb_un_2h_horrid, bw_ra_*). Bosses author their
+        // signature weapon as their equipped item — Horrid's Club, the Krug
+        // Commander's Cutter — and the guide promises those drops; a 35%
+        // roll on a one-time boss would eat the drop most playthroughs.
         foreach (var bucket in table.Equipped)
         {
-            if (rng.NextDouble() < EquippedDropChance)
+            if (ContainsRareOrUnique(bucket) || rng.NextDouble() < EquippedDropChance)
                 RollBucket(bucket, rng, results);
         }
         return results;
     }
 
+    static bool ContainsRareOrUnique(LootBucket bucket)
+    {
+        foreach (var e in bucket.Entries)
+            if (PcontentResolver.ClassifyRarity(e.Reference) != PcontentResolver.Rarity.Normal)
+                return true;
+        foreach (var c in bucket.Children)
+            if (ContainsRareOrUnique(c)) return true;
+        return false;
+    }
+
     static void RollBucket(LootBucket bucket, Random rng, List<LootEntry> results)
     {
         if (!RollChance(bucket.Chance, rng)) return;
-        EmitFromBucket(bucket, rng, results);
+        _ = EmitFromBucket(bucket, rng, results);
     }
 
     static bool RollChance(float chance, Random rng) =>
@@ -70,33 +85,49 @@ public static class LootRoller
     /// regional barrel pcontent lines (e.g. <c>barrel_glb_fh_r1</c> with
     /// gold@0.35 + potion@0.05) drop ~35% gold, ~3% potions, ~62% empty
     /// under this reading, matching the community-observed barrel
-    /// distribution (60-70% empty / 20-25% gold / 5-10% potions).</summary>
-    static void EmitFromBucket(LootBucket bucket, Random rng, List<LootEntry> results)
+    /// distribution (60-70% empty / 20-25% gold / 5-10% potions).
+    ///
+    /// SC-CARRIED-INVENTORY fold — "wins" now means the peer actually
+    /// EMITTED something, not merely passed its own chance line. The krug
+    /// mob templates wrap their gold in a chance-1 <c>[all*]</c> whose
+    /// 0.15 sits on the INNER [gold*]; under pass-wins that wrapper
+    /// swallowed every roll and the sibling branch holding the authored
+    /// <c>#spell/0-2</c> / bow / melee / body drops was unreachable —
+    /// which is why no krug ever dropped a spell. Flat peer sets (the
+    /// barrel shape) produce identical distributions either way.
+    /// Returns true when at least one entry landed in
+    /// <paramref name="results"/>.</summary>
+    static bool EmitFromBucket(LootBucket bucket, Random rng, List<LootEntry> results)
     {
         // SC-LOOT-ALL — [all*] buckets emit EVERYTHING: every entry plus
         // every child (each child still gated by its own chance). DS1 uses
         // this shape for guaranteed boss drops and multi-item payloads.
         if (bucket.EmitAll)
         {
+            bool any = bucket.Entries.Count > 0;
             foreach (var e in bucket.Entries) results.Add(e);
             foreach (var child in bucket.Children)
                 if (RollChance(child.Chance, rng))
-                    EmitFromBucket(child, rng, results);
-            return;
+                    any |= EmitFromBucket(child, rng, results);
+            return any;
         }
         if (bucket.Children.Count > 0)
         {
             foreach (var child in bucket.Children)
             {
-                if (RollChance(child.Chance, rng))
-                {
-                    EmitFromBucket(child, rng, results);
-                    return;
-                }
+                if (!RollChance(child.Chance, rng)) continue;
+                // A peer that passed its chance but emitted nothing (a
+                // wrapper whose inner rolls all failed) doesn't win —
+                // keep walking so its siblings still get their shot.
+                if (EmitFromBucket(child, rng, results)) return true;
             }
-            return;
+            return false;
         }
         if (bucket.Entries.Count > 0)
+        {
             results.Add(bucket.Entries[rng.Next(bucket.Entries.Count)]);
+            return true;
+        }
+        return false;
     }
 }

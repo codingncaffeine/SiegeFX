@@ -2020,7 +2020,15 @@ public sealed class RenderHost : IDisposable
             s.Brain = null;
             BeginDeathChore(s);
             PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
-            LogLootDrop(s.Actor, s.CurrentTransform.Translation);
+            // SC-CARRIED-INVENTORY — dying companions keep their kit. The
+            // hireable-hero templates author their starting gear/spells in
+            // [inventory][other] (Merik's eight spells, Ulora's lore book),
+            // which now feeds the loot table — but retail party members are
+            // resurrectable corpses, never loot piñatas. The two player-kill
+            // sites can't target party members, so this sweep is the only
+            // path that needs the guard.
+            if (!s.IsPartyMember)
+                LogLootDrop(s.Actor, s.CurrentTransform.Translation);
             OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
             CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
             // Party shares the kill's XP (the follower dealt the blow). Our
@@ -23613,12 +23621,14 @@ void main()
         var rng = new Random((int)actor.Instance.Scid);
         var drops = SiegeFX.Core.Actors.LootRoller.Roll(table, rng);
         // SC-MOB-SPELLBOOK — casters authoring [actor] drops_spellbook=true
-        // always drop their spells regardless of how the pcontent roll went
-        // (DS1's dropped spellbook carries the caster's authored spell set —
-        // the early-game magic source: the krug apprentice by the farmhouse
-        // teaches you zap this way). Only catalog-resolvable spells drop;
-        // monster-only utilities like spell_resurrect_monster aren't
-        // player-castable and stay behind.
+        // always drop their spells regardless of how the pcontent roll went.
+        // SC-CARRIED-INVENTORY audit: retail ships NO template where this
+        // resolves true — every `= true` (krug_shaman_base) is overridden
+        // `= false` on the next duplicate key (gas assignment is overwrite;
+        // FindAttr is last-wins to match). Retail spell acquisition is
+        // authored ground pages + instance il_main carries (the fence-krug's
+        // spell_zap) + pcontent #spell rolls. The mechanism stays wired for
+        // mod content that turns it on.
         var dsb = _templateStore.GetAttribute(actor.Template, "actor", "drops_spellbook");
         if (dsb is not null && dsb.Trim().Equals("true", StringComparison.OrdinalIgnoreCase)
             && _spellCatalog is not null)
@@ -23659,6 +23669,7 @@ void main()
         // prop-shatter path; without it actor-death gold buckets would
         // resolve into inventory once FromTemplate started accepting them.
         var (items, goldTotal) = SplitGoldFromDrops(drops, rng);
+        ResolveSpecsAtDrop(items, rng);
         var parts = new List<string>(drops.Count);
         if (goldTotal > 0) parts.Add($"{goldTotal} gold");
         foreach (var d in items)
@@ -23733,6 +23744,32 @@ void main()
         return (items, goldTotal);
     }
 
+    /// <summary>SC-CARRIED-INVENTORY — resolve pcontent specs (#spell/0-2,
+    /// #club/2-3) to concrete templates at DROP time with the kill's own
+    /// deterministic RNG, so every downstream consumer (pile mesh, label,
+    /// scroll auto-pickup, inventory) sees a concrete name AND different
+    /// kills roll different items. The session-scope
+    /// <see cref="_resolvedSpecCache"/> in <see cref="ResolveItemRef"/>
+    /// stays as a fallback for legacy raw refs (old saves), but it pins a
+    /// spec to ONE template for the whole session — resolving here is what
+    /// keeps random loot random.</summary>
+    private void ResolveSpecsAtDrop(List<SiegeFX.Core.Actors.LootEntry> items, Random rng)
+    {
+        if (_templateStore is null) return;
+        var pcr = _pcontentResolver
+            ??= new SiegeFX.Core.Actors.PcontentResolver(_templateStore);
+        for (int i = 0; i < items.Count; i++)
+        {
+            var refIn = items[i].Reference;
+            if (!SiegeFX.Core.Actors.PcontentResolver.IsSpec(refIn)) continue;
+            if (pcr.TryResolve(refIn, rng, out var rolled, out var power))
+            {
+                Console.WriteLine($"  pcontent: {refIn} -> {rolled} (power={power}) [drop-time]");
+                items[i] = items[i] with { Reference = rolled };
+            }
+        }
+    }
+
     /// <summary>Phase 21-SC-BARREL-D — roll a shattered breakable's
     /// inventory.pcontent. Mirrors <see cref="LogLootDrop"/> but for
     /// static props: gold entries credit the player directly with a
@@ -23774,6 +23811,7 @@ void main()
         }
 
         var (items, goldTotal) = SplitGoldFromDrops(drops, rng);
+        ResolveSpecsAtDrop(items, rng);
         var parts = new List<string>(drops.Count);
         if (goldTotal > 0) parts.Add($"{goldTotal} gold");
         foreach (var d in items)
@@ -26328,6 +26366,12 @@ void main()
         {
             var entry = pile.Items[i];
             if (!string.IsNullOrEmpty(entry.Slot)) continue;     // equipped item, not a scroll
+            // SC-CARRIED-INVENTORY — piles are concrete-ref by construction
+            // now, but legacy saves can still hold a raw #spell spec; resolve
+            // before the spell check so those route into the spellbook too.
+            var resolvedRef = ResolveItemRef(entry.Reference);
+            if (!resolvedRef.Equals(entry.Reference, StringComparison.OrdinalIgnoreCase))
+                entry = entry with { Reference = resolvedRef };
             var spell = ResolveSlottableSpell(entry.Reference, debugSpellsEnv: null);
             if (spell is null) continue;                          // not a spell template
             // First empty Placed slot wins.

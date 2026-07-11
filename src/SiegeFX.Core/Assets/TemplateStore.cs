@@ -100,12 +100,19 @@ public sealed class TemplateStore
         return true;
     }
 
-    /// <summary>Finds the first attribute named <paramref name="attrName"/> on
-    /// <paramref name="node"/>. Case-insensitive. Does not descend into children.</summary>
+    /// <summary>Finds the LAST attribute named <paramref name="attrName"/> on
+    /// <paramref name="node"/>. Case-insensitive. Does not descend into children.
+    /// Last-wins because gas assignment is overwrite-semantics: when a block
+    /// repeats a key, the later line is the authored final value — retail
+    /// krug_shaman_base writes <c>drops_spellbook = true;</c> then
+    /// <c>drops_spellbook = false;</c> in the same [actor] block and the
+    /// engine must read false. (Repeated-key LISTS like a bucket's multiple
+    /// <c>il_main</c> lines are consumed by iterating Attributes directly,
+    /// never through this single-value lookup.)</summary>
     public static string? FindAttr(GasNode node, string attrName)
     {
         // First pass: literal case-insensitive match.
-        for (int i = 0; i < node.Attributes.Count; i++)
+        for (int i = node.Attributes.Count - 1; i >= 0; i--)
             if (string.Equals(node.Attributes[i].Name, attrName, StringComparison.OrdinalIgnoreCase))
                 return node.Attributes[i].Value;
         // Second pass: whitespace-tolerant match. DS1 GAS authoring sometimes
@@ -115,7 +122,7 @@ public sealed class TemplateStore
         // shipped barrel/crate break sounds resolve via
         // GetAttribute("aspect","voice","die","*").
         if (HasInternalWhitespace(attrName)) return null; // queried name is already clean
-        for (int i = 0; i < node.Attributes.Count; i++)
+        for (int i = node.Attributes.Count - 1; i >= 0; i--)
         {
             var a = node.Attributes[i].Name;
             if (!HasInternalWhitespace(a)) continue;

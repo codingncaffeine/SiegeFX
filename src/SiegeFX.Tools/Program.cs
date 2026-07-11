@@ -7009,6 +7009,34 @@ static int CmdRegionMobLoot(string[] a)
     }
 
     Console.WriteLine($"mob-loot: {a[2]} — {counts.Count} unique template(s), {rolls} rolls each, seed={seed}");
+
+    // SC-CARRIED-INVENTORY — per-instance authored carries from actor.gas
+    // [inventory] blocks. These are guaranteed (il_main) or worn (es_*)
+    // drops on that ONE placement — the fence-krug's spell_zap lives here,
+    // invisible to the by-template tally below.
+    Console.WriteLine();
+    Console.WriteLine("  instance-authored carries:");
+    int carriers = 0;
+    foreach (var p in actors)
+    {
+        if (SiegeFX.Core.Assets.TemplateStore.FindChild(p.Node, "inventory") is not { } inv) continue;
+        var parts = new List<string>();
+        if (SiegeFX.Core.Assets.TemplateStore.FindChild(inv, "other") is { } other)
+            foreach (var at in other.Attributes)
+                if (at.Name.Equals("il_main", StringComparison.OrdinalIgnoreCase))
+                    parts.Add(at.Value.Trim());
+        if (SiegeFX.Core.Assets.TemplateStore.FindChild(inv, "equipment") is { } eq)
+            foreach (var at in eq.Attributes)
+                if (at.Name.StartsWith("es_", StringComparison.OrdinalIgnoreCase))
+                    parts.Add($"[worn:{at.Name[3..]}] {at.Value.Trim()}");
+        if (SiegeFX.Core.Assets.TemplateStore.FindChild(inv, "pcontent") is not null)
+            parts.Add("(+instance pcontent rolls)");
+        if (parts.Count == 0) continue;
+        carriers++;
+        Console.WriteLine($"    0x{p.Scid:x8} {p.TemplateName}: {string.Join(", ", parts)}");
+    }
+    if (carriers == 0) Console.WriteLine("    (none)");
+
     foreach (var (name, placed) in counts)
     {
         if (!store.TryGet(name, out var template) || template is null)
@@ -7028,7 +7056,7 @@ static int CmdRegionMobLoot(string[] a)
         var table = SiegeFX.Core.Actors.LootTable.FromTemplate(store, template);
         if (table.IsEmpty)
         {
-            Console.WriteLine("    (no inventory.pcontent — never drops)");
+            Console.WriteLine("    (no authored drops in template chain)");
             continue;
         }
         var rng = new Random(seed ^ name.GetHashCode(StringComparison.OrdinalIgnoreCase));
