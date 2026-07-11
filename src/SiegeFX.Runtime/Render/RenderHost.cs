@@ -434,12 +434,13 @@ public sealed class RenderHost : IDisposable
     /// victim template's [guts_manager] effect (melee_hit_1 authors sparks,
     /// not blood — skeletons etc.), and the authored ~1s per-actor throttle
     /// (frames_before_next_guts_spew = 20).</summary>
-    private void SpawnBloodHit(ActorRenderState victim)
+    /// <summary>SC-GORE — shared blood/gore gate: the Blood Color option
+    /// plus the per-template guts_manager opt-out. Used by the mist AND the
+    /// overkill gib so #NO_BLOOD creatures never spray or chunk.</summary>
+    private bool BloodAllowedFor(ActorRenderState victim)
     {
         var mode = _optionsMenu.Live.BloodColor;
-        if (string.Equals(mode, "Disabled", StringComparison.OrdinalIgnoreCase)) return;
-        bool green = string.Equals(mode, "Green", StringComparison.OrdinalIgnoreCase);
-        // Per-template guts gate.
+        if (string.Equals(mode, "Disabled", StringComparison.OrdinalIgnoreCase)) return false;
         var tplName = victim.Actor.Template.Name;
         if (!_bloodByTemplate.TryGetValue(tplName, out bool bleeds))
         {
@@ -450,7 +451,13 @@ public sealed class RenderHost : IDisposable
             bleeds = fx.Length == 0 || fx.Contains("melee_hit_2", StringComparison.OrdinalIgnoreCase);
             _bloodByTemplate[tplName] = bleeds;
         }
-        if (!bleeds) return;
+        return bleeds;
+    }
+
+    private void SpawnBloodHit(ActorRenderState victim)
+    {
+        if (!BloodAllowedFor(victim)) return;
+        bool green = string.Equals(_optionsMenu.Live.BloodColor, "Green", StringComparison.OrdinalIgnoreCase);
         int now = Environment.TickCount;
         if (unchecked(now - victim.NextBloodOkMs) < 0) return;
         victim.NextBloodOkMs = unchecked(now + 1000);
@@ -12792,20 +12799,30 @@ void main()
     {
         if (_templateStore is null) return;
         if (!_templateStore.TryGet(prop.Template, out var template)) return;
+        SpawnFragBurst(template, prop.World.Translation, prop.Template ?? "");
+    }
+
+    /// <summary>SC-GORE — shared frag burst: walks a template's
+    /// [physics][break_particulate] list and throws the authored frag
+    /// meshes. Props shatter through it (barrels/crates) and overkilled
+    /// actors gib through it (krugs author frag_glb_krug_scout_01..08 +
+    /// break_sound s_e_meat_explosion).</summary>
+    private void SpawnFragBurst(SiegeFX.Core.Assets.Template template, Vector3 origin, string seedName)
+    {
+        if (_templateStore is null) return;
         var section = _templateStore.GetSection(template, "physics", "break_particulate");
         if (section is null) return;
 
-        // Per-shatter rng seeded off prop position + template name so two
+        // Per-shatter rng seeded off position + template name so two
         // stacked barrels (same X,Z, different Y, or two different templates
         // sharing the same X,Z) don't burst identical patterns from the same
         // point. Phase 21-SC-BARREL-FOLD widens a Y-collision-prone (X,Z)
         // hash to (X,Y,Z, templateNameHash).
-        var origin = prop.World.Translation;
         int seed = unchecked(
             BitConverter.SingleToInt32Bits(origin.X) * 73856093 ^
             BitConverter.SingleToInt32Bits(origin.Y) * 83492791 ^
             BitConverter.SingleToInt32Bits(origin.Z) * 19349663 ^
-            (prop.Template?.GetHashCode() ?? 0));
+            seedName.GetHashCode());
         var rng = new Random(seed);
 
         int spawned = 0;
@@ -12853,7 +12870,32 @@ void main()
             }
         }
         if (spawned > 0)
-            Console.WriteLine($"  debris: {spawned} frag instance(s) from {prop.Template}");
+            Console.WriteLine($"  debris: {spawned} frag instance(s) from {seedName}");
+    }
+
+    /// <summary>SC-GORE — overkill gib: a killing blow that lands at least
+    /// half the victim's max life past zero explodes the body into its
+    /// authored [physics][break_particulate] frags (DS1's meat-explosion
+    /// death). Gated on the Blood Color option (off = never) and the
+    /// guts_manager #NO_BLOOD template opt-out via the same cache the mist
+    /// uses. The corpse hides — the chunks ARE the corpse — while the loot
+    /// pile spawned by the kill flow stays clickable.</summary>
+    private void TryActorGib(ActorRenderState victim, float dealt)
+    {
+        if (_templateStore is null || victim.Actor.Stats.MaxLife <= 0f) return;
+        float overkill = dealt - victim.Actor.Stats.MaxLife * 0.5f
+                       - MathF.Max(0f, victim.Actor.Combat.CurrentLife);
+        if (overkill < 0f) return;
+        // Reuse the blood gate: blood off / template opted out = no gore.
+        if (!BloodAllowedFor(victim)) return;
+        var section = _templateStore.GetSection(victim.Actor.Template, "physics", "break_particulate");
+        if (section is null) return;
+        var pos = victim.CurrentTransform.Translation;
+        SpawnFragBurst(victim.Actor.Template, pos, victim.Actor.Template.Name);
+        // Triple mist burst reads as the explosion cloud.
+        SpawnBloodHit(victim); SpawnBloodHit(victim); SpawnBloodHit(victim);
+        victim.Hidden = true;
+        Console.WriteLine($"  gore: {victim.Actor.Template.Name} gibbed (overkill {overkill:F0})");
     }
 
     /// <summary>Phase 21-SC-BARREL-C — integrate frag-debris ballistic
@@ -22218,6 +22260,7 @@ void main()
             LogLootDrop(best, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+            TryActorGib(best, dealt);   // SC-GORE — overkill arrow gib
         }
     }
 
@@ -22575,6 +22618,7 @@ void main()
             LogLootDrop(best, best.CurrentTransform.Translation);
             OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
             CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+            TryActorGib(best, dealt);   // SC-GORE — overkill melee gib
         }
     }
 
