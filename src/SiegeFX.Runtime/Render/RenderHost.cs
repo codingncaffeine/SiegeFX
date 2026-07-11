@@ -3280,6 +3280,8 @@ public sealed class RenderHost : IDisposable
     private bool _hoverPileIsGoldOrSpell;
     private LootPile? _pendingPickupPile;
     private const float PickupReach = 2.4f;
+    // SC-GOLD-PILES — sparse glint spawner for gold piles (gold.bmp look).
+    private readonly Random _pileSparkleRng = new(7);
 
     private bool PileIsGoldOrSpell(LootPile pile)
     {
@@ -3300,6 +3302,12 @@ public sealed class RenderHost : IDisposable
     {
         foreach (var it in pile.Items)
         {
+            // SC-GOLD-PILES — synthetic gold reads as "N Gold", not "7-7".
+            if (it.IsGold)
+            {
+                var (lo, hi) = it.GoldRange();
+                return $"{(lo + hi) / 2} Gold";
+            }
             if (string.IsNullOrWhiteSpace(it.Reference)) continue;
             var resolved = ResolveItemRef(it.Reference);
             if (_templateStore is not null && _templateStore.TryGet(resolved, out var tpl))
@@ -22113,6 +22121,12 @@ void main()
         public SiegeFX.Core.Actors.ActorCombatState? NpcTargetCombat;
     }
     private readonly List<RangedShot> _rangedShots = new();
+    // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled shaft-along-+Y
+    // (ap_grip at the base, ap_tip up); rotate +Y→+Z once so both the
+    // nocked draw and the in-flight trajectory rotation treat the shaft
+    // as "forward". Built — needs eyes; flip the sign if the tip points
+    // backward in play.
+    private static readonly Matrix4x4 s_ammoAxisFix = Matrix4x4.CreateRotationX(MathF.PI / 2f);
     private const float RangedImpactRadius = 0.9f;
     private const float RangedSimDuration = 7f;   // components.gas sim_duration default
     private const float DefaultAmmoGravity = 6.864655f; // components.gas [physics] gravity
@@ -25923,7 +25937,11 @@ void main()
                 float horiz = MathF.Sqrt(v.X * v.X + v.Z * v.Z);
                 float pitch = MathF.Atan2(-v.Y, MathF.Max(0.001f, horiz));
                 float yaw = MathF.Atan2(v.X, v.Z);
-                var model = Matrix4x4.CreateRotationX(pitch)
+                // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled along +Y
+                // (user report: shaft read VERTICAL); pre-rotate +Y→+Z so
+                // the trajectory pitch/yaw sees the shaft as forward.
+                var model = s_ammoAxisFix
+                          * Matrix4x4.CreateRotationX(pitch)
                           * Matrix4x4.CreateRotationY(yaw)
                           * Matrix4x4.CreateTranslation(shot.Pos);
                 _meshShader.SetMatrix4("uModel", model);
@@ -26069,6 +26087,9 @@ void main()
                 if (_weaponIsRanged && _playerAmmoMesh is not null
                     && _playerSwing is { ArrowAway: false })
                 {
+                    // Same +Y→+Z shaft correction as the in-flight draw so
+                    // the nocked arrow lies along the draw, not vertical.
+                    _meshShader.SetMatrix4("uModel", s_ammoAxisFix * weaponModel);
                     if (_playerAmmoTex is not null)
                     {
                         _playerAmmoTex.Bind(TextureUnit.Texture0);
@@ -26172,11 +26193,38 @@ void main()
                 // authored coin mesh; its entry is a synthetic amount).
                 if (pile.DisplayOverride.Length > 0)
                     itemMesh = TryGetItemMesh(pile.DisplayOverride);
+                bool goldDisplay = false;
                 for (var i = 0; itemMesh is null && i < pile.Items.Count; i++)
+                {
                     // SC-GOLD-PILES — synthetic gold entries ("7-7") have no
-                    // template; render the authored coin mesh (gold →
-                    // m_i_glb_coin-01) so dropped gold isn't a placeholder box.
-                    itemMesh = TryGetItemMesh(pile.Items[i].IsGold ? "gold" : pile.Items[i].Reference);
+                    // template; display the authored treasure-pile mesh sized
+                    // by amount (gold_cav_01..03 → m_i_cav_gold-01..03). The
+                    // single-coin "gold" template mesh was centimeters tall —
+                    // drawn but invisible at camera distance.
+                    if (pile.Items[i].IsGold)
+                    {
+                        var (glo, ghi) = pile.Items[i].GoldRange();
+                        int amt = (glo + ghi) / 2;
+                        itemMesh = TryGetItemMesh(amt < 25 ? "gold_cav_01"
+                                                : amt < 100 ? "gold_cav_02" : "gold_cav_03");
+                        goldDisplay = itemMesh is not null;
+                    }
+                    else
+                    {
+                        itemMesh = TryGetItemMesh(pile.Items[i].Reference);
+                    }
+                }
+                // SC-GOLD-PILES — retail gold glints (user ref gold.bmp):
+                // sparse tiny bright motes above any pile carrying gold.
+                if (_particles is not null && PileIsGoldOrSpell(pile)
+                    && pile.Items.Any(x => x.IsGold)
+                    && _pileSparkleRng.NextDouble() < 0.05)
+                {
+                    var sp = pos + new Vector3(
+                        (float)(_pileSparkleRng.NextDouble() - 0.5) * 0.5f, 0.25f,
+                        (float)(_pileSparkleRng.NextDouble() - 0.5) * 0.5f);
+                    _particles.SpawnSmoke(sp, new Vector4(1.0f, 0.92f, 0.35f, 0.9f), 0.08f, 0.35f, 1);
+                }
 
                 if (itemMesh is not null)
                 {
@@ -26195,10 +26243,15 @@ void main()
                     // + flop" while a landed item just sits at its rest angle.
                     // RotationX is already 0 once the throw lands (cleared at
                     // t>=1 in the tick), so this collapses to RestPitch only.
-                    var model = Matrix4x4.CreateScale(itemScale)
-                              * Matrix4x4.CreateRotationX(pitch + pile.RotationX)
-                              * Matrix4x4.CreateRotationY(pile.RotationY)
-                              * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
+                    // Gold treasure meshes are authored ground-hugging; sit
+                    // them ON the floor (no half-size lift) at full scale.
+                    var model = goldDisplay
+                        ? Matrix4x4.CreateRotationY(pile.RotationY)
+                          * Matrix4x4.CreateTranslation(pos.X, pos.Y + 0.02f, pos.Z)
+                        : Matrix4x4.CreateScale(itemScale)
+                          * Matrix4x4.CreateRotationX(pitch + pile.RotationX)
+                          * Matrix4x4.CreateRotationY(pile.RotationY)
+                          * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
                     _meshShader.SetMatrix4("uModel", model);
                     _meshShader.SetInt("uFlipV", 0);
                     if (itemMesh.Texture is not null)
