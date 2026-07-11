@@ -830,6 +830,15 @@ public sealed class RenderHost : IDisposable
     // still fall back to the generic SfxGuiInventory.
     const string SfxGuiPutDownScroll = "gui_put_down_scroll";
     const string SfxGuiOutOfMana   = "gui_out_of_mana";
+    // SC-CLICK-AUDIO — DS1's order-feedback cues: the soft tap when a
+    // ground click issues a move order (s_e_gui_order_move, the smallest
+    // wav in the gui family), the chime when a click targets an enemy or
+    // breakable (order_attack), the cast-order cue for spell clicks, and
+    // the "can't move there" grumble when the click point is unreachable.
+    const string SfxOrderMove     = "gui_order_move";
+    const string SfxOrderAttack   = "gui_order_attack";
+    const string SfxOrderCast     = "gui_order_cast";
+    const string SfxOrderCantMove = "gui_order_cant_move";
     // Phase 24-POLISH-C — frontend menu click cue. DS1 ships
     // s_e_frontend_big_button.wav (79 KB) as the main-menu button click;
     // tiny_button is the spinner arrow. Hover SFX is a follow-up — the
@@ -8193,6 +8202,11 @@ void main()
                     TryRegisterSfx(soundReader, SfxGuiPickup,    "/sound/effects/s_e_gui_pick_up.wav");
                     TryRegisterSfx(soundReader, SfxGuiPutDownScroll, "/sound/effects/s_e_gui_put_down_scroll.wav");
                     TryRegisterSfx(soundReader, SfxGuiOutOfMana, "/sound/effects/s_e_gui_out_of_mana.wav");
+                    // SC-CLICK-AUDIO — order-feedback cues (see consts above).
+                    TryRegisterSfx(soundReader, SfxOrderMove,     "/sound/effects/s_e_gui_order_move.wav");
+                    TryRegisterSfx(soundReader, SfxOrderAttack,   "/sound/effects/s_e_gui_order_attack.wav");
+                    TryRegisterSfx(soundReader, SfxOrderCast,     "/sound/effects/s_e_gui_order_cast.wav");
+                    TryRegisterSfx(soundReader, SfxOrderCantMove, "/sound/effects/s_e_gui_order_cant_move.wav");
 
                     // Phase 9-SC-2 — death cues lazy-registered on first kill,
                     // sourced from each template's [aspect][voice][die] `*`.
@@ -18433,6 +18447,9 @@ void main()
             _playerFollower.SetTarget(upw);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
         _pendingAttackTarget = null;
+        // SC-CLICK-AUDIO — the soft order tap on an accepted move click;
+        // the authored "can't move there" cue when the point is unreachable.
+        _audio?.Play(_playerFollower.PathBlocked ? SfxOrderCantMove : SfxOrderMove);
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
     }
 
@@ -19072,19 +19089,30 @@ void main()
     /// actionable sat under the cursor.</summary>
     private bool DispatchAbilityClick(Vector2 pos)
     {
+        // SC-CLICK-AUDIO — a click that lands an attack order on an enemy
+        // or breakable plays DS1's order chime; a spell click plays the
+        // cast-order cue.
         if (_activeAbilityIdx is 2 or 3 && _playerSpellbook is not null)
         {
             var slot = _activeAbilityIdx == 2
                 ? SiegeFX.Core.Actors.SpellSlot.Primary
                 : SiegeFX.Core.Actors.SpellSlot.Secondary;
             var spell = _activeAbilityIdx == 2 ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
-            if (spell is null) return TryClickToAttack(pos);
+            if (spell is null)
+            {
+                if (!TryClickToAttack(pos)) return false;
+                _audio?.Play(SfxOrderAttack);
+                return true;
+            }
             if (spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal && !HasCombatTargetAt(pos))
                 return false;
             TryClickToCast(slot);
+            _audio?.Play(SfxOrderCast);
             return true;
         }
-        return TryClickToAttack(pos);
+        if (!TryClickToAttack(pos)) return false;
+        _audio?.Play(SfxOrderAttack);
+        return true;
     }
 
     /// <summary>True when a live enemy or breakable prop sits within the click
