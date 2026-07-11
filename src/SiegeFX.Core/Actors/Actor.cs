@@ -164,7 +164,7 @@ public sealed class Actor
     /// random over the non-qffg variants, published into
     /// <c>Clips[chore_attack]</c> for the render layer. Returns the clip
     /// (null when the template ships no attack chore).</summary>
-    public PrsAnimation? PickNextSwingClip()
+    public PrsAnimation? PickNextSwingClip(float targetElevationDelta = 0f)
     {
         int idx = GetClipIndex("chore_attack");
         if (idx < 0) return null;
@@ -175,13 +175,15 @@ public sealed class Actor
             // SC-RANGED-PROJECTILE — bow/minigun stances author their attack
             // sub-anims as AIM-ELEVATION variants (select_attack.skrit maps
             // 0mid/high/loww = at/at-02/at-03), NOT random flavor like the
-            // melee stances. Until target-elevation blending lands, always
-            // shoot the mid clip — random-picking made archers loose
-            // skyward/ground shots on flat terrain.
+            // melee stances. Discrete pick by target height delta stands in
+            // for the skrit's blend ratios: ±2u ≈ one story.
             if (AttackStance is WeaponStance.Bow or WeaponStance.Minigun)
             {
-                Clips[idx] = variants[0];
-                return variants[0];
+                int vi = 0;
+                if (targetElevationDelta > 2f && variants.Length > 1) vi = 1;       // high
+                else if (targetElevationDelta < -2f && variants.Length > 2) vi = 2; // loww
+                Clips[idx] = variants[vi];
+                return variants[vi];
             }
             _swingRng ??= new Random(unchecked((int)Instance.Scid ^ 0x5157_4E47));
             var pick = variants[_swingRng.Next(variants.Length)];

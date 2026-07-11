@@ -217,9 +217,9 @@ public sealed class ActorBrain
     bool _activeSwingRanged;
     bool _activeSwingIsCast;
 
-    void StartSwing(bool ranged)
+    void StartSwing(bool ranged, float targetElevationDelta = 0f)
     {
-        var clip = _selfActor?.PickNextSwingClip();
+        var clip = _selfActor?.PickNextSwingClip(targetElevationDelta);
         if (clip is null || _selfActor is null)
         {
             // No attack chore authored — legacy instant cadence.
@@ -374,7 +374,9 @@ public sealed class ActorBrain
                     _swingCooldown -= dt;
                     if (_activeSwing is null && _swingCooldown <= 0f)
                     {
-                        StartSwing(ranged: !meleeNow);
+                        StartSwing(ranged: !meleeNow,
+                            targetElevationDelta: targetPos is { } tep
+                                ? tep.Y - Wander.Position.Y : 0f);
                         if (_activeSwing is null)
                         {
                             // Legacy clip-less path.

@@ -22386,7 +22386,12 @@ void main()
     private void StartPlayerSwing(ActorRenderState? target, StaticPropInstance? prop,
                                   SiegeFX.Core.Actors.ActorStats attacker)
     {
-        var clip = _player!.Actor.PickNextSwingClip();
+        // SC-RANGED-PROJECTILE — bow elevation pick: aim-high/low sub-anims
+        // by target height delta (melee stances ignore the parameter).
+        float elev = target is not null
+            ? target.CurrentTransform.Translation.Y - _player!.CurrentTransform.Translation.Y
+            : 0f;
+        var clip = _player!.Actor.PickNextSwingClip(elev);
         if (clip is null)
         {
             // No authored attack chore — land the hit immediately (legacy
