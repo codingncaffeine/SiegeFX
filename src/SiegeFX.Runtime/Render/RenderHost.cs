@@ -16207,6 +16207,10 @@ void main()
     /// armor's <c>b_c_pos_*</c> texture.</summary>
     private void TryLoadPlayerEquipment(SiegeFX.Core.Assets.Template playerTemplate)
     {
+        // Republish combat Defense from the live worn-armor total before the
+        // (GL-gated) visual rebuild — this is the one central choke every player
+        // armor/shield equip, unequip, spawn and loot swap routes through.
+        SyncPlayerArmorDefense();
         DisposeEquippedLayers();
         DisposeAttachedItems();
         _chestTexOverrideName = null;
@@ -20780,6 +20784,21 @@ void main()
         return (int)MathF.Round(total);
     }
 
+    /// <summary>Fold the summed worn-armor [armor][defense] into the player's
+    /// live combat Defense so enemy hits are actually mitigated — CombatResolver
+    /// reads target.Defense, and HeroBaselineStats authors Defense 0, so without
+    /// this worn armor reduced incoming damage by nothing. Called on spawn, on
+    /// every armor/shield equip change (via TryLoadPlayerEquipment), and on load.
+    /// ResyncStats only reclamps caps, so this never heals or alters life/mana.</summary>
+    private void SyncPlayerArmorDefense()
+    {
+        if (_player is null) return;
+        float armor = ComputePlayerArmorRating();
+        var s = _player.Actor.Stats;
+        if (MathF.Abs(s.Defense - armor) > 0.01f)
+            _player.Actor.ResyncStats(s with { Defense = armor });
+    }
+
     private SiegeFX.Core.Actors.ActorStats GetPlayerAttackStats()
     {
         if (_templateStore is null) return HeroBaselineStats;
@@ -23693,6 +23712,9 @@ void main()
             // the restored es_weapon_hand entry. Safe even when no weapon was
             // saved — TryLoadPlayerWeapon early-outs on a missing slot.
             TryLoadPlayerWeapon();
+            // Fold restored armor back into combat Defense (the load ResyncStats
+            // above preserved the snapshot's Defense, not the worn-armor total).
+            SyncPlayerArmorDefense();
 
             if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
             {
