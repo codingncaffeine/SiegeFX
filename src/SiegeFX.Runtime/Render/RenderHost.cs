@@ -22323,12 +22323,11 @@ void main()
         public SiegeFX.Core.Actors.ActorCombatState? NpcTargetCombat;
     }
     private readonly List<RangedShot> _rangedShots = new();
-    // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled shaft-along-+Y
-    // (ap_grip at the base, ap_tip up); rotate +Y→+Z once so both the
-    // nocked draw and the in-flight trajectory rotation treat the shaft
-    // as "forward". Built — needs eyes; flip the sign if the tip points
-    // backward in play.
-    private static readonly Matrix4x4 s_ammoAxisFix = Matrix4x4.CreateRotationX(MathF.PI / 2f);
+    // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled shaft-along-Y with
+    // the TIP at −Y (user playtest: the +90° guess flew tip-backward,
+    // "pointing at the player's feet", and read edge-on/invisible at nock).
+    // −90° about X maps −Y→+Z so the tip leads the trajectory.
+    private static readonly Matrix4x4 s_ammoAxisFix = Matrix4x4.CreateRotationX(-MathF.PI / 2f);
     private const float RangedImpactRadius = 0.9f;
     private const float RangedSimDuration = 7f;   // components.gas sim_duration default
     private const float DefaultAmmoGravity = 6.864655f; // components.gas [physics] gravity
