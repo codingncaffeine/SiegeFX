@@ -24178,7 +24178,20 @@ void main()
                 }
                 else
                 {
-                    weaponModel = _weaponBindInv * gripPreRot * gripPreTrans * gripLocal * _player.CurrentTransform;
+                    // SC-ATTACK-GRIP (Phase 18a) — authored attach: DS1 weapon
+                    // meshes are modeled with MESH SPACE AS THE HAND FRAME
+                    // (dagger/sword origin at the pommel, staff and bow at
+                    // their center grip — verified across every family), so
+                    // the weapon attaches RAW to the animated weapon_grip
+                    // bone. The old bindInv·gripPreRot·gripPreTrans chain
+                    // algebraically cancels to ~identity for the dagger the
+                    // constants were tuned on (inverse(R180x·T(0,.038,0)) ·
+                    // R180x · T(.02,.04,0) = T(.02,.002,0)) — but left every
+                    // OTHER weapon offset by its own grip-bone bind delta
+                    // (mace 9cm low). Raw attach is what the tuning was
+                    // converging on; the GRIP bone bind matters only for
+                    // skinning, not attachment.
+                    weaponModel = gripLocal * _player.CurrentTransform;
                 }
 
                 if (_introHoeSwapped && !_hoeRenderDiagLogged)
