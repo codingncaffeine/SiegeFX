@@ -159,6 +159,23 @@ void main() {
         Face(b0, b2, b1, 1.12f); // base, brightest (lit from above)
     }
 
+    /// <summary>Phase 22 — DS1's flat blue hover triangle around gold and
+    /// spells on the ground: a single ground-plane triangle, drawn with the
+    /// ring pass's polygon offset so it hugs the floor.</summary>
+    public void AddFlatTriangle(Vector3 ground, float size, Vector4 color)
+    {
+        float y = ground.Y + 0.05f;
+        var p0 = new Vector3(ground.X, y, ground.Z + size);
+        var p1 = new Vector3(ground.X - size * 0.87f, y, ground.Z - size * 0.5f);
+        var p2 = new Vector3(ground.X + size * 0.87f, y, ground.Z - size * 0.5f);
+        // Solid texture (full alpha) — the ring texture's band profile would
+        // gradient the corners away. +0.05 above ground keeps it clear of
+        // z-fighting at DS1's camera pitch without the ring pass's offset.
+        Emit(_solidVerts, p0, 0.5f, 0.5f, color);
+        Emit(_solidVerts, p1, 0.5f, 0.5f, color);
+        Emit(_solidVerts, p2, 0.5f, 0.5f, color);
+    }
+
     private float[] _uploadBuf = Array.Empty<float>();
 
     public void Draw(Matrix4x4 viewProj)

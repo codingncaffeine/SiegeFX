@@ -3166,6 +3166,45 @@ public sealed class RenderHost : IDisposable
     // so cursor visual tracks 1:1 with what a click actually picks.
     private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk }
     private CursorState _cursorState = CursorState.Pointer;
+    // Phase 22 — hover + walk-up pickup state. _hoverPile feeds the
+    // bottom-center item readout; gold/spells also get the flat blue hover
+    // triangle. _pendingPickupPile is a distant-click latch: the player
+    // walks to the pile and loots on arrival.
+    private LootPile? _hoverPile;
+    private bool _hoverPileIsGoldOrSpell;
+    private LootPile? _pendingPickupPile;
+    private const float PickupReach = 2.4f;
+
+    private bool PileIsGoldOrSpell(LootPile pile)
+    {
+        if (pile.DisplayOverride.Contains("gold", StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (var it in pile.Items)
+        {
+            var r = it.Reference ?? "";
+            if (r.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)) return true;
+            if (r.Contains("gold", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Phase 22 — display name for a hovered pile: the first item's
+    /// [common] screen_name, falling back to its reference.</summary>
+    private string PileLabel(LootPile pile)
+    {
+        foreach (var it in pile.Items)
+        {
+            if (string.IsNullOrWhiteSpace(it.Reference)) continue;
+            var resolved = ResolveItemRef(it.Reference);
+            if (_templateStore is not null && _templateStore.TryGet(resolved, out var tpl))
+            {
+                var sn = (_templateStore.GetAttribute(tpl!, "common", "screen_name") ?? "")
+                    .Trim().Trim('"');
+                if (sn.Length > 0) return sn;
+            }
+            return it.Reference;
+        }
+        return "Item";
+    }
     private GlTexture? _cursorPointer;          // sword (default)
     private GlTexture? _cursorAttack;           // red sword (enemy under cursor in melee/ranged)
     private GlTexture? _cursorCastAttack;       // blue-glow sword (enemy under cursor in spell mode)
@@ -5302,6 +5341,7 @@ void main()
                 {
                     _playerFollower?.SetTarget(_playerFollower.Position);
                     _pendingAttackTarget = null;
+                    _pendingPickupPile = null;
                     Console.WriteLine("[cmd] stop");
                 }
                 else if (Is("select_all_party_members"))
@@ -16469,15 +16509,19 @@ void main()
         if (t < 0f) return null;
         var hit = near + dir * t;
 
-        ActorRenderState? best = null;
-        float bestD = 1.3f;
+        // Phase 22 — live actors win the pick; a corpse under the cursor is
+        // still hovered (its status line reads "Dead ...: Health 0/x" in
+        // red, matching the original).
+        ActorRenderState? best = null, bestDead = null;
+        float bestD = 1.3f, bestDeadD = 1.3f;
         foreach (var s in _actors)
         {
-            if (s.IsDead || s.Hidden || s.IsPlayer) continue;
+            if (s.Hidden || s.IsPlayer) continue;
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             float d = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestD) { bestD = d; best = s; }
+            if (s.IsDead) { if (d < bestDeadD) { bestDeadD = d; bestDead = s; } }
+            else if (d < bestD) { bestD = d; best = s; }
         }
         // The hero counts too (their status line shows on self-hover).
         {
@@ -16486,7 +16530,7 @@ void main()
             float d = MathF.Sqrt(dx * dx + dz * dz);
             if (d < bestD && !_player.IsDead) best = _player;
         }
-        return best;
+        return best ?? bestDead;
     }
 
     /// <summary>SC-MOUSE-FX — marker aging + the per-frame hover pick.</summary>
@@ -16498,6 +16542,30 @@ void main()
             if (_moveMarkerAge >= MoveMarkerLife) _moveMarkerPos = null;
         }
         _hoverActor = PickHoverActor();
+        // Phase 22 — walk-up pickup drive: loot the latched pile on arrival;
+        // drop the latch if the pile vanished (someone else looted it) or
+        // the path dead-ends away from it.
+        if (_pendingPickupPile is { } pk && _playerFollower is not null)
+        {
+            int idx = _lootPiles.IndexOf(pk);
+            if (idx < 0) _pendingPickupPile = null;
+            else
+            {
+                var p = _playerFollower.Position;
+                float dx = pk.Position.X - p.X, dz = pk.Position.Z - p.Z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 <= PickupReach * PickupReach)
+                {
+                    _pendingPickupPile = null;
+                    LootPileNow(pk, idx);
+                }
+                else if (_playerFollower.PathBlocked
+                         || (_playerFollower.ReachedGoal && d2 > 3.5f * 3.5f))
+                {
+                    _pendingPickupPile = null;
+                }
+            }
+        }
     }
 
     /// <summary>World-space pass: selection rings under every selected party
@@ -16522,6 +16590,10 @@ void main()
             _selectionFx.AddInvertedTetra(mp, 0.30f,
                 new Vector4(0.05f, 0.72f, 0.10f, 0.75f * fade));
         }
+        // Phase 22 — flat blue hover triangle on gold/spell piles.
+        if (_hoverPile is { } hoverPile && _hoverPileIsGoldOrSpell)
+            _selectionFx.AddFlatTriangle(hoverPile.Position, 0.45f,
+                new Vector4(0.15f, 0.35f, 0.95f, 0.70f));
         _selectionFx.Draw(vp);
         // Phase 21 — combat blood splats ride the same world pass.
         _bloodSplats ??= _gl is not null ? new BloodSplatRenderer(_gl) : null;
@@ -16541,20 +16613,41 @@ void main()
                 new Vector4(0.10f, 0.95f, 0.15f, 0.95f));
         }
         // SC-OPTIONS-GAME — "Show Rollover Help" gates the hover readout.
-        if (_showTooltips && _hoverActor is { } ha && !ha.IsDead)
+        if (_showTooltips && _hoverActor is { } ha)
         {
             string name = ResolveMemberName(ha);
             var combat = ha.Actor.Combat;
             var stats = ha.Actor.Stats;
             bool friendly = ha.IsPlayer || ha.IsPartyMember;
-            string line = friendly && stats.MaxMana > 0
-                ? $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}, Mana {combat.CurrentMana:F0}/{stats.MaxMana:F0}"
-                : $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}";
+            // Phase 22 — corpses read in red ("Dead Krug Scavenger: Health
+            // 0/8"), matching the original's dead-hover line.
+            bool dead = ha.IsDead || combat.IsDead;
+            string line = dead
+                ? $"Dead {name}: Health 0/{stats.MaxLife:F0}"
+                : friendly && stats.MaxMana > 0
+                    ? $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}, Mana {combat.CurrentMana:F0}/{stats.MaxMana:F0}"
+                    : $"{name}: Health {combat.CurrentLife:F0}/{stats.MaxLife:F0}";
             int fs = Math.Max(1, (int)MathF.Round(Hud.HudScale.Modal(vw, vh)));
             int lw = _textRenderer.MeasureWidth(line, fs);
             _textRenderer.DrawString(vw, vh, line, (vw - lw) / 2,
                 vh - (int)(20 * fs) - _textRenderer.LineHeight * fs / 2,
-                new Vector4(0.42f, 0.95f, 0.38f, 1f), fs);
+                dead ? new Vector4(0.88f, 0.15f, 0.12f, 1f)
+                     : new Vector4(0.42f, 0.95f, 0.38f, 1f), fs);
+        }
+        // Phase 22 — hovered ground item: two-line bottom readout ("Fireshot"
+        // / "Left-click to pick up item") per the blue-triangle reference.
+        else if (_showTooltips && _hoverPile is { } hp)
+        {
+            int fs = Math.Max(1, (int)MathF.Round(Hud.HudScale.Modal(vw, vh)));
+            var ink = new Vector4(0.92f, 0.88f, 0.76f, 1f);
+            string l1 = PileLabel(hp);
+            string l2 = "Left-click to pick up item";
+            int w1 = _textRenderer.MeasureWidth(l1, fs);
+            int w2 = _textRenderer.MeasureWidth(l2, fs);
+            int baseY = vh - (int)(20 * fs) - _textRenderer.LineHeight * fs;
+            _textRenderer.DrawString(vw, vh, l1, (vw - w1) / 2, baseY, ink, fs);
+            _textRenderer.DrawString(vw, vh, l2, (vw - w2) / 2,
+                baseY + _textRenderer.LineHeight * fs, ink, fs);
         }
     }
 
@@ -18234,11 +18327,17 @@ void main()
             // from the raw template. Lets the user slot summon_helper /
             // summon_drake_green / etc. and see/hear the authored cast
             // effect on Q-press without needing the spawn-verb runtime.
-            var primary = ResolveSlottableSpell(primaryName, debugSpells);
+            // Phase 22 authentic-start fix — the hero begins with NO spells:
+            // Zap drops from the krug that haunts the barn, Fireshot sits
+            // authored by the barrels. The spellbook itself always exists so
+            // pickups route into it; SIEGEFX_DEBUG_SPELLS still pre-slots a
+            // test roster.
+            _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
+                player, new Random(unchecked((int)0x5C617AC1u)));
+            var primary = string.IsNullOrWhiteSpace(debugSpells)
+                ? null : ResolveSlottableSpell(primaryName, debugSpells);
             if (primary is not null)
             {
-                _playerSpellbook = new SiegeFX.Core.Actors.PlayerSpellbook(
-                    player, new Random(unchecked((int)0x5C617AC1u)));
                 _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, primary);
                 Console.WriteLine($"  spellbook: primary <- {primary.Name} (\"{primary.ScreenName}\") " +
                                   $"range={primary.CastRange:F1} cd={primary.CastReloadDelay:F2}s");
@@ -18862,8 +18961,10 @@ void main()
         if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
             TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
             _playerFollower.SetTarget(upw);
-        // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing.
+        // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
+        // (and Phase 22: any pending walk-up pickup).
         _pendingAttackTarget = null;
+        _pendingPickupPile = null;
         // SC-CLICK-AUDIO — the soft order tap on an accepted move click;
         // the authored "can't move there" cue when the point is unreachable.
         _audio?.Play(_playerFollower.PathBlocked ? SfxOrderCantMove : SfxOrderMove);
@@ -21185,6 +21286,8 @@ void main()
     private void UpdateCursorState()
     {
         _cursorState = CursorState.Pointer;
+        _hoverPile = null;
+        _hoverPileIsGoldOrSpell = false;
         if (_player is null || _window is null || _player.IsDead) return;
         if (_mouseLookActive) return;
         var size = _window.FramebufferSize;
@@ -21238,12 +21341,21 @@ void main()
         }
         // 3) loot pile under cursor → grab hand. Skip piles that are still
         //    in their throw-tumble (auto-pickup is gated on the same flag).
+        //    Phase 22 — the hovered pile is captured for the bottom-center
+        //    readout, and gold/spells additionally mark themselves for the
+        //    flat blue hover triangle.
         foreach (var pile in _lootPiles)
         {
             if (pile.Throw is not null && pile.Throw.Elapsed < pile.Throw.Duration) continue;
             var pos = pile.Position;
             float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
-            if (dx * dx + dz * dz < r2) { _cursorState = CursorState.Grab; return; }
+            if (dx * dx + dz * dz < r2)
+            {
+                _cursorState = CursorState.Grab;
+                _hoverPile = pile;
+                _hoverPileIsGoldOrSpell = PileIsGoldOrSpell(pile);
+                return;
+            }
         }
         // 4) talkable NPC inside the wider talk radius → talk marker.
         if (_conversations is not null && _conversations.Count > 0)
@@ -24008,7 +24120,26 @@ void main()
             if (d2 < bestDistSq) { bestDistSq = d2; bestIdx = i; }
         }
         if (bestIdx < 0) return false;
-        return LootPileNow(_lootPiles[bestIdx], bestIdx);
+        // Phase 22 — distant clicks WALK to the item first (the original's
+        // behavior); the pending latch loots on arrival in TickMouseFx.
+        var pick = _lootPiles[bestIdx];
+        var pp = _playerFollower?.Position;
+        if (pp is { } playerPos && _playerFollower is not null)
+        {
+            float pdx = pick.Position.X - playerPos.X, pdz = pick.Position.Z - playerPos.Z;
+            if (pdx * pdx + pdz * pdz > PickupReach * PickupReach)
+            {
+                _pendingPickupPile = pick;
+                _pendingAttackTarget = null;
+                _playerFollower.SetTarget(pick.Position);
+                _moveMarkerPos = pick.Position;
+                _moveMarkerAge = 0f;
+                _audio?.Play(SfxOrderMove);
+                Console.WriteLine($"click-pickup: walking to item ({MathF.Sqrt(pdx * pdx + pdz * pdz):F1}u away)");
+                return true;
+            }
+        }
+        return LootPileNow(pick, bestIdx);
     }
 
     /// <summary>SC-COMMANDS — authored [collect_loot] (key Z, also the
