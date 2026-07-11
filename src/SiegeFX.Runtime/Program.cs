@@ -231,6 +231,30 @@ else if (args.Length == 0)
     // user gets a friendly hint instead of a silent black window.
     bootMode = true;
     ds1Resources = ResolveDs1Resources();
+    // ALPHA-PACKAGING — tank byte-size integrity check (warn-only). Known-
+    // good sizes are the GOG 1.11 set; Steam/disc editions may differ and
+    // still work, but a truncated download or a modded tank is the #1
+    // "engine acts weird" cause a tester can self-diagnose from this line.
+    if (ds1Resources is not null)
+    {
+        var known = new (string Name, long Size)[]
+        {
+            ("Logic.dsres",   4_206_896),
+            ("Objects.dsres", 304_438_568),
+            ("Sound.dsres",   185_343_092),
+            ("Terrain.dsres", 410_230_240),
+            ("Voices.dsres",  45_951_736),
+        };
+        foreach (var (name, size) in known)
+        {
+            var p = System.IO.Path.Combine(ds1Resources, name);
+            if (!System.IO.File.Exists(p))
+                Console.WriteLine($"[data] warning: {name} missing from '{ds1Resources}'");
+            else if (new System.IO.FileInfo(p).Length != size)
+                Console.WriteLine($"[data] note: {name} is {new System.IO.FileInfo(p).Length:N0} bytes " +
+                                  $"(known-good GOG: {size:N0}) — other editions/mods may work but are untested");
+        }
+    }
     if (ds1Resources is null)
     {
         // Persist the failure to siegefx_crash.log too — the .exe is
