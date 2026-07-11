@@ -455,12 +455,13 @@ public sealed class RenderHost : IDisposable
         victim.NextBloodOkMs = unchecked(now + 1000);
 
         var pos = victim.CurrentTransform.Translation;
-        // Mid-air: the light translucent mist at the wound (authored
-        // explosion colors color0(0.4,0.1,0.1) red / (0.1,0.4,0.1) green,
-        // alphastart 0.76, dark()).
+        // Mid-air: the light translucent mist at the wound. The authored
+        // color0(0.4,0.1,0.1) is pre-dark() — through our smoke shader it
+        // read muddy, so the tint is brightened to a clear bright red
+        // (user-tuned 2026-07-11); green mode brightened to match.
         var mist = green
-            ? new Vector4(0.10f, 0.40f, 0.10f, 0.55f)
-            : new Vector4(0.40f, 0.10f, 0.10f, 0.55f);
+            ? new Vector4(0.10f, 0.85f, 0.10f, 0.55f)
+            : new Vector4(0.85f, 0.08f, 0.08f, 0.55f);
         _particles?.SpawnSmoke(pos + new Vector3(0f, 0.9f, 0f), mist, 0.55f, 0.8f, 10);
 
         // Ground: 2-3 splats scattered under the victim (authored splat
