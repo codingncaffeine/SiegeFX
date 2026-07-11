@@ -6543,12 +6543,14 @@ void main()
                     _mouseLookActive = false;
                     _lastMousePos = null;
                     // Phase 21-SC-BARREL-A1 — keep the OS cursor hidden in
-                    // play mode so the sprite cursor isn't doubled up on
-                    // release. Viewer modes (no _player) restore the OS
-                    // pointer as before.
-                    m.Cursor.CursorMode = _player is not null
-                        ? CursorMode.Hidden
-                        : CursorMode.Normal;
+                    // play mode (and the frontend menus, which draw the
+                    // sword sprite) so the sprite cursor isn't doubled up
+                    // on release. Viewer modes restore the OS pointer; drop
+                    // the hidden latch there so EnsureOsCursorHidden can
+                    // re-hide if a menu/game state follows.
+                    bool spriteOwns = _player is not null || FrontendWantsSpriteCursor();
+                    m.Cursor.CursorMode = spriteOwns ? CursorMode.Hidden : CursorMode.Normal;
+                    if (!spriteOwns) _osCursorHidden = false;
                 }
                 if (btn == MouseButton.Right)
                 {
@@ -17700,28 +17702,18 @@ void main()
             // 60% black scrim) aren't clipped to the chrome letterbox.
             _gl?.Disable(EnableCap.ScissorTest);
             // Phase 27-SP-FLYOUT — sword cursor in the frontend menu.
-            // Render only in the post-logo chrome states (the same set
-            // EnsureOsCursorHidden uses to hide the OS cursor) so the
-            // intro splash + sword-drop frames keep the OS cursor and
+            // Render only in the post-logo chrome states (the same
+            // FrontendWantsSpriteCursor set that hides the OS cursor) so
+            // the intro splash + sword-drop frames keep the OS cursor and
             // we don't double-render. Always the Pointer state — combat
             // / talk / loot icons make no sense outside gameplay.
-            var fs = _frontendScene.State;
-            bool inMenu = fs == Hud.FrontendScene.ScreenState.MainMenu
-                       || fs == Hud.FrontendScene.ScreenState.MainMenuToSp
-                       || fs == Hud.FrontendScene.ScreenState.SinglePlayer
-                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToMm
-                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToLg
-                       || fs == Hud.FrontendScene.ScreenState.LoadGame
-                       || fs == Hud.FrontendScene.ScreenState.LgToSinglePlayer
-                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToCd
-                       || fs == Hud.FrontendScene.ScreenState.CharacterSelect
-                       || fs == Hud.FrontendScene.ScreenState.CharacterSelectToSp
-                       || fs == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
-                       || fs == Hud.FrontendScene.ScreenState.Difficulty
-                       || fs == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect
-                       || fs == Hud.FrontendScene.ScreenState.IntroMenuFlyIn;
+            bool inMenu = FrontendWantsSpriteCursor();
             if (inMenu)
             {
+                // DrawBootScene never reaches the in-game HUD pass that
+                // normally calls this, so hide the OS arrow here — the
+                // sprite below is the only cursor the menu should show.
+                EnsureOsCursorHidden();
                 EnsureCursorTextures();
                 if (_iconRenderer is not null && !_mouseLookActive && _cursorPointer is not null)
                 {
@@ -21475,6 +21467,40 @@ void main()
         }
     }
 
+    /// <summary>Phase 27-SP-FLYOUT — the frontend states where the game's
+    /// sword sprite owns the pointer: the post-logo menu chrome. ONE
+    /// predicate shared by the sprite-draw site, EnsureOsCursorHidden,
+    /// and the MMB-release restore, so the state lists can't drift —
+    /// they had: the Difficulty screens drew the sprite without being in
+    /// the hide list, and the hide call itself only ran from the in-game
+    /// HUD pass that DrawBootScene never reaches, so the OS arrow sat on
+    /// top of the menu's sword cursor. The earlier splash / sword-drop
+    /// frames keep the OS cursor (nothing there needs aiming).</summary>
+    private bool FrontendWantsSpriteCursor()
+    {
+        if (!_bootMode || _frontendScene is null) return false;
+        switch (_frontendScene.State)
+        {
+            case Hud.FrontendScene.ScreenState.MainMenu:
+            case Hud.FrontendScene.ScreenState.MainMenuToSp:
+            case Hud.FrontendScene.ScreenState.SinglePlayer:
+            case Hud.FrontendScene.ScreenState.SinglePlayerToMm:
+            case Hud.FrontendScene.ScreenState.SinglePlayerToLg:
+            case Hud.FrontendScene.ScreenState.LoadGame:
+            case Hud.FrontendScene.ScreenState.LgToSinglePlayer:
+            case Hud.FrontendScene.ScreenState.SinglePlayerToCd:
+            case Hud.FrontendScene.ScreenState.CharacterSelect:
+            case Hud.FrontendScene.ScreenState.CharacterSelectToSp:
+            case Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty:
+            case Hud.FrontendScene.ScreenState.Difficulty:
+            case Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect:
+            case Hud.FrontendScene.ScreenState.IntroMenuFlyIn:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     /// <summary>Phase 21-SC-BARREL-A1 — hide the OS cursor once we've
     /// committed to drawing our own sprite. Idempotent; cheap to call
     /// every frame. Skipped while RMB camera-look is active (CursorMode
@@ -21488,23 +21514,8 @@ void main()
         if (_mouseLookActive) return;
         // In-game: hide once player is spawned. Boot/frontend: hide once
         // the FrontendScene has reached the main-menu chrome stage so
-        // the sword sprite owns the cursor in the menus too. The earlier
-        // splash + Bink-stub frames keep the OS cursor (no menu ever
-        // requires aiming during them and the brief flicker is fine).
-        bool inGame = _player is not null;
-        bool inMenuChrome = _bootMode && _frontendScene is not null
-            && (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToLg
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.LgToSinglePlayer
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp
-             || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn);
-        if (!inGame && !inMenuChrome) return;
+        // the sword sprite owns the cursor in the menus too.
+        if (_player is null && !FrontendWantsSpriteCursor()) return;
         _input.Mice[0].Cursor.CursorMode = Silk.NET.Input.CursorMode.Hidden;
         _osCursorHidden = true;
     }

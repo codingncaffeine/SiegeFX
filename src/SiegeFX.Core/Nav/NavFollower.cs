@@ -118,8 +118,11 @@ public sealed class NavFollower
     /// the ground".</summary>
     private bool TryFindStandTriangle(Vector3 pos, out int tri)
     {
+        // SC-NAV-KIND-BIND — pass the walker's traversal so candidates it
+        // can't traverse (Water for LandOnly) rank below every legal layer;
+        // see TryFindTriangleNear for the bridge-bank flip this prevents.
         if (Mesh.TryFindTriangleNear(pos, CurrentTriangle, MaxRebindDy,
-                includeFadeHidden: true, out tri))
+                includeFadeHidden: true, out tri, Traversal))
             return true;
         tri = -1;
         return false;
@@ -221,6 +224,26 @@ public sealed class NavFollower
                 PathBlocked = true;
                 return;
             }
+        }
+        // SC-NAV-KIND-BIND recovery — the walker's bind sits on a kind it
+        // can't traverse (the bridge-bank layer flip parked the hero on the
+        // stream's Water sheet). That sheet is usually NOT edge-connected
+        // to the bank floor, so no path request can walk out of it — the
+        // only exit is a physical step onto the nearest legal ground. 8u
+        // covers a stream's width from mid-span; 3u of vertical keeps the
+        // recovery on this layer stack.
+        if (!Traversal.CanEnter(Mesh.Kinds[startTri])
+            && Mesh.TryFindNearestEnterable(Position, radius: 8f, maxDy: 3f,
+                    Traversal, out var liftTri, out var liftPos))
+        {
+            if (DiagnosticLogging)
+                System.Console.WriteLine(
+                    $"[nav-rebind] start tri {startTri} kind={Mesh.Kinds[startTri]} " +
+                    $"impassable — stepping to nearest legal ground " +
+                    $"({liftPos.X:F1},{liftPos.Y:F1},{liftPos.Z:F1}) tri={liftTri}");
+            Position = liftPos;
+            CurrentTriangle = liftTri;
+            startTri = liftTri;
         }
         if (!Mesh.TryFindTriangle(Target, out var goalTri))
         {

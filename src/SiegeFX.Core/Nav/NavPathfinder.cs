@@ -140,9 +140,16 @@ public static class NavPathfinder
         if (startTri < 0 || startTri >= mesh.TriangleCount) return false;
         if (goalTri  < 0 || goalTri  >= mesh.TriangleCount) return false;
         traversal ??= NavTraversal.LandOnly;
-        // Refuse impassable endpoints up front. Without this, A* would walk the whole
-        // open set looking for a goal it can never enter.
-        if (!traversal.CanEnter(mesh.Kinds[startTri])) { LastFailure = $"start tri {startTri} kind={mesh.Kinds[startTri]} impassable under {traversal.GetType().Name}"; return false; }
+        // Refuse an impassable GOAL up front. Without this, A* would walk the
+        // whole open set looking for a goal it can never enter. The START is
+        // deliberately exempt — same escape rule as obstacle-Blocked starts
+        // below: a walker whose ground bind ended up on a kind it can't
+        // traverse (the bridge-bank layer flip parked the hero on a Water
+        // tri) is already THERE and must be allowed to path back OUT;
+        // refusing the start made every subsequent click fail and the
+        // player permanently stuck. Expansion still refuses to ENTER
+        // impassable kinds, so the path leaves through the first legal
+        // neighbor and never wades further in.
         if (!traversal.CanEnter(mesh.Kinds[goalTri])) { LastFailure = $"goal tri {goalTri} kind={mesh.Kinds[goalTri]} impassable under {traversal.GetType().Name}"; return false; }
         // Phase 24-NAV-LOGICAL-FLAGS — per-triangle actor-class gate.
         // When the region's logical_flags.gas tags a triangle's lnode

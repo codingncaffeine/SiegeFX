@@ -912,7 +912,8 @@ public sealed class NavMesh
     /// unblocked candidate but stay eligible (an actor standing on ground
     /// that got obstacle-marked after spawn still needs a bind).</summary>
     public bool TryFindTriangleNear(Vector3 worldPos, int nearTri, float maxDy,
-                                    bool includeFadeHidden, out int triIndex)
+                                    bool includeFadeHidden, out int triIndex,
+                                    NavTraversal? traversal = null)
     {
         triIndex = -1;
         if (TriangleCount == 0) return false;
@@ -944,6 +945,15 @@ public sealed class NavMesh
             if (dy > maxDy) continue;
             int rank = t == nearTri ? 0 : IsNeighborOfNear(t) ? 1 : 2;
             if (Blocked is not null && t < Blocked.Length && Blocked[t]) rank += 3;
+            // SC-NAV-KIND-BIND — a triangle whose kind the walker can't
+            // traverse ranks below every legal candidate. Where a bridge
+            // deck converges with the stream it spans (the banks put both
+            // layers inside maxDy), plain continuity ranking could flip a
+            // land-only walker's bind onto the Water layer; it then walked
+            // the bed downhill and every path request refused its start.
+            // Water stays ELIGIBLE (rank, not filter) so an actor genuinely
+            // over water still binds somewhere instead of going off-mesh.
+            if (traversal is not null && !traversal.CanEnter(Kinds[t])) rank += 6;
             if (rank < bestRank || (rank == bestRank && dy < bestDy))
             {
                 bestRank = rank;
@@ -953,6 +963,82 @@ public sealed class NavMesh
         }
         triIndex = bestTri;
         return triIndex >= 0;
+    }
+
+    /// <summary>SC-NAV-KIND-BIND — nearest triangle the given traversal can
+    /// actually ENTER, searched by XZ distance-to-triangle across the lookup
+    /// grid within <paramref name="radius"/>. The un-strand recovery for a
+    /// walker whose ground bind landed on an impassable kind: the water
+    /// sheet under a bridge is often NOT edge-connected to the bank floor
+    /// (only select border edges are stitched), so A* cannot walk out of it
+    /// — the only exit is a physical step back onto real ground. Returns
+    /// the closest point on that triangle (Y sampled on its plane).
+    /// Vertical gate: candidates more than <paramref name="maxDy"/> from
+    /// the query Y are skipped so a stream bed doesn't "recover" onto an
+    /// overpass three floors up. Blocked and fade-hidden triangles are
+    /// skipped (recovery must land on ground the walker could stand on).</summary>
+    public bool TryFindNearestEnterable(Vector3 worldPos, float radius, float maxDy,
+                                        NavTraversal traversal, out int triIndex, out Vector3 point)
+    {
+        triIndex = -1;
+        point = default;
+        if (TriangleCount == 0 || radius <= 0f) return false;
+        int c0x = (int)MathF.Floor((worldPos.X - radius - _gridMinX) / GridCellSize);
+        int c1x = (int)MathF.Floor((worldPos.X + radius - _gridMinX) / GridCellSize);
+        int c0z = (int)MathF.Floor((worldPos.Z - radius - _gridMinZ) / GridCellSize);
+        int c1z = (int)MathF.Floor((worldPos.Z + radius - _gridMinZ) / GridCellSize);
+        float bestD2 = radius * radius;
+        for (int cz = Math.Max(0, c0z); cz <= Math.Min(_gridCellsZ - 1, c1z); cz++)
+        for (int cx = Math.Max(0, c0x); cx <= Math.Min(_gridCellsX - 1, c1x); cx++)
+        {
+            var bucket = _grid[cz * _gridCellsX + cx];
+            if (bucket is null) continue;
+            for (int i = 0; i < bucket.Length; i++)
+            {
+                int t = bucket[i];
+                if (!traversal.CanEnter(Kinds[t])) continue;
+                if (Blocked is not null && t < Blocked.Length && Blocked[t]) continue;
+                if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+                var a = Vertices[Indices[3 * t + 0]];
+                var b = Vertices[Indices[3 * t + 1]];
+                var c = Vertices[Indices[3 * t + 2]];
+                Vector3 cand;
+                if (PointInTriangleXZ(worldPos, a, b, c))
+                {
+                    cand = worldPos with { Y = InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c) };
+                }
+                else
+                {
+                    cand = ClosestPointOnSegmentXZ(worldPos, a, b);
+                    var pbc = ClosestPointOnSegmentXZ(worldPos, b, c);
+                    var pca = ClosestPointOnSegmentXZ(worldPos, c, a);
+                    if (DistSqXZ(worldPos, pbc) < DistSqXZ(worldPos, cand)) cand = pbc;
+                    if (DistSqXZ(worldPos, pca) < DistSqXZ(worldPos, cand)) cand = pca;
+                }
+                if (MathF.Abs(cand.Y - worldPos.Y) > maxDy) continue;
+                float d2 = DistSqXZ(worldPos, cand);
+                if (d2 >= bestD2) continue;
+                bestD2 = d2;
+                triIndex = t;
+                point = cand;
+            }
+        }
+        return triIndex >= 0;
+    }
+
+    static Vector3 ClosestPointOnSegmentXZ(Vector3 p, Vector3 a, Vector3 b)
+    {
+        float abx = b.X - a.X, abz = b.Z - a.Z;
+        float len2 = abx * abx + abz * abz;
+        float t = len2 <= 1e-8f ? 0f
+            : Math.Clamp(((p.X - a.X) * abx + (p.Z - a.Z) * abz) / len2, 0f, 1f);
+        return new Vector3(a.X + abx * t, a.Y + (b.Y - a.Y) * t, a.Z + abz * t);
+    }
+
+    static float DistSqXZ(Vector3 p, Vector3 q)
+    {
+        float dx = p.X - q.X, dz = p.Z - q.Z;
+        return dx * dx + dz * dz;
     }
 
     /// <summary>SC-CLICK-RAY-PICK — nearest ray hit against the nav mesh.
