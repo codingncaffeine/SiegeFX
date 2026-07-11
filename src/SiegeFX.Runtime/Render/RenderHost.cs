@@ -914,13 +914,23 @@ public sealed class RenderHost : IDisposable
             if (dfs is not null && atkIdx >= 0)
             {
                 // Ride the chore_attack override slot (the established swap
-                // pattern): the dfs beat plays once, the override drains,
-                // and the stance's dff fidget idle resumes. The next real
-                // swing/cast re-publishes the slot anyway.
+                // pattern): the dfs "fists up" beat plays once, the override
+                // drains, and the casting idle below takes over. The next
+                // real swing/cast re-publishes the slot anyway.
                 _player.Actor.Clips[atkIdx] = dfs;
                 _player.Actor.PlayChoreOnce("chore_attack",
                     dfs.AnimLength > 0f ? dfs.AnimLength : 0.8f);
             }
+            // The casting IDLE is the RELAXED default stance (ds), not the
+            // fists-up fighting fidget (dff) the chore_default rebind lands
+            // on — DS1's suffix vocabulary: ds/dsf = relaxed stand + its
+            // fidgets, dfs/dff = guard up. Without this swap the fists never
+            // come down. Switching back to a weapon slot re-runs
+            // RefreshPlayerStance, whose chore_default rebind restores the
+            // weapon stance's authored idle.
+            var ds = _actorSpawner.LoadStanceClip(_player.Actor, stance, "ds");
+            if (ds is not null && _player.Actor.Clips.Length > 0)
+                _player.Actor.Clips[0] = ds;
         }
     }
     // Phase 9-SC-7 — item-mesh cache for ground loot. Keyed by item template name
