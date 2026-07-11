@@ -914,12 +914,14 @@ public sealed class RenderHost : IDisposable
             if (dfs is not null && atkIdx >= 0)
             {
                 // Ride the chore_attack override slot (the established swap
-                // pattern): the dfs "fists up" beat plays once, the override
-                // drains, and the casting idle below takes over. The next
-                // real swing/cast re-publishes the slot anyway.
+                // pattern): the dfs "fists up" clip plays once, then the
+                // override's end-hold keeps the guard pose ON SCREEN for a
+                // linger before draining into the relaxed casting idle —
+                // clip-length-only felt like an instant flinch.
+                const float GuardLinger = 1.4f;
+                float dfsLen = dfs.AnimLength > 0f ? dfs.AnimLength : 0.8f;
                 _player.Actor.Clips[atkIdx] = dfs;
-                _player.Actor.PlayChoreOnce("chore_attack",
-                    dfs.AnimLength > 0f ? dfs.AnimLength : 0.8f);
+                _player.Actor.PlayChoreOnce("chore_attack", dfsLen + GuardLinger);
             }
             // The casting IDLE is the RELAXED default stance (ds), not the
             // fists-up fighting fidget (dff) the chore_default rebind lands
