@@ -3705,7 +3705,6 @@ public sealed class RenderHost : IDisposable
     // latch the screen position at RMB-down and measure pixel drift on MouseUp;
     // below _rmbClickDriftPx it's a click (→ attack), otherwise just end orbit.
     private Vector2 _rmbDownPos;
-    private float _rmbDrift;
     private const float RmbClickDriftPx = 4f;
 
     // Phase 13b — camera modes. Fly is the free RMB+WASD debug cam from earlier
@@ -3752,7 +3751,10 @@ public sealed class RenderHost : IDisposable
     // the user wants for the dungeon-diagnostic case.
     private float _chasePitch = 0.6610432f;
     private const float ChasePitchMin = 0.05f;          // ~3°
-    private const float ChasePitchMax = (MathF.PI / 2f) - 0.05f; // ~87°
+    // SC-CAM-MMB — DS1 lets the middle-mouse tilt ride all the way to
+    // fully overhead of the player; 0.01 off vertical keeps the look
+    // direction non-degenerate while reading as straight down.
+    private const float ChasePitchMax = (MathF.PI / 2f) - 0.01f; // ~89.4°
 
     // SC-CAMERA-GAS — authored camera config, parsed from /config/camera.gas
     // ([camera_settings]) + /ui/config/character_camera/character_camera.gas
@@ -5886,10 +5888,20 @@ void main()
                         CancelCursorItem();
                         return;
                     }
+                    // SC-CAM-MMB — RMB no longer latches camera look (that
+                    // moved to middle-mouse, DS1's authored binding); it
+                    // only records the press point so MouseUp can fire the
+                    // tap action (talk / attack / cast).
+                    _rmbDownPos = m.Position;
+                }
+                // SC-CAM-MMB — middle-mouse hold = rotate + tilt, exactly as
+                // DS1 authors it ([camera] middle-mouse; the manual's "hold
+                // middle mouse button then move"). Raw cursor mode while held
+                // so the orbit doesn't fight the pointer.
+                else if (btn == MouseButton.Middle)
+                {
                     _mouseLookActive = true;
                     _lastMousePos = null;
-                    _rmbDownPos = m.Position;
-                    _rmbDrift = 0f;
                     m.Cursor.CursorMode = CursorMode.Raw;
                 }
                 // Phase 21-SC-SCROLL-F-1 — LMB outside any UI WITH a scroll
@@ -6225,23 +6237,29 @@ void main()
                             _window.Size.X, _window.Size.Y))
                         return;
                 }
-                if (btn == MouseButton.Right)
+                // SC-CAM-MMB — middle-mouse release ends the camera orbit.
+                if (btn == MouseButton.Middle)
                 {
                     _mouseLookActive = false;
                     _lastMousePos = null;
                     // Phase 21-SC-BARREL-A1 — keep the OS cursor hidden in
                     // play mode so the sprite cursor isn't doubled up on
-                    // RMB release. Viewer modes (no _player) restore the
-                    // OS pointer as before.
+                    // release. Viewer modes (no _player) restore the OS
+                    // pointer as before.
                     m.Cursor.CursorMode = _player is not null
                         ? CursorMode.Hidden
                         : CursorMode.Normal;
-                    // Phase 13d — tap-click discrimination. In Raw cursor mode
-                    // m.Position is unreliable on mouse-up (driver snaps it back),
-                    // so we use the drift accumulated while RMB was held instead.
-                    // A nearly-zero drift means the user tapped without dragging;
-                    // anything past the threshold was an orbit gesture.
-                    if (_rmbDrift <= RmbClickDriftPx)
+                }
+                if (btn == MouseButton.Right)
+                {
+                    // Phase 13d — tap-click discrimination. With the camera
+                    // orbit on middle-mouse the cursor stays in normal mode
+                    // during an RMB hold, so the release position is reliable:
+                    // compare it against the press point directly. A nearly-
+                    // zero drift means the user tapped without dragging.
+                    float rmbDrift = MathF.Abs(m.Position.X - _rmbDownPos.X)
+                                   + MathF.Abs(m.Position.Y - _rmbDownPos.Y);
+                    if (rmbDrift <= RmbClickDriftPx)
                     {
                         // Phase 20a — talk before attack. If the click landed on
                         // a talkable NPC, open dialogue; otherwise fall through
@@ -6270,7 +6288,6 @@ void main()
                             }
                         }
                     }
-                    _rmbDrift = 0f;
                 }
             };
             mouse.MouseMove += (_, pos) =>
@@ -6399,31 +6416,21 @@ void main()
                 {
                     float dx = pos.X - last.X;
                     float dy = pos.Y - last.Y;
-                    // Phase 13d — accumulate L1 pixel drift so MouseUp can tell a
-                    // tap from a drag. L1 (abs sum) instead of L2 so a dead-slow
-                    // diagonal scrub still accumulates past the click threshold.
-                    _rmbDrift += MathF.Abs(dx) + MathF.Abs(dy);
                     if (_cameraMode == CameraMode.Chase)
                     {
                         // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
                         // so chase mode and first-person mode share the same
                         // sensitivity/invert formula.
                         _chaseYaw += _camera.YawIncrement(dx);
-                        // SC-CAM-DEV-TOPDOWN — with the dev camera ON,
-                        // RMB-drag-Y adjusts chase pitch (tilt to top-down for
-                        // dungeon inspection). Authentic mode is yaw-only;
-                        // bounds_camera tilt drives the pitch there.
-                        if (_devFreeCamera && _devCamUnclampedPitch)
-                        {
-                            // Reuse the camera's sensitivity-aware delta path;
-                            // PitchIncrement returns a signed radians value
-                            // already adjusted for invert + sensitivity. Mouse
-                            // dy is screen-down-positive, so a downward drag
-                            // INCREASES pitch (camera looks more steeply down).
-                            _chasePitch = System.Math.Clamp(
-                                _chasePitch + _camera.PitchIncrement(dy),
-                                ChasePitchMin, ChasePitchMax);
-                        }
+                        // SC-CAM-MMB — middle-mouse drag tilts as well as
+                        // rotates (DS1's authored behavior), all the way up
+                        // to fully overhead. PitchIncrement is signed and
+                        // already adjusted for invert + sensitivity; mouse
+                        // dy is screen-down-positive, so a downward drag
+                        // INCREASES pitch (camera looks more steeply down).
+                        _chasePitch = System.Math.Clamp(
+                            _chasePitch + _camera.PitchIncrement(dy),
+                            ChasePitchMin, ChasePitchMax);
                     }
                     else
                     {
