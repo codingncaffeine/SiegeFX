@@ -822,6 +822,8 @@ public sealed class RenderHost : IDisposable
     // softer pitched-down version of the click would be a synthesizer
     // job rather than a "play this clip" wire-up.
     const string SfxFrontendBigButton  = "frontend_big_button";
+    // SC-DEFEAT — the small dialog-button click (defeat_dialog authors it).
+    const string SfxFrontendTinyButton = "frontend_tiny_button";
     const string SfxFrontendArrowButton = "frontend_arrow_button";
     // Phase 25-CHROME — logo "fly-in" + "fly-out" cues. DS1 plays these
     // during the splash → main menu sequence: flyin = sword drop into
@@ -4601,6 +4603,13 @@ void main()
                     ToggleDevConsole();
                     return;
                 }
+                // SC-DEFEAT — Esc answers the defeat question with "No" (the
+                // dim + Defeat! stay; the Esc menu remains available after).
+                if (key == Key.Escape && DefeatDialogActive)
+                {
+                    _defeatPhase = DefeatPhase.DialogClosed;
+                    return;
+                }
                 if (_devConsoleOpen)
                 {
                     if (key == Key.Escape) { _devConsoleOpen = false; _devItemFocus = false; return; }
@@ -5035,6 +5044,12 @@ void main()
                 if (_devConsoleOpen && btn == MouseButton.Left
                     && DevConsoleContains((int)m.Position.X, (int)m.Position.Y))
                     return;
+                // SC-DEFEAT — the defeat question is modal while up.
+                if (DefeatDialogActive && btn == MouseButton.Left)
+                {
+                    DefeatClick((int)m.Position.X, (int)m.Position.Y, isUp: false);
+                    return;
+                }
                 // SC-MAINMENU-LOADGAME — the frontend Load window is modal over
                 // the shell; intercept LMB ahead of the submenu handlers below.
                 // A click off the panel (and off the PREVIOUS/NEXT plates)
@@ -5795,6 +5810,12 @@ void main()
                 if (_devConsoleOpen && btn == MouseButton.Left
                     && DevConsoleClick((int)m.Position.X, (int)m.Position.Y))
                     return;
+                // SC-DEFEAT — YES/NO/HELP commit on mouse-up.
+                if (DefeatDialogActive && btn == MouseButton.Left)
+                {
+                    DefeatClick((int)m.Position.X, (int)m.Position.Y, isUp: true);
+                    return;
+                }
                 // SC-MAINMENU-LOADGAME — frontend Load window click-up commits
                 // Load/Delete (or PREVIOUS/NEXT), ahead of the submenus.
                 // Same settled-state gate as the mousedown path.
@@ -6063,6 +6084,14 @@ void main()
                 {
                     var fb = _window.FramebufferSize;
                     _loadDialog.OnMouseMove((int)pos.X, (int)pos.Y, fb.X, fb.Y);
+                }
+                // SC-DEFEAT — YES/NO/HELP hover states.
+                if (DefeatDialogActive)
+                {
+                    _defeatHover = "";
+                    foreach (var (id, bx, by, bw, bh) in _defeatButtons)
+                        if (pos.X >= bx && pos.X < bx + bw && pos.Y >= by && pos.Y < by + bh)
+                        { _defeatHover = id; break; }
                 }
                 if (_handbook.IsOpen)
                 {
@@ -7901,6 +7930,7 @@ void main()
                     TryRegisterSfx(soundReader, SfxMeleeMiss, "/sound/effects/s_e_miss_melee.wav");
                     TryRegisterSfx(soundReader, SfxLevelUp,   "/sound/effects/s_e_level_up_melee.wav");
                     TryRegisterSfx(soundReader, SfxQuestComplete, "/sound/effects/s_e_level_up_quest.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendTinyButton, "/sound/effects/s_e_frontend_tiny_button.wav");
 
                     // Phase 21d-2a-ix — GUI cue triplet (see Sfx const block above).
                     TryRegisterSfx(soundReader, SfxGuiInventory, "/sound/effects/s_e_gui_inventory_sheet.wav");
@@ -14572,6 +14602,8 @@ void main()
         FlushDialogueQuestEdges();
         // SC-DEVMODE — god mode tops the hero's pools back up every tick.
         TickDevGodMode();
+        // SC-DEFEAT — hero death edge + party-wipe presentation.
+        TickDefeat((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
         // (not inside DrawBootScene) so the boot sequence keeps advancing
         // even when the render loop is paused (e.g. minimized window).
@@ -15476,8 +15508,198 @@ void main()
     }
 
     // ====================================================================
+    // SC-DEFEAT — party-wipe death flow, rebuilt from the authored gas:
+    //   defeat_menu.gas   — full-screen b_gui_cmn_textbox_bg dim at alpha
+    //                       0.45 + "Defeat!" in 20p copperplate, rect
+    //                       (0,100,640,140) centered (640×480 space).
+    //   defeat_dialog.gas — cpbox 130,170,510,310 with inner cpbox
+    //                       150,190,490,258, runtime text at 155,215,484,232,
+    //                       and button_4 YES(160,276,250,292) /
+    //                       NO(263..353) / HELP(386..476), each playing
+    //                       s_e_frontend_tiny_button.
+    // The hero + party corpses hold their chore_die pose underneath (same
+    // machinery Norick's intro death uses); the world stays live.
+    // ====================================================================
+    private enum DefeatPhase { None, Dimming, Dialog, DialogClosed }
+    private DefeatPhase _defeatPhase;
+    private float _defeatTimer;
+    private bool _defeatReopenOnLoadClose;
+    private string _defeatHover = "", _defeatPressed = "";
+    private readonly List<(string Id, int X, int Y, int W, int H)> _defeatButtons = new();
+
+    private bool PartyWiped()
+    {
+        if (_player is null || !_player.IsDead) return false;
+        foreach (var m in _party)
+            if (m is not null && !ReferenceEquals(m, _player) && m.IsPartyMember && !m.IsDead)
+                return false;
+        return true;
+    }
+
+    /// <summary>SC-DEFEAT — per-tick death bookkeeping: consume the hero's
+    /// death edge (die chore + sfx, same as every other actor), detect the
+    /// full wipe, advance the dim → dialog presentation, and re-raise the
+    /// dialog when a defeat-launched Load window closes without loading.</summary>
+    private void TickDefeat(float dt)
+    {
+        // Hero death edge — the party-member drain skips IsPlayer, so the
+        // hero's chore_die/scream fire here.
+        if (_player is not null && !_player.IsDead && _player.Actor.Combat.ConsumeJustDied())
+        {
+            _player.IsDead = true;
+            BeginDeathChore(_player);
+            PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
+            if (_cursorScroll is not null) ClearScrollDrag();
+            Console.WriteLine("[defeat] the hero has fallen");
+        }
+
+        switch (_defeatPhase)
+        {
+            case DefeatPhase.None:
+                if (PartyWiped())
+                {
+                    _defeatPhase = DefeatPhase.Dimming;
+                    _defeatTimer = 0f;
+                    _defeatHover = _defeatPressed = "";
+                    Console.WriteLine("[defeat] party wiped — Defeat!");
+                }
+                break;
+            case DefeatPhase.Dimming:
+                _defeatTimer += dt;
+                if (_defeatTimer >= 1.5f) _defeatPhase = DefeatPhase.Dialog;
+                break;
+            case DefeatPhase.Dialog:
+            case DefeatPhase.DialogClosed:
+                _defeatTimer += dt;
+                if (_defeatReopenOnLoadClose && !_loadDialog.IsOpen)
+                {
+                    _defeatReopenOnLoadClose = false;
+                    if (PartyWiped()) _defeatPhase = DefeatPhase.Dialog;
+                }
+                break;
+        }
+    }
+
+    private bool DefeatDialogActive => _defeatPhase == DefeatPhase.Dialog && !_loadDialog.IsOpen;
+
+    private bool DefeatClick(int px, int py, bool isUp)
+    {
+        if (!DefeatDialogActive) return false;
+        string hit = "";
+        foreach (var (id, x, y, w, h) in _defeatButtons)
+            if (px >= x && px < x + w && py >= y && py < y + h) { hit = id; break; }
+        if (!isUp) { _defeatPressed = hit; return true; }
+
+        var pressed = _defeatPressed;
+        _defeatPressed = "";
+        if (hit.Length == 0 || hit != pressed) return true;
+        _audio?.Play(SfxFrontendTinyButton);
+        switch (hit)
+        {
+            case "yes":
+                // The Load Game picker over the defeat dim; if it closes
+                // without loading, the question comes back.
+                _defeatReopenOnLoadClose = true;
+                _defeatPhase = DefeatPhase.DialogClosed;
+                OpenLoadDialog(mainMenuStyle: false);
+                break;
+            case "no":
+                _defeatPhase = DefeatPhase.DialogClosed;
+                break;
+            case "help":
+                _defeatPhase = DefeatPhase.DialogClosed;
+                _defeatReopenOnLoadClose = true;
+                ToggleHandbook();
+                break;
+        }
+        return true;
+    }
+
+    /// <summary>SC-DEFEAT — the authored presentation. 640×480 gas rects
+    /// scale through the same modal mapping the other in-game dialogs use.</summary>
+    private void DrawDefeatOverlay(int vw, int vh)
+    {
+        if (_defeatPhase == DefeatPhase.None || _barRenderer is null || _textRenderer is null) return;
+
+        float s = Hud.HudScale.Modal(vw, vh);
+        int dx = (vw - (int)(640 * s)) / 2;
+        int dy = (vh - (int)(480 * s)) / 2;
+        (int x, int y, int w, int h) R(int x0, int y0, int x1, int y1) =>
+            (dx + (int)(x0 * s), dy + (int)(y0 * s), (int)((x1 - x0) * s), (int)((y1 - y0) * s));
+
+        // defeat_menu background: full-screen textbox_bg at authored alpha
+        // 0.45, fading in over the Dimming beat.
+        float dimT = _defeatPhase == DefeatPhase.Dimming ? Math.Clamp(_defeatTimer / 1.5f, 0f, 1f) : 1f;
+        float alpha = 0.45f * dimT;
+        var dimTex = TryGetGuiTexture("b_gui_cmn_textbox_bg");
+        if (dimTex is not null && _iconRenderer is not null)
+            _iconRenderer.DrawIcon(vw, vh, dimTex, 0, 0, vw, vh, new Vector4(1f, 1f, 1f, alpha));
+        else
+            _barRenderer.DrawRect(vw, vh, 0, 0, vw, vh, new Vector4(0.06f, 0.05f, 0.04f, alpha));
+
+        // "Defeat!" — 20p copperplate, rect (0,100,640,140) centered.
+        if (dimT > 0.4f)
+        {
+            var tr = R(0, 100, 640, 140);
+            int ts = Math.Max(1, (int)MathF.Round(s));
+            int tw = _textRenderer.MeasureWidth("20p", "Defeat!") * ts;
+            int th = _textRenderer.LineHeightOf("20p") * ts;
+            _textRenderer.DrawString("20p", vw, vh, "Defeat!",
+                tr.x + (tr.w - tw) / 2, tr.y + (tr.h - th) / 2,
+                new Vector4(1f, 1f, 1f, Math.Clamp((dimT - 0.4f) / 0.6f, 0f, 1f)), ts);
+        }
+
+        _defeatButtons.Clear();
+        if (!DefeatDialogActive) return;
+
+        int fs = Math.Max(1, (int)MathF.Round(s));
+        // dialog_main_bg + dialog_text_bg — both cpbox.
+        var main = R(130, 170, 510, 310);
+        var inner = R(150, 190, 490, 258);
+        if (_iconRenderer is not null)
+        {
+            Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh, main.x, main.y, main.w, main.h, Vector4.One);
+            Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh, inner.x, inner.y, inner.w, inner.h, Vector4.One);
+        }
+        else
+        {
+            _barRenderer.DrawRect(vw, vh, main.x, main.y, main.w, main.h, new Vector4(0.05f, 0.05f, 0.05f, 0.92f));
+        }
+
+        // text_defeat_game — runtime string, centered in (155,215,484,232).
+        const string question = "Do you want to load a saved game?";
+        var qr = R(155, 215, 484, 232);
+        int qw = _textRenderer.MeasureWidth(question, fs);
+        _textRenderer.DrawString(vw, vh, question,
+            qr.x + (qr.w - qw) / 2, qr.y + (qr.h - _textRenderer.LineHeight * fs) / 2,
+            Vector4.One, fs);
+
+        // YES / NO / HELP — button_4 chrome with centered 12p labels.
+        void DefeatButton(string id, string label, int x0, int y0, int x1, int y1)
+        {
+            var r = R(x0, y0, x1, y1);
+            var st = _defeatPressed == id ? Hud.ButtonChrome.State.Down
+                   : _defeatHover == id ? Hud.ButtonChrome.State.Hover
+                   : Hud.ButtonChrome.State.Up;
+            if (!Hud.ButtonChrome.Draw(_iconRenderer, TryGetGuiTexture, vw, vh, r.x, r.y, r.w, r.h, "button4", st))
+            {
+                _barRenderer.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.14f, 0.13f, 0.11f, 1f));
+                _barRenderer.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.55f, 0.52f, 0.45f, 1f));
+            }
+            int lw = _textRenderer.MeasureWidth(label, fs);
+            _textRenderer.DrawString(vw, vh, label,
+                r.x + (r.w - lw) / 2, r.y + (r.h - _textRenderer.LineHeight * fs) / 2,
+                Vector4.One, fs);
+            _defeatButtons.Add((id, r.x, r.y, r.w, r.h));
+        }
+        DefeatButton("yes",  "Yes",  160, 276, 250, 292);
+        DefeatButton("no",   "No",   263, 276, 353, 292);
+        DefeatButton("help", "Help", 386, 276, 476, 292);
+    }
+
+    // ====================================================================
     // SC-DEVMODE — tilde (~) developer console. A TESTING TOOL, deliberately
-    // plain-styled (not DS1 chrome): god mode, heal, gold, level, item
+    // plain-styled (not DS1 chrome): god mode, gold, level, item
     // spawning by template name / pcontent spec, kill-nearby, and a
     // quick-teleport list of every region in the map tank.
     // ====================================================================
@@ -24024,6 +24246,9 @@ void main()
                 _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer,
                                TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
+            // SC-DEFEAT — dim + Defeat! + the load-question dialog, above the
+            // HUD but below the Load window / dev console.
+            DrawDefeatOverlay(size.X, size.Y);
             // SC-DEVMODE — dev console overlay (topmost among gameplay HUD).
             DrawDevConsole(size.X, size.Y);
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause
