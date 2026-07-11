@@ -22123,6 +22123,10 @@ void main()
         public float Age;
         public bool Stuck;
         public float StuckAge;
+        // SC-RANGED-STICK — a hit arrow rides the victim briefly (retail
+        // arrows visibly stick in bodies): chest-relative offset, victim ref.
+        public ActorRenderState? StuckInActor;
+        public Vector3 StuckOffset;
         // Player-fired: hostile target + attacker stats for impact bookkeeping.
         public ActorRenderState? TargetActor;
         public StaticPropInstance? TargetProp;
@@ -22183,7 +22187,12 @@ void main()
             if (shot.Stuck)
             {
                 shot.StuckAge += dt;
-                if (shot.StuckAge > 4f) _rangedShots.RemoveAt(i);
+                // Stuck-in-body arrows follow the victim (or drop with the
+                // corpse pose); ground arrows just sit.
+                if (shot.StuckInActor is { } victim)
+                    shot.Pos = victim.CurrentTransform.Translation + shot.StuckOffset;
+                if (shot.StuckAge > (shot.StuckInActor is null ? 4f : 3f))
+                    _rangedShots.RemoveAt(i);
                 continue;
             }
             if (shot.Age > RangedSimDuration) { _rangedShots.RemoveAt(i); continue; }
@@ -22200,7 +22209,10 @@ void main()
                 if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                 {
                     ApplyPlayerRangedImpact(shot, ta);
-                    _rangedShots.RemoveAt(i);
+                    // SC-RANGED-STICK — leave the shaft in the body a beat.
+                    shot.Stuck = true;
+                    shot.StuckInActor = ta;
+                    shot.StuckOffset = shot.Pos - ta.CurrentTransform.Translation;
                     continue;
                 }
             }
@@ -25934,6 +25946,23 @@ void main()
                 }
                 if (!s.WeaponDroppedOnDeath) DrawGear(s.WeaponMesh, s.WeaponTexture, s.WeaponBoneIdx);
                 DrawGear(s.ShieldMesh, s.ShieldTexture, s.ShieldBoneIdx);
+                // SC-TORCH-FLAME — a held torch burns: sparse small flame
+                // motes at the torch head (weapon bone + up). Built — needs
+                // eyes for size/height tuning.
+                if (!s.IsDead && !s.WeaponDroppedOnDeath && s.WeaponMesh is not null
+                    && s.WieldedWeaponRef is { } wref
+                    && wref.Contains("torch", StringComparison.OrdinalIgnoreCase)
+                    && s.WeaponBoneIdx >= 0 && s.WeaponBoneIdx < npcBones
+                    && _particles is not null && _pileSparkleRng.NextDouble() < 0.30)
+                {
+                    var torchTip = Vector3.Transform(new Vector3(0f, 0.45f, 0f),
+                        _boneWorldsScratch[s.WeaponBoneIdx] * actorModel);
+                    _particles.SpawnSmoke(torchTip,
+                        _pileSparkleRng.NextDouble() < 0.5
+                            ? new Vector4(1.0f, 0.55f, 0.12f, 0.75f)
+                            : new Vector4(1.0f, 0.85f, 0.30f, 0.70f),
+                        0.14f, 0.4f, 1);
+                }
             }
 
             // SC-RANGED-PROJECTILE — ammo GOs in flight (or stuck in the
