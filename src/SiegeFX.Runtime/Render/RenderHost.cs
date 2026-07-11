@@ -2975,18 +2975,42 @@ public sealed class RenderHost : IDisposable
     private float _questIndicatorFlashRemaining;
     private readonly PauseMenu _pauseMenu = new(); // Esc toggles DS1's in_game_menu
     private readonly SaveGameDialog _saveDialog = new(); // DS1 Save Game window
+    private readonly LoadGameDialog _loadDialog = new(); // DS1 Load Game window
 
     // Top-of-screen save-confirmation banner ("Game 'X' saved successfully") —
-    // DS1's post-save feedback. Ticks down like the level-up toast.
+    // DS1's post-save feedback. Ticks down like the level-up toast. Reused for
+    // the Load window's "Game loaded successfully" banner.
     private float _saveToastRemaining;
     private string _saveToastText = "";
     private const float SaveToastDuration = 3.5f;
+
+    // DS1 tracks per-character elapsed play time; the Load window shows it
+    // ("ELAPSED TIME: 0:13:16") and the Save window pre-fills the name box with
+    // it. Accumulates real dt while the world is live (not paused / in a modal /
+    // at the frontend); persisted in the save (v12) and restored on load.
+    private double _playSeconds;
+
+    // Most recent clean-gameplay screenshot, downscaled + packed by
+    // ThumbnailCodec, captured periodically off the framebuffer. Written into
+    // the save (v12) so the Load window can show a preview thumbnail. Only ever
+    // sampled on frames with no modal open, so the preview is always a clean
+    // world+HUD shot rather than a picture of the Save dialog.
+    private byte[]? _sceneThumbnail;
+    private float _thumbRefreshTimer;
+    private const int ThumbW = 96, ThumbH = 72;   // 4:3, matches the preview box
+    private const float ThumbInterval = 1.0f;     // seconds between captures
+
+    // SC-MAINMENU-LOADGAME — set from SIEGEFX_LOAD_SAVE when the frontend/in-game
+    // Load window relaunches the process into the save's region. Applied once,
+    // on the first frame the player + region are live, then cleared.
+    private string? _bootLoadSavePath;
+    private bool _bootLoadDone;
 
     /// <summary>Gameplay freezes while a pausing modal is up. DS1 explicitly
     /// pauses for the Adventurer's Handbook; the Save window also holds the
     /// world still while the player types a name. ORs with the manual
     /// pause-button toggle (<see cref="_isPaused"/>).</summary>
-    private bool SimFrozen => _isPaused || _saveDialog.IsOpen || _handbook.IsOpen;
+    private bool SimFrozen => _isPaused || _saveDialog.IsOpen || _loadDialog.IsOpen || _handbook.IsOpen;
 
     // Adventurer's Handbook (world tips). Tips load lazily off the play map
     // tank; the cadence auto-pops the next ordered tip as the player advances
@@ -3011,7 +3035,7 @@ public sealed class RenderHost : IDisposable
             case PauseMenu.Action.Resume:   _pauseMenu.Close(); break;
             case PauseMenu.Action.Options:  _pauseMenu.Close(); OpenOptionsMenu(); break;
             case PauseMenu.Action.SaveGame: _pauseMenu.Close(); OpenSaveDialog(); break;
-            case PauseMenu.Action.LoadGame: _pauseMenu.Close(); DoQuickLoad(); break;
+            case PauseMenu.Action.LoadGame: _pauseMenu.Close(); OpenLoadDialog(mainMenuStyle: false); break;
             case PauseMenu.Action.ExitGame: _window.Close(); break;
         }
     }
@@ -3041,10 +3065,107 @@ public sealed class RenderHost : IDisposable
     private void OpenSaveDialog()
     {
         var saves = SiegeFX.Core.Save.SaveStore.ListSaves();
-        // DS1 pre-fills the name box with the day's date; the player types over
-        // it if they want a custom label.
-        string def = DateTime.Now.ToString("MMM d, yyyy");
+        // DS1 pre-fills the name box with "<hero> (<elapsed>)" — e.g.
+        // "WOOT (0-13-16)" — so accepting the default gives the timestamped
+        // names the Load window shows. Fall back to the day's date when no hero
+        // name / clock is available (viewer boot).
+        string def = !string.IsNullOrWhiteSpace(_heroName)
+            ? $"{_heroName} ({FormatElapsedDashed(_playSeconds)})"
+            : DateTime.Now.ToString("MMM d, yyyy");
         _saveDialog.Open(saves, def);
+    }
+
+    /// <summary>Open DS1's Load Game window. <paramref name="mainMenuStyle"/>
+    /// picks the ornate frontend pose (from the Single Player submenu) vs the
+    /// in-game cpbox pose (from the Escape menu). Populates the list from disk;
+    /// the dialog auto-highlights the first row.</summary>
+    private void OpenLoadDialog(bool mainMenuStyle)
+    {
+        _loadDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), mainMenuStyle);
+    }
+
+    /// <summary>Raise DS1's "Game loaded successfully" banner (reuses the save-
+    /// toast slot).</summary>
+    private void ShowLoadedBanner()
+    {
+        _saveToastText = "Game loaded successfully.";
+        _saveToastRemaining = SaveToastDuration;
+    }
+
+    /// <summary>Act on the Load Game window's button result. Load resumes the
+    /// highlighted save (in-region via <see cref="ApplySave"/>, or by relaunch
+    /// into the save's region when it differs / we're at the main menu); Delete
+    /// removes the file and refreshes the list; Cancel closes (returning to the
+    /// SP submenu in the frontend pose).</summary>
+    private void HandleLoadDialogResult(LoadGameDialog.Result r)
+    {
+        switch (r)
+        {
+            case LoadGameDialog.Result.Load:
+                if (_loadDialog.Selected is { } lslot) PerformLoad(lslot, _loadDialog.MainMenuStyle);
+                break;
+            case LoadGameDialog.Result.Delete:
+                if (_loadDialog.Selected is { } dslot)
+                {
+                    SiegeFX.Core.Save.SaveStore.Delete(dslot.Path);
+                    _loadDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), _loadDialog.MainMenuStyle);
+                }
+                break;
+            case LoadGameDialog.Result.Cancel:
+                CloseLoadDialog();
+                break;
+        }
+    }
+
+    /// <summary>Close the Load window; from the frontend pose, hand input back
+    /// to the Single Player submenu.</summary>
+    private void CloseLoadDialog()
+    {
+        bool wasMainMenu = _loadDialog.MainMenuStyle;
+        _loadDialog.Close();
+        if (wasMainMenu && _frontendScene is not null
+            && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
+            _spMenu.IsActive = true;
+    }
+
+    /// <summary>Resume a save. Same-region in-game loads patch the live scene
+    /// directly (the quickload path); a different region — always the case from
+    /// the main menu — relaunches into that region and applies the save on
+    /// boot.</summary>
+    private void PerformLoad(SiegeFX.Core.Save.SaveStore.SaveSlot slot, bool mainMenuStyle)
+    {
+        bool sameRegion = !mainMenuStyle
+            && string.Equals(slot.RegionPath, _regionPath ?? "", StringComparison.OrdinalIgnoreCase)
+            && _player is not null;
+        if (sameRegion)
+        {
+            _loadDialog.Close();
+            if (_cursorScroll is not null) ClearScrollDrag();
+            try
+            {
+                ApplySave(SiegeFX.Core.Save.SaveStore.Load(slot.Path));
+                ShowLoadedBanner();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  load: failed -- {ex.Message}");
+                _saveToastText = "Load failed.";
+                _saveToastRemaining = SaveToastDuration;
+            }
+            return;
+        }
+        // Cross-region / from the frontend: boot the save's region fresh, then
+        // apply. Needs the DS1 resources dir (only present under a boot launch).
+        if (_ds1ResourcesDir is not null)
+        {
+            _loadDialog.Close();
+            LaunchRegionForLoad(_ds1ResourcesDir, slot.Path);
+        }
+        else
+        {
+            _saveToastText = "Cannot load this save here.";
+            _saveToastRemaining = SaveToastDuration;
+        }
     }
 
     /// <summary>Write a named save from the Save Game window and raise the
@@ -3134,7 +3255,7 @@ public sealed class RenderHost : IDisposable
         if (_nextTipIndex >= _handbook.Count) return;
         if (_player is null || _bootMode) return;
         // Only while the player actually has control of the world.
-        if (_handbook.IsOpen || _saveDialog.IsOpen || _pauseMenu.IsOpen || _optionsMenu.IsOpen
+        if (_handbook.IsOpen || _saveDialog.IsOpen || _loadDialog.IsOpen || _pauseMenu.IsOpen || _optionsMenu.IsOpen
             || _creator.IsOpen || _dialogue.IsOpen || _vendor.IsOpen || _inventoryOpen
             || _questLogOpen) return;
         if (_nisPhase != NisPhase.Off) return;
@@ -4030,6 +4151,14 @@ void main()
         _bootMode = bootMode;
         _ds1ResourcesDir = ds1ResourcesDir;
         _noVideo = noVideo;
+        // SC-MAINMENU-LOADGAME — a Load Game relaunch (LaunchRegionForLoad) sets
+        // these so this fresh process boots into the save's region, applies the
+        // save once the player is live (OnUpdate's boot-load hook), and shows the
+        // saved hero's name immediately.
+        _bootLoadSavePath = Environment.GetEnvironmentVariable("SIEGEFX_LOAD_SAVE");
+        if (string.IsNullOrEmpty(_bootLoadSavePath)) _bootLoadSavePath = null;
+        var bootHeroName = Environment.GetEnvironmentVariable("SIEGEFX_HERO_NAME");
+        if (!string.IsNullOrWhiteSpace(bootHeroName)) _heroName = bootHeroName;
         // ALPHA-2V — persisted options load BEFORE window creation so the
         // last windowed size (or fullscreen mode), vsync, and MSAA surface
         // apply from the first frame. No prefs file = the historical
@@ -4120,6 +4249,21 @@ void main()
                         return;
                     }
                     if (key == Key.Escape) { _saveDialog.Close(); return; }
+                    return;
+                }
+                // Load Game window owns the keyboard while open: Up/Down walk the
+                // list, Enter loads the highlight, Escape backs out. Every other
+                // world hotkey is suppressed.
+                if (_loadDialog.IsOpen)
+                {
+                    if (key == Key.Up)   { _loadDialog.OnArrowKey(-1); return; }
+                    if (key == Key.Down) { _loadDialog.OnArrowKey(+1); return; }
+                    if (key == Key.Enter || key == Key.KeypadEnter)
+                    {
+                        if (_loadDialog.Selected is { } ls) PerformLoad(ls, _loadDialog.MainMenuStyle);
+                        return;
+                    }
+                    if (key == Key.Escape) { CloseLoadDialog(); return; }
                     return;
                 }
                 // Adventurer's Handbook owns the keyboard while open: Escape /
@@ -4551,6 +4695,20 @@ void main()
                     _aboutOpen = false;
                     return;
                 }
+                // SC-MAINMENU-LOADGAME — the frontend Load window is modal over
+                // the shell; intercept LMB ahead of the submenu handlers below.
+                // A click off the panel (e.g. the shell's PREVIOUS button, which
+                // stays visible behind the modal) backs out — DS1's PREVIOUS
+                // returns to the Single Player menu.
+                if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    if (!_loadDialog.IsInsidePanel((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y))
+                        CloseLoadDialog();
+                    else
+                        _loadDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    return;
+                }
                 if (_bootMode && _frontendScene is not null
                     && _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu
                     && btn == MouseButton.Left)
@@ -4609,6 +4767,12 @@ void main()
                 {
                     var fb = _window.FramebufferSize;
                     _saveDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    return;
+                }
+                if (_loadDialog.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    _loadDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
                     return;
                 }
                 if (_handbook.IsOpen && btn == MouseButton.Left)
@@ -5284,6 +5448,15 @@ void main()
                     _optionsMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                // SC-MAINMENU-LOADGAME — frontend Load window click-up commits
+                // Load/Delete (or an arrow selector), ahead of the submenus.
+                if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    HandleLoadDialogResult(
+                        _loadDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                    return;
+                }
                 // Phase 24-MAINMENU step 5+6 — main menu click-up commits
                 // the action; OnUpdate's HandleMainMenuActions drains
                 // _mainMenu.ConsumeAction() the same frame.
@@ -5325,6 +5498,13 @@ void main()
                     var fb = _window.FramebufferSize;
                     HandleSaveDialogResult(
                         _saveDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                    return;
+                }
+                if (_loadDialog.IsOpen && btn == MouseButton.Left)
+                {
+                    var fb = _window.FramebufferSize;
+                    HandleLoadDialogResult(
+                        _loadDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
                     return;
                 }
                 if (_handbook.IsOpen && btn == MouseButton.Left)
@@ -5529,6 +5709,11 @@ void main()
                     var fb = _window.FramebufferSize;
                     _saveDialog.OnMouseMove((int)pos.X, (int)pos.Y, fb.X, fb.Y);
                 }
+                if (_loadDialog.IsOpen)
+                {
+                    var fb = _window.FramebufferSize;
+                    _loadDialog.OnMouseMove((int)pos.X, (int)pos.Y, fb.X, fb.Y);
+                }
                 if (_handbook.IsOpen)
                 {
                     var fb = _window.FramebufferSize;
@@ -5628,6 +5813,7 @@ void main()
                 // Save Game list scrolls with the wheel; consume it so the
                 // camera doesn't also zoom behind the modal.
                 if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
+                if (_loadDialog.IsOpen) { _loadDialog.OnScroll(wheel.Y); return; }
                 if (_handbook.IsOpen) return;
                 if (_cameraMode != CameraMode.Chase) return;
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
@@ -13845,6 +14031,29 @@ void main()
     private void OnUpdate(double dt)
     {
         if (_input is null) return;
+        // DS1's per-character elapsed play clock (shown in the Load window and
+        // used as the Save window's default name). Accrues real wall time only
+        // while a live world runs and no pause/modal holds it — measured before
+        // the SimFrozen gate zeroes dt below.
+        if (_player is not null && !_bootMode && !SimFrozen)
+            _playSeconds += dt;
+        // SC-MAINMENU-LOADGAME — a relaunch requested via SIEGEFX_LOAD_SAVE lands
+        // us in the save's region (--play-region). Apply the save once the
+        // player + region are live (both come up synchronously during GL init,
+        // so the player exists by the first update), then clear the request.
+        if (_bootLoadSavePath is not null && !_bootLoadDone && _player is not null
+            && !string.IsNullOrEmpty(_regionPath))
+        {
+            _bootLoadDone = true;
+            var pending = _bootLoadSavePath;
+            _bootLoadSavePath = null;
+            try
+            {
+                ApplySave(SiegeFX.Core.Save.SaveStore.Load(pending));
+                ShowLoadedBanner();
+            }
+            catch (Exception ex) { Console.Error.WriteLine($"  load(boot): failed -- {ex.Message}"); }
+        }
         // Phase 22-A SC-HUD-DATABAR — pause gate. Zero the dt the rest of the
         // tick sees so brain / particle / sfx / audio-glitter all halt. Menu
         // drain still fires above this point so resume / unpause still
@@ -14425,8 +14634,11 @@ void main()
         // the MainMenuToSp / SinglePlayerToMm transitions input is
         // suppressed so a fast click doesn't fire on a half-flown panel.
         _spMenu.IsActive = state == Hud.FrontendScene.ScreenState.SinglePlayer
-                           && !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen;
+                           && !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen
+                           && !_loadDialog.IsOpen;
         if (state != Hud.FrontendScene.ScreenState.SinglePlayer) return;
+        // The frontend Load window owns input while open; drain nothing else.
+        if (_loadDialog.IsOpen) return;
         var act = _spMenu.ConsumeAction();
         if (act != SinglePlayerMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
         switch (act)
@@ -14450,9 +14662,11 @@ void main()
                 _spMenu.ClearHover();
                 break;
             case SinglePlayerMenuPanel.Action.LoadGame:
-                // Stub — SC-MAINMENU-LOADGAME wires the SaveStore-backed
-                // load_game.gas screen.
-                Console.WriteLine($"  sp menu: '{act}' click — splinter SC-MAINMENU-LOADGAME pending");
+                // SC-MAINMENU-LOADGAME — open the frontend Load Game window over
+                // the main-menu shell. Suspend the SP submenu's input while the
+                // modal owns the screen; CloseLoadDialog hands it back.
+                OpenLoadDialog(mainMenuStyle: true);
+                _spMenu.IsActive = false;
                 _spMenu.ClearHover();
                 break;
         }
@@ -14635,6 +14849,94 @@ void main()
         catch (Exception ex)
         {
             Console.Error.WriteLine($"SC-DIFF-LAUNCH failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>SC-MAINMENU-LOADGAME — relaunch into the save's region and hand
+    /// the new process the save path via <c>SIEGEFX_LOAD_SAVE</c> so it applies
+    /// the save once the region + player are live (see OnUpdate's boot-load
+    /// hook). The saved hero variant + name ride the same <c>SIEGEFX_HERO_*</c>
+    /// envs the difficulty launch uses so the spawned body matches before the
+    /// save patch lands. Reuses the whole-world DS1 tanks (only the region path
+    /// changes between saves).</summary>
+    private void LaunchRegionForLoad(string ds1ResourcesDir, string savePath)
+    {
+        try
+        {
+            SiegeFX.Core.Save.SaveFile save;
+            try { save = SiegeFX.Core.Save.SaveStore.Load(savePath); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"SC-MAINMENU-LOADGAME: can't read save '{savePath}' -- {ex.Message}");
+                _saveToastText = "Load failed."; _saveToastRemaining = SaveToastDuration;
+                return;
+            }
+            string regionPath = save.RegionPath;
+            if (string.IsNullOrEmpty(regionPath))
+            {
+                Console.Error.WriteLine("SC-MAINMENU-LOADGAME: save has no region path; aborting");
+                _saveToastText = "Load failed."; _saveToastRemaining = SaveToastDuration;
+                return;
+            }
+
+            string installRoot = System.IO.Path.GetDirectoryName(ds1ResourcesDir.TrimEnd('\\', '/'))
+                                 ?? ds1ResourcesDir;
+            string mapTank = System.IO.Path.Combine(installRoot, "Maps", "World.dsmap");
+            string terrain = System.IO.Path.Combine(ds1ResourcesDir, "Terrain.dsres");
+            string logic   = System.IO.Path.Combine(ds1ResourcesDir, "Logic.dsres");
+            string objects = System.IO.Path.Combine(ds1ResourcesDir, "Objects.dsres");
+
+            string? exePath = Environment.ProcessPath;
+            if (exePath is null)
+            {
+                Console.Error.WriteLine("SC-MAINMENU-LOADGAME: can't resolve own ProcessPath; aborting relaunch");
+                return;
+            }
+            bool runningUnderDotnet = string.Equals(
+                System.IO.Path.GetFileNameWithoutExtension(exePath), "dotnet", StringComparison.OrdinalIgnoreCase);
+
+            var psi = new System.Diagnostics.ProcessStartInfo { FileName = exePath, UseShellExecute = false };
+            if (runningUnderDotnet)
+            {
+                string asmPath = typeof(RenderHost).Assembly.Location;
+                if (string.IsNullOrEmpty(asmPath) || !System.IO.File.Exists(asmPath))
+                {
+                    Console.Error.WriteLine("SC-MAINMENU-LOADGAME: can't locate the game assembly for dotnet relaunch");
+                    return;
+                }
+                psi.ArgumentList.Add(asmPath);
+            }
+            psi.ArgumentList.Add("--play-region");
+            psi.ArgumentList.Add(mapTank);
+            psi.ArgumentList.Add(terrain);
+            psi.ArgumentList.Add(logic);
+            psi.ArgumentList.Add(objects);
+            psi.ArgumentList.Add(regionPath);
+
+            // Forward the saved hero appearance so the spawned body matches the
+            // save before the state patch lands. Null variant = stock farmboy
+            // (leave the envs unset, exactly like a default New Game).
+            if (save.Player?.Variant is { } v)
+            {
+                psi.Environment["SIEGEFX_HERO_GENDER"] = v.Gender;
+                if (v.BodyTypeIdx >= 0) psi.Environment["SIEGEFX_HERO_BODY"] = (v.BodyTypeIdx + 1).ToString();
+                if (!string.IsNullOrEmpty(v.SkinSuffix))  psi.Environment["SIEGEFX_HERO_SKIN"]  = v.SkinSuffix;
+                if (!string.IsNullOrEmpty(v.PantsSuffix)) psi.Environment["SIEGEFX_HERO_PANTS"] = v.PantsSuffix;
+            }
+            string heroName = save.HeroName;
+            if (string.IsNullOrEmpty(heroName)) heroName = save.Player?.HeroName ?? "";
+            if (!string.IsNullOrEmpty(heroName)) psi.Environment["SIEGEFX_HERO_NAME"] = heroName;
+            psi.Environment["SIEGEFX_LOAD_SAVE"] = savePath;
+            psi.Environment["SIEGEFX_NOVIDEO"] = "1";
+            psi.Environment["SIEGEFX_CREATOR"] = "0";
+
+            Console.WriteLine($"SC-MAINMENU-LOADGAME: relaunching into {regionPath} + applying '{savePath}'");
+            System.Diagnostics.Process.Start(psi);
+            _window.Close();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"SC-MAINMENU-LOADGAME failed: {ex.Message}");
         }
     }
 
@@ -15167,13 +15469,18 @@ void main()
                 // DrawSpBackButton. One asp draw per widget with ONLY
                 // its art_mapping-specified subsets — adjacent atlas
                 // regions can't bleed because their subsets are masked.
+                // SC-MAINMENU-LOADGAME — hide the SP submenu widgets while the
+                // frontend Load window is up so they don't peek around the modal
+                // panel; the ornate backdrop (drawn by _frontendScene.Draw
+                // above) still shows through, matching the reference screenshot.
+                bool spModal = _loadDialog.IsOpen;
                 // SC-SP-HOVER — DrawMenubarsButton is the source of truth
                 // for NEW GAME / LOAD GAME (chrome's DrawSpChrome menubars
                 // mask is chrome-only subsets 0-5; text labels live on
                 // subsets 12/14 which only render through this per-widget
                 // call). Fire always so mouseout shows the engraved label;
                 // hover swaps to menubars-up + text-menubars1-up.
-                if (_spMenu.TryGetButtonStateAndRect(
+                if (!spModal && _spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.NewGame,
                         viewportW, viewportH,
                         out int ngx, out int ngy, out int ngw, out int ngh,
@@ -15182,7 +15489,7 @@ void main()
                     _frontendScene.DrawMenubarsButton(viewportW, viewportH,
                         ngx, ngy, ngw, ngh, ngHover, ngPress, "button_start_new_game");
                 }
-                if (_spMenu.TryGetButtonStateAndRect(
+                if (!spModal && _spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.LoadGame,
                         viewportW, viewportH,
                         out int lgx, out int lgy, out int lgw, out int lgh,
@@ -15196,7 +15503,7 @@ void main()
                 // draw (with state-aware e2b / b2e clip) is the
                 // mouseout source of truth; per-widget renders the
                 // hover/press swap on top.
-                if (_spMenu.TryGetButtonStateAndRect(
+                if (!spModal && _spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.Back,
                         viewportW, viewportH,
                         out int bx, out int by, out int bw, out int bh,
@@ -15208,7 +15515,7 @@ void main()
                 // Hover overlays for the SP submenu buttons (only meaningful
                 // in the settled SinglePlayer state where _spMenu has
                 // hover state).
-                if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
+                if (!spModal && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
                     DrawSpMenuHoverOverlays(viewportW, viewportH);
             }
             else if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
@@ -15347,6 +15654,15 @@ void main()
         {
             _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH,
                 commonChrome: GetCommonTexture);
+        }
+        // SC-MAINMENU-LOADGAME — frontend Load Game window over the main-menu
+        // shell. Same modal as the in-game pose but the mirrored (info-left /
+        // thumbnail-right) layout with ◄► list selectors. Needs _gl for the
+        // preview-thumbnail upload.
+        if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null)
+        {
+            _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
+                             TryGetGuiTexture, GetCommonTexture, viewportW, viewportH);
         }
         _textRenderer.EndPass();
     }
@@ -19861,6 +20177,35 @@ void main()
         return norm[start..end];
     }
 
+    /// <summary>Turn the internal map token (<c>DeriveMapName</c> → "world")
+    /// into the player-facing name DS1 shows on the Load window ("Kingdom of
+    /// Ehb"). Unknown maps fall back to a title-cased token so a SiegeSmith map
+    /// still reads sensibly instead of blank.</summary>
+    static string FriendlyMapName(string? mapToken)
+    {
+        if (string.IsNullOrWhiteSpace(mapToken)) return "";
+        switch (mapToken.Trim().ToLowerInvariant())
+        {
+            case "world":     return "Kingdom of Ehb";
+            case "multiplayer_world": return "Utraean Peninsula";
+            case "yesterhaven": return "Yesterhaven";
+        }
+        // Title-case the raw token, underscores → spaces.
+        var parts = mapToken.Replace('_', ' ').Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < parts.Length; i++)
+            parts[i] = char.ToUpperInvariant(parts[i][0]) + parts[i][1..];
+        return string.Join(' ', parts);
+    }
+
+    /// <summary>Elapsed play time as DS1's dashed default-save-name form
+    /// ("0-13-16"). The colon form lives in <see cref="Hud.LoadGameDialog"/>.</summary>
+    static string FormatElapsedDashed(double seconds)
+    {
+        if (seconds < 0) seconds = 0;
+        var t = TimeSpan.FromSeconds(seconds);
+        return $"{(int)t.TotalHours}-{t.Minutes:00}-{t.Seconds:00}";
+    }
+
     static string? DeriveRegionName(string? regionPath)
     {
         if (string.IsNullOrEmpty(regionPath)) return null;
@@ -22459,6 +22804,23 @@ void main()
             DrawNisLetterbox(size.X, size.Y);
             DrawSubtitles(size.X, size.Y);
 
+            // v12 Load-window preview — capture a downscaled screenshot off the
+            // freshly-composited world+HUD (before any modal draws below) at a
+            // throttled ~1 Hz, and only on clean frames (no modal / not at the
+            // frontend). The most recent capture rides the next save so the Load
+            // window can show a real gameplay thumbnail rather than a shot of the
+            // Save dialog. glReadPixels stalls the pipe, hence the throttle.
+            if (_thumbRefreshTimer > 0f) _thumbRefreshTimer -= (float)dt;
+            if (_thumbRefreshTimer <= 0f && _player is not null && !_bootMode
+                && !_pauseMenu.IsOpen && !_saveDialog.IsOpen && !_loadDialog.IsOpen
+                && !_handbook.IsOpen && !_optionsMenu.IsOpen && !_questLogOpen
+                && !_inventoryOpen && !_dialogue.IsOpen && !_vendor.IsOpen
+                && _nisPhase == NisPhase.Off)
+            {
+                RefreshSceneThumbnail(size.X, size.Y);
+                _thumbRefreshTimer = ThumbInterval;
+            }
+
             // Phase 21-SC-INV-A — the grid inventory was relocated into the
             // top-dock row above (alongside the character + spell book panes)
             // so the previous centered/modal draw call for it is gone here.
@@ -22501,6 +22863,14 @@ void main()
             {
                 _saveDialog.Tick((float)dt);
                 _saveDialog.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                                 TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
+            }
+            // DS1 Load Game window (in-game pose). The frontend pose is drawn
+            // over the boot chrome instead (see DrawBootScene). Needs _gl to
+            // upload the preview thumbnail.
+            if (_loadDialog.IsOpen && !_loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null)
+            {
+                _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
                                  TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             if (_handbook.IsOpen && _barRenderer is not null)
@@ -23289,6 +23659,48 @@ void main()
     // that drift during play (life/mana/dead/positions/inventory/spellbook
     // cooldowns/camera/XP) live in the save. RegionPath stamps the snapshot
     // so the load path can refuse a save written for a different region.
+    /// <summary>Grab the current default framebuffer, center-crop to 4:3,
+    /// nearest-downsample to <see cref="ThumbW"/>×<see cref="ThumbH"/> (flipping
+    /// GL's bottom-up rows to a top-left image), and stash the packed bytes for
+    /// the next save. Called only on clean frames (no modal open) so the preview
+    /// is a real gameplay shot. A glReadPixels stalls the pipeline, so the caller
+    /// throttles this to ~1 Hz.</summary>
+    private unsafe void RefreshSceneThumbnail(int fbW, int fbH)
+    {
+        if (_gl is null || fbW <= 0 || fbH <= 0) return;
+        var src = new byte[fbW * fbH * 4];
+        fixed (byte* p = src)
+            _gl.ReadPixels(0, 0, (uint)fbW, (uint)fbH, GLEnum.Rgba, GLEnum.UnsignedByte, p);
+
+        float srcAspect = (float)fbW / fbH;
+        float dstAspect = (float)ThumbW / ThumbH;
+        int cropW = fbW, cropH = fbH, cropX = 0, cropY = 0;
+        if (srcAspect > dstAspect) { cropW = (int)(fbH * dstAspect); cropX = (fbW - cropW) / 2; }
+        else                       { cropH = (int)(fbW / dstAspect); cropY = (fbH - cropH) / 2; }
+
+        // Keep the rows in glReadPixels' native bottom-up order (row 0 = bottom
+        // of the frame). IconRenderer's DrawIcon flips V for bottom-up textures,
+        // so a bottom-up thumbnail displays upright without an extra flip here.
+        var dst = new byte[ThumbW * ThumbH * 4];
+        for (int ty = 0; ty < ThumbH; ty++)
+        {
+            int sy = cropY + (int)((ty + 0.5f) / ThumbH * cropH);
+            if (sy < 0) sy = 0; else if (sy >= fbH) sy = fbH - 1;
+            for (int tx = 0; tx < ThumbW; tx++)
+            {
+                int sx = cropX + (int)((tx + 0.5f) / ThumbW * cropW);
+                if (sx < 0) sx = 0; else if (sx >= fbW) sx = fbW - 1;
+                int si = (sy * fbW + sx) * 4;
+                int di = (ty * ThumbW + tx) * 4;
+                dst[di]     = src[si];
+                dst[di + 1] = src[si + 1];
+                dst[di + 2] = src[si + 2];
+                dst[di + 3] = 255;
+            }
+        }
+        _sceneThumbnail = SiegeFX.Core.Save.ThumbnailCodec.Encode(ThumbW, ThumbH, dst);
+    }
+
     internal SiegeFX.Core.Save.SaveFile CaptureSave()
     {
         var save = new SiegeFX.Core.Save.SaveFile
@@ -23298,6 +23710,13 @@ void main()
             RegionPath    = _regionPath ?? "",
             NextTipIndex  = _nextTipIndex,
             TipsDisabled  = _tipsDisabled,
+            // v12 — Load window preview metadata. HeroName/MapName/ElapsedSeconds
+            // fill the HERO / MAP / ELAPSED TIME info box; Thumbnail is the most
+            // recent clean-gameplay screenshot (may be null on a viewer save).
+            HeroName        = _heroName,
+            MapName         = FriendlyMapName(DeriveMapName(_regionPath)),
+            ElapsedSeconds  = _playSeconds,
+            Thumbnail       = _sceneThumbnail,
         };
 
         // ALPHA-2G — cross-region world state a long run accumulates.
@@ -23483,6 +23902,9 @@ void main()
         _tipsDisabled = save.TipsDisabled;
         _handbook.Disabled = _tipsDisabled;
         _tipTracking = false;
+        // Resume the per-character play clock where the save left off (v12+; v11
+        // and older default ElapsedSeconds to 0, which is correct for them).
+        _playSeconds = save.ElapsedSeconds;
 
         // Phase 22-SC-MUSIC-FOLD — clear runtime music state so the
         // post-load region apply re-fires the mood + standard track.

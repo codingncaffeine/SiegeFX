@@ -40,12 +40,17 @@ public sealed class SaveFile
     ///              label shown in the Save Game window's list) and
     ///              <see cref="NextTipIndex"/>/<see cref="TipsDisabled"/>
     ///              (Adventurer's Handbook auto-popup progress).
+    ///   v11 -> v12: added the Load Game window's preview fields —
+    ///              <see cref="HeroName"/>, <see cref="MapName"/>,
+    ///              <see cref="ElapsedSeconds"/> (play-clock) and
+    ///              <see cref="Thumbnail"/> (a small PNG screenshot captured
+    ///              at save time). All default-friendly.
     /// All bumps are deserializer-friendly — missing fields hit their defaults —
-    /// so any v1..v10 file loads as a v11 with the new fields zero-initialized.
+    /// so any v1..v11 file loads as a v12 with the new fields zero-initialized.
     /// IMPORTANT: bumping CurrentSchemaVersion requires extending the
     /// migration whitelist in SaveStore.Load too; the strict-equality check
     /// downstream throws InvalidDataException on any unmigrated version.</summary>
-    public const int CurrentSchemaVersion = 11;
+    public const int CurrentSchemaVersion = 12;
 
     /// <summary>Schema version of the file as written. Loader rejects when
     /// this doesn't match <see cref="CurrentSchemaVersion"/>.</summary>
@@ -78,6 +83,31 @@ public sealed class SaveFile
     /// refuses if the active region doesn't match — trying to splice
     /// fh_r1 actor scids into a different region would hit-or-miss.</summary>
     public string RegionPath { get; set; } = "";
+
+    /// <summary>v12 — the hero's name, mirrored from
+    /// <see cref="PlayerSnapshot.HeroName"/> up to the top level so the Load
+    /// Game window's lightweight header read can show "HERO: X" without
+    /// deserializing the whole player payload. Empty on pre-v12 / nameless.</summary>
+    public string HeroName { get; set; } = "";
+
+    /// <summary>v12 — friendly map name for the Load window's "MAP:" line
+    /// (e.g. "Kingdom of Ehb"), derived from <see cref="RegionPath"/> at save
+    /// time. Empty on pre-v12 saves (the UI falls back to the region stem).</summary>
+    public string MapName { get; set; } = "";
+
+    /// <summary>v12 — total played time in seconds, shown as the Load window's
+    /// "ELAPSED TIME: h:mm:ss". Accumulated only while the sim runs (paused /
+    /// modal time doesn't count). 0 on pre-v12 saves.</summary>
+    public double ElapsedSeconds { get; set; }
+
+    /// <summary>v12 — a small screenshot of the scene captured when the Save
+    /// window opened, shown in the Load window's preview box (DS1 stores a
+    /// per-save thumbnail there). Encoded as raw RGBA with an 8-byte header —
+    /// <c>[width:int32 LE][height:int32 LE][rgba…]</c> — so the UI can upload it
+    /// straight to a texture without a PNG decoder (see <c>ThumbnailCodec</c>).
+    /// Null on pre-v12 saves and quicksaves with no framebuffer to grab; the UI
+    /// draws a placeholder then. Base64 in the JSON (~96×72 ≈ 36 KB).</summary>
+    public byte[]? Thumbnail { get; set; }
 
     /// <summary>Player progression block. Null when no PC was active at
     /// save time (viewer modes, headless test scenes).</summary>

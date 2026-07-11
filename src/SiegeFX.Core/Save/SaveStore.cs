@@ -59,7 +59,9 @@ public static class SaveStore
         //              QuestSnapshot.DialogueLog — both default-friendly.
         //   v10 -> v11: added SaveFile.DisplayName + NextTipIndex/TipsDisabled
         //              (handbook progress) — all default-friendly.
-        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10)
+        //   v11 -> v12: added SaveFile.HeroName/MapName/ElapsedSeconds/Thumbnail
+        //              (Load Game window preview) — all default-friendly.
+        if (file.SchemaVersion is 1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 or 10 or 11)
         {
             file.SchemaVersion = SaveFile.CurrentSchemaVersion;
         }
@@ -84,11 +86,15 @@ public static class SaveStore
     public static string QuicksavePath()
         => Path.Combine(DefaultSaveDirectory(), "quicksave.save");
 
-    /// <summary>One row in the Save Game window's list. <see cref="Path"/> is
-    /// the file to load/delete; <see cref="DisplayName"/> is the player-typed
-    /// label (or file stem for pre-v11 / quicksaves).</summary>
+    /// <summary>One row in the Save/Load Game window's list. <see cref="Path"/>
+    /// is the file to load/delete; <see cref="DisplayName"/> is the player-typed
+    /// label (or file stem for pre-v11 / quicksaves). The v12 preview fields
+    /// (<see cref="HeroName"/>, <see cref="MapName"/>, <see cref="ElapsedSeconds"/>,
+    /// <see cref="Thumbnail"/>) feed the Load window's HERO/MAP/ELAPSED info box
+    /// and screenshot; they're empty/null on older saves.</summary>
     public readonly record struct SaveSlot(
-        string Path, string DisplayName, DateTime SavedAt, string RegionPath, bool IsQuicksave);
+        string Path, string DisplayName, DateTime SavedAt, string RegionPath, bool IsQuicksave,
+        string HeroName, string MapName, double ElapsedSeconds, byte[]? Thumbnail);
 
     // Lightweight header — System.Text.Json ignores unknown members by default,
     // so this reads the metadata fields without materializing the (potentially
@@ -100,6 +106,10 @@ public static class SaveStore
         public DateTime SavedAt { get; set; }
         public string DisplayName { get; set; } = "";
         public string RegionPath { get; set; } = "";
+        public string HeroName { get; set; } = "";
+        public string MapName { get; set; } = "";
+        public double ElapsedSeconds { get; set; }
+        public byte[]? Thumbnail { get; set; }
     }
 
     /// <summary>Turn a player-typed save label into a safe, unique on-disk
@@ -156,7 +166,8 @@ public static class SaveStore
             var label = !string.IsNullOrWhiteSpace(h.DisplayName)
                 ? h.DisplayName
                 : isQuick ? "Quicksave" : Path.GetFileNameWithoutExtension(path);
-            slots.Add(new SaveSlot(path, label, h.SavedAt, h.RegionPath, isQuick));
+            slots.Add(new SaveSlot(path, label, h.SavedAt, h.RegionPath, isQuick,
+                                   h.HeroName, h.MapName, h.ElapsedSeconds, h.Thumbnail));
         }
         slots.Sort((a, b) => b.SavedAt.CompareTo(a.SavedAt));
         return slots;
