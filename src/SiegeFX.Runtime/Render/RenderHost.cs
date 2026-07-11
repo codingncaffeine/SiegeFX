@@ -18718,6 +18718,19 @@ void main()
         var itemRef = _cursorItem.Value.Reference;
         if (!IsItemClassMatchingSlot(itemRef, slotName)) return;
 
+        // SC-EQUIP-REQ — authored stat gate. DS1 refuses the equip and tells
+        // you why; the item stays on the cursor.
+        var wearer = target <= 0 ? _player : _party.FirstOrDefault(m => m.PartyIndex == target);
+        if (wearer is not null &&
+            !MeetsEquipRequirements(itemRef, wearer.Actor.Stats, out var reqFail))
+        {
+            Console.WriteLine($"  paperdoll[{target}]: '{itemRef}' refused — {reqFail}");
+            AddFloatingText(reqFail,
+                wearer.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
+                new Vector4(1f, 0.35f, 0.25f, 1f));
+            return;
+        }
+
         if (slotHasItem)
         {
             // (c) Swap.
@@ -21076,6 +21089,10 @@ void main()
     private void AnnounceLevelUp(int oldLevel)
     {
         if (_progression is null) return;
+        // SC-EQUIP-ENCHANT — the level-up recompute derives caps from the
+        // enchanted attribute trio and drops direct life/mana bonuses; rebase
+        // the worn-gear layer so +mana rings survive leveling.
+        if (_progression.Level > oldLevel) SyncPlayerArmorDefense();
         if (_progression.Level > oldLevel)
         {
             // Level-up announce: console line for diagnostics + on-screen banner
@@ -21366,19 +21383,133 @@ void main()
         return (int)MathF.Round(total);
     }
 
-    /// <summary>Fold the summed worn-armor [armor][defense] into the player's
-    /// live combat Defense so enemy hits are actually mitigated — CombatResolver
-    /// reads target.Defense, and HeroBaselineStats authors Defense 0, so without
-    /// this worn armor reduced incoming damage by nothing. Called on spawn, on
-    /// every armor/shield equip change (via TryLoadPlayerEquipment), and on load.
-    /// ResyncStats only reclamps caps, so this never heals or alters life/mana.</summary>
+    // SC-EQUIP-ENCHANT — the enchantment layer currently applied to the
+    // player's live stats (from worn [magic][enchantments] alterations).
+    // Tracked separately so level-ups and saves can rebase to NATURAL stats:
+    // saves subtract the layer (snapshots stay natural), and each sync
+    // re-derives naturals before applying the current gear's bonuses.
+    private (float Str, float Dex, float Int, float Life, float Mana, float Armor) _appliedEnchant;
+
+    /// <summary>Sum the [magic][enchantments] alterations across an equipment
+    /// dict. DS1's statically-authored vocabulary: alter_ARMOR (+defense),
+    /// alter_strength/dexterity/intelligence, alter_life_bonus/max_life,
+    /// alter_mana_bonus/max_mana (case-insensitive; pcontent-rolled modifier
+    /// enchants are a separate open item).</summary>
+    private (float Str, float Dex, float Int, float Life, float Mana, float Armor)
+        ComputeEnchantBonus(Dictionary<string, string> equip)
+    {
+        float str = 0, dex = 0, intl = 0, life = 0, mana = 0, armor = 0;
+        if (_templateStore is null || equip.Count == 0) return (0, 0, 0, 0, 0, 0);
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        foreach (var kv in equip)
+        {
+            if (!_templateStore.TryGet(kv.Value, out var tpl) || tpl is null) continue;
+            var ench = _templateStore.GetSection(tpl, "magic", "enchantments");
+            if (ench is null) continue;
+            foreach (var e in ench.Children)
+            {
+                string? alteration = null; float value = 0f;
+                foreach (var a in e.Attributes)
+                {
+                    if (a.Name.Equals("alteration", StringComparison.OrdinalIgnoreCase))
+                        alteration = a.Value.Trim().Trim('"');
+                    else if (a.Name.Equals("value", StringComparison.OrdinalIgnoreCase))
+                        float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float, ci, out value);
+                }
+                if (alteration is null || value == 0f) continue;
+                switch (alteration.ToLowerInvariant())
+                {
+                    case "alter_armor":                          armor += value; break;
+                    case "alter_strength":                       str   += value; break;
+                    case "alter_dexterity":                      dex   += value; break;
+                    case "alter_intelligence":                   intl  += value; break;
+                    case "alter_life_bonus": case "alter_max_life": case "alter_life":
+                                                                 life  += value; break;
+                    case "alter_mana_bonus": case "alter_max_mana": case "alter_mana":
+                                                                 mana  += value; break;
+                }
+            }
+        }
+        return (str, dex, intl, life, mana, armor);
+    }
+
+    /// <summary>Fold the summed worn-armor [armor][defense] AND worn
+    /// [magic][enchantments] alterations into the player's live stats so
+    /// enemy hits are actually mitigated and enchanted jewelry actually does
+    /// something. Naturals are re-derived each call (attributes by
+    /// subtracting the applied layer; life/mana caps from the formulas over
+    /// the natural trio — the formula is linear, so the rebase is exact),
+    /// then the current gear layer applies on top. Called on spawn, on every
+    /// equip change (via TryLoadPlayerEquipment), and on load. ResyncStats
+    /// only reclamps caps, so this never heals.</summary>
     private void SyncPlayerArmorDefense()
     {
         if (_player is null) return;
-        float armor = ComputePlayerArmorRating();
         var s = _player.Actor.Stats;
-        if (MathF.Abs(s.Defense - armor) > 0.01f)
-            _player.Actor.ResyncStats(s with { Defense = armor });
+        var ench = ComputeEnchantBonus(_playerEquipment);
+        float armor = ComputePlayerArmorRating() + ench.Armor;
+
+        float nStr = s.Strength     - _appliedEnchant.Str;
+        float nDex = s.Dexterity    - _appliedEnchant.Dex;
+        float nInt = s.Intelligence - _appliedEnchant.Int;
+        float nLife = _formulas is not null ? _formulas.MaxLife(nStr, nDex, nInt) : s.MaxLife - _appliedEnchant.Life;
+        float nMana = _formulas is not null ? _formulas.MaxMana(nStr, nDex, nInt) : s.MaxMana - _appliedEnchant.Mana;
+
+        float eStr = nStr + ench.Str, eDex = nDex + ench.Dex, eInt = nInt + ench.Int;
+        float eLife = (_formulas is not null ? _formulas.MaxLife(eStr, eDex, eInt) : nLife) + ench.Life;
+        float eMana = (_formulas is not null ? _formulas.MaxMana(eStr, eDex, eInt) : nMana) + ench.Mana;
+
+        var ns = s with
+        {
+            Defense = armor,
+            Strength = eStr, Dexterity = eDex, Intelligence = eInt,
+            MaxLife = eLife, MaxMana = eMana,
+        };
+        // Record the layer as (applied − natural) so the next rebase is exact.
+        _appliedEnchant = (ench.Str, ench.Dex, ench.Int, eLife - nLife, eMana - nMana, ench.Armor);
+        if (MathF.Abs(s.Defense - ns.Defense) > 0.01f || MathF.Abs(s.Strength - ns.Strength) > 0.001f
+            || MathF.Abs(s.Dexterity - ns.Dexterity) > 0.001f || MathF.Abs(s.Intelligence - ns.Intelligence) > 0.001f
+            || MathF.Abs(s.MaxLife - ns.MaxLife) > 0.01f || MathF.Abs(s.MaxMana - ns.MaxMana) > 0.01f)
+        {
+            _player.Actor.ResyncStats(ns);
+            if (ench != default((float, float, float, float, float, float)))
+                Console.WriteLine($"  enchant: +{ench.Str:F0}str +{ench.Dex:F0}dex +{ench.Int:F0}int " +
+                                  $"+{ench.Life:F0}life +{ench.Mana:F0}mana +{ench.Armor:F0}armor from worn gear");
+        }
+    }
+
+    /// <summary>SC-EQUIP-REQ — DS1's [gui] equip_requirements gate
+    /// (<c>strength:78</c>, comma-separated pairs). Returns false with the
+    /// failing requirement when the target's stats don't meet the authored
+    /// bar; items without requirements always pass.</summary>
+    private bool MeetsEquipRequirements(string itemRef, in SiegeFX.Core.Actors.ActorStats stats,
+                                        out string failText)
+    {
+        failText = "";
+        if (_templateStore is null) return true;
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return true;
+        var req = _templateStore.GetAttribute(tpl, "gui", "equip_requirements")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(req)) return true;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        foreach (var pair in req.Split(','))
+        {
+            var kv = pair.Split(':');
+            if (kv.Length != 2) continue;
+            if (!float.TryParse(kv[1].Trim(), System.Globalization.NumberStyles.Float, ci, out var need)) continue;
+            float have = kv[0].Trim().ToLowerInvariant() switch
+            {
+                "strength"     => stats.Strength,
+                "dexterity"    => stats.Dexterity,
+                "intelligence" => stats.Intelligence,
+                _              => float.MaxValue, // unknown stat names never block
+            };
+            if (have < need)
+            {
+                failText = $"Requires {need:F0} {char.ToUpperInvariant(kv[0].Trim()[0])}{kv[0].Trim()[1..]}";
+                return false;
+            }
+        }
+        return true;
     }
 
     private SiegeFX.Core.Actors.ActorStats GetPlayerAttackStats()
@@ -24023,9 +24154,12 @@ void main()
                 Scid          = _player.Actor.Instance.Scid,
                 TotalXp       = _progression?.TotalXp ?? 0,
                 Level         = _progression?.Level ?? 1,
-                Strength      = _player.Actor.Stats.Strength,
-                Dexterity     = _player.Actor.Stats.Dexterity,
-                Intelligence  = _player.Actor.Stats.Intelligence,
+                // SC-EQUIP-ENCHANT — snapshot NATURAL attributes (worn-gear
+                // alterations subtracted); the load path recomputes caps from
+                // the trio and the post-load equipment sync re-applies gear.
+                Strength      = _player.Actor.Stats.Strength     - _appliedEnchant.Str,
+                Dexterity     = _player.Actor.Stats.Dexterity    - _appliedEnchant.Dex,
+                Intelligence  = _player.Actor.Stats.Intelligence - _appliedEnchant.Int,
                 Facing        = SiegeFX.Core.Save.Vec3.From(_playerFacing),
                 CameraMode    = (int)_cameraMode,
                 ChaseYaw      = _chaseYaw,
@@ -24374,6 +24508,10 @@ void main()
             TryLoadPlayerWeapon();
             // Fold restored armor back into combat Defense (the load ResyncStats
             // above preserved the snapshot's Defense, not the worn-armor total).
+            // SC-EQUIP-ENCHANT — the snapshot stored NATURAL stats, so clear the
+            // applied-enchant layer before the sync re-derives it from restored
+            // gear (a stale same-session layer would double-subtract).
+            _appliedEnchant = default;
             SyncPlayerArmorDefense();
 
             if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
