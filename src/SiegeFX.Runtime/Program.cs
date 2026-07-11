@@ -48,6 +48,8 @@ try
     var fs = new System.IO.FileStream(teePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
     var fileWriter = new System.IO.StreamWriter(fs) { AutoFlush = true };
     Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter));
+    // ALPHA-PACKAGING — the bug-snapshot hotkey (F11) bundles this file.
+    SiegeFX.Runtime.Render.RenderHost.SessionLogPath = teePath;
     Console.WriteLine($"[log] session log: {teePath}");
 }
 catch (Exception ex) { Console.WriteLine($"  tee log: failed to open '{teePath}': {ex.Message}"); }

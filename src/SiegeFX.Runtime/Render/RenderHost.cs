@@ -5089,6 +5089,16 @@ void main()
                     if (key == Key.Escape) { CloseLoadDialog(); return; }
                     return;
                 }
+                // ALPHA-PACKAGING — F11 bug snapshot: zips the live session
+                // log + a state summary + the newest save into
+                // %LOCALAPPDATA%\SiegeFX\bugreports\ so a tester can attach
+                // one file to an issue. Always available (it's the whole
+                // point for testers), cheap, and side-effect free.
+                if (key == Key.F11 && !_bootMode)
+                {
+                    WriteBugSnapshot();
+                    return;
+                }
                 // SC-DEVMODE — tilde toggles the developer console (in-game
                 // only; boot menus and text-entry modals keep the key).
                 // ALPHA-PACKAGING — testers don't get god/spawn/teleport by
@@ -21780,6 +21790,76 @@ void main()
                 return f;
         }
         return null;
+    }
+
+    /// <summary>ALPHA-PACKAGING — set by Program.cs at boot: the live
+    /// session-log path the F11 bug snapshot bundles.</summary>
+    internal static string? SessionLogPath;
+
+    /// <summary>ALPHA-PACKAGING — F11: one-file bug report. Zip contains the
+    /// session log so far, a state.txt (region, position, level, gold,
+    /// equipment, quests), and the newest save. Non-fatal on any error.</summary>
+    private void WriteBugSnapshot()
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SiegeFX", "bugreports");
+            Directory.CreateDirectory(dir);
+            var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var zipPath = Path.Combine(dir, $"bug-{stamp}.zip");
+            using (var zip = System.IO.Compression.ZipFile.Open(zipPath,
+                       System.IO.Compression.ZipArchiveMode.Create))
+            {
+                if (SessionLogPath is not null && File.Exists(SessionLogPath))
+                {
+                    // Shared read — the tee holds the writer open.
+                    var entry = zip.CreateEntry("session.log");
+                    using var es = entry.Open();
+                    using var ls = new FileStream(SessionLogPath, FileMode.Open,
+                        FileAccess.Read, FileShare.ReadWrite);
+                    ls.CopyTo(es);
+                }
+                var state = zip.CreateEntry("state.txt");
+                using (var sw = new StreamWriter(state.Open()))
+                {
+                    sw.WriteLine($"time: {DateTime.Now:O}");
+                    sw.WriteLine($"region: {_regionPath}");
+                    var pp = _player?.CurrentTransform.Translation ?? default;
+                    sw.WriteLine($"player: pos=({pp.X:F1},{pp.Y:F1},{pp.Z:F1}) " +
+                                 $"level={_progression?.Level} gold={_progression?.Gold} " +
+                                 $"life={_player?.Actor.Combat.CurrentLife:F0}/{_player?.Actor.Stats.MaxLife:F0}");
+                    foreach (var kv in _playerEquipment)
+                        sw.WriteLine($"equip: {kv.Key} = {kv.Value}");
+                    if (_progression is not null)
+                        foreach (var q in _progression.Journal.Entries)
+                            sw.WriteLine($"quest: {q.Key} = {q.State}");
+                    sw.WriteLine($"party: {_party.Count} member(s)");
+                }
+                var saveDir = SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory();
+                if (Directory.Exists(saveDir))
+                {
+                    var newest = new DirectoryInfo(saveDir).GetFiles("*.save")
+                        .OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault();
+                    if (newest is not null)
+                    {
+                        var saveEntry = zip.CreateEntry("latest" + newest.Extension);
+                        using var ss = saveEntry.Open();
+                        using var sf = newest.OpenRead();
+                        sf.CopyTo(ss);
+                    }
+                }
+            }
+            Console.WriteLine($"[bug] snapshot written: {zipPath}");
+            AddFloatingText("Bug snapshot saved",
+                (_player?.CurrentTransform.Translation ?? default) + new Vector3(0f, 2.4f, 0f),
+                new Vector4(0.6f, 0.9f, 1f, 1f));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[bug] snapshot failed: {ex.Message}");
+        }
     }
 
     private void EnsureCursorTextures()
