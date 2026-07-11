@@ -3270,7 +3270,7 @@ public sealed class RenderHost : IDisposable
     // happen per render frame via a ground-plane raycast through the
     // mouse, mirroring TryClickToAttack / TryClickToBreakProp / TryClickToTalk
     // so cursor visual tracks 1:1 with what a click actually picks.
-    private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk, NoGo }
+    private enum CursorState { Pointer, Attack, CastAttack, Smash, Grab, Talk, NoGo, NoTalk }
     private CursorState _cursorState = CursorState.Pointer;
     // Phase 22 — hover + walk-up pickup state. _hoverPile feeds the
     // bottom-center item readout; gold/spells also get the flat blue hover
@@ -3325,6 +3325,7 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _cursorCastAttack;       // blue-glow sword (enemy under cursor in spell mode)
     private GlTexture? _cursorTalk;             // talk marker
     private GlTexture? _cursorCant;             // red circle+slash (unwalkable terrain)
+    private GlTexture? _cursorNoTalk;           // no-talk marker (cursor_initiate)
     private GlTexture[]? _cursorSmash;          // animated hammer (smash1.flm)
     private GlTexture[]? _cursorGrab;           // animated hand (grab1.flm)
     private bool _cursorTexturesAttempted;
@@ -21797,6 +21798,9 @@ void main()
         // Phase 23 — cursors.gas cursor_cant: the red circle+slash shown
         // over terrain the player can't be sent to (water, off-mesh void).
         _cursorCant       = TryGetGuiTexture("b_gui_c_cant");
+        // SC-CURSORS — cursors.gas cursor_initiate: the no-talk marker for
+        // friendly NPCs that have nothing to say (32px, hotspot 9,5).
+        _cursorNoTalk     = TryGetGuiTexture("b_gui_c_notalk");
         _cursorSmash      = LoadFlmFrames("b_gui_c_smash1.flm");
         _cursorGrab       = LoadFlmFrames("b_gui_c_grab1.flm");
         Console.WriteLine(
@@ -21907,6 +21911,11 @@ void main()
                 // Phase 26b — hireable companions read as interactable too.
                 if (!talkable && !s.IsPartyMember && ResolveHireable(s.Actor.Template) is not null) talkable = true;
                 if (talkable) { _cursorState = CursorState.Talk; return; }
+                // SC-CURSORS — cursors.gas cursor_initiate: a friendly
+                // non-combatant with nothing to say gets the no-talk marker
+                // instead of silently reading as bare ground.
+                if (!s.Actor.Stats.IsCombatant)
+                { _cursorState = CursorState.NoTalk; return; }
             }
         }
         // 5) Phase 23 — nothing interactive under the cursor: is the ground
@@ -21985,6 +21994,9 @@ void main()
             case CursorState.NoGo:
                 // cursors.gas cursor_cant: 64x64, sethotspot(21,13).
                 return (_cursorCant ?? _cursorPointer, hsBigX, hsBigY, big);
+            case CursorState.NoTalk when _cursorNoTalk is not null:
+                // cursors.gas cursor_initiate: 32x32, sethotspot(9,5).
+                return (_cursorNoTalk, hsSmallX, hsSmallY, small);
             case CursorState.Pointer:
             default:
                 return (_cursorPointer, hsBigX, hsBigY, big);

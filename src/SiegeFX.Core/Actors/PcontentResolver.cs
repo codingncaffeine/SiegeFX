@@ -93,12 +93,28 @@ public sealed class PcontentResolver
             !e.Name.StartsWith("base_", StringComparison.OrdinalIgnoreCase));
 
         // Phase 25a — sub-class filter: "#body,ro" narrows body armor to
-        // robes (chain rooted at base_body_armor_cloth). Unknown subs
-        // keep the pre-25a no-op behavior.
+        // robes (chain rooted at base_body_armor_cloth). SC-PCONTENT-STANCE
+        // — the single-letter subs are STANCE classes per gaspy's
+        // parse_template_name (f=Fighter, r=Ranger, m=Mage tokens in the
+        // underscore-split name; e.g. bd_ba_f_g_c_avg is fighter cut).
+        // The old silent no-op made "#body,f/6-8" roll mage robes onto
+        // fighters. Unknown subs keep the no-op behavior.
         if (parsed.Sub.Equals("ro", StringComparison.OrdinalIgnoreCase))
             candidates = candidates.Where(e =>
                 _store.TryGet(e.Name, out var t) && t is not null
                 && IsDescendantOf(t, "base_body_armor_cloth"));
+        else if (parsed.Sub.Length == 1
+                 && (parsed.Sub is "f" or "r" or "m" || parsed.Sub is "F" or "R" or "M"))
+        {
+            var tok = parsed.Sub.ToLowerInvariant();
+            candidates = candidates.Where(e =>
+            {
+                var parts = e.Name.Split('_');
+                foreach (var p in parts)
+                    if (string.Equals(p, tok, StringComparison.OrdinalIgnoreCase)) return true;
+                return false;
+            });
+        }
 
         // Rarity filter. Without a modifier, only normal-tier items
         // that aren't is_pcontent_allowed=false can roll. With
