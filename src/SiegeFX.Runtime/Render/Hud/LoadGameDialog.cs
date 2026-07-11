@@ -63,19 +63,25 @@ public sealed class LoadGameDialog : IDisposable
     private static readonly (int x0, int y0, int x1, int y1) FeDelete  = (413, 492, 500, 518); // delete_button
     private static readonly (int x0, int y0, int x1, int y1) FePrev    = (237, 575, 338, 595); // button_previous
     private static readonly (int x0, int y0, int x1, int y1) FeNext    = (461, 575, 562, 595); // button_next (= load ok)
-    // The gas frames each widget with common-control chrome; the enclosing
-    // rusty window this bounds spans the info/preview/list/buttons cluster.
+    // The loadmap.asp mesh draws the enclosing marble window + map backing +
+    // selector spikes; this bound is only used for click-off-to-dismiss
+    // hit-testing. The "LOAD GAME" title is mesh art too (mainmenu title drum
+    // at sp2lg pose) — no 2D title here.
     private static readonly (int x0, int y0, int x1, int y1) FeWindow  = (214, 158, 584, 528);
-    private static readonly (int x0, int y0, int x1, int y1) FeTitle   = (300,  40, 500,  78); // "LOAD GAME" scroll label
+    // preview_window gas rect anchors the thumbnail at 488,179 (the woodbox
+    // interior); the box crops it to its own 90×69 frame.
+    private static readonly (int x0, int y0, int x1, int y1) FeThumb   = (488, 179, 568, 238);
     private const int FeElementH = 13; // listbox setelementheight(13)
+    // load_game_listbox font_color = 0x00959290 — silver-gray row text.
+    private static readonly Vector4 FeRowInk = new(0x95 / 255f, 0x92 / 255f, 0x90 / 255f, 1f);
 
     private readonly List<SaveStore.SaveSlot> _saves = new();
     private int _selected = -1;
     private int _scrollRow;
 
     // Per-frame screen rects (Layout writes; hit-tests read).
-    private (int x, int y, int w, int h) _sPanel, _sInfo, _sPreview, _sList,
-                                          _sLoad, _sDelete, _sCancel, _sNext;
+    private (int x, int y, int w, int h) _sPanel, _sInfo, _sPreview, _sThumb,
+                                          _sList, _sLoad, _sDelete, _sCancel, _sNext;
     private int _rowH, _visibleRows;
 
     // Frontend interface→screen mapping (800×600 gas space → pixels). Set from
@@ -89,9 +95,17 @@ public sealed class LoadGameDialog : IDisposable
     /// origin + per-axis scale. Null → plain <c>min(vw/800,vh/600)</c> fallback.</summary>
     public Func<int, int, (bool ok, float ox, float oy, float sx, float sy)>? FrontendMap;
 
-    private enum Btn { None, Load, Delete, Cancel }
+    private enum Btn { None, Load, Delete, Cancel, Next }
     private Btn _pressed = Btn.None;
     private Btn _hover = Btn.None;
+
+    // SC-MAINMENU-LOADGAME — hover/press state for the shell's PREVIOUS /
+    // NEXT plates (backbutton.asp b2pn pose). The host layers the
+    // art_mapping texture swap via DrawPreviousButton / DrawNextButton.
+    public bool PrevHovered => _hover == Btn.Cancel;
+    public bool PrevPressed => _pressed == Btn.Cancel;
+    public bool NextHovered => _hover == Btn.Next;
+    public bool NextPressed => _pressed == Btn.Next;
 
     private GlTexture? _thumbTex;
     private string? _thumbForPath;
@@ -174,6 +188,7 @@ public sealed class LoadGameDialog : IDisposable
         _sPanel   = ScrFe(FeWindow, vw, vh);
         _sInfo    = ScrFe(FeInfo, vw, vh);
         _sPreview = ScrFe(FePreview, vw, vh);
+        _sThumb   = ScrFe(FeThumb, vw, vh);
         _sList    = ScrFe(FeList, vw, vh);
         _sLoad    = ScrFe(FeLoad, vw, vh);
         _sDelete  = ScrFe(FeDelete, vw, vh);
@@ -181,8 +196,7 @@ public sealed class LoadGameDialog : IDisposable
         _sNext    = ScrFe(FeNext, vw, vh); // Next == Load
 
         _rowH = Math.Max(1, (int)MathF.Round(FeElementH * _feSy));
-        int pad = (int)MathF.Round(4 * _feSy);
-        _visibleRows = Math.Max(1, (_sList.h - pad * 2) / _rowH);
+        _visibleRows = Math.Max(1, _sList.h / _rowH);
     }
 
     // ---- input -------------------------------------------------------------
@@ -214,6 +228,7 @@ public sealed class LoadGameDialog : IDisposable
         return up switch
         {
             Btn.Load   => Selected is null ? Result.None : Result.Load,
+            Btn.Next   => Selected is null ? Result.None : Result.Load,
             Btn.Delete => Selected is null ? Result.None : Result.Delete,
             Btn.Cancel => Result.Cancel,
             _          => Result.None,
@@ -244,13 +259,14 @@ public sealed class LoadGameDialog : IDisposable
         InvalidateThumb();
     }
 
-    /// <summary>True if the point falls on the dialog's window — the host uses
-    /// this in the frontend pose to treat a click off the window (e.g. the
-    /// shell's PREVIOUS button) as a back-out.</summary>
+    /// <summary>True if the point falls on the dialog's window or one of the
+    /// shell's PREVIOUS / NEXT plate hit-rects (which sit OUTSIDE the window,
+    /// on the bottom bar). The host treats a click anywhere else as a
+    /// back-out in the frontend pose.</summary>
     public bool IsInsidePanel(int px, int py, int vw, int vh)
     {
         Layout(vw, vh);
-        return In(px, py, _sPanel);
+        return In(px, py, _sPanel) || In(px, py, _sCancel) || In(px, py, _sNext);
     }
 
     private Btn HitButton(int px, int py)
@@ -258,14 +274,16 @@ public sealed class LoadGameDialog : IDisposable
         if (In(px, py, _sLoad))   return Btn.Load;
         if (In(px, py, _sDelete)) return Btn.Delete;
         if (In(px, py, _sCancel)) return Btn.Cancel;
-        if (In(px, py, _sNext))   return Btn.Load; // frontend NEXT == Load
+        if (In(px, py, _sNext))   return Btn.Next; // frontend NEXT commits Load
         return Btn.None;
     }
 
     private void TrySelectRow(int px, int py)
     {
         if (!In(px, py, _sList)) return;
-        int pad = Math.Max(0, (_sList.h - _visibleRows * _rowH) / 2);
+        // Frontend rows stack from the listbox top (DS1 listbox layout); the
+        // in-game pose centres them, so keep the pad state-dependent.
+        int pad = MainMenuStyle ? 0 : Math.Max(0, (_sList.h - _visibleRows * _rowH) / 2);
         int rel = py - (_sList.y + pad);
         if (rel < 0) return;
         int row = rel / _rowH + _scrollRow;
@@ -297,38 +315,19 @@ public sealed class LoadGameDialog : IDisposable
                               Func<string, GlTexture?>? guiTex, Func<string, GlTexture?>? commonChrome,
                               int vw, int vh)
     {
-        float s = _feSy; // uniform-ish; used for insets, fonts, padding
+        float s = _feSy;
         int fs = Math.Max(1, (int)MathF.Round(s));
-        var parch = new Vector4(0.90f, 0.84f, 0.68f, 1f);
-        var gold  = new Vector4(1f, 0.90f, 0.55f, 1f);
-        var dim   = new Vector4(0.60f, 0.57f, 0.50f, 1f);
         bool haveChrome = icons is not null && commonChrome is not null;
 
-        // Ornate window: a dark backing fill (so the interior isn't see-through
-        // between the widgets) framed by the chunky woodbox (brd_01) border —
-        // the riveted frame DS1 wraps the load content in. browntrim is only a
-        // 4px hairline, so woodbox reads far closer to the reference.
-        bars.DrawRect(vw, vh, _sPanel.x, _sPanel.y, _sPanel.w, _sPanel.h, new Vector4(0.09f, 0.07f, 0.05f, 0.90f));
-        if (haveChrome)
-            DrawWoodbox(icons!, commonChrome!, vw, vh, _sPanel);
-        else
-            bars.DrawBorder(vw, vh, _sPanel.x, _sPanel.y, _sPanel.w, _sPanel.h, new Vector4(0.45f, 0.34f, 0.20f, 1f));
+        // Everything structural is mesh art drawn by FrontendScene's Load
+        // Game chrome: the marble window + world-map list backing + selector
+        // spikes (loadmap.asp), the ornate LOAD GAME title (mainmenu title
+        // drum @ sp2lg), and the PREVIOUS / NEXT plates (backbutton @ b2pn).
+        // This pose paints only the gas-authored 2D widgets on top.
 
-        // "LOAD GAME" title on the shared mainmenu scroll (chrome drawn by
-        // FrontendScene; the label lives here to dodge the sp2lg text-row bleed).
-        var titleR = ScrFe(FeTitle, vw, vh);
-        int titleScale = Math.Max(1, (int)MathF.Round(s * 2.0f));
-        const string title = "LOAD GAME";
-        int tw = text.MeasureWidth(title, titleScale);
-        text.DrawString(vw, vh, title, titleR.x + (titleR.w - tw) / 2,
-                        titleR.y + (titleR.h - text.LineHeight * titleScale) / 2, gold, titleScale);
-
-        // Info box (loadsave_game_name_text) — textbox_bg backing, centered
-        // HERO / MAP / ELAPSED TIME (gas justify = center).
-        if (haveChrome && commonChrome!("textbox_bg") is { } infoBg)
-            icons!.DrawIcon(vw, vh, infoBg, _sInfo.x, _sInfo.y, _sInfo.w, _sInfo.h, Vector4.One);
-        else
-            bars.DrawRect(vw, vh, _sInfo.x, _sInfo.y, _sInfo.w, _sInfo.h, new Vector4(0.05f, 0.05f, 0.05f, 0.65f));
+        // loadsave_game_name_text — text_box at 226,172,470,252, justify =
+        // center + center_height, font_color -1 (white). No background of its
+        // own: the window mesh's dark info band shows through.
         if (Selected is { } sel)
         {
             var lines = InfoLines(sel);
@@ -337,71 +336,65 @@ public sealed class LoadGameDialog : IDisposable
             foreach (var line in lines)
             {
                 int lw = text.MeasureWidth(line, fs);
-                text.DrawString(vw, vh, line, _sInfo.x + (_sInfo.w - lw) / 2, iy, parch, fs);
+                text.DrawString(vw, vh, line, _sInfo.x + (_sInfo.w - lw) / 2, iy, Vector4.One, fs);
                 iy += lineH;
             }
         }
 
-        // Preview (preview_dialog_bg) — woodbox (brd_01) frame around the
-        // screenshot thumbnail.
+        // preview_window + preview_dialog_bg — the screenshot thumbnail at the
+        // gas window anchor, framed by the common woodbox (b_gui_cmn_brd_01
+        // nine-patch) drawn OVER it (gas draw order 26 then 27).
         EnsureThumb(gl);
+        if (_thumbTex is not null && icons is not null && _sThumb.w > 0 && _sThumb.h > 0)
+            icons.DrawIcon(vw, vh, _thumbTex, _sThumb.x, _sThumb.y, _sThumb.w, _sThumb.h, Vector4.One);
         if (haveChrome)
             DrawWoodbox(icons!, commonChrome!, vw, vh, _sPreview);
-        int pin = Math.Max(2, (int)MathF.Round(6 * s));
-        var pInner = (_sPreview.x + pin, _sPreview.y + pin, _sPreview.w - pin * 2, _sPreview.h - pin * 2);
-        if (_thumbTex is not null && icons is not null && pInner.Item3 > 0 && pInner.Item4 > 0)
-            icons.DrawIcon(vw, vh, _thumbTex, pInner.Item1, pInner.Item2, pInner.Item3, pInner.Item4, Vector4.One);
-        else if (Selected is not null)
-            bars.DrawRect(vw, vh, pInner.Item1, pInner.Item2, pInner.Item3, pInner.Item4, new Vector4(0.04f, 0.04f, 0.05f, 0.9f));
 
-        // Save list (load_game_listbox) — tiled listreport parchment + selection
-        // bar (b_gui_cmn_selection) + rows.
-        var listBg = haveChrome ? commonChrome!("listreport_tiled_bg") : null;
-        if (listBg is not null)
-            DrawTiledFill(icons!, vw, vh, _sList, listBg);
-        else
-            bars.DrawRect(vw, vh, _sList.x, _sList.y, _sList.w, _sList.h, new Vector4(0.16f, 0.12f, 0.07f, 0.85f));
-
+        // load_game_listbox — rows stack from the top over the mesh's world
+        // map; silver-gray ink (gas font_color 0x959290), selection bar at
+        // alpha 0.5 (gas selection_box), selected row ink goes dark for
+        // contrast against the lit bar.
         var selTex = haveChrome ? commonChrome!("selection") : null;
-        int listPad = Math.Max(0, (_sList.h - _visibleRows * _rowH) / 2);
-        int lx = _sList.x + (int)MathF.Round(8 * s);
-        int lw2 = _sList.w - (int)MathF.Round(16 * s);
+        int lx = _sList.x + (int)MathF.Round(3 * s);
+        int lw2 = _sList.w - (int)MathF.Round(6 * s);
         for (int i = 0; i < _visibleRows; i++)
         {
             int idx = _scrollRow + i;
             if (idx >= _saves.Count) break;
             var slot = _saves[idx];
-            int ry = _sList.y + listPad + i * _rowH;
+            int ry = _sList.y + i * _rowH;
             if (idx == _selected)
             {
                 if (selTex is not null)
-                    icons!.DrawIcon(vw, vh, selTex, _sList.x + (int)MathF.Round(3 * s), ry,
-                                    _sList.w - (int)MathF.Round(6 * s), _rowH, new Vector4(1f, 1f, 1f, 0.85f));
+                    icons!.DrawIcon(vw, vh, selTex, _sList.x, ry, _sList.w, _rowH,
+                                    new Vector4(1f, 1f, 1f, 0.5f));
                 else
-                    bars.DrawRect(vw, vh, _sList.x + (int)MathF.Round(3 * s), ry,
-                                  _sList.w - (int)MathF.Round(6 * s), _rowH, new Vector4(0.52f, 0.42f, 0.22f, 0.9f));
+                    bars.DrawRect(vw, vh, _sList.x, ry, _sList.w, _rowH,
+                                  new Vector4(0.72f, 0.78f, 0.82f, 0.5f));
             }
             string label = RowLabel(slot);
             int rowTextH = text.LineHeight * fs;
             text.DrawString(vw, vh, Truncate(text, label, lw2, fs), lx,
                             ry + Math.Max(0, (_rowH - rowTextH) / 2),
-                            idx == _selected ? new Vector4(0.14f, 0.10f, 0.05f, 1f) : parch, fs);
+                            idx == _selected ? new Vector4(0.10f, 0.12f, 0.14f, 1f) : FeRowInk, fs);
         }
         if (_saves.Count > _visibleRows)
         {
-            int ax = _sList.x + _sList.w - (int)MathF.Round(12 * s);
+            var dim = new Vector4(0.60f, 0.57f, 0.50f, 1f);
+            int ax = _sList.x + _sList.w - (int)MathF.Round(10 * s);
             if (_scrollRow > 0)
-                text.DrawString(vw, vh, "^", ax, _sList.y + (int)MathF.Round(2 * s), dim, fs);
+                text.DrawString(vw, vh, "^", ax, _sList.y, dim, fs);
             if (_scrollRow < _saves.Count - _visibleRows)
                 text.DrawString(vw, vh, "v", ax, _sList.y + _sList.h - _rowH, dim, fs);
         }
 
-        // Wood buttons (button_wood_up/hov/down cropped to the gas uvcoords).
+        // load_button / delete_button — wood buttons (button_wood_up/hov/down
+        // with the gas uvcoords crop), white 12p copperplate labels.
         bool canAct = Selected is not null;
-        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sLoad,   "Load",     Btn.Load,   canAct, fs);
-        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sDelete, "Delete",   Btn.Delete, canAct, fs);
-        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sCancel, "Previous", Btn.Cancel, true,   fs);
-        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sNext,   "Next",     Btn.Load,   canAct, fs);
+        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sLoad,   "Load",   Btn.Load,   canAct, fs);
+        DrawWoodButton(bars, text, icons, guiTex, vw, vh, _sDelete, "Delete", Btn.Delete, canAct, fs);
+        // button_previous / button_next author NO texture — they're bare hit
+        // rects over the 3D PREVIOUS / NEXT plates the chrome renders.
     }
 
     private string[] InfoLines(SaveStore.SaveSlot sel)
@@ -412,9 +405,13 @@ public sealed class LoadGameDialog : IDisposable
     }
 
     // The DS1 wood button (b_gui_fe_m_mn_3d_button_wood_*) with the gas
-    // uvcoords crop (0, 0.1875, 0.679688, 1.0). DS1 raw is bottom-up; the crop
-    // is authored in that space, so V maps directly (IconRenderer's UV overload
-    // does the bottom-up flip internally).
+    // uvcoords crop (0, 0.1875, 0.679688, 1.0). The gas authors V in DS1's
+    // bottom-up GL space (texture is 128×32; the art fills the TOP 26 px
+    // visually = stored rows 7-31); IconRenderer's UV overload takes VISUAL
+    // (top-down) coords, so the band converts to v 0 .. 1-0.1875 = 0.8125.
+    // Passing the gas values raw selected the wrong band — the art rode ~7px
+    // high in the rect with the texture's empty strip at the bottom, which
+    // made the centred label read as off-centre on the wood.
     private void DrawWoodButton(BarRenderer bars, TextRenderer text, IconRenderer? icons,
                                 Func<string, GlTexture?>? guiTex, int vw, int vh,
                                 (int x, int y, int w, int h) r, string label, Btn id, bool enabled, int fs)
@@ -427,23 +424,23 @@ public sealed class LoadGameDialog : IDisposable
         if (tex is not null && icons is not null)
             icons.DrawIcon(vw, vh, tex, r.x, r.y, r.w, r.h,
                            enabled ? Vector4.One : new Vector4(0.55f, 0.55f, 0.55f, 1f),
-                           0f, 0.1875f, 0.679688f, 1f);
+                           0f, 0f, 0.679688f, 0.8125f);
         else
         {
             bars.DrawRect(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.20f, 0.14f, 0.07f, 0.95f));
             bars.DrawBorder(vw, vh, r.x, r.y, r.w, r.h, new Vector4(0.45f, 0.34f, 0.20f, 1f));
         }
-        var ink = !enabled ? new Vector4(0.50f, 0.47f, 0.42f, 1f)
-                : _hover == id ? new Vector4(1f, 0.96f, 0.85f, 1f)
-                               : new Vector4(0.92f, 0.86f, 0.72f, 1f);
+        // gas text child: font_color -1 (white); hover/press feedback is the
+        // wood texture swap only. disable_color 0x555f5f5f dims the label.
+        var ink = enabled ? Vector4.One : new Vector4(0.37f, 0.37f, 0.37f, 1f);
         int lw = text.MeasureWidth(label, fs);
         int fh = text.LineHeight * fs;
         text.DrawString(vw, vh, label, r.x + (r.w - lw) / 2,
-                        r.y + (r.h - fh) / 2 + (_pressed == id ? fs : 0), ink, fs);
+                        r.y + (r.h - fh) / 2, ink, fs);
     }
 
-    // woodbox nine-patch (woodbox_* → b_gui_cmn_brd_01_*; no fill — the
-    // interior holds the thumbnail).
+    // preview_dialog_bg — common_template=woodbox → b_gui_cmn_brd_01_* nine-
+    // patch, no fill (the interior holds the thumbnail).
     private static void DrawWoodbox(IconRenderer icons, Func<string, GlTexture?> cmn,
                                     int vw, int vh, (int x, int y, int w, int h) r)
         => NinePatch.Draw(icons, vw, vh, r.x, r.y, r.w, r.h,
@@ -453,25 +450,6 @@ public sealed class LoadGameDialog : IDisposable
             leftSide: cmn("brd_01_l"),  rightSide:  cmn("brd_01_r"),
             fill: null, tint: Vector4.One);
 
-    // Tile a small bg texture across a rect (listreport_tiled_bg is authored to
-    // repeat). Steps by the texture's native size; the last row/col clips.
-    private static void DrawTiledFill(IconRenderer icons, int vw, int vh,
-                                      (int x, int y, int w, int h) r, GlTexture tex)
-    {
-        int tw = Math.Max(4, tex.Width);
-        int th = Math.Max(4, tex.Height);
-        for (int yy = 0; yy < r.h; yy += th)
-        {
-            int ch = Math.Min(th, r.h - yy);
-            float vMax = ch / (float)th;
-            for (int xx = 0; xx < r.w; xx += tw)
-            {
-                int cw = Math.Min(tw, r.w - xx);
-                float uMax = cw / (float)tw;
-                icons.DrawIcon(vw, vh, tex, r.x + xx, r.y + yy, cw, ch, Vector4.One, 0f, 0f, uMax, vMax);
-            }
-        }
-    }
 
     // ===== in-game (cpbox) pose — unchanged from the working modal ==========
 

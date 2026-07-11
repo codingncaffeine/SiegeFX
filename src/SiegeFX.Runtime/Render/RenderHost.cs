@@ -3091,7 +3091,9 @@ public sealed class RenderHost : IDisposable
                 return (true, ox, oy, sx, sy);
             return (false, 0f, 0f, 0f, 0f);
         };
-        _loadDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), mainMenuStyle);
+        var slots = SiegeFX.Core.Save.SaveStore.ListSaves();
+        Console.WriteLine($"[load] open dialog (frontend={mainMenuStyle}) saves={slots.Count}");
+        _loadDialog.Open(slots, mainMenuStyle);
     }
 
     /// <summary>Raise DS1's "Game loaded successfully" banner (reuses the save-
@@ -3127,15 +3129,18 @@ public sealed class RenderHost : IDisposable
         }
     }
 
-    /// <summary>Close the Load window; from the frontend pose, hand input back
-    /// to the Single Player submenu.</summary>
+    /// <summary>Close the Load window; from the frontend pose, play the
+    /// reverse chrome transition (window flies up, PREVIOUS/NEXT unwind to
+    /// BACK, the title drum flips back to SINGLE PLAYER). The SP submenu
+    /// re-activates itself once the state settles (FlushSinglePlayerMenu).</summary>
     private void CloseLoadDialog()
     {
         bool wasMainMenu = _loadDialog.MainMenuStyle;
         _loadDialog.Close();
         if (wasMainMenu && _frontendScene is not null
-            && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
-            _spMenu.IsActive = true;
+            && (_frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToLg))
+            _frontendScene.SetState(Hud.FrontendScene.ScreenState.LgToSinglePlayer);
     }
 
     /// <summary>Resume a save. Same-region in-game loads patch the live scene
@@ -4263,9 +4268,13 @@ void main()
                 }
                 // Load Game window owns the keyboard while open: Up/Down walk the
                 // list, Enter loads the highlight, Escape backs out. Every other
-                // world hotkey is suppressed.
+                // world hotkey is suppressed. In the frontend pose, input waits
+                // for the settled LoadGame state (same rule as the mouse paths).
                 if (_loadDialog.IsOpen)
                 {
+                    if (_loadDialog.MainMenuStyle
+                        && _frontendScene?.State != Hud.FrontendScene.ScreenState.LoadGame)
+                        return;
                     if (key == Key.Up)   { _loadDialog.OnArrowKey(-1); return; }
                     if (key == Key.Down) { _loadDialog.OnArrowKey(+1); return; }
                     if (key == Key.Enter || key == Key.KeypadEnter)
@@ -4707,11 +4716,14 @@ void main()
                 }
                 // SC-MAINMENU-LOADGAME — the frontend Load window is modal over
                 // the shell; intercept LMB ahead of the submenu handlers below.
-                // A click off the panel (e.g. the shell's PREVIOUS button, which
-                // stays visible behind the modal) backs out — DS1's PREVIOUS
-                // returns to the Single Player menu.
+                // A click off the panel (and off the PREVIOUS/NEXT plates)
+                // backs out — DS1's PREVIOUS returns to the Single Player
+                // menu. Input waits for the settled LoadGame state so clicks
+                // don't land on a window still dropping in.
                 if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && btn == MouseButton.Left)
                 {
+                    if (_frontendScene?.State != Hud.FrontendScene.ScreenState.LoadGame)
+                        return;
                     var fb = _window.FramebufferSize;
                     if (!_loadDialog.IsInsidePanel((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y))
                         CloseLoadDialog();
@@ -5459,9 +5471,12 @@ void main()
                     return;
                 }
                 // SC-MAINMENU-LOADGAME — frontend Load window click-up commits
-                // Load/Delete (or an arrow selector), ahead of the submenus.
+                // Load/Delete (or PREVIOUS/NEXT), ahead of the submenus.
+                // Same settled-state gate as the mousedown path.
                 if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && btn == MouseButton.Left)
                 {
+                    if (_frontendScene?.State != Hud.FrontendScene.ScreenState.LoadGame)
+                        return;
                     var fb = _window.FramebufferSize;
                     HandleLoadDialogResult(
                         _loadDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
@@ -14070,6 +14085,14 @@ void main()
         // dispatch correctly. Camera + input still tick (rendering continues
         // and the player can interact with HUD buttons). SimFrozen also folds
         // in the Save window + Adventurer's Handbook (both pause the world).
+        // SC-MAINMENU-LOADGAME — the frontend state machine ticks on the RAW
+        // dt below: SimFrozen includes _loadDialog.IsOpen, and the frontend
+        // Load screen opens its dialog DURING the SinglePlayerToLg transition
+        // — zeroed dt froze the transition at hold 0 (window parked
+        // off-screen, never settles, input gated out = "load screen never
+        // comes up"). The menus have no world sim to protect; they must
+        // always animate.
+        double rawDt = dt;
         if (SimFrozen) dt = 0.0;
         // Adventurer's Handbook auto-popup cadence. Runs on the gated dt so it
         // freezes with the world (no tip fires mid-pause); the early-outs inside
@@ -14091,10 +14114,11 @@ void main()
         if (_bootMode && _frontendScene is not null)
         {
             var prev = _frontendScene.State;
-            _frontendScene.Tick((float)dt);
+            _frontendScene.Tick((float)rawDt);
             var now = _frontendScene.State;
             if (prev != now)
             {
+                Console.WriteLine($"[frontend] {prev} -> {now}");
                 if (now == Hud.FrontendScene.ScreenState.IntroLogoDrop)
                     _audio?.Play(SfxFrontendLogoFlyin);
                 else if (now == Hud.FrontendScene.ScreenState.IntroLogoExit)
@@ -14620,12 +14644,31 @@ void main()
                 _mainMenu.ClearHover();
                 break;
             case MainMenuPanel.Action.Continue:
+                // SC-MAINMENU-CONTINUE — DS1's CONTINUE resumes the most
+                // recent save directly. ListSaves() returns newest-first;
+                // PerformLoad's frontend path relaunches into the save's
+                // region and applies it on boot. No saves → no-op (DS1
+                // greys the button out; we just consume the click).
+                {
+                    var latest = SiegeFX.Core.Save.SaveStore.ListSaves();
+                    if (latest.Count > 0)
+                    {
+                        Console.WriteLine($"[continue] resuming latest save '{System.IO.Path.GetFileName(latest[0].Path)}'");
+                        PerformLoad(latest[0], mainMenuStyle: true);
+                    }
+                    else
+                    {
+                        Console.WriteLine("[continue] no saves found — click ignored");
+                    }
+                    _mainMenu.ClearHover();
+                }
+                break;
             case MainMenuPanel.Action.Multiplayer:
             case MainMenuPanel.Action.Credits:
-                // Stubs — SC-MAINMENU-CONTINUE / -MULTIPLAYER / -CREDITS
-                // splinters track the routing for these. Each click is
-                // consumed but no-op for now; clear hover so the button
-                // doesn't read as "still selectable" after.
+                // Stubs — SC-MAINMENU-MULTIPLAYER / -CREDITS splinters
+                // track the routing for these. Each click is consumed but
+                // no-op for now; clear hover so the button doesn't read
+                // as "still selectable" after.
                 Console.WriteLine($"  main menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
                 _mainMenu.ClearHover();
                 break;
@@ -14672,9 +14715,11 @@ void main()
                 _spMenu.ClearHover();
                 break;
             case SinglePlayerMenuPanel.Action.LoadGame:
-                // SC-MAINMENU-LOADGAME — open the frontend Load Game window over
-                // the main-menu shell. Suspend the SP submenu's input while the
-                // modal owns the screen; CloseLoadDialog hands it back.
+                // SC-MAINMENU-LOADGAME — SP → Load Game. mainmenu_sp2lg /
+                // backbutton_b2pn / loadmap_down run together; auto-advances
+                // to LoadGame at SpToLgDur. The dialog opens now but its 2D
+                // content (and input) waits for the settled state.
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.SinglePlayerToLg);
                 OpenLoadDialog(mainMenuStyle: true);
                 _spMenu.IsActive = false;
                 _spMenu.ClearHover();
@@ -15367,6 +15412,9 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToLg
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.LgToSinglePlayer
               || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
               || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
               || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp
@@ -15407,10 +15455,6 @@ void main()
             int boxYGlBottom = viewportH - boxYTop - boxH;
             _gl?.Enable(EnableCap.ScissorTest);
             _gl?.Scissor(boxX, boxYGlBottom, (uint)boxW, (uint)boxH);
-            // SC-MAINMENU-LOADGAME — drop the SP "SINGLE PLAYER" title row while
-            // the Load window is up so its own "LOAD GAME" title reads on the
-            // shared scroll (chrome plate stays).
-            _frontendScene.SuppressSpTitleText = _loadDialog.IsOpen && _loadDialog.MainMenuStyle;
             _frontendScene.Draw(viewportW, viewportH);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
@@ -15483,18 +15527,19 @@ void main()
                 // DrawSpBackButton. One asp draw per widget with ONLY
                 // its art_mapping-specified subsets — adjacent atlas
                 // regions can't bleed because their subsets are masked.
-                // SC-MAINMENU-LOADGAME — hide the SP submenu widgets while the
-                // frontend Load window is up so they don't peek around the modal
-                // panel; the ornate backdrop (drawn by _frontendScene.Draw
-                // above) still shows through, matching the reference screenshot.
-                bool spModal = _loadDialog.IsOpen;
                 // SC-SP-HOVER — DrawMenubarsButton is the source of truth
-                // for NEW GAME / LOAD GAME (chrome's DrawSpChrome menubars
-                // mask is chrome-only subsets 0-5; text labels live on
-                // subsets 12/14 which only render through this per-widget
-                // call). Fire always so mouseout shows the engraved label;
-                // hover swaps to menubars-up + text-menubars1-up.
-                if (!spModal && _spMenu.TryGetButtonStateAndRect(
+                // for NEW GAME / LOAD GAME at the SETTLED pose (chrome's
+                // DrawSpChrome menubars mask is chrome-only there; text
+                // labels live on subsets 12/14 which render through this
+                // per-widget call so hover swaps to menubars-up +
+                // text-menubars1-up work). SC-MAINMENU-FOLD-LABELS — during
+                // the MM↔SP transitions the labels render inside
+                // DrawSpChrome's menubars pass instead, riding the folding
+                // planks with the clip; firing these settled-pose draws
+                // mid-flight would paint the labels at the destination
+                // while the wood is still turning.
+                bool spSettled = _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer;
+                if (spSettled && _spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.NewGame,
                         viewportW, viewportH,
                         out int ngx, out int ngy, out int ngw, out int ngh,
@@ -15503,7 +15548,7 @@ void main()
                     _frontendScene.DrawMenubarsButton(viewportW, viewportH,
                         ngx, ngy, ngw, ngh, ngHover, ngPress, "button_start_new_game");
                 }
-                if (!spModal && _spMenu.TryGetButtonStateAndRect(
+                if (spSettled && _spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.LoadGame,
                         viewportW, viewportH,
                         out int lgx, out int lgy, out int lgw, out int lgh,
@@ -15517,7 +15562,7 @@ void main()
                 // draw (with state-aware e2b / b2e clip) is the
                 // mouseout source of truth; per-widget renders the
                 // hover/press swap on top.
-                if (!spModal && _spMenu.TryGetButtonStateAndRect(
+                if (_spMenu.TryGetButtonStateAndRect(
                         Hud.SinglePlayerMenuPanel.Action.Back,
                         viewportW, viewportH,
                         out int bx, out int by, out int bw, out int bh,
@@ -15529,8 +15574,29 @@ void main()
                 // Hover overlays for the SP submenu buttons (only meaningful
                 // in the settled SinglePlayer state where _spMenu has
                 // hover state).
-                if (!spModal && _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
+                if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer)
                     DrawSpMenuHoverOverlays(viewportW, viewportH);
+            }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToLg
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.LgToSinglePlayer)
+            {
+                // SC-MAINMENU-LOADGAME — the Load Game chrome (title drum,
+                // map window, menubars, PREVIOUS/NEXT plates) is fully drawn
+                // by _frontendScene.Draw above. Only the hover/press texture
+                // swaps for the PREVIOUS / NEXT plates layer on here, once
+                // the screen has settled (mid-flight plates aren't clickable,
+                // matching the SP transition input rule).
+                if (_frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
+                    && _loadDialog.IsOpen && _loadDialog.MainMenuStyle)
+                {
+                    if (_loadDialog.PrevHovered || _loadDialog.PrevPressed)
+                        _frontendScene.DrawPreviousButton(viewportW, viewportH, 0, 0, 0, 0,
+                            _loadDialog.PrevHovered, _loadDialog.PrevPressed);
+                    if (_loadDialog.NextHovered || _loadDialog.NextPressed)
+                        _frontendScene.DrawNextButton(viewportW, viewportH, 0, 0, 0, 0,
+                            _loadDialog.NextHovered, _loadDialog.NextPressed);
+                }
             }
             else if (_frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
                   || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
@@ -15640,6 +15706,9 @@ void main()
                        || fs == Hud.FrontendScene.ScreenState.MainMenuToSp
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayer
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                       || fs == Hud.FrontendScene.ScreenState.SinglePlayerToLg
+                       || fs == Hud.FrontendScene.ScreenState.LoadGame
+                       || fs == Hud.FrontendScene.ScreenState.LgToSinglePlayer
                        || fs == Hud.FrontendScene.ScreenState.SinglePlayerToCd
                        || fs == Hud.FrontendScene.ScreenState.CharacterSelect
                        || fs == Hud.FrontendScene.ScreenState.CharacterSelectToSp
@@ -15669,11 +15738,12 @@ void main()
             _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH,
                 commonChrome: GetCommonTexture);
         }
-        // SC-MAINMENU-LOADGAME — frontend Load Game window over the main-menu
-        // shell. Same modal as the in-game pose but the mirrored (info-left /
-        // thumbnail-right) layout with ◄► list selectors. Needs _gl for the
-        // preview-thumbnail upload.
-        if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null)
+        // SC-MAINMENU-LOADGAME — the Load screen's 2D layer (save list, info
+        // text, thumbnail, LOAD/DELETE) over the mesh window. Waits for the
+        // settled LoadGame state so the widgets don't float in mid-air while
+        // the window is still dropping in / flying out.
+        if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null
+            && _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame)
         {
             _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
                              TryGetGuiTexture, GetCommonTexture, viewportW, viewportH);
@@ -19113,6 +19183,9 @@ void main()
              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToSp
              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayer
              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToLg
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame
+             || _frontendScene.State == Hud.FrontendScene.ScreenState.LgToSinglePlayer
              || _frontendScene.State == Hud.FrontendScene.ScreenState.SinglePlayerToCd
              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelect
              || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp

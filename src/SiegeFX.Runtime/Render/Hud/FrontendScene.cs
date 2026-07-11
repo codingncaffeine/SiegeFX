@@ -83,6 +83,27 @@ public sealed class FrontendScene : IDisposable
         /// over <see cref="SpToMmDur"/>; auto-advances to
         /// <see cref="MainMenu"/> at completion.</summary>
         SinglePlayerToMm,
+        /// <summary>SC-MAINMENU-LOADGAME — Single Player → Load Game
+        /// forward transition. mainmenu_sp2lg (title drum flips SINGLE
+        /// PLAYER → LOAD GAME) / backbutton_b2pn (BACK morphs into the
+        /// PREVIOUS + NEXT plates) / loadmap_down (the map window drops
+        /// in from above) run together over <see cref="SpToLgDur"/>;
+        /// auto-advances to <see cref="LoadGame"/>. Menubars hold their
+        /// SP pose — DS1 leaves the two wood rows parked behind the
+        /// window (their end caps peek out at the sides).</summary>
+        SinglePlayerToLg,
+        /// <summary>SC-MAINMENU-LOADGAME — settled Load Game screen. The
+        /// loadmap.asp window (marble frame + world map + selector
+        /// spikes) holds centre stage; LoadGameDialog paints the 2D save
+        /// list / info / thumbnail / buttons over it through
+        /// <see cref="GetInterfaceMapping"/>.</summary>
+        LoadGame,
+        /// <summary>SC-MAINMENU-LOADGAME — Load Game → Single Player
+        /// reverse transition (PREVIOUS click). mainmenu_lg2sp /
+        /// backbutton_pn2b / loadmap_up unwind to the SP pose over
+        /// <see cref="LgToSpDur"/>; auto-advances to
+        /// <see cref="SinglePlayer"/>.</summary>
+        LgToSinglePlayer,
         /// <summary>Phase 28-CD-FLYOUT — Single Player → Character
         /// Creator forward transition. mainmenu_sng2cd / menubars_lm2cd
         /// / backbutton_b2pn / heromenu_begin run together over
@@ -182,6 +203,12 @@ public sealed class FrontendScene : IDisposable
     public float SpToMmTimeFraction =>
         State == ScreenState.SinglePlayerToMm ? Math.Clamp(_stateTime / SpToMmDur, 0f, 1f) : 0f;
 
+    // SC-MAINMENU-LOADGAME — SP → Load Game and reverse. mainmenu_sp2lg /
+    // backbutton_b2pn / loadmap_down run together (menubars hold the SP
+    // pose). Same 1.0s cadence as the MM↔SP morphs.
+    const float SpToLgDur = 1.0f;
+    const float LgToSpDur = 1.0f;
+
     // Phase 28-CD-FLYOUT — SP → Character Creator and reverse.
     // mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn / heromenu_begin
     // run together. Authored clip lengths cluster around 1.0–1.7s in
@@ -280,14 +307,6 @@ public sealed class FrontendScene : IDisposable
 
     public ScreenState State { get; private set; } = ScreenState.CharacterSelect;
 
-    /// <summary>SC-MAINMENU-LOADGAME — when the frontend Load Game window is up,
-    /// the shared SP chrome must NOT paint its "SINGLE PLAYER" title row (the
-    /// Load window draws its own "LOAD GAME" title). The ornate title-bar chrome
-    /// plate (mainmenu subset 0) still renders — only the text rows are masked —
-    /// so the scroll banner stays and the label swaps cleanly, sidestepping the
-    /// text-01/text-02 both-rows-in-slot bleed the sp2lg pose exhibits.</summary>
-    public bool SuppressSpTitleText { get; set; }
-
     public FrontendScene(GL gl, AssetResolver resolver)
     {
         _gl = gl;
@@ -330,6 +349,12 @@ public sealed class FrontendScene : IDisposable
                 break;
             case ScreenState.SinglePlayerToMm:
                 if (_stateTime >= SpToMmDur) SetState(ScreenState.MainMenu);
+                break;
+            case ScreenState.SinglePlayerToLg:
+                if (_stateTime >= SpToLgDur) SetState(ScreenState.LoadGame);
+                break;
+            case ScreenState.LgToSinglePlayer:
+                if (_stateTime >= LgToSpDur) SetState(ScreenState.SinglePlayer);
                 break;
             case ScreenState.SinglePlayerToCd:
                 if (_stateTime >= SpToCdDur) SetState(ScreenState.CharacterSelect);
@@ -428,6 +453,22 @@ public sealed class FrontendScene : IDisposable
                 // mainmenu_sp2mm + menubars_sp2mm + backbutton_b2e
                 // unwind to the MainMenu pose.
                 DrawSpToMmState(fullW, fullH);
+                return;
+            case ScreenState.SinglePlayerToLg:
+                // SC-MAINMENU-LOADGAME — SP → Load Game. Title drum flips
+                // to LOAD GAME, BACK morphs into PREVIOUS/NEXT, the map
+                // window drops in from above.
+                DrawLoadGameChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / SpToLgDur, 0f, 1f), spToLg: true);
+                return;
+            case ScreenState.LoadGame:
+                DrawLoadGameChrome(fullW, fullH, hold: 1f, spToLg: true);
+                return;
+            case ScreenState.LgToSinglePlayer:
+                // Reverse (PREVIOUS click) — lg2sp / pn2b / loadmap_up
+                // unwind to the SP pose.
+                DrawLoadGameChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / LgToSpDur, 0f, 1f), spToLg: false);
                 return;
             case ScreenState.SinglePlayerToCd:
                 // Phase 28-CD-FLYOUT — SP → Character Creator. mainmenu_sng2cd
@@ -622,21 +663,30 @@ public sealed class FrontendScene : IDisposable
         // mainmenu text-01 (subsets 1+2) renders the "SINGLE PLAYER"
         // title at the panel header at SP state — leave enabled.
         // text-02 (subsets 3+4, MP-tree labels) and shadows masked off.
-        // SC-MAINMENU-LOADGAME: while the Load window owns the screen, drop the
-        // text rows (keep subset 0 chrome plate) so "SINGLE PLAYER" doesn't show
-        // behind the "LOAD GAME" title the window paints.
-        var mainmenuMask = SuppressSpTitleText
-            ? new[] { true, false, false, false, false, false }
-            : new[] { true, true, true, false, false, false };
+        var mainmenuMask = new[] { true, true, true, false, false, false };
         // Phase 27-SP-FLYOUT-FIX3 — SP state menubars: render ONLY the
-        // panel chrome + per-row wood buttons (subsets 0-5). Mask off
-        // text subsets (6-15) so the multi-bone text quads can't bleed
-        // adjacent atlas rows onto slots 1+2. The actual button labels
-        // (NEW GAME / LOAD GAME) come from per-button DrawMenubarsButton
-        // calls in RenderHost using the art_mapping.gas[button_*]
-        // recipe — exactly how DS1 renders these widgets.
+        // panel chrome + per-row wood buttons (subsets 0-5). At the
+        // SETTLED pose the labels come from per-button DrawMenubarsButton
+        // calls in RenderHost (art_mapping.gas[button_*] recipe) so the
+        // hover/press texture swaps work per-widget.
+        // SC-MAINMENU-FOLD-LABELS — MID-TRANSITION the letters must ride
+        // the folding wood planks (they're skinned to the same plank
+        // bones), so the label subsets render here WITH the transition
+        // clip: the MM labels fold away with their rows while the SP
+        // labels fold in with theirs — exactly DS1's rolodex flip. Only
+        // the even text subsets (6/8/10/12/14, the text-menubars1 label
+        // halves the per-widget draws use) — odds stay off per the
+        // text-menubars2 wrong-content recipe. At hold=1 the mask drops
+        // back to chrome-only and the per-widget draws take over at the
+        // identical pose, so the handoff is invisible.
         var menubarsMask = new bool[17];
-        for (int i = 0; i < 6; i++) menubarsMask[i] = true; // chrome only
+        for (int i = 0; i < 6; i++) menubarsMask[i] = true; // chrome
+        if (hold < 1f)
+        {
+            menubarsMask[6]  = true; menubarsMask[8]  = true;
+            menubarsMask[10] = true; menubarsMask[12] = true;
+            menubarsMask[14] = true;
+        }
 
         var mainClip = mmToSp ? "mainmenu_mm2sp" : "mainmenu_sp2mm";
         var barsClip = mmToSp ? "menubars_mm2sp" : "menubars_sp2mm";
@@ -1035,15 +1085,20 @@ public sealed class FrontendScene : IDisposable
     }
 
     /// <summary>SC-MAINMENU-LOADGAME — map an 800×600 frontend-interface point
-    /// to screen pixels using the SAME projection the 3D chrome renders through
-    /// (letterbox by the backdrop aspect + the 1.30 overscan), so 2D interface
-    /// widgets (the Load window) scale and sit in lockstep with the pillars /
-    /// title at ANY resolution — not via an independent <c>min(vw/800,vh/600)</c>
-    /// that only lines up at the authored size. The full 800×600 frame maps to
-    /// the backdrop box's projected screen rect: interface (0,0) = the box's
-    /// top-left (mesh <c>refMinX, refMaxY</c>), (800,600) = bottom-right
-    /// (<c>refMaxX, refMinY</c>). Returns false (caller falls back to the plain
-    /// interface scale) until the backdrop mesh has resolved the reference box.</summary>
+    /// to screen pixels in lockstep with the 3D chrome. Receipts (backdrop.asp
+    /// trace-pose + the DS1 800×600 reference screenshot): the backdrop box is
+    /// SQUARE (X ±1.64, Y ±1.64) and the 1.30 overscan means DS1's native
+    /// 800×600 frame showed only the CENTRAL 1/1.30 of that box — so the
+    /// 800×600 gas interface maps 1:1 onto the letterboxed target area
+    /// (NO overscan on the interface layer), centred on the screen. Mapping
+    /// interface corners to the full overscanned box (the first cut of this
+    /// method) drew every widget 1.3× too big and pushed the top of the
+    /// interface off-screen. Scale = viewport letterbox ÷ native (800×600)
+    /// letterbox per axis; interface (400,300) pins to the screen centre
+    /// (which is the chrome's own scale centre, so mesh and interface stay
+    /// registered at any resolution). Returns false until the backdrop mesh
+    /// has resolved the reference box (caller falls back to plain min-scale,
+    /// identical for a 4:3-ish box).</summary>
     public bool GetInterfaceMapping(int vw, int vh,
         out float ox, out float oy, out float scaleX, out float scaleY)
     {
@@ -1054,29 +1109,105 @@ public sealed class FrontendScene : IDisposable
 
         float refW = MathF.Max(1e-4f, _refMaxX - _refMinX);
         float refH = MathF.Max(1e-4f, _refMaxY - _refMinY);
-        float refCx = 0.5f * (_refMinX + _refMaxX);
-        float refCy = 0.5f * (_refMinY + _refMaxY);
         float targetAspect = refW / refH;
+        // Letterbox for the current viewport — must match BuildSharedSceneModel.
         float targetW, targetH;
         if (vw / (float)vh > targetAspect) { targetH = vh; targetW = vh * targetAspect; }
         else                               { targetW = vw; targetH = vw / targetAspect; }
-        // Same overscan constants as BuildSharedSceneModel — keep in sync.
-        const float overscanX = 1.30f, overscanY = 1.30f;
-        float sx = (targetW / refW) * overscanX;
-        float sy = (targetH / refH) * overscanY;
-        float cx = vw * 0.5f, cy = vh * 0.5f;
-
-        // Project the backdrop box corners (matrix scales by (sx, -sy) about
-        // the ref centre, then centres on screen). Mesh is +Y up, screen +Y
-        // down, so the top edge is refMaxY.
-        float tlx = (_refMinX - refCx) * sx + cx;
-        float tly = (refCy - _refMaxY) * sy + cy;
-        float brx = (_refMaxX - refCx) * sx + cx;
-        float bry = (refCy - _refMinY) * sy + cy;
-        scaleX = (brx - tlx) / 800f;
-        scaleY = (bry - tly) / 600f;
-        ox = tlx; oy = tly;
+        // Letterbox for the DS1-native 800×600 frame the gas rects are
+        // authored against. The interface scales by the ratio of the two.
+        float nativeW, nativeH;
+        if (800f / 600f > targetAspect) { nativeH = 600f; nativeW = 600f * targetAspect; }
+        else                            { nativeW = 800f; nativeH = 800f / targetAspect; }
+        scaleX = targetW / nativeW;
+        scaleY = targetH / nativeH;
+        ox = vw * 0.5f - 400f * scaleX;
+        oy = vh * 0.5f - 300f * scaleY;
         return scaleX > 1e-4f && scaleY > 1e-4f;
+    }
+
+    /// <summary>SC-MAINMENU-LOADGAME — the Load Game screen chrome, assembled
+    /// from the real DS1 assets end-to-end. Receipts (trace-pose, 800×600):
+    /// <list type="bullet">
+    ///   <item><c>mainmenu_sp2lg@1</c> — the title drum flips PanelBASE4's
+    ///         LOAD GAME plate down into the visible slot (tip Y 1.161→0.948,
+    ///         screen y≈24-82) while PanelBASE2's SINGLE PLAYER plate rotates
+    ///         up/away (tip 1.405, back-facing → culled). text-01l.raw row
+    ///         V[0.607,0.797] = the ornate LOAD GAME art. Same drum mechanism
+    ///         the MM/SP/CD titles already use — the earlier "both rows in the
+    ///         slot" reading compared base-bone Y only; the TIPS disambiguate
+    ///         (visible plate hangs tip-DOWN from the spindle).</item>
+    ///   <item>menubars hold the SP pose (<c>mm2sp@1</c>): DS1 leaves the two
+    ///         wood rows parked behind the window — their round end caps peek
+    ///         out at the sides in the reference shot. Chrome-only mask; the
+    ///         NEW GAME / LOAD GAME labels stay hidden behind the window.</item>
+    ///   <item><c>backbutton_b2pn</c> — BACK morphs into the PREVIOUS + NEXT
+    ///         plates (PrevTip X→-0.796, NextTip X→0.799; text quads land at
+    ///         screen x 262-339 / 461-562 ≈ the gas hit rects 237-338 /
+    ///         461-562). Name-plate subsets 5+9 masked (at pn pose they'd land
+    ///         across the LOAD/DELETE row) + shadow subset 10 (haze, same
+    ///         exclusion as the cd state).</item>
+    ///   <item><c>loadmap_down</c> — the map window drops from Y=3.01 (parked
+    ///         above the frame) to Y=0.004 (centre stage; the settled pose ==
+    ///         bind). Marble frame + world-map list backing + selector spikes
+    ///         (subsets 0/1) + drop shadow (2); drawn LAST so it slides in
+    ///         OVER the shell chrome.</item>
+    /// </list>
+    /// The 2D save list / info / thumbnail / buttons paint on top through
+    /// <see cref="GetInterfaceMapping"/> once the state settles.</summary>
+    private void DrawLoadGameChrome(int vw, int vh, float hold, bool spToLg)
+    {
+        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
+        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
+        DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
+        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
+        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+
+        // Title scroll plate + drum: the LOAD GAME art rides PanelBASE4
+        // through the sp2lg flip; text-02 + shadows masked off as in the
+        // SP state.
+        var mainmenuMask = new[] { true, true, true, false, false, false };
+        DrawMesh("mainmenu", "mainmenu",
+                 clip: spToLg ? "mainmenu_sp2lg" : "mainmenu_lg2sp",
+                 hold: hold, vw, vh, mainmenuMask);
+
+        // Menubars: SP pose held — the wood rows stay parked behind the
+        // window (chrome-only subsets, no text).
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 6; i++) menubarsMask[i] = true;
+        DrawMesh("menubars", "menubars", clip: "menubars_mm2sp", hold: 1f, vw, vh, menubarsMask);
+
+        // PREVIOUS / NEXT plates. Per-widget hover swaps layer on via
+        // DrawPreviousButton / DrawNextButton in the host.
+        var backMask = new bool[11];
+        for (int i = 0; i < 10; i++) backMask[i] = true;
+        backMask[5] = false; backMask[9] = false;
+        DrawMesh("backbutton", "backbutton",
+                 clip: spToLg ? "backbutton_b2pn" : "backbutton_pn2b",
+                 hold: hold, vw, vh, backMask);
+
+        // The map window itself. Drawn last: it slides in OVER the shell
+        // chrome. Authored subset order ≠ DS1 layer order here, so the
+        // draw splits into three passes bottom-to-top:
+        //   1. shadow (subset 2) — authored LAST; single-pass painted the
+        //      grey haze OVER the world map ("background missing"), per
+        //      feedback_siegefx_chrome_shadow_layering.
+        //   2. pieces (subset 1, heromenu tex) — the long silver pole rig
+        //      on the LoadGamePieces bones. DS1 layers it BEHIND the
+        //      window body so only the ends that stick past the frame
+        //      (side tips / hanging knobs) show; painting it after the
+        //      body ran the full shafts over the LOAD/DELETE row.
+        //   3. body (subset 0) — marble frame + world map, occludes the
+        //      pole shafts.
+        var loadmapClip = spToLg ? "loadmap_down" : "loadmap_up";
+        var loadmapShadowMask = new[] { false, false, true  };
+        var loadmapPiecesMask = new[] { false, true,  false };
+        var loadmapBodyMask   = new[] { true,  false, false };
+        DrawMesh("loadmap-shadow", "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapShadowMask);
+        DrawMesh("loadmap-pieces", "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapPiecesMask);
+        DrawMesh("loadmap",        "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapBodyMask);
     }
 
     /// <summary>One-shot probe of the frontend reference rect. Use backdrop
