@@ -152,6 +152,14 @@ public sealed class Actor
     // the loot roller).
     Random? _swingRng;
 
+    /// <summary>Phase 18 fix — bumped every time combat swaps the CONTENT of
+    /// a clip slot (next swing variant, cast variant, qffg pad). The render
+    /// layer resets its per-actor anim clock when this changes: the
+    /// index-only change detection can't see a swap that reuses the same
+    /// slot, which left back-to-back swings starting with the clock clamped
+    /// at the previous clip's end — the "robotic" frozen swing.</summary>
+    public int ClipEpoch { get; private set; }
+
     /// <summary>Phase 18 — pick the next attack clip DS1-style: uniform
     /// random over the non-qffg variants, published into
     /// <c>Clips[chore_attack]</c> for the render layer. Returns the clip
@@ -160,6 +168,7 @@ public sealed class Actor
     {
         int idx = GetClipIndex("chore_attack");
         if (idx < 0) return null;
+        ClipEpoch++;
         var variants = AttackVariants;
         if (variants is { Length: > 0 })
         {
@@ -178,6 +187,7 @@ public sealed class Actor
     {
         int idx = GetClipIndex("chore_attack");
         if (idx < 0 || AttackPadClip is null) return false;
+        ClipEpoch++;
         Clips[idx] = AttackPadClip;
         return true;
     }
@@ -193,6 +203,7 @@ public sealed class Actor
     {
         int idx = GetClipIndex("chore_magic");
         if (idx < 0) return null;
+        ClipEpoch++;
         var variants = MagicVariants;
         if (variants is { Length: > 0 })
         {

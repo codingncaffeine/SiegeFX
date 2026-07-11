@@ -1187,6 +1187,10 @@ public sealed class RenderHost : IDisposable
         public SkinnedMesh GlMesh = null!;
         public double AnimTime;
         public int LastClipIndex;
+        // Phase 18 fix — mirrors Actor.ClipEpoch; a bump means the clip
+        // CONTENT in a slot changed (next swing variant / pad) even though
+        // the index didn't, so the anim clock must restart.
+        public int LastClipEpoch;
 
         // Intro NIS gizmos — the narrator (a King-model voice-over actor) and the
         // sleeping dog (a one-shot "look at the camera" prop) are spawned so the
@@ -15416,9 +15420,14 @@ void main()
                 if (!isDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
                     && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < s.Actor.Clips.Length)
                     idx = s.Actor.WalkClipIndex;
-                if (idx != s.LastClipIndex)
+                if (idx != s.LastClipIndex || s.Actor.ClipEpoch != s.LastClipEpoch)
                 {
+                    // Phase 18 fix — restart the clock on slot-content swaps
+                    // too (PickNextSwingClip / SwapToPadClip reuse the same
+                    // index); without the epoch check, back-to-back swings
+                    // started end-clamped and froze on the final pose.
                     s.LastClipIndex = idx;
+                    s.LastClipEpoch = s.Actor.ClipEpoch;
                     s.AnimTime = 0;
                 }
                 if (s.Actor.Clips.Length > 0)
@@ -21248,7 +21257,9 @@ void main()
             {
                 var pp = _player.CurrentTransform.Translation;
                 var tp = tgt.CurrentTransform.Translation;
-                float reach = (_player.Actor.Stats.AttackRange > 0.1f ? _player.Actor.Stats.AttackRange : 2f) + 1.2f;
+                // Same engage range the click path uses — swing again in
+                // place, or re-queue the walk-up when the target stepped out.
+                float reach = PlayerMeleeReach(ps.Attacker);
                 float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
                 if (dx * dx + dz * dz <= reach * reach)
                 {
@@ -21272,11 +21283,19 @@ void main()
         if (_player is null || best.IsDead) return;
         var pp = _player.CurrentTransform.Translation;
         var tp = best.CurrentTransform.Translation;
-        float reach = (_player.Actor.Stats.AttackRange > 0.1f ? _player.Actor.Stats.AttackRange : 2f) + 1.2f;
+        // Phase 18 fix — the FIRE reach is the SAME range the walk-up
+        // engages at (PlayerMeleeReach) plus follow-through slack. The
+        // first cut used bare hero attack_range (0.5u) + 1.2, tighter than
+        // the engage distance — every strike whiffed and enemies looked
+        // unkillable.
+        float reach = PlayerMeleeReach(attacker) + 1.0f;
         float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
         var hitPos = tp + new Vector3(0f, 1.0f, 0f);
         if (dx * dx + dz * dz > reach * reach)
         {
+            Console.WriteLine(
+                $"click-attack: whiff on {best.Actor.Template.Name} " +
+                $"(dist {MathF.Sqrt(dx * dx + dz * dz):F1} > reach {reach:F1})");
             _audio?.PlayAt(SfxMeleeMiss, hitPos);
             return;
         }

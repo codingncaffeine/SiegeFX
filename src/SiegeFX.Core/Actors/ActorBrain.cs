@@ -243,8 +243,10 @@ public sealed class ActorBrain
             if (!_activeSwingRanged)
             {
                 // The target had the whole windup to step away — out of
-                // reach at the FIRE moment is a whiff.
-                if (DistXZ(Wander.Position, targetPos.Value) > MeleeRange * 1.5f) continue;
+                // reach at the FIRE moment is a whiff. Generous slack: the
+                // engage/hold band already keeps the fight at MeleeRange-ish
+                // center distance, so only a real escape should whiff.
+                if (DistXZ(Wander.Position, targetPos.Value) > MeleeRange * 1.5f + 1.5f) continue;
             }
             float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
                 attackerIsPlayer: PartyAligned, ranged: _activeSwingRanged);
