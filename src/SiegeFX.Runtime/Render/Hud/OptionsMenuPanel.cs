@@ -44,6 +44,13 @@ internal sealed class OptionsMenuPanel
     /// values currently round-trip within a session only.</summary>
     public sealed class Settings
     {
+        // SC-OPTIONS-GAME — schema marker for prefs.json migrations. Files
+        // written before this property existed used GameSpeed=100 as a dead
+        // knob's default; under the live 0..100 → 0.5x..2.0x mapping that
+        // would boot at double speed, so OptionsPrefs.Load resets legacy
+        // files' GameSpeed to the 1.0x midpoint.
+        public int PrefsVersion = 2;
+
         // Video — ALPHA-2V all runtime-wired. Defaults from /config/options.gas
         // (modernized: resolution drops DS1's bpp suffix; fullscreen is a new
         // checkbox — DS1 was always fullscreen, SiegeFX defaults windowed).
@@ -83,14 +90,14 @@ internal sealed class OptionsMenuPanel
         public bool LockCameraX = false;
         public bool LockCameraY = false;
 
-        // Game (page 1)
+        // Game (page 1) — SC-OPTIONS-GAME: all runtime-wired.
         public bool ShowFramerate = false;
-        public bool PriorityBoost = false;
-        public int TextScrollRate = 50;     // 0..100 (DS1 default 5.0)
-        public int MaxTextDisplayed = 6;    // 0..100
-        public int GameSpeed = 100;         // 0..100 step 10 (1.0 default)
-        public bool TutorialTips = true;
-        public string Difficulty = "Normal"; // Easy/Normal/Hard
+        public bool PriorityBoost = false;   // process priority AboveNormal
+        public int TextScrollRate = 50;      // 0..100 → floating-text hold 1.5x..0.5x
+        public int MaxTextDisplayed = 6;     // 1..20 concurrent floating lines
+        public int GameSpeed = 50;           // 0..100 → 0.5x..2.0x sim speed (50 = 1.0x)
+        public bool TutorialTips = true;     // gates handbook auto-pop cadence
+        public string Difficulty = "Normal"; // Easy/Normal/Hard → CombatResolver
 
         // INFORAIL-F — DS1's vertical paperdoll toggle for "open
         // spellbook when I is pressed". Persists via the standard
@@ -1050,29 +1057,38 @@ internal sealed class OptionsMenuPanel
         int r = 0;
         if (_gamePage == 0)
         {
-            BoolCycle(bars, text, vw, vh, r++, "Show Framerate",
-                () => _staged.ShowFramerate, v => _staged.ShowFramerate = v);
+            // SC-OPTIONS-GAME — authored labels + value words from
+            // options_game.gas (framerate reads Yes/No in DS1, the rest
+            // On/Off). Every knob on this page is runtime-wired.
+            var yesNo = new[] { "No", "Yes" };
+            CycleButton(bars, text, vw, vh, r, _widgets.Count, "Display Onscreen Framerate",
+                () => _staged.ShowFramerate ? 1 : 0, _ => { }, yesNo);
+            AddCycleWidget(r++, () => _staged.ShowFramerate = !_staged.ShowFramerate,
+                () => _staged.ShowFramerate = !_staged.ShowFramerate, vw, vh);
             BoolCycle(bars, text, vw, vh, r++, "Raise App Priority",
                 () => _staged.PriorityBoost, v => _staged.PriorityBoost = v);
             IntSlider(bars, text, vw, vh, r++, "Text Scroll Rate",
                 () => _staged.TextScrollRate, v => _staged.TextScrollRate = v, 0, 100);
-            IntSlider(bars, text, vw, vh, r++, "Maximum Text",
-                () => _staged.MaxTextDisplayed, v => _staged.MaxTextDisplayed = v, 0, 100);
+            IntSlider(bars, text, vw, vh, r++, "Maximum Text Displayed",
+                () => _staged.MaxTextDisplayed, v => _staged.MaxTextDisplayed = v, 1, 20);
             IntSlider(bars, text, vw, vh, r++, "Game Speed",
                 () => _staged.GameSpeed, v => _staged.GameSpeed = v, 0, 100);
             BoolCycle(bars, text, vw, vh, r++, "Tutorial Tips",
                 () => _staged.TutorialTips, v => _staged.TutorialTips = v);
-            CycleField(bars, text, vw, vh, r++, "Difficulty",
+            CycleField(bars, text, vw, vh, r++, "Game Difficulty",
                 () => _staged.Difficulty, v => _staged.Difficulty = v, diff);
             DrawPageButton(bars, text, vw, vh, "More →", () => _gamePage = 1);
         }
         else
         {
-            BoolCycle(bars, text, vw, vh, r++, "Show Tooltips",
+            // Page 2 (authored group options_game_2). Blood color and
+            // dismemberment have no runtime systems yet — labeled inactive
+            // rather than pretending (same convention as Ambient Volume).
+            BoolCycle(bars, text, vw, vh, r++, "Show Rollover Help",
                 () => _staged.ShowTooltips, v => _staged.ShowTooltips = v);
-            CycleField(bars, text, vw, vh, r++, "Blood Color",
+            CycleField(bars, text, vw, vh, r++, "Blood Color (inactive)",
                 () => _staged.BloodColor, v => _staged.BloodColor = v, blood);
-            BoolCycle(bars, text, vw, vh, r++, "Dismemberment",
+            BoolCycle(bars, text, vw, vh, r++, "Dismemberment (inactive)",
                 () => _staged.Dismemberment, v => _staged.Dismemberment = v);
             DrawPageButton(bars, text, vw, vh, "← Back", () => _gamePage = 0);
         }

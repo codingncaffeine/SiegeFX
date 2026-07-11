@@ -3072,6 +3072,22 @@ public sealed class RenderHost : IDisposable
     // The KeyDown chain queries it instead of hardcoded keycodes so
     // the Options → Input → Hotkeys editor genuinely rebinds play.
     private readonly Hud.KeyBindingRegistry _keyBindings = new();
+    // SC-OPTIONS-GAME — Game-tab runtime knobs. Game speed scales the sim
+    // dt (0.5x..2.0x, slider 50 = 1.0x, DS1's ctrl+=/ctrl+- steps ride the
+    // same value); text hold scales floating-text + subtitle time on
+    // screen (Text Scroll Rate: higher = faster); Maximum Text caps the
+    // concurrent floating lines; Show Rollover Help gates the hover
+    // name/stats readout.
+    private float _gameSpeed = 1f;
+    private float _textHoldScale = 1f;
+    private int _maxFloatingTexts = 6;
+    private bool _showTooltips = true;
+
+    /// <summary>Slider 0..100 → 0.5x..2.0x with the 50 midpoint = 1.0x
+    /// (piecewise linear so both halves feel evenly spaced).</summary>
+    private static float GameSpeedFactor(int slider) =>
+        slider <= 50 ? 0.5f + slider / 50f * 0.5f
+                     : 1.0f + (slider - 50) / 50f * 1.0f;
     // SC-AUTH-CHAR-AWP-LONGPRESS — gas wires `click_delay = 0.2` +
     // `onclickdelay = notify(list_spells)` on slots 3/4 and the active
     // slot radio button. We approximate by tracking the LMB-down moment
@@ -3463,6 +3479,10 @@ public sealed class RenderHost : IDisposable
                 // The checkbox toggled; keep the panel open. Persist the flag
                 // via the next CaptureSave (mirrored on the panel).
                 _tipsDisabled = _handbook.Disabled;
+                // SC-OPTIONS-GAME — the handbook's own "Disable tips"
+                // checkbox and the Game tab's Tutorial Tips toggle are the
+                // same setting; keep them in lockstep.
+                _optionsMenu.Live.TutorialTips = !_tipsDisabled;
                 Console.WriteLine($"[handbook] tips {(_tipsDisabled ? "disabled" : "enabled")}");
                 break;
         }
@@ -5125,6 +5145,20 @@ void main()
                 // we don't have). The old F11 particle-burst dev receipt is
                 // retired (the sfx_script interpreter has driven the
                 // particle backend from data since SC-F/SC-G).
+                // SC-OPTIONS-GAME — authored game-speed steps ([game_speed_up]
+                // ctrl+equals, [game_speed_down] ctrl+minus, [game_speed_reset]
+                // ctrl+backspace). They edit the same setting the Game tab's
+                // slider drives, apply instantly, and persist with the prefs.
+                else if (Is("game_speed_up") || Is("game_speed_down") || Is("game_speed_reset"))
+                {
+                    var liveSet = _optionsMenu.Live;
+                    liveSet.GameSpeed = Is("game_speed_reset") ? 50
+                        : Math.Clamp(liveSet.GameSpeed + (Is("game_speed_up") ? 10 : -10), 0, 100);
+                    _gameSpeed = GameSpeedFactor(liveSet.GameSpeed);
+                    _saveToastText = $"Game speed x{_gameSpeed:0.0#}";
+                    _saveToastRemaining = SaveToastDuration;
+                    Console.WriteLine($"[cmd] game speed -> x{_gameSpeed:F2}");
+                }
                 else if (Is("quick_save") || (key == Key.F5 && !modCtrl && !modAlt)) DoQuickSave();
                 else if (Is("quick_load")) DoQuickLoad();
                 // Adventurer's Handbook — authored [tutorial_tips] (default
@@ -7954,7 +7988,13 @@ void main()
         // Region relaunches forward the frontend's choice via SIEGEFX_DIFFICULTY.
         var diffEnv = Environment.GetEnvironmentVariable("SIEGEFX_DIFFICULTY");
         if (!string.IsNullOrEmpty(diffEnv) && Enum.TryParse<GameDifficulty>(diffEnv, true, out var envDiff))
+        {
             _difficulty = envDiff;
+            // SC-OPTIONS-GAME — mirror the relaunch-forwarded choice into the
+            // Options settings so the Game tab shows the difficulty actually
+            // in force (and persists it on the next prefs save).
+            _optionsMenu.Live.Difficulty = _difficulty.ToString();
+        }
         SiegeFX.Core.Actors.CombatResolver.Configure(
             _formulas?.Combat ?? SiegeFX.Core.Assets.CombatConstants.Ds1Default,
             _difficulty switch
@@ -14802,7 +14842,11 @@ void main()
         // comes up"). The menus have no world sim to protect; they must
         // always animate.
         double rawDt = dt;
-        if (SimFrozen) dt = 0.0;
+        // SC-OPTIONS-GAME — game speed scales the whole simulation clock
+        // (actors, particles, skrit chores, camera dynamics) exactly like
+        // DS1's Game Speed slider / ctrl+= / ctrl+-. Menus and the play
+        // clock above ride rawDt so UI pacing never changes.
+        if (SimFrozen) dt = 0.0; else dt *= _gameSpeed;
         // Adventurer's Handbook auto-popup cadence. Runs on the gated dt so it
         // freezes with the world (no tip fires mid-pause); the early-outs inside
         // also skip while any menu owns the screen.
@@ -15556,6 +15600,9 @@ void main()
                     DifficultyMenuPanel.Action.Hard   => GameDifficulty.Hard,
                     _ => GameDifficulty.Normal,
                 };
+                // SC-OPTIONS-GAME — keep the Options Game tab in sync with
+                // the new-game difficulty pick.
+                _optionsMenu.Live.Difficulty = _difficulty.ToString();
                 _creator.Confirmed = true;
                 _diffMenu.ClearHover();
                 // SC-DIFF-LAUNCH (interim) — relaunch the runtime with
@@ -16077,7 +16124,8 @@ void main()
             _barRenderer.DrawBorder(vw, vh, x0, y0, x1 - x0, y1 - y0,
                 new Vector4(0.10f, 0.95f, 0.15f, 0.95f));
         }
-        if (_hoverActor is { } ha && !ha.IsDead)
+        // SC-OPTIONS-GAME — "Show Rollover Help" gates the hover readout.
+        if (_showTooltips && _hoverActor is { } ha && !ha.IsDead)
         {
             string name = ResolveMemberName(ha);
             var combat = ha.Actor.Combat;
@@ -16612,6 +16660,39 @@ void main()
         }
         _showFps = s.ShowFramerate;
         _spellbookWithI = s.SpellbookOpensWithI;
+        // SC-OPTIONS-GAME — the Game tab's knobs go live here (boot, OK,
+        // Defaults all route through this method).
+        _gameSpeed = GameSpeedFactor(s.GameSpeed);
+        _textHoldScale = Math.Clamp(1.5f - s.TextScrollRate / 100f, 0.5f, 1.5f);
+        _maxFloatingTexts = Math.Clamp(s.MaxTextDisplayed, 1, 20);
+        _tipsDisabled = !s.TutorialTips;
+        _showTooltips = s.ShowTooltips;
+        try
+        {
+            System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
+                s.PriorityBoost ? System.Diagnostics.ProcessPriorityClass.AboveNormal
+                                : System.Diagnostics.ProcessPriorityClass.Normal;
+        }
+        catch { /* priority change can fail under restricted tokens — non-fatal */ }
+        // Difficulty applies to the live combat pack immediately; the
+        // region-load path re-Configures with the same _difficulty, and a
+        // relaunch still forwards it via SIEGEFX_DIFFICULTY (env wins).
+        if (Enum.TryParse<GameDifficulty>(s.Difficulty, true, out var diff)
+            && diff != _difficulty)
+        {
+            _difficulty = diff;
+            SiegeFX.Core.Actors.CombatResolver.Configure(
+                _formulas?.Combat ?? SiegeFX.Core.Assets.CombatConstants.Ds1Default,
+                _difficulty switch
+                {
+                    GameDifficulty.Easy => SiegeFX.Core.Assets.CombatDifficulty.Easy,
+                    GameDifficulty.Hard => SiegeFX.Core.Assets.CombatDifficulty.Hard,
+                    _                   => SiegeFX.Core.Assets.CombatDifficulty.Medium,
+                });
+            Console.WriteLine($"[options] difficulty -> {_difficulty} " +
+                $"(player x{SiegeFX.Core.Actors.CombatResolver.PlayerDamageMultiplier:F2}, " +
+                $"computer x{SiegeFX.Core.Actors.CombatResolver.ComputerDamageMultiplier:F2})");
+        }
     }
 
     /// <summary>Phase 23-SC-OPTIONS-C — push the menu's audio settings
@@ -22539,14 +22620,19 @@ void main()
     /// so it tracks the actor as the camera moves and fades over its lifetime.</summary>
     private void AddFloatingText(string text, Vector3 worldPos, Vector4 color)
     {
+        // SC-OPTIONS-GAME — Text Scroll Rate scales how long each line
+        // holds; Maximum Text Displayed caps the concurrent lines (oldest
+        // entries retire first, like DS1's scrolling feed).
+        float hold = FloatingTextDuration * _textHoldScale;
         _floatingTexts.Add(new FloatingText
         {
             Text = text,
             WorldPos = worldPos,
             Color = color,
-            Remaining = FloatingTextDuration,
-            Total = FloatingTextDuration,
+            Remaining = hold,
+            Total = hold,
         });
+        while (_floatingTexts.Count > _maxFloatingTexts) _floatingTexts.RemoveAt(0);
     }
 
     /// <summary>Phase 16d — fold a damage roll + kill bonus into the player's
@@ -23306,7 +23392,7 @@ void main()
         // integration etc.) use `simDt` which is zero when paused. Audio
         // and UI tweens fall on the music side; anything that mutates
         // world state falls on the sim side.
-        float simDt = SimFrozen ? 0f : (float)dt;
+        float simDt = SimFrozen ? 0f : (float)(dt * _gameSpeed);
         // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
         // hostile NPC is engaging the player; revert to standard_track
         // after CombatExitDelay seconds without aggro. Cheap loop over

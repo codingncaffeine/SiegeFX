@@ -26,8 +26,21 @@ internal static class OptionsPrefs
         {
             var path = PrefsPath;
             if (!File.Exists(path)) return null;
-            return JsonSerializer.Deserialize<OptionsMenuPanel.Settings>(
-                File.ReadAllText(path), JsonOpts);
+            var text = File.ReadAllText(path);
+            var s = JsonSerializer.Deserialize<OptionsMenuPanel.Settings>(text, JsonOpts);
+            // SC-OPTIONS-GAME — legacy migration: files without PrefsVersion
+            // predate the live GameSpeed mapping (their 100 was a dead knob's
+            // default, not a 2.0x request). Missing JSON properties keep the
+            // C# initializer value, so presence must be checked on the raw
+            // document rather than the deserialized object.
+            if (s is not null)
+            {
+                using var doc = JsonDocument.Parse(text);
+                if (!doc.RootElement.TryGetProperty("PrefsVersion", out _))
+                    s.GameSpeed = 50;
+                s.PrefsVersion = 2;
+            }
+            return s;
         }
         catch (Exception ex)
         {
