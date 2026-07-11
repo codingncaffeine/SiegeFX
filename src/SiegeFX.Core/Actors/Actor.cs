@@ -172,6 +172,17 @@ public sealed class Actor
         var variants = AttackVariants;
         if (variants is { Length: > 0 })
         {
+            // SC-RANGED-PROJECTILE — bow/minigun stances author their attack
+            // sub-anims as AIM-ELEVATION variants (select_attack.skrit maps
+            // 0mid/high/loww = at/at-02/at-03), NOT random flavor like the
+            // melee stances. Until target-elevation blending lands, always
+            // shoot the mid clip — random-picking made archers loose
+            // skyward/ground shots on flat terrain.
+            if (AttackStance is WeaponStance.Bow or WeaponStance.Minigun)
+            {
+                Clips[idx] = variants[0];
+                return variants[0];
+            }
             _swingRng ??= new Random(unchecked((int)Instance.Scid ^ 0x5157_4E47));
             var pick = variants[_swingRng.Next(variants.Length)];
             Clips[idx] = pick;

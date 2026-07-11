@@ -1005,6 +1005,17 @@ public sealed class RenderHost : IDisposable
     // Disposed with the actor mesh cache on region teardown.
     private readonly Dictionary<string, (StaticMesh Mesh, GlTexture? Tex)> _npcGearCache =
         new(StringComparer.OrdinalIgnoreCase);
+    // SC-RANGED-PROJECTILE — the player's ranged-weapon profile, resolved on
+    // equip by TryLoadPlayerWeapon. is_projectile weapons (ac_bow, ac_minigun)
+    // fire ammo GOs from the FIRE note instead of resolving a melee hit:
+    // velocity from the weapon [physics], engage range from [attack]
+    // attack_range, ammo model + gravity from the [attack] ammo_template.
+    private bool _weaponIsRanged;
+    private float _weaponProjVelocity = 14f;
+    private float _weaponAmmoGravity = DefaultAmmoGravity;
+    private float _weaponRangedRange = 10f;
+    private StaticMesh? _playerAmmoMesh;
+    private GlTexture? _playerAmmoTex;
     private int _weaponGripBoneIdx = -1;
     // Off-hand (shield_grip) bone index + a per-render override so a beat can pin the
     // weapon mesh to the other hand. -1 override = normal weapon_grip. The intro hoe
@@ -1433,6 +1444,14 @@ public sealed class RenderHost : IDisposable
         public int ShieldBoneIdx = -1;
         public string? WieldedWeaponRef;
         public bool WeaponDroppedOnDeath;
+
+        // SC-RANGED-PROJECTILE — launch profile when either hand holds an
+        // is_projectile weapon (bows and thrown rocks author es_shield_hand):
+        // ammo visual + weapon velocity + ammo gravity, resolved at spawn.
+        public StaticMesh? RangedAmmoMesh;
+        public GlTexture? RangedAmmoTex;
+        public float RangedVelocity = 14f;
+        public float RangedGravity = DefaultAmmoGravity;
     }
 
     // Phase 10-SC-1 — trigger-runtime queries route through these helpers so the
@@ -15320,6 +15339,8 @@ void main()
         TickCastingIdle();
         // Phase 21 — age combat blood splats (hold + fade).
         _bloodSplats?.Tick((float)dt);
+        // SC-RANGED-PROJECTILE — arrows/rocks in flight: integrate, impact.
+        TickRangedShots((float)dt);
         // SC-MOUSE-FX — destination-marker fade + hover pick.
         TickMouseFx((float)dt);
         // Phase 24-MAINMENU step 1+2-FOLD — splash state machine ticks here
@@ -15695,7 +15716,7 @@ void main()
                         else
                         {
                             var atk = GetPlayerAttackStats();
-                            float r = PlayerMeleeReach(atk);
+                            float r = PlayerEngageReach(atk);
                             var tp = pat.CurrentTransform.Translation;
                             float ddx = after.X - tp.X;
                             float ddz = after.Z - tp.Z;
@@ -18903,6 +18924,42 @@ void main()
         _weaponIsStaff = string.Equals(
             (_templateStore.GetAttribute(tpl!, "attack", "attack_class") ?? "").Trim(),
             "ac_staff", StringComparison.OrdinalIgnoreCase);
+        // SC-RANGED-PROJECTILE — bows/crossbows author is_projectile = true
+        // and fire ammo GOs; resolve the launch profile now so the click
+        // paths and the FIRE branch don't re-walk the template chain.
+        _weaponIsRanged = string.Equals(
+            (_templateStore.GetAttribute(tpl!, "attack", "is_projectile") ?? "").Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        _playerAmmoMesh = null;
+        _playerAmmoTex = null;
+        _weaponProjVelocity = 14f;
+        _weaponAmmoGravity = DefaultAmmoGravity;
+        _weaponRangedRange = 10f;
+        if (_weaponIsRanged)
+        {
+            if (float.TryParse(_templateStore.GetAttribute(tpl!, "physics", "velocity")?.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var pv) && pv > 0f)
+                _weaponProjVelocity = pv;
+            if (float.TryParse(_templateStore.GetAttribute(tpl!, "attack", "attack_range")?.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var ar) && ar > 1f)
+                _weaponRangedRange = ar;
+            var ammoRef = _templateStore.GetAttribute(tpl!, "attack", "ammo_template")?.Trim();
+            if (string.IsNullOrEmpty(ammoRef)) ammoRef = "arrow";
+            if (TryGetGearVisual(ammoRef!, out var ammoVis))
+            {
+                _playerAmmoMesh = ammoVis.Mesh;
+                _playerAmmoTex = ammoVis.Tex;
+            }
+            if (_templateStore.TryGet(ammoRef!, out var ammoTpl) && ammoTpl is not null
+                && float.TryParse(_templateStore.GetAttribute(ammoTpl, "physics", "gravity")?.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var ag) && ag > 0f)
+                _weaponAmmoGravity = ag;
+            Console.WriteLine($"  weapon: ranged profile v={_weaponProjVelocity:F1} " +
+                              $"range={_weaponRangedRange:F1} ammo={ammoRef} g={_weaponAmmoGravity:F2}");
+        }
         if (!_playResolver.TryLoadModel(modelName, out var aspBytes))
         {
             Console.WriteLine($"  weapon: model '{modelName}.asp' not in any tank");
@@ -19031,6 +19088,36 @@ void main()
                 s.ShieldTexture = sVis.Tex;
                 s.ShieldBoneIdx = idx;
             }
+        }
+
+        // SC-RANGED-PROJECTILE — a projectile weapon in either hand (bows and
+        // krug rocks author es_shield_hand) gives this actor a launch profile
+        // for TickRangedShots: weapon [physics] velocity, ammo model, ammo
+        // [physics] gravity.
+        foreach (var wref in new[] { weaponRef, shieldRef })
+        {
+            if (wref is null || !store.TryGet(wref, out var wt) || wt is null) continue;
+            if (!string.Equals(store.GetAttribute(wt, "attack", "is_projectile")?.Trim(),
+                    "true", StringComparison.OrdinalIgnoreCase)) continue;
+            if (float.TryParse(store.GetAttribute(wt, "physics", "velocity")?.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var pv) && pv > 0f)
+                s.RangedVelocity = pv;
+            var ammoRef = store.GetAttribute(wt, "attack", "ammo_template")?.Trim();
+            if (!string.IsNullOrEmpty(ammoRef))
+            {
+                if (TryGetGearVisual(ammoRef!, out var ammoVis))
+                {
+                    s.RangedAmmoMesh = ammoVis.Mesh;
+                    s.RangedAmmoTex = ammoVis.Tex;
+                }
+                if (store.TryGet(ammoRef!, out var ammoTpl) && ammoTpl is not null
+                    && float.TryParse(store.GetAttribute(ammoTpl, "physics", "gravity")?.Trim(),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var ag) && ag > 0f)
+                    s.RangedGravity = ag;
+            }
+            break;
         }
     }
 
@@ -19734,6 +19821,13 @@ void main()
     static float PlayerMeleeReach(SiegeFX.Core.Actors.ActorStats attacker) =>
         attacker.AttackRange > MeleeReachAttackRangeThreshold ? attacker.AttackRange : MeleeReachFallback;
 
+    /// <summary>SC-RANGED-PROJECTILE — the distance a click engages at: the
+    /// bow's authored [attack] attack_range (Short Bow 10u) when a projectile
+    /// weapon is equipped, melee reach otherwise. Every walk-up/auto-attack
+    /// site routes through this so an archer stands off instead of charging.</summary>
+    private float PlayerEngageReach(SiegeFX.Core.Actors.ActorStats attacker) =>
+        _weaponIsRanged ? MathF.Max(4f, _weaponRangedRange) : PlayerMeleeReach(attacker);
+
     /// <summary>Returns true when a combatant (or breakable prop) was under
     /// the click and an attack fired / a walk-up was queued — the LMB context
     /// dispatch uses that to decide between attack and move.</summary>
@@ -19802,9 +19896,10 @@ void main()
         // or near him"; the *swing* requires the player be within attacker
         // reach of the target. If not, latch _pendingAttackTarget so the
         // per-tick player block walks the follower up and fires the swing
-        // when in range.
+        // when in range. SC-RANGED-PROJECTILE — a bow engages at its
+        // authored attack_range so the archer stands off.
         var attackerStats = GetPlayerAttackStats();
-        float reach = PlayerMeleeReach(attackerStats);
+        float reach = PlayerEngageReach(attackerStats);
         var pPos = _playerFollower?.Position ?? _player.CurrentTransform.Translation;
         var tPos = best.CurrentTransform.Translation;
         float playerDist = MathF.Sqrt(
@@ -19967,7 +20062,7 @@ void main()
         if (NearestSettledPileD2(groundHit) < bestDist * bestDist) return false;
 
         var attackerStats = GetPlayerAttackStats();
-        float reach = PlayerMeleeReach(attackerStats);
+        float reach = PlayerEngageReach(attackerStats);
         var pPos = _playerFollower?.Position ?? _player.CurrentTransform.Translation;
         var tPos = best.World.Translation;
         float playerDist = MathF.Sqrt(
@@ -21819,8 +21914,190 @@ void main()
         // current attack finishes (the user's stated DS1 rule — same-target
         // clicks are ignored, a target switch waits for the swing).
         public ActorRenderState? NextTarget;
+        // SC-RANGED-PROJECTILE — set when the arrow leaves at the FIRE note;
+        // the render layer shows a nocked arrow in hand until then (the
+        // heroes' ATTA note sits at t=0, so nock-from-swing-start is exact).
+        public bool ArrowAway;
     }
     private PlayerSwingState? _playerSwing;
+
+    /// <summary>SC-RANGED-PROJECTILE — one ammo GO in flight. DS1 launches a
+    /// real GO at the FIRE note (job_attack_object_ranged → SLaunchAmmo) with
+    /// the WEAPON's [physics] velocity (bow 14, krug rock 10, crossbow 75),
+    /// solves a ballistic arc against the AMMO's gravity (default 6.864655),
+    /// and resolves damage at IMPACT. Misses are first-class: the shot flies
+    /// to where the target WAS aimed; a target that stepped away lets the
+    /// arrow stick in the ground (arrows author elasticity/deflection; we
+    /// stick + expire, sim_duration 7s cap).</summary>
+    private sealed class RangedShot
+    {
+        public Vector3 Pos;
+        public Vector3 Vel;
+        public float Gravity;
+        public StaticMesh? Mesh;
+        public GlTexture? Tex;
+        public float Age;
+        public bool Stuck;
+        public float StuckAge;
+        // Player-fired: hostile target + attacker stats for impact bookkeeping.
+        public ActorRenderState? TargetActor;
+        public StaticPropInstance? TargetProp;
+        public SiegeFX.Core.Actors.ActorStats? Attacker;
+        public bool FromPlayer;
+        // NPC-fired: pre-rolled damage payload + the victim combat sink.
+        public float NpcDamage;
+        public SiegeFX.Core.Actors.ActorCombatState? NpcTargetCombat;
+    }
+    private readonly List<RangedShot> _rangedShots = new();
+    private const float RangedImpactRadius = 0.9f;
+    private const float RangedSimDuration = 7f;   // components.gas sim_duration default
+    private const float DefaultAmmoGravity = 6.864655f; // components.gas [physics] gravity
+
+    /// <summary>Ballistic launch velocity: low-arc solution for speed
+    /// <paramref name="speed"/> under <paramref name="gravity"/> from src to
+    /// dst (DS1's ComputeAimingAngle). Out-of-range targets get the 45°
+    /// max-range lob; zero gravity degenerates to a straight shot.</summary>
+    private static Vector3 SolveBallistic(Vector3 src, Vector3 dst, float speed, float gravity)
+    {
+        var d = dst - src;
+        float horiz = MathF.Sqrt(d.X * d.X + d.Z * d.Z);
+        if (horiz < 1e-3f)
+            return new Vector3(0f, d.Y >= 0f ? speed : -speed, 0f);
+        var dirXZ = new Vector3(d.X / horiz, 0f, d.Z / horiz);
+        if (gravity <= 1e-4f)
+        {
+            var straight = Vector3.Normalize(new Vector3(d.X, d.Y, d.Z));
+            return straight * speed;
+        }
+        float s2 = speed * speed;
+        float disc = s2 * s2 - gravity * (gravity * horiz * horiz + 2f * d.Y * s2);
+        float tan = disc <= 0f ? 1f : (s2 - MathF.Sqrt(disc)) / (gravity * horiz);
+        float velH = speed / MathF.Sqrt(1f + tan * tan);
+        return dirXZ * velH + new Vector3(0f, velH * tan, 0f);
+    }
+
+    private void SpawnRangedShot(RangedShot shot, Vector3 src, Vector3 aimPoint, float speed)
+    {
+        shot.Pos = src;
+        shot.Vel = SolveBallistic(src, aimPoint, MathF.Max(1f, speed), shot.Gravity);
+        _rangedShots.Add(shot);
+    }
+
+    private void TickRangedShots(float dt)
+    {
+        if (_rangedShots.Count == 0 || dt <= 0f) return;
+        for (int i = _rangedShots.Count - 1; i >= 0; i--)
+        {
+            var shot = _rangedShots[i];
+            shot.Age += dt;
+            if (shot.Stuck)
+            {
+                shot.StuckAge += dt;
+                if (shot.StuckAge > 4f) _rangedShots.RemoveAt(i);
+                continue;
+            }
+            if (shot.Age > RangedSimDuration) { _rangedShots.RemoveAt(i); continue; }
+            shot.Vel = shot.Vel with { Y = shot.Vel.Y - shot.Gravity * dt };
+            shot.Pos += shot.Vel * dt;
+
+            // Impact vs the intended target's CURRENT position — a target
+            // that stepped away since the FIRE note is a miss (DS1's
+            // on_alert_projectile_near_missed reactions exist because misses
+            // are normal outcomes).
+            if (shot.TargetActor is { IsDead: false } ta)
+            {
+                var chest = ta.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
+                {
+                    ApplyPlayerRangedImpact(shot, ta);
+                    _rangedShots.RemoveAt(i);
+                    continue;
+                }
+            }
+            else if (shot.TargetProp is { IsDestroyed: false } prop)
+            {
+                var center = prop.World.Translation + new Vector3(0f, 0.5f, 0f);
+                if (Vector3.DistanceSquared(shot.Pos, center) <= 1.2f * 1.2f)
+                {
+                    if (shot.Attacker is { } atk) PerformPropBreak(prop, atk);
+                    _rangedShots.RemoveAt(i);
+                    continue;
+                }
+            }
+            if (shot.NpcTargetCombat is { IsDead: false } victim)
+            {
+                // NPC shot at the player/party: find the wrapper this combat
+                // sink belongs to and test proximity against it.
+                foreach (var m in _party)
+                {
+                    if (!ReferenceEquals(m.Actor.Combat, victim)) continue;
+                    var chest = m.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                    if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
+                    {
+                        victim.ApplyDamage(shot.NpcDamage);
+                        // Existing per-frame just-hit scans carry the FX
+                        // (hit voice, HUD); blood fires here since the scan
+                        // only covers NPC victims.
+                        SpawnBloodHit(m);
+                        _rangedShots.RemoveAt(i);
+                        shot.NpcTargetCombat = null;
+                    }
+                    break;
+                }
+                if (shot.NpcTargetCombat is null) continue;
+            }
+
+            // Ground: stick where the arc lands (arrows hold a few seconds).
+            float groundY = shot.Pos.Y - 100f;
+            if (_navMesh is not null && _navMesh.TryFindTriangle(shot.Pos, out var tri))
+                groundY = _navMesh.SampleYOnTriangle(tri, shot.Pos);
+            if (shot.Pos.Y <= groundY + 0.03f && shot.Vel.Y < 0f)
+            {
+                shot.Pos = shot.Pos with { Y = groundY + 0.03f };
+                shot.Stuck = true;
+            }
+        }
+    }
+
+    /// <summary>SC-RANGED-PROJECTILE — a player arrow lands. Mirrors
+    /// <see cref="ResolveSwingHitOnActor"/>'s post-damage bookkeeping (hit
+    /// cue, hit-voice, blood, XP, kill flow) without the melee reach gate —
+    /// the projectile already traveled the distance; proximity IS the hit.
+    /// XP credits the ranged skill.</summary>
+    private void ApplyPlayerRangedImpact(RangedShot shot, ActorRenderState best)
+    {
+        if (best.IsDead || shot.Attacker is not { } attacker) return;
+        var rng = new Random();
+        float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
+            attacker, best.Actor.Stats, rng, attackerIsPlayer: true, ranged: true);
+        // The FIRE-time payload pre-rolled nothing for player shots — roll at
+        // impact with the attacker snapshot (same resolver the melee hit uses).
+        float dealt = best.Actor.Combat.ApplyDamage(raw);
+        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        Console.WriteLine(
+            $"ranged: hit {best.Actor.Template.Name} for {dealt:F0} " +
+            $"({best.Actor.Combat.CurrentLife:F0}/{best.Actor.Stats.MaxLife:F0})" +
+            $"{(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+        if (dealt > 0f)
+        {
+            PlayMeleeHit(hitPos);
+            if (!best.Actor.Combat.IsDead && best.Actor.Combat.ConsumeJustHit(out var dmg))
+                PlayHitVoiceSfx(best.Actor.Template, best.CurrentTransform.Translation,
+                                dmg, best.Actor.Stats.MaxLife);
+            SpawnBloodHit(best);
+        }
+        AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Ranged);
+        if (best.Actor.Combat.ConsumeJustDied())
+        {
+            best.IsDead = true;
+            best.Brain = null;
+            BeginDeathChore(best);
+            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
+            LogLootDrop(best, best.CurrentTransform.Translation);
+            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
+            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+        }
+    }
 
     // Phase 19 — the player's in-flight CAST iteration: initiation plays the
     // mg clip (random variant); the release executes at the FIRE note (fs0
@@ -22027,6 +22304,38 @@ void main()
                 MathF.Max(0.1f, ps.Sched.Period - ps.Sched.Elapsed));
         for (int i = 0; i < fires; i++)
         {
+            // SC-RANGED-PROJECTILE — a projectile weapon looses an ammo GO at
+            // the FIRE note instead of resolving a melee strike; damage lands
+            // at impact in TickRangedShots. Melee keeps the inline resolve.
+            if (_weaponIsRanged)
+            {
+                var src = _player.CurrentTransform.Translation + new Vector3(0f, 1.3f, 0f);
+                Vector3 aim;
+                if (ps.Target is { IsDead: false } rt)
+                {
+                    SnapPlayerFacingTo(rt.CurrentTransform.Translation);
+                    aim = rt.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                }
+                else if (ps.Prop is { IsDestroyed: false } rp)
+                {
+                    aim = rp.World.Translation + new Vector3(0f, 0.5f, 0f);
+                }
+                else continue;
+                var shot = new RangedShot
+                {
+                    Gravity = _weaponAmmoGravity,
+                    Mesh = _playerAmmoMesh,
+                    Tex = _playerAmmoTex,
+                    TargetActor = ps.Target,
+                    TargetProp = ps.Target is null ? ps.Prop : null,
+                    Attacker = ps.Attacker,
+                    FromPlayer = true,
+                };
+                SpawnRangedShot(shot, src, aim, _weaponProjVelocity);
+                ps.ArrowAway = true;
+                _audio?.Play(SfxMeleeSwingGroup);
+                continue;
+            }
             if (ps.Target is not null) ResolveSwingHitOnActor(ps.Target, ps.Attacker);
             if (ps.Prop is not null) ResolveSwingHitOnProp(ps.Prop, ps.Attacker);
         }
@@ -22048,7 +22357,7 @@ void main()
                 var tp = tgt.CurrentTransform.Translation;
                 // Same engage range the click path uses — swing again in
                 // place, or re-queue the walk-up when the target stepped out.
-                float reach = PlayerMeleeReach(ps.Attacker);
+                float reach = PlayerEngageReach(ps.Attacker);
                 float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
                 if (dx * dx + dz * dz <= reach * reach)
                 {
@@ -23352,13 +23661,28 @@ void main()
                     brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
                 PlayVoiceCue(s.Actor.Template, s.CurrentTransform.Translation, "cast");
             }
-            // SC-MOB-RANGED — thrown-projectile visual (krug rock). Damage is
-            // already applied instant-hit by the brain; this is the read.
-            if (brain.ConsumeJustFiredRanged(out var throwDst) && _particles is not null)
+            // SC-MOB-RANGED / SC-RANGED-PROJECTILE — the brain's FIRE note
+            // hands us the pre-rolled damage payload; spawn the real ammo GO
+            // (rock m_w_misc_018, arrow m_w_arw_001) on the ballistic arc and
+            // let TickRangedShots apply the damage at IMPACT. When the actor
+            // resolved no ammo mesh the shot still flies (invisible) so the
+            // hit lands; the particle streak stands in as its tracer.
+            if (brain.ConsumeJustFiredRanged(out var throwDst, out var thrDmg, out var thrTarget))
             {
                 var throwSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.4f, 0f);
-                _particles.SpawnProjectile(throwSrc, throwDst + new Vector3(0f, 1.0f, 0f),
-                    new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
+                var aim = throwDst + new Vector3(0f, 1.0f, 0f);
+                var shot = new RangedShot
+                {
+                    Gravity = s.RangedGravity,
+                    Mesh = s.RangedAmmoMesh,
+                    Tex = s.RangedAmmoTex,
+                    NpcDamage = thrDmg,
+                    NpcTargetCombat = thrTarget,
+                };
+                SpawnRangedShot(shot, throwSrc, aim, s.RangedVelocity);
+                if (shot.Mesh is null && _particles is not null)
+                    _particles.SpawnProjectile(throwSrc, aim,
+                        new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
             }
             // SC-ENEMY-AUDIO-AUDIT — fire hit reaction for any NPC that
             // just took damage from a non-player source (brain-on-brain
@@ -25363,6 +25687,40 @@ void main()
                 if (!s.WeaponDroppedOnDeath) DrawGear(s.WeaponMesh, s.WeaponTexture, s.WeaponBoneIdx);
                 DrawGear(s.ShieldMesh, s.ShieldTexture, s.ShieldBoneIdx);
             }
+
+            // SC-RANGED-PROJECTILE — ammo GOs in flight (or stuck in the
+            // ground), oriented to trajectory (arrows author
+            // orient_to_trajectory = true; the velocity vector is retained
+            // after sticking so the shaft keeps its landing angle).
+            bool shotShaderBound = false;
+            foreach (var shot in _rangedShots)
+            {
+                if (shot.Mesh is null) continue;
+                if (!shotShaderBound)
+                {
+                    _meshShader.Use();
+                    _meshShader.SetMatrix4("uViewProj", vp);
+                    _meshShader.SetInt("uAlbedo", 0);
+                    _meshShader.SetInt("uFlipV", 0);
+                    ApplyLightingUniforms(_meshShader);
+                    shotShaderBound = true;
+                }
+                var v = shot.Vel;
+                float horiz = MathF.Sqrt(v.X * v.X + v.Z * v.Z);
+                float pitch = MathF.Atan2(-v.Y, MathF.Max(0.001f, horiz));
+                float yaw = MathF.Atan2(v.X, v.Z);
+                var model = Matrix4x4.CreateRotationX(pitch)
+                          * Matrix4x4.CreateRotationY(yaw)
+                          * Matrix4x4.CreateTranslation(shot.Pos);
+                _meshShader.SetMatrix4("uModel", model);
+                if (shot.Tex is not null)
+                {
+                    shot.Tex.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else _meshShader.SetInt("uHasTexture", 0);
+                shot.Mesh.Draw();
+            }
         }
 
         // Phase 14d — render the PC's equipped weapon attached to the weapon_grip
@@ -25488,6 +25846,23 @@ void main()
                     _meshShader.SetInt("uHasTexture", 0);
                 }
                 _weaponMesh.Draw();
+
+                // SC-RANGED-PROJECTILE — the nocked arrow: while a ranged
+                // attack iteration is winding up (heroes' ATTA note is at
+                // t=0) and hasn't fired yet, the ammo mesh rides the same
+                // hand frame as the bow. Vanishes the instant the FIRE note
+                // spawns the in-flight shot.
+                if (_weaponIsRanged && _playerAmmoMesh is not null
+                    && _playerSwing is { ArrowAway: false })
+                {
+                    if (_playerAmmoTex is not null)
+                    {
+                        _playerAmmoTex.Bind(TextureUnit.Texture0);
+                        _meshShader.SetInt("uHasTexture", 1);
+                    }
+                    else _meshShader.SetInt("uHasTexture", 0);
+                    _playerAmmoMesh.Draw();
+                }
             }
 
             // Phase 9-SC-10 — render every other bone-attached prop on the PC

@@ -100,19 +100,29 @@ public sealed class ActorBrain
         return true;
     }
 
-    /// <summary>One-shot edge + target position for the render layer's thrown
-    /// projectile (krug rock etc.). Set when a Ranged-mode brain fires.</summary>
-    public bool ConsumeJustFiredRanged(out Vector3 target)
+    /// <summary>One-shot edge for the render layer's thrown projectile (krug
+    /// rock, skeleton arrow). Set when a Ranged-mode brain fires. SC-RANGED-
+    /// PROJECTILE — the payload carries the pre-rolled damage and the target
+    /// combat sink; the HOST applies it at projectile impact (DS1 resolves
+    /// ranged damage on collision, not at the FIRE note). A consumer that
+    /// drops the payload drops the hit — by design, that's a miss.</summary>
+    public bool ConsumeJustFiredRanged(out Vector3 target, out float damage,
+                                       out ActorCombatState? targetCombat)
     {
         target = _lastFireTarget;
+        damage = _pendingRangedDamage;
+        targetCombat = _pendingRangedTargetCombat;
         if (!_justFiredRanged) return false;
         _justFiredRanged = false;
+        _pendingRangedTargetCombat = null;
         return true;
     }
 
     bool _justCast;
     bool _justFiredRanged;
     Vector3 _lastFireTarget;
+    float _pendingRangedDamage;
+    ActorCombatState? _pendingRangedTargetCombat;
 
     /// <summary>XZ distance at which we transition Wander → Chase. ~8u is one
     /// krug-sized stride; the PC has to actively step into a mob's bubble.</summary>
@@ -260,11 +270,20 @@ public sealed class ActorBrain
             }
             float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
                 attackerIsPlayer: PartyAligned, ranged: _activeSwingRanged);
-            targetCombat.ApplyDamage(raw);
             if (_activeSwingRanged)
             {
+                // SC-RANGED-PROJECTILE — ranged damage rides the projectile
+                // now: the host consumes this payload, spawns the ammo GO,
+                // and applies the damage at IMPACT (DS1 resolves ranged hits
+                // on collision — job_attack_object_ranged only launches).
                 _justFiredRanged = true;
                 _lastFireTarget = targetPos.Value;
+                _pendingRangedDamage = raw;
+                _pendingRangedTargetCombat = targetCombat;
+            }
+            else
+            {
+                targetCombat.ApplyDamage(raw);
             }
         }
         if (sw.Complete) _activeSwing = null;
@@ -364,7 +383,17 @@ public sealed class ActorBrain
                             {
                                 float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
                                     attackerIsPlayer: PartyAligned, ranged: !meleeNow);
-                                targetCombat!.ApplyDamage(raw);
+                                if (meleeNow)
+                                {
+                                    targetCombat!.ApplyDamage(raw);
+                                }
+                                else
+                                {
+                                    // SC-RANGED-PROJECTILE — same impact-time
+                                    // payload as the scheduled-swing path.
+                                    _pendingRangedDamage = raw;
+                                    _pendingRangedTargetCombat = targetCombat;
+                                }
                             }
                             JustSwung = true;
                             if (!meleeNow)
