@@ -1265,8 +1265,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 // the fireball into a spray. Ball radius = the authored displace
                 // jitter (fireshot ±1), falling back to a small radius-derived
                 // default when displace is unauthored.
-                float jr = MathF.Max(MathF.Abs(s.MinDisplace), MathF.Abs(s.MaxDisplace));
-                if (jr < 0.01f) jr = MathF.Min(MathF.Max(0.25f, s.MaxRadius), 1.0f);
+                // 0.55x the displace jitter: keeps the ball tight enough that
+                // the fireball-01 sprites overlap into ONE fused fireball
+                // rather than a loose ring of distinct blobs.
+                float jr = 0.55f * MathF.Max(MathF.Abs(s.MinDisplace), MathF.Abs(s.MaxDisplace));
+                if (jr < 0.01f) jr = MathF.Min(MathF.Max(0.2f, s.MaxRadius * 0.5f), 0.7f);
                 float z   = Rand(-1f, 1f);
                 float rho = MathF.Sqrt(MathF.Max(0f, 1f - z * z));
                 float th  = Rand(0f, MathF.Tau);
@@ -1274,7 +1277,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 pos = position + new Vector3(rho * MathF.Cos(th), z, rho * MathF.Sin(th)) * rr;
             }
 
-            var vel = s.Velocity * Rand(0.8f, 1.2f);
+            var vel = s.Velocity * Rand(0.8f, 1.2f) + s.CarrierVelocity;
             // Particle radius tracks the authored scale the same way the
             // hand-tuned SpawnFire one-shot does (~scale*0.6→*1.1 over life).
             // The old *0.4 rendered every authored plume at half size, so

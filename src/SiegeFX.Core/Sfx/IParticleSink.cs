@@ -209,6 +209,11 @@ public struct PlumeSpec
     public System.Numerics.Vector4 Color;
     public System.Numerics.Vector3 Velocity;  // doc default fire (0,8,0), steam (0,5.75,0)
     public System.Numerics.Vector3 Accel;     // doc default fire (0,14,0), steam (0,4,0)
+    // Velocity of the emitter itself when it rides a motion handle (trackball/
+    // orbiter). Refreshed each tick. Spawned particles inherit it so a flying
+    // fireball's fire travels WITH the ball as one body instead of stranding
+    // in world space behind it. Zero for static emitters.
+    public System.Numerics.Vector3 CarrierVelocity;
     public float   FlameSize;    // flamesize / wispsize (doc default 1.75 / 2.25)
     public System.Numerics.Vector3 Fctrl;     // fire expansion (min, max, inc)
     public bool    HasFctrl;

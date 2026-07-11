@@ -350,6 +350,18 @@ public sealed class SfxRuntime
                 _emitters.RemoveAt(i);
                 continue;
             }
+            // Carrier velocity: how fast the emitter itself moved this tick.
+            // Handed to plume spawns so the fire rides a flying trackball as a
+            // single body (no world-space trail). Zero on the first tick and
+            // for static emitters.
+            if (e.HasSpec)
+            {
+                e.Spec.CarrierVelocity = (e.HasPrevPos && dt > 1e-5f)
+                    ? (e.Position - e.PrevPosition) / dt
+                    : Vector3.Zero;
+            }
+            e.PrevPosition = e.Position;
+            e.HasPrevPos = true;
             switch (e.Mode)
             {
                 case EmitterMode.Fire:
@@ -3546,6 +3558,11 @@ public sealed class SfxRuntime
         // Phase 23d-2d — lightsource frequency(f): flicker period in
         // seconds (doc default 0.025). 0 = steady.
         public float     Flicker;
+        // Carrier-velocity tracking: last tick's Position + whether we have one
+        // yet, so a motion-following emitter can hand its own velocity to the
+        // particles it spawns (they ride the trackball with it).
+        public Vector3   PrevPosition;
+        public bool      HasPrevPos;
     }
 
     /// <summary>Phase 21-SC-SPELL-VFX-MOTION-HANDLE — live motion state for
