@@ -183,6 +183,7 @@ echo  110. ALPHA-2: DWARVEN GATE        - path2sd: stuck use-toggle gate shows a
 echo  111. ALPHA-2: STAR DEVICE         - gd_a_r1: locked usable reports Locked. without key_glb_star; crypt doors chain msg_scid_opening
 echo  112. NAV VERTICAL-REBIND REPRO    - sd_r1 mine ledge (headless): horseshoe walk must reach at Y=17, never teleport to the Y=44 mountain top
 echo  113. ENEMY ROAM-SIM               - headless 90s wander soak over the path2sd..sd_r2 set; expect 0 FROZEN and no field-report piles
+echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapshot+state-delta+input-authority+chat+malformed-frame safety (loopback)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -302,6 +303,7 @@ if /i "%CHOICE%"=="110" goto T110
 if /i "%CHOICE%"=="111" goto T111
 if /i "%CHOICE%"=="112" goto T112
 if /i "%CHOICE%"=="113" goto T113
+if /i "%CHOICE%"=="114" goto T114
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2627,6 +2629,20 @@ echo  A handful of BLOCKED-heavy but moving actors is normal (pond fish,
 echo  narrow trails). Use --near=x,z,r to reproduce a field report spot.]
 echo.
 "%TOOL%" region roam-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/path2sd,/world/maps/map_world/regions/bt_r1,/world/maps/map_world/regions/path2dm,/world/maps/map_world/regions/path2sd_a,/world/maps/map_world/regions/sd_r1,/world/maps/map_world/regions/sd_r2 90
+echo.
+pause
+goto MENU
+
+:T114
+echo.
+echo --- SC-MP-EOS P3: multiplayer net round-trip (headless) ---
+echo [Host and client MpSessions over the loopback transport. Asserts:
+echo  join -^> world snapshot delivered intact, host-authoritative state
+echo  deltas applied on the client, client Input drives the host sim,
+echo  chat relays both ways, and the bounds-checked protocol reader
+echo  flags a truncated frame instead of throwing. Expect ALL PASS.]
+echo.
+dotnet "%RUN%" --selftest-net
 echo.
 pause
 goto MENU

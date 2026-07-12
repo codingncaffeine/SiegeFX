@@ -192,6 +192,13 @@ else if (args.Length >= 1 && args[0] == "--selftest-save")
     // JSON-correctness check, suitable for test-all.bat.
     return SiegeFX.Runtime.SaveSelfTest.Run() ? 0 : 1;
 }
+else if (args.Length >= 1 && args[0] == "--selftest-net")
+{
+    // SC-MP-EOS P3 self-test. Host↔client round-trip over the loopback
+    // transport: join + snapshot + state delta + input authority + chat +
+    // malformed-frame safety. No window; suitable for test-all.bat.
+    return SiegeFX.Runtime.NetSelfTest.Run() ? 0 : 1;
+}
 else if (args.Length >= 1 && args[0] == "--selftest-dialogue")
 {
     // Phase 20a self-test. Parses a synthetic conversations.gas (mirroring
