@@ -4428,31 +4428,47 @@ public sealed class RenderHost : IDisposable
         // factory and gives us a platform to Tick.
         try
         {
-            var asm = System.Reflection.Assembly.Load("SiegeFX.Net.Eos");
-            var boot = asm.GetType("SiegeFX.Net.Eos.EosBootstrap");
-            var reg = boot?.GetMethod("Register", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-            if (reg is not null)
+            // Assembly.Load(simpleName) resolves against the app's deps.json,
+            // which does NOT list SiegeFX.Net.Eos (it's a reflection-only optional
+            // module), so it fails with FileNotFoundException even when the DLL
+            // sits next to the exe. Load it by explicit path instead.
+            string eosDll = Path.Combine(AppContext.BaseDirectory, "SiegeFX.Net.Eos.dll");
+            if (!File.Exists(eosDll))
             {
-                string cfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
-                // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
-                // instances on one box get DISTINCT anonymous EOS identities
-                // (same cache dir = same device id = same ProductUserId = collision).
-                string cache = Environment.GetEnvironmentVariable("SIEGEFX_EOS_CACHE") is { Length: > 0 } cc
-                    ? cc : Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
-                _eosPlatform = reg.Invoke(null, new object[] { cfg, cache });
-                if (_eosPlatform is not null)
+                Console.WriteLine($"[mp] EOS module not present ({eosDll}) — LAN only");
+            }
+            else
+            {
+                var asm = System.Reflection.Assembly.LoadFrom(eosDll);
+                var boot = asm.GetType("SiegeFX.Net.Eos.EosBootstrap");
+                var reg = boot?.GetMethod("Register", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                if (reg is null)
                 {
-                    var tick = _eosPlatform.GetType().GetMethod("Tick");
-                    if (tick is not null) _eosTick = () => tick.Invoke(_eosPlatform, null);
-                    Console.WriteLine("[mp] EOS provider registered");
+                    Console.WriteLine("[mp] EOS module loaded but EosBootstrap.Register not found");
+                }
+                else
+                {
+                    string cfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
+                    // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
+                    // instances on one box get DISTINCT anonymous EOS identities
+                    // (same cache dir = same device id = same ProductUserId = collision).
+                    string cache = Environment.GetEnvironmentVariable("SIEGEFX_EOS_CACHE") is { Length: > 0 } cc
+                        ? cc : Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
+                    _eosPlatform = reg.Invoke(null, new object[] { cfg, cache });
+                    if (_eosPlatform is not null)
+                    {
+                        var tick = _eosPlatform.GetType().GetMethod("Tick");
+                        if (tick is not null) _eosTick = () => tick.Invoke(_eosPlatform, null);
+                        Console.WriteLine("[mp] EOS provider registered");
+                    }
+                    else
+                    {
+                        Console.WriteLine("[mp] EOS module present but not registered — bad/missing eos_config.txt or platform init failed (see [net] ERROR lines)");
+                    }
                 }
             }
         }
-        catch (System.IO.FileNotFoundException)
-        {
-            // SiegeFX.Net.Eos not built/present — LAN only. Expected default.
-        }
-        catch (Exception ex) { Console.WriteLine($"[mp] EOS load skipped: {ex.Message}"); }
+        catch (Exception ex) { Console.WriteLine($"[mp] EOS load skipped: {ex}"); }
         Console.WriteLine($"[mp] provider = {_mpProviderId} (available: {string.Join(',', SiegeFX.Core.Net.MpProviderFactory.Available)})");
     }
 
