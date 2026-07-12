@@ -5518,6 +5518,8 @@ void main()
                 {
                     _playerFollower?.SetTarget(_playerFollower.Position);
                     _pendingAttackTarget = null;
+                    _pendingCastTarget = null;
+                    _pendingCastProp = null;
                     _pendingPickupPile = null;
                     Console.WriteLine("[cmd] stop");
                 }
@@ -16107,6 +16109,50 @@ void main()
                             }
                         }
                     }
+                    // SC-CAST-APPROACH — pending spell-cast drive: walk until
+                    // the clicked target sits inside the spell's CastRange
+                    // with a clear sight line, then initiate the cast (same
+                    // shape as the pending-attack drive above).
+                    if (_pendingCastTarget is { } pct || _pendingCastProp is not null)
+                    {
+                        var pcSpell = _pendingCastSlot == SiegeFX.Core.Actors.SpellSlot.Primary
+                            ? _playerSpellbook?.Primary : _playerSpellbook?.Secondary;
+                        var pcPos = _pendingCastTarget?.CurrentTransform.Translation
+                                 ?? _pendingCastProp!.World.Translation;
+                        bool pcDead = pcSpell is null
+                            || (_pendingCastTarget is { } t0 && (t0.IsDead || t0.Actor.Combat.IsDead))
+                            || (_pendingCastProp is { } p0 && p0.IsDestroyed);
+                        if (pcDead)
+                        {
+                            _pendingCastTarget = null;
+                            _pendingCastProp = null;
+                        }
+                        else
+                        {
+                            float cdx = after.X - pcPos.X;
+                            float cdz = after.Z - pcPos.Z;
+                            float cdist = MathF.Sqrt(cdx * cdx + cdz * cdz);
+                            if (cdist > MeleeChaseGiveUp)
+                            {
+                                Console.WriteLine($"click-cast: gave up (dist={cdist:F1}u)");
+                                _pendingCastTarget = null;
+                                _pendingCastProp = null;
+                            }
+                            else if (cdist <= pcSpell!.CastRange && !IsSightBlocked(after, pcPos))
+                            {
+                                BeginPlayerCast(_pendingCastSlot, pcSpell,
+                                    _pendingCastTarget, _pendingCastProp,
+                                    _progression?.Level ?? 1);
+                                _pendingCastTarget = null;
+                                _pendingCastProp = null;
+                            }
+                            else
+                            {
+                                _playerFollower.SetTarget(ComputeApproachPoint(
+                                    after, pcPos, MathF.Max(1.5f, pcSpell.CastRange * 0.9f)));
+                            }
+                        }
+                    }
 
                     // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
                     // (lr_unit/lr_period and mr_unit/mr_period; STR/INT-scaled). At
@@ -19696,8 +19742,11 @@ void main()
             TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
             _playerFollower.SetTarget(upw);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
-        // (and Phase 22: any pending walk-up pickup).
+        // (and Phase 22: any pending walk-up pickup; SC-CAST-APPROACH: any
+        // pending walk-up cast).
         _pendingAttackTarget = null;
+        _pendingCastTarget = null;
+        _pendingCastProp = null;
         _pendingPickupPile = null;
         // SC-CLICK-AUDIO — the soft order tap on an accepted move click;
         // the authored "can't move there" cue when the point is unreachable.
@@ -20330,6 +20379,13 @@ void main()
     // enemy beyond reach: the follower walks up, and once inside MeleeReach the
     // per-tick check fires the actual swing through PerformPlayerSwing.
     private ActorRenderState? _pendingAttackTarget;
+    // SC-CAST-APPROACH — pending walk-up-and-cast latch: clicking an enemy
+    // (or breakable) beyond the active spell's CastRange runs the hero into
+    // range and re-initiates the cast, mirroring the melee/bow walk-up
+    // instead of refusing with "out of range".
+    private ActorRenderState? _pendingCastTarget;
+    private StaticPropInstance? _pendingCastProp;
+    private SiegeFX.Core.Actors.SpellSlot _pendingCastSlot;
     // Phase 13e — fallback attacker profile used when the PC template didn't
     // resolve real damage stats (hero templates author damage=0 and derive it
     // from the equipped weapon — Phase 14). 1-3 matches a bare-fisted level-1
@@ -20444,6 +20500,8 @@ void main()
         if (playerDist > reach || meleeObstructed || rangedSightBlocked)
         {
             _pendingAttackTarget = best;
+            _pendingCastTarget = null;
+            _pendingCastProp = null;
             // Walk to a point just inside reach on the player→target line so
             // the follower stops at swinging distance instead of plowing in.
             var stop = ComputeApproachPoint(pPos, tPos, reach);
@@ -24851,9 +24909,52 @@ void main()
                 }
                 if (bestProp is not null)
                 {
+                    // SC-CAST-APPROACH — a breakable beyond cast range gets
+                    // the same walk-up the actor path below uses.
+                    var bpPos = bestProp.World.Translation;
+                    float bdx = bpPos.X - playerPos.X, bdz = bpPos.Z - playerPos.Z;
+                    float bdist = MathF.Sqrt(bdx * bdx + bdz * bdz);
+                    if (bdist > spell.CastRange || IsSightBlocked(playerPos, bpPos))
+                    {
+                        _pendingCastProp = bestProp;
+                        _pendingCastTarget = null;
+                        _pendingCastSlot = slot;
+                        _pendingAttackTarget = null;
+                        _pendingPickupPile = null;
+                        _playerFollower?.SetTarget(ComputeApproachPoint(
+                            playerPos, bpPos, MathF.Max(1.5f, spell.CastRange * 0.9f)));
+                        Console.WriteLine($"click-cast: approaching {bestProp.Template} " +
+                                          $"(dist={bdist:F1}u, range={spell.CastRange:F1}u)");
+                        return;
+                    }
                     BeginPlayerCast(slot, spell, best: null, prop: bestProp, magicLevel);
                     return;
                 }
+            }
+        }
+
+        // SC-CAST-APPROACH — DS1 runs the hero INTO cast range instead of
+        // refusing: a target beyond CastRange (or behind a sight occluder)
+        // latches a pending cast; the per-tick drive walks the follower and
+        // initiates the cast when range + sight clear. Mirrors the melee/bow
+        // _pendingAttackTarget walk-up.
+        if (best is not null)
+        {
+            var ctp = best.CurrentTransform.Translation;
+            float cdx = ctp.X - playerPos.X, cdz = ctp.Z - playerPos.Z;
+            float cdist = MathF.Sqrt(cdx * cdx + cdz * cdz);
+            if (cdist > spell.CastRange || IsSightBlocked(playerPos, ctp))
+            {
+                _pendingCastTarget = best;
+                _pendingCastProp = null;
+                _pendingCastSlot = slot;
+                _pendingAttackTarget = null;
+                _pendingPickupPile = null;
+                _playerFollower?.SetTarget(ComputeApproachPoint(
+                    playerPos, ctp, MathF.Max(1.5f, spell.CastRange * 0.9f)));
+                Console.WriteLine($"click-cast: approaching {best.Actor.Template.Name} " +
+                                  $"(dist={cdist:F1}u, range={spell.CastRange:F1}u)");
+                return;
             }
         }
 
@@ -25927,6 +26028,8 @@ void main()
             {
                 _pendingPickupPile = pick;
                 _pendingAttackTarget = null;
+                _pendingCastTarget = null;
+                _pendingCastProp = null;
                 _playerFollower.SetTarget(pick.Position);
                 // SC-PICKUP-BLOCKED — items authored inside a prop cluster
                 // (the fh_r1 Fireshot page among the barrels) sit on
