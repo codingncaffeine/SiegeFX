@@ -19392,6 +19392,33 @@ void main()
         }
     }
 
+    /// <summary>SC-SPELL-SPARKLE — the ground glitter is authored PER SPELL
+    /// SCHOOL: every spell template fires a we_dropped trigger calling
+    /// nature_spell_sparkle (green .2,.7,.4 — base_spell_good chain) or
+    /// combat_spell_sparkle (orange .7,.4,.2 — base_spell_dark/monster).
+    /// Keyed by the spell's [magic] magic_class, lifted ~1.35× so the
+    /// authored tints read at gameplay distance (same lesson as the blood
+    /// and fireball-core colors). Cached per reference.</summary>
+    private readonly Dictionary<string, Vector4> _spellSparkleColorCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private Vector4 SpellSparkleColor(string spellRef)
+    {
+        if (_spellSparkleColorCache.TryGetValue(spellRef, out var hit)) return hit;
+        var color = new Vector4(1f, 1f, 1f, 1f);
+        if (_templateStore is not null && _templateStore.TryGet(spellRef, out var tpl) && tpl is not null)
+        {
+            var mc = (_templateStore.GetAttribute(tpl, "magic", "magic_class") ?? "")
+                .Trim().ToLowerInvariant();
+            if (mc.Contains("nature"))
+                color = new Vector4(0.27f, 0.95f, 0.54f, 1f);   // authored .2,.7,.4 × 1.35
+            else if (mc.Contains("combat"))
+                color = new Vector4(0.95f, 0.54f, 0.27f, 1f);   // authored .7,.4,.2 × 1.35
+        }
+        _spellSparkleColorCache[spellRef] = color;
+        return color;
+    }
+
     /// <summary>SC-NPC-WEAPONS — item template → cached (StaticMesh, texture)
     /// via its [aspect] model, shared across every actor holding the same
     /// model. Same load recipe as <see cref="TryLoadPlayerWeapon"/>.</summary>
@@ -25842,7 +25869,6 @@ void main()
             const float glitterRate = 18f;          // sparkles per second per pile
             const float scrollTopY  = 0.30f;        // was 0.55 — emit just above the resting scroll
             const float footprintR  = 0.16f;        // was 0.30 — tighter cluster on the scroll
-            var sparkleColor = new Vector4(1f, 1f, 1f, 1f); // pure white
             // SC-WORLD-INVENTORY-VIEW-DISTANCE — match the render cull via the
             // shared WorldInventoryVisRadius constant so the two paths can't
             // drift. Far-away world-inventory scrolls would otherwise burn
@@ -25860,24 +25886,24 @@ void main()
                     float pdz = pile.Position.Z - glitterPlayerPos.Z;
                     if (pdx * pdx + pdz * pdz > glitterR2) { pile.GlitterCarry = 0f; continue; }
                 }
-                bool hasScroll = false;
+                string? scrollRef = null;
                 foreach (var entry in pile.Items)
                 {
                     if (string.IsNullOrEmpty(entry.Slot)
                         && entry.Reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
                     {
-                        hasScroll = true;
+                        scrollRef = entry.Reference;
                         break;
                     }
                 }
-                if (!hasScroll) { pile.GlitterCarry = 0f; continue; }
+                if (scrollRef is null) { pile.GlitterCarry = 0f; continue; }
                 pile.GlitterCarry += glitterRate * (float)dt;
                 if (pile.GlitterCarry < 1f) continue;
                 int batch = (int)pile.GlitterCarry;
                 pile.GlitterCarry -= batch;
                 _particles.SpawnTwinkle(
                     pile.Position + new Vector3(0f, scrollTopY, 0f),
-                    sparkleColor,
+                    SpellSparkleColor(scrollRef),
                     footprintRadius: footprintR,
                     scale: 0.14f,         // was 0.18 — tighter visual size
                     duration: 0.45f,      // was 0.70 — fade before drifting too high
