@@ -1601,10 +1601,11 @@ public sealed class SfxRuntime
                     Position = h.Anchor,
                     Color    = coreColor,
                     // For Glow, Scale is the halo radius; trackball keeps
-                    // its 0.80x particle-scale shrink to read as a streak.
+                    // its particle-scale shrink to read as a streak (user
+                    // sizing pass 2026-07-11: fireball read fat — halved).
                     Scale    = isLight
                         ? MathF.Max(0.30f, h.Scale)
-                        : MathF.Max(0.30f, h.Scale * 0.80f),
+                        : MathF.Max(0.15f, h.Scale * 0.40f),
                     Rate     = isLight ? 80f : 60f,
                     TargetMotionId = h.MotionId,
                     SelfMotionId   = h.MotionId,
@@ -1619,7 +1620,7 @@ public sealed class SfxRuntime
                         Mode     = EmitterMode.Glow,
                         Position = h.Anchor,
                         Color    = coreColor,
-                        Scale    = MathF.Max(0.40f, h.Scale * 1.6f),
+                        Scale    = MathF.Max(0.20f, h.Scale * 0.8f),
                         Rate     = 80f,
                         TargetMotionId = h.MotionId,
                         SelfMotionId   = h.MotionId,

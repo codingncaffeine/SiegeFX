@@ -22489,11 +22489,14 @@ void main()
         public Vector3 SnapshotAim;
     }
     private readonly List<RangedShot> _rangedShots = new();
-    // SC-RANGED-PROJECTILE fix — arrow ASPs are modeled shaft-along-Y with
-    // the TIP at −Y (user playtest: the +90° guess flew tip-backward,
-    // "pointing at the player's feet", and read edge-on/invisible at nock).
-    // −90° about X maps −Y→+Z so the tip leads the trajectory.
-    private static readonly Matrix4x4 s_ammoAxisFix = Matrix4x4.CreateRotationX(-MathF.PI / 2f);
+    // SC-RANGED-PROJECTILE — arrow ASPs are modeled shaft-along-Z (asp
+    // extents 0.11 × 0.09 × 0.89; end bones at Z −0.45/+0.44), which is
+    // ALREADY the flight frame's forward — identity is correct. The two
+    // earlier rotation "fixes" (±90° X) chased the nocked arrow's hand-bone
+    // orientation and broke flight (tip-at-feet, then tip-left). If a
+    // playtest shows arrows flying fletching-first, the fix is RotY(π)
+    // here — nothing else.
+    private static readonly Matrix4x4 s_ammoAxisFix = Matrix4x4.Identity;
     private const float RangedImpactRadius = 0.9f;
     private const float RangedSimDuration = 7f;   // components.gas sim_duration default
     private const float DefaultAmmoGravity = 6.864655f; // components.gas [physics] gravity
