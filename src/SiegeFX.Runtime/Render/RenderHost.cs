@@ -17725,6 +17725,17 @@ void main()
         }
         var act = _mpSession.ConsumeAction();
         if (act != Hud.MpSessionScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
+        // A player name is required to host or join: it names the hosted game
+        // (blank names all collapse to "'s Game") and the roster/avatar entry.
+        // The lobby id + host PUID stay unique regardless, so same-named hosts
+        // still route correctly — this is purely so games are human-readable.
+        bool HasName()
+        {
+            var n = _mpSession.PlayerName.Trim();
+            if (n.Length == 0) { _mpSession.Status = "Enter a player name first."; return false; }
+            _mpSession.PlayerName = n; // normalize (trim) so the game name is clean
+            return true;
+        }
         switch (act)
         {
             case Hud.MpSessionScreen.Action.Close:
@@ -17733,6 +17744,7 @@ void main()
                 _frontendScene.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
                 break;
             case Hud.MpSessionScreen.Action.Connect:
+                if (!HasName()) break;
                 var addr = _mpSession.AddressEntry.Trim();
                 if (addr.Length == 0)
                 {
@@ -17756,9 +17768,11 @@ void main()
                 _mpSession.SelectedGame = -1;
                 break;
             case Hud.MpSessionScreen.Action.Host:
+                if (!HasName()) break;
                 MpStartHost();
                 break;
             case Hud.MpSessionScreen.Action.Join:
+                if (!HasName()) break;
                 if (_mpSession.SelectedGame >= 0
                     && _mpSession.SelectedGame < _mpSession.LanGameAddresses.Count)
                     MpStartConnect(_mpSession.LanGameAddresses[_mpSession.SelectedGame]);
