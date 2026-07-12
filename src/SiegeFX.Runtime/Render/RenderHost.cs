@@ -18203,7 +18203,12 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToSp
               || _frontendScene.State == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
               || _frontendScene.State == Hud.FrontendScene.ScreenState.Difficulty
-              || _frontendScene.State == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect)
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MainMenuToMp
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpToMainMenu
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork)
         {
             // Phase 26-VIEWPORT — clip rendering to the chrome's letterbox
             // area so meshes that extend BEYOND backdrop's authored bounds
