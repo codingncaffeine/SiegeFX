@@ -1435,6 +1435,11 @@ public sealed class RenderHost : IDisposable
         public float NetTargetYaw;
         public bool NetHasTarget;
 
+        // SC-MP-INGAME P3 — a world actor (enemy/NPC) whose pose the host dictates
+        // over the wire on a client. The sim skips its Brain; the transform is
+        // slaved to NetTargetPos/Yaw exactly like a remote avatar.
+        public bool IsNetworkOwned;
+
         // Phase 26a — set once an NPC is recruited into the party (the player
         // is member 0 and also carries IsPlayer). Party members follow the
         // party leader instead of wandering, count as party for trigger
@@ -4022,6 +4027,9 @@ public sealed class RenderHost : IDisposable
     private string? _mpJoinedHostAddress;      // client: the address we connected to (reused in-region)
     private const string MpRegionPath = "/world/maps/map_world/regions/fh_r1";
     private sealed record MpRelaunch(string Role, string Provider, string HostAddr, int Port, string Name);
+    // Client: authored SCID -> the local actor the host drives (built once at
+    // in-region init since the region is static for a co-op session).
+    private readonly Dictionary<uint, ActorRenderState> _mpScidIndex = new();
     private volatile List<(string Row, string Addr)>? _mpLanScanResult;
     private bool _mpLanScanBusy;
     // SC-MP-EOS P4 — the configured provider id (SIEGEFX_MP_PROVIDER env /
@@ -4094,6 +4102,7 @@ public sealed class RenderHost : IDisposable
         }
         else
         {
+            MpMarkClientWorldActors(); // host drives the mobs; suppress local AI
             // Raise the connect budget — the host is loading its region in parallel.
             if (transport is SiegeFX.Core.Net.UdpTransport udp) { udp.ConnectAttempts = 120; udp.ConnectDelayMs = 500; }
             transport.PeerDisconnected += _ => SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host");
@@ -4141,7 +4150,11 @@ public sealed class RenderHost : IDisposable
         var list = new List<SiegeFX.Core.Net.MpActorState>(_actors.Count);
         foreach (var a in _actors)
         {
-            if (a.IsPlayer || a.IsRemotePlayer || a.IsDead) continue;
+            // Only the mobs/NPCs that can move or die (they have a Brain). Static
+            // props are already placed identically by the shared region load, and
+            // players ride the separate player-pose channel. Dead mobs stay in the
+            // set so their life==0 reaches a client that joined before they died.
+            if (a.IsPlayer || a.IsRemotePlayer || a.Brain is null) continue;
             var pos = a.CurrentTransform.Translation;
             list.Add(new SiegeFX.Core.Net.MpActorState(
                 a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
@@ -4243,16 +4256,50 @@ public sealed class RenderHost : IDisposable
         float t = 1f - MathF.Exp(-dt * 12f);
         foreach (var a in _actors)
         {
-            if (!a.IsRemotePlayer || !a.NetHasTarget) continue;
+            if ((!a.IsRemotePlayer && !a.IsNetworkOwned) || !a.NetHasTarget) continue;
             var cur = a.CurrentTransform.Translation;
             var next = Vector3.Lerp(cur, a.NetTargetPos, t);
             a.CurrentTransform = Matrix4x4.CreateRotationY(a.NetTargetYaw) * Matrix4x4.CreateTranslation(next);
         }
     }
 
-    // SC-MP-INGAME P3 — slave host-owned world actors to the delta by SCID.
-    // Filled in the enemy-sync phase.
-    private void MpApplyWorldDelta(uint tick, IReadOnlyList<SiegeFX.Core.Net.MpActorState> actors) { }
+    // SC-MP-INGAME P3 — client: mark the region's mobs/NPCs host-authoritative
+    // (suppress their local AI) and index them by authored SCID. The region is
+    // identical on both machines, so SCIDs match; static props aren't network-
+    // owned — they're already placed correctly by the shared region load.
+    private void MpMarkClientWorldActors()
+    {
+        _mpScidIndex.Clear();
+        int n = 0;
+        foreach (var a in _actors)
+        {
+            if (a.IsPlayer || a.IsRemotePlayer || a.Brain is null) continue;
+            a.IsNetworkOwned = true;
+            _mpScidIndex[a.Actor.Instance.Scid] = a;
+            n++;
+        }
+        SiegeFX.Core.Net.NetLog.Info($"client: {n} world actors are host-authoritative (local AI suppressed)");
+    }
+
+    // SC-MP-INGAME P3 — client: slave host-owned actors to the delta by SCID.
+    // Position interpolates (see MpInterpolateRemoteActors); facing is derived
+    // from motion; life==0 propagates the host's kills so the corpse shows.
+    private void MpApplyWorldDelta(uint tick, IReadOnlyList<SiegeFX.Core.Net.MpActorState> actors)
+    {
+        foreach (var st in actors)
+        {
+            if (!_mpScidIndex.TryGetValue(st.Scid, out var a)) continue;
+            var cur = a.CurrentTransform.Translation;
+            bool dead = st.Life == 0;
+            float dx = st.X - cur.X, dz = st.Z - cur.Z;
+            bool moving = !dead && (dx * dx + dz * dz) > 0.0025f;
+            if (moving) a.NetTargetYaw = MathF.Atan2(dx, dz);
+            a.NetTargetPos = new Vector3(st.X, st.Y, st.Z);
+            a.NetHasTarget = true;
+            a.IsMoving = moving;
+            if (dead && !a.IsDead) { a.IsDead = true; SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)"); }
+        }
+    }
 
     // SC-MP-EOS P8 — stand up the host-authoritative session driver over the
     // active transport and enter the staging area. The engine supplies the
@@ -16628,6 +16675,10 @@ void main()
                     // so non-combatants and brain-less actors still tick.
                     s.Actor.Host.TickOverride((float)stepSec);
                     if (s.Brain is null) continue;
+                    // SC-MP-INGAME — client: a host-authoritative actor's pose is
+                    // dictated over the wire; skip its local AI so packets own the
+                    // transform (it still animates + draws via the loops below).
+                    if (s.IsNetworkOwned) continue;
                     // SC-SMASH — while the barn set-piece drives this actor, pause
                     // its brain so it doesn't fight the scripted walk or overwrite
                     // the pose from its own (stale) follower position.
