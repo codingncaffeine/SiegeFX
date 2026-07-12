@@ -4252,7 +4252,8 @@ public sealed class RenderHost : IDisposable
             avatar.NetTargetYaw = ps.Yaw;
             avatar.NetHasTarget = true;
             avatar.IsMoving = (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving) != 0;
-            avatar.IsDead   = (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead) != 0;
+            // Death/revive of a remote player drives its avatar's corpse chore.
+            MpSetNetActorDead(avatar, (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead) != 0, playDeathSfx: false);
         }
     }
 
@@ -4373,7 +4374,8 @@ public sealed class RenderHost : IDisposable
             a.NetTargetPos = new Vector3(st.X, st.Y, st.Z);
             a.NetHasTarget = true;
             a.IsMoving = moving;
-            if (dead && !a.IsDead) { a.IsDead = true; SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)"); }
+            if (dead && !a.IsDead) SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)");
+            MpSetNetActorDead(a, dead, playDeathSfx: true);
         }
     }
 
@@ -4386,6 +4388,27 @@ public sealed class RenderHost : IDisposable
         _mpNetSession is not null
         && string.Equals(_mpInRegionRole, "client", StringComparison.OrdinalIgnoreCase)
         && target.IsNetworkOwned;
+
+    // SC-MP-INGAME F3 — apply a network-driven death/revive to an actor whose
+    // life is owned elsewhere (host-owned enemies via the world delta; remote
+    // players via their broadcast Dead flag). On the false→true edge it pins
+    // chore_die so the body actually falls like a locally-killed one instead of
+    // freezing upright; on the true→false edge (revive/respawn) it cancels the
+    // death chore so locomotion resumes. Edge-guarded, so repeated deltas no-op.
+    private void MpSetNetActorDead(ActorRenderState a, bool dead, bool playDeathSfx)
+    {
+        if (dead && !a.IsDead)
+        {
+            a.IsDead = true;
+            BeginDeathChore(a);
+            if (playDeathSfx) PlayDeathSfx(a.Actor.Template, a.CurrentTransform.Translation);
+        }
+        else if (!dead && a.IsDead)
+        {
+            a.IsDead = false;
+            a.Actor.Host.OverrideAnimIndex(-1, 0f); // cancel chore_die → resume locomotion
+        }
+    }
 
     // SC-MP-INGAME F3 — host: apply a co-op client's rolled damage to the
     // authoritative actor named by SCID, then run the local hit/death path so the
