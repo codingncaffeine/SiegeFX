@@ -3497,6 +3497,13 @@ public sealed class RenderHost : IDisposable
     // player opts in with the authored L toggle ("Character Labels").
     private bool _charLabelsVisible;
     private bool _overheadBarsVisible;
+    // SC-DEVMODE — every SiegeFX-invented debug hotkey (terrain-UV cycle,
+    // hoe-grip tuner, fly cam, decal/fade diags, force-recruit) gates on
+    // the same env switch as the tilde console, so a playtester can't
+    // trip one accidentally. Authored retail bindings + the F11 bug
+    // snapshot stay live in every build.
+    private static readonly bool DevHotkeys =
+        Environment.GetEnvironmentVariable("SIEGEFX_DEV") == "1";
     private bool _camTracking = true;
     private bool _altComboFired;
     // SC-OPTIONS-REBIND — the live key-binding registry (authored
@@ -5132,7 +5139,7 @@ void main()
                 if (key == Key.GraveAccent && !_bootMode && _player is not null
                     && !_saveDialog.IsOpen && !_creator.IsOpen)
                 {
-                    if (Environment.GetEnvironmentVariable("SIEGEFX_DEV") == "1")
+                    if (DevHotkeys)
                         ToggleDevConsole();
                     else
                         Console.WriteLine("[dev] console disabled (set SIEGEFX_DEV=1 to enable)");
@@ -5281,7 +5288,7 @@ void main()
                 // Commands cluster. The old dev formation-cycle hook moved
                 // to Ctrl+F (gas leaves cycle_formations = key_none; DS1
                 // cycles formations via the RMB+LMB modal, not a key).
-                else if (key == Key.F && modCtrl && _party.Count > 1)
+                else if (DevHotkeys && key == Key.F && modCtrl && _party.Count > 1)
                 { CyclePartyFormation(); _audio?.Play(SfxGuiInventory); }
                 else if (Is("field_commands") && _player is not null)
                 {
@@ -5291,7 +5298,7 @@ void main()
                 // SC-TERRAIN-UV dev hook: 'U' cycles the terrain tile UV
                 // orientation (8 dihedral flips/rotations) to find the one where
                 // the ground pattern connects across tiles. Logs the mode.
-                else if (key == Key.U)
+                else if (DevHotkeys && key == Key.U)
                 {
                     _terrainUvOrient = (_terrainUvOrient + 1) % 8;
                     string[] modes = { "identity", "transpose", "flipU", "flipV",
@@ -5304,28 +5311,28 @@ void main()
                 // into the hero's hand outside the cinematic so it can be tuned with full
                 // camera control. 8/2 pitch, 4/6 yaw, 7/9 roll (±5°); 1/3 X, +/− Y, * / Z
                 // (±0.01); 5 resets; . prints. Same live-tweak flow the dagger grip used.
-                else if (key == Key.Keypad0 && _player is not null && !_player.IsDead)
+                else if (DevHotkeys && key == Key.Keypad0 && _player is not null && !_player.IsDead)
                 {
                     _hoeGripDevMode = !_hoeGripDevMode;
                     if (_hoeGripDevMode) { EquipHoeInHand(); _introHoeTimer = 0f; PrintHoeGrip(); }
                     else { _player.Actor.Host.OverrideAnimIndex(-1, 0f); RestoreIntroHoeWeapon(); }
                     Console.WriteLine($"[hoe-grip] dev mode = {_hoeGripDevMode} (hoe in hand + hoeing loop); live value -> {HoeGripDevFile}");
                 }
-                else if (key == Key.Keypad8) { _hoeGripEulerDeg.X += 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad2) { _hoeGripEulerDeg.X -= 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad4) { _hoeGripEulerDeg.Y -= 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad6) { _hoeGripEulerDeg.Y += 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad7) { _hoeGripEulerDeg.Z -= 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad9) { _hoeGripEulerDeg.Z += 5f; PrintHoeGrip(); }
-                else if (key == Key.Keypad1) { _hoeGripTrans.X -= 0.01f; PrintHoeGrip(); }
-                else if (key == Key.Keypad3) { _hoeGripTrans.X += 0.01f; PrintHoeGrip(); }
-                else if (key == Key.KeypadAdd) { _hoeGripTrans.Y += 0.01f; PrintHoeGrip(); }
-                else if (key == Key.KeypadSubtract) { _hoeGripTrans.Y -= 0.01f; PrintHoeGrip(); }
-                else if (key == Key.KeypadMultiply) { _hoeGripTrans.Z += 0.01f; PrintHoeGrip(); }
-                else if (key == Key.KeypadDivide) { _hoeGripTrans.Z -= 0.01f; PrintHoeGrip(); }
-                else if (key == Key.Keypad5) { _hoeGripEulerDeg = Vector3.Zero; _hoeGripTrans = Vector3.Zero; PrintHoeGrip(); }
-                else if (key == Key.KeypadDecimal) { PrintHoeGrip(); }
-                else if (key == Key.KeypadEnter && _introHoeSwapped)
+                else if (DevHotkeys && key == Key.Keypad8) { _hoeGripEulerDeg.X += 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad2) { _hoeGripEulerDeg.X -= 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad4) { _hoeGripEulerDeg.Y -= 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad6) { _hoeGripEulerDeg.Y += 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad7) { _hoeGripEulerDeg.Z -= 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad9) { _hoeGripEulerDeg.Z += 5f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad1) { _hoeGripTrans.X -= 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad3) { _hoeGripTrans.X += 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadAdd) { _hoeGripTrans.Y += 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadSubtract) { _hoeGripTrans.Y -= 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadMultiply) { _hoeGripTrans.Z += 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadDivide) { _hoeGripTrans.Z -= 0.01f; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.Keypad5) { _hoeGripEulerDeg = Vector3.Zero; _hoeGripTrans = Vector3.Zero; PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadDecimal) { PrintHoeGrip(); }
+                else if (DevHotkeys && key == Key.KeypadEnter && _introHoeSwapped)
                 {
                     // Flip the hoe between the off-hand (character's left) and the weapon hand.
                     _weaponGripBoneOverride = _weaponGripBoneOverride >= 0 ? -1 : _shieldGripBoneIdx;
@@ -5347,7 +5354,7 @@ void main()
                 // Ctrl+R force-recruits the nearest hireable NPC (bypasses
                 // the join dialogue + gold cost) so party follow/formation can be
                 // tested deterministically without hunting the recruit conversation.
-                else if (key == Key.R && _player is not null && modCtrl)
+                else if (DevHotkeys && key == Key.R && _player is not null && modCtrl)
                 {
                     var pp = _player.CurrentTransform.Translation;
                     ActorRenderState? best = null; float bestD2 = 12f * 12f;
@@ -5387,7 +5394,7 @@ void main()
                 // Phase 13b → relocated: F8 flips between chase cam (follows
                 // the PC) and fly cam (free WASD+RMB). No-op if there's no
                 // player. C used to do this; freed for the character pane.
-                else if (key == Key.F8 && _player is not null)
+                else if (DevHotkeys && key == Key.F8 && _player is not null)
                 {
                     _cameraMode = _cameraMode == CameraMode.Chase ? CameraMode.Fly : CameraMode.Chase;
                     Console.WriteLine($"camera: {_cameraMode}");
@@ -5633,7 +5640,7 @@ void main()
                 // SC-DECAL-DIAG — live decal-layer toggle (dev knob; strip
                 // before v1.0). Confirms/clears decals for any "floating
                 // flat image" report in one keypress, no rebuild.
-                else if (key == Key.F6)
+                else if (DevHotkeys && key == Key.F6)
                 {
                     _decalsVisible = !_decalsVisible;
                     Console.WriteLine($"[decals] layer {(_decalsVisible ? "ON" : "OFF")} (F6)");
@@ -5647,7 +5654,7 @@ void main()
                     if (_optionsMenu.IsOpen) _optionsMenu.OnEscape();
                     else OpenOptionsMenu();
                 }
-                else if (key == Key.F7)
+                else if (DevHotkeys && key == Key.F7)
                 {
                     // SC-FADE-DIAG — snapshot the live cutaway state to a log
                     // file (the windowed build has no visible console). Press
