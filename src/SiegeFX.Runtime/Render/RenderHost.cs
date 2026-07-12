@@ -3992,6 +3992,66 @@ public sealed class RenderHost : IDisposable
     private readonly MpSessionScreen _mpSession = new();
     private bool _mpSessionLoaded;
     private string? _mpLocalIp;
+    // SC-MP-EOS P2 — live LAN provider + direct-UDP transport behind the
+    // P1 seam. One transport at a time; NetLog carries the diagnostics.
+    private SiegeFX.Core.Net.LanLobbyService? _mpLanLobby;
+    private SiegeFX.Core.Net.UdpTransport? _mpTransport;
+    private double _mpLanScanAt;
+    private volatile List<(string Row, string Addr)>? _mpLanScanResult;
+    private bool _mpLanScanBusy;
+
+    private void MpTearDownSession()
+    {
+        _mpLanLobby?.Dispose(); _mpLanLobby = null;
+        _mpTransport?.Dispose(); _mpTransport = null;
+        _mpSession.Status = "";
+    }
+
+    private void MpStartHost()
+    {
+        MpTearDownSession();
+        _mpTransport = new SiegeFX.Core.Net.UdpTransport();
+        _mpTransport.PeerConnected += id =>
+            _mpSession.Status = $"Player {id} connected ({_mpTransport?.Peers.Count ?? 0} in session). Waiting in staging...";
+        _mpTransport.PeerDisconnected += id =>
+            _mpSession.Status = $"Player {id} left ({_mpTransport?.Peers.Count ?? 0} in session).";
+        _ = _mpTransport.ListenAsync(SiegeFX.Core.Net.UdpTransport.DefaultGamePort, default)
+            .ContinueWith(t =>
+            {
+                if (t.Result)
+                {
+                    _mpSession.Status = $"HOSTING '{_mpSession.PlayerName}'s Game' on port {SiegeFX.Core.Net.UdpTransport.DefaultGamePort} — waiting for players...";
+                    _mpLanLobby = new SiegeFX.Core.Net.LanLobbyService();
+                    _ = _mpLanLobby.CreateAsync($"{_mpSession.PlayerName}'s Game",
+                        new Dictionary<string, string>
+                        {
+                            ["port"] = SiegeFX.Core.Net.UdpTransport.DefaultGamePort.ToString(),
+                            ["map"] = "Kingdom of Ehb",
+                            ["players"] = "1/8",
+                            ["host"] = _mpSession.PlayerName,
+                        }, default);
+                }
+                else
+                {
+                    _mpSession.Status = $"HOST FAILED — port {SiegeFX.Core.Net.UdpTransport.DefaultGamePort} in use? See session log [net] lines.";
+                }
+            }, TaskScheduler.Default);
+    }
+
+    private void MpStartConnect(string address)
+    {
+        MpTearDownSession();
+        _mpTransport = new SiegeFX.Core.Net.UdpTransport();
+        _mpTransport.PeerDisconnected += _ =>
+            _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
+        _mpSession.Status = $"Connecting to {address}...";
+        _ = _mpTransport.ConnectAsync(address, default).ContinueWith(t =>
+        {
+            _mpSession.Status = t.Result
+                ? $"CONNECTED to {address} — waiting in staging..."
+                : $"CONNECT FAILED to {address} — host down, wrong address, or port blocked. See session log [net] lines.";
+        }, TaskScheduler.Default);
+    }
     private static string MpSessionPrefsPath =>
         Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "mp_session.txt");
 
@@ -16783,26 +16843,78 @@ void main()
         bool active = _bootMode
             && (st == Hud.FrontendScene.ScreenState.MpInternet
              || st == Hud.FrontendScene.ScreenState.MpNetwork);
+        bool wasActive = _mpSession.IsActive;
         _mpSession.IsActive = active;
-        if (!active) return;
+        if (!active)
+        {
+            // Leaving the screens tears the session down (BACK from the
+            // provider menu / Esc path saves prefs there).
+            if (wasActive) MpTearDownSession();
+            return;
+        }
+        // SC-MP-EOS P2 — LAN discovery loop: while the Network screen is
+        // up and we're not hosting, rescan every 2.5s off-thread and apply
+        // results on this (render) thread.
+        if (st == Hud.FrontendScene.ScreenState.MpNetwork && _mpLanLobby is null)
+        {
+            if (_mpLanScanResult is { } scan)
+            {
+                _mpLanScanResult = null;
+                _mpSession.LanGames.Clear();
+                _mpSession.LanGameAddresses.Clear();
+                foreach (var (row, addr) in scan)
+                {
+                    _mpSession.LanGames.Add(row);
+                    _mpSession.LanGameAddresses.Add(addr);
+                }
+                if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
+            }
+            if (!_mpLanScanBusy && _playSeconds >= _mpLanScanAt)
+            {
+                _mpLanScanBusy = true;
+                _mpLanScanAt = _playSeconds + 2.5;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var scanner = new SiegeFX.Core.Net.LanLobbyService();
+                        var lobbies = await scanner.ListAsync(default).ConfigureAwait(false);
+                        _mpLanScanResult = lobbies.Select(l =>
+                        {
+                            l.Attributes.TryGetValue("map", out var map);
+                            l.Attributes.TryGetValue("players", out var players);
+                            return ($"{l.Name}   {map ?? ""}   {players ?? ""}   {l.HostAddress}", l.HostAddress);
+                        }).ToList();
+                    }
+                    catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"lan scan loop: {ex.Message}"); }
+                    finally { _mpLanScanBusy = false; }
+                });
+            }
+        }
         var act = _mpSession.ConsumeAction();
         if (act != Hud.MpSessionScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
         switch (act)
         {
             case Hud.MpSessionScreen.Action.Close:
                 SaveMpSessionPrefs();
+                MpTearDownSession();
                 _frontendScene.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
                 break;
             case Hud.MpSessionScreen.Action.Connect:
                 var addr = _mpSession.AddressEntry.Trim();
-                if (addr.Length > 0 && !_mpSession.RecentAddresses.Contains(addr))
+                if (addr.Length == 0)
+                {
+                    _mpSession.Status = "Enter a host address first (ip or ip:port).";
+                    break;
+                }
+                if (!_mpSession.RecentAddresses.Contains(addr))
                 {
                     _mpSession.RecentAddresses.Insert(0, addr);
                     if (_mpSession.RecentAddresses.Count > 16)
                         _mpSession.RecentAddresses.RemoveAt(_mpSession.RecentAddresses.Count - 1);
                     SaveMpSessionPrefs();
                 }
-                Console.WriteLine($"[mp] connect '{addr}' — transport lands with SC-MP-EOS");
+                MpStartConnect(addr);
                 break;
             case Hud.MpSessionScreen.Action.Remove:
                 if (_mpSession.SelectedAddress >= 0
@@ -16814,8 +16926,14 @@ void main()
                 }
                 break;
             case Hud.MpSessionScreen.Action.Host:
+                MpStartHost();
+                break;
             case Hud.MpSessionScreen.Action.Join:
-                Console.WriteLine($"[mp] {act} — transport lands with SC-MP-EOS");
+                if (_mpSession.SelectedGame >= 0
+                    && _mpSession.SelectedGame < _mpSession.LanGameAddresses.Count)
+                    MpStartConnect(_mpSession.LanGameAddresses[_mpSession.SelectedGame]);
+                else
+                    _mpSession.Status = "Select a game in the list first.";
                 break;
         }
     }

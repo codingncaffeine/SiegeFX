@@ -27,10 +27,14 @@ internal sealed class MpSessionScreen
     public string AddressEntry = "";
     public readonly List<string> RecentAddresses = new();
     public int SelectedAddress = -1;
-    /// <summary>Network mode: discovered LAN sessions (empty until the
-    /// discovery slice lands — the list shows a searching notice).</summary>
+    /// <summary>Network mode: discovered LAN sessions (display rows) and
+    /// their host addresses (parallel list, JOIN target).</summary>
     public readonly List<string> LanGames = new();
+    public readonly List<string> LanGameAddresses = new();
     public int SelectedGame = -1;
+    /// <summary>Connection status line; when non-empty it replaces the help
+    /// strip text (hosting/connecting/connected/failed + diagnostics hint).</summary>
+    public string Status = "";
 
     enum Focus { None, Name, Address }
     Focus _focus = Focus.None;
@@ -273,9 +277,10 @@ internal sealed class MpSessionScreen
         Box(RYourIp);
         Label(RYourIp, $"YOUR IP ADDRESS:  {localIp}", inkFaint, center: true);
         Box(RHelp);
-        string help = ScreenMode == Mode.Internet
-            ? "Enter a host address and click CONNECT, or click HOST GAME to start your own. Multiplayer service arrives in a future update."
-            : "Games hosted on your local network appear in the list. Multiplayer service arrives in a future update.";
-        Label(RHelp, help, inkFaint, center: true);
+        string help = Status.Length > 0 ? Status
+            : ScreenMode == Mode.Internet
+            ? "Enter a host address (ip or ip:port) and click CONNECT, or click HOST GAME to start your own."
+            : "Games hosted on your local network appear in the list. Click one, then JOIN GAME.";
+        Label(RHelp, help, Status.Length > 0 ? inkText : inkFaint, center: true);
     }
 }
