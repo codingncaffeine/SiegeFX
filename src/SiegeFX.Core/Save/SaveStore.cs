@@ -16,6 +16,21 @@ public static class SaveStore
         IncludeFields = false,
     };
 
+    /// <summary>SC-MP-EOS P8 — serialize a SaveFile to bytes for the MP
+    /// late-join world snapshot (same JSON shape as an on-disk save; the
+    /// host builds it, the joiner deserializes + applies).</summary>
+    public static byte[] Serialize(SaveFile data) =>
+        System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(data, Json));
+
+    /// <summary>SC-MP-EOS P8 — inverse of <see cref="Serialize"/>. Returns
+    /// null on malformed input (a hostile/garbled snapshot never throws
+    /// into the join path).</summary>
+    public static SaveFile? Deserialize(byte[] bytes)
+    {
+        try { return JsonSerializer.Deserialize<SaveFile>(System.Text.Encoding.UTF8.GetString(bytes), Json); }
+        catch { return null; }
+    }
+
     public static void Save(string path, SaveFile data)
     {
         var dir = Path.GetDirectoryName(path);

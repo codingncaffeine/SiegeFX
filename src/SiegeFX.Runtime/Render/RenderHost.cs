@@ -3997,6 +3997,9 @@ public sealed class RenderHost : IDisposable
     // config value. NetLog carries the diagnostics.
     private SiegeFX.Core.Net.ILobbyService? _mpLobby;
     private SiegeFX.Core.Net.ISessionTransport? _mpTransport;
+    // SC-MP-EOS P8 — the host-authoritative session driver + staging screen.
+    private SiegeFX.Core.Net.MpSession? _mpNetSession;
+    private readonly Hud.MpStagingScreen _mpStaging = new();
     private double _mpLanScanAt;
     private volatile List<(string Row, string Addr)>? _mpLanScanResult;
     private bool _mpLanScanBusy;
@@ -4009,9 +4012,76 @@ public sealed class RenderHost : IDisposable
 
     private void MpTearDownSession()
     {
+        _mpNetSession?.Dispose(); _mpNetSession = null;
         _mpLobby?.Dispose(); _mpLobby = null;
         _mpTransport?.Dispose(); _mpTransport = null;
         _mpSession.Status = "";
+        _mpStaging.Players.Clear();
+        _mpStaging.Chat.Clear();
+    }
+
+    // SC-MP-EOS P8 — stand up the host-authoritative session driver over the
+    // active transport and enter the staging area. The engine supplies the
+    // world snapshot (SaveFile capture) and actor poses; character state is
+    // client-owned (retail .dsparty model).
+    private void MpEnterStaging(bool asHost)
+    {
+        _mpNetSession = new SiegeFX.Core.Net.MpSession(_mpTransport!, asHost, _mpSession.PlayerName);
+        _mpStaging.IsHost = asHost;
+        _mpStaging.LocalReady = asHost; // host is implicitly ready
+        _mpStaging.Players.Clear();
+        _mpStaging.Players.Add((_mpSession.PlayerName, asHost, asHost));
+        _mpStaging.HostIp = asHost ? (_mpLocalIp ??= LocalIpBestEffort()) : "";
+        _mpStaging.Status = asHost ? "Waiting for players to join and ready up." : "Waiting for the host to start.";
+        _mpNetSession.OnPlayerJoined = (id, name) =>
+        {
+            if (!_mpStaging.Players.Any(p => p.Name == name && !p.Host))
+                _mpStaging.Players.Add((name, false, false));
+            _mpStaging.Chat.Add($"* {name} joined.");
+        };
+        _mpNetSession.OnPlayerLeft = id =>
+        {
+            _mpStaging.Chat.Add($"* Player {id} left.");
+        };
+        _mpNetSession.OnChat += line => _mpStaging.Chat.Add(line);
+        if (!asHost)
+        {
+            _mpNetSession.OnJoinAccepted = id => _mpStaging.Status = $"Joined as player {id}. Waiting for the host to start.";
+            _mpNetSession.OnJoinRejected = reason => { _mpStaging.Status = $"Join rejected: {reason}"; };
+            // Client receives the host's world snapshot; parked for the
+            // in-game apply (SC-MP-INGAME) — verifying it arrives + parses.
+            _mpNetSession.ApplySnapshot = bytes =>
+            {
+                var snap = SiegeFX.Core.Save.SaveStore.Deserialize(bytes);
+                SiegeFX.Core.Net.NetLog.Info(snap is not null
+                    ? $"client: world snapshot parsed ({bytes.Length}B, schema v{snap.SchemaVersion})"
+                    : $"client: world snapshot FAILED to parse ({bytes.Length}B)");
+            };
+        }
+        // Host serves the world snapshot + authoritative actor poses to
+        // joiners; wired to the existing save-capture + actor list.
+        if (asHost)
+        {
+            _mpNetSession.BuildSnapshot = () =>
+            {
+                try { return SiegeFX.Core.Save.SaveStore.Serialize(CaptureSave()); }
+                catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"snapshot build: {ex.Message}"); return System.Array.Empty<byte>(); }
+            };
+            _mpNetSession.EnumerateActors = () =>
+            {
+                var list = new List<SiegeFX.Core.Net.MpActorState>(_actors.Count);
+                foreach (var a in _actors)
+                {
+                    if (a.IsDead) continue;
+                    var p = a.CurrentTransform.Translation;
+                    list.Add(new SiegeFX.Core.Net.MpActorState(
+                        a.Actor.Instance.Scid, p.X, p.Y, p.Z,
+                        (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue)));
+                }
+                return list;
+            };
+        }
+        _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MpStaging);
     }
 
     // SC-MP-EOS P4 — optional EOS platform handle (loaded by reflection so
@@ -4079,6 +4149,7 @@ public sealed class RenderHost : IDisposable
                         ["players"] = "1/8",
                         ["host"] = _mpSession.PlayerName,
                     }, default);
+                _mpPendingStaging = true; // enter staging on the render thread
             }
             else
             {
@@ -4097,10 +4168,51 @@ public sealed class RenderHost : IDisposable
         _mpSession.Status = $"Connecting to {address} ({transport.ProviderId})...";
         _ = transport.ConnectAsync(address, default).ContinueWith(t =>
         {
-            _mpSession.Status = t.Result
-                ? $"CONNECTED to {address} — waiting in staging..."
-                : $"CONNECT FAILED to {address} — host down, wrong address, or port blocked. See session log [net] lines.";
+            if (t.Result)
+            {
+                _mpSession.Status = $"CONNECTED to {address} — entering staging...";
+                _mpPendingStagingClient = true;
+            }
+            else
+                _mpSession.Status = $"CONNECT FAILED to {address} — host down, wrong address, or port blocked. See session log [net] lines.";
         }, TaskScheduler.Default);
+    }
+    // SC-MP-EOS P8 — cross-thread staging-entry latches (ContinueWith runs
+    // off the render thread; enter staging on the next Flush tick).
+    private volatile bool _mpPendingStaging;
+    private volatile bool _mpPendingStagingClient;
+    private double _frameDtSeconds = 1.0 / 60.0;
+
+    /// <summary>SC-MP-EOS P8 — drain staging-screen actions.</summary>
+    private void FlushMpStaging(Hud.FrontendScene.ScreenState st)
+    {
+        bool active = _bootMode && st == Hud.FrontendScene.ScreenState.MpStaging;
+        _mpStaging.IsActive = active;
+        if (!active) return;
+        // Keep the host player-count attribute fresh-ish for the roster line.
+        var act = _mpStaging.ConsumeAction();
+        if (act != Hud.MpStagingScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case Hud.MpStagingScreen.Action.Leave:
+                MpTearDownSession();
+                _frontendScene?.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
+                break;
+            case Hud.MpStagingScreen.Action.ToggleReady:
+                _mpStaging.LocalReady = !_mpStaging.LocalReady;
+                _mpNetSession?.SendChat(_mpStaging.LocalReady ? "ready" : "not ready");
+                break;
+            case Hud.MpStagingScreen.Action.Start:
+                // Host launches the co-op game. Full in-game state sync (host
+                // renders the authoritative sim, clients apply deltas) is the
+                // remaining SC-MP-INGAME slice; the session, snapshot serve,
+                // and delta broadcast are all live and self-tested. For now
+                // the host drops into its own world with the session running.
+                _mpStaging.Status = "Starting game — launching host world...";
+                SiegeFX.Core.Net.NetLog.Info("staging: host START — session live; entering world (in-game client sync = SC-MP-INGAME)");
+                if (_ds1ResourcesDir is not null) LaunchRegionViaRelaunch(_ds1ResourcesDir);
+                break;
+        }
     }
     private static string MpSessionPrefsPath =>
         Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "mp_session.txt");
@@ -5999,6 +6111,14 @@ void main()
                     _mpSession.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpStaging.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
                 // backward (DS1 lets the cycle buttons go either way
                 // via onrbuttondown). Also swallow RMB camera-look
@@ -6814,6 +6934,14 @@ void main()
                     _mpSession.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpStaging.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_saveDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
@@ -7138,6 +7266,12 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _mpSession.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpStaging.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -15865,6 +15999,7 @@ void main()
         // the SimFrozen gate zeroes dt below.
         if (_player is not null && !_bootMode && !SimFrozen)
             _playSeconds += dt;
+        _frameDtSeconds = dt; // SC-MP-EOS P8 — for the session driver tick
         // SC-MAINMENU-LOADGAME — a relaunch requested via SIEGEFX_LOAD_SAVE lands
         // us in the save's region (--play-region). Apply the save once the
         // player + region are live (both come up synchronously during GL init,
@@ -16901,14 +17036,25 @@ void main()
             or Hud.FrontendScene.ScreenState.MpToMainMenu
             or Hud.FrontendScene.ScreenState.MpInternet
             or Hud.FrontendScene.ScreenState.MpNetwork;
-        if (inMpAnyScreen)
+        if (inMpAnyScreen || st == Hud.FrontendScene.ScreenState.MpStaging)
         {
             _eosTick?.Invoke();
             // EOS transport needs an explicit packet pump (not in the P1
             // interface); call it by name when present.
-            if (_mpTransport is { } tr && tr.ProviderId == "eos")
+            if (_mpTransport is { } tr && tr.ProviderId.StartsWith("eos"))
                 tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
         }
+
+        // SC-MP-EOS P8 — cross-thread staging entry + the session driver.
+        if (_mpPendingStaging) { _mpPendingStaging = false; MpEnterStaging(asHost: true); }
+        if (_mpPendingStagingClient)
+        {
+            _mpPendingStagingClient = false;
+            MpEnterStaging(asHost: false);
+            _mpNetSession?.SendJoinRequest();
+        }
+        _mpNetSession?.Tick(_frameDtSeconds);
+        FlushMpStaging(st);
 
         bool wasActive = _mpSession.IsActive;
         _mpSession.IsActive = active;
@@ -18393,7 +18539,8 @@ void main()
               || _frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer
               || _frontendScene.State == Hud.FrontendScene.ScreenState.MpToMainMenu
               || _frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
-              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork)
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork
+              || _frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging)
         {
             // Phase 26-VIEWPORT — clip rendering to the chrome's letterbox
             // area so meshes that extend BEYOND backdrop's authored bounds
@@ -18694,6 +18841,13 @@ void main()
                     _mpSession.Draw(viewportW, viewportH,
                         _iconRenderer, _barRenderer, _textRenderer,
                         TryGetGuiTexture, _mpLocalIp ??= LocalIpBestEffort());
+            }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging)
+            {
+                // SC-MP-EOS P8 — staging area (roster/chat/settings).
+                if (_iconRenderer is not null && _barRenderer is not null && _textRenderer is not null)
+                    _mpStaging.Draw(viewportW, viewportH,
+                        _iconRenderer, _barRenderer, _textRenderer, TryGetGuiTexture);
             }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
@@ -23121,6 +23275,7 @@ void main()
             case Hud.FrontendScene.ScreenState.MpToMainMenu:
             case Hud.FrontendScene.ScreenState.MpInternet:
             case Hud.FrontendScene.ScreenState.MpNetwork:
+            case Hud.FrontendScene.ScreenState.MpStaging:
             case Hud.FrontendScene.ScreenState.IntroMenuFlyIn:
                 return true;
             default:

@@ -164,6 +164,11 @@ public sealed class FrontendScene : IDisposable
         /// <summary>SC-MP-SESSION — the Network (LAN) session screen
         /// (lan_game_menu.gas): games list + JOIN / HOST GAME / CLOSE.</summary>
         MpNetwork,
+        /// <summary>SC-MP-EOS P8 — the staging area (staging_area.gas):
+        /// player roster, chat, game settings, host IP, ready + Leave/Start.
+        /// Reached after hosting or joining; the launch pad into the co-op
+        /// game. Drawn by the host's MpStagingScreen 2D layer.</summary>
+        MpStaging,
     }
 
     // Phase 24-MAINMENU splash timing. DS1's gas authors `alpha_animation`
@@ -547,8 +552,9 @@ public sealed class FrontendScene : IDisposable
                 return;
             case ScreenState.MpInternet:
             case ScreenState.MpNetwork:
-                // SC-MP-SESSION — 2D full-screen interface; the host's
-                // MpSessionScreen paints the authored parchment + widgets.
+            case ScreenState.MpStaging:
+                // SC-MP-SESSION / P8 — 2D full-screen interfaces; the host
+                // paints the authored parchment + widgets in RenderHost.
                 return;
             default:
                 // Other states are stubs for now — fall back to character_select
