@@ -205,7 +205,7 @@ public sealed class DataBar
             ButtonId.Labels       => labelsOn
                 ? "Hide labels for items on the ground (Hotkey: Alt)"
                 : "Show labels for items on the ground (Hotkey: Alt)",
-            ButtonId.MegaMap      => "World Map (Hotkey: M)",
+            ButtonId.MegaMap      => "World Map (Hotkey: Tab)",
             ButtonId.QuestLog     => "Quest Log (Hotkey: L)",
             ButtonId.Menu         => "Menu (Hotkey: Esc)",
             _ => "",

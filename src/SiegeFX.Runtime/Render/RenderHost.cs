@@ -15826,6 +15826,19 @@ void main()
         if (_cameraMode == CameraMode.Chase && _player is not null && _nisPhase == NisPhase.Off
             && _camTracking)
         {
+            // SC-MEGAMAP wire-up — the overview pose lived only in
+            // ComputeChasePose, which the LIVE camera never calls (only the
+            // NIS return path does); Tab toggled state that nothing read.
+            // Route the live pose through it while the map is up.
+            if (_megaMapActive && !_devFreeCamera)
+            {
+                ComputeChasePose(out var mmPos, out var mmYaw, out var mmPitch);
+                _camera.Position = mmPos;
+                _camera.Yaw = mmYaw;
+                _camera.Pitch = mmPitch;
+            }
+            else
+            {
             float horiz, height, camDist;
             Vector3 target;
             if (_devFreeCamera)
@@ -15860,6 +15873,7 @@ void main()
             var dir = Vector3.Normalize(target - _camera.Position);
             _camera.Yaw   = MathF.Atan2(dir.X, -dir.Z);
             _camera.Pitch = MathF.Asin(Math.Clamp(dir.Y, -0.999f, 0.999f));
+            }
         }
 
         if (_anim is not null && _anim.AnimLength > 0f)
@@ -21022,18 +21036,16 @@ void main()
                 0f, 1f - 0.861f, 1f, 1f - 0f);
         }
 
-        // Per-button render. Pick the right texture for each state. The
-        // mega-map button renders at gas's `disable_color = 0xff5f5f5f`
-        // until SC-HUD-MEGAMAP wires the actual screen — a clickable
-        // button that does nothing reads as a polish regression vs a
-        // visibly-disabled one.
-        var disabledTint = new Vector4(0x5f / 255f, 0x5f / 255f, 0x5f / 255f, 1f);
+        // Per-button render. Pick the right texture for each state.
+        // SC-MEGAMAP wire-up — the map button is LIVE now (the overview
+        // camera routes through the live chase pose), so the disable_color
+        // dim comes off.
         foreach (var slot in Hud.DataBar.Slots)
         {
             GlTexture? tex = ResolveDataBarTexture(slot.Id);
             if (tex is null) continue;
             var (x, y, w, h) = Hud.DataBar.ProjectRect(slot, viewportW, viewportH);
-            var tint = slot.Id == Hud.DataBar.ButtonId.MegaMap ? disabledTint : Vector4.One;
+            var tint = Vector4.One;
             // Apply the gas-authored uvcoords so the rendered rect samples
             // only the artwork portion of the 32×32 texture (the rest is
             // transparent padding). Default UV (0,0,1,1) would stretch the
