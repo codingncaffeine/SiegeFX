@@ -109,14 +109,16 @@ internal sealed class MpSessionScreen
         if (ScreenMode == Mode.Internet)
         {
             if (Hits(S(RAddrBox), px, py)) { _focus = Focus.Address; return; }
+            // The list shows discovered EOS games; clicking one fills the address
+            // box with its host id so CONNECT joins it (manual paste still works).
             var list = S(RList);
-            if (Hits(list, px, py) && RecentAddresses.Count > 0)
+            if (Hits(list, px, py) && LanGames.Count > 0)
             {
                 int row = (int)((py - list.Y) / MathF.Max(1f, 16 * _scale));
-                if (row >= 0 && row < RecentAddresses.Count)
+                if (row >= 0 && row < LanGames.Count)
                 {
-                    SelectedAddress = row;
-                    AddressEntry = RecentAddresses[row];
+                    SelectedGame = row;
+                    if (row < LanGameAddresses.Count) AddressEntry = LanGameAddresses[row];
                 }
             }
         }
@@ -233,16 +235,18 @@ internal sealed class MpSessionScreen
             Box(RList);
             var list = S(RList);
             int rowH = (int)MathF.Round(16 * _scale);
-            for (int i = 0; i < RecentAddresses.Count && (i + 1) * rowH <= list.H; i++)
+            // Live internet games discovered via EOS; clicking one fills the
+            // address box so CONNECT joins it (manual paste still works).
+            for (int i = 0; i < LanGames.Count && (i + 1) * rowH <= list.H; i++)
             {
-                if (i == SelectedAddress)
+                if (i == SelectedGame)
                     bars.DrawRect(vw, vh, list.X + 2, list.Y + i * rowH, list.W - 4, rowH,
                         new Vector4(0.55f, 0.45f, 0.25f, 0.5f));
-                text.DrawString(vw, vh, RecentAddresses[i],
+                text.DrawString(vw, vh, LanGames[i],
                     list.X + 4 * fs, list.Y + i * rowH + 2, inkText, fs);
             }
-            if (RecentAddresses.Count == 0)
-                text.DrawString(vw, vh, "No recent addresses.",
+            if (LanGames.Count == 0)
+                text.DrawString(vw, vh, "Searching for internet games...",
                     list.X + 4 * fs, list.Y + 4, inkFaint, fs);
         }
         else
@@ -279,7 +283,7 @@ internal sealed class MpSessionScreen
         Box(RHelp);
         string help = Status.Length > 0 ? Status
             : ScreenMode == Mode.Internet
-            ? "Enter a host address (ip or ip:port) and click CONNECT, or click HOST GAME to start your own."
+            ? "Pick a game from the list (or paste a host id) and click CONNECT, or click HOST GAME to start your own."
             : "Games hosted on your local network appear in the list. Click one, then JOIN GAME.";
         Label(RHelp, help, Status.Length > 0 ? inkText : inkFaint, center: true);
     }

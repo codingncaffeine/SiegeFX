@@ -4032,6 +4032,21 @@ public sealed class RenderHost : IDisposable
     private readonly Dictionary<uint, ActorRenderState> _mpScidIndex = new();
     private volatile List<(string Row, string Addr)>? _mpLanScanResult;
     private bool _mpLanScanBusy;
+    // SC-MP-EOS F1 — the Internet screen's lobby browser. A persistent EOS
+    // browse lobby (search only, no transport) polls ListAsync ~2.5s and fills
+    // the same LanGames/LanGameAddresses lists the Network screen uses. EOS SDK
+    // is single-threaded (driven off _eosTick on the render thread), so the
+    // search is KICKED from the render thread; only the immutable result rows
+    // are marshalled back off-thread. _mpHostInvite is our own PUID, shown on
+    // the staging screen as the id a friend pastes to join.
+    private SiegeFX.Core.Net.ILobbyService? _mpBrowseLobby;
+    private double _mpEosScanAt;
+    private bool _mpEosScanBusy;
+    private volatile List<(string Row, string Addr)>? _mpEosScanResult;
+    private volatile string? _mpHostInvite;
+    // The Internet and Network browsers share LanGames/LanGameAddresses; track
+    // which one last filled it so we can clear stale rows on a screen switch.
+    private Hud.FrontendScene.ScreenState _mpLastListScreen = Hud.FrontendScene.ScreenState.Multiplayer;
     // SC-MP-EOS P4 — the configured provider id (SIEGEFX_MP_PROVIDER env /
     // mp_provider.txt first line; "lan" default). EOS registers itself with
     // MpProviderFactory at boot when eos_config.txt is valid.
@@ -4044,9 +4059,24 @@ public sealed class RenderHost : IDisposable
         _mpNetSession?.Dispose(); _mpNetSession = null;
         _mpLobby?.Dispose(); _mpLobby = null;
         _mpTransport?.Dispose(); _mpTransport = null;
+        _mpBrowseLobby?.Dispose(); _mpBrowseLobby = null;
+        _mpEosScanResult = null;
+        _mpHostInvite = null;
         _mpSession.Status = "";
         _mpStaging.Players.Clear();
         _mpStaging.Chat.Clear();
+    }
+
+    /// <summary>F1 — the address a joiner uses to reach this host: the host
+    /// ProductUserId for EOS (relayed; no port forward), else the LAN endpoint.
+    /// The PUID is captured asynchronously from lobby creation, so this falls
+    /// back to the LAN address until it arrives.</summary>
+    private string MpHostInviteAddress()
+    {
+        if (string.Equals(_mpProviderId, "eos", StringComparison.OrdinalIgnoreCase)
+            && _mpHostInvite is { Length: > 0 } puid)
+            return puid;
+        return _mpLocalIp ??= LocalIpBestEffort();
     }
 
     // SC-MP-INGAME — stand up the session inside a live region. Called once the
@@ -4348,7 +4378,10 @@ public sealed class RenderHost : IDisposable
         _mpStaging.LocalReady = asHost; // host is implicitly ready
         _mpStaging.Players.Clear();
         _mpStaging.Players.Add((_mpSession.PlayerName, asHost, asHost));
-        _mpStaging.HostIp = asHost ? (_mpLocalIp ??= LocalIpBestEffort()) : "";
+        // F1 — for EOS the join id is the host ProductUserId (relayed, no port
+        // forward); for direct providers it's the LAN endpoint. The PUID may
+        // still be minting (CreateAsync is async) — FlushMpStaging refreshes it.
+        _mpStaging.HostIp = asHost ? MpHostInviteAddress() : "";
         _mpStaging.Status = asHost ? "Waiting for players to join and ready up." : "Waiting for the host to start.";
         _mpNetSession.OnPlayerJoined = (id, name) =>
         {
@@ -4495,7 +4528,19 @@ public sealed class RenderHost : IDisposable
                         ["map"] = "Kingdom of Ehb",
                         ["players"] = "1/8",
                         ["host"] = _mpSession.PlayerName,
-                    }, default);
+                    }, default).ContinueWith(ct =>
+                    {
+                        // F1 — capture the invite id a friend uses to join: the
+                        // host ProductUserId for EOS, the LAN endpoint otherwise.
+                        // Logged so it survives in the shareable session log even
+                        // if the on-screen string is truncated.
+                        if (ct.Status == TaskStatus.RanToCompletion && ct.Result is { } info
+                            && info.HostAddress.Length > 0)
+                        {
+                            _mpHostInvite = info.HostAddress;
+                            SiegeFX.Core.Net.NetLog.Info($"hosting: invite id = {info.HostAddress} (provider {transport.ProviderId})");
+                        }
+                    }, TaskScheduler.Default);
                 _mpPendingStaging = true; // enter staging on the render thread
             }
             else
@@ -4538,6 +4583,14 @@ public sealed class RenderHost : IDisposable
         bool active = _bootMode && st == Hud.FrontendScene.ScreenState.MpStaging;
         _mpStaging.IsActive = active;
         if (!active) return;
+        // F1 — the EOS invite PUID mints asynchronously after CreateAsync; adopt
+        // it the moment it arrives so the host's shown join id stops reading as
+        // the (useless-over-internet) LAN address.
+        if (_mpStaging.IsHost)
+        {
+            var invite = MpHostInviteAddress();
+            if (invite.Length > 0 && _mpStaging.HostIp != invite) _mpStaging.HostIp = invite;
+        }
         // Keep the host player-count attribute fresh-ish for the roster line.
         var act = _mpStaging.ConsumeAction();
         if (act != Hud.MpStagingScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
@@ -17420,6 +17473,25 @@ void main()
     {
         if (_frontendScene is null) return;
         var st = _frontendScene.State;
+        // F1 — the Internet browse lobby is scoped to the Internet screen; drop
+        // it (and its stale results) the moment we leave, so hosting/joining or
+        // backing out doesn't keep an idle EOS search alive.
+        if (st != Hud.FrontendScene.ScreenState.MpInternet && _mpBrowseLobby is not null)
+        {
+            _mpBrowseLobby.Dispose(); _mpBrowseLobby = null;
+            _mpEosScanResult = null;
+        }
+        // Switching between the two browsers wipes the shared list so LAN rows
+        // never flash on the Internet screen (or vice versa) before a refresh.
+        if ((st == Hud.FrontendScene.ScreenState.MpInternet || st == Hud.FrontendScene.ScreenState.MpNetwork)
+            && st != _mpLastListScreen)
+        {
+            _mpSession.LanGames.Clear();
+            _mpSession.LanGameAddresses.Clear();
+            _mpSession.SelectedGame = -1;
+            _mpLanScanResult = null; _mpEosScanResult = null;
+            _mpLastListScreen = st;
+        }
         bool active = _bootMode
             && (st == Hud.FrontendScene.ScreenState.MpInternet
              || st == Hud.FrontendScene.ScreenState.MpNetwork);
@@ -17498,6 +17570,63 @@ void main()
                     catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"lan scan loop: {ex.Message}"); }
                     finally { _mpLanScanBusy = false; }
                 });
+            }
+        }
+        // F1 — Internet lobby browser (EOS). Same 2.5s cadence as the LAN scan,
+        // but EOS is single-threaded: the search is KICKED here on the render
+        // thread and its Find callback fires under _eosTick (also render thread);
+        // only the immutable result rows are marshalled back off-thread. Gated on
+        // the eos provider and "not yet hosting/connecting" (_mpLobby is null).
+        if (st == Hud.FrontendScene.ScreenState.MpInternet && _mpLobby is null
+            && string.Equals(_mpProviderId, "eos", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_mpEosScanResult is { } escan)
+            {
+                _mpEosScanResult = null;
+                _mpSession.LanGames.Clear();
+                _mpSession.LanGameAddresses.Clear();
+                foreach (var (row, addr) in escan)
+                {
+                    _mpSession.LanGames.Add(row);
+                    _mpSession.LanGameAddresses.Add(addr);
+                }
+                if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
+            }
+            if (!_mpEosScanBusy && _playSeconds >= _mpEosScanAt)
+            {
+                _mpEosScanAt = _playSeconds + 2.5;
+                // (Re)acquire the browse lobby on the scan cadence — never every
+                // frame — so the pre-login LAN fallback isn't churned. Create()
+                // hands back a "lan" pair until device-id login completes; we
+                // only keep it if it's really EOS.
+                if (_mpBrowseLobby is null)
+                {
+                    var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create("eos");
+                    transport.Dispose(); // browsing needs the lobby service only
+                    if (string.Equals(lobby.ProviderId, "eos", StringComparison.OrdinalIgnoreCase))
+                        _mpBrowseLobby = lobby;
+                    else
+                        lobby.Dispose(); // still logging in (or EOS unconfigured)
+                }
+                if (_mpBrowseLobby is { } browse)
+                {
+                    _mpEosScanBusy = true;
+                    _ = browse.ListAsync(default).ContinueWith(t =>
+                    {
+                        try
+                        {
+                            if (t.Status == TaskStatus.RanToCompletion && t.Result is { } lobbies)
+                                _mpEosScanResult = lobbies.Select(l =>
+                                {
+                                    l.Attributes.TryGetValue("map", out var map);
+                                    l.Attributes.TryGetValue("players", out var players);
+                                    return ($"{l.Name}   {map ?? ""}   {players ?? ""}", l.HostAddress);
+                                }).ToList();
+                        }
+                        catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"eos browse loop: {ex.Message}"); }
+                        finally { _mpEosScanBusy = false; }
+                    }, TaskScheduler.Default);
+                }
             }
         }
         var act = _mpSession.ConsumeAction();
