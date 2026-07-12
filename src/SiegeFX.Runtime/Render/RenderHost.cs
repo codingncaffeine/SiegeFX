@@ -1810,6 +1810,7 @@ public sealed class RenderHost : IDisposable
                 // Followers are the player side of the difficulty model — their
                 // damage scales by difficulty_*_player, not _computer.
                 PartyAligned = true,
+                SightBlocked = IsSightBlocked,
             };
             npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
         }
@@ -9033,6 +9034,7 @@ void main()
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
+                brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
                 actorsOnMesh++;
             }
@@ -13131,9 +13133,17 @@ void main()
     ///     positions of the local AABB rather than naive column
     ///     length, so rotated placements + non-Y rotations get the
     ///     correct effective radius.</summary>
+    // SC-PATHING-LOS — tall does_block_path props double as SIGHT occluders
+    // for standoff brains: XZ circle + world top Y, tested against an
+    // eye-height sight line. Props under ~2.2u world height (fences, crates)
+    // never occlude — archers shoot over them like retail.
+    private readonly List<(Vector2 C, float R, float TopY)> _sightOccluders = new();
+    private const float SightOccluderMinHeight = 2.2f;
+
     private void MarkAllObstacles()
     {
         if (_navMesh is null || _templateStore is null) return;
+        _sightOccluders.Clear();
         int obstacles = 0;
         int triangles = 0;
         // CA2014 — hoist the 4-corner stackalloc above the loop so a
@@ -13192,6 +13202,15 @@ void main()
             float sideAD = new Vector2(wcD.X - wcA.X, wcD.Z - wcA.Z).Length(); // local Z extent
             float longLen = MathF.Max(sideAB, sideAD);
             float shortLen = MathF.Max(0.4f, MathF.Min(sideAB, sideAD));
+            // SC-PATHING-LOS — world height decides sight occlusion. Center
+            // column transform is exact for yaw-only placements (the norm);
+            // tilted props approximate fine at this granularity.
+            var wBase = Vector3.Transform(
+                new Vector3((minL.X + maxL.X) * 0.5f, minL.Y, (minL.Z + maxL.Z) * 0.5f), prop.World);
+            var wTop = Vector3.Transform(
+                new Vector3((minL.X + maxL.X) * 0.5f, maxL.Y, (minL.Z + maxL.Z) * 0.5f), prop.World);
+            float propTopY = MathF.Max(wBase.Y, wTop.Y);
+            bool occludesSight = MathF.Abs(wTop.Y - wBase.Y) >= SightOccluderMinHeight;
             int marked = 0;
             if (longLen > shortLen * 2.2f && longLen > 2f)
             {
@@ -13206,11 +13225,37 @@ void main()
                     float along = -halfLong + longLen * (di / (float)(discs - 1));
                     var c = origin + axis * along;
                     marked += _navMesh.MarkObstacle(c.X, c.Z, discR);
+                    if (occludesSight)
+                        _sightOccluders.Add((new Vector2(c.X, c.Z), discR, propTopY));
+                }
+            }
+            else if (shortLen > 2.4f)
+            {
+                // SC-PATHING-FOOTPRINT — big squat props (wagons, stalls,
+                // boulders, crypt furniture) block their OBB rectangle as a
+                // grid of small discs. One bounding disc overshoots the
+                // corners by up to 40% and sealed rooms/pens — the parity
+                // roam soak froze 35 spawns inside such footprints.
+                var axU = Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z));
+                var axV = Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                const float gridR = 0.8f;
+                int nu = Math.Max(2, (int)MathF.Ceiling(sideAB / (gridR * 1.4f)) + 1);
+                int nv = Math.Max(2, (int)MathF.Ceiling(sideAD / (gridR * 1.4f)) + 1);
+                for (int iu = 0; iu < nu; iu++)
+                for (int iv = 0; iv < nv; iv++)
+                {
+                    var c = wcA + axU * (sideAB * iu / (nu - 1))
+                                + axV * (sideAD * iv / (nv - 1));
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR);
+                    if (occludesSight)
+                        _sightOccluders.Add((new Vector2(c.X, c.Z), gridR, propTopY));
                 }
             }
             else
             {
                 marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius);
+                if (occludesSight)
+                    _sightOccluders.Add((new Vector2(origin.X, origin.Z), radius, propTopY));
             }
             if (marked > 0)
             {
@@ -13227,7 +13272,36 @@ void main()
             if (marked > 0) { obstacles++; triangles += marked; }
         }
         if (obstacles > 0)
-            Console.WriteLine($"  nav obstacles: {obstacles} props blocked {triangles} triangles");
+            Console.WriteLine($"  nav obstacles: {obstacles} props blocked {triangles} triangles, " +
+                              $"{_sightOccluders.Count} sight-occluder disc(s)");
+    }
+
+    /// <summary>SC-PATHING-LOS — true when a tall occluder crosses the
+    /// eye-height sight line between two actors (feet positions in, eye
+    /// offsets applied here). Circle-vs-segment in XZ; a crossing only
+    /// blocks when the sight line at that point is BELOW the occluder's
+    /// top, so bows keep looseing over low walls and downhill shots over
+    /// mid-height props stay legal. Injected into standoff brains and the
+    /// player's ranged/cast click gates.</summary>
+    private bool IsSightBlocked(Vector3 fromFeet, Vector3 toFeet)
+    {
+        if (_sightOccluders.Count == 0) return false;
+        var a = new Vector2(fromFeet.X, fromFeet.Z);
+        var b = new Vector2(toFeet.X, toFeet.Z);
+        var ab = b - a;
+        float abLen2 = ab.LengthSquared();
+        if (abLen2 < 1e-4f) return false;
+        float eyeA = fromFeet.Y + 1.5f;
+        float eyeB = toFeet.Y + 1.2f;
+        foreach (var oc in _sightOccluders)
+        {
+            float t = Math.Clamp(Vector2.Dot(oc.C - a, ab) / abLen2, 0f, 1f);
+            var p = a + ab * t;
+            if (Vector2.DistanceSquared(p, oc.C) > oc.R * oc.R) continue;
+            float sightY = eyeA + (eyeB - eyeA) * t;
+            if (sightY < oc.TopY - 0.1f) return true;
+        }
+        return false;
     }
 
     private void TickDoors(float dt)
@@ -15427,6 +15501,7 @@ void main()
                 brain = new SiegeFX.Core.Actors.ActorBrain(
                     follower, actor.Stats, rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
+                brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
                 onMesh++;
             }
@@ -16015,7 +16090,8 @@ void main()
                             }
                             else if (pdist <= r
                                      && !(!_weaponIsRanged && _navMesh is not null
-                                          && _navMesh.SegmentCrossesBlocked(after, tp)))
+                                          && _navMesh.SegmentCrossesBlocked(after, tp))
+                                     && !(_weaponIsRanged && IsSightBlocked(after, tp)))
                             {
                                 PerformPlayerSwing(pat, atk);
                                 _pendingAttackTarget = null;
@@ -16023,8 +16099,9 @@ void main()
                             else
                             {
                                 // SC-PATHING — out of reach OR the melee
-                                // approach is obstacle-blocked (fence): keep
-                                // walking; the A* routes around now that
+                                // approach is obstacle-blocked (fence) OR the
+                                // bow's sight line is occluded (building):
+                                // keep walking; the A* routes around now that
                                 // blockers mark the mesh.
                                 _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
                             }
@@ -20358,9 +20435,13 @@ void main()
         // SC-PATHING — melee "in reach" must also be UNOBSTRUCTED: an enemy
         // across a fence is close by XZ but the swing would pass through
         // blocked ground; walk up (the A* routes around) instead.
+        // SC-PATHING-LOS — a bow needs SIGHT: an enemy behind a building is
+        // in range but the shot would fly through the wall; approach until
+        // the sight line clears (DS1's FindClearLosPoint behavior).
         bool meleeObstructed = !_weaponIsRanged && _navMesh is not null
             && _navMesh.SegmentCrossesBlocked(pPos, tPos);
-        if (playerDist > reach || meleeObstructed)
+        bool rangedSightBlocked = _weaponIsRanged && IsSightBlocked(pPos, tPos);
+        if (playerDist > reach || meleeObstructed || rangedSightBlocked)
         {
             _pendingAttackTarget = best;
             // Walk to a point just inside reach on the player→target line so

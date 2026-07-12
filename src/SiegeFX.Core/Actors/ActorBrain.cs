@@ -162,6 +162,15 @@ public sealed class ActorBrain
     /// starts firing here. Melee brains never read it.</summary>
     public float StandoffRange { get; }
 
+    /// <summary>SC-PATHING-LOS — host-injected sight test (from feet, to feet
+    /// → true when a tall occluder crosses the line). DS1 gates ranged/magic
+    /// jobs on requires_line_of_sight and repositions via FindClearLosPoint;
+    /// our proxy: a sight-blocked standoff target keeps the brain CHASING
+    /// (the follower's A* routes around the blocker) instead of firing
+    /// through a building. Null (headless sims, tests) = always clear.
+    /// Height-aware on the host side so low fences stay shootable-over.</summary>
+    public Func<Vector3, Vector3, bool>? SightBlocked;
+
     float EngageRange => Mode == AttackMode.Melee ? MeleeRange : StandoffRange;
 
     /// <summary>Seconds between swings while in Attack. 1.5s roughly matches
@@ -367,7 +376,14 @@ public sealed class ActorBrain
                 // standing at the rail reaching through it.
                 if (distXZ <= EngageRange
                     && !(Mode == AttackMode.Melee
-                         && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value)))
+                         && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value))
+                    // SC-PATHING-LOS — standoff modes need SIGHT, not floor:
+                    // an archer/caster with a building between it and the
+                    // target keeps chasing around it instead of firing
+                    // through the wall. Low fences don't block (height-aware
+                    // host test) so bows still loose over them like retail.
+                    && !(Mode != AttackMode.Melee
+                         && SightBlocked?.Invoke(Wander.Position, targetPos!.Value) == true))
                 { EnterAttack(targetPos!.Value); break; }
                 // Re-pin the follower target every tick — the player is a moving
                 // goalpost, so a fire-and-forget SetTarget would have us chasing
@@ -391,6 +407,10 @@ public sealed class ActorBrain
                 // mid-fight (fence, cart) breaks the hold: back to Chase so
                 // the follower paths around instead of zombie-reaching.
                 if (meleeNow && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value))
+                { State = BrainState.Chase; _attackFacing = null; break; }
+                // SC-PATHING-LOS — a standoff target that stepped behind a
+                // tall occluder mid-fight breaks the hold the same way.
+                if (!meleeNow && SightBlocked?.Invoke(Wander.Position, targetPos!.Value) == true)
                 { State = BrainState.Chase; _attackFacing = null; break; }
                 FaceTarget(targetPos!.Value);
                 if (meleeNow || Mode != AttackMode.Magic)

@@ -232,15 +232,20 @@ public sealed class NavFollower
         // only exit is a physical step onto the nearest legal ground. 8u
         // covers a stream's width from mid-span; 3u of vertical keeps the
         // recovery on this layer stack.
-        if (!Traversal.CanEnter(Mesh.Kinds[startTri])
+        // SC-PATHING — obstacle-BLOCKED starts take the same escape: an
+        // actor spawned (or knocked) inside a prop footprint whose whole
+        // neighborhood is blocked can never expand out through A* (blocked
+        // tris are excluded from expansion); step to the nearest enterable
+        // point instead of freezing (parity roam soak: 35 spawns frozen).
+        if ((!Traversal.CanEnter(Mesh.Kinds[startTri]) || Mesh.IsBlocked(startTri))
             && Mesh.TryFindNearestEnterable(Position, radius: 8f, maxDy: 3f,
                     Traversal, out var liftTri, out var liftPos))
         {
             if (DiagnosticLogging)
                 System.Console.WriteLine(
                     $"[nav-rebind] start tri {startTri} kind={Mesh.Kinds[startTri]} " +
-                    $"impassable — stepping to nearest legal ground " +
-                    $"({liftPos.X:F1},{liftPos.Y:F1},{liftPos.Z:F1}) tri={liftTri}");
+                    $"blocked={Mesh.IsBlocked(startTri)} — stepping to nearest legal " +
+                    $"ground ({liftPos.X:F1},{liftPos.Y:F1},{liftPos.Z:F1}) tri={liftTri}");
             Position = liftPos;
             CurrentTriangle = liftTri;
             startTri = liftTri;

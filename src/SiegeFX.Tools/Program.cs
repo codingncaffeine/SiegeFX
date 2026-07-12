@@ -3027,6 +3027,152 @@ static int CmdWorldPath(string[] a)
     return 0;
 }
 
+/// <summary>SC-PATHING parity — mark does_block_path props on the sim mesh
+/// with the same rules RenderHost.MarkAllObstacles uses in-game (chain-
+/// resolved does_block_path, base_door skip, bounding disc vs capsule-of-
+/// discs for elongated props), so roam-sim soaks the mesh the game plays.
+/// Resolves Logic.dsres/Objects.dsres as <c>&lt;root&gt;/Resources/</c>
+/// siblings of the map tank; missing tanks = unmarked mesh + a loud note.
+/// MIRROR of RenderHost.MarkAllObstacles — keep the two in step.</summary>
+static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPath,
+    string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld)
+{
+    string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(mapTankPath)));
+    string logicPath = root is null ? "" : Path.Combine(root, "Resources", "Logic.dsres");
+    string objectsPath = root is null ? "" : Path.Combine(root, "Resources", "Objects.dsres");
+    if (!File.Exists(logicPath) || !File.Exists(objectsPath))
+    {
+        Console.WriteLine("Obstacles  : SKIPPED (Logic.dsres/Objects.dsres not beside the map tank) — mesh is UNBLOCKED, unlike in-game");
+        return 0;
+    }
+    int props = 0, discs = 0;
+    using var logicTank = TankFile.Open(logicPath);
+    using var objectsTank = TankFile.Open(objectsPath);
+    var logicReader = new TankReader(logicTank);
+    var objectsReader = new TankReader(objectsTank);
+    var (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(logicReader);
+    var aspIndex = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var f in objectsReader.ListFiles())
+        if (f.EndsWith(".asp", StringComparison.OrdinalIgnoreCase))
+            aspIndex[Path.GetFileNameWithoutExtension(f)] = f;
+    var boundsCache = new Dictionary<string, (Vector3 Min, Vector3 Max)?>(StringComparer.OrdinalIgnoreCase);
+    Span<Vector3> corners = stackalloc Vector3[4];
+    using var obsMapTank = TankFile.Open(mapTankPath);
+    var obsMapReader = new TankReader(obsMapTank);
+    foreach (var raw in regionsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var rp = raw.Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        if (rp.EndsWith('/')) rp = rp[..^1];
+        foreach (var fileName in SiegeFX.Core.Assets.RegionObjects.StaticPropFiles)
+        {
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(obsMapReader, rp, fileName);
+            foreach (var p in placements)
+            {
+                if (!nodeWorld.TryGetValue(p.Placement.NodeGuid, out var nw)) continue;
+                if (!store.TryGet(p.TemplateName, out var tpl) || tpl is null) continue;
+                bool isDoor = false;
+                for (var t = tpl; t is not null; t = t.Specializes)
+                    if (string.Equals(t.Name, "base_door", StringComparison.OrdinalIgnoreCase))
+                    { isDoor = true; break; }
+                if (isDoor) continue;
+                var blockAttr = store.GetAttribute(tpl, "aspect", "does_block_path")
+                             ?? store.GetAttribute(tpl, "physics", "does_block_path");
+                var blockTrim = (blockAttr ?? "").Trim().Trim('"').ToLowerInvariant();
+                if (blockTrim != "true" && blockTrim != "1") continue;
+                var modelName = store.GetAttribute(tpl, "aspect", "model")?.Trim().Trim('"');
+                if (string.IsNullOrEmpty(modelName)) continue;
+                if (!boundsCache.TryGetValue(modelName!, out var bounds))
+                {
+                    bounds = null;
+                    if (aspIndex.TryGetValue(modelName!, out var aspPath))
+                    {
+                        try
+                        {
+                            var asp = SiegeFX.Core.Assets.AspMesh.Load(objectsReader.ExtractToMemory(aspPath));
+                            var mn = new Vector3(float.PositiveInfinity);
+                            var mx = new Vector3(float.NegativeInfinity);
+                            foreach (var v in asp.Positions) { mn = Vector3.Min(mn, v); mx = Vector3.Max(mx, v); }
+                            if (mn.X <= mx.X) bounds = (mn, mx);
+                        }
+                        catch { bounds = null; }
+                    }
+                    boundsCache[modelName!] = bounds;
+                }
+                if (bounds is not { } bb) continue;
+                var world = Matrix4x4.CreateFromQuaternion(p.Placement.Orientation)
+                          * Matrix4x4.CreateTranslation(p.Placement.LocalPosition)
+                          * nw;
+                // — everything below mirrors RenderHost.MarkAllObstacles —
+                var minL = bb.Min; var maxL = bb.Max;
+                float midY = (minL.Y + maxL.Y) * 0.5f;
+                corners[0] = new(minL.X, midY, minL.Z);
+                corners[1] = new(maxL.X, midY, minL.Z);
+                corners[2] = new(maxL.X, midY, maxL.Z);
+                corners[3] = new(minL.X, midY, maxL.Z);
+                var origin = world.Translation;
+                float maxR2 = 0f;
+                foreach (var corner in corners)
+                {
+                    var wc0 = Vector3.Transform(corner, world);
+                    float dx = wc0.X - origin.X, dz = wc0.Z - origin.Z;
+                    float r2 = dx * dx + dz * dz;
+                    if (r2 > maxR2) maxR2 = r2;
+                }
+                float radius = MathF.Sqrt(maxR2);
+                if (radius < 0.5f) continue;
+                var wcA = Vector3.Transform(corners[0], world);
+                var wcB = Vector3.Transform(corners[1], world);
+                var wcD = Vector3.Transform(corners[3], world);
+                float sideAB = new Vector2(wcB.X - wcA.X, wcB.Z - wcA.Z).Length();
+                float sideAD = new Vector2(wcD.X - wcA.X, wcD.Z - wcA.Z).Length();
+                float longLen = MathF.Max(sideAB, sideAD);
+                float shortLen = MathF.Max(0.4f, MathF.Min(sideAB, sideAD));
+                int marked = 0;
+                if (longLen > shortLen * 2.2f && longLen > 2f)
+                {
+                    var axis = sideAB >= sideAD
+                        ? Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z))
+                        : Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                    float halfLong = longLen * 0.5f;
+                    float discR = MathF.Max(0.45f, shortLen * 0.5f);
+                    int n = Math.Max(2, (int)MathF.Ceiling(longLen / (discR * 1.4f)));
+                    for (int di = 0; di < n; di++)
+                    {
+                        float along = -halfLong + longLen * (di / (float)(n - 1));
+                        var c = origin + axis * along;
+                        marked += mesh.MarkObstacle(c.X, c.Z, discR);
+                    }
+                }
+                else if (shortLen > 2.4f)
+                {
+                    // SC-PATHING-FOOTPRINT — OBB rectangle grid, mirroring
+                    // the in-game branch (bounding disc sealed rooms).
+                    var axU = Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z));
+                    var axV = Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                    const float gridR = 0.8f;
+                    int nu = Math.Max(2, (int)MathF.Ceiling(sideAB / (gridR * 1.4f)) + 1);
+                    int nv = Math.Max(2, (int)MathF.Ceiling(sideAD / (gridR * 1.4f)) + 1);
+                    for (int iu = 0; iu < nu; iu++)
+                    for (int iv = 0; iv < nv; iv++)
+                    {
+                        var c = wcA + axU * (sideAB * iu / (nu - 1))
+                                    + axV * (sideAD * iv / (nv - 1));
+                        marked += mesh.MarkObstacle(c.X, c.Z, gridR);
+                    }
+                }
+                else
+                {
+                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius);
+                }
+                if (marked > 0) { props++; discs += marked; }
+            }
+        }
+    }
+    Console.WriteLine($"Obstacles  : {props} does_block_path props blocked {discs} triangles (in-game parity)");
+    return discs;
+}
+
 /// <summary>`region roam-sim` — headless enemy-roam soak. Spawns an
 /// <see cref="SiegeFX.Core.Actors.ActorFollower"/> (the exact wander driver the
 /// game gives every mob) at every actor.gas placement across the listed regions,
@@ -3072,6 +3218,9 @@ static int CmdRegionRoamSim(string[] a)
     var nodeWorld = new Dictionary<uint, Matrix4x4>();
     foreach (var (guid, _, _, w) in LoadWorldNodePlacements(a[0], a[1], a[2]))
         nodeWorld[guid] = w;
+    // SC-PATHING parity — the game marks does_block_path props on its mesh;
+    // an unmarked sim mesh would soak a world with no fences or walls.
+    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld);
 
     // One sim entry per actor.gas placement that lands on the mesh.
     var sims = new List<(string Template, Vector3 Anchor, SiegeFX.Core.Actors.ActorFollower Follower, int BlockedTicks, float Walked)>();
