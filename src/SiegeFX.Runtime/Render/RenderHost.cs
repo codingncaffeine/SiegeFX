@@ -4460,6 +4460,23 @@ public sealed class RenderHost : IDisposable
     private Action? _eosTick;
     private bool _mpProviderInit;
 
+    /// <summary>Resolve a file that ships beside the exe. AppContext.BaseDirectory
+    /// is the exe dir for single-file publishes (.NET 6+), but the real process
+    /// dir is checked too so the reflection-loaded EOS module + bundled creds are
+    /// found regardless of publish mode. Returns null if in neither location.</summary>
+    private static string? MpAppFile(string name)
+    {
+        string? procDir = null;
+        try { procDir = Path.GetDirectoryName(Environment.ProcessPath); } catch { }
+        foreach (var dir in new[] { AppContext.BaseDirectory, procDir })
+        {
+            if (string.IsNullOrEmpty(dir)) continue;
+            var p = Path.Combine(dir, name);
+            if (File.Exists(p)) return p;
+        }
+        return null;
+    }
+
     private void MpInitProvider()
     {
         if (_mpProviderInit) return;
@@ -4473,11 +4490,13 @@ public sealed class RenderHost : IDisposable
             // Assembly.Load(simpleName) resolves against the app's deps.json,
             // which does NOT list SiegeFX.Net.Eos (it's a reflection-only optional
             // module), so it fails with FileNotFoundException even when the DLL
-            // sits next to the exe. Load it by explicit path instead.
-            string eosDll = Path.Combine(AppContext.BaseDirectory, "SiegeFX.Net.Eos.dll");
-            if (!File.Exists(eosDll))
+            // sits next to the exe. Load it by explicit path instead. MpAppFile
+            // checks both AppContext.BaseDirectory and the real process dir so
+            // the bundled module/creds resolve under single-file publishing too.
+            string? eosDll = MpAppFile("SiegeFX.Net.Eos.dll");
+            if (eosDll is null)
             {
-                Console.WriteLine($"[mp] EOS module not present ({eosDll}) — LAN only");
+                Console.WriteLine("[mp] EOS module not present beside the exe — LAN only");
             }
             else
             {
@@ -4497,8 +4516,7 @@ public sealed class RenderHost : IDisposable
                     // creds identify the GAME (a Peer2Peer/GameClient client id that
                     // ships in binaries by design), not the player.
                     string userCfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
-                    string bundledCfg = Path.Combine(AppContext.BaseDirectory, "eos_config.txt");
-                    string cfg = File.Exists(userCfg) ? userCfg : bundledCfg;
+                    string cfg = File.Exists(userCfg) ? userCfg : (MpAppFile("eos_config.txt") ?? userCfg);
                     Console.WriteLine($"[mp] EOS config: {(File.Exists(cfg) ? cfg : "(none found — LAN only)")}");
                     // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
                     // instances on one box get DISTINCT anonymous EOS identities
