@@ -11623,12 +11623,16 @@ void main()
         {
             var path = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "autosave.save");
             var save = CaptureSave();
-            save.DisplayName = "Autosave";
+            // Dated label so the Load window's rolling autosave slot reads as
+            // a checkpoint ("Autosave — Jul 11, 6:22 PM"), not a bare name.
+            save.DisplayName = $"Autosave — {DateTime.Now:MMM d, h:mm tt}";
             SiegeFX.Core.Save.SaveStore.Save(path, save);
             Console.WriteLine($"[cmd] auto_save → {path}");
-            AddFloatingText("Autosaved",
-                _player.CurrentTransform.Translation + new Vector3(0f, 2.4f, 0f),
-                new Vector4(0.75f, 0.85f, 1f, 1f));
+            // Screen-anchored banner (the DS1 save-toast slot) — the old
+            // floating world text sat above the hero's head and was missed
+            // in playtests entirely.
+            _saveToastText = "Auto-saving...";
+            _saveToastRemaining = SaveToastDuration;
         }
         catch (Exception ex) { Console.WriteLine($"[cmd] auto_save failed: {ex.Message}"); }
     }
