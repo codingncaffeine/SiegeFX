@@ -5528,6 +5528,7 @@ void main()
                     _pendingAttackTarget = null;
                     _pendingCastTarget = null;
                     _pendingCastProp = null;
+                    _pendingBreakProp = null;
                     _pendingPickupPile = null;
                     Console.WriteLine("[cmd] stop");
                 }
@@ -16166,6 +16167,48 @@ void main()
                             }
                         }
                     }
+                    // SC-BREAK-APPROACH — pending breakable drive: walk until
+                    // the prop sits inside the active weapon's reach with a
+                    // clear line, then swing. Same shape as the attack drive.
+                    if (_pendingBreakProp is { } pbp)
+                    {
+                        if (pbp.IsDestroyed)
+                        {
+                            _pendingBreakProp = null;
+                        }
+                        else
+                        {
+                            var bAtk = GetPlayerAttackStats();
+                            float bReach = PlayerEngageReach(bAtk);
+                            var bPos = pbp.World.Translation;
+                            float bdx = after.X - bPos.X;
+                            float bdz = after.Z - bPos.Z;
+                            float bdist = MathF.Sqrt(bdx * bdx + bdz * bdz);
+                            if (bdist > MeleeChaseGiveUp)
+                            {
+                                Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u)");
+                                _pendingBreakProp = null;
+                            }
+                            else if (bdist <= bReach
+                                     && !(!_weaponIsRanged && _navMesh is not null
+                                          && _navMesh.SegmentCrossesBlocked(after, bPos))
+                                     && !(_weaponIsRanged && IsSightBlocked(after, bPos)))
+                            {
+                                // PerformPropBreak no-ops while a swing/cast is
+                                // in flight — keep the latch so the next tick
+                                // retries instead of dropping the click.
+                                if (_playerSwing is null && _playerCast is null)
+                                {
+                                    PerformPropBreak(pbp, bAtk);
+                                    _pendingBreakProp = null;
+                                }
+                            }
+                            else
+                            {
+                                _playerFollower.SetTarget(ComputeApproachPoint(after, bPos, bReach));
+                            }
+                        }
+                    }
 
                     // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
                     // (lr_unit/lr_period and mr_unit/mr_period; STR/INT-scaled). At
@@ -19773,10 +19816,11 @@ void main()
             _playerFollower.SetTarget(upw);
         // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
         // (and Phase 22: any pending walk-up pickup; SC-CAST-APPROACH: any
-        // pending walk-up cast).
+        // pending walk-up cast; SC-BREAK-APPROACH: any pending smash).
         _pendingAttackTarget = null;
         _pendingCastTarget = null;
         _pendingCastProp = null;
+        _pendingBreakProp = null;
         _pendingPickupPile = null;
         // SC-CLICK-AUDIO — the soft order tap on an accepted move click;
         // the authored "can't move there" cue when the point is unreachable.
@@ -20422,6 +20466,10 @@ void main()
     private ActorRenderState? _pendingCastTarget;
     private StaticPropInstance? _pendingCastProp;
     private SiegeFX.Core.Actors.SpellSlot _pendingCastSlot;
+    // SC-BREAK-APPROACH — pending walk-up-and-smash latch: clicking a
+    // breakable beyond reach runs the hero in and swings on arrival
+    // (previously it walked closer and required a second click).
+    private StaticPropInstance? _pendingBreakProp;
     // Phase 13e — fallback attacker profile used when the PC template didn't
     // resolve real damage stats (hero templates author damage=0 and derive it
     // from the equipped weapon — Phase 14). 1-3 matches a bare-fisted level-1
@@ -20539,6 +20587,7 @@ void main()
             _pendingAttackTarget = best;
             _pendingCastTarget = null;
             _pendingCastProp = null;
+            _pendingBreakProp = null;
             // Walk to a point just inside reach on the player→target line so
             // the follower stops at swinging distance instead of plowing in.
             var stop = ComputeApproachPoint(pPos, tPos, reach);
@@ -20694,12 +20743,20 @@ void main()
         float playerDist = MathF.Sqrt(
             (pPos.X - tPos.X) * (pPos.X - tPos.X) +
             (pPos.Z - tPos.Z) * (pPos.Z - tPos.Z));
-        if (playerDist > reach)
+        // SC-BREAK-APPROACH — same walk-up rules as enemies: out of the
+        // active weapon's reach, melee line blocked, or bow sight occluded
+        // all latch the prop and run the hero in; the per-tick drive swings
+        // the moment reach + line clear (no second click needed).
+        bool breakMeleeObstructed = !_weaponIsRanged && _navMesh is not null
+            && _navMesh.SegmentCrossesBlocked(pPos, tPos);
+        bool breakSightBlocked = _weaponIsRanged && IsSightBlocked(pPos, tPos);
+        if (playerDist > reach || breakMeleeObstructed || breakSightBlocked)
         {
-            // Static props don't sit in _pendingAttackTarget (that field
-            // expects an ActorRenderState); for now just walk closer and
-            // ask the user to click again. A latched-prop pending-target is
-            // a Phase 21 polish item.
+            _pendingBreakProp = best;
+            _pendingAttackTarget = null;
+            _pendingCastTarget = null;
+            _pendingCastProp = null;
+            _pendingPickupPile = null;
             var stop = ComputeApproachPoint(pPos, tPos, reach);
             _playerFollower?.SetTarget(stop);
             Console.WriteLine(
@@ -24964,6 +25021,7 @@ void main()
                         _pendingCastSlot = slot;
                         _pendingAttackTarget = null;
                         _pendingPickupPile = null;
+                        _pendingBreakProp = null;
                         _playerFollower?.SetTarget(ComputeApproachPoint(
                             playerPos, bpPos, MathF.Max(1.5f, spell.CastRange * 0.9f)));
                         Console.WriteLine($"click-cast: approaching {bestProp.Template} " +
@@ -24993,6 +25051,7 @@ void main()
                 _pendingCastSlot = slot;
                 _pendingAttackTarget = null;
                 _pendingPickupPile = null;
+                _pendingBreakProp = null;
                 _playerFollower?.SetTarget(ComputeApproachPoint(
                     playerPos, ctp, MathF.Max(1.5f, spell.CastRange * 0.9f)));
                 Console.WriteLine($"click-cast: approaching {best.Actor.Template.Name} " +
@@ -26073,6 +26132,7 @@ void main()
                 _pendingAttackTarget = null;
                 _pendingCastTarget = null;
                 _pendingCastProp = null;
+                _pendingBreakProp = null;
                 _playerFollower.SetTarget(pick.Position);
                 // SC-PICKUP-BLOCKED — items authored inside a prop cluster
                 // (the fh_r1 Fireshot page among the barrels) sit on
