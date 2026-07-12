@@ -5846,11 +5846,57 @@ void main()
 
     public void Run() => _window.Run();
 
+    // Deferred window-icon application. Decoded once at load; re-applied over
+    // the first frames of the live loop because GLFW only updates the Windows
+    // taskbar when events poll within ~500ms of SetWindowIcon (glfw#2753),
+    // which the pre-loop asset boot would otherwise blow past.
+    private Silk.NET.Core.RawImage[]? _windowIcons;
+    private int _windowIconFramesLeft;
+
+    /// <summary>
+    /// Decodes the window-icon frames embedded as "siegefx_icon.bin"
+    /// (256/48/32/16 px RGBA) for use with <see cref="IWindow.SetWindowIcon"/>.
+    /// Returns null if the resource is missing or malformed — the icon is
+    /// purely cosmetic and must never break startup.
+    /// </summary>
+    private static Silk.NET.Core.RawImage[]? LoadWindowIcons()
+    {
+        try
+        {
+            using var s = typeof(RenderHost).Assembly.GetManifestResourceStream("siegefx_icon.bin");
+            if (s is null) return null;
+            using var br = new BinaryReader(s);
+            int count = br.ReadInt32();
+            if (count <= 0 || count > 16) return null;
+            var icons = new Silk.NET.Core.RawImage[count];
+            for (int i = 0; i < count; i++)
+            {
+                int w = br.ReadInt32();
+                int h = br.ReadInt32();
+                if (w <= 0 || h <= 0 || w > 512 || h > 512) return null;
+                var pixels = br.ReadBytes(w * h * 4);
+                if (pixels.Length != w * h * 4) return null;
+                icons[i] = new Silk.NET.Core.RawImage(w, h, new Memory<byte>(pixels));
+            }
+            return icons;
+        }
+        catch { return null; }
+    }
+
     private void OnLoad()
     {
         if (_diagMode) _diagBootStopwatch.Start();
         _gl = GL.GetApi(_window);
         _input = _window.CreateInput();
+
+        // Title-bar + taskbar icon. GLFW ignores the exe's <ApplicationIcon>
+        // for its own window, and only lands the icon on the Windows TASKBAR
+        // if events are polled within ~500ms of SetWindowIcon (glfw#2753).
+        // OnLoad is followed by heavy world/asset boot before the loop starts
+        // pumping, so we DECODE the frames here but APPLY them across the first
+        // frames of the running loop (see _windowIconFramesLeft in OnUpdate).
+        _windowIcons = LoadWindowIcons();
+        _windowIconFramesLeft = _windowIcons is null ? 0 : 240;
 
         foreach (var kb in _input.Keyboards)
         {
@@ -16514,6 +16560,17 @@ void main()
 
     private void OnUpdate(double dt)
     {
+        // Re-apply the window/taskbar icon across the first frames of the live
+        // loop. GLFW only pushes the icon to the Windows taskbar if events are
+        // polled within ~500ms of SetWindowIcon (glfw#2753); OnLoad sets it
+        // before the heavy asset boot, so we re-assert it now that the loop is
+        // pumping. Idempotent and sub-millisecond; stops once the budget runs.
+        if (_windowIconFramesLeft > 0 && _windowIcons is not null)
+        {
+            _windowIconFramesLeft--;
+            try { _window.SetWindowIcon(_windowIcons); } catch { /* cosmetic */ }
+        }
+
         if (_input is null) return;
         // DS1's per-character elapsed play clock (shown in the Load window and
         // used as the Save window's default name). Accrues real wall time only
@@ -19495,28 +19552,9 @@ void main()
             // intentionally fill the framebuffer (e.g. About overlay's
             // 60% black scrim) aren't clipped to the chrome letterbox.
             _gl?.Disable(EnableCap.ScissorTest);
-            // Phase 27-SP-FLYOUT — sword cursor in the frontend menu.
-            // Render only in the post-logo chrome states (the same
-            // FrontendWantsSpriteCursor set that hides the OS cursor) so
-            // the intro splash + sword-drop frames keep the OS cursor and
-            // we don't double-render. Always the Pointer state — combat
-            // / talk / loot icons make no sense outside gameplay.
-            bool inMenu = FrontendWantsSpriteCursor();
-            if (inMenu)
-            {
-                // DrawBootScene never reaches the in-game HUD pass that
-                // normally calls this, so hide the OS arrow here — the
-                // sprite below is the only cursor the menu should show.
-                EnsureOsCursorHidden();
-                EnsureCursorTextures();
-                if (_iconRenderer is not null && !_mouseLookActive && _cursorPointer is not null)
-                {
-                    const int big = 64, hsBigX = 21, hsBigY = 13;
-                    int cx = (int)_currentMousePos.X - hsBigX;
-                    int cy = (int)_currentMousePos.Y - hsBigY;
-                    _iconRenderer.DrawIcon(viewportW, viewportH, _cursorPointer, cx, cy, big, big, Vector4.One);
-                }
-            }
+            // Sword cursor is drawn at the END of this pass (below), so it
+            // sits on top of the Options dialog / Load overlay that render
+            // above the frontend chrome.
         }
         // SC-OPTIONS-CHROME — Options dialog must draw in boot mode too
         // (was only firing in the in-game render block at line ~10808
@@ -19538,6 +19576,27 @@ void main()
         {
             _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
                              TryGetGuiTexture, GetCommonTexture, viewportW, viewportH);
+        }
+        // Phase 27-SP-FLYOUT — sword cursor in the frontend menu, drawn LAST so
+        // it sits ON TOP of the Options dialog and Load-game overlay (both of
+        // which render above the frontend chrome). Same FrontendWantsSpriteCursor
+        // gate that hides the OS cursor, so the intro splash / sword-drop frames
+        // keep the OS cursor and we don't double-render. Always the Pointer
+        // state — combat / talk / loot icons make no sense outside gameplay.
+        if (FrontendWantsSpriteCursor())
+        {
+            // DrawBootScene never reaches the in-game HUD pass that normally
+            // draws the sprite cursor, so hide the OS arrow here — this sprite
+            // is the only cursor the menu should show.
+            EnsureOsCursorHidden();
+            EnsureCursorTextures();
+            if (_iconRenderer is not null && !_mouseLookActive && _cursorPointer is not null)
+            {
+                const int big = 64, hsBigX = 21, hsBigY = 13;
+                int cx = (int)_currentMousePos.X - hsBigX;
+                int cy = (int)_currentMousePos.Y - hsBigY;
+                _iconRenderer.DrawIcon(viewportW, viewportH, _cursorPointer, cx, cy, big, big, Vector4.One);
+            }
         }
         _textRenderer?.EndPass();
     }

@@ -32,7 +32,19 @@
          "<Version>+<git-sha>") so two players can confirm they're on the same
          build. Bump alongside each release tag. -->
     <Version>0.0.4</Version>
+    <!-- Explorer / exe file icon. The taskbar + title-bar icon is set
+         separately at runtime (RenderHost.ApplyWindowIcon) because GLFW does
+         not pick up ApplicationIcon for its window. -->
+    <ApplicationIcon>Assets\siegefx.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Pre-decoded RGBA icon frames (256/48/32/16) handed to
+         IWindow.SetWindowIcon at load; see RenderHost.ApplyWindowIcon. -->
+    <EmbeddedResource Include="Assets\siegefx_icon.bin">
+      <LogicalName>siegefx_icon.bin</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
   <PropertyGroup Condition=" '$(PublishSingleFile)' == 'true' ">
     <SelfContained>true</SelfContained>

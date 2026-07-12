@@ -349,7 +349,7 @@ static string? ResolveDs1Resources()
 }
 
 using var host = new RenderHost(
-    bootMode ? "Dungeon Siege" : "SiegeFX  —  RMB+WASD to fly, Shift to sprint, Esc to quit",
+    bootMode ? "SiegeFX" : "SiegeFX  —  RMB+WASD to fly, Shift to sprint, Esc to quit",
     meshPath: meshPath,
     texturePath: texturePath,
     regionMapTankPath: regionMap,
