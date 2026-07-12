@@ -79,3 +79,9 @@ See [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Build
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Third-party software
+
+SiegeFX's multiplayer is built on the **Epic Online Services (EOS) SDK** — © Epic Games, Inc., used under the [Epic Online Services terms](https://onlineservices.epicgames.com/en-US/services/terms/agreements). Epic, Epic Games, Epic Online Services, and their respective logos are trademarks or registered trademarks of Epic Games, Inc. in the United States and elsewhere. SiegeFX is not affiliated with, endorsed by, or sponsored by Epic Games.
+
+The EOS SDK bundles a number of open-source components; their license notices are reproduced verbatim in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which also ships alongside each release build.

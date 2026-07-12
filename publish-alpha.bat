@@ -55,15 +55,21 @@ if errorlevel 1 (
   )
 )
 
+rem --- Reproduce the EOS SDK's third-party license notices beside the build.
+rem     Required by the EOS terms whenever the SDK ships; harmless in a
+rem     LAN/direct-IP-only build. See THIRD-PARTY-NOTICES.txt / README.
+if exist "THIRD-PARTY-NOTICES.txt" ( copy /y "THIRD-PARTY-NOTICES.txt" "publish\SiegeFX\" >nul && echo   + THIRD-PARTY-NOTICES.txt )
+
 echo.
 echo === publishing SiegeSmith (single-file, self-contained win-x64) ===
 if exist "publish\SiegeSmith" rmdir /s /q "publish\SiegeSmith"
 dotnet publish src/SiegeSmith -c Release -p:PublishSingleFile=true -p:DebugType=embedded -o publish\SiegeSmith --nologo
 if errorlevel 1 goto :fail
 
-rem SiegeFX should be just the exe plus the 3 optional EOS files; SiegeSmith
-rem just its exe. Anything else is a packaging regression worth seeing - list
-rem both folders so a growing file count is obvious.
+rem SiegeFX should be just the exe plus the 3 optional EOS files and
+rem THIRD-PARTY-NOTICES.txt; SiegeSmith just its exe. Anything else is a
+rem packaging regression worth seeing - list both folders so a growing file
+rem count is obvious.
 echo.
 echo === publish\SiegeFX ===
 dir /b "publish\SiegeFX"
