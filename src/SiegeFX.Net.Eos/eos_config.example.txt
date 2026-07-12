@@ -1,0 +1,23 @@
+# SC-MP-EOS P4 — Epic Online Services credentials.
+#
+# HOW TO GO LIVE ON EOS (the one manual step):
+#   1. Create a free Epic Games dev account at dev.epicgames.com.
+#   2. New Product → note its Product Id.
+#   3. In the product: Sandboxes (pick one → Sandbox Id) and
+#      Deployments (pick one → Deployment Id).
+#   4. Product Settings → Clients → create a Client (→ Client Id +
+#      Client Secret). Give it the default game-client policy.
+#   5. Copy this file to your SiegeFX Saves folder as `eos_config.txt`
+#      (%LOCALAPPDATA%\SiegeFX\Saves\eos_config.txt) and fill the five
+#      values below. Also drop a `mp_provider.txt` there whose first
+#      line reads `eos` to select the EOS provider (default is `lan`).
+#
+# NO player Epic account is needed — the game logs in with an anonymous
+# per-device id. No Epic Store publishing, so no tax forms.
+# If any value is missing the game silently stays on LAN.
+
+product_id    = PUT_YOUR_PRODUCT_ID_HERE
+sandbox_id    = PUT_YOUR_SANDBOX_ID_HERE
+deployment_id = PUT_YOUR_DEPLOYMENT_ID_HERE
+client_id     = PUT_YOUR_CLIENT_ID_HERE
+client_secret = PUT_YOUR_CLIENT_SECRET_HERE

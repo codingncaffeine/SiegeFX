@@ -3992,60 +3992,110 @@ public sealed class RenderHost : IDisposable
     private readonly MpSessionScreen _mpSession = new();
     private bool _mpSessionLoaded;
     private string? _mpLocalIp;
-    // SC-MP-EOS P2 — live LAN provider + direct-UDP transport behind the
-    // P1 seam. One transport at a time; NetLog carries the diagnostics.
-    private SiegeFX.Core.Net.LanLobbyService? _mpLanLobby;
-    private SiegeFX.Core.Net.UdpTransport? _mpTransport;
+    // SC-MP-EOS P2/P4 — active provider (lan by default; eos when configured
+    // + registered). Held as the P1 interfaces so the concrete provider is a
+    // config value. NetLog carries the diagnostics.
+    private SiegeFX.Core.Net.ILobbyService? _mpLobby;
+    private SiegeFX.Core.Net.ISessionTransport? _mpTransport;
     private double _mpLanScanAt;
     private volatile List<(string Row, string Addr)>? _mpLanScanResult;
     private bool _mpLanScanBusy;
+    // SC-MP-EOS P4 — the configured provider id (SIEGEFX_MP_PROVIDER env /
+    // mp_provider.txt first line; "lan" default). EOS registers itself with
+    // MpProviderFactory at boot when eos_config.txt is valid.
+    private string _mpProviderId = "lan";
+    private static string MpProviderConfigPath =>
+        Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "mp_provider.txt");
 
     private void MpTearDownSession()
     {
-        _mpLanLobby?.Dispose(); _mpLanLobby = null;
+        _mpLobby?.Dispose(); _mpLobby = null;
         _mpTransport?.Dispose(); _mpTransport = null;
         _mpSession.Status = "";
+    }
+
+    // SC-MP-EOS P4 — optional EOS platform handle (loaded by reflection so
+    // the default build never depends on the SDK). Non-null when
+    // SiegeFX.Net.Eos is present AND eos_config.txt is valid; Tick()'d each
+    // frame while in the frontend so login/lobby callbacks fire.
+    private object? _eosPlatform;
+    private Action? _eosTick;
+    private bool _mpProviderInit;
+
+    private void MpInitProvider()
+    {
+        if (_mpProviderInit) return;
+        _mpProviderInit = true;
+        _mpProviderId = SiegeFX.Core.Net.MpProviderFactory.ConfiguredProvider(MpProviderConfigPath);
+        // Optional EOS: reflection-load SiegeFX.Net.Eos so the default build
+        // stays SDK-free. Present + configured → registers "eos" with the
+        // factory and gives us a platform to Tick.
+        try
+        {
+            var asm = System.Reflection.Assembly.Load("SiegeFX.Net.Eos");
+            var boot = asm.GetType("SiegeFX.Net.Eos.EosBootstrap");
+            var reg = boot?.GetMethod("Register", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (reg is not null)
+            {
+                string cfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
+                string cache = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
+                _eosPlatform = reg.Invoke(null, new object[] { cfg, cache });
+                if (_eosPlatform is not null)
+                {
+                    var tick = _eosPlatform.GetType().GetMethod("Tick");
+                    if (tick is not null) _eosTick = () => tick.Invoke(_eosPlatform, null);
+                    Console.WriteLine("[mp] EOS provider registered");
+                }
+            }
+        }
+        catch (System.IO.FileNotFoundException)
+        {
+            // SiegeFX.Net.Eos not built/present — LAN only. Expected default.
+        }
+        catch (Exception ex) { Console.WriteLine($"[mp] EOS load skipped: {ex.Message}"); }
+        Console.WriteLine($"[mp] provider = {_mpProviderId} (available: {string.Join(',', SiegeFX.Core.Net.MpProviderFactory.Available)})");
     }
 
     private void MpStartHost()
     {
         MpTearDownSession();
-        _mpTransport = new SiegeFX.Core.Net.UdpTransport();
-        _mpTransport.PeerConnected += id =>
+        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        _mpLobby = lobby; _mpTransport = transport;
+        transport.PeerConnected += id =>
             _mpSession.Status = $"Player {id} connected ({_mpTransport?.Peers.Count ?? 0} in session). Waiting in staging...";
-        _mpTransport.PeerDisconnected += id =>
+        transport.PeerDisconnected += id =>
             _mpSession.Status = $"Player {id} left ({_mpTransport?.Peers.Count ?? 0} in session).";
-        _ = _mpTransport.ListenAsync(SiegeFX.Core.Net.UdpTransport.DefaultGamePort, default)
-            .ContinueWith(t =>
+        int port = SiegeFX.Core.Net.UdpTransport.DefaultGamePort;
+        _ = transport.ListenAsync(port, default).ContinueWith(t =>
+        {
+            if (t.Result)
             {
-                if (t.Result)
-                {
-                    _mpSession.Status = $"HOSTING '{_mpSession.PlayerName}'s Game' on port {SiegeFX.Core.Net.UdpTransport.DefaultGamePort} — waiting for players...";
-                    _mpLanLobby = new SiegeFX.Core.Net.LanLobbyService();
-                    _ = _mpLanLobby.CreateAsync($"{_mpSession.PlayerName}'s Game",
-                        new Dictionary<string, string>
-                        {
-                            ["port"] = SiegeFX.Core.Net.UdpTransport.DefaultGamePort.ToString(),
-                            ["map"] = "Kingdom of Ehb",
-                            ["players"] = "1/8",
-                            ["host"] = _mpSession.PlayerName,
-                        }, default);
-                }
-                else
-                {
-                    _mpSession.Status = $"HOST FAILED — port {SiegeFX.Core.Net.UdpTransport.DefaultGamePort} in use? See session log [net] lines.";
-                }
-            }, TaskScheduler.Default);
+                _mpSession.Status = $"HOSTING '{_mpSession.PlayerName}'s Game' ({transport.ProviderId}) — waiting for players...";
+                _ = lobby.CreateAsync($"{_mpSession.PlayerName}'s Game",
+                    new Dictionary<string, string>
+                    {
+                        ["port"] = port.ToString(),
+                        ["map"] = "Kingdom of Ehb",
+                        ["players"] = "1/8",
+                        ["host"] = _mpSession.PlayerName,
+                    }, default);
+            }
+            else
+            {
+                _mpSession.Status = $"HOST FAILED ({transport.ProviderId}) — port in use / not logged in? See session log [net] lines.";
+            }
+        }, TaskScheduler.Default);
     }
 
     private void MpStartConnect(string address)
     {
         MpTearDownSession();
-        _mpTransport = new SiegeFX.Core.Net.UdpTransport();
-        _mpTransport.PeerDisconnected += _ =>
+        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        _mpLobby = lobby; _mpTransport = transport;
+        transport.PeerDisconnected += _ =>
             _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
-        _mpSession.Status = $"Connecting to {address}...";
-        _ = _mpTransport.ConnectAsync(address, default).ContinueWith(t =>
+        _mpSession.Status = $"Connecting to {address} ({transport.ProviderId})...";
+        _ = transport.ConnectAsync(address, default).ContinueWith(t =>
         {
             _mpSession.Status = t.Result
                 ? $"CONNECTED to {address} — waiting in staging..."
@@ -16637,6 +16687,7 @@ void main()
                 break;
             case MainMenuPanel.Action.Multiplayer:
                 // SC-MP-MENU — roll into the Multiplayer provider menu.
+                MpInitProvider();
                 _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MainMenuToMp);
                 _mainMenu.ClearHover();
                 break;
@@ -16843,6 +16894,22 @@ void main()
         bool active = _bootMode
             && (st == Hud.FrontendScene.ScreenState.MpInternet
              || st == Hud.FrontendScene.ScreenState.MpNetwork);
+        // SC-MP-EOS P4 — drive EOS callbacks (login/lobby/p2p) + drain the
+        // EOS transport queue while any MP screen (menu or session) is up.
+        bool inMpAnyScreen = st is Hud.FrontendScene.ScreenState.Multiplayer
+            or Hud.FrontendScene.ScreenState.MainMenuToMp
+            or Hud.FrontendScene.ScreenState.MpToMainMenu
+            or Hud.FrontendScene.ScreenState.MpInternet
+            or Hud.FrontendScene.ScreenState.MpNetwork;
+        if (inMpAnyScreen)
+        {
+            _eosTick?.Invoke();
+            // EOS transport needs an explicit packet pump (not in the P1
+            // interface); call it by name when present.
+            if (_mpTransport is { } tr && tr.ProviderId == "eos")
+                tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
+        }
+
         bool wasActive = _mpSession.IsActive;
         _mpSession.IsActive = active;
         if (!active)
@@ -16855,7 +16922,7 @@ void main()
         // SC-MP-EOS P2 — LAN discovery loop: while the Network screen is
         // up and we're not hosting, rescan every 2.5s off-thread and apply
         // results on this (render) thread.
-        if (st == Hud.FrontendScene.ScreenState.MpNetwork && _mpLanLobby is null)
+        if (st == Hud.FrontendScene.ScreenState.MpNetwork && _mpLobby is null)
         {
             if (_mpLanScanResult is { } scan)
             {

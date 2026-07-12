@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SC-MP-EOS P4 — the Epic Online Services provider. Compiles the EOS C#
+    SDK source (Epic's, NOT in this repo — licensed, lives outside) together
+    with our thin wrapper implementing SiegeFX.Core.Net's ILobbyService /
+    ISessionTransport. Excluded from the default solution build; referenced
+    only when EOS is wanted. Set EosSdkRoot to wherever the SDK was unzipped;
+    default is the download location.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <DefineConstants>EOS_PLATFORM_WINDOWS_64;$(DefineConstants)</DefineConstants>
+    <EosSdkRoot Condition="'$(EosSdkRoot)' == ''">$(USERPROFILE)\Downloads\EOS\SDK</EosSdkRoot>
+    <!-- Epic's generated SDK trips nullable/obsolete analyzers; silence them
+         for the vendor source only (our wrapper stays strict). -->
+    <NoWarn>$(NoWarn);CS0618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625;CS0219;CS0414</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Epic's SDK source (external, licensed — never committed). -->
+  <ItemGroup>
+    <Compile Include="$(EosSdkRoot)\Source\Core\**\*.cs">
+      <Link>EosSdk\Core\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+    <Compile Include="$(EosSdkRoot)\Source\Generated\**\*.cs">
+      <Link>EosSdk\Generated\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </Compile>
+  </ItemGroup>
+
+  <!-- Native runtime alongside the managed assembly. -->
+  <ItemGroup>
+    <None Include="$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll" Condition="Exists('$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>EOSSDK-Win64-Shipping.dll</Link>
+    </None>
+  </ItemGroup>
+
+</Project>

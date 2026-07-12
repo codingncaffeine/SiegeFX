@@ -493,3 +493,9 @@ anim-diag.log
 
 goldens/sfx-filmstrips/
 capture-kit/
+
+# SC-MP-EOS — EOS SDK (Epic's, licensed) + live credentials never committed
+src/SiegeFX.Net.Eos/bin/
+src/SiegeFX.Net.Eos/obj/
+EOSSDK-*.dll
+eos_config.txt
