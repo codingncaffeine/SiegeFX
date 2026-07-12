@@ -17435,9 +17435,14 @@ void main()
         _mpSession.IsActive = active;
         if (!active)
         {
-            // Leaving the screens tears the session down (BACK from the
-            // provider menu / Esc path saves prefs there).
-            if (wasActive) MpTearDownSession();
+            // Leaving the Internet/Network screen tears the session down — BUT
+            // entering the STAGING area is a continuation of the session, not a
+            // departure. Tearing down on the Internet/Network -> Staging
+            // transition killed the host's listener the instant it started
+            // hosting (host beacon up then immediately down). Staging exits
+            // (Leave / Start) tear down explicitly, so skip it here for staging.
+            if (wasActive && st != Hud.FrontendScene.ScreenState.MpStaging)
+                MpTearDownSession();
             return;
         }
         // SC-MP-EOS P2 — LAN discovery loop: while the Network screen is
