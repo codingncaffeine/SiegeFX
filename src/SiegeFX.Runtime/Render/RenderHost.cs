@@ -21083,16 +21083,19 @@ void main()
                 hoveredId.Value, isPaused: _isPaused, labelsOn: _overheadLabelsVisible);
             if (!string.IsNullOrEmpty(tip))
             {
-                // text_box_info rect 95,450,501,479 in 640×480 ref. Same
-                // clamped scale + bottom anchoring as DataBar.ProjectRect
-                // so the tooltip stays inside the (re-baselined) bar band.
+                // text_box_info authors rect 95,450,501,479 in the 640×480
+                // ref — "centered between the two button clusters" on 4:3.
+                // Our widescreen bar splits the clusters to the viewport
+                // edges (left cluster left-anchored, right cluster right-
+                // anchored), so the authored X band strands the help text
+                // by the left cluster where it goes unnoticed. Keep the
+                // authored bottom band; center the TEXT on the viewport,
+                // which is where "between the clusters" lands on any width.
                 float dbScale = Hud.HudScale.Hud(viewportH);
-                int tipX0 = (int)Math.Round(95 * dbScale);
                 int tipY0 = viewportH - (int)Math.Round((480 - 450) * dbScale);
-                int tipW  = (int)Math.Round((501 - 95) * dbScale);
                 int tipH  = (int)Math.Round((479 - 450) * dbScale);
                 int textW = _textRenderer.MeasureWidth(tip);
-                int tx = tipX0 + (tipW - textW) / 2;
+                int tx = (viewportW - textW) / 2;
                 int ty = tipY0 + (tipH - 8) / 2;
                 var ink = new Vector4(0.86f, 0.83f, 0.69f, 1f);
                 _textRenderer.DrawString(viewportW, viewportH, tip, tx, ty, ink);
