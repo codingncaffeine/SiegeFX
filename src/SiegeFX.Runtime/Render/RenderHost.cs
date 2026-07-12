@@ -4069,7 +4069,11 @@ public sealed class RenderHost : IDisposable
 
         MpInitProvider(); // reflection-load EOS if present (idempotent, fresh process)
 
-        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
+        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
+        // Tune the connect budget on the raw UDP transport BEFORE the AEAD wrap
+        // hides its concrete type — the client dials for a while as the host loads.
+        if (!asHost && rawTransport is SiegeFX.Core.Net.UdpTransport rudp) { rudp.ConnectAttempts = 120; rudp.ConnectDelayMs = 500; }
+        var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         var session = new SiegeFX.Core.Net.MpSession(transport, asHost, name);
         _mpNetSession = session;
@@ -4103,8 +4107,6 @@ public sealed class RenderHost : IDisposable
         else
         {
             MpMarkClientWorldActors(); // host drives the mobs; suppress local AI
-            // Raise the connect budget — the host is loading its region in parallel.
-            if (transport is SiegeFX.Core.Net.UdpTransport udp) { udp.ConnectAttempts = 120; udp.ConnectDelayMs = 500; }
             transport.PeerDisconnected += _ => SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host");
             if (string.IsNullOrWhiteSpace(host))
             { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); return; }
@@ -4122,10 +4124,32 @@ public sealed class RenderHost : IDisposable
     private void TickMpInRegion()
     {
         _eosTick?.Invoke();
-        if (_mpTransport is { } tr && tr.ProviderId.StartsWith("eos", StringComparison.Ordinal))
-            tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
+        MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
         MpInterpolateRemoteActors((float)_frameDtSeconds);
+    }
+
+    // SC-MP-EOS P6 — opt-in AEAD wrap. When SIEGEFX_MP_PASSPHRASE is set (same
+    // string on both peers, shared out-of-band like the host address), every
+    // payload is AES-GCM sealed so a blind scanner that discovers the endpoint
+    // can't inject/hijack. Default (unset) runs clear — the always-on, no-alloc,
+    // fuzz-hardened protocol reader is the load-bearing RCE protection regardless.
+    private SiegeFX.Core.Net.ISessionTransport MpSecure(SiegeFX.Core.Net.ISessionTransport t)
+    {
+        var pass = Environment.GetEnvironmentVariable("SIEGEFX_MP_PASSPHRASE");
+        if (string.IsNullOrEmpty(pass)) return t;
+        SiegeFX.Core.Net.NetLog.Info("mp: AEAD enabled (SIEGEFX_MP_PASSPHRASE set) — payloads encrypted");
+        return new SiegeFX.Core.Net.SecureTransport(t, SiegeFX.Core.Net.MpSecurity.DeriveKey(pass));
+    }
+
+    // Drain the EOS P2P queue (a provider-specific method not on the interface),
+    // unwrapping the SecureTransport decorator when AEAD is on.
+    private void MpPumpEos(SiegeFX.Core.Net.ISessionTransport? tr)
+    {
+        if (tr is null) return;
+        var inner = tr is SiegeFX.Core.Net.SecureTransport st ? st.Inner : tr;
+        if (inner.ProviderId.StartsWith("eos", StringComparison.Ordinal))
+            inner.GetType().GetMethod("Pump")?.Invoke(inner, null);
     }
 
     // SC-MP-INGAME — the local player's pose for the client-authoritative sync.
@@ -4423,7 +4447,8 @@ public sealed class RenderHost : IDisposable
     private void MpStartHost()
     {
         MpTearDownSession();
-        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerConnected += id =>
             _mpSession.Status = $"Player {id} connected ({_mpTransport?.Peers.Count ?? 0} in session). Waiting in staging...";
@@ -4456,7 +4481,8 @@ public sealed class RenderHost : IDisposable
     {
         MpTearDownSession();
         _mpJoinedHostAddress = address; // reused when we relaunch into the region
-        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerDisconnected += _ =>
             _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
@@ -17379,10 +17405,7 @@ void main()
         if (inMpAnyScreen || st == Hud.FrontendScene.ScreenState.MpStaging)
         {
             _eosTick?.Invoke();
-            // EOS transport needs an explicit packet pump (not in the P1
-            // interface); call it by name when present.
-            if (_mpTransport is { } tr && tr.ProviderId.StartsWith("eos"))
-                tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
+            MpPumpEos(_mpTransport);
         }
 
         // SC-MP-EOS P8 — cross-thread staging entry + the session driver.

@@ -12,6 +12,17 @@ public static class MpSecurity
     /// <summary>Mint a random 32-byte session key (lobby-side, per session).</summary>
     public static byte[] NewSessionKey() => RandomNumberGenerator.GetBytes(32);
 
+    /// <summary>Derive a deterministic 32-byte AEAD key from a shared passphrase
+    /// (both peers agree on it out-of-band, like the host address). Used when no
+    /// lobby server exists to mint a key: PBKDF2-SHA256, fixed app salt, 200k
+    /// iterations. Same passphrase → same key on both sides → frames authenticate.</summary>
+    public static byte[] DeriveKey(string passphrase)
+    {
+        var salt = Encoding.UTF8.GetBytes("SiegeFX-MP-AEAD-v1");
+        return Rfc2898DeriveBytes.Pbkdf2(
+            Encoding.UTF8.GetBytes(passphrase ?? ""), salt, 200_000, HashAlgorithmName.SHA256, 32);
+    }
+
     /// <summary>HMAC-SHA256 session ticket: proves the bearer was admitted by
     /// the lobby for this session before a given expiry. Body =
     /// player|sessionId|expiryUnix; tag authenticates it under the session key.</summary>
@@ -89,6 +100,10 @@ public sealed class SecureTransport : ISessionTransport
     readonly ISessionTransport _inner;
     readonly byte[] _key;
     public SecureTransport(ISessionTransport inner, byte[] sessionKey) { _inner = inner; _key = sessionKey; }
+
+    /// <summary>The wrapped transport — so callers can reach provider-specific
+    /// methods not on the interface (e.g. the EOS packet Pump).</summary>
+    public ISessionTransport Inner => _inner;
 
     public string ProviderId => _inner.ProviderId + "+aead";
     public IReadOnlyList<int> Peers => _inner.Peers;

@@ -185,6 +185,26 @@ public static class NetSelfTest
             "AEAD seal/open round-trips the payload");
         sealed_[15] ^= 0xFF; // tamper a ciphertext byte
         Assert(MpSecurity.Open(key, sealed_) is null, "AEAD rejects a tampered frame (returns null, no throw)");
+
+        // SecureTransport end-to-end over loopback with a passphrase-derived key
+        // (the opt-in AEAD wrap used on the live path when SIEGEFX_MP_PASSPHRASE
+        // is set — no lobby server needed to distribute a key).
+        Assert(MpSecurity.DeriveKey("dragons").AsSpan().SequenceEqual(MpSecurity.DeriveKey("dragons")),
+            "same passphrase derives the same key on both sides");
+        {
+            var (st1, st2) = LoopbackTransport.CreatePair();
+            var sh = new SecureTransport(st1, MpSecurity.DeriveKey("dragons"));
+            var sc = new SecureTransport(st2, MpSecurity.DeriveKey("dragons"));
+            sh.Send(1, System.Text.Encoding.UTF8.GetBytes("ping"));
+            bool rttOk = sc.TryReceive(out _, out var pl) && System.Text.Encoding.UTF8.GetString(pl) == "ping";
+            Assert(rttOk, "SecureTransport round-trips an AEAD frame over the transport");
+            var (bt1, bt2) = LoopbackTransport.CreatePair();
+            var good = new SecureTransport(bt1, MpSecurity.DeriveKey("dragons"));
+            var wrong = new SecureTransport(bt2, MpSecurity.DeriveKey("goblins"));
+            good.Send(1, System.Text.Encoding.UTF8.GetBytes("secret"));
+            Assert(!wrong.TryReceive(out _, out _), "SecureTransport drops a frame sealed under a different passphrase");
+            sh.Dispose(); sc.Dispose(); good.Dispose(); wrong.Dispose();
+        }
         // Fuzz the protocol reader: 20k random frames, must never throw.
         var rng = new Random(1234);
         bool anyThrow = false;
