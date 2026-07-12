@@ -344,7 +344,15 @@ public sealed class ActorBrain
 
             case BrainState.Chase:
                 if (!targetAlive || distXZ > DisengageRadius) { State = BrainState.Wander; _attackFacing = null; break; }
-                if (distXZ <= EngageRange) { EnterAttack(targetPos!.Value); break; }
+                // SC-PATHING — "in range" must mean REACHABLE: a target
+                // across a fence is close by XZ but the melee approach is
+                // obstacle-blocked; keep chasing (the follower's A* now
+                // routes around the fence's blocked triangles) instead of
+                // standing at the rail reaching through it.
+                if (distXZ <= EngageRange
+                    && !(Mode == AttackMode.Melee
+                         && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value)))
+                { EnterAttack(targetPos!.Value); break; }
                 // Re-pin the follower target every tick — the player is a moving
                 // goalpost, so a fire-and-forget SetTarget would have us chasing
                 // a stale position. NavFollower replans on each SetTarget call.
@@ -363,6 +371,11 @@ public sealed class ActorBrain
                 // melee distances are tight; standoff modes get a bit more slack.
                 float holdRange = meleeNow ? MeleeRange * 1.2f : StandoffRange * 1.15f;
                 if (distXZ > holdRange) { State = BrainState.Chase; _attackFacing = null; break; }
+                // SC-PATHING — a target that stepped behind blocked ground
+                // mid-fight (fence, cart) breaks the hold: back to Chase so
+                // the follower paths around instead of zombie-reaching.
+                if (meleeNow && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value))
+                { State = BrainState.Chase; _attackFacing = null; break; }
                 FaceTarget(targetPos!.Value);
                 if (meleeNow || Mode != AttackMode.Magic)
                 {

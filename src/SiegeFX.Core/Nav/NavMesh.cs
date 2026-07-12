@@ -1026,6 +1026,29 @@ public sealed class NavMesh
         return triIndex >= 0;
     }
 
+    /// <summary>SC-PATHING — does the straight XZ segment between two points
+    /// cross obstacle-blocked (or missing) ground? The melee-engagement gate:
+    /// a mob standing across a fence from its target is "in range" by XZ
+    /// distance but must keep CHASING (pathing around) instead of reaching
+    /// through the fence. Sample-based (every ~0.5u) — the segment lengths
+    /// involved are engage ranges (≤ ~4u), so this is a handful of grid
+    /// lookups.</summary>
+    public bool SegmentCrossesBlocked(Vector3 a, Vector3 b)
+    {
+        float dx = b.X - a.X, dz = b.Z - a.Z;
+        float len = MathF.Sqrt(dx * dx + dz * dz);
+        if (len < 0.25f) return false;
+        int steps = Math.Clamp((int)(len / 0.5f), 1, 24);
+        for (int i = 1; i < steps; i++)
+        {
+            float t = i / (float)steps;
+            var p = new Vector3(a.X + dx * t, (a.Y + b.Y) * 0.5f, a.Z + dz * t);
+            if (!TryFindTriangle(p, out var tri, includeFadeHidden: true)) return true;
+            if (IsBlocked(tri)) return true;
+        }
+        return false;
+    }
+
     static Vector3 ClosestPointOnSegmentXZ(Vector3 p, Vector3 a, Vector3 b)
     {
         float abx = b.X - a.X, abz = b.Z - a.Z;

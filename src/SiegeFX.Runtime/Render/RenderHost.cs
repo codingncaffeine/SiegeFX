@@ -13114,10 +13114,17 @@ void main()
         {
             if (prop.IsDoor || prop.IsDestroyed) continue;
             if (!_templateStore.TryGet(prop.Template, out var tpl)) continue;
-            var icAttr = _templateStore.GetAttribute(tpl, "aspect", "is_collidable");
-            if (icAttr is null) continue;
-            var icTrim = icAttr.Trim().Trim('"').ToLowerInvariant();
-            if (icTrim != "true" && icTrim != "1") continue;
+            // SC-PATHING — the authored walk-blocking field is [aspect]
+            // does_block_path ("prevents another from walking through it"),
+            // set true on the base non_interactive chain with explicit
+            // opt-outs (the *_nonblocking family). The old is_collidable
+            // read was the PROJECTILE flag and explicit-only, so fences and
+            // walls never blocked the nav mesh — mobs and clicks pathed
+            // straight through their line while the visuals said otherwise.
+            var blockAttr = _templateStore.GetAttribute(tpl, "aspect", "does_block_path")
+                         ?? _templateStore.GetAttribute(tpl, "physics", "does_block_path");
+            var blockTrim = (blockAttr ?? "").Trim().Trim('"').ToLowerInvariant();
+            if (blockTrim != "true" && blockTrim != "1") continue;
             // World-space XZ radius: transform the local AABB's 4
             // XZ corners (Y collapsed) by the placement matrix,
             // then take the max distance from the translation
@@ -13144,7 +13151,38 @@ void main()
             }
             float radius = MathF.Sqrt(maxR2);
             if (radius < 0.5f) continue;
-            int marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius);
+            // SC-PATHING — elongated props (fence sections, walls, carts)
+            // block as a CAPSULE of small discs along their world long axis
+            // instead of one bounding disc: a 6u fence with a 3u disc would
+            // over-block the walkable grass beside it and turn "walk around
+            // the fence" into a huge detour.
+            var wcA = Vector3.Transform(corners[0], prop.World);
+            var wcB = Vector3.Transform(corners[1], prop.World);
+            var wcD = Vector3.Transform(corners[3], prop.World);
+            float sideAB = new Vector2(wcB.X - wcA.X, wcB.Z - wcA.Z).Length(); // local X extent
+            float sideAD = new Vector2(wcD.X - wcA.X, wcD.Z - wcA.Z).Length(); // local Z extent
+            float longLen = MathF.Max(sideAB, sideAD);
+            float shortLen = MathF.Max(0.4f, MathF.Min(sideAB, sideAD));
+            int marked = 0;
+            if (longLen > shortLen * 2.2f && longLen > 2f)
+            {
+                var axis = sideAB >= sideAD
+                    ? Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z))
+                    : Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                float halfLong = longLen * 0.5f;
+                float discR = MathF.Max(0.45f, shortLen * 0.5f);
+                int discs = Math.Max(2, (int)MathF.Ceiling(longLen / (discR * 1.4f)));
+                for (int di = 0; di < discs; di++)
+                {
+                    float along = -halfLong + longLen * (di / (float)(discs - 1));
+                    var c = origin + axis * along;
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR);
+                }
+            }
+            else
+            {
+                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius);
+            }
             if (marked > 0)
             {
                 obstacles++;
@@ -15943,13 +15981,19 @@ void main()
                                     $"(dist={pdist:F1}u)");
                                 _pendingAttackTarget = null;
                             }
-                            else if (pdist <= r)
+                            else if (pdist <= r
+                                     && !(!_weaponIsRanged && _navMesh is not null
+                                          && _navMesh.SegmentCrossesBlocked(after, tp)))
                             {
                                 PerformPlayerSwing(pat, atk);
                                 _pendingAttackTarget = null;
                             }
                             else
                             {
+                                // SC-PATHING — out of reach OR the melee
+                                // approach is obstacle-blocked (fence): keep
+                                // walking; the A* routes around now that
+                                // blockers mark the mesh.
                                 _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
                             }
                         }
@@ -20271,7 +20315,12 @@ void main()
         float playerDist = MathF.Sqrt(
             (pPos.X - tPos.X) * (pPos.X - tPos.X) +
             (pPos.Z - tPos.Z) * (pPos.Z - tPos.Z));
-        if (playerDist > reach)
+        // SC-PATHING — melee "in reach" must also be UNOBSTRUCTED: an enemy
+        // across a fence is close by XZ but the swing would pass through
+        // blocked ground; walk up (the A* routes around) instead.
+        bool meleeObstructed = !_weaponIsRanged && _navMesh is not null
+            && _navMesh.SegmentCrossesBlocked(pPos, tPos);
+        if (playerDist > reach || meleeObstructed)
         {
             _pendingAttackTarget = best;
             // Walk to a point just inside reach on the player→target line so
