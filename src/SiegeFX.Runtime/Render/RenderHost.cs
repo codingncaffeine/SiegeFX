@@ -23818,6 +23818,47 @@ void main()
         return result;
     }
 
+    /// <summary>SC-GOLD-PILES — load a display mesh directly by .asp model
+    /// name, skipping the template store. For art-only assets (the cavern
+    /// treasure piles) that no authored template references. Shares
+    /// <see cref="_itemMeshCache"/> under a "model:" key prefix.</summary>
+    private ItemMesh? TryGetModelMesh(string modelName)
+    {
+        if (_gl is null || _playResolver is null) return null;
+        var cacheKey = "model:" + modelName;
+        if (_itemMeshCache.TryGetValue(cacheKey, out var cached)) return cached;
+
+        ItemMesh? result = null;
+        string? missReason = null;
+        try
+        {
+            if (!_playResolver.TryLoadModel(modelName, out var aspBytes))
+            {
+                missReason = "model load failed";
+            }
+            else
+            {
+                var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+                var mesh = new StaticMesh(_gl, asp);
+                GlTexture? tex = null;
+                if (asp.TextureNames.Count > 0
+                    && _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
+                {
+                    try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); }
+                    catch { tex = null; }
+                }
+                result = new ItemMesh(mesh, tex, null);
+            }
+        }
+        catch (Exception ex) { result = null; missReason = $"exception: {ex.GetType().Name}"; }
+
+        if (result is null && missReason is not null && _loggedItemRefMisses.Add(cacheKey))
+            Console.WriteLine($"  loot-mesh miss: {cacheKey} ({missReason})");
+
+        _itemMeshCache[cacheKey] = result;
+        return result;
+    }
+
     /// <summary>Phase 9-SC-13 — resolve and cache the inventory icon for an
     /// item template name. Mirrors <see cref="TryGetItemMesh"/>'s
     /// pcontent-spec-aware path: rolls #specs through the resolver, reads
@@ -26852,10 +26893,13 @@ void main()
                     // drawn but invisible at camera distance.
                     if (pile.Items[i].IsGold)
                     {
+                        // No template references these meshes — they're raw
+                        // art assets — so resolve by model name directly
+                        // (template-store lookup of an invented name = box).
                         var (glo, ghi) = pile.Items[i].GoldRange();
                         int amt = (glo + ghi) / 2;
-                        itemMesh = TryGetItemMesh(amt < 25 ? "gold_cav_01"
-                                                : amt < 100 ? "gold_cav_02" : "gold_cav_03");
+                        itemMesh = TryGetModelMesh(amt < 25 ? "m_i_cav_gold-01"
+                                                : amt < 100 ? "m_i_cav_gold-02" : "m_i_cav_gold-03");
                         goldDisplay = itemMesh is not null;
                     }
                     else
