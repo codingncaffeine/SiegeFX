@@ -105,6 +105,66 @@ public static class NetSelfTest
 
         host.Dispose(); client.Dispose(); hostT.Dispose(); clientT.Dispose();
 
+        // ---- P5: join rules + spawn-town gates ----
+        var vet = new MpSessionInfo("Bob", "Utraea", MpDifficulty.Veteran, 2, 8, false, "Lang", 50, 60);
+        Assert(!MpJoinRules.CanJoin(vet, 40, false).Ok, "level-40 char refused from a Veteran game (needs 54+)");
+        Assert(MpJoinRules.CanJoin(vet, 60, false).Ok, "level-60 char accepted into a Veteran game");
+        var full = vet with { PlayersIn = 8 };
+        Assert(!MpJoinRules.CanJoin(full, 99, false).Ok, "full game refuses even a high-level char");
+        var newOnly = new MpSessionInfo("Bob", "Ehb", MpDifficulty.Regular, 1, 8, true, "", 1, 1);
+        Assert(!MpJoinRules.CanJoin(newOnly, 30, false).Ok, "'new characters only' refuses an existing char");
+        Assert(MpJoinRules.CanJoin(newOnly, 1, true).Ok, "'new characters only' accepts a fresh char");
+        var towns = MpSpawnTowns.Available(20).ToList();
+        Assert(towns.Contains("Meren") && !towns.Contains("Lang"), "level-20 spawn towns include Meren, exclude Lang");
+        Assert(!MpSpawnTowns.CanEnter("Grescal", 20) && MpSpawnTowns.CanEnter("Elddim", 0), "town gates: Grescal locked at 20, Elddim open");
+
+        // ---- P6: HMAC tickets + AEAD + fuzz ----
+        var key = MpSecurity.NewSessionKey();
+        string ticket = MpSecurity.MintTicket(key, 3, "sess-abc", DateTimeOffset.UtcNow.AddMinutes(5));
+        Assert(MpSecurity.VerifyTicket(key, ticket, "sess-abc", DateTimeOffset.UtcNow, out int tp) && tp == 3,
+            "valid HMAC ticket verifies with the right player id");
+        Assert(!MpSecurity.VerifyTicket(key, ticket, "sess-abc", DateTimeOffset.UtcNow.AddMinutes(10), out _),
+            "expired ticket rejected");
+        Assert(!MpSecurity.VerifyTicket(MpSecurity.NewSessionKey(), ticket, "sess-abc", DateTimeOffset.UtcNow, out _),
+            "ticket forged under a different key rejected");
+        var sealed_ = MpSecurity.Seal(key, System.Text.Encoding.UTF8.GetBytes("secret payload"));
+        var opened = MpSecurity.Open(key, sealed_);
+        Assert(opened is not null && System.Text.Encoding.UTF8.GetString(opened) == "secret payload",
+            "AEAD seal/open round-trips the payload");
+        sealed_[15] ^= 0xFF; // tamper a ciphertext byte
+        Assert(MpSecurity.Open(key, sealed_) is null, "AEAD rejects a tampered frame (returns null, no throw)");
+        // Fuzz the protocol reader: 20k random frames, must never throw.
+        var rng = new Random(1234);
+        bool anyThrow = false;
+        for (int i = 0; i < 20000; i++)
+        {
+            var frame = new byte[rng.Next(0, 64)];
+            rng.NextBytes(frame);
+            try
+            {
+                var rr = new MpReader(frame);
+                for (int j = 0; j < 8; j++) { rr.U8(); rr.U16(); rr.U32(); rr.F32(); rr.Str(); rr.Str(true); }
+            }
+            catch { anyThrow = true; break; }
+        }
+        Assert(!anyThrow, "protocol reader survived 20k random frames without throwing (fuzz-hard)");
+
+        // ---- P7: NAT host election + player-relay ----
+        var cands = new List<HostCandidate>
+        {
+            new(0, "Alice", NatClass.Symmetric, 20),
+            new(1, "Bob",   NatClass.FullCone,  40),
+            new(2, "Cara",  NatClass.OpenOrForwarded, 60),
+        };
+        var (elected, relay) = MpHostElection.Elect(cands);
+        Assert(elected.Player == 2 && !relay, "most-reachable player (open/forwarded) elected host, no relay needed");
+        var symOnly = new List<HostCandidate> { new(0, "A", NatClass.Symmetric, 10), new(1, "B", NatClass.PortRestricted, 30) };
+        var (_, relay2) = MpHostElection.Elect(symOnly);
+        Assert(relay2, "all-restricted lobby flags relay-likely");
+        // Player-relay: client 0 can't reach host 2 directly, but peer 1 can bridge.
+        int bridge = MpPlayerRelay.PickRelay(0, 2, cands, (a, b) => !(a == 0 && b == 2));
+        Assert(bridge == 1, "player-relay picks peer 1 to bridge the blocked client");
+
         Console.WriteLine(ok ? "[selftest-net] ALL PASS" : "[selftest-net] FAILURES ABOVE");
         return ok;
     }
