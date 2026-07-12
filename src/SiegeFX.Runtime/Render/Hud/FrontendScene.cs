@@ -136,8 +136,25 @@ public sealed class FrontendScene : IDisposable
         DifficultyToCharacterSelect,
         /// <summary>Load Map — final screen before world load.</summary>
         LoadMap,
-        /// <summary>Multiplayer.</summary>
+        /// <summary>SC-MP-MENU — Main → Multiplayer transition.
+        /// mainmenu_mm2mp (title drum rolls MAIN MENU → MULTIPLAYER, the
+        /// text-02 PanelBASE6 plate tips down) / menubars_mm2mp (the five
+        /// MM rows fold into the three provider rows) / backbutton_e2b
+        /// (EXIT morphs to BACK) run together over <see cref="MmToMpDur"/>;
+        /// auto-advances to <see cref="Multiplayer"/>.</summary>
+        MainMenuToMp,
+        /// <summary>SC-MP-MENU — settled Multiplayer provider menu:
+        /// ZONEMATCH (visibly disabled — the service is discontinued) /
+        /// INTERNET / NETWORK + BACK. Layout from
+        /// multiplayer_provider.gas; labels are UV crops of
+        /// text-menubars2 (the atlas whose "wrong screen" content was
+        /// always THIS screen's).</summary>
         Multiplayer,
+        /// <summary>SC-MP-MENU — Multiplayer → Main reverse transition
+        /// (BACK click). mainmenu_mp2mm / menubars_mp2mm /
+        /// backbutton_b2e unwind over <see cref="MpToMmDur"/>;
+        /// auto-advances to <see cref="MainMenu"/>.</summary>
+        MpToMainMenu,
     }
 
     // Phase 24-MAINMENU splash timing. DS1's gas authors `alpha_animation`
@@ -202,6 +219,12 @@ public sealed class FrontendScene : IDisposable
     /// (clamped 0..1). Used only during the reverse transition.</summary>
     public float SpToMmTimeFraction =>
         State == ScreenState.SinglePlayerToMm ? Math.Clamp(_stateTime / SpToMmDur, 0f, 1f) : 0f;
+
+    // SC-MP-MENU — Main ↔ Multiplayer morphs. menubars_mm2mp authors
+    // 1.6667s (trace-pose header); run both directions at the authored
+    // cadence.
+    const float MmToMpDur = 1.6667f;
+    const float MpToMmDur = 1.6667f;
 
     // SC-MAINMENU-LOADGAME — SP → Load Game and reverse. mainmenu_sp2lg /
     // backbutton_b2pn / loadmap_down run together (menubars hold the SP
@@ -368,6 +391,12 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.DifficultyToCharacterSelect:
                 if (_stateTime >= DiffToCdDur) SetState(ScreenState.CharacterSelect);
                 break;
+            case ScreenState.MainMenuToMp:
+                if (_stateTime >= MmToMpDur) SetState(ScreenState.Multiplayer);
+                break;
+            case ScreenState.MpToMainMenu:
+                if (_stateTime >= MpToMmDur) SetState(ScreenState.MainMenu);
+                break;
         }
     }
 
@@ -495,6 +524,17 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.DifficultyToCharacterSelect:
                 DrawDifficultyChrome(fullW, fullH,
                     hold: Math.Clamp(_stateTime / DiffToCdDur, 0f, 1f), fromCd: false);
+                return;
+            case ScreenState.MainMenuToMp:
+                DrawMultiplayerChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / MmToMpDur, 0f, 1f), toMp: true);
+                return;
+            case ScreenState.Multiplayer:
+                DrawMultiplayerChrome(fullW, fullH, hold: 1f, toMp: true);
+                return;
+            case ScreenState.MpToMainMenu:
+                DrawMultiplayerChrome(fullW, fullH,
+                    hold: Math.Clamp(_stateTime / MpToMmDur, 0f, 1f), toMp: false);
                 return;
             default:
                 // Other states are stubs for now — fall back to character_select
@@ -716,6 +756,147 @@ public sealed class FrontendScene : IDisposable
         // Per-widget DrawSpBackButton overlays the hover/press texture
         // swap on top, gated to fire only on hov/pr (the chrome above
         // is the mouseout source of truth).
+    }
+
+    /// <summary>SC-MP-MENU — Multiplayer provider menu chrome. Mirrors
+    /// DrawSpChrome with the mp clip family: mainmenu_mm2mp rolls the
+    /// title drum to the MULTIPLAYER plate (text-02, PanelBASE6 tips
+    /// down at @1 — trace-pose receipt), menubars_mm2mp folds the five
+    /// MM rows into the three provider rows (rows 3/2/1 park at gas Y
+    /// 217/292/366 ≈ the multiplayer_provider.gas hit rects), and
+    /// backbutton_e2b morphs EXIT → BACK. Reverse = mp2mm / b2e.</summary>
+    private void DrawMultiplayerChrome(int vw, int vh, float hold, bool toMp)
+    {
+        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
+        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
+        DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
+        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
+        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
+        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
+        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+
+        // Title drum: MAIN MENU (text-01, subsets 1+2) rolls away while
+        // MULTIPLAYER (text-02, subsets 3+4) rolls in — both atlases ride
+        // the drum during the transition (tip-down culling picks the
+        // visible plate); settle on text-02 only.
+        var mainmenuMask = new[] { true, hold < 1f, hold < 1f, true, true, false };
+        var mainClip = toMp ? "mainmenu_mm2mp" : "mainmenu_mp2mm";
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
+
+        // Menubars: chrome + (mid-transition) the even text-menubars1
+        // label halves so the MM labels visibly ride the folding planks
+        // out; the provider labels render as text-menubars2 UV crops at
+        // the settled pose (TryDrawMultiplayerLabels — same solution as
+        // the Difficulty screen; the odd subsets author the wrong atlas
+        // on disk).
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 6; i++) menubarsMask[i] = true;
+        if (hold < 1f)
+        {
+            menubarsMask[6]  = true; menubarsMask[8]  = true;
+            menubarsMask[10] = true; menubarsMask[12] = true;
+            menubarsMask[14] = true;
+        }
+        var barsClip = toMp ? "menubars_mm2mp" : "menubars_mp2mm";
+        DrawMesh("menubars", "menubars", clip: barsClip, hold: hold, vw, vh, menubarsMask);
+
+        // Backbutton: EXIT ↔ BACK morph, same two-pass split as SP
+        // (folded arrows behind the backing).
+        var backClip = toMp ? "backbutton_e2b" : "backbutton_b2e";
+        var arrowsFoldedMask = new bool[11];
+        arrowsFoldedMask[1] = true; arrowsFoldedMask[2] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, arrowsFoldedMask);
+        var backFrontMask = new bool[11];
+        backFrontMask[0] = true; backFrontMask[4] = true; backFrontMask[8] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backFrontMask);
+    }
+
+    /// <summary>SC-MP-MENU — provider button hover/press chrome overlay.
+    /// art_mapping: button_matchmaker=3, button_internet=4, button_lan=5
+    /// (menubars-up/-down swap), posed at menubars_mm2mp@1.</summary>
+    public void DrawMultiplayerButton(int viewportW, int viewportH,
+                                      bool hovered, bool pressed,
+                                      string widgetName)
+    {
+        int chromeSubset = widgetName switch
+        {
+            "button_matchmaker" => 3,
+            "button_internet"   => 4,
+            "button_lan"        => 5,
+            _ => -1,
+        };
+        if (chromeSubset < 0) return;
+
+        var renderer = GetOrLoadMesh("menubars");
+        if (renderer is null) return;
+        var names = renderer.Asp.TextureNames;
+        var arr = new GlTexture?[names.Count];
+        var mask = new bool[names.Count];
+
+        string menubarsTex = pressed ? "menubars-down" : hovered ? "menubars-up" : "menubars";
+        for (int i = 0; i < names.Count; i++)
+            arr[i] = GetOrLoadTexture(names[i]);
+        if (chromeSubset < arr.Length)
+        {
+            arr[chromeSubset] = GetOrLoadTextureBase(menubarsTex);
+            mask[chromeSubset] = true;
+        }
+        var model = BuildSharedSceneModel(viewportW, viewportH);
+        var anim = GetOrLoadClip("menubars_mm2mp");
+        float timeSec = anim is not null ? anim.AnimLength * 1f : 0f;
+        renderer.DrawWithModel(viewportW, viewportH, model, arr,
+            anim: anim, timeSec: timeSec, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>SC-MP-MENU — engraved ZONEMATCH / INTERNET / NETWORK
+    /// labels: UV crops of text-menubars2.raw (stacked top→bottom in the
+    /// same three V bands as the difficulty atlas — decoded receipt).
+    /// ZONEMATCH always draws from the base atlas with the retail
+    /// disable_color dim (0xff5f5f5f) — the service is discontinued, the
+    /// button is a monument: no hover, no press, no click.</summary>
+    public bool TryDrawMultiplayerLabels(int viewportW, int viewportH,
+        IconRenderer iconRenderer,
+        bool netHov = false, bool netPr = false,
+        bool lanHov = false, bool lanPr = false)
+    {
+        GlTexture? PickTex(bool hov, bool pr)
+        {
+            string name = pr ? "text-menubars2-down" : hov ? "text-menubars2-up" : "text-menubars2";
+            return GetChromeTexture(name);
+        }
+        var texZone = GetChromeTexture("text-menubars2");
+        var texNet  = PickTex(netHov, netPr);
+        var texLan  = PickTex(lanHov, lanPr);
+        if (texZone is null || texNet is null || texLan is null) return false;
+
+        var inkFull = new Vector4(1f, 1f, 1f, 1f);
+        var inkDim  = new Vector4(0x5f / 255f, 0x5f / 255f, 0x5f / 255f, 1f);
+        (GlTexture tex, int gasY, float vMin, float vMax, Vector4 tint)[] rows =
+        {
+            (texZone, 192, 0.00f, 0.30f, inkDim),
+            (texNet,  268, 0.27f, 0.60f, inkFull),
+            (texLan,  342, 0.55f, 0.92f, inkFull),
+        };
+        float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
+        int authoredW = (int)MathF.Round(800 * scale);
+        int authoredH = (int)MathF.Round(600 * scale);
+        int dx = (viewportW - authoredW) / 2;
+        int dy = (viewportH - authoredH) / 2;
+        const int labelGasW = 180;
+        const int labelGasH = 36;
+        const int buttonGasH = 49;
+        const int buttonCenterGasX = (283 + 519) / 2;
+        foreach (var (rowTex, gasY, vMin, vMax, tint) in rows)
+        {
+            int w = (int)MathF.Round(labelGasW * scale);
+            int h = (int)MathF.Round(labelGasH * scale);
+            int cx = dx + (int)MathF.Round(buttonCenterGasX * scale);
+            int cy = dy + (int)MathF.Round((gasY + buttonGasH * 0.5f) * scale);
+            iconRenderer.DrawIcon(viewportW, viewportH, rowTex,
+                cx - w / 2, cy - h / 2, w, h, tint,
+                0.00f, vMin, 1.00f, vMax);
+        }
+        return true;
     }
 
     /// <summary>Phase 25-CHROME — sword rises out of the log via

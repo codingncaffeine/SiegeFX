@@ -3985,6 +3985,9 @@ public sealed class RenderHost : IDisposable
     // panel only owns the two backbutton.asp-driven nav buttons.
     private readonly CharacterSelectMenuPanel _csMenu = new();
     private readonly DifficultyMenuPanel _diffMenu = new();
+    // SC-MP-MENU — Multiplayer provider menu (ZoneMatch disabled /
+    // Internet / Network / Back).
+    private readonly MultiplayerMenuPanel _mpMenu = new();
     /// <summary>SC-DIFF Phase A — set by Easy/Normal/Hard click on the
     /// Difficulty screen, defaulted to Normal. Future damage/loot/
     /// encounter scaling reads this (splinter SC-DIFF-SCALING).</summary>
@@ -5804,6 +5807,14 @@ void main()
                     _diffMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
                 // backward (DS1 lets the cycle buttons go either way
                 // via onrbuttondown). Also swallow RMB camera-look
@@ -6602,6 +6613,14 @@ void main()
                     _diffMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_saveDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
@@ -6913,6 +6932,12 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _diffMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && _frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -15763,6 +15788,8 @@ void main()
         FlushCharacterSelectMenu();
         // SC-DIFF Phase C — drain Difficulty button clicks.
         FlushDifficultyMenu();
+        // SC-MP-MENU — drain Multiplayer provider-menu clicks.
+        FlushMultiplayerMenu();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -16457,11 +16484,12 @@ void main()
                 }
                 break;
             case MainMenuPanel.Action.Multiplayer:
+                // SC-MP-MENU — roll into the Multiplayer provider menu.
+                _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MainMenuToMp);
+                _mainMenu.ClearHover();
+                break;
             case MainMenuPanel.Action.Credits:
-                // Stubs — SC-MAINMENU-MULTIPLAYER / -CREDITS splinters
-                // track the routing for these. Each click is consumed but
-                // no-op for now; clear hover so the button doesn't read
-                // as "still selectable" after.
+                // Stub — SC-MAINMENU-CREDITS splinter tracks the routing.
                 Console.WriteLine($"  main menu: '{act}' click — splinter SC-MAINMENU-{act.ToString().ToUpperInvariant()} pending");
                 _mainMenu.ClearHover();
                 break;
@@ -16612,6 +16640,40 @@ void main()
                 {
                     LaunchRegionViaRelaunch(_ds1ResourcesDir);
                 }
+                break;
+        }
+    }
+
+    /// <summary>SC-MP-MENU — drain Multiplayer provider-menu clicks.
+    /// BACK unwinds to the main menu; INTERNET / NETWORK route to the
+    /// session screens (SC-MP-SESSION slice). ZoneMatch never reaches
+    /// here — the panel excludes it from hit-testing (disabled).</summary>
+    private void FlushMultiplayerMenu()
+    {
+        if (_frontendScene is null) return;
+        var state = _frontendScene.State;
+        _mpMenu.IsActive = state == Hud.FrontendScene.ScreenState.Multiplayer && _bootMode;
+        if (state != Hud.FrontendScene.ScreenState.Multiplayer) return;
+        var act = _mpMenu.ConsumeAction();
+        if (act != MultiplayerMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case MultiplayerMenuPanel.Action.None:
+                break;
+            case MultiplayerMenuPanel.Action.Back:
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.MpToMainMenu);
+                _mpMenu.IsActive = false;
+                _mpMenu.ClearHover();
+                break;
+            case MultiplayerMenuPanel.Action.Internet:
+                // SC-MP-SESSION — Internet (EOS) session screen; routing
+                // lands with that slice.
+                Console.WriteLine("[mp] INTERNET clicked — session screen slice pending");
+                _mpMenu.ClearHover();
+                break;
+            case MultiplayerMenuPanel.Action.Network:
+                Console.WriteLine("[mp] NETWORK clicked — session screen slice pending");
+                _mpMenu.ClearHover();
                 break;
         }
     }
@@ -18269,6 +18331,28 @@ void main()
                             bx, by, bw, bh, bkHov, bkPr);
                     }
                 }
+            }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.Multiplayer)
+            {
+                // SC-MP-MENU — provider-button hover/press overlays +
+                // engraved labels. ZoneMatch renders dimmed inside
+                // TryDrawMultiplayerLabels and has no hover (excluded
+                // from panel hit-testing — the service is discontinued).
+                _mpMenu.TryGetButtonStateAndRect(Hud.MultiplayerMenuPanel.Action.Internet,
+                    viewportW, viewportH, out _, out _, out _, out _, out bool netHov, out bool netPr);
+                _mpMenu.TryGetButtonStateAndRect(Hud.MultiplayerMenuPanel.Action.Network,
+                    viewportW, viewportH, out _, out _, out _, out _, out bool lanHov, out bool lanPr);
+                _mpMenu.TryGetButtonStateAndRect(Hud.MultiplayerMenuPanel.Action.Back,
+                    viewportW, viewportH, out int mbx, out int mby, out int mbw, out int mbh,
+                    out bool mbHov, out bool mbPr);
+                if (netHov || netPr) _frontendScene.DrawMultiplayerButton(viewportW, viewportH, netHov, netPr, "button_internet");
+                if (lanHov || lanPr) _frontendScene.DrawMultiplayerButton(viewportW, viewportH, lanHov, lanPr, "button_lan");
+                if (_iconRenderer is not null)
+                    _frontendScene.TryDrawMultiplayerLabels(viewportW, viewportH, _iconRenderer,
+                        netHov, netPr, lanHov, lanPr);
+                if (mbHov || mbPr)
+                    _frontendScene.DrawSpBackButton(viewportW, viewportH,
+                        mbx, mby, mbw, mbh, mbHov, mbPr);
             }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
@@ -22690,6 +22774,9 @@ void main()
             case Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty:
             case Hud.FrontendScene.ScreenState.Difficulty:
             case Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect:
+            case Hud.FrontendScene.ScreenState.MainMenuToMp:
+            case Hud.FrontendScene.ScreenState.Multiplayer:
+            case Hud.FrontendScene.ScreenState.MpToMainMenu:
             case Hud.FrontendScene.ScreenState.IntroMenuFlyIn:
                 return true;
             default:
