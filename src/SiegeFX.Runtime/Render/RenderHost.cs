@@ -27153,8 +27153,12 @@ void main()
                     var handPos = weaponModel.Translation;
                     var nockFwd = Vector3.TransformNormal(Vector3.UnitZ, _player.CurrentTransform);
                     float nockYaw = MathF.Atan2(nockFwd.X, nockFwd.Z);
+                    // The arrow ASP's origin is the SHAFT CENTER (end bones
+                    // at Z −0.45/+0.44); anchored raw on the hand, the back
+                    // half buried itself in the chest. Half a shaft forward
+                    // puts the NOCK end at the bow hand.
                     var nockModel = Matrix4x4.CreateRotationY(nockYaw)
-                                  * Matrix4x4.CreateTranslation(handPos);
+                                  * Matrix4x4.CreateTranslation(handPos + nockFwd * 0.45f);
                     _meshShader.SetMatrix4("uModel", nockModel);
                     if (_playerAmmoTex is not null)
                     {
