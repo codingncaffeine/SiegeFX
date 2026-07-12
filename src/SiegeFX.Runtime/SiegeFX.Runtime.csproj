@@ -28,6 +28,10 @@
          PropertyGroup below bundles Silk.NET's GLFW + OpenAL Soft natives
          inside the .exe, self-extracting on first launch). -->
     <AssemblyName>SiegeFX</AssemblyName>
+    <!-- Release version. Surfaces in the MP diagnostics header (as
+         "<Version>+<git-sha>") so two players can confirm they're on the same
+         build. Bump alongside each release tag. -->
+    <Version>0.0.4</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(PublishSingleFile)' == 'true' ">
