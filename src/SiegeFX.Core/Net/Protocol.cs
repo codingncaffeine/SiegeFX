@@ -15,18 +15,25 @@ public enum MpMsg : byte
     JoinRequest = 1,   // [nameLen u8][name utf8]
     Input       = 2,   // [tick u32][cmd u8][x f32][z f32][targetScid u32]
     Chat        = 3,   // [textLen u16][text utf8]
+    ClientState = 5,   // client→host: this player's authoritative pose (movement is
+                       // client-owned in the friend-trust model): [x f32][y f32][z f32][yaw f32][life u16][flags u8]
     // host → client
     JoinAccept  = 10,  // [assignedPlayer u8][worldSnapshotLen u32][snapshot bytes]
     JoinReject  = 11,  // [reasonLen u8][reason utf8]
-    StateDelta  = 12,  // [tick u32][actorCount u16][ (scid u32,x f32,y f32,z f32,life u16) * ]
+    StateDelta  = 12,  // [tick u32][actorCount u16][ (scid u32,x f32,y f32,z f32,life u16) * ]  — world/enemy poses
     PlayerJoined= 13,  // [player u8][nameLen u8][name utf8]
     PlayerLeft  = 14,  // [player u8]
     ChatRelay   = 15,  // [player u8][textLen u16][text utf8]
+    PlayerDelta = 16,  // [tick u32][count u8][ (player u8,x f32,y f32,z f32,yaw f32,life u16,flags u8) * ]  — all player poses
+    GameStart   = 17,  // host→client: leave staging and relaunch into the region: [regionLen u8][region utf8][difficulty u8]
 }
 
 /// <summary>Input command verbs a client sends up (host resolves them
 /// against its authoritative sim, exactly as the local player path does).</summary>
 public enum MpInputCmd : byte { Move = 0, Attack = 1, CastPrimary = 2, CastSecondary = 3, Pickup = 4, Stop = 5 }
+
+/// <summary>Flag bits in a player-state frame (<see cref="MpPlayerState.Flags"/>).</summary>
+[Flags] public enum MpPlayerFlags : byte { None = 0, Moving = 1, Dead = 2 }
 
 /// <summary>Bounds-checked writer — grows a pooled buffer; never throws on
 /// caller data.</summary>
@@ -88,3 +95,9 @@ public ref struct MpReader
 /// <summary>One actor's authoritative pose in a StateDelta. Kept a plain
 /// struct so the delta loop allocates nothing per actor.</summary>
 public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life);
+
+/// <summary>One player's pose in a PlayerDelta / ClientState frame. Movement is
+/// client-authoritative (retail friend-trust), so each machine reports its own
+/// pose and the host fans the whole set back out. Yaw is the heading in radians
+/// (atan2(facing.X, facing.Z), matching the engine's player-facing convention).</summary>
+public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags);

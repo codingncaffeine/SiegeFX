@@ -116,6 +116,11 @@ public sealed class LanLobbyService : ILobbyService
 public sealed class UdpTransport : ISessionTransport
 {
     public const int DefaultGamePort = 47778;
+    // Connect retry budget (HELLO resend). Default suits the frontend staging
+    // connect; the in-region reconnect raises ConnectAttempts because the host
+    // is loading a region in parallel and won't be listening for many seconds.
+    public int ConnectAttempts = 5;
+    public int ConnectDelayMs = 600;
     const uint Magic = 0x53465831; // "SFX1"
     const byte ProtocolVersion = 1;
     enum Ft : byte { Hello = 1, Welcome = 2, Ping = 3, Data = 4, Bye = 5 }
@@ -168,20 +173,21 @@ public sealed class UdpTransport : ISessionTransport
             _ = Task.Run(() => PumpAsync(_cts.Token));
             _ = Task.Run(() => KeepaliveAsync(_cts.Token));
             NetLog.Info($"connecting to {_hostEp} (local :{((IPEndPoint)_sock.Client.LocalEndPoint!).Port})...");
-            // 5 HELLO attempts at 600ms — the retry line in the log is the
-            // first diagnostic for "port not forwarded / firewall".
-            for (int attempt = 1; attempt <= 5 && !ct.IsCancellationRequested; attempt++)
+            // HELLO resend loop — each unanswered attempt is logged, the first
+            // diagnostic for "port not forwarded / firewall / host still loading".
+            int attempts = Math.Max(1, ConnectAttempts);
+            for (int attempt = 1; attempt <= attempts && !ct.IsCancellationRequested; attempt++)
             {
                 SendFrame(_hostEp, Ft.Hello, 0, new[] { ProtocolVersion });
-                await Task.Delay(600, ct).ConfigureAwait(false);
+                await Task.Delay(Math.Max(50, ConnectDelayMs), ct).ConfigureAwait(false);
                 if (_selfId >= 0)
                 {
                     NetLog.Info($"connected: assigned peer id {_selfId} by {_hostEp}");
                     return true;
                 }
-                NetLog.Warn($"no WELCOME yet (attempt {attempt}/5) — host down, port blocked, or version mismatch");
+                NetLog.Warn($"no WELCOME yet (attempt {attempt}/{attempts}) — host down, port blocked, still loading, or version mismatch");
             }
-            NetLog.Error($"connect to {_hostEp} timed out after 5 attempts");
+            NetLog.Error($"connect to {_hostEp} timed out after {attempts} attempts");
             return false;
         }
         catch (Exception ex)

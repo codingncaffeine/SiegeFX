@@ -33,14 +33,31 @@ public sealed class MpSession : IDisposable
     public Action<int>? OnJoinAccepted;
     public Action<string>? OnJoinRejected;
 
+    // Player-pose sync (movement is client-authoritative; the host fans the
+    // whole set back out so every machine can render the other avatars).
+    /// <summary>Both roles: read the LOCAL player's pose for broadcast.</summary>
+    public Func<MpPlayerState>? BuildLocalPlayerState;
+    /// <summary>Both roles: apply the OTHER players' poses (remote avatars). The
+    /// local player (<see cref="LocalPlayerId"/>) is filtered out first.</summary>
+    public Action<IReadOnlyList<MpPlayerState>>? ApplyPlayerStates;
+    /// <summary>Client: host pressed START — leave staging, relaunch into the
+    /// region and reconnect. (regionPath, difficulty).</summary>
+    public Action<string, int>? OnGameStart;
+
     public event Action<string>? OnChat;
+
+    /// <summary>This machine's player id (host = 0; client = the id the host
+    /// assigned in JoinAccept). Remote-avatar rendering filters this out.</summary>
+    public int LocalPlayerId { get; private set; }
 
     readonly string _localName;
     uint _tick;
     double _deltaTimer;
+    double _clientSendTimer;
     const double DeltaInterval = 1.0 / 15.0; // 15 Hz authoritative deltas
     public int MaxPlayers = 8;
     int _playerCount = 1; // host counts as 1
+    readonly Dictionary<int, MpPlayerState> _players = new(); // host: player id -> latest pose
 
     public MpSession(ISessionTransport transport, bool isHost, string localName)
     {
@@ -53,6 +70,7 @@ public sealed class MpSession : IDisposable
         if (IsHost)
         {
             _playerCount = Math.Max(1, _playerCount - 1);
+            _players.Remove(peer);
             OnPlayerLeft?.Invoke(peer);
             Broadcast(new MpWriter().U8((byte)MpMsg.PlayerLeft).U8((byte)peer).ToArray());
             NetLog.Info($"session: player {peer} left ({_playerCount}/{MaxPlayers})");
@@ -94,6 +112,18 @@ public sealed class MpSession : IDisposable
             {
                 _deltaTimer = 0;
                 _tick++;
+
+                // Players: refresh our own pose (id 0), fan the whole set out to
+                // clients, and hand the host its own view of the remote avatars.
+                if (BuildLocalPlayerState is not null)
+                    _players[LocalPlayerId] = BuildLocalPlayerState() with { Player = (byte)LocalPlayerId };
+                if (_players.Count > 0)
+                {
+                    if (_t.Peers.Count > 0) Broadcast(BuildPlayerDelta());
+                    EmitRemotePlayers();
+                }
+
+                // World actors (enemies) — host-authoritative, keyed by SCID.
                 var actors = EnumerateActors?.Invoke();
                 if (actors is { Count: > 0 } && _t.Peers.Count > 0)
                 {
@@ -109,6 +139,52 @@ public sealed class MpSession : IDisposable
                 }
             }
         }
+        else
+        {
+            // Client: movement is client-owned, so report our own pose upstream.
+            _clientSendTimer += dt;
+            if (_clientSendTimer >= DeltaInterval)
+            {
+                _clientSendTimer = 0;
+                if (BuildLocalPlayerState is not null)
+                    SendClientState(BuildLocalPlayerState() with { Player = (byte)LocalPlayerId });
+            }
+        }
+    }
+
+    byte[] BuildPlayerDelta()
+    {
+        var w = new MpWriter(8 + _players.Count * 20);
+        w.U8((byte)MpMsg.PlayerDelta).U32(_tick).U8((byte)Math.Min(_players.Count, byte.MaxValue));
+        int n = 0;
+        foreach (var s in _players.Values)
+        {
+            if (n++ >= byte.MaxValue) break;
+            w.U8(s.Player).F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags);
+        }
+        return w.ToArray();
+    }
+
+    // Host renders the OTHER players (everyone but itself) from its own table.
+    void EmitRemotePlayers()
+    {
+        if (ApplyPlayerStates is null) return;
+        var list = new List<MpPlayerState>(_players.Count);
+        foreach (var s in _players.Values) if (s.Player != LocalPlayerId) list.Add(s);
+        if (list.Count > 0) ApplyPlayerStates(list);
+    }
+
+    void SendClientState(MpPlayerState s) =>
+        _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientState)
+            .F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags).Span);
+
+    /// <summary>Host: broadcast the START signal so every client leaves staging,
+    /// relaunches into the region and reconnects in-world.</summary>
+    public void SendGameStart(string regionPath, int difficulty)
+    {
+        if (!IsHost) return;
+        Broadcast(new MpWriter().U8((byte)MpMsg.GameStart).Str(regionPath).U8((byte)difficulty).ToArray());
+        NetLog.Info($"session: host broadcast GameStart region='{regionPath}' diff={difficulty} to {_t.Peers.Count} peer(s)");
     }
 
     void Broadcast(byte[] frame)
@@ -153,6 +229,14 @@ public sealed class MpSession : IDisposable
                 ApplyClientInput?.Invoke(peer, cmd, x, z, scid);
                 break;
             }
+            case MpMsg.ClientState when IsHost:
+            {
+                float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
+                ushort life = r.U16(); byte flags = r.U8();
+                if (r.Bad) { NetLog.Warn($"session: malformed ClientState from peer {peer} — dropped"); return; }
+                _players[peer] = new MpPlayerState((byte)peer, x, y, z, yaw, life, flags);
+                break;
+            }
             case MpMsg.Chat when IsHost:
             {
                 string text = r.Str(u16Len: true);
@@ -165,6 +249,7 @@ public sealed class MpSession : IDisposable
                 uint len = r.U32();
                 var snap = r.Rest((int)Math.Min(len, (uint)int.MaxValue));
                 if (r.Bad) { NetLog.Error("session: malformed JoinAccept — snapshot dropped"); return; }
+                LocalPlayerId = assigned;
                 ApplySnapshot?.Invoke(snap);
                 OnJoinAccepted?.Invoke(assigned);
                 NetLog.Info($"session: join accepted as player {assigned}, snapshot {snap.Length}B applied");
@@ -186,6 +271,31 @@ public sealed class MpSession : IDisposable
                     list.Add(new MpActorState(r.U32(), r.F32(), r.F32(), r.F32(), r.U16()));
                 if (r.Bad) { NetLog.Warn("session: truncated StateDelta — dropped"); return; }
                 ApplyDelta?.Invoke(tick, list);
+                break;
+            }
+            case MpMsg.PlayerDelta when !IsHost:
+            {
+                uint tick = r.U32();
+                int count = r.U8();
+                var list = new List<MpPlayerState>(count);
+                for (int i = 0; i < count && !r.Bad; i++)
+                {
+                    byte pid = r.U8();
+                    float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
+                    ushort life = r.U16(); byte flags = r.U8();
+                    if (pid != LocalPlayerId) list.Add(new MpPlayerState(pid, x, y, z, yaw, life, flags));
+                }
+                if (r.Bad) { NetLog.Warn("session: truncated PlayerDelta — dropped"); return; }
+                if (list.Count > 0) ApplyPlayerStates?.Invoke(list);
+                break;
+            }
+            case MpMsg.GameStart when !IsHost:
+            {
+                string region = r.Str();
+                int diff = r.U8();
+                if (r.Bad) { NetLog.Error("session: malformed GameStart — ignored"); return; }
+                NetLog.Info($"session: received GameStart region='{region}' diff={diff}");
+                OnGameStart?.Invoke(region, diff);
                 break;
             }
             case MpMsg.PlayerJoined:

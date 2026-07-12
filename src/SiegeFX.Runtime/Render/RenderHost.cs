@@ -4001,6 +4001,17 @@ public sealed class RenderHost : IDisposable
     private SiegeFX.Core.Net.MpSession? _mpNetSession;
     private readonly Hud.MpStagingScreen _mpStaging = new();
     private double _mpLanScanAt;
+    // SC-MP-INGAME — in-region session lifecycle. A --play-region process
+    // relaunched from staging carries its role/host/provider/port/name in env
+    // vars (set by LaunchRegionViaRelaunch), and re-establishes the session in
+    // the region rather than trying to carry a socket across the relaunch.
+    private readonly string? _mpInRegionRole = Environment.GetEnvironmentVariable("SIEGEFX_MP_ROLE");
+    private bool _mpInRegionDone;
+    private double _mpStartCountdown;          // host: >0 = broadcasting GameStart before relaunch
+    private MpRelaunch? _mpClientStartPending; // client: latched on GameStart, relaunched next frame
+    private string? _mpJoinedHostAddress;      // client: the address we connected to (reused in-region)
+    private const string MpRegionPath = "/world/maps/map_world/regions/fh_r1";
+    private sealed record MpRelaunch(string Role, string Provider, string HostAddr, int Port, string Name);
     private volatile List<(string Row, string Addr)>? _mpLanScanResult;
     private bool _mpLanScanBusy;
     // SC-MP-EOS P4 — the configured provider id (SIEGEFX_MP_PROVIDER env /
@@ -4019,6 +4030,121 @@ public sealed class RenderHost : IDisposable
         _mpStaging.Players.Clear();
         _mpStaging.Chat.Clear();
     }
+
+    // SC-MP-INGAME — stand up the session inside a live region. Called once the
+    // world is up in a --play-region process that carries SIEGEFX_MP_ROLE. The
+    // host re-hosts on its game port (retrying past the frontend socket-release
+    // race); the client reconnects to the same host address it joined in staging
+    // (raising the connect budget because the host is loading a region too).
+    private void MpInRegionInit()
+    {
+        var role = _mpInRegionRole;
+        if (role is null) return;
+        string provider = Environment.GetEnvironmentVariable("SIEGEFX_MP_PROVIDER") ?? "lan";
+        string host = Environment.GetEnvironmentVariable("SIEGEFX_MP_HOST") ?? "";
+        int port = int.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_MP_PORT"), out var pv)
+            ? pv : SiegeFX.Core.Net.UdpTransport.DefaultGamePort;
+        string name = Environment.GetEnvironmentVariable("SIEGEFX_MP_NAME") is { Length: > 0 } n
+            ? n : (_heroName.Length > 0 ? _heroName : "Player");
+        bool asHost = string.Equals(role, "host", StringComparison.OrdinalIgnoreCase);
+        SiegeFX.Core.Net.NetLog.Info($"in-region MP init: role={role} provider={provider} host='{host}' port={port} name='{name}' region={_regionPath}");
+
+        MpInitProvider(); // reflection-load EOS if present (idempotent, fresh process)
+
+        var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
+        _mpLobby = lobby; _mpTransport = transport;
+        var session = new SiegeFX.Core.Net.MpSession(transport, asHost, name);
+        _mpNetSession = session;
+        session.BuildLocalPlayerState = BuildLocalMpPlayerState;
+        session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
+        if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
+
+        if (asHost)
+        {
+            session.BuildSnapshot = () =>
+            {
+                try { return SiegeFX.Core.Save.SaveStore.Serialize(CaptureSave()); }
+                catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"snapshot build: {ex.Message}"); return System.Array.Empty<byte>(); }
+            };
+            session.EnumerateActors = MpEnumerateWorldActors;
+            transport.PeerConnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} joined ({transport.Peers.Count} in world)");
+            transport.PeerDisconnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} left");
+            _ = Task.Run(async () =>
+            {
+                for (int i = 0; i < 20; i++)
+                {
+                    if (await transport.ListenAsync(port, default).ConfigureAwait(false))
+                    { SiegeFX.Core.Net.NetLog.Info($"in-region host listening on :{port}"); return; }
+                    SiegeFX.Core.Net.NetLog.Warn($"in-region host bind :{port} busy (attempt {i + 1}/20) — frontend socket not released yet?");
+                    await Task.Delay(500).ConfigureAwait(false);
+                }
+                SiegeFX.Core.Net.NetLog.Error($"in-region host could not bind :{port} after 20 attempts");
+            });
+        }
+        else
+        {
+            // Raise the connect budget — the host is loading its region in parallel.
+            if (transport is SiegeFX.Core.Net.UdpTransport udp) { udp.ConnectAttempts = 120; udp.ConnectDelayMs = 500; }
+            transport.PeerDisconnected += _ => SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host");
+            if (string.IsNullOrWhiteSpace(host))
+            { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); return; }
+            _ = transport.ConnectAsync(host, default).ContinueWith(t =>
+            {
+                if (t.Result) { SiegeFX.Core.Net.NetLog.Info($"in-region: connected to host {host} — sending JoinRequest"); session.SendJoinRequest(); }
+                else SiegeFX.Core.Net.NetLog.Error($"in-region: could NOT connect to host {host}. See [net] lines.");
+            }, TaskScheduler.Default);
+        }
+    }
+
+    // SC-MP-INGAME — pump the in-region session each frame. EOS needs an explicit
+    // callback tick + packet drain; the session drives snapshots/deltas on the dt
+    // captured before the pause gate (co-op keeps syncing while a local menu is up).
+    private void TickMpInRegion()
+    {
+        _eosTick?.Invoke();
+        if (_mpTransport is { } tr && tr.ProviderId.StartsWith("eos", StringComparison.Ordinal))
+            tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
+        _mpNetSession?.Tick(_frameDtSeconds);
+    }
+
+    // SC-MP-INGAME — the local player's pose for the client-authoritative sync.
+    private SiegeFX.Core.Net.MpPlayerState BuildLocalMpPlayerState()
+    {
+        var p = _player;
+        if (p is null) return default;
+        var t = p.CurrentTransform.Translation;
+        float yaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
+        ushort life = (ushort)System.Math.Clamp((int)p.Actor.Combat.CurrentLife, 0, ushort.MaxValue);
+        byte flags = 0;
+        if (p.IsMoving) flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving;
+        if (p.IsDead)   flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead;
+        return new SiegeFX.Core.Net.MpPlayerState(0, t.X, t.Y, t.Z, yaw, life, flags);
+    }
+
+    // SC-MP-INGAME — host-authoritative world actors (enemies/props), keyed by
+    // authored SCID so a client can match them to its identical region load.
+    // Players (local + remote avatars) ride the separate player-pose channel.
+    private List<SiegeFX.Core.Net.MpActorState> MpEnumerateWorldActors()
+    {
+        var list = new List<SiegeFX.Core.Net.MpActorState>(_actors.Count);
+        foreach (var a in _actors)
+        {
+            if (a.IsPlayer || a.IsDead) continue;
+            var pos = a.CurrentTransform.Translation;
+            list.Add(new SiegeFX.Core.Net.MpActorState(
+                a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
+                (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue)));
+        }
+        return list;
+    }
+
+    // SC-MP-INGAME P2 — apply the other players' poses (remote avatars). Filled
+    // in the player-avatar phase; the session already fans the poses here.
+    private void MpApplyPlayerStates(IReadOnlyList<SiegeFX.Core.Net.MpPlayerState> players) { }
+
+    // SC-MP-INGAME P3 — slave host-owned world actors to the delta by SCID.
+    // Filled in the enemy-sync phase.
+    private void MpApplyWorldDelta(uint tick, IReadOnlyList<SiegeFX.Core.Net.MpActorState> actors) { }
 
     // SC-MP-EOS P8 — stand up the host-authoritative session driver over the
     // active transport and enter the staging area. The engine supplies the
@@ -4056,6 +4182,15 @@ public sealed class RenderHost : IDisposable
                 SiegeFX.Core.Net.NetLog.Info(snap is not null
                     ? $"client: world snapshot parsed ({bytes.Length}B, schema v{snap.SchemaVersion})"
                     : $"client: world snapshot FAILED to parse ({bytes.Length}B)");
+            };
+            // Host pressed START — latch a relaunch into the region as a client,
+            // reconnecting to the same host address we joined in staging.
+            _mpNetSession.OnGameStart = (region, diff) =>
+            {
+                if (_mpClientStartPending is not null) return;
+                _mpStaging.Status = "Host started the game — loading region...";
+                SiegeFX.Core.Net.NetLog.Info($"staging: GameStart received — relaunching as client to host '{_mpJoinedHostAddress}'");
+                _mpClientStartPending = new MpRelaunch("client", _mpProviderId, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
             };
         }
         // Host serves the world snapshot + authoritative actor poses to
@@ -4161,6 +4296,7 @@ public sealed class RenderHost : IDisposable
     private void MpStartConnect(string address)
     {
         MpTearDownSession();
+        _mpJoinedHostAddress = address; // reused when we relaunch into the region
         var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerDisconnected += _ =>
@@ -4203,15 +4339,41 @@ public sealed class RenderHost : IDisposable
                 _mpNetSession?.SendChat(_mpStaging.LocalReady ? "ready" : "not ready");
                 break;
             case Hud.MpStagingScreen.Action.Start:
-                // Host launches the co-op game. Full in-game state sync (host
-                // renders the authoritative sim, clients apply deltas) is the
-                // remaining SC-MP-INGAME slice; the session, snapshot serve,
-                // and delta broadcast are all live and self-tested. For now
-                // the host drops into its own world with the session running.
-                _mpStaging.Status = "Starting game — launching host world...";
-                SiegeFX.Core.Net.NetLog.Info("staging: host START — session live; entering world (in-game client sync = SC-MP-INGAME)");
-                if (_ds1ResourcesDir is not null) LaunchRegionViaRelaunch(_ds1ResourcesDir);
+                // Host launches the co-op game. GameStart is an unreliable
+                // packet, so start a short repeat-broadcast window before we
+                // tear down and relaunch into the region (SC-MP-INGAME).
+                if (_mpStartCountdown <= 0)
+                {
+                    _mpStaging.Status = "Starting game — signaling players...";
+                    _mpStartCountdown = 0.6;
+                    SiegeFX.Core.Net.NetLog.Info("staging: host START — broadcasting GameStart, then relaunching into region");
+                }
                 break;
+        }
+
+        // Host: repeat-broadcast GameStart for ~0.6s so it reaches every client
+        // (UDP Data is unreliable), then release the staging socket and relaunch
+        // the host into the region carrying its MP role.
+        if (_mpStartCountdown > 0)
+        {
+            _mpNetSession?.SendGameStart(MpRegionPath, (int)_difficulty);
+            _mpStartCountdown -= _frameDtSeconds;
+            if (_mpStartCountdown <= 0 && _ds1ResourcesDir is not null)
+            {
+                var ctx = new MpRelaunch("host", _mpProviderId, "",
+                    SiegeFX.Core.Net.UdpTransport.DefaultGamePort, _mpSession.PlayerName);
+                MpTearDownSession();
+                LaunchRegionViaRelaunch(_ds1ResourcesDir, ctx);
+            }
+        }
+
+        // Client: GameStart latched a relaunch into the region — do it now,
+        // reconnecting to the same host address we joined in staging.
+        if (_mpClientStartPending is { } cctx && _ds1ResourcesDir is not null)
+        {
+            _mpClientStartPending = null;
+            MpTearDownSession();
+            LaunchRegionViaRelaunch(_ds1ResourcesDir, cctx);
         }
     }
     private static string MpSessionPrefsPath =>
@@ -16017,6 +16179,16 @@ void main()
             }
             catch (Exception ex) { Console.Error.WriteLine($"  load(boot): failed -- {ex.Message}"); }
         }
+        // SC-MP-INGAME — a relaunch requested via SIEGEFX_MP_ROLE lands us in the
+        // region; establish the in-region MP session once the world is live, then
+        // pump it every frame (FlushMpSession's frontend path never runs here).
+        if (_mpInRegionRole is not null && !_mpInRegionDone && _player is not null
+            && !_bootMode && !string.IsNullOrEmpty(_regionPath))
+        {
+            _mpInRegionDone = true;
+            MpInRegionInit();
+        }
+        if (_mpNetSession is not null && !_bootMode) TickMpInRegion();
         // Phase 22-A SC-HUD-DATABAR — pause gate. Zero the dt the rest of the
         // tick sees so brain / particle / sfx / audio-glitter all halt. Menu
         // drain still fires above this point so resume / unpause still
@@ -17195,7 +17367,7 @@ void main()
         }
     }
 
-    private void LaunchRegionViaRelaunch(string ds1ResourcesDir)
+    private void LaunchRegionViaRelaunch(string ds1ResourcesDir, MpRelaunch? mp = null)
     {
         try
         {
@@ -17264,6 +17436,17 @@ void main()
             // Null SIEGEFX_CREATOR so the new process doesn't pop the
             // creator modal again — the picker is already chosen.
             psi.Environment["SIEGEFX_CREATOR"] = "0";
+            // SC-MP-INGAME — carry the multiplayer role/host/provider across the
+            // relaunch so the region process re-establishes the session in-world.
+            if (mp is not null)
+            {
+                psi.Environment["SIEGEFX_MP_ROLE"] = mp.Role;
+                psi.Environment["SIEGEFX_MP_PROVIDER"] = mp.Provider;
+                psi.Environment["SIEGEFX_MP_HOST"] = mp.HostAddr;
+                psi.Environment["SIEGEFX_MP_PORT"] = mp.Port.ToString();
+                psi.Environment["SIEGEFX_MP_NAME"] = mp.Name;
+                Console.WriteLine($"SC-MP-INGAME: relaunch carries MP context role={mp.Role} provider={mp.Provider} host='{mp.HostAddr}' port={mp.Port}");
+            }
 
             Console.WriteLine($"SC-DIFF-LAUNCH: relaunching '{exePath}' --play-region {regionPath} (difficulty={_difficulty})");
             System.Diagnostics.Process.Start(psi);
