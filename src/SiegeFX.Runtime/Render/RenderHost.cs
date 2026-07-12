@@ -3493,7 +3493,9 @@ public sealed class RenderHost : IDisposable
     // _altComboFired suppresses the Alt-release item-labels toggle after an
     // Alt+key order combo consumed the same Alt press.
     private bool _awpExpertMode;
-    private bool _charLabelsVisible = true;
+    // Default OFF — retail shows no text over the party's heads until the
+    // player opts in with the authored L toggle ("Character Labels").
+    private bool _charLabelsVisible;
     private bool _overheadBarsVisible;
     private bool _camTracking = true;
     private bool _altComboFired;
@@ -21043,51 +21045,6 @@ void main()
         }
     }
 
-    /// <summary>SC-COMMANDS — authored [toggle_status_bars] "Health/Mana
-    /// Bars" (X key): small HP (green) and MP (blue) strips floating over
-    /// each character. Party members show both pools; living hostiles in
-    /// range show HP only, so a brawl reads at a glance. Drawn just above
-    /// where the member label sits so the two toggles stack cleanly.</summary>
-    private void DrawOverheadBars(int viewportW, int viewportH)
-    {
-        if (!_overheadBarsVisible || _barRenderer is null) return;
-        var hpCol = new Vector4(0.22f, 0.78f, 0.20f, 0.92f);
-        var mpCol = new Vector4(0.25f, 0.42f, 0.90f, 0.92f);
-        var bgCol = new Vector4(0f, 0f, 0f, 0.55f);
-        var playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
-
-        void DrawBars(ActorRenderState a, bool withMana)
-        {
-            var head = a.CurrentTransform.Translation + new Vector3(0f, 2.45f, 0f);
-            if (!ProjectToScreen(head, viewportW, viewportH, out int sx, out int sy)) return;
-            var combat = a.Actor.Combat;
-            var stats = a.Actor.Stats;
-            float hp = stats.MaxLife > 0f ? Math.Clamp(combat.CurrentLife / stats.MaxLife, 0f, 1f) : 0f;
-            const int w = 30, h = 4;
-            int x = sx - w / 2;
-            _barRenderer.DrawRect(viewportW, viewportH, x - 1, sy - 1, w + 2, h + 2, bgCol);
-            _barRenderer.DrawRect(viewportW, viewportH, x, sy, (int)(w * hp), h, hpCol);
-            if (withMana)
-            {
-                float mp = stats.MaxMana > 0f ? Math.Clamp(combat.CurrentMana / stats.MaxMana, 0f, 1f) : 0f;
-                _barRenderer.DrawRect(viewportW, viewportH, x - 1, sy + h + 1, w + 2, h + 1, bgCol);
-                _barRenderer.DrawRect(viewportW, viewportH, x, sy + h + 1, (int)(w * mp), h - 1, mpCol);
-            }
-        }
-
-        foreach (var m in _party)
-            if (m is not null && !m.IsDead) DrawBars(m, withMana: true);
-        const float range2 = 40f * 40f;
-        foreach (var a in _actors)
-        {
-            if (a.IsDead || a.IsPlayer || a.IsPartyMember || !a.CanFight) continue;
-            var p = a.CurrentTransform.Translation;
-            float dx = p.X - playerPos.X, dz = p.Z - playerPos.Z;
-            if (dx * dx + dz * dz > range2) continue;
-            DrawBars(a, withMana: false);
-        }
-    }
-
     /// <summary>Screen name from a template's [common]screen_name (quote-stripped),
     /// falling back to the template name.</summary>
     private string ScreenNameOf(SiegeFX.Core.Assets.Template tpl)
@@ -21887,14 +21844,15 @@ void main()
     //   - pass_through = true  → click-routing hint for the gas widget
     //                             system; render-only path can ignore
     //   - [oncreated] setvisible(false) → DS1's "engine reveals per actor"
-    //                             pattern; our visibility gate (player
-    //                             always; wounded/aggro for NPCs) is the
+    //                             pattern; our visibility gate (X toggle +
+    //                             non-controlled party members only) is the
     //                             equivalent at the rendering layer
     //   - The dim bg color (0.05/0.05/0.05 @ 0.82α) is SiegeFX-invented for
     //     readability of the empty region — NOT authored in DS1's gas
     //     (DS1 ships no bg layer; missing fill is just transparent).
     private void DrawOverheadStatusBars(int viewportW, int viewportH, Matrix4x4 viewProj)
     {
+        if (!_overheadBarsVisible) return;
         if (_iconRenderer is null || _barRenderer is null) return;
         if (!_statusBarsLoaded)
         {
@@ -21922,18 +21880,14 @@ void main()
         var dim    = new Vector4(0.05f, 0.05f, 0.05f, 0.82f);
         var border = new Vector4(0f, 0f, 0f, 1f);
 
-        // Track which actors recently took damage so enemies surface briefly
-        // after a hit even if they're not in aggro. Uses the existing
-        // ActorCombatState — JustHit was reset by the audio voice path,
-        // so we read LastDamageTaken and a separate "shown until" stamp
-        // is overkill; instead show every non-dead actor whose
-        // CurrentLife < MaxLife (took at least one hit). DS1's exact
-        // gate is unverified; this reads as a reasonable approximation.
+        // Party members only, and only while the authored X toggle
+        // ("Health/Mana Bars") is on. Enemies NEVER show overhead pools —
+        // the always-on wounded/aggro reveal this shipped with was a
+        // SiegeFX invention that read as HUD noise in playtests.
         for (int i = 0; i < _actors.Count; i++)
         {
             var s = _actors[i];
             if (s.IsDead) continue;
-            bool isPlayer = s.IsPlayer;
             var combat = s.Actor.Combat;
             var stats = s.Actor.Stats;
             if (stats.MaxLife <= 0f) continue;
@@ -21943,18 +21897,8 @@ void main()
             // playing"). When SiegeFX gains party-control swapping,
             // IsPlayer tracks whichever actor the user currently drives,
             // so the bar follows the un-controlled party members.
-            if (isPlayer) continue;
-            // Non-player visibility gate: wounded or aggro combatants.
-            // When party-hireling support lands those actors will need
-            // an "always-on" branch here (party members display bars
-            // even at full HP), but the only non-player actors today
-            // are enemies/NPCs so the existing gate is correct.
-            bool wounded = combat.CurrentLife < stats.MaxLife;
-            bool aggro = s.Brain is not null &&
-                (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
-              || s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack);
-            if (!wounded && !aggro) continue;
-            if (!stats.IsCombatant) continue;
+            if (s.IsPlayer) continue;
+            if (!s.IsPartyMember) continue;
             // Project worldPos + headOffset to screen via NDC.
             var headWorld = s.CurrentTransform.Translation + new Vector3(0f, 2.6f, 0f);
             var clip = Vector4.Transform(new Vector4(headWorld, 1f), viewProj);
@@ -27167,11 +27111,11 @@ void main()
             DrawCharacterAwp(size.X, size.Y);
 
             // Phase 27 — member_labels: floating party-member names over
-            // their heads when the data_bar Labels toggle is on.
+            // their heads when the L "Character Labels" toggle is on
+            // (default off — no text over anyone's head unasked). The X
+            // "Health/Mana Bars" toggle draws through the authored-art
+            // DrawOverheadStatusBars pass below.
             DrawMemberLabels(size.X, size.Y);
-            // SC-COMMANDS — overhead HP/MP strips (X toggle), stacked
-            // above the member labels.
-            DrawOverheadBars(size.X, size.Y);
 
             // Phase 22-INFORAIL-B + anchor fold — gas-cited info-rail
             // layout. Per hud_character.gas / hud_inventory.gas /
