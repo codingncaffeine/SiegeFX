@@ -19,7 +19,7 @@
     <EosSdkRoot Condition="'$(EosSdkRoot)' == ''">$(USERPROFILE)\Downloads\EOS\SDK</EosSdkRoot>
     <!-- Epic's generated SDK trips nullable/obsolete analyzers; silence them
          for the vendor source only (our wrapper stays strict). -->
-    <NoWarn>$(NoWarn);CS0618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8618;CS8625;CS0219;CS0414</NoWarn>
+    <NoWarn>$(NoWarn);CS0618;CS8600;CS8601;CS8602;CS8603;CS8604;CS8605;CS8618;CS8625;CS8629;CS8765;CS8767;CS0219;CS0414</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

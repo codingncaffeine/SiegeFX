@@ -123,6 +123,10 @@ public sealed class EosLobbyService : ILobbyService
         return tcs.Task;
     }
 
+    // The game connects to the host by ProductUserId over P2P (carried in the
+    // lobby's HOST_PUID attribute), so joining as a lobby MEMBER isn't required
+    // for play — our own staging protocol owns the roster. Kept a no-op rather
+    // than tracking lobby-membership state nothing reads.
     public Task<bool> JoinAsync(LobbyInfo lobby, CancellationToken ct) => Task.FromResult(true);
 
     public Task LeaveAsync()

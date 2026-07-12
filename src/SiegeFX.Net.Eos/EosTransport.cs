@@ -19,6 +19,7 @@ public sealed class EosTransport : ISessionTransport
     readonly ProductUserId _local;
     bool _isHost;
     ulong _connReqNotify;
+    ulong _connClosedNotify;
 
     readonly object _lock = new();
     readonly Dictionary<int, ProductUserId> _peers = new();      // gameId -> puid
@@ -37,6 +38,30 @@ public sealed class EosTransport : ISessionTransport
         _plat = plat;
         _p2p = plat.Platform!.GetP2PInterface();
         _local = plat.LocalUser!;
+        // Fire PeerDisconnected when EOS reports a P2P connection closed (peer
+        // quit / lost / relay dropped) so the session reacts exactly as it does
+        // on a LAN timeout — the diagnostics + roster cull stay provider-agnostic.
+        var closedOpts = new AddNotifyPeerConnectionClosedOptions { LocalUserId = _local, SocketId = MakeSocket() };
+        _connClosedNotify = _p2p.AddNotifyPeerConnectionClosed(ref closedOpts, null, (ref OnRemoteConnectionClosedInfo info) =>
+        {
+            int id = PeerIdFor(info.RemoteUserId);
+            if (id < 0) return;
+            lock (_lock)
+            {
+                _peers.Remove(id);
+                info.RemoteUserId.ToString(out var b);
+                if (b?.ToString() is { } key) _puidToId.Remove(key);
+            }
+            NetLog.Info($"eos: peer {id} connection closed ({info.Reason})");
+            PeerDisconnected?.Invoke(id);
+        });
+    }
+
+    int PeerIdFor(ProductUserId puid)
+    {
+        puid.ToString(out var buf);
+        string key = buf?.ToString() ?? puid.ToString();
+        lock (_lock) return _puidToId.TryGetValue(key, out var id) ? id : -1;
     }
 
     static SocketId MakeSocket() => new() { SocketName = SocketName };
@@ -152,6 +177,7 @@ public sealed class EosTransport : ISessionTransport
     public void Dispose()
     {
         if (_connReqNotify != 0) _p2p.RemoveNotifyPeerConnectionRequest(_connReqNotify);
+        if (_connClosedNotify != 0) _p2p.RemoveNotifyPeerConnectionClosed(_connClosedNotify);
         var close = new CloseConnectionsOptions { LocalUserId = _local, SocketId = MakeSocket() };
         _p2p.CloseConnections(ref close);
         NetLog.Info("eos: transport closed");

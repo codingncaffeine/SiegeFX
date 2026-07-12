@@ -4398,7 +4398,11 @@ public sealed class RenderHost : IDisposable
             if (reg is not null)
             {
                 string cfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
-                string cache = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
+                // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
+                // instances on one box get DISTINCT anonymous EOS identities
+                // (same cache dir = same device id = same ProductUserId = collision).
+                string cache = Environment.GetEnvironmentVariable("SIEGEFX_EOS_CACHE") is { Length: > 0 } cc
+                    ? cc : Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
                 _eosPlatform = reg.Invoke(null, new object[] { cfg, cache });
                 if (_eosPlatform is not null)
                 {
@@ -17336,12 +17340,17 @@ void main()
                 break;
             case MultiplayerMenuPanel.Action.Internet:
                 LoadMpSessionPrefs();
+                // INTERNET routes through EOS (relayed, cross-NAT). Falls back to
+                // LAN inside the factory if EOS isn't configured — better than a
+                // dead button, and the [net] log names which provider ran.
+                _mpProviderId = "eos";
                 _mpSession.ScreenMode = Hud.MpSessionScreen.Mode.Internet;
                 _frontendScene.SetState(Hud.FrontendScene.ScreenState.MpInternet);
                 _mpMenu.ClearHover();
                 break;
             case MultiplayerMenuPanel.Action.Network:
                 LoadMpSessionPrefs();
+                _mpProviderId = "lan"; // NETWORK = direct LAN/IP, no vendor, rug-proof
                 _mpSession.ScreenMode = Hud.MpSessionScreen.Mode.Network;
                 _frontendScene.SetState(Hud.FrontendScene.ScreenState.MpNetwork);
                 _mpMenu.ClearHover();
