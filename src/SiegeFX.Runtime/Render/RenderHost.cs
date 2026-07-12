@@ -17749,13 +17749,11 @@ void main()
                 MpStartConnect(addr);
                 break;
             case Hud.MpSessionScreen.Action.Remove:
-                if (_mpSession.SelectedAddress >= 0
-                    && _mpSession.SelectedAddress < _mpSession.RecentAddresses.Count)
-                {
-                    _mpSession.RecentAddresses.RemoveAt(_mpSession.SelectedAddress);
-                    _mpSession.SelectedAddress = -1;
-                    SaveMpSessionPrefs();
-                }
+                // The Internet screen's list now shows live EOS games rather than
+                // a recent-address book, so this button clears the typed host id
+                // and the current selection instead of editing a hidden list.
+                _mpSession.AddressEntry = "";
+                _mpSession.SelectedGame = -1;
                 break;
             case Hud.MpSessionScreen.Action.Host:
                 MpStartHost();
