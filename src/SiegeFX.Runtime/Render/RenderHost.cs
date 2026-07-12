@@ -4105,6 +4105,10 @@ public sealed class RenderHost : IDisposable
         if (!asHost && rawTransport is SiegeFX.Core.Net.UdpTransport rudp) { rudp.ConnectAttempts = 120; rudp.ConnectDelayMs = 500; }
         var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
+        SiegeFX.Core.Net.MpDiag.WriteSession(asHost ? "host (in region)" : "client (in region)",
+            provider, transport.ProviderId,
+            asHost ? (_mpLocalIp ??= LocalIpBestEffort()) : host, port,
+            SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         var session = new SiegeFX.Core.Net.MpSession(transport, asHost, name);
         _mpNetSession = session;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
@@ -4183,6 +4187,11 @@ public sealed class RenderHost : IDisposable
         SiegeFX.Core.Net.NetLog.Info("mp: AEAD enabled (SIEGEFX_MP_PASSPHRASE set) — payloads encrypted");
         return new SiegeFX.Core.Net.SecureTransport(t, SiegeFX.Core.Net.MpSecurity.DeriveKey(pass));
     }
+
+    // F6 — is this transport AEAD-wrapped? (Diagnostics header; never logs the
+    // passphrase itself, only whether one is in effect.)
+    private static bool MpIsEncrypted(SiegeFX.Core.Net.ISessionTransport t) =>
+        t is SiegeFX.Core.Net.SecureTransport;
 
     // Drain the EOS P2P queue (a provider-specific method not on the interface),
     // unwrapping the SecureTransport decorator when AEAD is on.
@@ -4516,6 +4525,9 @@ public sealed class RenderHost : IDisposable
         transport.PeerDisconnected += id =>
             _mpSession.Status = $"Player {id} left ({_mpTransport?.Peers.Count ?? 0} in session).";
         int port = SiegeFX.Core.Net.UdpTransport.DefaultGamePort;
+        SiegeFX.Core.Net.MpDiag.WriteSession("host", _mpProviderId, transport.ProviderId,
+            _mpLocalIp ??= LocalIpBestEffort(), port,
+            SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         _ = transport.ListenAsync(port, default).ContinueWith(t =>
         {
             if (t.Result)
@@ -4559,6 +4571,9 @@ public sealed class RenderHost : IDisposable
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerDisconnected += _ =>
             _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
+        SiegeFX.Core.Net.MpDiag.WriteSession("client", _mpProviderId, transport.ProviderId,
+            address, SiegeFX.Core.Net.UdpTransport.DefaultGamePort,
+            SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         _mpSession.Status = $"Connecting to {address} ({transport.ProviderId})...";
         _ = transport.ConnectAsync(address, default).ContinueWith(t =>
         {

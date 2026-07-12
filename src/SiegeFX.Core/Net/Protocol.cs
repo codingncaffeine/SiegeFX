@@ -28,6 +28,17 @@ public enum MpMsg : byte
     GameStart   = 17,  // host→client: leave staging and relaunch into the region: [regionLen u8][region utf8][difficulty u8]
 }
 
+/// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
+/// message layout changes so mismatched builds reject cleanly at the join
+/// handshake instead of silently misreading each other's bytes (the most
+/// likely two-machine failure: friends on different builds). The client sends
+/// it in <see cref="MpMsg.JoinRequest"/>; the host rejects a mismatch with a
+/// human-readable reason.</summary>
+public static class MpProtocol
+{
+    public const ushort Version = 1;
+}
+
 /// <summary>Input command verbs a client sends up (host resolves them
 /// against its authoritative sim, exactly as the local player path does).</summary>
 public enum MpInputCmd : byte { Move = 0, Attack = 1, CastPrimary = 2, CastSecondary = 3, Pickup = 4, Stop = 5 }

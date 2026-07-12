@@ -81,8 +81,8 @@ public sealed class MpSession : IDisposable
     public void SendJoinRequest()
     {
         if (IsHost) return;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).Str(_localName).Span);
-        NetLog.Info($"session: sent JoinRequest as '{_localName}'");
+        _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
+        NetLog.Info($"session: sent JoinRequest as '{_localName}' (protocol v{MpProtocol.Version})");
     }
 
     public void SendInput(MpInputCmd cmd, float x, float z, uint targetScid = 0)
@@ -200,8 +200,19 @@ public sealed class MpSession : IDisposable
         {
             case MpMsg.JoinRequest when IsHost:
             {
+                ushort ver = r.U16();
                 string name = r.Str();
                 if (r.Bad) { NetLog.Warn($"session: malformed JoinRequest from peer {peer} — dropped"); return; }
+                if (ver != MpProtocol.Version)
+                {
+                    // Different build/protocol — reject cleanly rather than let
+                    // the two desync on incompatible byte layouts. The friend
+                    // test's single most likely failure; make it unmistakable.
+                    string why = $"Version mismatch — host is protocol v{MpProtocol.Version}, you sent v{ver}. Both players need the same SiegeFX build.";
+                    _t.Send(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str(why).Span);
+                    NetLog.Warn($"session: rejected peer {peer} — protocol v{ver} != host v{MpProtocol.Version}");
+                    return;
+                }
                 if (_playerCount >= MaxPlayers)
                 {
                     _t.Send(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str("Game is full.").Span);

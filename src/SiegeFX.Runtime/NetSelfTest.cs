@@ -105,6 +105,38 @@ public static class NetSelfTest
 
         host.Dispose(); client.Dispose(); hostT.Dispose(); clientT.Dispose();
 
+        // ---- F6: protocol-version handshake gate ----
+        // A client on a different build (wrong wire version) must be rejected
+        // with a clear reason, never silently accepted onto an incompatible
+        // byte layout — the most likely two-machine failure.
+        {
+            var (ht, ct) = LoopbackTransport.CreatePair();
+            var h = new MpSession(ht, isHost: true, "Host");
+            var c = new MpSession(ct, isHost: false, "Client");
+            string? rejectReason = null; int accepted = -1;
+            c.OnJoinRejected = why => rejectReason = why;
+            c.OnJoinAccepted = id => accepted = id;
+            // Hand-craft a JoinRequest carrying a bogus version (bypassing
+            // SendJoinRequest, which always stamps the current version).
+            ushort badVer = (ushort)(MpProtocol.Version + 99);
+            ct.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(badVer).Str("Client").Span);
+            Pump(h, c);
+            Assert(rejectReason is not null && rejectReason.Contains("Version mismatch"),
+                $"mismatched protocol version rejected with a clear reason (got '{rejectReason}')");
+            Assert(accepted == -1, "version-mismatched client was NOT accepted into the game");
+
+            // Sanity: a request at the CURRENT version still joins.
+            var (ht2, ct2) = LoopbackTransport.CreatePair();
+            var h2 = new MpSession(ht2, isHost: true, "Host");
+            var c2 = new MpSession(ct2, isHost: false, "Client");
+            int ok2 = -1; c2.OnJoinAccepted = id => ok2 = id;
+            c2.SendJoinRequest();
+            Pump(h2, c2);
+            Assert(ok2 == 1, $"matching-version client still joins (got id {ok2})");
+            h.Dispose(); c.Dispose(); ht.Dispose(); ct.Dispose();
+            h2.Dispose(); c2.Dispose(); ht2.Dispose(); ct2.Dispose();
+        }
+
         // ---- SC-MP-INGAME: player-pose fan-out, GameStart, leave ----
         {
             var (h2, c2) = LoopbackTransport.CreatePair();
