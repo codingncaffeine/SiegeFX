@@ -1474,6 +1474,10 @@ public sealed class RenderHost : IDisposable
         public GlTexture? RangedAmmoTex;
         public float RangedVelocity = 14f;
         public float RangedGravity = DefaultAmmoGravity;
+        // SC-AUDIO-FIRE — the projectile WEAPON template (may be the shield
+        // hand); DS1 authors the launch sound on it ([aspect][voice][attack],
+        // krug rock = s_e_swing_01/03).
+        public string? RangedWeaponRef;
     }
 
     // Phase 10-SC-1 — trigger-runtime queries route through these helpers so the
@@ -3441,7 +3445,6 @@ public sealed class RenderHost : IDisposable
     // (template's [aspect][voice][put_down] *). Cache hits per cue stem; many
     // templates share the same put_down cue (every steel sword fires the same
     // s_e_gui_put_down_steelsword) so this keeps the per-drop path one cache hit.
-    private readonly HashSet<string> _registeredPutDownCues = new(StringComparer.OrdinalIgnoreCase);
     private bool _questLogOpen;  // 'L' (and SC-HUD-DATABAR-aliased 'J') toggles; sibling overlay to inventory
     // SC-QUEST-UI-C — DS1-authentic journal screen (parchment + portrait +
     // quest listbox + Show Dialogue/Close buttons). Owns selection + scroll
@@ -6310,7 +6313,11 @@ void main()
                             ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry(
                                 Slot: "", Reference: _cursorItem.Value.Reference));
                             _inventoryPanel.NotifyItemAdded();
-                            _audio?.Play(SfxGuiInventory);
+                            // SC-AUDIO-ITEMS — item settles into the pack
+                            // with its own put_down cue (DS1: "dropped on
+                            // ground or into inventory").
+                            PlayPutDownSfx(_cursorItem.Value.Reference,
+                                _player?.CurrentTransform.Translation ?? Vector3.Zero);
                             Console.WriteLine($"  cursor item: placed {_cursorItem.Value.Reference} into inventory");
                             ClearCursorItem();
                             return;
@@ -8118,7 +8125,13 @@ void main()
         {
             _sfxStore = SiegeFX.Core.Assets.SfxScriptStore.LoadFromTank(logicReader);
             if (_particles is not null)
+            {
                 _sfxRuntime = new SiegeFX.Core.Sfx.SfxRuntime(_sfxStore, _particles);
+                // SC-AUDIO-VM — authored `sound play` statements (bow twang
+                // in arrow_tracer, spell impacts, goo splats) dispatch to
+                // the shared voice-cue player instead of no-opping.
+                _sfxRuntime.SoundSink = (clip, pos) => RegisterAndPlayVoiceCue(clip, pos);
+            }
             Console.WriteLine($"  sfx scripts: {_sfxStore.Count} loaded");
         }
         catch (Exception ex) { Console.WriteLine($"  sfx_script load failed: {ex.Message}"); }
@@ -13946,7 +13959,10 @@ void main()
         chest.ChestOpened = true;
         Console.WriteLine($"[chest] 0x{chest.Scid:X8} {chest.Template} opened");
         LogPropLootDrop(chest);
-        _audio?.PlayAt(SfxGuiInventory, chest.World.Translation);
+        // SC-AUDIO-ITEMS — sounddb's chest-open material event; spilled
+        // loot plays its own put_down cues at landing.
+        if (!RegisterAndPlayVoiceCue("s_e_chest_m_open", chest.World.Translation))
+            _audio?.PlayAt(SfxGuiInventory, chest.World.Translation);
     }
 
     /// <summary>[trapped] { trap = trp_generator_* } — the generator's
@@ -19389,6 +19405,7 @@ void main()
             if (wref is null || !store.TryGet(wref, out var wt) || wt is null) continue;
             if (!string.Equals(store.GetAttribute(wt, "attack", "is_projectile")?.Trim(),
                     "true", StringComparison.OrdinalIgnoreCase)) continue;
+            s.RangedWeaponRef = wref;
             if (float.TryParse(store.GetAttribute(wt, "physics", "velocity")?.Trim(),
                     System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out var pv) && pv > 0f)
@@ -20087,6 +20104,10 @@ void main()
             // item always lands unequipped, so the loot slot stays empty.
             ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry("", row.ItemReference));
             _inventoryPanel.NotifyItemAdded();
+            // SC-AUDIO-ITEMS — the bought item settles into the pack with
+            // its own put_down cue (DS1 vendor feel: potion clink, sword clank).
+            if (_player is not null)
+                PlayPutDownSfx(row.ItemReference, _player.CurrentTransform.Translation);
             Console.WriteLine($"trade: bought {row.ScreenName} for {row.Price}g → member {_paperdollTargetIndex} (gold now {_progression.Gold})");
         }
         else if (act.Kind == SiegeFX.Runtime.Render.Hud.VendorActionKind.Sell)
@@ -20098,6 +20119,9 @@ void main()
             _inventoryPanel.NotifyItemRemoved(act.Index);
             sellInv.RemoveAt(act.Index);
             _progression.CreditGold(price);
+            // SC-AUDIO-ITEMS — DS1 [global_voice] sell = the gold jingle.
+            if (_player is not null)
+                RegisterAndPlayVoiceCue("s_e_gui_put_down_gold", _player.CurrentTransform.Translation);
             Console.WriteLine($"trade: sold {entry.Reference} for {price}g (gold now {_progression.Gold})");
         }
     }
@@ -21002,7 +21026,10 @@ void main()
         if (isHealth) _player.Actor.Combat.Heal(amount);
         else          _player.Actor.Combat.RestoreMana(amount);
         Console.WriteLine($"[data_bar] drank {picked.Reference} → +{amount:F0} {(isHealth ? "HP" : "MP")}");
-        _audio?.Play(SfxGuiInventory);
+        // SC-AUDIO-ITEMS — DS1 [global_voice] drink cue (priority always).
+        if (_player is null
+            || !RegisterAndPlayVoiceCue("s_e_potion_drink", _player.CurrentTransform.Translation))
+            _audio?.Play(SfxGuiInventory);
     }
 
     /// <summary>Phase 22-A — kick the quest indicator pulse. Called whenever
@@ -21592,7 +21619,8 @@ void main()
             equip[esTag] = itemRef;
             _cursorItem = new SiegeFX.Core.Actors.LootEntry(esTag, currentRef!);
             _cursorItemIcon = TryGetItemIcon(currentRef!);
-            _audio?.Play(SfxGuiPickup);
+            // SC-AUDIO-ITEMS — the placed item's own put_down cue.
+            PlayPutDownSfx(itemRef, _player?.CurrentTransform.Translation ?? Vector3.Zero);
             Console.WriteLine($"  paperdoll[{target}]: swapped {currentRef} ↔ {itemRef} on {esTag}");
         }
         else
@@ -21602,7 +21630,8 @@ void main()
             _cursorItem = null;
             _cursorItemIcon = null;
             _cursorItemFromInventoryIdx = -1;
-            _audio?.Play(SfxGuiPickup);
+            // SC-AUDIO-ITEMS — the placed item's own put_down cue.
+            PlayPutDownSfx(itemRef, _player?.CurrentTransform.Translation ?? Vector3.Zero);
             Console.WriteLine($"  paperdoll[{target}]: equipped {itemRef} on {esTag}");
         }
         ApplyEquipmentChange(esTag, target);
@@ -22684,7 +22713,9 @@ void main()
                         victim.ApplyDamage(shot.NpcDamage);
                         // Existing per-frame just-hit scans carry the FX
                         // (hit voice, HUD); blood fires here since the scan
-                        // only covers NPC victims.
+                        // only covers NPC victims. SC-AUDIO-FIRE — arrow/goo
+                        // strikes on the party use the arrow-impact family.
+                        RegisterAndPlayVoiceCue("s_e_hit_arrow_flesh", shot.Pos);
                         SpawnBloodHit(m);
                         RunImpactSplat(shot);
                         _rangedShots.RemoveAt(i);
@@ -22813,7 +22844,11 @@ void main()
             $"{(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
         if (dealt > 0f)
         {
-            PlayMeleeHit(hitPos);
+            // SC-AUDIO-FIRE — arrow impacts use DS1's s_e_hit_arrow_* family
+            // (sounddb dest-material rows; flesh vs actors), not the melee
+            // weapon-on-flesh clank.
+            if (!RegisterAndPlayVoiceCue("s_e_hit_arrow_flesh", hitPos))
+                PlayMeleeHit(hitPos);
             if (!best.Actor.Combat.IsDead && best.Actor.Combat.ConsumeJustHit(out var dmg))
                 PlayHitVoiceSfx(best.Actor.Template, best.CurrentTransform.Translation,
                                 dmg, best.Actor.Stats.MaxLife);
@@ -23036,7 +23071,9 @@ void main()
         if (_playerSwing is null || _player is null) return;
         var ps = _playerSwing;
         int fires = ps.Sched.Advance(dt, out bool whoosh, out bool pad);
-        if (whoosh) _audio?.Play(SfxMeleeSwingGroup);
+        // SC-AUDIO-FIRE — the BSWG whoosh is a melee sound; a drawn bow is
+        // silent until the release twang below.
+        if (whoosh && !_weaponIsRanged) _audio?.Play(SfxMeleeSwingGroup);
         if (pad && _player.Actor.SwapToPadClip())
             _player.Actor.PlayChoreOnce("chore_attack",
                 MathF.Max(0.1f, ps.Sched.Period - ps.Sched.Elapsed));
@@ -23071,7 +23108,10 @@ void main()
                 };
                 SpawnRangedShot(shot, src, aim, _weaponProjVelocity);
                 ps.ArrowAway = true;
-                _audio?.Play(SfxMeleeSwingGroup);
+                // SC-AUDIO-FIRE — DS1's bow release is the arrow script's
+                // s_e_bow_shoot2 twang, not the melee whoosh.
+                if (!RegisterAndPlayVoiceCue("s_e_bow_shoot2", src))
+                    _audio?.Play(SfxMeleeSwingGroup);
                 continue;
             }
             if (ps.Target is not null) ResolveSwingHitOnActor(ps.Target, ps.Attacker);
@@ -23433,14 +23473,16 @@ void main()
     /// wav file on disk is the un-decorated name, and the SED lookup hits
     /// via the wav basename). Mirrors the same _SED-stripping the spell
     /// cast-script binding does. Returns silently when the cue is empty
-    /// (no state authored) or when the audio engine isn't up.</summary>
-    private void RegisterAndPlayVoiceCue(string? rawCue, Vector3 worldPos)
+    /// (no state authored) or when the audio engine isn't up. Returns true
+    /// when a clip actually played so callers can chain fallbacks.</summary>
+    private readonly HashSet<string> _availableVoiceCues = new(StringComparer.OrdinalIgnoreCase);
+    private bool RegisterAndPlayVoiceCue(string? rawCue, Vector3 worldPos)
     {
-        if (_audio is null || string.IsNullOrEmpty(rawCue)) return;
+        if (_audio is null || string.IsNullOrEmpty(rawCue)) return false;
         var cue = rawCue;
         if (cue.EndsWith("_SED", StringComparison.OrdinalIgnoreCase))
             cue = cue.Substring(0, cue.Length - 4);
-        if (cue.Length == 0) return;
+        if (cue.Length == 0) return false;
         if (_registeredDeathCues.Add(cue) && _playSoundTank is not null)
         {
             var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
@@ -23475,17 +23517,20 @@ void main()
                 // (e.g. s_e_call_worm) instead of the SED key
                 // (s_e_call_googore) the rate is keyed on. Apply pitch
                 // range directly from the SED descriptor we already have.
-                if (!reader.TryGetFile(path, out _)) return;
+                if (!reader.TryGetFile(path, out _)) return false;
                 var bytes = reader.ExtractToMemory(path);
-                if (_audio.RegisterClip(cue, bytes)
-                    && sed is not null
-                    && (sed.MinPlaybackRate != 1f || sed.MaxPlaybackRate != 1f))
+                if (_audio.RegisterClip(cue, bytes))
                 {
-                    _audio.RegisterPitch(cue, sed.MinPlaybackRate, sed.MaxPlaybackRate);
+                    _availableVoiceCues.Add(cue);
+                    if (sed is not null
+                        && (sed.MinPlaybackRate != 1f || sed.MaxPlaybackRate != 1f))
+                        _audio.RegisterPitch(cue, sed.MinPlaybackRate, sed.MaxPlaybackRate);
                 }
             }
         }
+        if (!_availableVoiceCues.Contains(cue)) return false;
         _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+        return true;
     }
 
     /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire (2026-05-13): fire the
@@ -23612,48 +23657,40 @@ void main()
         RegisterAndPlayVoiceCue(cue, prop.World.Translation + new Vector3(0f, -0.4f, 0f));
     }
 
-    /// <summary>Phase 9-SC-9 — read the dropped item's
-    /// <c>[aspect][voice][put_down] *</c> off the resolved template, lazy-
-    /// register the WAV from Sound.dsres, and play it positioned at the drop.
-    /// Falls back to the generic gui_inventory_sheet cue if no put_down was
-    /// authored, or if the cue resolves to a SED-only stem (suffix
-    /// <c>_sed</c> — that's a Sound Effect Descriptor with multiple variants,
-    /// no single WAV by that name; full SED→WAV resolution is parked for a
-    /// later phase). Mirrors PlayDeathSfx caching otherwise.</summary>
+    /// <summary>Phase 9-SC-9 / SC-AUDIO-ITEMS — read the item's
+    /// <c>[aspect][voice][put_down] *</c> off the resolved template (pcontent
+    /// specs resolve first) and play it positioned at the drop, with full SED
+    /// pitch support via the shared voice-cue helper. DS1 authors this as the
+    /// ONLY per-item gui cue (potion clink, sword clank, gold jingle, book
+    /// thump — 19 category wavs), fired both when an item lands on the ground
+    /// AND when it settles into the pack. Unauthored items fall to the DS1
+    /// [global_voice] swish; a missing wav falls to the generic sheet cue.</summary>
     private void PlayPutDownSfx(string itemRef, Vector3 worldPos)
     {
         if (_audio is null || _templateStore is null) return;
-        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null)
-        {
+        string? cue = null;
+        var resolvedRef = ResolveItemRef(itemRef);
+        if (_templateStore.TryGet(resolvedRef, out var tpl) && tpl is not null)
+            cue = _templateStore.GetAttribute(tpl, "aspect", "voice", "put_down", "*");
+        if (string.IsNullOrEmpty(cue)) cue = "s_e_gui_put_down_swish";
+        if (!RegisterAndPlayVoiceCue(cue, worldPos)
+            && !RegisterAndPlayVoiceCue("s_e_gui_put_down_swish", worldPos))
             _audio.PlayAt(SfxGuiInventory, worldPos);
-            return;
-        }
-        var cue = _templateStore.GetAttribute(tpl, "aspect", "voice", "put_down", "*");
-        if (string.IsNullOrEmpty(cue) || cue.EndsWith("_sed", StringComparison.OrdinalIgnoreCase))
-        {
-            _audio.PlayAt(SfxGuiInventory, worldPos);
-            return;
-        }
-        if (_registeredPutDownCues.Contains(cue))
-        {
-            _audio.PlayAt(cue, worldPos);
-            return;
-        }
-        if (_playSoundTank is null)
-        {
-            _audio.PlayAt(SfxGuiInventory, worldPos);
-            return;
-        }
-        var reader = new SiegeFX.Core.Tank.TankReader(_playSoundTank);
-        if (TryRegisterSfx(reader, cue, $"/sound/effects/{cue}.wav"))
-        {
-            _registeredPutDownCues.Add(cue);
-            _audio.PlayAt(cue, worldPos);
-        }
+    }
+
+    /// <summary>SC-AUDIO-ITEMS — landing sound for a loot toss: the first
+    /// item's authored put_down cue (gold entries jingle with the authored
+    /// gold cue). Called from the throw integrator's t&gt;=1 branch, the one
+    /// choke point every airborne pile passes through — kill drops, chest
+    /// and barrel spills, inventory drag-outs, cursor drops.</summary>
+    private void PlayPileLandSfx(LootPile pile)
+    {
+        if (pile.Items.Count == 0) return;
+        var first = pile.Items[0];
+        if (first.IsGold)
+            RegisterAndPlayVoiceCue("s_e_gui_put_down_gold", pile.Position);
         else
-        {
-            _audio.PlayAt(SfxGuiInventory, worldPos);
-        }
+            PlayPutDownSfx(first.Reference, pile.Position);
     }
 
     /// <summary>Phase 9-SC-9 — pop an inventory entry out of the player's bag
@@ -23736,7 +23773,10 @@ void main()
         };
         _lootPiles.Add(pile);
         Console.WriteLine($"  drop: {entry.Reference} at {dropPos.X:F1},{dropPos.Z:F1}");
-        PlayPutDownSfx(entry.Reference, dropPos);
+        // SC-AUDIO-ITEMS — DS1's put_down_toss at the throw ( = the pick_up
+        // wav per [global_voice]); the item's own put_down fires when the
+        // arc lands via PlayPileLandSfx.
+        _audio?.PlayAt(SfxGuiPickup, feet);
     }
 
     /// <summary>Phase 9-SC-13 — pcontent-spec → concrete-template resolver
@@ -24430,7 +24470,17 @@ void main()
             // a boss with attack-only voice still yelps mid-fight even if
             // the brain stays in Attack between swings.
             if (brain.ConsumeJustSwung())
+            {
                 PlayAttackVoiceSfx(s.Actor.Template, s.CurrentTransform.Translation);
+                // SC-AUDIO-FIRE — sounddb maps every material's generic
+                // 'attack' event to the swing whoosh (s_e_swing_01_SED), so
+                // NPC melee swings whoosh like the player's; the ~27
+                // authored attack VOICES ride on top. Ranged brains get
+                // their fire cue at the FIRE-note consumer instead.
+                if (brain.Mode == SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee && _audio is not null)
+                    _audio.PlayAt(SfxMeleeSwingGroup,
+                        s.CurrentTransform.Translation + new Vector3(0f, 1.4f, 0f));
+            }
             // SC-MOB-CASTER — spell visual + the authored 'cast' voice state
             // (SC-ENEMY-AUDIO-CAST-WIRE: 123 DS1 templates author it).
             if (brain.ConsumeJustCast(out var castDst) && brain.CastSpell is not null)
@@ -24500,6 +24550,14 @@ void main()
                     SpawnSpellVisual(castSrc, castTo,
                         brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
                 }
+                // SC-AUDIO-CAST — the spell's OWN cast sound (scraped from
+                // its cast script's first `sound play`, same resolver the
+                // player path uses). Skip the zap-cue fallback for NPCs —
+                // monster spells without a script rely on the caster's
+                // authored 'cast' VOICE below instead of borrowing zap's wav.
+                var npcCastClip = ResolveSpellCastSound(brain.CastSpell);
+                if (npcCastClip != SfxZapCast)
+                    _audio?.PlayAt(npcCastClip, castSrc);
                 PlayVoiceCue(s.Actor.Template, s.CurrentTransform.Translation, "cast");
             }
             // SC-MOB-RANGED / SC-RANGED-PROJECTILE — the brain's FIRE note
@@ -24524,6 +24582,17 @@ void main()
                 if (shot.Mesh is null && _particles is not null)
                     _particles.SpawnProjectile(throwSrc, aim,
                         new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
+                // SC-AUDIO-FIRE — DS1 authors the launch sound on the WEAPON
+                // ([aspect][voice][attack]: krug rock = s_e_swing_01/03); bows
+                // author none there and get their twang from the arrow's
+                // launch script (s_e_bow_shoot2) — use it as the projectile
+                // default so skeleton/goblin archers stop firing silently.
+                string? fireCue = null;
+                if (s.RangedWeaponRef is { Length: > 0 } rwr && _templateStore is not null
+                    && _templateStore.TryGet(rwr, out var rwTpl) && rwTpl is not null)
+                    fireCue = _templateStore.GetAttribute(rwTpl, "aspect", "voice", "attack", "*");
+                if (!RegisterAndPlayVoiceCue(fireCue, throwSrc))
+                    RegisterAndPlayVoiceCue("s_e_bow_shoot2", throwSrc);
             }
             // SC-ENEMY-AUDIO-AUDIT — fire hit reaction for any NPC that
             // just took damage from a non-player source (brain-on-brain
@@ -25649,8 +25718,16 @@ void main()
                 if (completed.Count > 0) FlashQuestIndicator();
             }
         }
-        if (accepted.Count > 0 || pileGold > 0)
-            _audio?.PlayAt(SfxGuiPickup, pile.Position);
+        // SC-AUDIO-ITEMS — DS1's per-item pickup sound IS the put_down cue
+        // firing as the item settles into the pack (sounddb.gas: put_down =
+        // "dropped on ground or into inventory"; no per-item pick_up state
+        // exists). Gold jingles with its authored cue. The generic
+        // s_e_gui_pick_up stays for cursor grabs out of the gridbox, which
+        // is what DS1 authored it for.
+        if (pileGold > 0)
+            RegisterAndPlayVoiceCue("s_e_gui_put_down_gold", pile.Position);
+        if (accepted.Count > 0)
+            PlayPutDownSfx(accepted[0].Reference, pile.Position);
 
         // SC-PAPERDOLL-EQUIP — a picked-up PROJECTILE weapon auto-fills the
         // EMPTY ranged box (per the user's DS1 recall: first bow goes
@@ -25983,6 +26060,9 @@ void main()
                 pile.RotationY = 0f;
                 pile.RotationX = 0f;
                 pile.Throw = null;
+                // SC-AUDIO-ITEMS — DS1 plays the item's put_down at LANDING,
+                // not at the toss. Every airborne pile funnels through here.
+                PlayPileLandSfx(pile);
                 continue;
             }
             var basePos = Vector3.Lerp(th.Source, th.Target, t);
@@ -28030,7 +28110,10 @@ void main()
             },
         };
         _lootPiles.Add(pile);
-        _audio?.Play(SfxGuiPutDownScroll);
+        // SC-AUDIO-ITEMS — toss cue at release; the item's OWN put_down
+        // (sword clank, potion clink — not the scroll swish this hardcoded)
+        // fires at landing via PlayPileLandSfx.
+        _audio?.Play(SfxGuiPickup);
         Console.WriteLine($"  cursor item: world drop {_cursorItem.Value.Reference}");
         ClearCursorItem();
     }
@@ -28104,7 +28187,10 @@ void main()
             },
         };
         _lootPiles.Add(pile);
-        _audio?.Play(SfxGuiPutDownScroll);
+        // SC-AUDIO-ITEMS — toss at release; the scroll's authored put_down
+        // fires at landing (scrolls resolve to s_e_gui_put_down_scroll anyway,
+        // so the landing sound matches what this used to hardcode).
+        _audio?.Play(SfxGuiPickup);
         Console.WriteLine($"  scroll drag: world drop {spell.Name} -> pile at " +
                           $"({target.X:F1},{target.Z:F1}) with throw-tumble");
         ClearScrollDrag();

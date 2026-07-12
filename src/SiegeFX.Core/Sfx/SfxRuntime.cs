@@ -778,12 +778,24 @@ public sealed class SfxRuntime
                     // markers themselves.
                     break;
                 case StatementKind.SoundPlay:
+                    // SC-AUDIO-VM — dispatch to the host's audio sink. Grammar:
+                    // `sound play <clip>[_SED] [at #TARGET_POSITION|...]`; the
+                    // clip is always the first token, position defaults to the
+                    // caster (source) unless the target anchor is named. The
+                    // sink handles _SED strip + registration; null sink =
+                    // silent (headless), the pre-wire behavior.
+                    if (SoundSink is not null && stmt.Tokens.Count > 0)
+                    {
+                        var sndClip = stmt.Tokens[0].Trim().Trim('"');
+                        var sndPos = rs.Ctx.SourcePos;
+                        for (int ti = 1; ti < stmt.Tokens.Count; ti++)
+                            if (stmt.Tokens[ti].Contains("TARGET_POSITION", StringComparison.OrdinalIgnoreCase))
+                            { sndPos = rs.Ctx.TargetPos; break; }
+                        if (sndClip.Length > 0) SoundSink(sndClip, sndPos);
+                    }
+                    break;
                 case StatementKind.SoundStop:
-                    // Audio is wired separately (see SiegeAudioRouter); the
-                    // sfx_script side just declares "make a sound here" and
-                    // we silently honor it as a no-op rather than surfacing
-                    // every cast as `unhandled verb`. When we wire SED-driven
-                    // audio into the VM this becomes a real dispatch.
+                    // One-shot clips only so far — nothing persistent to stop.
                     break;
                 case StatementKind.SfxAttach:
                     ExecAttach(rs, stmt);
@@ -864,6 +876,13 @@ public sealed class SfxRuntime
     /// context). Gameplay-side consumers (spell damage sync) live on the
     /// host; the visual VM just forwards.</summary>
     public Action<string, SfxContext>? WorldMsgHook;
+
+    /// <summary>SC-AUDIO-VM — host-injected audio sink for <c>sound play</c>
+    /// statements: (clip name as authored, world position). The host owns
+    /// wav registration, SED pitch, and 3D playback; the VM just says
+    /// "this sound, here". Null (headless CLIs, filmstrip) = silent no-op,
+    /// the pre-wire behavior.</summary>
+    public Func<string, Vector3, bool>? SoundSink;
 
     /// <summary>Phase 23d-2e — raw verbs the VM now executes (the audit
     /// consults this so its unhandled-verb table stays truthful).</summary>
