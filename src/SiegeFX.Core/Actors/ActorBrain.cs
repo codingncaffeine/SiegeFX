@@ -123,6 +123,22 @@ public sealed class ActorBrain
     Vector3 _lastFireTarget;
     float _pendingRangedDamage;
     ActorCombatState? _pendingRangedTargetCombat;
+    float _pendingCastDamage;
+    ActorCombatState? _pendingCastTargetCombat;
+
+    /// <summary>SC-SPELL-LAUNCH — payload companion to <see cref="ConsumeJustCast"/>
+    /// for [spell_launch] ammo spells: the pre-rolled damage + victim combat
+    /// sink, applied by the HOST at ammo impact (DS1 resolves launch-spell
+    /// damage on collision, exactly like ranged weapons). Set only when the
+    /// cast spell IsLaunch; a consumer that drops it drops the hit — a miss.</summary>
+    public bool TakeCastLaunchPayload(out float damage, out ActorCombatState? targetCombat)
+    {
+        damage = _pendingCastDamage;
+        targetCombat = _pendingCastTargetCombat;
+        _pendingCastDamage = 0f;
+        _pendingCastTargetCombat = null;
+        return targetCombat is not null;
+    }
 
     /// <summary>XZ distance at which we transition Wander → Chase. ~8u is one
     /// krug-sized stride; the PC has to actively step into a mob's bubble.</summary>
@@ -509,7 +525,16 @@ public sealed class ActorBrain
         float damage = spell.RollDamage(dmgCtx, _swingRng)
             * (PartyAligned ? CombatResolver.PlayerDamageMultiplier
                             : CombatResolver.ComputerDamageMultiplier);
-        if (damage > 0f) targetCombat.ApplyDamage(damage);
+        // SC-SPELL-LAUNCH — ammo spells (phrak dart, skrubb spit) defer the
+        // hit to projectile impact: park the payload for the host's ammo GO,
+        // exactly like the ranged-weapon FIRE deferral above. Instant spells
+        // keep applying at the FIRE note.
+        if (spell.IsLaunch)
+        {
+            _pendingCastDamage = damage;
+            _pendingCastTargetCombat = targetCombat;
+        }
+        else if (damage > 0f) targetCombat.ApplyDamage(damage);
         // Deliberately NOT JustSwung — casts fire the authored 'cast' voice
         // state (123 DS1 templates), not the melee 'attack' cue.
         _justCast = true;

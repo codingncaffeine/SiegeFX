@@ -743,7 +743,9 @@ public sealed class RenderHost : IDisposable
         SiegeFX.Core.Assets.SpellElement.Acid      => new Vector4(0.55f, 0.95f, 0.40f, 1f),
         SiegeFX.Core.Assets.SpellElement.Death     => new Vector4(0.70f, 0.40f, 0.85f, 1f),
         SiegeFX.Core.Assets.SpellElement.Holy      => new Vector4(1.00f, 0.95f, 0.60f, 1f),
-        _                                           => new Vector4(0.55f, 0.85f, 1.00f, 1f),
+        // Generic: neutral warm white — deliberately NOT the lightning blue
+        // (an unclassified monster spell used to read as a zap).
+        _                                           => new Vector4(0.90f, 0.85f, 0.70f, 1f),
     };
 
     // Phase 21-SC-SPELL-VISUAL-F — caster-side bone resolver handed to
@@ -835,7 +837,10 @@ public sealed class RenderHost : IDisposable
                     new Vector4(1f, 0.95f, 0.65f, 1f), 0.6f, 0.45f, 24);
                 break;
             default:
-                _particles.SpawnLightning(src, dst, color, 0.30f);
+                // Neutral tinted streak — the old SpawnLightning default made
+                // every unclassified monster spell read as a lightning zap
+                // (the "skrubbs shoot lightning" report).
+                _particles.SpawnProjectile(src, dst, color, 0.50f, 16f, 0);
                 break;
         }
     }
@@ -22509,6 +22514,9 @@ void main()
         // NPC-fired: pre-rolled damage payload + the victim combat sink.
         public float NpcDamage;
         public SiegeFX.Core.Actors.ActorCombatState? NpcTargetCombat;
+        // SC-SPELL-LAUNCH — ammo GO's [physics] break_effect (skrubb_spit_splat):
+        // an sfx script run at the impact point when the payload lands.
+        public string ImpactSfxScript = "";
         // SC-SPELLFX-IMPACT — player projectile-SPELL carrier (fireshot):
         // damage pre-rolled by TryCastDeferred rides the flight (the VM's
         // trackball is the visual; this carrier is invisible and applies
@@ -22558,6 +22566,44 @@ void main()
         shot.Pos = src;
         shot.Vel = SolveBallistic(src, aimPoint, MathF.Max(1f, speed), shot.Gravity);
         _rangedShots.Add(shot);
+    }
+
+    // SC-SPELL-LAUNCH — per-spell ammo profile cache: ammo GO mesh/texture
+    // (via the same gear-visual loader NPC bows use), [physics] gravity for
+    // the arc, and [physics] break_effect for the impact splat.
+    private readonly Dictionary<string, (StaticMesh? Mesh, GlTexture? Tex, float Gravity, string BreakEffect)>
+        _spellAmmoCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _loggedNpcLaunchSpells = new(StringComparer.OrdinalIgnoreCase);
+
+    private (StaticMesh? Mesh, GlTexture? Tex, float Gravity, string BreakEffect)
+        ResolveSpellAmmo(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_spellAmmoCache.TryGetValue(spell.Name, out var cached)) return cached;
+        StaticMesh? mesh = null;
+        GlTexture? tex = null;
+        float gravity = DefaultAmmoGravity;
+        string breakEffect = "";
+        var ammoRef = spell.LaunchAmmoTemplate;
+        if (ammoRef.Length > 0 && _templateStore is not null)
+        {
+            if (TryGetGearVisual(ammoRef, out var vis))
+            {
+                mesh = vis.Mesh;
+                tex = vis.Tex;
+            }
+            if (_templateStore.TryGet(ammoRef, out var ammoTpl) && ammoTpl is not null)
+            {
+                if (float.TryParse(_templateStore.GetAttribute(ammoTpl, "physics", "gravity")?.Trim(),
+                        System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var g) && g > 0f)
+                    gravity = g;
+                breakEffect = (_templateStore.GetAttribute(ammoTpl, "physics", "break_effect") ?? "")
+                              .Trim().Trim('"');
+            }
+        }
+        var result = (mesh, tex, gravity, breakEffect);
+        _spellAmmoCache[spell.Name] = result;
+        return result;
     }
 
     private void TickRangedShots(float dt)
@@ -22640,6 +22686,7 @@ void main()
                         // (hit voice, HUD); blood fires here since the scan
                         // only covers NPC victims.
                         SpawnBloodHit(m);
+                        RunImpactSplat(shot);
                         _rangedShots.RemoveAt(i);
                         shot.NpcTargetCombat = null;
                     }
@@ -22649,15 +22696,45 @@ void main()
             }
 
             // Ground: stick where the arc lands (arrows hold a few seconds).
+            // SC-SPELL-LAUNCH — splat ammo (skrubb goo) bursts on the ground
+            // instead of sticking like a shaft.
             float groundY = shot.Pos.Y - 100f;
             if (_navMesh is not null && _navMesh.TryFindTriangle(shot.Pos, out var tri))
                 groundY = _navMesh.SampleYOnTriangle(tri, shot.Pos);
             if (shot.Pos.Y <= groundY + 0.03f && shot.Vel.Y < 0f)
             {
                 shot.Pos = shot.Pos with { Y = groundY + 0.03f };
+                if (shot.ImpactSfxScript.Length > 0)
+                {
+                    RunImpactSplat(shot);
+                    _rangedShots.RemoveAt(i);
+                    continue;
+                }
                 shot.Stuck = true;
             }
         }
+    }
+
+    /// <summary>SC-SPELL-LAUNCH — run the ammo GO's [physics] break_effect
+    /// sfx script at the impact point (skrubb_spit_splat's green burst).
+    /// When the VM doesn't cover the script, a small green-tinged puff
+    /// stands in — the only shipped break_effects are the goo splats.</summary>
+    private void RunImpactSplat(RangedShot shot)
+    {
+        if (shot.ImpactSfxScript.Length == 0) return;
+        bool ran = false;
+        if (_sfxRuntime is not null && _sfxStore is not null
+            && _sfxStore.TryGet(shot.ImpactSfxScript, out _))
+        {
+            var ctx = new SiegeFX.Core.Sfx.SfxContext(
+                SourcePos:     shot.Pos,
+                TargetPos:     shot.Pos,
+                WeaponBonePos: shot.Pos,
+                Resolver:      null);
+            ran = _sfxRuntime.Spawn(shot.ImpactSfxScript, ctx);
+        }
+        if (!ran && _particles is not null)
+            _particles.SpawnSmoke(shot.Pos, new Vector4(0.50f, 0.90f, 0.35f, 0.85f), 0.35f, 0.6f, 10);
     }
 
     /// <summary>SC-SPELLFX-IMPACT — per-spell projectile classifier cache:
@@ -24360,6 +24437,41 @@ void main()
             {
                 var castSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.6f, 0f);
                 var castTo  = castDst + new Vector3(0f, 1.0f, 0f);
+                // SC-SPELL-LAUNCH — [spell_launch] ammo spells (phrak dart,
+                // skrubb spit, blaster bomb) fire a REAL ballistic ammo GO —
+                // the authored dart/goo mesh on a gravity arc, damage payload
+                // applied at IMPACT by TickRangedShots, splat break_effect at
+                // the hit. This is the same flight path krug rocks and
+                // skeleton arrows already ride; the old instant-hitscan +
+                // generic-bolt substitution read as "phrak never fire" and
+                // "skrubbs shoot lightning".
+                if (brain.CastSpell.IsLaunch
+                    && brain.TakeCastLaunchPayload(out var launchDmg, out var launchTarget))
+                {
+                    var ammo = ResolveSpellAmmo(brain.CastSpell);
+                    var lshot = new RangedShot
+                    {
+                        Gravity = ammo.Gravity,
+                        Mesh = ammo.Mesh,
+                        Tex = ammo.Tex,
+                        NpcDamage = launchDmg,
+                        NpcTargetCombat = launchTarget,
+                        ImpactSfxScript = ammo.BreakEffect,
+                    };
+                    SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity);
+                    // Mesh-less ammo still flies (hit lands); a tinted streak
+                    // stands in as the tracer, same rule as NPC thrown rocks.
+                    if (lshot.Mesh is null && _particles is not null)
+                        _particles.SpawnProjectile(castSrc, castTo,
+                            SpellElementColor(brain.CastSpell.Element), 0.45f, 18f, 0);
+                    if (_loggedNpcLaunchSpells.Add(brain.CastSpell.Name))
+                        Console.WriteLine($"[npc-cast] {brain.CastSpell.Name}: launch ammo " +
+                            $"'{brain.CastSpell.LaunchAmmoTemplate}' vel={brain.CastSpell.LaunchVelocity:F1} " +
+                            $"grav={ammo.Gravity:F1} mesh={(ammo.Mesh is not null ? "ok" : "MISS")} " +
+                            $"splat={(ammo.BreakEffect.Length > 0 ? ammo.BreakEffect : "none")}");
+                }
+                else
+                {
                 // SC-SPELLFX-NPC — NPC casters run the authored script through
                 // the SAME VM gate the player path uses (gargoyle spears and
                 // apprentice zap render their authored look instead of the
@@ -24387,6 +24499,7 @@ void main()
                 if (!npcNativeVisual)
                     SpawnSpellVisual(castSrc, castTo,
                         brain.CastSpell.Element, SpellElementColor(brain.CastSpell.Element));
+                }
                 PlayVoiceCue(s.Actor.Template, s.CurrentTransform.Translation, "cast");
             }
             // SC-MOB-RANGED / SC-RANGED-PROJECTILE — the brain's FIRE note

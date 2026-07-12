@@ -200,6 +200,22 @@ public sealed class SpellTemplate
     /// and read as slow motion.</summary>
     public int CastSubAnimation { get; private set; }
 
+    /// <summary>SC-SPELL-LAUNCH — the spell fires a real ballistic ammo GO
+    /// ([spell_launch] block in the chain + [attack] ammo_template). DS1's
+    /// monster arsenal ships these as its projectile attacks: phrak dart,
+    /// skrubb spit (all three sizes), blaster bomb, gargoyle spear. Damage
+    /// resolves at ammo IMPACT, not at the FIRE note.</summary>
+    public bool IsLaunch { get; private set; }
+
+    /// <summary>SC-SPELL-LAUNCH — ammo GO template ([attack] ammo_template:
+    /// phrak_dart, skrub_spit, …). Its [aspect] model is the projectile
+    /// visual; its [physics] gravity shapes the arc.</summary>
+    public string LaunchAmmoTemplate { get; private set; } = "";
+
+    /// <summary>SC-SPELL-LAUNCH — launch speed from the SPELL's [physics]
+    /// velocity (phrak dart 15, skrubb spit 7-10).</summary>
+    public float LaunchVelocity { get; private set; } = 15f;
+
     /// <summary>Phase 24a — player-acquirable = a combat/nature-school
     /// spell (monster arsenal and unknown-chain templates excluded).</summary>
     public bool PlayerAcquirable =>
@@ -247,6 +263,23 @@ public sealed class SpellTemplate
             && int.TryParse(subAnimStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var csa)
             && csa >= 0)
             CastSubAnimation = csa;
+        // SC-SPELL-LAUNCH — detect the [spell_launch] component anywhere in
+        // the specializes chain, then read the launch profile off the
+        // chain-resolved [attack]/[physics] attributes. No ammo template =
+        // nothing to fly; stay on the instant-hit path.
+        for (var t = template; t is not null && !IsLaunch; t = t.Specializes)
+            foreach (var child in t.Node.Children)
+                if (child.Header.Equals("spell_launch", StringComparison.OrdinalIgnoreCase))
+                { IsLaunch = true; break; }
+        if (IsLaunch)
+        {
+            LaunchAmmoTemplate = (store.GetAttribute(template, "attack", "ammo_template") ?? "")
+                                 .Trim().Trim('"');
+            if (float.TryParse(store.GetAttribute(template, "physics", "velocity")?.Trim(),
+                    NumberStyles.Float, CultureInfo.InvariantCulture, out var lv) && lv > 0f)
+                LaunchVelocity = lv;
+            if (LaunchAmmoTemplate.Length == 0) IsLaunch = false;
+        }
         for (var t = template; t is not null; t = t.Specializes)
         {
             switch (t.Name.ToLowerInvariant())
