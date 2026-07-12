@@ -105,6 +105,58 @@ public static class NetSelfTest
 
         host.Dispose(); client.Dispose(); hostT.Dispose(); clientT.Dispose();
 
+        // ---- SC-MP-INGAME: player-pose fan-out, GameStart, leave ----
+        {
+            var (h2, c2) = LoopbackTransport.CreatePair();
+            var hs = new MpSession(h2, isHost: true, "Host");
+            var cs = new MpSession(c2, isHost: false, "Client");
+
+            // Both report a local pose (movement is client-authoritative). The
+            // host is player 0 and moving; the client reports itself standing.
+            hs.BuildLocalPlayerState = () => new MpPlayerState(0, 1f, 0f, 2f, 0.5f, 100, (byte)MpPlayerFlags.Moving);
+            cs.BuildLocalPlayerState = () => new MpPlayerState(0, 7f, 0f, 8f, 1.2f, 90, 0);
+
+            List<MpPlayerState>? hostSees = null, clientSees = null;
+            hs.ApplyPlayerStates = list => hostSees = new List<MpPlayerState>(list);
+            cs.ApplyPlayerStates = list => clientSees = new List<MpPlayerState>(list);
+
+            // Host is authoritative over a world actor too — verify the player
+            // and world channels coexist without interfering.
+            bool clientGotWorldDelta = false;
+            cs.ApplyDelta = (_, actors) => clientGotWorldDelta = actors.Count == 1 && actors[0].Scid == 0x01C00009;
+            hs.EnumerateActors = () => new List<MpActorState> { new(0x01C00009, 5f, 0f, 6f, 42) };
+
+            string? gsRegion = null; int gsDiff = -1;
+            cs.OnGameStart = (region, diff) => { gsRegion = region; gsDiff = diff; };
+            int hostSawLeave = -99;
+            hs.OnPlayerLeft = id => hostSawLeave = id;
+
+            cs.SendJoinRequest(); Pump(hs, cs);
+            Assert(cs.LocalPlayerId == 1, $"in-region: client LocalPlayerId assigned (got {cs.LocalPlayerId})");
+
+            cs.Tick(0.1); Pump(hs, cs);   // client uploads its pose; host stores it
+            hs.Tick(0.1); Pump(hs, cs);   // host fans PlayerDelta + StateDelta out
+
+            Assert(clientSees is not null && clientSees.Exists(p => p.Player == 0),
+                "in-region: client renders the host avatar (player 0)");
+            Assert(clientSees is not null && clientSees.TrueForAll(p => p.Player != cs.LocalPlayerId),
+                "in-region: client's own player is filtered out of its render set");
+            Assert(hostSees is not null && hostSees.Exists(p => p.Player == 1),
+                "in-region: host renders the client avatar (player 1)");
+            var hv = clientSees!.Find(p => p.Player == 0);
+            Assert(System.Math.Abs(hv.X - 1f) < 0.01f && (hv.Flags & (byte)MpPlayerFlags.Moving) != 0,
+                "in-region: host pose + moving flag arrived intact");
+            Assert(clientGotWorldDelta, "in-region: world-actor delta coexists with the player-pose channel");
+
+            hs.SendGameStart("/world/maps/map_world/regions/fh_r1", 2); Pump(hs, cs);
+            Assert(gsRegion == "/world/maps/map_world/regions/fh_r1" && gsDiff == 2,
+                "in-region: GameStart delivered region + difficulty to the client");
+
+            c2.Dispose(); // client drops — host must be told player 1 left
+            Assert(hostSawLeave == 1, $"in-region: host fired OnPlayerLeft on disconnect (got {hostSawLeave})");
+            hs.Dispose(); cs.Dispose(); h2.Dispose();
+        }
+
         // ---- P5: join rules + spawn-town gates ----
         var vet = new MpSessionInfo("Bob", "Utraea", MpDifficulty.Veteran, 2, 8, false, "Lang", 50, 60);
         Assert(!MpJoinRules.CanJoin(vet, 40, false).Ok, "level-40 char refused from a Veteran game (needs 54+)");
