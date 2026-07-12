@@ -4079,8 +4079,10 @@ public sealed class RenderHost : IDisposable
         _mpNetSession = session;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
-        session.OnPlayerLeft = MpRemoveRemoteAvatar;       // P2 — cull on leave
+        session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); MpToast($"Player {id} left the game"); };
+        session.OnPlayerJoined = (id, nm) => MpToast($"{nm} joined the game");
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
+        if (!asHost) session.OnJoinAccepted = _ => MpToast("Joined — playing with the host");
 
         if (asHost)
         {
@@ -4097,23 +4099,25 @@ public sealed class RenderHost : IDisposable
                 for (int i = 0; i < 20; i++)
                 {
                     if (await transport.ListenAsync(port, default).ConfigureAwait(false))
-                    { SiegeFX.Core.Net.NetLog.Info($"in-region host listening on :{port}"); return; }
+                    { SiegeFX.Core.Net.NetLog.Info($"in-region host listening on :{port}"); MpToast("Hosting — waiting for players to join"); return; }
                     SiegeFX.Core.Net.NetLog.Warn($"in-region host bind :{port} busy (attempt {i + 1}/20) — frontend socket not released yet?");
                     await Task.Delay(500).ConfigureAwait(false);
                 }
                 SiegeFX.Core.Net.NetLog.Error($"in-region host could not bind :{port} after 20 attempts");
+                MpToast($"Could not open game port {port} — is it already in use?");
             });
         }
         else
         {
             MpMarkClientWorldActors(); // host drives the mobs; suppress local AI
-            transport.PeerDisconnected += _ => SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host");
+            transport.PeerDisconnected += _ => { SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host"); MpToast("Lost connection to the host"); };
             if (string.IsNullOrWhiteSpace(host))
-            { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); return; }
+            { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); MpToast("No host address — cannot connect"); return; }
+            MpToast($"Connecting to host {host}...");
             _ = transport.ConnectAsync(host, default).ContinueWith(t =>
             {
                 if (t.Result) { SiegeFX.Core.Net.NetLog.Info($"in-region: connected to host {host} — sending JoinRequest"); session.SendJoinRequest(); }
-                else SiegeFX.Core.Net.NetLog.Error($"in-region: could NOT connect to host {host}. See [net] lines.");
+                else { SiegeFX.Core.Net.NetLog.Error($"in-region: could NOT connect to host {host}. See [net] lines."); MpToast("Could not connect to the host — see session log"); }
             }, TaskScheduler.Default);
         }
     }
@@ -4123,11 +4127,19 @@ public sealed class RenderHost : IDisposable
     // captured before the pause gate (co-op keeps syncing while a local menu is up).
     private void TickMpInRegion()
     {
+        // Promote any background-thread MP status onto the on-screen toast so a
+        // tester sees connect/disconnect in-game without reading the session log.
+        if (_mpToastPending is { } mt) { _mpToastPending = null; _saveToastText = mt; _saveToastRemaining = SaveToastDuration; }
         _eosTick?.Invoke();
         MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
         MpInterpolateRemoteActors((float)_frameDtSeconds);
     }
+
+    // Set from any thread (connect callbacks run off the render thread); the
+    // next TickMpInRegion promotes it to the toast.
+    private volatile string? _mpToastPending;
+    private void MpToast(string msg) => _mpToastPending = msg;
 
     // SC-MP-EOS P6 — opt-in AEAD wrap. When SIEGEFX_MP_PASSPHRASE is set (same
     // string on both peers, shared out-of-band like the host address), every
