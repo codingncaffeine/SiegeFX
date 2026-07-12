@@ -25581,15 +25581,35 @@ void main()
         if (pp is { } playerPos && _playerFollower is not null)
         {
             float pdx = pick.Position.X - playerPos.X, pdz = pick.Position.Z - playerPos.Z;
-            if (pdx * pdx + pdz * pdz > PickupReach * PickupReach)
+            float pdist = MathF.Sqrt(pdx * pdx + pdz * pdz);
+            if (pdist > PickupReach)
             {
                 _pendingPickupPile = pick;
                 _pendingAttackTarget = null;
                 _playerFollower.SetTarget(pick.Position);
+                // SC-PICKUP-BLOCKED — items authored inside a prop cluster
+                // (the fh_r1 Fireshot page among the barrels) sit on
+                // obstacle-blocked triangles: pathing to the pile's exact
+                // spot fails ("goal tri obstacle-blocked" click loop). Walk
+                // to the nearest REACHABLE stand point instead — pickup
+                // reach covers the last step.
+                if (_playerFollower.PathBlocked && _navMesh is not null
+                    && _navMesh.TryFindNearestEnterable(pick.Position, radius: PickupReach,
+                        maxDy: 3f, SiegeFX.Core.Nav.NavTraversal.Player,
+                        out _, out var standPoint))
+                {
+                    _playerFollower.SetTarget(standPoint);
+                    Console.WriteLine("click-pickup: pile spot blocked — walking to the nearest stand point");
+                }
+                // Still unreachable but already close-ish (the barrels only
+                // block the last meter): loot with a generous arm's reach
+                // rather than looping a dead click.
+                if (_playerFollower.PathBlocked && pdist <= PickupReach * 1.6f)
+                    return LootPileNow(pick, bestIdx);
                 _moveMarkerPos = pick.Position;
                 _moveMarkerAge = 0f;
                 _audio?.Play(SfxOrderMove);
-                Console.WriteLine($"click-pickup: walking to item ({MathF.Sqrt(pdx * pdx + pdz * pdz):F1}u away)");
+                Console.WriteLine($"click-pickup: walking to item ({pdist:F1}u away)");
                 return true;
             }
         }
