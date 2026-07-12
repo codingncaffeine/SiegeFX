@@ -1466,6 +1466,13 @@ public sealed class RenderHost : IDisposable
         public int ShieldBoneIdx = -1;
         public string? WieldedWeaponRef;
         public bool WeaponDroppedOnDeath;
+        // SC-ALIGNMENT — actor_evil in the specializes chain = a valid
+        // player attack target. DS1 never lets you attack good/neutral
+        // NPCs (Norick, guards, kings) — no attack cursor, no swing.
+        public bool IsEvilAligned;
+        // SC-SELECTABLE — authored [common] is_selectable=false (the intro
+        // narrator): NO interaction at all, not even a cursor change.
+        public bool IsSelectable = true;
 
         // SC-RANGED-PROJECTILE — launch profile when either hand holds an
         // is_projectile weapon (bows and thrown rocks author es_shield_hand):
@@ -2116,6 +2123,7 @@ public sealed class RenderHost : IDisposable
             var s = _actors[i];
             if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
             if (!s.Actor.Stats.IsCombatant || s.Actor.Combat.IsDead) continue;
+            if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
             var p = s.CurrentTransform.Translation;
             float dx = p.X - pos.X, dz = p.Z - pos.Z;
             float d2 = dx * dx + dz * dz;
@@ -9060,6 +9068,7 @@ void main()
             _actors.Add(spawnState);
             // SC-NPC-WEAPONS — attach the authored/rolled equipped gear.
             ResolveNpcEquippedGear(spawnState);
+            ResolveInteractionFlags(spawnState);
         }
 
         if (navMesh is not null)
@@ -15525,6 +15534,7 @@ void main()
             _actors.Add(spawnState);
             // SC-NPC-WEAPONS — attach the authored/rolled equipped gear.
             ResolveNpcEquippedGear(spawnState);
+            ResolveInteractionFlags(spawnState);
         }
         return (onMesh, offMesh);
     }
@@ -15976,7 +15986,10 @@ void main()
                     // loop in TickPartyFollowers; skip them here so they don't
                     // chase the player as if hostile.
                     if (s.IsPartyMember) continue;
-                    bool hostile = s.Actor.Stats.IsCombatant && _nisPhase == NisPhase.Off;
+                    // SC-ALIGNMENT — only evil-chain actors hunt the party;
+                    // good combatants (guards, kings) never turn on you.
+                    bool hostile = s.IsEvilAligned && s.Actor.Stats.IsCombatant
+                                   && _nisPhase == NisPhase.Off;
                     var quarry = hostile
                         ? NearestLivePartyMember(s.CurrentTransform.Translation)
                         : null;
@@ -19551,6 +19564,23 @@ void main()
         }
     }
 
+    /// <summary>SC-ALIGNMENT / SC-SELECTABLE — resolve the authored
+    /// interaction flags once at spawn: hostile-to-player = actor_evil in
+    /// the specializes chain (DS1 SP never lets you attack good NPCs), and
+    /// [common] is_selectable=false (the intro narrator) removes the actor
+    /// from every pick — attack, talk, and cursor alike.</summary>
+    private void ResolveInteractionFlags(ActorRenderState s)
+    {
+        if (_templateStore is null) return;
+        for (var t = s.Actor.Template; t is not null; t = t.Specializes)
+            if (t.Name.Equals("actor_evil", StringComparison.OrdinalIgnoreCase))
+            { s.IsEvilAligned = true; break; }
+        var sel = _templateStore.GetAttribute(s.Actor.Template, "common", "is_selectable");
+        if (!string.IsNullOrEmpty(sel)
+            && sel.Trim().Trim('"').Equals("false", StringComparison.OrdinalIgnoreCase))
+            s.IsSelectable = false;
+    }
+
     /// <summary>SC-COMPANION-GEAR-VISUAL — rebuild a companion's rendered
     /// held gear (weapon + shield attach) from its live equipment dict so a
     /// paperdoll swap shows on the body immediately. Mirrors the spawn-time
@@ -19808,6 +19838,9 @@ void main()
             // Intro gizmos (the invisible narrator; the spent sleeping dog) are never
             // clickable — they don't draw, so they can't be a talk target either.
             if (s.Hidden) continue;
+            // SC-SELECTABLE — authored is_selectable=false is the general
+            // form of the same rule (the narrator authors it explicitly).
+            if (!s.IsSelectable) continue;
             // The "has a [conversation] block in the placement" check is a
             // stronger talkable signal than Stats.IsCombatant: DS1's narrator
             // template inherits combat stats but is meant to be a static
@@ -20314,6 +20347,9 @@ void main()
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Hidden) continue;
             if (!s.Actor.Stats.IsCombatant) continue;
+            // SC-ALIGNMENT — the attack cursor only ever offers evil-chain,
+            // selectable actors (no sword cursor on Norick or the narrator).
+            if (!s.IsEvilAligned || !s.IsSelectable) continue;
             var self = s;
             Consider(s.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f), 34f,
                 () => { bestEnemy = self; bestProp = null; bestPile = null; });
@@ -20448,6 +20484,7 @@ void main()
             if (s.IsPlayer) continue;
             if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
             if (!s.Actor.Stats.IsCombatant) continue;
+            if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
             float dz = pos.Z - groundHit.Z;
@@ -20595,6 +20632,7 @@ void main()
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || !s.Actor.Stats.IsCombatant) continue;
+            if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
@@ -22447,6 +22485,9 @@ void main()
                 // so without this it still reads as a talkable NPC on hover (which
                 // looks like it "never joined") even though it's in the party.
                 if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
+                // SC-SELECTABLE — is_selectable=false actors (the intro
+                // narrator) and hidden gizmos never flip the cursor at all.
+                if (!s.IsSelectable || s.Hidden) continue;
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X, dz = pos.Z - groundHit.Z;
                 if (dx * dx + dz * dz > t2) continue;
@@ -23737,6 +23778,7 @@ void main()
         {
             if (ReferenceEquals(other, alerter) || other.Brain is null || other.IsDead) continue;
             if (!other.Actor.Stats.IsCombatant) continue;
+            if (!other.IsEvilAligned) continue; // SC-ALIGNMENT — friendlies don't join the mob
             var d = other.CurrentTransform.Translation - origin;
             if (d.X * d.X + d.Z * d.Z > r2) continue;
             other.Brain.ForceAggro(_playerFollower.Position);
@@ -24883,6 +24925,7 @@ void main()
                 if (s.IsPlayer) continue;
                 if (s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
+                if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
                 float dz = pos.Z - groundHit.Z;
@@ -27095,17 +27138,24 @@ void main()
                 }
                 _weaponMesh.Draw();
 
-                // SC-RANGED-PROJECTILE — the nocked arrow: while a ranged
-                // attack iteration is winding up (heroes' ATTA note is at
-                // t=0) and hasn't fired yet, the ammo mesh rides the same
-                // hand frame as the bow. Vanishes the instant the FIRE note
-                // spawns the in-flight shot.
+                // SC-RANGED-PROJECTILE / SC-BOW-NOCK — the nocked arrow.
+                // DS1 keeps an arrow nocked the WHOLE time the bow is the
+                // active weapon (idle, walking, winding up); it vanishes
+                // only between the FIRE note (the shot takes flight) and
+                // the next iteration's re-nock. Orientation comes from the
+                // PLAYER'S FACING — the same horizontal frame the shot
+                // launches in — NOT the raw hand-bone frame, whose local
+                // axes stood the shaft straight up (the "double arrows,
+                // one vertical" report: vertical nock + correct flight).
                 if (_weaponIsRanged && _playerAmmoMesh is not null
-                    && _playerSwing is { ArrowAway: false })
+                    && (_playerSwing is null || !_playerSwing.ArrowAway))
                 {
-                    // Same +Y→+Z shaft correction as the in-flight draw so
-                    // the nocked arrow lies along the draw, not vertical.
-                    _meshShader.SetMatrix4("uModel", s_ammoAxisFix * weaponModel);
+                    var handPos = weaponModel.Translation;
+                    var nockFwd = Vector3.TransformNormal(Vector3.UnitZ, _player.CurrentTransform);
+                    float nockYaw = MathF.Atan2(nockFwd.X, nockFwd.Z);
+                    var nockModel = Matrix4x4.CreateRotationY(nockYaw)
+                                  * Matrix4x4.CreateTranslation(handPos);
+                    _meshShader.SetMatrix4("uModel", nockModel);
                     if (_playerAmmoTex is not null)
                     {
                         _playerAmmoTex.Bind(TextureUnit.Texture0);
