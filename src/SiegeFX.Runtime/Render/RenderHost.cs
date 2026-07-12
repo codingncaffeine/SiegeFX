@@ -3988,6 +3988,56 @@ public sealed class RenderHost : IDisposable
     // SC-MP-MENU — Multiplayer provider menu (ZoneMatch disabled /
     // Internet / Network / Back).
     private readonly MultiplayerMenuPanel _mpMenu = new();
+    // SC-MP-SESSION — Internet / Network session screens.
+    private readonly MpSessionScreen _mpSession = new();
+    private bool _mpSessionLoaded;
+    private string? _mpLocalIp;
+    private static string MpSessionPrefsPath =>
+        Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "mp_session.txt");
+
+    private void LoadMpSessionPrefs()
+    {
+        if (_mpSessionLoaded) return;
+        _mpSessionLoaded = true;
+        try
+        {
+            if (!File.Exists(MpSessionPrefsPath)) { _mpSession.PlayerName = _heroName ?? "Player"; return; }
+            var lines = File.ReadAllLines(MpSessionPrefsPath);
+            _mpSession.PlayerName = lines.Length > 0 ? lines[0] : "Player";
+            for (int i = 1; i < lines.Length; i++)
+                if (!string.IsNullOrWhiteSpace(lines[i])) _mpSession.RecentAddresses.Add(lines[i].Trim());
+        }
+        catch { _mpSession.PlayerName = "Player"; }
+    }
+
+    private void SaveMpSessionPrefs()
+    {
+        try
+        {
+            var lines = new List<string> { _mpSession.PlayerName };
+            lines.AddRange(_mpSession.RecentAddresses);
+            Directory.CreateDirectory(Path.GetDirectoryName(MpSessionPrefsPath)!);
+            File.WriteAllLines(MpSessionPrefsPath, lines);
+        }
+        catch { /* prefs are best-effort */ }
+    }
+
+    private static string LocalIpBestEffort()
+    {
+        try
+        {
+            foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                foreach (var addr in ni.GetIPProperties().UnicastAddresses)
+                    if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                        return addr.Address.ToString();
+            }
+        }
+        catch { }
+        return "unknown";
+    }
     /// <summary>SC-DIFF Phase A — set by Easy/Normal/Hard click on the
     /// Difficulty screen, defaulted to Normal. Future damage/loot/
     /// encounter scaling reads this (splinter SC-DIFF-SCALING).</summary>
@@ -5069,6 +5119,7 @@ void main()
                 if (_creator.IsOpen) _creator.OnChar(c);
                 else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
                 else if (_devConsoleOpen && _devItemFocus && c != '`' && c != '~') DevConsoleChar(c);
+                else if (_mpSession.IsActive) _mpSession.OnChar(c);
             };
             // SC-COMMANDS — item-labels toggle rides Alt RELEASE, exactly as
             // authored ([toggle_item_labels] input = key_alt, qualifiers =
@@ -5140,6 +5191,20 @@ void main()
                     }
                     if (key == Key.Escape) { CloseLoadDialog(); return; }
                     return;
+                }
+                // SC-MP-SESSION — session-screen edit keys: backspace/enter
+                // for the focused box (Enter in the address box = authored
+                // oneditselect connect); Esc closes back to the provider menu.
+                if (_mpSession.IsActive)
+                {
+                    if (key == Key.Backspace) { _mpSession.OnEditKey(true, false); return; }
+                    if (key == Key.Enter || key == Key.KeypadEnter) { _mpSession.OnEditKey(false, true); return; }
+                    if (key == Key.Escape)
+                    {
+                        SaveMpSessionPrefs();
+                        _frontendScene?.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
+                        return;
+                    }
                 }
                 // ALPHA-PACKAGING — F11 bug snapshot: zips the live session
                 // log + a state summary + the newest save into
@@ -5813,6 +5878,15 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _mpMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
+                if (_bootMode && _frontendScene is not null
+                    && (_frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
+                     || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork)
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpSession.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
@@ -6621,6 +6695,15 @@ void main()
                     _mpMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
                     return;
                 }
+                if (_bootMode && _frontendScene is not null
+                    && (_frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
+                     || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork)
+                    && btn == MouseButton.Left)
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpSession.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    return;
+                }
                 if (_saveDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
@@ -6938,6 +7021,13 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _mpMenu.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                if (_bootMode && _frontendScene is not null
+                    && (_frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
+                     || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork))
+                {
+                    var sz = _window.FramebufferSize;
+                    _mpSession.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
@@ -15790,6 +15880,8 @@ void main()
         FlushDifficultyMenu();
         // SC-MP-MENU — drain Multiplayer provider-menu clicks.
         FlushMultiplayerMenu();
+        // SC-MP-SESSION — drain session-screen actions.
+        FlushMpSession();
         var forward = 0f;
         var strafe  = 0f;
         var vert    = 0f;
@@ -16666,14 +16758,64 @@ void main()
                 _mpMenu.ClearHover();
                 break;
             case MultiplayerMenuPanel.Action.Internet:
-                // SC-MP-SESSION — Internet (EOS) session screen; routing
-                // lands with that slice.
-                Console.WriteLine("[mp] INTERNET clicked — session screen slice pending");
+                LoadMpSessionPrefs();
+                _mpSession.ScreenMode = Hud.MpSessionScreen.Mode.Internet;
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.MpInternet);
                 _mpMenu.ClearHover();
                 break;
             case MultiplayerMenuPanel.Action.Network:
-                Console.WriteLine("[mp] NETWORK clicked — session screen slice pending");
+                LoadMpSessionPrefs();
+                _mpSession.ScreenMode = Hud.MpSessionScreen.Mode.Network;
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.MpNetwork);
                 _mpMenu.ClearHover();
+                break;
+        }
+    }
+
+    /// <summary>SC-MP-SESSION — drain session-screen actions. CONNECT
+    /// remembers the address (the authored recent-IP list) and, like HOST
+    /// GAME / JOIN, reports that the online service arrives with the
+    /// SC-MP-EOS phases; CLOSE returns to the provider menu.</summary>
+    private void FlushMpSession()
+    {
+        if (_frontendScene is null) return;
+        var st = _frontendScene.State;
+        bool active = _bootMode
+            && (st == Hud.FrontendScene.ScreenState.MpInternet
+             || st == Hud.FrontendScene.ScreenState.MpNetwork);
+        _mpSession.IsActive = active;
+        if (!active) return;
+        var act = _mpSession.ConsumeAction();
+        if (act != Hud.MpSessionScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case Hud.MpSessionScreen.Action.Close:
+                SaveMpSessionPrefs();
+                _frontendScene.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
+                break;
+            case Hud.MpSessionScreen.Action.Connect:
+                var addr = _mpSession.AddressEntry.Trim();
+                if (addr.Length > 0 && !_mpSession.RecentAddresses.Contains(addr))
+                {
+                    _mpSession.RecentAddresses.Insert(0, addr);
+                    if (_mpSession.RecentAddresses.Count > 16)
+                        _mpSession.RecentAddresses.RemoveAt(_mpSession.RecentAddresses.Count - 1);
+                    SaveMpSessionPrefs();
+                }
+                Console.WriteLine($"[mp] connect '{addr}' — transport lands with SC-MP-EOS");
+                break;
+            case Hud.MpSessionScreen.Action.Remove:
+                if (_mpSession.SelectedAddress >= 0
+                    && _mpSession.SelectedAddress < _mpSession.RecentAddresses.Count)
+                {
+                    _mpSession.RecentAddresses.RemoveAt(_mpSession.SelectedAddress);
+                    _mpSession.SelectedAddress = -1;
+                    SaveMpSessionPrefs();
+                }
+                break;
+            case Hud.MpSessionScreen.Action.Host:
+            case Hud.MpSessionScreen.Action.Join:
+                Console.WriteLine($"[mp] {act} — transport lands with SC-MP-EOS");
                 break;
         }
     }
@@ -18353,6 +18495,15 @@ void main()
                 if (mbHov || mbPr)
                     _frontendScene.DrawSpBackButton(viewportW, viewportH,
                         mbx, mby, mbw, mbh, mbHov, mbPr);
+            }
+            else if (_frontendScene.State == Hud.FrontendScene.ScreenState.MpInternet
+                  || _frontendScene.State == Hud.FrontendScene.ScreenState.MpNetwork)
+            {
+                // SC-MP-SESSION — the authored parchment session screen.
+                if (_iconRenderer is not null && _barRenderer is not null && _textRenderer is not null)
+                    _mpSession.Draw(viewportW, viewportH,
+                        _iconRenderer, _barRenderer, _textRenderer,
+                        TryGetGuiTexture, _mpLocalIp ??= LocalIpBestEffort());
             }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
@@ -22777,6 +22928,8 @@ void main()
             case Hud.FrontendScene.ScreenState.MainMenuToMp:
             case Hud.FrontendScene.ScreenState.Multiplayer:
             case Hud.FrontendScene.ScreenState.MpToMainMenu:
+            case Hud.FrontendScene.ScreenState.MpInternet:
+            case Hud.FrontendScene.ScreenState.MpNetwork:
             case Hud.FrontendScene.ScreenState.IntroMenuFlyIn:
                 return true;
             default:

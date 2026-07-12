@@ -155,6 +155,15 @@ public sealed class FrontendScene : IDisposable
         /// backbutton_b2e unwind over <see cref="MpToMmDur"/>;
         /// auto-advances to <see cref="MainMenu"/>.</summary>
         MpToMainMenu,
+        /// <summary>SC-MP-SESSION — the Internet session screen
+        /// (internet_game_menu.gas): full-screen authored parchment,
+        /// name/address entry, recent-address list, CONNECT / HOST GAME /
+        /// REMOVE ADDRESS / CLOSE. Drawn entirely by the host's
+        /// MpSessionScreen 2D layer; the 3D chrome stays dark.</summary>
+        MpInternet,
+        /// <summary>SC-MP-SESSION — the Network (LAN) session screen
+        /// (lan_game_menu.gas): games list + JOIN / HOST GAME / CLOSE.</summary>
+        MpNetwork,
     }
 
     // Phase 24-MAINMENU splash timing. DS1's gas authors `alpha_animation`
@@ -535,6 +544,11 @@ public sealed class FrontendScene : IDisposable
             case ScreenState.MpToMainMenu:
                 DrawMultiplayerChrome(fullW, fullH,
                     hold: Math.Clamp(_stateTime / MpToMmDur, 0f, 1f), toMp: false);
+                return;
+            case ScreenState.MpInternet:
+            case ScreenState.MpNetwork:
+                // SC-MP-SESSION — 2D full-screen interface; the host's
+                // MpSessionScreen paints the authored parchment + widgets.
                 return;
             default:
                 // Other states are stubs for now — fall back to character_select
