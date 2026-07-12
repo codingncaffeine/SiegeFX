@@ -1425,6 +1425,16 @@ public sealed class RenderHost : IDisposable
         // follower: the player stands still until the user clicks somewhere.
         public bool IsPlayer;
 
+        // SC-MP-INGAME P2 — a stand-in avatar for another human player, driven
+        // entirely by the player-pose stream (never by a Brain, and excluded
+        // from the host's world-actor delta). NetTargetPos/Yaw is the last
+        // authoritative pose; the transform interpolates toward it each frame.
+        public bool IsRemotePlayer;
+        public int  NetPlayerId = -1;
+        public System.Numerics.Vector3 NetTargetPos;
+        public float NetTargetYaw;
+        public bool NetHasTarget;
+
         // Phase 26a — set once an NPC is recruited into the party (the player
         // is member 0 and also carries IsPlayer). Party members follow the
         // party leader instead of wandering, count as party for trigger
@@ -4057,6 +4067,7 @@ public sealed class RenderHost : IDisposable
         _mpNetSession = session;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
+        session.OnPlayerLeft = MpRemoveRemoteAvatar;       // P2 — cull on leave
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
 
         if (asHost)
@@ -4105,6 +4116,7 @@ public sealed class RenderHost : IDisposable
         if (_mpTransport is { } tr && tr.ProviderId.StartsWith("eos", StringComparison.Ordinal))
             tr.GetType().GetMethod("Pump")?.Invoke(tr, null);
         _mpNetSession?.Tick(_frameDtSeconds);
+        MpInterpolateRemoteActors((float)_frameDtSeconds);
     }
 
     // SC-MP-INGAME — the local player's pose for the client-authoritative sync.
@@ -4129,7 +4141,7 @@ public sealed class RenderHost : IDisposable
         var list = new List<SiegeFX.Core.Net.MpActorState>(_actors.Count);
         foreach (var a in _actors)
         {
-            if (a.IsPlayer || a.IsDead) continue;
+            if (a.IsPlayer || a.IsRemotePlayer || a.IsDead) continue;
             var pos = a.CurrentTransform.Translation;
             list.Add(new SiegeFX.Core.Net.MpActorState(
                 a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
@@ -4138,9 +4150,105 @@ public sealed class RenderHost : IDisposable
         return list;
     }
 
-    // SC-MP-INGAME P2 — apply the other players' poses (remote avatars). Filled
-    // in the player-avatar phase; the session already fans the poses here.
-    private void MpApplyPlayerStates(IReadOnlyList<SiegeFX.Core.Net.MpPlayerState> players) { }
+    // SC-MP-INGAME P2 — apply the other players' poses. Each remote player gets
+    // a stand-in hero avatar (spawned on first sight) whose pose chases the
+    // authoritative stream. The local player is already filtered out upstream.
+    private void MpApplyPlayerStates(IReadOnlyList<SiegeFX.Core.Net.MpPlayerState> players)
+    {
+        foreach (var ps in players)
+        {
+            var avatar = FindRemoteAvatar(ps.Player) ?? SpawnRemoteAvatar(ps.Player, new Vector3(ps.X, ps.Y, ps.Z));
+            if (avatar is null) continue;
+            avatar.NetTargetPos = new Vector3(ps.X, ps.Y, ps.Z);
+            avatar.NetTargetYaw = ps.Yaw;
+            avatar.NetHasTarget = true;
+            avatar.IsMoving = (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving) != 0;
+            avatar.IsDead   = (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead) != 0;
+        }
+    }
+
+    private ActorRenderState? FindRemoteAvatar(int playerId)
+    {
+        foreach (var a in _actors) if (a.IsRemotePlayer && a.NetPlayerId == playerId) return a;
+        return null;
+    }
+
+    // Cull a remote avatar when its player leaves (wired to MpSession.OnPlayerLeft,
+    // which fires on both PlayerLeft messages and host-side disconnects).
+    private void MpRemoveRemoteAvatar(int playerId)
+    {
+        for (int i = _actors.Count - 1; i >= 0; i--)
+            if (_actors[i].IsRemotePlayer && _actors[i].NetPlayerId == playerId)
+            {
+                _actors.RemoveAt(i);
+                SiegeFX.Core.Net.NetLog.Info($"remote avatar removed: player {playerId} left");
+            }
+    }
+
+    // Build a stand-in hero for a remote player. Reuses the actor spawner's
+    // mesh-build core (template → synthetic instance → Spawn → motion clips →
+    // cached GL mesh) but sets NO player singletons and NO Brain — the avatar is
+    // network-driven. Gender alternates by player id for a little visual variety.
+    private ActorRenderState? SpawnRemoteAvatar(int playerId, Vector3 pos)
+    {
+        var spawner = _actorSpawner;
+        if (spawner is null || _gl is null) { SiegeFX.Core.Net.NetLog.Warn($"remote avatar {playerId}: no spawner/gl yet"); return null; }
+        var pick = new HeroVariantPicker { Gender = (playerId % 2 == 0) ? HeroGender.Boy : HeroGender.Girl };
+        string template = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        // Out-of-band scid, clear of region scids (0x01xxxxxx) and the local
+        // player (0xffffff00): 0xffff00NN keyed by player id.
+        uint scid = 0xffff0000u | (uint)(playerId & 0xffff);
+        var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+            template, scid: scid, worldPosition: pos, orientation: System.Numerics.Quaternion.Identity);
+
+        SiegeFX.Core.Actors.TemplateOverride? ov = null;
+        if (_templateStore is not null && _templateStore.TryGet(template, out var tpl))
+            ov = pick.BuildOverride(_templateStore, tpl);
+        var overrides = ov is null ? null
+            : new Dictionary<string, SiegeFX.Core.Actors.TemplateOverride>(StringComparer.OrdinalIgnoreCase) { [template] = ov };
+
+        var spawned = spawner.Spawn(new[] { inst }, null, overrides);
+        if (spawned.Count == 0) { SiegeFX.Core.Net.NetLog.Warn($"remote avatar {playerId}: '{template}' failed to spawn"); return null; }
+        var actor = spawned[0];
+        spawner.RefreshMotionClips(actor, null);
+        if (!_actorMeshCache.TryGetValue(actor.Mesh, out var gl))
+        {
+            gl = new SkinnedMesh(_gl, actor.Mesh);
+            _actorMeshCache[actor.Mesh] = gl;
+        }
+        var state = new ActorRenderState
+        {
+            Actor            = actor,
+            GlMesh           = gl,
+            AnimTime         = 0,
+            LastClipIndex    = actor.CurrentClipIndex,
+            Brain            = null,             // network-driven; no local AI
+            CurrentTransform = Matrix4x4.CreateTranslation(pos),
+            IsPlayer         = false,
+            IsRemotePlayer   = true,
+            NetPlayerId      = playerId,
+            NetTargetPos     = pos,
+            NetHasTarget     = true,
+        };
+        _actors.Add(state);
+        SiegeFX.Core.Net.NetLog.Info($"remote avatar spawned: player {playerId} ({template}) at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
+        return state;
+    }
+
+    // Chase the last authoritative pose each frame (15 Hz updates → smooth at
+    // frame rate). Yaw snaps (rotation lerp isn't worth the wraparound math at
+    // this cadence for a co-op friend session).
+    private void MpInterpolateRemoteActors(float dt)
+    {
+        float t = 1f - MathF.Exp(-dt * 12f);
+        foreach (var a in _actors)
+        {
+            if (!a.IsRemotePlayer || !a.NetHasTarget) continue;
+            var cur = a.CurrentTransform.Translation;
+            var next = Vector3.Lerp(cur, a.NetTargetPos, t);
+            a.CurrentTransform = Matrix4x4.CreateRotationY(a.NetTargetYaw) * Matrix4x4.CreateTranslation(next);
+        }
+    }
 
     // SC-MP-INGAME P3 — slave host-owned world actors to the delta by SCID.
     // Filled in the enemy-sync phase.
