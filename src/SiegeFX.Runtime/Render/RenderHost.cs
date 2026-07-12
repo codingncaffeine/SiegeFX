@@ -4490,7 +4490,16 @@ public sealed class RenderHost : IDisposable
                 }
                 else
                 {
-                    string cfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
+                    // EOS creds resolution: the user's own file in the save dir
+                    // wins (lets a player point at their own product), else fall
+                    // back to one bundled beside the exe so an official release can
+                    // ship the creds and a friend needn't hand-place a file. The
+                    // creds identify the GAME (a Peer2Peer/GameClient client id that
+                    // ships in binaries by design), not the player.
+                    string userCfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
+                    string bundledCfg = Path.Combine(AppContext.BaseDirectory, "eos_config.txt");
+                    string cfg = File.Exists(userCfg) ? userCfg : bundledCfg;
+                    Console.WriteLine($"[mp] EOS config: {(File.Exists(cfg) ? cfg : "(none found — LAN only)")}");
                     // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
                     // instances on one box get DISTINCT anonymous EOS identities
                     // (same cache dir = same device id = same ProductUserId = collision).
