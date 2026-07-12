@@ -20,6 +20,10 @@ public sealed class MpSession : IDisposable
     public Func<IReadOnlyList<MpActorState>>? EnumerateActors;
     /// <summary>Host: apply a client's input to the sim.</summary>
     public Action<int, MpInputCmd, float, float, uint>? ApplyClientInput;
+    /// <summary>Host: apply a client's rolled damage to a host-owned actor by
+    /// SCID (scid, damage). The host runs the resulting death/loot locally; its
+    /// life delta syncs the new life (and any kill) back to every client.</summary>
+    public Action<uint, float>? ApplyClientHit;
     /// <summary>Host: a player joined (id, name) — for the staging roster.</summary>
     public Action<int, string>? OnPlayerJoined;
     public Action<int>? OnPlayerLeft;
@@ -90,6 +94,15 @@ public sealed class MpSession : IDisposable
         if (IsHost) return;
         _t.Send(0, new MpWriter().U8((byte)MpMsg.Input)
             .U32(_tick).U8((byte)cmd).F32(x).F32(z).U32(targetScid).Span);
+    }
+
+    /// <summary>Client: report a hit its player rolled on a host-owned actor.
+    /// The host applies the damage authoritatively (its life delta then syncs
+    /// the result back). Friend-trust: the client owns its own damage roll.</summary>
+    public void SendClientHit(uint targetScid, float damage)
+    {
+        if (IsHost || targetScid == 0 || damage <= 0f) return;
+        _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientHit).U32(targetScid).F32(damage).Span);
     }
 
     public void SendChat(string text)
@@ -238,6 +251,15 @@ public sealed class MpSession : IDisposable
                 uint scid = r.U32();
                 if (r.Bad) { NetLog.Warn($"session: malformed Input from peer {peer} — dropped"); return; }
                 ApplyClientInput?.Invoke(peer, cmd, x, z, scid);
+                break;
+            }
+            case MpMsg.ClientHit when IsHost:
+            {
+                uint scid = r.U32();
+                float dmg = r.F32();
+                if (r.Bad) { NetLog.Warn($"session: malformed ClientHit from peer {peer} — dropped"); return; }
+                if (scid != 0 && dmg > 0f && !float.IsNaN(dmg) && !float.IsInfinity(dmg))
+                    ApplyClientHit?.Invoke(scid, dmg);
                 break;
             }
             case MpMsg.ClientState when IsHost:

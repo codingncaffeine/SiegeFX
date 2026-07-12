@@ -17,6 +17,8 @@ public enum MpMsg : byte
     Chat        = 3,   // [textLen u16][text utf8]
     ClientState = 5,   // client→host: this player's authoritative pose (movement is
                        // client-owned in the friend-trust model): [x f32][y f32][z f32][yaw f32][life u16][flags u8]
+    ClientHit   = 6,   // client→host: apply this player's rolled damage to a host-owned
+                       // actor (friend-trust: the client owns its own damage roll): [scid u32][damage f32]
     // host → client
     JoinAccept  = 10,  // [assignedPlayer u8][worldSnapshotLen u32][snapshot bytes]
     JoinReject  = 11,  // [reasonLen u8][reason utf8]

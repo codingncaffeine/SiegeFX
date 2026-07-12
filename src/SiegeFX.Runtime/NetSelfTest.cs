@@ -180,6 +180,19 @@ public static class NetSelfTest
                 "in-region: host pose + moving flag arrived intact");
             Assert(clientGotWorldDelta, "in-region: world-actor delta coexists with the player-pose channel");
 
+            // F3: a client's rolled hit on a host-owned actor is applied by the
+            // host (authoritative), keyed by SCID; junk damage is dropped.
+            uint hitScid = 0; float hitDmg = 0f;
+            hs.ApplyClientHit = (scid, dmg) => { hitScid = scid; hitDmg = dmg; };
+            cs.SendClientHit(0x01C00009, 37.5f); Pump(hs, cs);
+            Assert(hitScid == 0x01C00009 && System.Math.Abs(hitDmg - 37.5f) < 0.01f,
+                $"in-region: host applied the client's hit by scid (got scid {hitScid:x8} dmg {hitDmg:F1})");
+            hitScid = 0; hitDmg = 0f;
+            cs.SendClientHit(0x01C00009, 0f); Pump(hs, cs);       // zero damage: no-op
+            cs.SendClientHit(0, 10f); Pump(hs, cs);               // no target: no-op
+            Assert(hitScid == 0 && hitDmg == 0f,
+                "in-region: host ignores a zero-damage / no-target client hit");
+
             hs.SendGameStart("/world/maps/map_world/regions/fh_r1", 2); Pump(hs, cs);
             Assert(gsRegion == "/world/maps/map_world/regions/fh_r1" && gsDiff == 2,
                 "in-region: GameStart delivered region + difficulty to the client");

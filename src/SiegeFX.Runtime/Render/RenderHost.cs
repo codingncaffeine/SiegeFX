@@ -4126,6 +4126,7 @@ public sealed class RenderHost : IDisposable
                 catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"snapshot build: {ex.Message}"); return System.Array.Empty<byte>(); }
             };
             session.EnumerateActors = MpEnumerateWorldActors;
+            session.ApplyClientHit = MpApplyClientHit; // F3 — client hits resolve here
             transport.PeerConnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} joined ({transport.Peers.Count} in world)");
             transport.PeerDisconnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} left");
             _ = Task.Run(async () =>
@@ -4374,6 +4375,34 @@ public sealed class RenderHost : IDisposable
             a.IsMoving = moving;
             if (dead && !a.IsDead) { a.IsDead = true; SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)"); }
         }
+    }
+
+    // SC-MP-INGAME F3 — true when we're a co-op CLIENT and the target is a
+    // host-owned actor, so its damage must be resolved by the host (its life
+    // delta is authoritative) rather than applied locally where the next delta
+    // would just overwrite it. False in single-player and on the host, so those
+    // combat paths are completely unchanged.
+    private bool MpIsClientHitOnNetworkActor(ActorRenderState target) =>
+        _mpNetSession is not null
+        && string.Equals(_mpInRegionRole, "client", StringComparison.OrdinalIgnoreCase)
+        && target.IsNetworkOwned;
+
+    // SC-MP-INGAME F3 — host: apply a co-op client's rolled damage to the
+    // authoritative actor named by SCID, then run the local hit/death path so the
+    // corpse + loot happen host-side. The 15 Hz StateDelta then syncs the new
+    // life (and any kill) back to every client. No host-player XP — it's the
+    // client's kill; the client credits its own character for the damage it dealt.
+    private void MpApplyClientHit(uint scid, float damage)
+    {
+        ActorRenderState? best = null;
+        foreach (var a in _actors)
+            if (!a.IsPlayer && !a.IsRemotePlayer && a.Actor.Instance.Scid == scid) { best = a; break; }
+        if (best is null || best.IsDead || best.Actor.Combat.IsDead) return;
+        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        float dealt = best.Actor.Combat.ApplyDamage(damage);
+        if (dealt > 0f) { PlayMeleeHit(hitPos); SpawnBloodHit(best); }
+        if (best.Actor.Combat.ConsumeJustDied())
+            HandleActorKilledByHit(best, dealt);
     }
 
     // SC-MP-EOS P8 — stand up the host-authoritative session driver over the
@@ -24211,6 +24240,16 @@ void main()
     private void ApplyPlayerSpellImpact(RangedShot shot, ActorRenderState best)
     {
         if (best.IsDead || shot.Spell is not { } spell) return;
+        // MP co-op: a client's spell on a host-owned enemy resolves on the host.
+        if (MpIsClientHitOnNetworkActor(best))
+        {
+            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, shot.SpellDamage);
+            AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(shot.SpellDamage)}",
+                best.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f), SpellElementColor(spell.Element));
+            SpawnBloodHit(best);
+            AwardCombatXp(shot.SpellDamage, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+            return;
+        }
         float dealt = best.Actor.Combat.ApplyDamage(shot.SpellDamage);
         Console.WriteLine(
             $"cast {spell.ScreenName}: hit {best.Actor.Template.Name} for {dealt:F0}" +
@@ -24227,16 +24266,7 @@ void main()
         }
         AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.CombatMagic);
         if (best.Actor.Combat.ConsumeJustDied())
-        {
-            best.IsDead = true;
-            best.Brain = null;
-            BeginDeathChore(best);
-            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-            LogLootDrop(best, best.CurrentTransform.Translation);
-            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
-            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
-            TryActorGib(best, dealt);
-        }
+            HandleActorKilledByHit(best, dealt);
     }
 
     /// <summary>SC-RANGED-PROJECTILE — a player arrow lands. Mirrors
@@ -24250,10 +24280,19 @@ void main()
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
             attacker, best.Actor.Stats, rng, attackerIsPlayer: true, ranged: true);
+        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        // MP co-op: a client's arrow on a host-owned enemy resolves on the host.
+        if (MpIsClientHitOnNetworkActor(best))
+        {
+            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
+            if (!RegisterAndPlayVoiceCue("s_e_hit_arrow_flesh", hitPos)) PlayMeleeHit(hitPos);
+            SpawnBloodHit(best);
+            AwardCombatXp(raw, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Ranged);
+            return;
+        }
         // The FIRE-time payload pre-rolled nothing for player shots — roll at
         // impact with the attacker snapshot (same resolver the melee hit uses).
         float dealt = best.Actor.Combat.ApplyDamage(raw);
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
         Console.WriteLine(
             $"ranged: hit {best.Actor.Template.Name} for {dealt:F0} " +
             $"({best.Actor.Combat.CurrentLife:F0}/{best.Actor.Stats.MaxLife:F0})" +
@@ -24272,16 +24311,7 @@ void main()
         }
         AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Ranged);
         if (best.Actor.Combat.ConsumeJustDied())
-        {
-            best.IsDead = true;
-            best.Brain = null;
-            BeginDeathChore(best);
-            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-            LogLootDrop(best, best.CurrentTransform.Translation);
-            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
-            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
-            TryActorGib(best, dealt);   // SC-GORE — overkill arrow gib
-        }
+            HandleActorKilledByHit(best, dealt);
     }
 
     // Phase 19 — the player's in-flight CAST iteration: initiation plays the
@@ -24598,6 +24628,17 @@ void main()
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
             attacker, best.Actor.Stats, rng, attackerIsPlayer: true);
+        // MP co-op: a client's hit on a host-owned enemy is resolved by the HOST
+        // (authoritative life). Send the rolled damage up, play local feedback,
+        // credit our own XP, and let the host's delta drive the life bar + kill.
+        if (MpIsClientHitOnNetworkActor(best))
+        {
+            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
+            PlayMeleeHit(hitPos);
+            SpawnBloodHit(best);
+            AwardCombatXp(raw, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
+            return;
+        }
         float dealt = best.Actor.Combat.ApplyDamage(raw);
         float life = best.Actor.Combat.CurrentLife;
         float maxLife = best.Actor.Stats.MaxLife;
@@ -24630,21 +24671,28 @@ void main()
         AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
 
         if (best.Actor.Combat.ConsumeJustDied())
-        {
-            best.IsDead = true;
-            best.Brain = null;
-            // Phase 12-SC-4 — fire chore_die so the corpse falls instead of staying
-            // upright on the idle clip. Held forever (PositiveInfinity); the
-            // AnimTime tick + draw loop clamp time at the last frame so we don't
-            // loop the death animation.
-            BeginDeathChore(best);
-            // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
-            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-            LogLootDrop(best, best.CurrentTransform.Translation);
-            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
-            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
-            TryActorGib(best, dealt);   // SC-GORE — overkill melee gib
-        }
+            HandleActorKilledByHit(best, dealt);
+    }
+
+    /// <summary>Shared "an actor just died from a player hit" tail — corpse
+    /// chore, death cue, loot, quest/gold credit, overkill gib. Called by the
+    /// local melee/ranged/spell paths and by the host-applied client-hit path
+    /// (MP co-op) so a co-op kill produces the same corpse + drops.</summary>
+    private void HandleActorKilledByHit(ActorRenderState best, float dealt)
+    {
+        best.IsDead = true;
+        best.Brain = null;
+        // Phase 12-SC-4 — fire chore_die so the corpse falls instead of staying
+        // upright on the idle clip. Held forever (PositiveInfinity); the
+        // AnimTime tick + draw loop clamp time at the last frame so we don't
+        // loop the death animation.
+        BeginDeathChore(best);
+        // Phase 9-SC-2 — death SFX from template's [aspect][voice][die].
+        PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
+        LogLootDrop(best, best.CurrentTransform.Translation);
+        OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
+        CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
+        TryActorGib(best, dealt);   // SC-GORE — overkill melee gib
     }
 
     /// <summary>Phase 12-SC-4 — kick off the death chore on an actor that just died.
@@ -26502,19 +26550,14 @@ void main()
                                         elemColor);
                         AwardCombatXp(result.Damage, best.Actor.Stats,
                                       SiegeFX.Core.Assets.SkillKind.CombatMagic);
-                        if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
-                        {
-                            best.IsDead = true;
-                            best.Brain = null;
-                            // Phase 12-SC-4 — chore_die on spell-kill (mirrors the
-                            // melee-kill site).
-                            BeginDeathChore(best);
-                            // Phase 9-SC-2 — death scream from template's voice block.
-                            PlayDeathSfx(best.Actor.Template, best.CurrentTransform.Translation);
-                            LogLootDrop(best, best.CurrentTransform.Translation);
-                            OnActorKilled(best.Actor.Template.Name, best.CurrentTransform.Translation, best.Actor.Instance.Scid);
-                            CreditGoldFromKill(best.Actor.Stats.ExperienceValue, best.CurrentTransform.Translation);
-                        }
+                        // MP co-op: a client's instant spell resolves on the host
+                        // (its life delta is authoritative). Report the rolled
+                        // damage and skip the LOCAL kill so the corpse follows the
+                        // host, not a locally-computed death.
+                        if (MpIsClientHitOnNetworkActor(best))
+                            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, result.Damage);
+                        else if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
+                            HandleActorKilledByHit(best, result.Damage);
                     }
                 }
                 break;
