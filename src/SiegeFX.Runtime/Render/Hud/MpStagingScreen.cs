@@ -33,8 +33,6 @@ internal sealed class MpStagingScreen
     static readonly (int X0, int Y0, int X1, int Y1) RChat     = (24, 368, 546, 486);
     static readonly (int X0, int Y0, int X1, int Y1) RSetTtl   = (556, 348, 776, 366);
     static readonly (int X0, int Y0, int X1, int Y1) RSettings = (556, 368, 776, 460);
-    static readonly (int X0, int Y0, int X1, int Y1) RHostIpH  = (600, 368, 776, 384);
-    static readonly (int X0, int Y0, int X1, int Y1) RHostIp   = (600, 392, 776, 408);
     static readonly (int X0, int Y0, int X1, int Y1) RReady    = (608, 490, 756, 514);
     static readonly (int X0, int Y0, int X1, int Y1) RLeave    = (580, 470, 756, 486);
     static readonly (int X0, int Y0, int X1, int Y1) RStart    = (580, 498, 756, 514);
@@ -132,14 +130,21 @@ internal sealed class MpStagingScreen
         for (int i = start; i < Chat.Count; i++)
             text.DrawString(vw, vh, Chat[i], ch.X + 4 * fs, ch.Y + 4 + (i - start) * (int)MathF.Round(14 * _scale), ink, fs);
 
-        // Game settings + host IP.
+        // Game settings + host IP — all stacked as consecutive lines inside the
+        // one settings box so the address never lands on top of Map/Difficulty.
         Lbl(RSetTtl, "GAME SETTINGS", inkFaint);
         Box(RSettings);
         var set = S(RSettings);
-        text.DrawString(vw, vh, $"Map:  {Map}", set.X + 6 * fs, set.Y + 6, ink, fs);
-        text.DrawString(vw, vh, $"Difficulty:  {Difficulty}", set.X + 6 * fs, set.Y + 6 + (int)MathF.Round(18 * _scale), ink, fs);
-        text.DrawString(vw, vh, $"Players:  {Players.Count}/8", set.X + 6 * fs, set.Y + 6 + (int)MathF.Round(36 * _scale), ink, fs);
-        if (IsHost) { Lbl(RHostIpH, "YOUR ADDRESS", inkFaint); Lbl(RHostIp, HostIp, ink); }
+        int setLine = (int)MathF.Round(17 * _scale);
+        int setY = set.Y + 5 * fs;
+        text.DrawString(vw, vh, $"Map:  {Map}", set.X + 6 * fs, setY, ink, fs);
+        text.DrawString(vw, vh, $"Difficulty:  {Difficulty}", set.X + 6 * fs, setY + setLine, ink, fs);
+        text.DrawString(vw, vh, $"Players:  {Players.Count}/8", set.X + 6 * fs, setY + 2 * setLine, ink, fs);
+        if (IsHost)
+        {
+            text.DrawString(vw, vh, "Your Address:", set.X + 6 * fs, setY + 3 * setLine, inkFaint, fs);
+            text.DrawString(vw, vh, HostIp, set.X + 6 * fs, setY + 4 * setLine, ink, fs);
+        }
 
         // Buttons.
         foreach (var (a, r) in Buttons())
