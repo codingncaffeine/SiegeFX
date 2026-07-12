@@ -18537,7 +18537,7 @@ void main()
         // which DrawBootScene's early-return skips). Without this,
         // clicking Options on the Main Menu opens the dialog but it
         // never renders → "nothing happens when I click it."
-        if (_optionsMenu.IsOpen && _barRenderer is not null)
+        if (_optionsMenu.IsOpen && _barRenderer is not null && _textRenderer is not null)
         {
             _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, viewportW, viewportH,
                 commonChrome: GetCommonTexture);
@@ -18547,12 +18547,13 @@ void main()
         // settled LoadGame state so the widgets don't float in mid-air while
         // the window is still dropping in / flying out.
         if (_loadDialog.IsOpen && _loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null
+            && _textRenderer is not null
             && _frontendScene.State == Hud.FrontendScene.ScreenState.LoadGame)
         {
             _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
                              TryGetGuiTexture, GetCommonTexture, viewportW, viewportH);
         }
-        _textRenderer.EndPass();
+        _textRenderer?.EndPass();
     }
 
     /// <summary>Phase 24-MAINMENU step 6 — placeholder About sub-screen.
