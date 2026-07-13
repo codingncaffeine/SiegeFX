@@ -499,3 +499,16 @@ src/SiegeFX.Net.Eos/bin/
 src/SiegeFX.Net.Eos/obj/
 EOSSDK-*.dll
 eos_config.txt
+
+# CLEAN-ROOM POLICY — extracted original game data (gas dumps, raw assets,
+# tank contents) must NEVER be committed. The engine reads the user's own
+# install at runtime; reference extractions live in _ds1refs/ (ignored) or
+# a scratch dir. Blanket-ignored: a legitimate repo-authored exception must
+# be force-added deliberately.
+*.gas
+*.raw
+*.asp
+*.sno
+*.prs
+*.skrit
+*.dsres
