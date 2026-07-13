@@ -319,6 +319,18 @@ public sealed class HeroVariantSnapshot
 
     /// <summary>Three-digit zero-padded pants suffix (e.g. "015"). Null = no override.</summary>
     public string? PantsSuffix { get; set; }
+
+    // SC-CD-PERSIST (v14) — the creator's COMPOSITE axes (the look system
+    // that actually drives the in-game body textures: skin/face tone,
+    // hairstyle overlay, hair tint, shirt/pants overlays). -1 = not present
+    // (pre-v14 save) — the loader then falls back to the legacy suffix
+    // fields above. These were the documented v1 follow-up ("appearance
+    // resets on load") — a load used to silently drop face/hair/shirt/pants.
+    public int FaceIdx  { get; set; } = -1;
+    public int StyleIdx { get; set; } = -1;
+    public int ColorIdx { get; set; } = -1;
+    public int ShirtIdx { get; set; } = -1;
+    public int PantsIdx { get; set; } = -1;
 }
 
 /// <summary>One journal entry as stored in a save. Mirrors

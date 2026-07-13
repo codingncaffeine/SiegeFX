@@ -80,12 +80,27 @@ internal sealed class HeroVariantPicker
         var skin  = NormalisePadded(Environment.GetEnvironmentVariable("SIEGEFX_HERO_SKIN"),  width: 2);
         var pants = NormalisePadded(Environment.GetEnvironmentVariable("SIEGEFX_HERO_PANTS"), width: 3);
 
+        // SC-CD-PERSIST — the composite axes (the look system the in-game
+        // body actually renders with). Forwarded by the New Game relaunch;
+        // absent envs read as 0 (first option), matching the creator's
+        // untouched-spinner defaults.
+        static int EnvIdx(string name)
+        {
+            var raw = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(raw, out var v) && v >= 0 ? v : 0;
+        }
+
         return new HeroVariantPicker
         {
             Gender = gender,
             BodyTypeIdx = bodyIdx,
             SkinSuffix = skin,
             PantsSuffix = pants,
+            FaceIdx  = EnvIdx("SIEGEFX_HERO_FACE"),
+            StyleIdx = EnvIdx("SIEGEFX_HERO_STYLE"),
+            ColorIdx = EnvIdx("SIEGEFX_HERO_COLOR"),
+            ShirtIdx = EnvIdx("SIEGEFX_HERO_SHIRT"),
+            PantsIdx = EnvIdx("SIEGEFX_HERO_PANTSIDX"),
         };
     }
 

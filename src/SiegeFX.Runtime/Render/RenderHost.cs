@@ -1197,6 +1197,15 @@ public sealed class RenderHost : IDisposable
     // are nulled out for NPCs and for player templates without a matching env
     // var override; the renderer's ResolveActorTexture falls through to the
     // template's authored aspect.textures{0,1} when these are null.
+    // SC-BODY-DIAG — one-shot diagnostics through the player body render
+    // chain (spawn picker → texture resolution → composite → draw), chasing
+    // the "only my boots render" load report. Each distinct key logs once.
+    private readonly HashSet<string> _bodyDiagOnce = new(StringComparer.Ordinal);
+    private void BodyDiag(string key, string msg)
+    {
+        if (_bodyDiagOnce.Add(key)) Console.WriteLine($"[body-diag] {msg}");
+    }
+
     private string? _skinTexOverrideName;
     private string? _pantsTexOverrideName;
     private readonly Dictionary<(string Mesh, string Tex), GlTexture?> _equipTexCache = new();
@@ -10730,7 +10739,13 @@ void main()
             // 21d-2a-vii — equipped chest armor wins over the body's authored
             // clothing strip AND the creator's pants pick.
             if (textureIndex == 1 && _chestTexOverrideName is not null)
-                return LoadEquipmentTexture("__chest__", _chestTexOverrideName);
+            {
+                var ct = LoadEquipmentTexture("__chest__", _chestTexOverrideName);
+                BodyDiag($"slot{textureIndex}-chest-{(ct is null ? "MISS" : "ok")}",
+                    $"player slot {textureIndex}: CHEST override '{_chestTexOverrideName}' -> " +
+                    $"{(ct is null ? "NULL (falls through!)" : "ok")}");
+                return ct;
+            }
 
             // SC-CD-COMPOSITE — the created appearance carries into the game:
             // composite the player's two slots from the picker chosen at spawn.
@@ -10738,7 +10753,19 @@ void main()
             if (_playerPicker is not null)
             {
                 var t = ResolveCreatorTexture(_playerPicker, textureIndex);
+                BodyDiag($"slot{textureIndex}-creator-{(t is null ? "null" : "ok")}",
+                    $"player slot {textureIndex}: creator composite " +
+                    $"(gender={_playerPicker.Gender} body={_playerPicker.BodyTypeIdx} " +
+                    $"face={_playerPicker.FaceIdx} style={_playerPicker.StyleIdx} " +
+                    $"color={_playerPicker.ColorIdx} shirt={_playerPicker.ShirtIdx} " +
+                    $"pants={_playerPicker.PantsIdx}) -> " +
+                    $"{(t is null ? "null (texset fallback)" : "COMPOSITE TEXTURE")}");
                 if (t is not null) return t;
+            }
+            else
+            {
+                BodyDiag($"slot{textureIndex}-nopicker",
+                    $"player slot {textureIndex}: no picker -> texset fallback");
             }
         }
         var key = (actor.Template, actor.Mesh, textureIndex);
@@ -10761,6 +10788,10 @@ void main()
         }
         var tex = LoadTexsetTexture(baseName);
         _actorTextureCache[key] = tex;
+        if (_player is not null && ReferenceEquals(actor, _player.Actor))
+            BodyDiag($"slot{textureIndex}-texset-{(tex is null ? "MISS" : "ok")}",
+                $"player slot {textureIndex}: texset '{baseName ?? "<null>"}' " +
+                $"(src={source ?? "<none>"}) -> {(tex is null ? "NULL — subset draws untextured" : "ok")}");
         // Phase 21d-2a-v — one-shot diagnostic per (template, slot). Logs the
         // resolved texset basename + whether it found a .raw, so we can see
         // for the player exactly which texture slot 1 binds to. Cache means
@@ -18134,6 +18165,21 @@ void main()
                 psi.Environment["SIEGEFX_HERO_HAIR"] = _creator.Picker.HairSuffix;
             if (_creator.Picker.PantsSuffix is not null)
                 psi.Environment["SIEGEFX_HERO_PANTS"] = _creator.Picker.PantsSuffix;
+            // SC-CD-PERSIST — the COMPOSITE axes are the look system the body
+            // actually renders with (skin/face tone, hairstyle, hair tint,
+            // shirt/pants overlays). They were dropped at this relaunch
+            // boundary, so a freshly created character lost face/hair/clothes
+            // picks the moment the region booted — only the legacy suffix
+            // fields above made the trip.
+            psi.Environment["SIEGEFX_HERO_FACE"]     = _creator.Picker.FaceIdx.ToString();
+            psi.Environment["SIEGEFX_HERO_STYLE"]    = _creator.Picker.StyleIdx.ToString();
+            psi.Environment["SIEGEFX_HERO_COLOR"]    = _creator.Picker.ColorIdx.ToString();
+            psi.Environment["SIEGEFX_HERO_SHIRT"]    = _creator.Picker.ShirtIdx.ToString();
+            psi.Environment["SIEGEFX_HERO_PANTSIDX"] = _creator.Picker.PantsIdx.ToString();
+            // The typed hero name also has to survive the relaunch (only the
+            // load path forwarded it before).
+            if (!string.IsNullOrEmpty(_creator.HeroName))
+                psi.Environment["SIEGEFX_HERO_NAME"] = _creator.HeroName;
             psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
             // Skip the splash on relaunch — we already saw it.
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
@@ -20240,7 +20286,18 @@ void main()
         }
         _skinTexOverrideName  = heroOverride?.SkinTextureName;
         _pantsTexOverrideName = heroOverride?.ClothingTextureName;
-        _playerPicker = pick;   // SC-CD-COMPOSITE — carry the creator look in-game
+        // SC-CD-COMPOSITE — carry the creator look in-game. SC-BODY-DIAG round
+        // 2: ONLY when the pick is a REAL selection. FromEnv() always returns a
+        // picker, so creator-less boots (frontend-load relaunch, plain
+        // --play-region) used to feed the PLACEHOLDER (BodyTypeIdx -1, nothing
+        // chosen) into the composite path, which produced a non-null but EMPTY
+        // texture — the invisible body behind the "only my boots render"
+        // report ([body-diag]: slots 0+1 "COMPOSITE TEXTURE" at body=-1). A
+        // placeholder renders the authored texset look instead.
+        bool realPick = pick.BodyTypeIdx >= 0
+                        || !string.IsNullOrEmpty(pick.SkinSuffix)
+                        || !string.IsNullOrEmpty(pick.PantsSuffix);
+        _playerPicker = realPick ? pick : null;
         var overrides = heroOverride is null
             ? null
             : new Dictionary<string, SiegeFX.Core.Actors.TemplateOverride>(StringComparer.OrdinalIgnoreCase)
@@ -28741,7 +28798,18 @@ void main()
                 if (!s.IsPlayer && IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
                 // Intro NIS gizmos (narrator voice-over; spent sleeping dog) stay in
                 // _actors for scripting but never draw as visible NPCs.
+                if (s.IsPlayer && s.Hidden)
+                    BodyDiag("player-hidden", "player render state Hidden=TRUE — body draw SKIPPED");
                 if (s.Hidden) continue;
+                if (s.IsPlayer)
+                {
+                    var dp = s.CurrentTransform.Translation;
+                    BodyDiag("draw-player",
+                        $"drawing player body: mesh={s.Actor.Mesh.MeshName} " +
+                        $"subsets={s.Actor.Mesh.Subsets.Length} bones={s.Actor.Mesh.BoneCount} " +
+                        $"clips={s.Actor.Clips.Length} scale={s.Actor.Stats.RenderScale:F2} " +
+                        $"pos=({dp.X:F1},{dp.Y:F1},{dp.Z:F1})");
+                }
                 int flipV = defaultFlipV;
                 if (flipV != lastFlipV)
                 {
@@ -31428,14 +31496,24 @@ void main()
             // env-var spawn). Empty/null when the creator was bypassed; the
             // load path treats that as "no override" too.
             p.HeroName = _heroName;
-            if (_heroVariant is not null)
+            // SC-CD-PERSIST — snapshot the LIVE picker (the composite look the
+            // body actually renders with), not just the legacy suffix axes.
+            // A null picker (creator bypassed) writes no Variant at all, so a
+            // load can't restore garbage.
+            var snapPick = _playerPicker ?? _heroVariant;
+            if (snapPick is not null)
             {
                 p.Variant = new SiegeFX.Core.Save.HeroVariantSnapshot
                 {
-                    Gender      = _heroVariant.Gender == HeroGender.Girl ? "girl" : "boy",
-                    BodyTypeIdx = _heroVariant.BodyTypeIdx,
-                    SkinSuffix  = _heroVariant.SkinSuffix,
-                    PantsSuffix = _heroVariant.PantsSuffix,
+                    Gender      = snapPick.Gender == HeroGender.Girl ? "girl" : "boy",
+                    BodyTypeIdx = snapPick.BodyTypeIdx,
+                    SkinSuffix  = snapPick.SkinSuffix,
+                    PantsSuffix = snapPick.PantsSuffix,
+                    FaceIdx     = snapPick.FaceIdx,
+                    StyleIdx    = snapPick.StyleIdx,
+                    ColorIdx    = snapPick.ColorIdx,
+                    ShirtIdx    = snapPick.ShirtIdx,
+                    PantsIdx    = snapPick.PantsIdx,
                 };
             }
             save.Player = p;
@@ -31589,7 +31667,13 @@ void main()
         // region data so a pre-ambush load gets the ambush back instead of
         // duplicate mobs + a consumed generator. Per-generator Activated /
         // PendingChildren persistence is a follow-up (pickup memory).
-        _actors.RemoveAll(a => a.Actor.Instance.Scid >= 0xFE000000);
+        // SC-LOAD-PLAYER-EVICTED — the synthetic-children range check MUST
+        // exempt the player: his scid 0xFFFFFF00 sits INSIDE 0xFE000000+, so
+        // this purge evicted his render state from _actors on every load.
+        // The _player field kept referencing the detached object (follower,
+        // camera, equipment layers all kept working) but the body draw
+        // iterates _actors — THE "only my boots render" root cause.
+        _actors.RemoveAll(a => !a.IsPlayer && a.Actor.Instance.Scid >= 0xFE000000);
         _generators.Clear();
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();
@@ -31801,15 +31885,34 @@ void main()
             // with a broken texture and turned invisible while the separately
             // textured equipment layers kept rendering ("only my boots
             // render"). No pick saved = leave the spawn appearance alone.
-            if (ps.Variant is not null && ps.Variant.BodyTypeIdx >= 0)
+            // SC-CD-PERSIST — a variant is REAL when it carries either the
+            // composite axes (v14+, FaceIdx >= 0) or a legacy body pick
+            // (BodyTypeIdx >= 0). Placeholders (creator bypassed) restore
+            // nothing so the spawn appearance stays untouched.
+            bool realVariant = ps.Variant is not null
+                && (ps.Variant.FaceIdx >= 0 || ps.Variant.BodyTypeIdx >= 0);
+            BodyDiag("load-variant",
+                $"load: saved variant {(ps.Variant is null ? "<none>" : $"gender={ps.Variant.Gender} body={ps.Variant.BodyTypeIdx} face={ps.Variant.FaceIdx} style={ps.Variant.StyleIdx} color={ps.Variant.ColorIdx} shirt={ps.Variant.ShirtIdx} pants={ps.Variant.PantsIdx}")} " +
+                $"-> {(realVariant ? "APPLYING" : "skipped (placeholder)")}; " +
+                $"picker at load: {(_playerPicker is null ? "<null>" : $"gender={_playerPicker.Gender} body={_playerPicker.BodyTypeIdx}")}");
+            if (realVariant)
             {
                 var restored = new HeroVariantPicker
                 {
-                    Gender = string.Equals(ps.Variant.Gender, "girl", StringComparison.OrdinalIgnoreCase)
+                    Gender = string.Equals(ps.Variant!.Gender, "girl", StringComparison.OrdinalIgnoreCase)
                              ? HeroGender.Girl : HeroGender.Boy,
                     BodyTypeIdx = ps.Variant.BodyTypeIdx,
                     SkinSuffix  = ps.Variant.SkinSuffix,
                     PantsSuffix = ps.Variant.PantsSuffix,
+                    // SC-CD-PERSIST — the composite axes drive the actual body
+                    // textures (skin/face, hairstyle, hair tint, shirt/pants
+                    // overlays). Pre-v14 saves carry -1 → render option 0,
+                    // matching the pre-persistence default look.
+                    FaceIdx  = Math.Max(0, ps.Variant.FaceIdx),
+                    StyleIdx = Math.Max(0, ps.Variant.StyleIdx),
+                    ColorIdx = Math.Max(0, ps.Variant.ColorIdx),
+                    ShirtIdx = Math.Max(0, ps.Variant.ShirtIdx),
+                    PantsIdx = Math.Max(0, ps.Variant.PantsIdx),
                 };
                 // Re-derive the texture overrides so the next ResolveActorTexture
                 // call paints skin/pants from the saved variant, not whichever
@@ -31825,7 +31928,6 @@ void main()
                     var ov = restored.BuildOverride(_templateStore, pickTpl);
                     _skinTexOverrideName  = ov?.SkinTextureName;
                     _pantsTexOverrideName = ov?.ClothingTextureName;
-                    _playerPicker = restored;   // SC-CD-COMPOSITE — restored look
                     if (_heroVariant is not null
                         && (_heroVariant.BodyTypeIdx != restored.BodyTypeIdx
                          || _heroVariant.Gender      != restored.Gender))
@@ -31836,6 +31938,10 @@ void main()
                             $"textures updated, body mesh stays as spawned");
                     }
                 }
+                // SC-CD-PERSIST — the picker drives the composite body
+                // textures and must restore even when the legacy template
+                // override path has nothing to do (composite-only variants).
+                _playerPicker = restored;
                 _heroVariant = restored;
             }
         }
