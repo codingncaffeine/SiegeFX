@@ -3707,8 +3707,9 @@ public sealed class RenderHost : IDisposable
     /// <summary>Phase 27 — route a click on the DS1 in-game (Escape) menu.
     /// RESUME closes it; OPTIONS opens the Options dialog; SAVE/LOAD reuse the
     /// F5/F9 quicksave path (a slot-picker screen lands with multi_inventory);
-    /// EXIT quits the window (DS1's show_exit_game_dialog confirm is a later
-    /// refinement).</summary>
+    /// EXIT raises DS1's show_exit_game_dialog confirm ("Are you sure you want
+    /// to exit to the Main Menu without saving?" — SC-EXIT-CONFIRM, user ref
+    /// withoutsaving.bmp); Yes exits to the main menu.</summary>
     private void HandleInGameMenuAction(PauseMenu.Action action)
     {
         switch (action)
@@ -3717,8 +3718,42 @@ public sealed class RenderHost : IDisposable
             case PauseMenu.Action.Options:  _pauseMenu.Close(); OpenOptionsMenu(); break;
             case PauseMenu.Action.SaveGame: _pauseMenu.Close(); OpenSaveDialog(); break;
             case PauseMenu.Action.LoadGame: _pauseMenu.Close(); OpenLoadDialog(mainMenuStyle: false); break;
-            case PauseMenu.Action.ExitGame: _window.Close(); break;
+            case PauseMenu.Action.ExitGame: _pauseMenu.BeginExitConfirm(); break;
+            case PauseMenu.Action.ExitConfirmed: ExitToMainMenu(); break;
         }
+    }
+
+    /// <summary>SC-EXIT-CONFIRM — DS1's EXIT GAME goes to the MAIN MENU, not
+    /// the desktop. The in-region session is its own process, so "back to the
+    /// menu" relaunches the frontend (splash → main menu) and closes this
+    /// window — the inverse of the LaunchRegion* relaunches. If the relaunch
+    /// can't start, fall back to a plain close so Exit always exits.</summary>
+    private void ExitToMainMenu()
+    {
+        try
+        {
+            string? exePath = Environment.ProcessPath;
+            if (exePath is not null)
+            {
+                bool underDotnet = string.Equals(
+                    Path.GetFileNameWithoutExtension(exePath), "dotnet", StringComparison.OrdinalIgnoreCase);
+                var psi = new System.Diagnostics.ProcessStartInfo { FileName = exePath, UseShellExecute = false };
+                bool ok = true;
+                if (underDotnet)
+                {
+                    string asmPath = typeof(RenderHost).Assembly.Location;
+                    if (!string.IsNullOrEmpty(asmPath) && File.Exists(asmPath))
+                        psi.ArgumentList.Add(asmPath);
+                    else ok = false;
+                }
+                if (ok) System.Diagnostics.Process.Start(psi);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"exit-to-menu: frontend relaunch failed -- {ex.Message}");
+        }
+        _window.Close();
     }
 
     /// <summary>Phase 19c — quicksave to the single profile slot. Shared by the
@@ -13956,7 +13991,12 @@ void main()
         // weather state without a separate dirty-tracking pass. Lightning
         // flash brightens the fog itself (the sky "lights up" and the fog
         // wall reads white for the strike frames) — cheap and reads right.
-        bool fogOn = _weather.FogActive && _weather.FogFar > _weather.FogNear && !_noFogKnob;
+        // SC-MEGAMAP-NO-FOG — the TAB overview is a real camera at altitude,
+        // which put the WHOLE scene at fog distance and washed the map out.
+        // The overhead map must always read clearly, so fog drops while it's
+        // active (weather fog resumes the moment the map closes).
+        bool fogOn = _weather.FogActive && _weather.FogFar > _weather.FogNear
+                     && !_noFogKnob && !_megaMapActive;
         shader.SetInt("uFogOn", fogOn ? 1 : 0);
         if (fogOn)
         {
@@ -27130,20 +27170,6 @@ void main()
                     AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
                                     healedPos + new Vector3(0f, 2.2f, 0f),
                                     new Vector4(0.40f, 0.95f, 0.40f, 1f));
-                    // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX. Same
-                    // resolver as the offensive branch above, so swapping
-                    // the secondary slot to e.g. spell_nurture (a different
-                    // sound-only heal) plays its authored cast cue, not
-                    // healing_wind's. Fallback chain inside ResolveSpellCastSound
-                    // lands on SfxZapCast on a miss; if the secondary is
-                    // healing_wind specifically we re-fall to SfxHealingWindCast
-                    // since it's pre-registered and matches the pre-3a
-                    // experience for that one spell.
-                    var healClip = ResolveSpellCastSound(spell);
-                    if (healClip == SfxZapCast && spell.Name.Equals("spell_healing_wind",
-                            StringComparison.OrdinalIgnoreCase))
-                        healClip = SfxHealingWindCast;
-                    _audio?.Play(healClip);
                     // Heals award caster-skill XP proportional to HP restored,
                     // matching DS1's "cast_experience grows with effect" rule.
                     // Without this the heal slot is progression-dead.
@@ -27151,10 +27177,14 @@ void main()
                     // hard-coded Nature: battle_healing is COMBAT magic
                     // (base_spell_dark) and must feed that pool.
                     AwardRawXp((long)result.HealAmount, SkillForSpell(spell));
-                    // SC-SPELLFX-HEAL — the authored heal script (twin blue
-                    // spiral ribbons + sparkle fountains for healing_hands)
-                    // is all VM-covered kinds; run it anchored at the healed
-                    // member. Previously this branch was sound-only.
+                    // SC-HEAL-FX — run the AUTHORED heal script first (the
+                    // twin spiral ribbons + sparkle rain for healing_hands);
+                    // its own `sound play` line carries the authored cast cue
+                    // (s_e_spell_healing_hands_cast) through the sound sink,
+                    // so a successful run owns BOTH visual and audio. The
+                    // resolver-clip path is the fallback only — playing it
+                    // alongside the script double-fired the cue.
+                    bool ranHealScript = false;
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
                         && _sfxStore.TryGet(spell.CastSfxScript, out var healScript)
@@ -27165,7 +27195,18 @@ void main()
                             TargetPos:     healedPos + new Vector3(0f, 0.9f, 0f),
                             WeaponBonePos: playerPos + _playerFacing * 0.3f + new Vector3(0f, 1.2f, 0f),
                             Resolver:      ResolvePlayerBone);
-                        _sfxRuntime.Spawn(spell.CastSfxScript, healCtx);
+                        ranHealScript = _sfxRuntime.Spawn(spell.CastSfxScript, healCtx);
+                    }
+                    if (!ranHealScript)
+                    {
+                        // Fallback: the script didn't run (missing/uncovered) —
+                        // play the authored cast cue the resolver pulled from
+                        // the script's sound line, or the legacy chain.
+                        var healClip = ResolveSpellCastSound(spell);
+                        if (healClip == SfxZapCast && spell.Name.Equals("spell_healing_wind",
+                                StringComparison.OrdinalIgnoreCase))
+                            healClip = SfxHealingWindCast;
+                        _audio?.Play(healClip);
                     }
                 }
                 else
@@ -28539,8 +28580,11 @@ void main()
         // into the same tone, so unloaded space must match or the horizon
         // shows a hard silhouette line). Flash folded in so lightning also
         // lights the sky, not just geometry. No fog → the original dark clear.
-        if (_weather.FogActive && _weather.FogFar > _weather.FogNear)
+        if (_weather.FogActive && _weather.FogFar > _weather.FogNear && !_megaMapActive)
         {
+            // SC-MEGAMAP-NO-FOG — geometry renders unfogged under the TAB
+            // overview, so the void keeps the dark clear there too (a fog-
+            // bright backdrop against unfogged terrain read wrong).
             var cc = FogColorWithFlash();
             _gl.ClearColor(cc.X, cc.Y, cc.Z, 1f);
         }
@@ -31515,6 +31559,19 @@ void main()
             // updated directly since they have no follower to drive movement.
             var pos = snap.Position.ToVector3();
             if (s.Brain is not null) s.Brain.Teleport(pos);
+            // SC-LOAD-PLAYER-POS — the PLAYER is driven by _playerFollower,
+            // not a brain. Without teleporting it, the follower dragged the
+            // hero back to the region spawn on the next tick — frontend loads
+            // "started at the beginning" (same-spot quickloads masked it for
+            // months) — and the stale CurrentTransform/follower split tripped
+            // the vertical layer-hide cull against the hero's OWN body while
+            // the equipment layers (separate pass) kept drawing: the "only my
+            // boots render" report.
+            if (s.IsPlayer && _playerFollower is not null)
+            {
+                _playerFollower.Teleport(pos);
+                Console.WriteLine($"  load: player -> ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
+            }
             s.CurrentTransform = Matrix4x4.CreateTranslation(pos);
             patched++;
         }
@@ -31698,13 +31755,17 @@ void main()
             // the restored es_weapon_hand entry. Safe even when no weapon was
             // saved — TryLoadPlayerWeapon early-outs on a missing slot.
             TryLoadPlayerWeapon();
-            // Fold restored armor back into combat Defense (the load ResyncStats
-            // above preserved the snapshot's Defense, not the worn-armor total).
             // SC-EQUIP-ENCHANT — the snapshot stored NATURAL stats, so clear the
             // applied-enchant layer before the sync re-derives it from restored
             // gear (a stale same-session layer would double-subtract).
             _appliedEnchant = default;
-            SyncPlayerArmorDefense();
+            // SC-LOAD-GEAR-VISUALS — rebuild the WORN visuals from the restored
+            // equipment dict (chest texture swap, boots/helm/gauntlet layers,
+            // shield attach), not just the numbers. Its first act is
+            // SyncPlayerArmorDefense, so Defense + enchants republish too.
+            // Without this the body kept the spawn-time template gear and the
+            // save's worn armor was stats-only.
+            TryLoadPlayerEquipment(_player.Actor.Template);
 
             if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
             {
@@ -31731,7 +31792,16 @@ void main()
             }
 
             _heroName = ps.HeroName ?? "";
-            if (ps.Variant is not null)
+            // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
+            // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
+            // uses). Sessions started without the creator save a placeholder
+            // variant (BodyTypeIdx -1, null suffixes); restoring THAT set
+            // _playerPicker to garbage, which flipped ResolveActorTexture onto
+            // the creator-composite path with invalid indices — the body drew
+            // with a broken texture and turned invisible while the separately
+            // textured equipment layers kept rendering ("only my boots
+            // render"). No pick saved = leave the spawn appearance alone.
+            if (ps.Variant is not null && ps.Variant.BodyTypeIdx >= 0)
             {
                 var restored = new HeroVariantPicker
                 {

@@ -591,7 +591,15 @@ public sealed class SpellTemplate
         int open = s.IndexOf('(');
         int close = s.LastIndexOf(')');
         if (open < 0 || close <= open) return string.Empty;
-        var arg = s.Substring(open + 1, close - open - 1).Trim().Trim('"');
-        return arg;
+        var arg = s.Substring(open + 1, close - open - 1);
+        // SC-HEAL-FX — DS1 authors a TWO-ARG form too:
+        // call_sfx_script("healing", "@body_mid") (script + attach point).
+        // Taking the whole paren body returned `healing", "@body_mid` —
+        // a garbage script name, so healing_hands' authored visual+sound
+        // never resolved (the cast fell back to the zap cue). Only the
+        // FIRST argument is the script name.
+        int comma = arg.IndexOf(',');
+        if (comma >= 0) arg = arg.Substring(0, comma);
+        return arg.Trim().Trim('"');
     }
 }
