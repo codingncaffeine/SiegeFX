@@ -505,7 +505,7 @@ public sealed class RenderHost : IDisposable
     {
         if (_player is null || _player.IsDead || _playerFollower is null) return;
         if (_playerSwing is not null || _playerCast is not null
-            || _pendingAttackTarget is not null) return;
+            || _pendingAttackTarget is not null || PlayerDrinking) return;
         if (!_playerFollower.ReachedGoal) return; // an active move order wins
         var pp = _player.CurrentTransform.Translation;
         ActorRenderState? foe = null;
@@ -699,6 +699,12 @@ public sealed class RenderHost : IDisposable
     // is currently being drawn near the top of the HUD.
     private float _levelUpToastRemaining;
     private int _levelUpToastLevel;
+    // SC-AWP-LEVEL-MATCH — which SKILL the toast announces. The AWP boxes track
+    // per-skill XP pools, so the banner must fire on skill-level crossings (the
+    // moment a box completes), not character-level ones — the aggregate TotalXp
+    // crosses its thresholds at times unrelated to any one box ("box still shows
+    // 30% to go" report).
+    private string _levelUpToastSkill = "";
     private const float LevelUpToastDuration = 3f;
     // Phase 17a — instant-hit spell catalog (parsed from spl_spell.gas via the
     // template store) and the player's single-slot spellbook. Built after the
@@ -810,12 +816,17 @@ public sealed class RenderHost : IDisposable
         switch (element)
         {
             case SiegeFX.Core.Assets.SpellElement.Lightning:
-                _particles.SpawnLightning(src, dst, color, 0.40f);
+                // SC-SPELL-VFX-FLASH — the zap is an INSTANT strike: it must be
+                // gone before the caster's hand returns to his side (the cast
+                // clip is ~0.7s and the beam fires near the hand-extended peak,
+                // so a 0.4s beam lingered past the hand-drop and read as fake).
+                // A short double-flash keeps the DS1 zap snap without the trail.
+                _particles.SpawnLightning(src, dst, color, 0.15f);
                 // Layer a warm-white second beam (DS1 zap is two passes —
                 // cool-white over warm-white). Slightly different seed gives
                 // the jaggy stack a parallax read.
                 _particles.SpawnLightning(src, dst,
-                    new Vector4(1f, 0.95f, 0.85f, 1f), 0.30f);
+                    new Vector4(1f, 0.95f, 0.85f, 1f), 0.11f);
                 break;
             case SiegeFX.Core.Assets.SpellElement.Fire:
                 _particles.SpawnProjectile(src, dst, color, 0.55f, 16f, 0);
@@ -827,12 +838,16 @@ public sealed class RenderHost : IDisposable
                 _particles.SpawnProjectile(src, dst, color, 0.50f, 14f, 3);
                 break;
             case SiegeFX.Core.Assets.SpellElement.Death:
-                _particles.SpawnLightning(src, dst, color, 0.35f);
+                // SC-SPELL-VFX-FLASH — instant strike beam is a quick flash;
+                // the impact smoke at the target lingers on its own.
+                _particles.SpawnLightning(src, dst, color, 0.15f);
                 _particles.SpawnSmoke(dst,
                     new Vector4(0.45f, 0.20f, 0.55f, 0.7f), 0.6f, 1.0f, 8);
                 break;
             case SiegeFX.Core.Assets.SpellElement.Holy:
-                _particles.SpawnLightning(src, dst, color, 0.30f);
+                // SC-SPELL-VFX-FLASH — instant strike beam is a quick flash;
+                // the impact sparkle at the target carries the lasting read.
+                _particles.SpawnLightning(src, dst, color, 0.15f);
                 _particles.SpawnSpark(dst,
                     new Vector4(1f, 0.95f, 0.65f, 1f), 0.6f, 0.45f, 24);
                 break;
@@ -1142,6 +1157,11 @@ public sealed class RenderHost : IDisposable
     // Phase 9-SC-7 follow-up — log the cube-fallback reason once per unique
     // ref so the user can read the cause from the diag output without spam.
     private readonly HashSet<string> _loggedItemRefMisses =
+        new(StringComparer.OrdinalIgnoreCase);
+    // SC-GOLD-PILES-ROBUST — one-shot log of the gold-pile mesh resolution
+    // per size bucket, so a live session reports whether gold resolved to a
+    // coin mesh or fell through to the cube.
+    private readonly HashSet<string> _loggedGoldResolve =
         new(StringComparer.OrdinalIgnoreCase);
     private sealed record ItemMesh(StaticMesh Mesh, GlTexture? Texture, string? DisplayName);
 
@@ -3487,6 +3507,10 @@ public sealed class RenderHost : IDisposable
     private GlTexture? _dbStatusbarBg;
     private GlTexture? _dbPauseUp, _dbPauseDwn, _dbPauseHov;
     private GlTexture? _dbPlayUp,  _dbPlayDwn,  _dbPlayHov;
+    // SC-PAUSE-FLASH — free-running phase (real time, advances even while the
+    // sim is frozen) that pulses the play button's glow while the game is
+    // paused, DS1's "press to resume" attention cue.
+    private float _pausePulseT;
     private GlTexture? _dbHealthUp, _dbHealthDwn, _dbHealthHov;
     private GlTexture? _dbManaUp,   _dbManaDwn,   _dbManaHov;
     private GlTexture? _dbMapUp,    _dbMapDwn,    _dbMapHov;
@@ -3592,6 +3616,54 @@ public sealed class RenderHost : IDisposable
     // the Load window's "Game loaded successfully" banner.
     private float _saveToastRemaining;
     private string _saveToastText = "";
+
+    // SC-MSG-STRIP — DS1's top-center game-message strip (user ref text.bmp):
+    // stacked one-line dark bars with parchment small-caps text — screenshot
+    // confirmations ("Screenshot successfully taken to '...'"), skill
+    // level-ups ("Woot has advanced to level 1 in Nature Magic skill by
+    // casting Nature Magic spells!"), quest-journal notices ("A new quest
+    // has been added to your Journal."). Newest line appends at the bottom.
+    private readonly List<GameMessage> _gameMessages = new();
+    private sealed class GameMessage { public string Text = ""; public float Remaining; }
+    private const float GameMessageSeconds = 6f;
+    private const int GameMessageMax = 4;
+    private void AddGameMessage(string text)
+    {
+        _gameMessages.Add(new GameMessage { Text = text, Remaining = GameMessageSeconds });
+        while (_gameMessages.Count > GameMessageMax) _gameMessages.RemoveAt(0);
+        Console.WriteLine($"[msg] {text}");
+    }
+
+    // SC-SCREENSHOT — Print Screen capture (DS1: "Dungeon Siege Screen -
+    // NNNN.bmp" + strip confirmation). The key handler only sets the flag;
+    // the grab must happen on the GL thread at the END of a rendered frame
+    // (back buffer complete), so OnRender's tail calls the capture.
+    private bool _screenshotPending;
+
+    // SC-CHAPTER-TITLE — the centered chapter card (user ref chapter
+    // text.bmp: "Chapter 1: Stonebridge"). NOT font-rendered: DS1 authors it
+    // as PRE-RENDERED ART — /ui/interfaces/chapters/chapter_N.gas draws
+    // texture b_gui_nis_ch0N (256×256, ch01..ch09 all shipped) in a centered
+    // fade window (authored rect 181,111,437,367 on the 640×480 UI plane).
+    // Comes up full, holds a beat, then slowly fades (~4-5s per user eyes).
+    private GlTexture? _chapterCardTex;
+    private float _chapterTitleRemaining;
+    private const float ChapterTitleSeconds = 5f;
+    private const float ChapterTitleFadeSeconds = 4f;
+
+    // SC-LEVELUP-BOOK — DS1's per-skill level-up indicator (indicators.gas
+    // *_up_locked* scripts): an sfx orbiter — "radius(0) model(level_glb_*)
+    // offset(0,.5,0) rot_inc(0,350,0) model_smax(1) dur(5)" attached
+    // @BODY_ANTERIOR — spins the SKILL'S OWN tome/emblem above the hero's
+    // chest at 350°/s, growing to full size then shrinking away, 5s total.
+    // Each skill has its own model (user-confirmed): melee m_i_glb_combat,
+    // ranged m_i_glb_ranged, nature m_i_glb_nature-magic, combat magic
+    // m_i_glb_combat-magic — plus its own s_e_level_up_* sound. The orbiter
+    // create-kind is unmodeled in SfxRuntime, so this native animator
+    // renders the resolved mesh directly.
+    private ItemMesh? _levelUpFxMesh;
+    private float _levelUpFxRemaining;
+    private const float LevelUpFxSeconds = 5f;
     private const float SaveToastDuration = 3.5f;
 
     // DS1 tracks per-character elapsed play time; the Load window shows it
@@ -3619,8 +3691,16 @@ public sealed class RenderHost : IDisposable
     /// <summary>Gameplay freezes while a pausing modal is up. DS1 explicitly
     /// pauses for the Adventurer's Handbook; the Save window also holds the
     /// world still while the player types a name. ORs with the manual
-    /// pause-button toggle (<see cref="_isPaused"/>).</summary>
-    private bool SimFrozen => _isPaused || _saveDialog.IsOpen || _loadDialog.IsOpen || _handbook.IsOpen;
+    /// pause-button toggle (<see cref="_isPaused"/>) and the Esc in-game menu
+    /// (<see cref="_pauseMenu"/>) — DS1 halts the world the moment the 5-button
+    /// menu comes up (the data-bar play button flashes to say "press to
+    /// resume"); without this the sim kept ticking behind the menu.</summary>
+    private bool SimFrozen => _isPaused || _pauseMenu.IsOpen || _saveDialog.IsOpen || _loadDialog.IsOpen || _handbook.IsOpen;
+
+    /// <summary>True whenever the world is halted for the player's benefit
+    /// (manual pause OR the Esc menu). Drives the data-bar button's play-icon
+    /// swap + attention flash.</summary>
+    private bool PausedForDisplay => _isPaused || _pauseMenu.IsOpen;
 
     // Adventurer's Handbook (world tips). Tips load lazily off the play map
     // tank; the cadence auto-pops the next ordered tip as the player advances
@@ -5930,6 +6010,14 @@ void main()
                 _overheadLabelsVisible = !_overheadLabelsVisible;
                 _audio?.Play(SfxGuiInventory);
             };
+            // SC-SCREENSHOT — Print Screen on Windows/GLFW delivers only the
+            // RELEASE event (the OS eats the press), so the capture hooks
+            // KeyUp. Always available — screenshots work in menus, dialogs,
+            // the creator, and mid-NIS, exactly like retail.
+            kb.KeyUp += (_, key, _) =>
+            {
+                if (key == Key.PrintScreen) _screenshotPending = true;
+            };
             kb.KeyDown += (_, key, _) =>
             {
                 // Backspace is not a printable char, so KeyChar gets the
@@ -7002,6 +7090,22 @@ void main()
                         _audio?.Play(SfxGuiInventory);
                         return;
                     }
+                    // SC-EQUIP-ROUTING — paperdoll slot clicks dispatch BEFORE
+                    // the character-sheet swallow: the sheet's hit rect overlaps
+                    // the paperdoll figure, and swallowing first made the body/
+                    // helmet slots unreachable at common HUD scales — the
+                    // "can't equip Tattered Leather in the paperdoll" report.
+                    if (_charPanelOpen && _player is not null && btn == MouseButton.Left)
+                    {
+                        var pdSz = _window.Size;
+                        var pdSlot = _paperdoll.TryHitTestSlot(mx, my,
+                            _paperdollRect.X, _paperdollRect.Y, pdSz.Y);
+                        if (pdSlot is not null)
+                        {
+                            TryPaperdollSlotClick(pdSlot);
+                            return;
+                        }
+                    }
                     if (_charPanelOpen && _characterPanel.IsPointInPanel(mx, my))
                         return;
                     // Phase 21-SC-SCROLL-B-2 — LMB on a spellbook spell row
@@ -7321,6 +7425,26 @@ void main()
                     return;
                 }
                 if (btn == MouseButton.Left) _awpPressed = Hud.CharacterAwp.HitTarget.None;
+                // SC-EQUIP-ROUTING — DS1's press-drag-release equip: releasing
+                // a dragged cursor item over a paperdoll slot equips it there
+                // (MouseDown previously had the only paperdoll path, so the
+                // natural drag gesture was a no-op). Skips the slot the item
+                // was JUST unequipped from — that release belongs to the pickup
+                // click and the item stays on the cursor.
+                if (btn == MouseButton.Left && _cursorItem is not null
+                    && _charPanelOpen && _player is not null)
+                {
+                    int rmx = (int)m.Position.X, rmy = (int)m.Position.Y;
+                    var relSlot = _paperdoll.TryHitTestSlot(rmx, rmy,
+                        _paperdollRect.X, _paperdollRect.Y, _window.Size.Y);
+                    if (relSlot is not null
+                        && !string.Equals(PaperdollSlotToEsTag(relSlot) ?? "",
+                               _cursorItem.Value.Slot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        TryPaperdollSlotClick(relSlot);
+                        return;
+                    }
+                }
                 // SC-AUTH-CHAR-AWP-LONGPRESS — resolve slot click/hold per
                 // character_awp.gas.
                 //   Max mode (rail closed): quick tap selects that slot;
@@ -7578,7 +7702,13 @@ void main()
                             // Phase 22-A — pulse the red book indicator on the
                             // data_bar when a quest activates so the player has
                             // a visible cue to open the journal.
-                            if (added) FlashQuestIndicator();
+                            // SC-MSG-STRIP — plus DS1's authored strip line
+                            // (ref chapter text.bmp top bar).
+                            if (added)
+                            {
+                                FlashQuestIndicator();
+                                AddGameMessage("A new quest has been added to your Journal.");
+                            }
                         }
                         // Phase 26 — recruit offer accepted (a text node with
                         // choice = potential_member). Add the just-talked
@@ -11757,6 +11887,13 @@ void main()
             {
                 _nisPhase = NisPhase.Off;
                 Console.WriteLine("[nis] complete — control restored");
+                // SC-CHAPTER-TITLE — DS1 stamps the chapter card the moment
+                // the intro hands control back (ref chapter text.bmp). The
+                // authored art carries the text: b_gui_nis_ch01 = "Chapter 1:
+                // Stonebridge". Later chapters (ch02..) fire when their
+                // regions become reachable.
+                _chapterCardTex = TryGetGuiTexture("b_gui_nis_ch01");
+                _chapterTitleRemaining = _chapterCardTex is not null ? ChapterTitleSeconds : 0f;
             }
             return;
         }
@@ -11864,6 +12001,8 @@ void main()
                                   .Select(n => n.Text.Replace("\\n", " ")));
             Console.WriteLine($"[subtitle] quest activated: {node.ActivateQuest}");
             FlashQuestIndicator();
+            // SC-MSG-STRIP — DS1's authored journal notice.
+            AddGameMessage("A new quest has been added to your Journal.");
         }
         // Screen text authors literal \n sequences.
         _subtitleLines = node.Text.Replace("\\n", "\n").Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -14149,6 +14288,13 @@ void main()
             var wTop = Vector3.Transform(
                 new Vector3((minL.X + maxL.X) * 0.5f, maxL.Y, (minL.Z + maxL.Z) * 0.5f), prop.World);
             float propTopY = MathF.Max(wBase.Y, wTop.Y);
+            // SC-NAV-OBSTACLE-YGATE — the prop's world vertical band. Gates
+            // MarkObstacle so a ground-floor does_block_path prop can't
+            // blanket-block the basement stacked beneath it in the same snode
+            // (that severed the stair descent and stranded the cellar on its
+            // own nav component). Center-column Y is exact for the yaw-only
+            // norm; min/max guards a flipped placement.
+            float propBaseY = MathF.Min(wBase.Y, wTop.Y);
             bool occludesSight = MathF.Abs(wTop.Y - wBase.Y) >= SightOccluderMinHeight;
             int marked = 0;
             if (longLen > shortLen * 2.2f && longLen > 2f)
@@ -14163,7 +14309,7 @@ void main()
                 {
                     float along = -halfLong + longLen * (di / (float)(discs - 1));
                     var c = origin + axis * along;
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR);
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY);
                     if (occludesSight)
                         _sightOccluders.Add((new Vector2(c.X, c.Z), discR, propTopY));
                 }
@@ -14185,14 +14331,14 @@ void main()
                 {
                     var c = wcA + axU * (sideAB * iu / (nu - 1))
                                 + axV * (sideAD * iv / (nv - 1));
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR);
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY);
                     if (occludesSight)
                         _sightOccluders.Add((new Vector2(c.X, c.Z), gridR, propTopY));
                 }
             }
             else
             {
-                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius);
+                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY);
                 if (occludesSight)
                     _sightOccluders.Add((new Vector2(origin.X, origin.Z), radius, propTopY));
             }
@@ -16647,6 +16793,8 @@ void main()
         TickPlayerSwing((float)dt);
         // Phase 19 — advance the in-flight cast (FIRE-note release).
         TickPlayerCast((float)dt);
+        // SC-POTION-DRINK — advance the potion drink lock (gates attack/cast).
+        TickPlayerDrink((float)dt);
         // Phase 19 fix — casting idle follows engagement (guard up in
         // combat, relaxed stand only out of it).
         TickCastingIdle();
@@ -17104,8 +17252,15 @@ void main()
                             ? _playerSpellbook?.Primary : _playerSpellbook?.Secondary;
                         var pcPos = _pendingCastTarget?.CurrentTransform.Translation
                                  ?? _pendingCastProp!.World.Translation;
+                        // SC-CORPSE-SPELLS — a corpse-targeting cast WANTS a dead
+                        // target: abort only if the corpse burned away (Hidden)
+                        // while we were walking; living-target casts still abort
+                        // on target death.
                         bool pcDead = pcSpell is null
-                            || (_pendingCastTarget is { } t0 && (t0.IsDead || t0.Actor.Combat.IsDead))
+                            || (_pendingCastTarget is { } t0 &&
+                                (pcSpell.TargetsDeadEnemy
+                                    ? t0.Hidden
+                                    : t0.IsDead || t0.Actor.Combat.IsDead))
                             || (_pendingCastProp is { } p0 && p0.IsDestroyed);
                         if (pcDead)
                         {
@@ -17160,9 +17315,11 @@ void main()
                                 Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u)");
                                 _pendingBreakProp = null;
                             }
+                            // SC-PROP-BREAK-REACH — reach-only melee gate (see
+                            // TryClickBreak): no line-of-nav check for breakables,
+                            // so a clustered barrel isn't walled off by its
+                            // neighbours' (or its own) does_block_path footprint.
                             else if (bdist <= bReach
-                                     && !(!_weaponIsRanged && _navMesh is not null
-                                          && _navMesh.SegmentCrossesBlocked(after, bPos))
                                      && !(_weaponIsRanged && IsSightBlocked(after, bPos)))
                             {
                                 // PerformPropBreak no-ops while a swing/cast is
@@ -17176,7 +17333,7 @@ void main()
                             }
                             else
                             {
-                                _playerFollower.SetTarget(ComputeApproachPoint(after, bPos, bReach));
+                                _playerFollower.SetTarget(FindWalkableApproach(after, bPos, bReach));
                             }
                         }
                     }
@@ -18408,10 +18565,12 @@ void main()
             _selectionFx.AddInvertedTetra(mp, 0.30f,
                 new Vector4(0.05f, 0.72f, 0.10f, 0.75f * fade));
         }
-        // Phase 22 — flat blue hover triangle on gold/spell piles.
+        // Phase 22 — hollow blue hover triangle on gold/spell piles. DS1 draws
+        // it as a darker-blue OUTLINE with an empty (transparent) middle;
+        // AddFlatTriangle now emits the frame, this sets the darker tint.
         if (_hoverPile is { } hoverPile && _hoverPileIsGoldOrSpell)
             _selectionFx.AddFlatTriangle(hoverPile.Position, 0.45f,
-                new Vector4(0.15f, 0.35f, 0.95f, 0.70f));
+                new Vector4(0.06f, 0.16f, 0.62f, 0.85f));
         _selectionFx.Draw(vp);
         // Phase 21 — combat blood splats ride the same world pass.
         _bloodSplats ??= _gl is not null ? new BloodSplatRenderer(_gl) : null;
@@ -20088,6 +20247,12 @@ void main()
             _actorMeshCache[player.Mesh] = gl;
         }
 
+        // SC-IDLE-FIDGET exemption — the HERO's idle stays on slot 0
+        // (chore_default): the engagement/casting idle machinery swaps that
+        // slot's CONTENT (SetDefaultIdleClip, RefreshPlayerStance's rebind),
+        // so pointing the hero's idle at the chore_fidget slot would hide
+        // every stance/guard swap. NPCs keep the authored initial_chore.
+        player.IdleClipIndex = 0;
         var state = new ActorRenderState
         {
             Actor             = player,
@@ -20451,6 +20616,16 @@ void main()
             if (string.Equals(t.Name, "base_shield", StringComparison.OrdinalIgnoreCase))
                 return MathF.PI * 0.5f; // 90° — lay flat
         }
+        // SC-ARMOR-MESH — dropped body armor lies FLAT like gravity would
+        // have it, not standing on the pant legs. The m_a_suit_* ground
+        // meshes are authored on the mesh XY plane (1.46u tall, 0.10u thin)
+        // with a -90°X bind that StaticMesh doesn't bake — drawn raw they
+        // stand upright like a scarecrow. -90° lays the suit out on the
+        // floor with its textured FRONT facing up (+90°, the shield value,
+        // would face-plant it).
+        var chestSlot = (_templateStore.GetAttribute(tpl!, "gui", "equip_slot") ?? "").Trim();
+        if (chestSlot.Equals("es_chest", StringComparison.OrdinalIgnoreCase))
+            return -MathF.PI * 0.5f;
         return 0f;
     }
 
@@ -21919,8 +22094,13 @@ void main()
                 _audio?.Play(SfxOrderAttack);
                 return true;
             }
-            if (spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal && !HasCombatTargetAt(pos))
-                return false;
+            // SC-CORPSE-SPELLS — Burn Body / Explode Body target corpses, so
+            // the "is this click an action" probe looks for a dead enemy
+            // instead of a live one.
+            bool castable = spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal
+                || (spell.TargetsDeadEnemy ? TryPickCorpseAt(pos) is not null
+                                           : HasCombatTargetAt(pos));
+            if (!castable) return false;
             TryClickToCast(slot);
             _audio?.Play(SfxOrderCast);
             return true;
@@ -21941,7 +22121,82 @@ void main()
             ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
         if (spell is null) return false;
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal) return true;
+        // SC-CORPSE-SPELLS — corpse-targeting spells gate on a dead enemy.
+        if (spell.TargetsDeadEnemy) return TryPickCorpseAt(cursorPx) is not null;
         return HasCombatTargetAt(cursorPx);
+    }
+
+    /// <summary>SC-CORPSE-SPELLS — the corpse under the cursor for a
+    /// tt_dead_enemy cast (Burn Body): a DEAD enemy combatant within the
+    /// click radius of the cursor's ground point. Hidden = already burned.
+    /// Party members / good actors never qualify — DS1's spell_body_bomb
+    /// pops only computer-controlled corpses (and target_type_flags_not
+    /// excludes the party), so friendly bodies can't be bombed.</summary>
+    private ActorRenderState? TryPickCorpseAt(Vector2 cursorPx)
+    {
+        if (_player is null || _window is null) return null;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return null;
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection((float)size.X / size.Y), out var invVp)) return null;
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return null;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X / farH.W, farH.Y / farH.W, farH.Z / farH.W);
+        var dir = far_ - near;
+        if (MathF.Abs(dir.Y) < 1e-4f) return null;
+        float t = (_player.CurrentTransform.Translation.Y - near.Y) / dir.Y;
+        if (t < 0f) return null;
+        var hit = near + dir * t;
+        ActorRenderState? best = null;
+        float bestDist = ClickAttackRadius;
+        foreach (var s in _actors)
+        {
+            if (!s.IsDead || s.Hidden || s.IsPlayer || s.IsPartyMember) continue;
+            if (!s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            float d = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = s; }
+        }
+        return best;
+    }
+
+    /// <summary>SC-HEAL-AUDIT — the LIVE party member (player or companion)
+    /// under the cursor, for single-target heal casts. Same ground-point
+    /// pick as the corpse/enemy variants, friendly-only.</summary>
+    private ActorRenderState? TryPickPartyMemberAt(Vector2 cursorPx)
+    {
+        if (_player is null || _window is null) return null;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return null;
+        float ndcX = (cursorPx.X / size.X) * 2f - 1f;
+        float ndcY = 1f - (cursorPx.Y / size.Y) * 2f;
+        if (!Matrix4x4.Invert(_camera.GetViewProjection((float)size.X / size.Y), out var invVp)) return null;
+        var nearH = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+        var farH  = Vector4.Transform(new Vector4(ndcX, ndcY,  1f, 1f), invVp);
+        if (MathF.Abs(nearH.W) < 1e-6f || MathF.Abs(farH.W) < 1e-6f) return null;
+        var near = new Vector3(nearH.X / nearH.W, nearH.Y / nearH.W, nearH.Z / nearH.W);
+        var far_ = new Vector3(farH.X / farH.W, farH.Y / farH.W, farH.Z / farH.W);
+        var dir = far_ - near;
+        if (MathF.Abs(dir.Y) < 1e-4f) return null;
+        float t = (_player.CurrentTransform.Translation.Y - near.Y) / dir.Y;
+        if (t < 0f) return null;
+        var hit = near + dir * t;
+        ActorRenderState? best = null;
+        float bestDist = ClickAttackRadius;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.Hidden) continue;
+            if (!s.IsPlayer && !s.IsPartyMember) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - hit.X, dz = p.Z - hit.Z;
+            float d = MathF.Sqrt(dx * dx + dz * dz);
+            if (d < bestDist) { bestDist = d; best = s; }
+        }
+        return best;
     }
 
     /// <summary>True when a live enemy or breakable prop sits within the click
@@ -22004,6 +22259,43 @@ void main()
         return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
     }
 
+    /// <summary>SC-PROP-BREAK-REACH — pick a WALKABLE stand point to approach a
+    /// break/attack target from. The straight player→center approach point can
+    /// land on the target's own does_block_path footprint (or a clustered
+    /// neighbour's / a destroyed one's persistent marks); the pathfinder then
+    /// refuses that goal ("obstacle-blocked") and the hero freezes just outside
+    /// reach until the player hand-picks a new angle. This sweeps a ring just
+    /// inside reach around the target and returns the nearest UN-blocked point
+    /// to the hero, so a click from any angle auto-walks to a valid position.
+    /// Falls back to the geometric point on open ground / when no ring point is
+    /// walkable.</summary>
+    private Vector3 FindWalkableApproach(Vector3 from, Vector3 center, float reach)
+    {
+        var direct = ComputeApproachPoint(from, center, reach);
+        if (_navMesh is null || IsWalkableStand(direct)) return direct;
+        float standR = MathF.Max(0.6f, reach * 0.85f);
+        float baseAng = MathF.Atan2(from.Z - center.Z, from.X - center.X);
+        Vector3 best = direct;
+        float bestD2 = float.MaxValue;
+        bool found = false;
+        for (int i = 0; i < 24; i++)
+        {
+            float ang = baseAng + i * (MathF.Tau / 24f);
+            var cand = new Vector3(center.X + MathF.Cos(ang) * standR, center.Y,
+                                   center.Z + MathF.Sin(ang) * standR);
+            if (!IsWalkableStand(cand)) continue;
+            float dx = cand.X - from.X, dz = cand.Z - from.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; best = cand; found = true; }
+        }
+        return found ? best : direct;
+    }
+
+    private bool IsWalkableStand(Vector3 p)
+        => _navMesh is not null
+           && _navMesh.TryFindTriangle(p, out var tri, includeFadeHidden: true)
+           && !_navMesh.IsBlocked(tri);
+
     /// <summary>Phase 17-SC-K — pick the closest live breakable static prop
     /// to the cursor's ground hit. Walks to it if out of reach; otherwise
     /// shatters it on the spot. DS1 barrels/crates/jugs are 1HP so a single
@@ -22038,21 +22330,25 @@ void main()
         float playerDist = MathF.Sqrt(
             (pPos.X - tPos.X) * (pPos.X - tPos.X) +
             (pPos.Z - tPos.Z) * (pPos.Z - tPos.Z));
-        // SC-BREAK-APPROACH — same walk-up rules as enemies: out of the
-        // active weapon's reach, melee line blocked, or bow sight occluded
-        // all latch the prop and run the hero in; the per-tick drive swings
-        // the moment reach + line clear (no second click needed).
-        bool breakMeleeObstructed = !_weaponIsRanged && _navMesh is not null
-            && _navMesh.SegmentCrossesBlocked(pPos, tPos);
+        // SC-BREAK-APPROACH — out of reach (or bow sight occluded) latches the
+        // prop and runs the hero in; the per-tick drive swings the moment reach
+        // is met (no second click needed).
+        // SC-PROP-BREAK-REACH — NO melee line-of-nav gate for breakables: DS1
+        // lets you smash any barrel/crate you can stand next to, in any order.
+        // A does_block_path breakable obstacle-marks its OWN footprint, clustered
+        // barrels mark each OTHER's, and a destroyed one's marks persist from
+        // load — so a "SegmentCrossesBlocked" gate walled off the last barrel in
+        // a cluster (breakable by spell, which has no such gate, but not by
+        // dagger). Reach alone gates melee now.
         bool breakSightBlocked = _weaponIsRanged && IsSightBlocked(pPos, tPos);
-        if (playerDist > reach || breakMeleeObstructed || breakSightBlocked)
+        if (playerDist > reach || breakSightBlocked)
         {
             _pendingBreakProp = best;
             _pendingAttackTarget = null;
             _pendingCastTarget = null;
             _pendingCastProp = null;
             _pendingPickupPile = null;
-            var stop = ComputeApproachPoint(pPos, tPos, reach);
+            var stop = FindWalkableApproach(pPos, tPos, reach);
             _playerFollower?.SetTarget(stop);
             Console.WriteLine(
                 $"click-break: approaching {best.Template} " +
@@ -22347,6 +22643,27 @@ void main()
                 slot.U0, 1f - slot.V1, slot.U1, 1f - slot.V0);
         }
 
+        // SC-PAUSE-FLASH — DS1 flashes the data-bar play button while the game
+        // is paused (manual pause OR the Esc menu) to signal "press to resume".
+        // Re-draw the play icon over its slot with a pulsing alpha; the base
+        // button (already the play glyph via ResolveDataBarTexture) stays solid
+        // underneath so the glyph never fully vanishes.
+        if (PausedForDisplay && _dbPlayUp is not null)
+        {
+            _pausePulseT += (float)_frameDtSeconds;
+            float pulse = 0.35f + 0.35f * MathF.Sin(_pausePulseT * 6.5f); // 0..0.7
+            var pauseSlot = Hud.DataBar.Slots.FirstOrDefault(sl => sl.Id == Hud.DataBar.ButtonId.Pause);
+            if (pauseSlot.Id == Hud.DataBar.ButtonId.Pause)
+            {
+                var (px, py, pw, ph) = Hud.DataBar.ProjectRect(pauseSlot, viewportW, viewportH);
+                var glow = _dbPlayHov ?? _dbPlayUp;
+                _iconRenderer.DrawIcon(viewportW, viewportH, glow, px, py, pw, ph,
+                    new Vector4(1f, 1f, 1f, pulse),
+                    pauseSlot.U0, 1f - pauseSlot.V1, pauseSlot.U1, 1f - pauseSlot.V0);
+            }
+        }
+        else _pausePulseT = 0f;
+
         // Quest indicator flash overlay — pulses red over the quest_log
         // button when a quest activated/completed in the recent past.
         if (_questIndicatorFlashRemaining > 0f && _dbBookRed is not null)
@@ -22406,8 +22723,9 @@ void main()
         switch (id)
         {
             case Hud.DataBar.ButtonId.Pause:
-                // Swap-pair: when paused, show the play icon; otherwise pause.
-                if (_isPaused)
+                // Swap-pair: when paused (manual OR the Esc menu), show the
+                // play icon; otherwise pause.
+                if (PausedForDisplay)
                     return press ? (_dbPlayDwn ?? _dbPlayUp)
                          : hover ? (_dbPlayHov ?? _dbPlayUp)
                          : _dbPlayUp;
@@ -22560,6 +22878,53 @@ void main()
         if (_player is null
             || !RegisterAndPlayVoiceCue("s_e_potion_drink", _player.CurrentTransform.Translation))
             _audio?.Play(SfxGuiInventory);
+        // SC-POTION-DRINK — play the raise-to-lips gesture and lock attacking/
+        // casting until it finishes (StartPlayerSwing / BeginPlayerCast /
+        // auto-defend all honor PlayerDrinking). DS1's hero has no dedicated
+        // drink chore (7-entry dictionary: attack/default/die/fidget/magic/
+        // misc/walk); chore_magic is the authored raise it drives item use
+        // through — pure animation here, no spell VFX. An in-flight swing/cast
+        // finishes on its own; the lock only blocks the NEXT action. Movement
+        // stays free, matching DS1.
+        if (_player is not null)
+        {
+            _drinkIsHealth = isHealth;
+            EnsureBottleAssets();
+            // SC-POTION-DRINK — DS1's job_drink.skrit plays CHORE_MISC sub-anim
+            // 'drnk' (farmboy: a_c_gah_fb_fs1_dk, the raise-to-lips), NOT
+            // chore_magic — chore_magic is the forward cast thrust, which read
+            // as "punching forward with the bottle." Lock for the clip's OWN
+            // length so the gesture plays once and fully finishes before the
+            // next swing/cast (DS1 holds the hero until WE_ANIM_DONE). A hero
+            // variant with no 'drnk' clip just holds the bottle (DS1's own
+            // "No 'drink' animation in the chore" no-op branch).
+            int drinkIdx = _player.Actor.GetClipIndex("drnk");
+            float drinkLen = (drinkIdx >= 0 && drinkIdx < _player.Actor.Clips.Length
+                              && _player.Actor.Clips[drinkIdx].AnimLength > 0.05f)
+                ? _player.Actor.Clips[drinkIdx].AnimLength
+                : PotionDrinkSeconds;
+            _playerDrinkRemaining = drinkLen;
+            _player.Actor.PlayChoreOnce("drnk", drinkLen);
+            Console.WriteLine(drinkIdx >= 0
+                ? $"[potion] drink gesture 'drnk' (len={drinkLen:F2}s)"
+                : "[potion] no 'drnk' misc clip on hero — holding bottle, no gesture");
+            // SC-POTION-DRINK-BOTTLE — DS1 ptn_potion.gas fires the item's
+            // effect_script_equip (health_potion_small / mana_potion_small) as
+            // the drink sparkle. Route it through the SfxRuntime at the hero;
+            // a no-op if the effects tank doesn't ship that script name.
+            if (_sfxRuntime is not null)
+            {
+                var drinkFx = isHealth ? "health_potion_small" : "mana_potion_small";
+                bool ranFx = _sfxRuntime.Spawn(drinkFx, _player.CurrentTransform.Translation, null);
+                if (!ranFx)
+                {
+                    // Fallback to the drop-sparkle scripts (potion_sparkle_red/blue),
+                    // which every shipped potion authors on we_dropped.
+                    var sparkle = isHealth ? "potion_sparkle_red" : "potion_sparkle_blue";
+                    _sfxRuntime.Spawn(sparkle, _player.CurrentTransform.Translation, null);
+                }
+            }
+        }
     }
 
     /// <summary>Phase 22-A — kick the quest indicator pulse. Called whenever
@@ -22620,6 +22985,30 @@ void main()
         return string.IsNullOrWhiteSpace(n) ? tpl.Name : n;
     }
 
+    // SC-AWP-XP-PULSE — DS1's brief green flash on each skill-XP tick. Per-slot
+    // previous progress fraction + a decaying pulse intensity: a RISE in the
+    // fraction (a kill/heal just granted XP to that skill) sets the pulse to 1,
+    // which fades to 0 over AwpXpPulseSeconds so a razor-thin green line appears
+    // and disappears exactly as the bar nudges up. Seeded on the first draw so a
+    // load/level-restore doesn't spuriously pulse every slot.
+    private readonly float[] _awpSlotProgPrev = new float[4];
+    private readonly float[] _awpSlotXpPulse = new float[4];
+    // SC-AWP-LEVEL-HOLD — when a skill levels, its XP fraction resets high→low
+    // in one frame, so the bar never visibly reaches full before the toast.
+    // On that reset we hold the bar DISPLAYED at 100% for a beat so the level
+    // reads as "filled → level up → reset", matching the notification's timing.
+    private readonly float[] _awpSlotLevelHold = new float[4];
+    private bool _awpProgSeeded;
+    private const float AwpXpPulseSeconds = 0.4f;
+    private const float AwpLevelHoldSeconds = 0.7f;
+
+    // SC-AWP-SPELL-ICON — active combat slot prefers the spell's small
+    // [gui]active_icon; falls back to the inventory_icon for spells that
+    // don't author one (matches the companion-strip resolution).
+    private static string? AwpSpellIcon(SiegeFX.Core.Assets.SpellTemplate? spell) =>
+        spell is null ? null
+        : (!string.IsNullOrWhiteSpace(spell.ActiveIcon) ? spell.ActiveIcon : spell.InventoryIcon);
+
     private void DrawCharacterAwp(int viewportW, int viewportH)
     {
         if (_player is null || _iconRenderer is null || _barRenderer is null || _textRenderer is null) return;
@@ -22664,8 +23053,14 @@ void main()
         // renders empty — matching DS1's "no item = no icon" rule.
         GlTexture? slot1 = ResolveAwpSlotByWeaponClass("weapon_melee");
         GlTexture? slot2 = ResolveAwpSlotByWeaponClass("weapon_ranged");
-        GlTexture? slot3 = ResolveAwpSlotIcon(_playerSpellbook?.Primary?.InventoryIcon);
-        GlTexture? slot4 = ResolveAwpSlotIcon(_playerSpellbook?.Secondary?.InventoryIcon);
+        // SC-AWP-SPELL-ICON — the active combat slot shows the spell's
+        // [gui]active_icon (the small b_gui_ig_i_ic_sp_NNN art), NOT its
+        // inventory_icon (the _inv spellbook-grid art). The companion strip
+        // already resolves ActiveIcon; the player's own slots were reading
+        // InventoryIcon, so they showed the wrong (spellbook) icon. Fall back
+        // to InventoryIcon for spells that don't author an active_icon.
+        GlTexture? slot3 = ResolveAwpSlotIcon(AwpSpellIcon(_playerSpellbook?.Primary));
+        GlTexture? slot4 = ResolveAwpSlotIcon(AwpSpellIcon(_playerSpellbook?.Secondary));
 
         // SC-COMMANDS — W's expert mode folds the AWP with the same
         // authored min-mode transformation the open info-rail uses.
@@ -22676,10 +23071,41 @@ void main()
         // melee/ranged skill XP fractions; slots 3/4 mirror their
         // spell's caster-skill XP. Falls back to 0 when no progression
         // is bound (creator preview path).
-        float sp1 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0f;
-        float sp2 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0f;
-        float sp3 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0f;
-        float sp4 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0f;
+        float sp1 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)  ?? 0f;
+        float sp2 = _progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged) ?? 0f;
+        // Slots 3/4 track the caster skill of the spell ACTUALLY in each slot
+        // (primary/secondary), not a fixed school — a nature primary must fill
+        // its OWN slot's bar (not the secondary's), and an empty slot shows no
+        // fill. Previously these were hardwired slot3=Combat / slot4=Nature, so
+        // a nature primary lit the secondary box and left a phantom fill behind
+        // an empty slot.
+        float sp3 = SpellSlotProgress(_playerSpellbook?.Primary);
+        float sp4 = SpellSlotProgress(_playerSpellbook?.Secondary);
+        // SC-AWP-XP-PULSE / SC-AWP-LEVEL-HOLD — per-slot XP feedback:
+        //  • a RISE in the fraction (kill/heal granted XP) fires the green tick;
+        //  • a high→low DROP is a level-up reset → hold the bar at full for a
+        //    beat (display only) so the level visibly completes before resetting.
+        var spNow = new[] { sp1, sp2, sp3, sp4 };
+        var spDisp = new float[4];
+        for (int i = 0; i < 4; i++)
+        {
+            float now = spNow[i];
+            float prev = _awpSlotProgPrev[i];
+            if (_awpProgSeeded)
+            {
+                if (now > prev + 0.0004f)
+                    _awpSlotXpPulse[i] = 1f;
+                else if (prev > 0.55f && now < prev - 0.25f) // level-up reset
+                    _awpSlotLevelHold[i] = AwpLevelHoldSeconds;
+            }
+            _awpSlotProgPrev[i] = now;
+            if (_awpSlotXpPulse[i] > 0f)
+                _awpSlotXpPulse[i] = MathF.Max(0f, _awpSlotXpPulse[i] - (float)_frameDtSeconds / AwpXpPulseSeconds);
+            if (_awpSlotLevelHold[i] > 0f)
+                _awpSlotLevelHold[i] = MathF.Max(0f, _awpSlotLevelHold[i] - (float)_frameDtSeconds);
+            spDisp[i] = _awpSlotLevelHold[i] > 0f ? 1f : now;
+        }
+        _awpProgSeeded = true;
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
                            slot1, slot2, slot3, slot4, _awpInvBtnTex,
@@ -22688,8 +23114,10 @@ void main()
                            inventoryBtnDwnAtlas: _awpInvBtnDwnTex,
                            hovered: _awpHover,
                            pressed: _awpPressed,
-                           slot1Progress: sp1, slot2Progress: sp2,
-                           slot3Progress: sp3, slot4Progress: sp4);
+                           slot1Progress: spDisp[0], slot2Progress: spDisp[1],
+                           slot3Progress: spDisp[2], slot4Progress: spDisp[3],
+                           slot1Flash: _awpSlotXpPulse[0], slot2Flash: _awpSlotXpPulse[1],
+                           slot3Flash: _awpSlotXpPulse[2], slot4Flash: _awpSlotXpPulse[3]);
 
         // Phase 27 — team_portraits strip: the follower cells stacked below
         // the leader's slot-1 portrait. One cell per recruited member.
@@ -24341,7 +24769,7 @@ void main()
             AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(shot.SpellDamage)}",
                 best.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f), SpellElementColor(spell.Element));
             SpawnBloodHit(best);
-            AwardCombatXp(shot.SpellDamage, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+            AwardCombatXp(shot.SpellDamage, best.Actor.Stats, SkillForSpell(spell));
             return;
         }
         float dealt = best.Actor.Combat.ApplyDamage(shot.SpellDamage);
@@ -24358,7 +24786,7 @@ void main()
                                 dmg, best.Actor.Stats.MaxLife);
             SpawnBloodHit(best);
         }
-        AwardCombatXp(dealt, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.CombatMagic);
+        AwardCombatXp(dealt, best.Actor.Stats, SkillForSpell(spell));
         if (best.Actor.Combat.ConsumeJustDied())
             HandleActorKilledByHit(best, dealt);
     }
@@ -24426,6 +24854,75 @@ void main()
     }
     private PlayerCastState? _playerCast;
 
+    // SC-POTION-DRINK — DS1 plays a drink gesture on potion use and won't let
+    // the hero swing/cast until it finishes. Seconds of remaining lock; while
+    // > 0 the raise animation is held and StartPlayerSwing / BeginPlayerCast /
+    // auto-defend all refuse to start a new action. Movement is NOT gated (you
+    // can walk while drinking, matching DS1).
+    private float _playerDrinkRemaining;
+    private const float PotionDrinkSeconds = 0.9f;
+    private bool PlayerDrinking => _playerDrinkRemaining > 0f;
+    // SC-POTION-DRINK-BOTTLE — while the raise gesture plays we swap the weapon
+    // for the potion bottle in the hero's hand, tinted by the potion type
+    // (DS1 ptn_potion.gas: m_i_glb_bottle-potion textured b_i_glb_bottle-red-01
+    // for health, -blue-01 for mana). Loaded once, on first drink.
+    private bool _drinkIsHealth;
+    private StaticMesh? _bottleMesh;
+    private GlTexture? _bottleTexHealth;
+    private GlTexture? _bottleTexMana;
+    private bool _bottleLoadAttempted;
+
+    /// <summary>SC-POTION-DRINK — count down the potion drink lock. Uses the
+    /// sim dt so it freezes with a paused game. When it lapses the hero drops
+    /// back to the engagement-aware idle (guard up in combat, relaxed out).</summary>
+    private void TickPlayerDrink(float dt)
+    {
+        if (_playerDrinkRemaining <= 0f) return;
+        _playerDrinkRemaining = MathF.Max(0f, _playerDrinkRemaining - dt);
+    }
+
+    /// <summary>SC-POTION-DRINK-BOTTLE — lazily load the shared bottle mesh and
+    /// its two tinted textures (red = health, blue = mana). One-shot: the flag
+    /// latches on the first attempt so a missing asset never re-hammers the
+    /// tanks. The mesh rides the weapon_grip bone while PlayerDrinking.</summary>
+    private void EnsureBottleAssets()
+    {
+        if (_bottleLoadAttempted) return;
+        _bottleLoadAttempted = true;
+        if (_playResolver is null || _gl is null) return;
+        if (!_playResolver.TryLoadModel("m_i_glb_bottle-potion", out var aspBytes))
+        {
+            Console.WriteLine("[potion] bottle mesh 'm_i_glb_bottle-potion.asp' not in any tank");
+            return;
+        }
+        try
+        {
+            var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+            _bottleMesh = new StaticMesh(_gl, asp);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[potion] bottle mesh load failed: {ex.Message}");
+            return;
+        }
+        _bottleTexHealth = LoadBottleTexture("b_i_glb_bottle-red-01");
+        _bottleTexMana   = LoadBottleTexture("b_i_glb_bottle-blue-01");
+        Console.WriteLine($"[potion] bottle assets loaded (health tex {(_bottleTexHealth is null ? "MISSING" : "ok")}, " +
+                          $"mana tex {(_bottleTexMana is null ? "MISSING" : "ok")})");
+    }
+
+    private GlTexture? LoadBottleTexture(string basename)
+    {
+        if (_playResolver is null || _gl is null) return null;
+        if (_playResolver.TryLoadByBasename(basename + ".raw", out var texBytes))
+        {
+            try { return new GlTexture(_gl, RawImage.Load(texBytes)); }
+            catch (Exception ex) { Console.WriteLine($"[potion] bottle tex '{basename}' load failed: {ex.Message}"); }
+        }
+        else Console.WriteLine($"[potion] bottle tex '{basename}.raw' not in any tank");
+        return null;
+    }
+
     /// <summary>Phase 19 — start a cast iteration. Plays the mg clip and
     /// schedules the release; falls back to an immediate release when the
     /// template ships no chore_magic (or the offensive cast has no target —
@@ -24435,6 +24932,8 @@ void main()
         StaticPropInstance? prop, float magicLevel)
     {
         if (_player is null || _playerSpellbook is null) return;
+        // SC-POTION-DRINK — casting is locked out for the drink gesture too.
+        if (PlayerDrinking) return;
         if (_playerCast is not null)
         {
             // Same-target click spam is ignored; a different target queues
@@ -24573,6 +25072,10 @@ void main()
     private void StartPlayerSwing(ActorRenderState? target, StaticPropInstance? prop,
                                   SiegeFX.Core.Actors.ActorStats attacker)
     {
+        // SC-POTION-DRINK — no swing may begin until the drink gesture finishes.
+        // The walk-up/auto-attack driver keeps _pendingAttackTarget, so the
+        // swing simply resumes the instant the lock lapses.
+        if (PlayerDrinking) return;
         // SC-RANGED-PROJECTILE — bow elevation pick: aim-high/low sub-anims
         // by target height delta (melee stances ignore the parameter).
         float elev = target is not null
@@ -25379,12 +25882,16 @@ void main()
 
     /// <summary>Phase 9-SC-7 — resolve and cache the ASP+RAW for an item
     /// template name. Returns null when the template has no <c>[aspect][model]</c>
-    /// (e.g. gold-only piles, scroll-less items) or the asset failed to load;
-    /// the negative result is cached too so the lookup is one-shot per name.</summary>
+    /// (e.g. gold-only piles, scroll-less items) or the asset failed to load.
+    /// SC-LOOT-MESH-RETRY — successes and STABLE misses (no template / no
+    /// model attribute) cache one-shot; transient load failures retry on the
+    /// shared ~2s throttle instead of pinning a session-long tan box.</summary>
     private ItemMesh? TryGetItemMesh(string itemRef)
     {
         if (_gl is null || _playResolver is null || _templateStore is null) return null;
         if (_itemMeshCache.TryGetValue(itemRef, out var cached)) return cached;
+        if (_itemMeshRetryAtMs.TryGetValue(itemRef, out var notBefore)
+            && Environment.TickCount64 < notBefore) return null;
 
         var resolvedRef = ResolveItemRef(itemRef);
 
@@ -25400,7 +25907,62 @@ void main()
             }
             else
             {
-                var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model");
+                var modelName = _templateStore.GetAttribute(tpl!, "aspect", "model")?.Trim().Trim('"');
+                // SC-ARMOR-MESH — the core `armor` template authors the LITERAL
+                // string `<none>` as its model (templates.gas), which dodged the
+                // IsNullOrEmpty checks and fell through to TryLoadModel("<none>")
+                // — a forever-retried "transient" miss, i.e. a permanent tan box
+                // for every meshless armor piece (body bd_*, gloves gl_*, boots
+                // bo_*, helms he_*). Normalize it to empty first.
+                if (modelName is not null && modelName.Equals("<none>", StringComparison.OrdinalIgnoreCase))
+                    modelName = null;
+                // SC-SCROLL-MESH — DS1 spell templates (base_spell_good /
+                // base_spell_dark) ship NO [aspect] model, so a dropped spell
+                // has no mesh of its own; retail renders it as the generic
+                // scroll (base_scroll_good: model = m_i_glb_scroll). Without
+                // this fallback every spell drop fell to the debug cube — or,
+                // in a pile that also carried gold, the render loop fell THROUGH
+                // the meshless spell to the gold coin, so the scroll read as
+                // "N gold" (the zap-spell "gave me gold" report).
+                if (string.IsNullOrEmpty(modelName)
+                    && resolvedRef.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+                    modelName = "m_i_glb_scroll";
+                // SC-ARMOR-MESH — DS1 derives a dropped armor piece's ground
+                // mesh from its authored data: [gui] equip_slot picks the mesh
+                // family, [defend] armor_type the variant (Tattered Leather:
+                // es_chest + a1 → m_a_suit_a1), and [defend] armor_style the
+                // exact texture (b_c_pos_a1_018). All families verified in
+                // Objects.dsres: m_a_suit_a1..a7, m_a_hlmt_type1..31,
+                // m_a_gntl_type1..3, m_a_boot_type1..3.
+                string? texOverride = null;
+                if (string.IsNullOrEmpty(modelName))
+                {
+                    var equipSlot  = (_templateStore.GetAttribute(tpl!, "gui", "equip_slot") ?? "").Trim();
+                    var armorType  = (_templateStore.GetAttribute(tpl!, "defend", "armor_type") ?? "").Trim();
+                    var armorStyle = (_templateStore.GetAttribute(tpl!, "defend", "armor_style") ?? "").Trim();
+                    if (armorType.Length > 0)
+                    {
+                        switch (equipSlot.ToLowerInvariant())
+                        {
+                            case "es_chest":
+                                modelName = "m_a_suit_" + armorType;
+                                if (armorStyle.Length > 0) texOverride = $"b_c_pos_{armorType}_{armorStyle}";
+                                break;
+                            case "es_head":
+                                modelName = "m_a_hlmt_" + armorType;
+                                if (armorStyle.Length > 0) texOverride = "b_a_hlmt_" + armorStyle;
+                                break;
+                            case "es_forearms":
+                                modelName = "m_a_gntl_" + armorType;
+                                if (armorStyle.Length > 0) texOverride = "b_a_gntl_" + armorStyle;
+                                break;
+                            case "es_feet":
+                                modelName = "m_a_boot_" + armorType;
+                                if (armorStyle.Length > 0) texOverride = "b_a_boot_" + armorStyle;
+                                break;
+                        }
+                    }
+                }
                 if (string.IsNullOrEmpty(modelName))
                 {
                     missReason = "no aspect.model";
@@ -25414,7 +25976,17 @@ void main()
                     var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
                     var mesh = new StaticMesh(_gl, asp);
                     GlTexture? tex = null;
-                    if (asp.TextureNames.Count > 0
+                    // SC-ARMOR-MESH — the style-exact texture wins when the
+                    // armor fallback computed one; a missing style raw falls
+                    // back to the mesh's embedded default (m_a_suit_a1 embeds
+                    // b_c_pos_a1_027) so the piece still renders textured.
+                    if (texOverride is not null
+                        && _playResolver.TryLoadByBasename(texOverride + ".raw", out var texOvBytes))
+                    {
+                        try { tex = new GlTexture(_gl, RawImage.Load(texOvBytes)); }
+                        catch { tex = null; }
+                    }
+                    if (tex is null && asp.TextureNames.Count > 0
                         && _playResolver.TryLoadByBasename(asp.TextureNames[0] + ".raw", out var texBytes))
                     {
                         try { tex = new GlTexture(_gl, RawImage.Load(texBytes)); }
@@ -25443,9 +26015,31 @@ void main()
         if (result is null && missReason is not null && _loggedItemRefMisses.Add(itemRef))
             Console.WriteLine($"  loot-mesh miss: {itemRef} ({missReason})");
 
-        _itemMeshCache[itemRef] = result;
+        // SC-LOOT-MESH-RETRY — only cache SUCCESSES and STABLE misses (a
+        // template that ships no model won't grow one mid-session). A
+        // TRANSIENT failure — model bytes not resolvable right now (mid
+        // region-stream), a decode exception — must NOT be pinned: negative-
+        // caching it turned one hiccup into "this item is a tan box for the
+        // rest of the session," which read as a random regression.
+        bool stableMiss = missReason is "no aspect.model" or "no template";
+        if (result is not null || stableMiss)
+        {
+            _itemMeshCache[itemRef] = result;
+            _itemMeshRetryAtMs.Remove(itemRef);
+        }
+        else
+        {
+            _itemMeshRetryAtMs[itemRef] = Environment.TickCount64 + ItemMeshRetryDelayMs;
+        }
         return result;
     }
+
+    // SC-LOOT-MESH-RETRY — transient mesh-load misses aren't negative-cached
+    // anymore; this throttle spaces the re-attempts (~2s apiece) so a
+    // persistently-missing asset doesn't re-walk the tanks every frame.
+    private readonly Dictionary<string, long> _itemMeshRetryAtMs =
+        new(StringComparer.OrdinalIgnoreCase);
+    private const long ItemMeshRetryDelayMs = 2000;
 
     /// <summary>SC-GOLD-PILES — load a display mesh directly by .asp model
     /// name, skipping the template store. For art-only assets (the cavern
@@ -25456,6 +26050,8 @@ void main()
         if (_gl is null || _playResolver is null) return null;
         var cacheKey = "model:" + modelName;
         if (_itemMeshCache.TryGetValue(cacheKey, out var cached)) return cached;
+        if (_itemMeshRetryAtMs.TryGetValue(cacheKey, out var notBefore)
+            && Environment.TickCount64 < notBefore) return null;
 
         ItemMesh? result = null;
         string? missReason = null;
@@ -25484,7 +26080,17 @@ void main()
         if (result is null && missReason is not null && _loggedItemRefMisses.Add(cacheKey))
             Console.WriteLine($"  loot-mesh miss: {cacheKey} ({missReason})");
 
-        _itemMeshCache[cacheKey] = result;
+        // SC-LOOT-MESH-RETRY — every miss here is transient-class (raw model
+        // load / decode); throttle instead of pinning a permanent null.
+        if (result is not null)
+        {
+            _itemMeshCache[cacheKey] = result;
+            _itemMeshRetryAtMs.Remove(cacheKey);
+        }
+        else
+        {
+            _itemMeshRetryAtMs[cacheKey] = Environment.TickCount64 + ItemMeshRetryDelayMs;
+        }
         return result;
     }
 
@@ -26267,6 +26873,44 @@ void main()
         float magicLevel = _progression?.Level ?? 1;
 
         ActorRenderState? best = null;
+        // SC-HEAL-AUDIT — DS1's single-target heals restore "a single Party
+        // Member": the member under the cursor when the click lands on one
+        // (companion healing), else the caster. The pick is friendly-only —
+        // heals never consider enemies.
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
+        {
+            best = TryPickPartyMemberAt(_input.Mice[0].Position);
+            BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
+            return;
+        }
+        // SC-CORPSE-SPELLS — tt_dead_enemy spells (Burn Body) pick a CORPSE
+        // under the cursor and never consider living actors or props. Beyond
+        // cast range they share the walk-up latch (the pending drive exempts
+        // corpse spells from its dead-target abort).
+        if (spell.TargetsDeadEnemy)
+        {
+            var corpse = TryPickCorpseAt(_input.Mice[0].Position);
+            if (corpse is null) return;
+            var cp = corpse.CurrentTransform.Translation;
+            float kdx = cp.X - playerPos.X, kdz = cp.Z - playerPos.Z;
+            float kdist = MathF.Sqrt(kdx * kdx + kdz * kdz);
+            if (kdist > spell.CastRange || IsSightBlocked(playerPos, cp))
+            {
+                _pendingCastTarget = corpse;
+                _pendingCastProp = null;
+                _pendingCastSlot = slot;
+                _pendingAttackTarget = null;
+                _pendingPickupPile = null;
+                _pendingBreakProp = null;
+                _playerFollower?.SetTarget(ComputeApproachPoint(
+                    playerPos, cp, MathF.Max(1.5f, spell.CastRange * 0.9f)));
+                Console.WriteLine($"click-cast: approaching corpse {corpse.Actor.Template.Name} " +
+                                  $"(dist={kdist:F1}u, range={spell.CastRange:F1}u)");
+                return;
+            }
+            BeginPlayerCast(slot, spell, corpse, prop: null, magicLevel);
+            return;
+        }
         // Phase 17c — self-heal spells skip target picking entirely. The
         // spellbook ignores the target arg for SpellKind.SelfHeal, but we
         // also skip the unproject math so the cast still fires when the
@@ -26396,6 +27040,46 @@ void main()
     {
         if (_player is null || _playerSpellbook is null) return;
         var playerPos = _player.CurrentTransform.Translation;
+        // SC-CORPSE-SPELLS — Burn Body's release: DS1's spell_body_bomb runs
+        // the burn effect on the corpse, obliterates it, and deletes the body
+        // (1s later, faded). NOTHING living takes damage — the level-1 spell
+        // authors no [attack] and no make_explosion; it's corpse DISPOSAL
+        // (anti-resurrection), and self-damage is impossible. Mana/cooldown
+        // ride TryCastAtPoint (caster-context costs, no live-target gate).
+        if (spell.TargetsDeadEnemy)
+        {
+            if (best is null || !best.IsDead || best.Hidden) return;
+            var corpsePos = best.CurrentTransform.Translation;
+            float cdx = corpsePos.X - playerPos.X, cdz = corpsePos.Z - playerPos.Z;
+            float cdist = MathF.Sqrt(cdx * cdx + cdz * cdz);
+            var cres = _playerSpellbook.TryCastAtPoint(slot, cdist, magicLevel);
+            if (cres.Outcome != SiegeFX.Core.Actors.CastOutcome.Cast)
+            {
+                Console.WriteLine($"[spell] {spell.Name} on corpse refused: {cres.Outcome}");
+                return;
+            }
+            // Burn VFX at the corpse: the authored effect script when the
+            // runtime covers it, else a fire burst stand-in.
+            bool ranFx = _sfxRuntime is not null
+                && _sfxRuntime.Spawn(string.IsNullOrEmpty(spell.CastSfxScript) ? "burn_body" : spell.CastSfxScript,
+                                     corpsePos, null);
+            if (!ranFx && _particles is not null)
+            {
+                _particles.SpawnFire(corpsePos + new Vector3(0f, 0.3f, 0f),
+                    new Vector4(1.0f, 0.55f, 0.15f, 0.95f), 0.5f, 0.9f, 24);
+                _particles.SpawnSmoke(corpsePos + new Vector3(0f, 0.7f, 0f),
+                    new Vector4(0.25f, 0.22f, 0.20f, 0.8f), 0.35f, 1.2f, 8);
+            }
+            // The body burns away — hide it (loot already dropped at death).
+            best.Hidden = true;
+            if (ReferenceEquals(_hoverActor, best)) _hoverActor = null;
+            // DS1 [magic] cast_experience = (#magic*0.25)+1 — the utility
+            // cast's own XP trickle (there's no damage to earn it through).
+            AwardRawXp((long)MathF.Max(1f, magicLevel * 0.25f + 1f), SkillForSpell(spell));
+            Console.WriteLine($"[spell] {spell.Name}: burned corpse {best.Actor.Template.Name} " +
+                              $"(mana -{cres.ManaSpent:F0})");
+            return;
+        }
         // SC-SPELLFX-IMPACT — projectile spells (cast script creates a
         // trackball: fireshot family) defer their damage to the ball's
         // impact instead of the release note; the VM flies the visual, an
@@ -26406,7 +27090,13 @@ void main()
         SiegeFX.Core.Actors.CastResult result;
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
         {
-            result = _playerSpellbook.TryCast(slot, _player.Actor, 0f, magicLevel);
+            // SC-HEAL-AUDIT — heal the clicked party member (companion
+            // healing); the spellbook falls back to the caster when the
+            // click didn't land on one. Friendly-only by construction
+            // (TryClickToCast's heal pick never selects enemies).
+            var healActor = best is not null && (best.IsPlayer || best.IsPartyMember)
+                ? best.Actor : _player.Actor;
+            result = _playerSpellbook.TryCast(slot, healActor, 0f, magicLevel);
         }
         else if (best is null)
         {
@@ -26436,15 +27126,18 @@ void main()
                 // release, so no chore replay here.
                 if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
-                    // Phase 17c — self-heal cast: no target, no bolt, green
-                    // restore popup over the player. Heal is applied inside
-                    // the spellbook so the HP bar is already updated by the
-                    // time this branch runs.
+                    // Phase 17c — heal cast: no bolt; green restore popup over
+                    // whoever was healed. Heal is applied inside the spellbook
+                    // so the HP bar is already updated by the time this runs.
+                    // SC-HEAL-AUDIT — popup + VFX anchor at the healed MEMBER
+                    // (companion heals read at the companion, not the caster).
+                    var healedPos = best is not null && (best.IsPlayer || best.IsPartyMember)
+                        ? best.CurrentTransform.Translation : playerPos;
                     Console.WriteLine(
                         $"cast {spell.ScreenName}: heal +{result.HealAmount:F0} " +
                         $"(mana -{result.ManaSpent:F1})");
                     AddFloatingText($"+{(int)MathF.Round(result.HealAmount)} HP",
-                                    playerPos + new Vector3(0f, 2.2f, 0f),
+                                    healedPos + new Vector3(0f, 2.2f, 0f),
                                     new Vector4(0.40f, 0.95f, 0.40f, 1f));
                     // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX. Same
                     // resolver as the offensive branch above, so swapping
@@ -26460,23 +27153,25 @@ void main()
                             StringComparison.OrdinalIgnoreCase))
                         healClip = SfxHealingWindCast;
                     _audio?.Play(healClip);
-                    // Heals award NatureMagic XP proportional to HP restored,
+                    // Heals award caster-skill XP proportional to HP restored,
                     // matching DS1's "cast_experience grows with effect" rule.
                     // Without this the heal slot is progression-dead.
-                    AwardRawXp((long)result.HealAmount,
-                               SiegeFX.Core.Assets.SkillKind.NatureMagic);
+                    // SC-HEAL-AUDIT — routed by the spell's CLASS, not
+                    // hard-coded Nature: battle_healing is COMBAT magic
+                    // (base_spell_dark) and must feed that pool.
+                    AwardRawXp((long)result.HealAmount, SkillForSpell(spell));
                     // SC-SPELLFX-HEAL — the authored heal script (twin blue
                     // spiral ribbons + sparkle fountains for healing_hands)
-                    // is all VM-covered kinds; run it anchored at the caster.
-                    // Previously this branch was sound-only.
+                    // is all VM-covered kinds; run it anchored at the healed
+                    // member. Previously this branch was sound-only.
                     if (_sfxRuntime is not null && _sfxStore is not null
                         && !string.IsNullOrEmpty(spell.CastSfxScript)
                         && _sfxStore.TryGet(spell.CastSfxScript, out var healScript)
                         && IsCastScriptFullyCovered(spell, healScript))
                     {
                         var healCtx = new SiegeFX.Core.Sfx.SfxContext(
-                            SourcePos:     playerPos + new Vector3(0f, 0.9f, 0f),
-                            TargetPos:     playerPos + new Vector3(0f, 0.9f, 0f),
+                            SourcePos:     healedPos + new Vector3(0f, 0.9f, 0f),
+                            TargetPos:     healedPos + new Vector3(0f, 0.9f, 0f),
                             WeaponBonePos: playerPos + _playerFacing * 0.3f + new Vector3(0f, 1.2f, 0f),
                             Resolver:      ResolvePlayerBone);
                         _sfxRuntime.Spawn(spell.CastSfxScript, healCtx);
@@ -26492,6 +27187,18 @@ void main()
                         Console.WriteLine(
                             $"cast {spell.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
                             $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                    // SC-SPELL-IMPACT-SPARKLE — DS1 bursts a sparkle cloud ON
+                    // the victim at the hit (user ref sparkles.bmp), tinted by
+                    // the originating spell's element (zap = pale blue-white,
+                    // fire = orange, acid = green...). Instant-hit spells only
+                    // — projectiles burst at their own landing.
+                    if (!projectileSpell && _particles is not null && best is not null)
+                    {
+                        var impactCol = SpellElementColor(spell.Element);
+                        var ip = best.CurrentTransform.Translation + new Vector3(0f, 0.85f, 0f);
+                        _particles.SpawnSpark(ip, impactCol, 0.14f, 0.5f, 20);
+                        _particles.SpawnTwinkle(ip, impactCol, 0.45f, 0.10f, 0.45f, 6);
+                    }
                     // Phase 17b — snap PC facing toward the target so the cast
                     // at least visually originates *toward* the victim.
                     // _playerFacing normally only updates from movement deltas;
@@ -26643,7 +27350,7 @@ void main()
                                         anchor + new Vector3(0f, 1.8f, 0f),
                                         elemColor);
                         AwardCombatXp(result.Damage, best.Actor.Stats,
-                                      SiegeFX.Core.Assets.SkillKind.CombatMagic);
+                                      SkillForSpell(spell));
                         // MP co-op: a client's instant spell resolves on the host
                         // (its life delta is authoritative). Report the rolled
                         // damage and skip the LOCAL kill so the corpse follows the
@@ -26714,8 +27421,9 @@ void main()
     {
         if (_progression is null) return;
         int oldLevel = _progression.Level;
+        int oldSkillLevel = _progression.SkillLevel(skill);
         _progression.AwardDamageXp(lifeRemoved, victim.ExperienceValue, victim.MaxLife, skill);
-        AnnounceLevelUp(oldLevel);
+        AnnounceLevelUp(oldLevel, oldSkillLevel, skill);
     }
 
     /// <summary>Non-victim XP awards (heal casts credit NatureMagic by HP
@@ -26724,33 +27432,93 @@ void main()
     {
         if (_progression is null || amount <= 0) return;
         int oldLevel = _progression.Level;
+        int oldSkillLevel = _progression.SkillLevel(skill);
         _progression.AwardXp(amount, skill);
-        AnnounceLevelUp(oldLevel);
+        AnnounceLevelUp(oldLevel, oldSkillLevel, skill);
     }
 
-    private void AnnounceLevelUp(int oldLevel)
+    private static string SkillDisplayName(SiegeFX.Core.Assets.SkillKind k) => k switch
+    {
+        SiegeFX.Core.Assets.SkillKind.Melee       => "Melee",
+        SiegeFX.Core.Assets.SkillKind.Ranged      => "Ranged",
+        SiegeFX.Core.Assets.SkillKind.NatureMagic => "Nature Magic",
+        SiegeFX.Core.Assets.SkillKind.CombatMagic => "Combat Magic",
+        _ => k.ToString(),
+    };
+
+    private void AnnounceLevelUp(int oldLevel, int oldSkillLevel, SiegeFX.Core.Assets.SkillKind skill)
     {
         if (_progression is null) return;
+        int newSkillLevel = _progression.SkillLevel(skill);
+        bool skillLeveled = newSkillLevel > oldSkillLevel;
+        bool charLeveled  = _progression.Level > oldLevel;
         // SC-EQUIP-ENCHANT — the level-up recompute derives caps from the
         // enchanted attribute trio and drops direct life/mana bonuses; rebase
         // the worn-gear layer so +mana rings survive leveling.
-        if (_progression.Level > oldLevel) SyncPlayerArmorDefense();
-        if (_progression.Level > oldLevel)
+        // SC-ATTR-XP — attribute crossings are independent of skill crossings
+        // under the redistribution model, so rebase on that edge too.
+        if (skillLeveled || charLeveled || _progression.AttributesChangedLastAward)
+            SyncPlayerArmorDefense();
+        // SC-AWP-LEVEL-MATCH — the banner announces the SKILL level-up, which
+        // is the event the AWP boxes visualize: the box the player is watching
+        // completes (level-hold shows it full) at the exact moment this fires.
+        // The old trigger was the CHARACTER level (aggregate TotalXp), which
+        // crosses at moments unrelated to any single box — the user saw
+        // "LEVEL UP!" while the nature box still showed ~30% to go. The
+        // aggregate level keeps its console diagnostic only.
+        if (skillLeveled)
         {
-            // Level-up announce: console line for diagnostics + on-screen banner
-            // so the user actually notices. The toast fades after 3 seconds.
             var s = _player!.Actor.Stats;
             Console.WriteLine(
-                $"  *** LEVEL UP! L{oldLevel}->L{_progression.Level} " +
+                $"  *** LEVEL UP! {SkillDisplayName(skill)} L{oldSkillLevel}->L{newSkillLevel} " +
+                $"(char L{_progression.Level}) " +
                 $"str={s.Strength:F2} dex={s.Dexterity:F2} int={s.Intelligence:F2} " +
                 $"life={s.MaxLife:F0} mana={s.MaxMana:F0} ***");
-            _levelUpToastRemaining = LevelUpToastDuration;
-            _levelUpToastLevel = _progression.Level;
-            // Phase 18b — punctuate the toast with the matching DS1 jingle.
-            // Single shared melee-flavored cue for now; per-skill cues
-            // (magic_nature/magic_dark/ranged) can land in 18c next to the
-            // skill-flavored XP bar.
-            _audio?.Play(SfxLevelUp);
+            // SC-MSG-STRIP — DS1's authored level-up line (ref text.bmp:
+            // "Woot has advanced to level 1 in Nature Magic skill by casting
+            // Nature Magic spells!") on the top message strip; replaces the
+            // invented yellow banner.
+            string verb = skill switch
+            {
+                SiegeFX.Core.Assets.SkillKind.Melee       => "fighting with melee weapons",
+                SiegeFX.Core.Assets.SkillKind.Ranged      => "fighting with ranged weapons",
+                SiegeFX.Core.Assets.SkillKind.NatureMagic => "casting Nature Magic spells",
+                SiegeFX.Core.Assets.SkillKind.CombatMagic => "casting Combat Magic spells",
+                _ => "adventuring",
+            };
+            string heroName = _player is not null ? ResolveMemberName(_player) : "You";
+            AddGameMessage($"{heroName} has advanced to level {newSkillLevel} in " +
+                           $"{SkillDisplayName(skill)} skill by {verb}!");
+            // SC-LEVELUP-BOOK — the skill's own spinning tome above the hero
+            // + the skill's own authored jingle (falls back to the shared
+            // melee cue when the sound tank misses).
+            var (fxModel, fxCue) = skill switch
+            {
+                SiegeFX.Core.Assets.SkillKind.Melee       => ("m_i_glb_combat",       "s_e_level_up_melee"),
+                SiegeFX.Core.Assets.SkillKind.Ranged      => ("m_i_glb_ranged",       "s_e_level_up_ranged"),
+                SiegeFX.Core.Assets.SkillKind.NatureMagic => ("m_i_glb_nature-magic", "s_e_level_up_magic_nature"),
+                SiegeFX.Core.Assets.SkillKind.CombatMagic => ("m_i_glb_combat-magic", "s_e_level_up_magic_dark"),
+                _ => ("m_i_glb_combat", "s_e_level_up_melee"),
+            };
+            _levelUpFxMesh = TryGetModelMesh(fxModel);
+            _levelUpFxRemaining = _levelUpFxMesh is not null ? LevelUpFxSeconds : 0f;
+            if (_player is null
+                || !RegisterAndPlayVoiceCue(fxCue, _player.CurrentTransform.Translation))
+                _audio?.Play(SfxLevelUp);
+        }
+        else if (charLeveled)
+        {
+            Console.WriteLine($"  [xp] character level {oldLevel}->{_progression.Level} (aggregate; no banner)");
+        }
+        // SC-ATTR-XP — DS1 announces attribute advances on the strip just
+        // like skills ("... has advanced to level 11 in Strength!"). These
+        // crossings are independent of skill crossings under the
+        // redistribution model, so this runs on its own edge.
+        foreach (var (attr, lvl) in _progression.LastAttrLevelUps)
+        {
+            string attrName = attr == 0 ? "Strength" : attr == 1 ? "Dexterity" : "Intelligence";
+            string who = _player is not null ? ResolveMemberName(_player) : "You";
+            AddGameMessage($"{who} has advanced to level {lvl} in {attrName}!");
         }
     }
 
@@ -26839,11 +27607,7 @@ void main()
         foreach (var d in items)
             parts.Add(d.IsEquipped ? $"[{d.Slot}] {d.Reference}" : d.Reference);
         Console.WriteLine($"  loot: {actor.Template.Name} dropped {string.Join(", ", parts)}");
-        // SC-GOLD-PILES — retail drops gold as a CLICKABLE pile, not an
-        // auto-credit; the pickup path credits it with the +N cue.
-        if (goldTotal > 0)
-            items.Add(new SiegeFX.Core.Actors.LootEntry("gold", $"{goldTotal}-{goldTotal}"));
-        if (items.Count == 0) return;
+        if (items.Count == 0 && goldTotal <= 0) return;
         // Phase 9-SC-9 — enemy drops get the same toss arc as PC drops so
         // the kill→loot moment reads as "items flew off the body" instead of
         // "cube appeared." Random horizontal angle keeps repeated kills from
@@ -26854,31 +27618,48 @@ void main()
             (float)rng.NextDouble() * 2f - 1f);
         if (dropDir.LengthSquared() < 1e-4f) dropDir = new Vector2(0f, 1f);
         else dropDir = Vector2.Normalize(dropDir);
-        // Phase 21-SC-SCROLL-CLICKLOOT — short throw, item lands near
-        // the body. DS1 enemies drop loot in a tight scatter, not flung
-        // 1.4u out. Was 1.4f.
-        var dropTarget = deathPos + new Vector3(dropDir.X * 0.6f, 0f, dropDir.Y * 0.6f);
-        var deathPile = new LootPile(deathPos, items)
+
+        // SC-GOLD-OWN-PILE — DS1 drops gold as its OWN golden pickup, never
+        // fused into an item pile. Keeping them SEPARATE (thrown in opposite
+        // directions so they don't stack) means grabbing a dropped spell
+        // scroll no longer also credits the kill's gold — the user report
+        // "picking up the zap spell gives me +N gold." The item pile flies one
+        // way; the gold pile the other. (Was: items.Add(gold) → one merged
+        // pile that the pickup path emptied wholesale.)
+        LootThrow MakeThrow(Vector3 target) => new LootThrow
         {
-            Throw = new LootThrow
-            {
-                Source        = deathPos,
-                Target        = dropTarget,
-                Duration      = 0.55f,
-                Elapsed       = 0f,
-                ArcHeight     = 0.45f,
-                Spins         = 0.5f,
-                StartRotation = (float)rng.NextDouble() * MathF.PI * 2f,
-            }
+            Source        = deathPos,
+            Target        = target,
+            Duration      = 0.55f,
+            Elapsed       = 0f,
+            ArcHeight     = 0.45f,
+            Spins         = 0.5f,
+            // Phase 21-SC-SCROLL-CLICKLOOT — short throw, lands near the body
+            // (DS1 scatter is tight, not flung 1.4u out).
+            StartRotation = (float)rng.NextDouble() * MathF.PI * 2f,
         };
-        // Phase 9-SC-10 — first resolvable item drives the pile's rest pitch
-        // (shields lie flat on the ground, weapons stay upright).
-        foreach (var d in items)
+        if (items.Count > 0)
         {
-            var pitch = ComputeLootRestPitch(d.Reference);
-            if (pitch != 0f) { deathPile.RestPitch = pitch; break; }
+            var itemTarget = deathPos + new Vector3(dropDir.X * 0.6f, 0f, dropDir.Y * 0.6f);
+            var itemPile = new LootPile(deathPos, items) { Throw = MakeThrow(itemTarget) };
+            // Phase 9-SC-10 — first resolvable item drives the pile's rest pitch
+            // (shields lie flat on the ground, weapons stay upright).
+            foreach (var d in items)
+            {
+                var pitch = ComputeLootRestPitch(d.Reference);
+                if (pitch != 0f) { itemPile.RestPitch = pitch; break; }
+            }
+            _lootPiles.Add(itemPile);
         }
-        _lootPiles.Add(deathPile);
+        if (goldTotal > 0)
+        {
+            var goldItems = new List<SiegeFX.Core.Actors.LootEntry>
+            {
+                new SiegeFX.Core.Actors.LootEntry("gold", $"{goldTotal}-{goldTotal}"),
+            };
+            var goldTarget = deathPos + new Vector3(-dropDir.X * 0.6f, 0f, -dropDir.Y * 0.6f);
+            _lootPiles.Add(new LootPile(deathPos, goldItems) { Throw = MakeThrow(goldTarget) });
+        }
     }
 
     /// <summary>Phase 21-SC-BARREL-FOLD — extracted helper. Walks the drop
@@ -27532,6 +28313,15 @@ void main()
         ReconcileTradeInventory();
         if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
         if (_saveToastRemaining > 0f) _saveToastRemaining -= (float)dt;
+        // SC-MSG-STRIP / SC-CHAPTER-TITLE — tick + prune the message lines
+        // and the chapter card.
+        for (int i = _gameMessages.Count - 1; i >= 0; i--)
+        {
+            _gameMessages[i].Remaining -= (float)dt;
+            if (_gameMessages[i].Remaining <= 0f) _gameMessages.RemoveAt(i);
+        }
+        if (_chapterTitleRemaining > 0f) _chapterTitleRemaining -= (float)dt;
+        if (_levelUpFxRemaining > 0f) _levelUpFxRemaining -= (float)dt;
         // Phase 18c — listener follows the PC every frame. We use camera
         // forward (not _playerFacing) so the audio image rotates with
         // the camera instead of the body — matches what the user is
@@ -28432,7 +29222,9 @@ void main()
 
             // SC-CAST-STOW — a selected spell slot puts the weapon away
             // (DS1 casts unarmed or with a staff; the staff stays in hand).
-            if (gripIdx < pcBones && !(SpellSlotActive && !_weaponIsStaff))
+            // SC-POTION-DRINK-BOTTLE — the drink gesture swaps the weapon for the
+            // potion bottle, so the weapon hides for the whole raise.
+            if (gripIdx < pcBones && !PlayerDrinking && !(SpellSlotActive && !_weaponIsStaff))
             {
                 var gripLocal = _boneWorldsScratch[gripIdx];
                 // weaponBindInv cancels the weapon ASP's own grip-bone bind offset
@@ -28597,6 +29389,98 @@ void main()
             }
         }
 
+        // SC-POTION-DRINK-BOTTLE — while the raise gesture plays, the potion
+        // bottle rides the hero's weapon hand, tinted by the potion type. Its
+        // OWN block (not the weapon draw's) so it also shows when drinking
+        // unarmed; it recomputes the animated grip-bone world the same way the
+        // weapon draw does. Kept world-upright (translation only) — the ASP is
+        // an inventory bottle modeled standing on +Y, so following the raw hand
+        // frame would tip it over; DS1 shows it held upright at the lips.
+        if (_meshShader is not null && PlayerDrinking && _bottleMesh is not null
+            && _player is not null && !_player.IsDead && gripIdx >= 0)
+        {
+            var pcMesh = _player.Actor.Mesh;
+            var clips = _player.Actor.Clips;
+            int pcBones = pcMesh.BoneCount;
+            if (_boneWorldsScratch.Length < pcBones)
+                _boneWorldsScratch = new Matrix4x4[Math.Max(pcBones, 64)];
+            if (clips.Length == 0)
+            {
+                AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, null, 0f, _boneWorldsScratch);
+            }
+            else
+            {
+                int cidx = _player.Actor.CurrentClipIndex;
+                if (_player.IsMoving && _player.Actor.WalkClipIndex >= 0 && _player.Actor.WalkClipIndex < clips.Length)
+                    cidx = _player.Actor.WalkClipIndex;
+                cidx = Math.Min(cidx, clips.Length - 1);
+                var clip = clips[cidx];
+                var t = (float)(clip.AnimLength > 0f ? _player.AnimTime % clip.AnimLength : 0.0);
+                AnimationRuntime.ComputeAnimatedBoneWorlds(pcMesh, clip, t, _boneWorldsScratch);
+            }
+            if (gripIdx < pcBones)
+            {
+                var handPos = (_boneWorldsScratch[gripIdx] * _player.CurrentTransform).Translation;
+                // Nudge up into the palm; native item scale matches the ground bottle.
+                var bottleModel = Matrix4x4.CreateTranslation(handPos + new Vector3(0f, 0.06f, 0f));
+                var bottleTex = _drinkIsHealth ? _bottleTexHealth : _bottleTexMana;
+                _meshShader.Use();
+                _meshShader.SetMatrix4("uViewProj", vp);
+                _meshShader.SetMatrix4("uModel", bottleModel);
+                _meshShader.SetInt("uAlbedo", 0);
+                _meshShader.SetInt("uFlipV", 0);
+                ApplyLightingUniforms(_meshShader);
+                if (bottleTex is not null)
+                {
+                    bottleTex.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else _meshShader.SetInt("uHasTexture", 0);
+                _bottleMesh.Draw();
+            }
+        }
+
+        // SC-LEVELUP-BOOK — the skill tome spinning above the hero: 350°/s
+        // yaw (authored rot_inc), grows in over the first quarter, holds
+        // full-size, shrinks away over the last quarter (the user-described
+        // "spins up growing, hits max, spins back down shrinking").
+        if (_meshShader is not null && _levelUpFxRemaining > 0f
+            && _levelUpFxMesh is not null && _player is not null && !_player.IsDead)
+        {
+            float t = 1f - _levelUpFxRemaining / LevelUpFxSeconds; // 0 → 1
+            float fxScale = t < 0.25f ? t / 0.25f
+                          : t > 0.75f ? (1f - t) / 0.25f : 1f;
+            if (fxScale > 0.01f)
+            {
+                float spin = t * LevelUpFxSeconds * (350f * MathF.PI / 180f);
+                // The tome meshes are authored LYING FLAT (Y-thin, book-on-a-
+                // table) with a -90°X bind that StaticMesh doesn't bake —
+                // drawn raw the book floated horizontally. Apply the bind's
+                // own rotation to STAND it upright (mesh Z-length becomes
+                // world up), then spin about the vertical axis. The upright
+                // book extends ~0.2-0.9u ABOVE its origin, so the anchor sits
+                // lower than the flat version did.
+                var anchor = _player.CurrentTransform.Translation + new Vector3(0f, 1.55f, 0f);
+                var fxModel = Matrix4x4.CreateScale(fxScale)
+                            * Matrix4x4.CreateRotationX(-MathF.PI / 2f)
+                            * Matrix4x4.CreateRotationY(spin)
+                            * Matrix4x4.CreateTranslation(anchor);
+                _meshShader.Use();
+                _meshShader.SetMatrix4("uViewProj", vp);
+                _meshShader.SetMatrix4("uModel", fxModel);
+                _meshShader.SetInt("uAlbedo", 0);
+                _meshShader.SetInt("uFlipV", 0);
+                ApplyLightingUniforms(_meshShader);
+                if (_levelUpFxMesh.Texture is not null)
+                {
+                    _levelUpFxMesh.Texture.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else _meshShader.SetInt("uHasTexture", 0);
+                _levelUpFxMesh.Mesh.Draw();
+            }
+        }
+
         // Phase 9-SC-7 — render the first item in each loot pile as its real
         // ASP mesh (and texture, if any). Items without [aspect][model] (gold,
         // potions whose template is scroll-only, etc.) fall back to the legacy
@@ -28644,39 +29528,65 @@ void main()
                 if (pile.DisplayOverride.Length > 0)
                     itemMesh = TryGetItemMesh(pile.DisplayOverride);
                 bool goldDisplay = false;
+                // World-placed gold routes through DisplayOverride (the `gold`
+                // template = m_i_glb_coin-01); flag it so it gets the same
+                // lay-flat coin transform as enemy-drop gold, not the upright
+                // item transform (which would stand the coin fan on edge).
+                if (itemMesh is not null && pile.DisplayOverride.Length > 0
+                    && pile.DisplayOverride.Contains("gold", StringComparison.OrdinalIgnoreCase))
+                    goldDisplay = true;
                 for (var i = 0; itemMesh is null && i < pile.Items.Count; i++)
                 {
                     // SC-GOLD-PILES — synthetic gold entries ("7-7") have no
-                    // template; display the authored treasure-pile mesh sized
-                    // by amount (gold_cav_01..03 → m_i_cav_gold-01..03). The
-                    // single-coin "gold" template mesh was centimeters tall —
-                    // drawn but invisible at camera distance.
+                    // template; display DS1's authored flat COIN SPREAD sized by
+                    // amount. DS1's own `gold` GO template ships
+                    // model = m_i_glb_coin-01 (mesh b_i_glb_gold) — a flat,
+                    // ground-hugging fan of coins, NOT the chunky cavern treasure
+                    // nuggets (m_i_cav_gold-*, used only for dungeon treasure
+                    // rooms). coin-01/02/03 grow the fan with the amount (5/16/40
+                    // corners). This is the user's gold.png reference look; the
+                    // small footprint is DS1-authentic (the star glint + "N gold"
+                    // label are what make it pop at camera distance).
                     if (pile.Items[i].IsGold)
                     {
-                        // No template references these meshes — they're raw
-                        // art assets — so resolve by model name directly
-                        // (template-store lookup of an invented name = box).
+                        // No template references these meshes by our synthetic
+                        // amount, so resolve the coin model by name directly.
+                        // SC-GOLD-PILES-ROBUST — a gold drop must ALWAYS read as
+                        // gold, never the debug cube: amount-sized coin fan, then
+                        // the other coin sizes, then the `gold` template (also
+                        // m_i_glb_coin-01), then the nugget as a last resort.
                         var (glo, ghi) = pile.Items[i].GoldRange();
                         int amt = (glo + ghi) / 2;
-                        itemMesh = TryGetModelMesh(amt < 25 ? "m_i_cav_gold-01"
-                                                : amt < 100 ? "m_i_cav_gold-02" : "m_i_cav_gold-03");
+                        string primary = amt < 25 ? "m_i_glb_coin-01"
+                                       : amt < 100 ? "m_i_glb_coin-02" : "m_i_glb_coin-03";
+                        itemMesh = TryGetModelMesh(primary)
+                                ?? TryGetModelMesh("m_i_glb_coin-02")
+                                ?? TryGetModelMesh("m_i_glb_coin-01")
+                                ?? TryGetModelMesh("m_i_glb_coin-03")
+                                ?? TryGetItemMesh("gold")
+                                ?? TryGetModelMesh("m_i_glb_nugget-gold-01");
                         goldDisplay = itemMesh is not null;
+                        if (_loggedGoldResolve.Add(primary))
+                            Console.WriteLine(itemMesh is not null
+                                ? $"  gold-mesh: amt={amt} → {(goldDisplay ? primary : "fallback")} OK"
+                                : $"  gold-mesh: amt={amt} ALL candidates missed → cube (report this)");
                     }
                     else
                     {
                         itemMesh = TryGetItemMesh(pile.Items[i].Reference);
                     }
                 }
-                // SC-GOLD-PILES — retail gold glints (user ref gold.bmp):
-                // sparse tiny bright motes above any pile carrying gold.
+                // SC-GOLD-GLINT — retail gold GLITTERS like scattered starlight,
+                // not the puffs of smoke SpawnSmoke gave (user: "buffs of smoke
+                // instead of glitter"). SpawnTwinkle emits the star sprite
+                // (TexSlot 2), additive, grow-then-fade, drifting across the coin
+                // fan's footprint — a proper sparkle field hugging the pile.
                 if (_particles is not null && PileIsGoldOrSpell(pile)
                     && pile.Items.Any(x => x.IsGold)
-                    && _pileSparkleRng.NextDouble() < 0.05)
+                    && _pileSparkleRng.NextDouble() < 0.06)
                 {
-                    var sp = pos + new Vector3(
-                        (float)(_pileSparkleRng.NextDouble() - 0.5) * 0.5f, 0.25f,
-                        (float)(_pileSparkleRng.NextDouble() - 0.5) * 0.5f);
-                    _particles.SpawnSmoke(sp, new Vector4(1.0f, 0.92f, 0.35f, 0.9f), 0.08f, 0.35f, 1);
+                    _particles.SpawnTwinkle(pos + new Vector3(0f, 0.07f, 0f),
+                        new Vector4(1.0f, 0.94f, 0.55f, 1f), 0.28f, 0.09f, 0.5f, 2);
                 }
 
                 if (itemMesh is not null)
@@ -28696,10 +29606,15 @@ void main()
                     // + flop" while a landed item just sits at its rest angle.
                     // RotationX is already 0 once the throw lands (cleared at
                     // t>=1 in the tick), so this collapses to RestPitch only.
-                    // Gold treasure meshes are authored ground-hugging; sit
-                    // them ON the floor (no half-size lift) at full scale.
+                    // Gold coin fans are authored on the mesh's XY plane (Z-up,
+                    // like every DS1 item ASP) with a -90°X bind that StaticMesh
+                    // doesn't bake, so without a rotation here the fan stands
+                    // VERTICAL. Lay it flat on the world XZ floor (mesh Z, the
+                    // thin axis, becomes world up), then random-spin + ground it
+                    // at full scale (no half-size lift — the fan is ~2cm thick).
                     var model = goldDisplay
-                        ? Matrix4x4.CreateRotationY(pile.RotationY)
+                        ? Matrix4x4.CreateRotationX(-MathF.PI / 2f)
+                          * Matrix4x4.CreateRotationY(pile.RotationY)
                           * Matrix4x4.CreateTranslation(pos.X, pos.Y + 0.02f, pos.Z)
                         : Matrix4x4.CreateScale(itemScale)
                           * Matrix4x4.CreateRotationX(pitch + pile.RotationX)
@@ -28730,8 +29645,13 @@ void main()
                         _frameLootLabels.Add((labelPos, itemMesh.DisplayName));
                     }
                 }
-                else if (_lootCube is not null)
+                else if (_lootCube is not null && !pile.Items.Any(x => x.IsGold))
                 {
+                    // SC-GOLD-PILES-ROBUST — the debug cube stands in for a
+                    // failed-to-resolve ITEM mesh, never for gold: a gold pile
+                    // that somehow missed every mesh candidate above still shows
+                    // its glint (spawned earlier) rather than a beige box, which
+                    // reads far worse than "sparkle with no pile."
                     var model = Matrix4x4.CreateScale(pileSize)
                               * Matrix4x4.CreateTranslation(pos.X, pos.Y + pileSize * 0.5f, pos.Z);
                     _meshShader.SetMatrix4("uModel", model);
@@ -29190,25 +30110,61 @@ void main()
                     _iconRenderer, spellClose, ResolveSpellInventoryIcon);
             }
 
-            if (_player is not null)
+            // SC-MSG-STRIP — DS1's top-center message strip (ref text.bmp /
+            // sparkles.bmp): ONE wide translucent shadowbox band (~65% of the
+            // screen width, centered) behind ALL the live lines — the "easier
+            // to read" backdrop — with the lines LEFT-ALIGNED inside it,
+            // parchment ink, stacked newest-last. Carries screenshot
+            // confirmations, skill/attribute level-ups, and quest notices.
+            if (_gameMessages.Count > 0 && _barRenderer is not null)
             {
-                // Phase 16d — level-up toast. Big banner near top-center while
-                // _levelUpToastRemaining > 0; a yellow-on-black backdrop grabs
-                // the eye even with a busy 3D scene behind. Console line stays
-                // for diagnostics; this is the player-facing signal.
-                if (_levelUpToastRemaining > 0f && _barRenderer is not null)
+                float hs = Hud.HudScale.Hud(size.Y);
+                int fscale = Math.Max(1, (int)MathF.Round(hs));
+                int lineH = _textRenderer.LineHeight * fscale + 2 * fscale;
+                int padX = 8 * fscale, padY = 3 * fscale;
+                int bandW = (int)(size.X * 0.655f);
+                int bandX = (size.X - bandW) / 2;
+                int bandY = 0;
+                // Sit below the save toast when one is up (same slot in DS1).
+                if (_saveToastRemaining > 0f)
+                    bandY += _textRenderer.LineHeight * fscale + (int)MathF.Round(24 * hs);
+                int bandH = _gameMessages.Count * lineH + padY * 2;
+                // Band alpha follows the LONGEST-lived line so the box holds
+                // while any line is still readable, then fades with the last.
+                float bandA = 0f;
+                foreach (var msg in _gameMessages)
+                    bandA = MathF.Max(bandA, MathF.Min(1f, msg.Remaining / 0.8f));
+                _barRenderer.DrawRect(size.X, size.Y, bandX, bandY, bandW, bandH,
+                    new Vector4(0.02f, 0.02f, 0.03f, 0.60f * bandA));
+                int lineY = bandY + padY;
+                foreach (var msg in _gameMessages)
                 {
-                    string banner = $"** LEVEL UP!  Lv {_levelUpToastLevel} **";
-                    int textW = banner.Length * 7;  // 7px per glyph approx
-                    int padX = 16, padY = 6;
-                    int boxW = textW + padX * 2;
-                    int boxH = 24;
-                    int boxX = (size.X - boxW) / 2;
-                    int boxY = 60;
-                    _barRenderer.DrawRect (size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(0.10f, 0.08f, 0.02f, 0.85f));
-                    _barRenderer.DrawBorder(size.X, size.Y, boxX, boxY, boxW, boxH, new Vector4(1.00f, 0.85f, 0.20f, 1f));
-                    _textRenderer.DrawString(size.X, size.Y, banner, boxX + padX, boxY + padY, new Vector4(1f, 0.92f, 0.40f, 1f));
+                    float a = MathF.Min(1f, msg.Remaining / 0.8f);
+                    _textRenderer.DrawString(size.X, size.Y, msg.Text, bandX + padX, lineY,
+                        new Vector4(0.93f, 0.90f, 0.74f, a), fscale);
+                    lineY += lineH;
                 }
+            }
+
+            // SC-CHAPTER-TITLE — the authored chapter card art (b_gui_nis_ch0N,
+            // ref chapter text.bmp). Full-strength on arrival, then a slow
+            // linear fade over the last ChapterTitleFadeSeconds. Sized from
+            // the authored 256px window on the 640×480 UI plane, centered at
+            // the authored spot (~screen center).
+            if (_chapterTitleRemaining > 0f && _chapterCardTex is not null
+                && _iconRenderer is not null)
+            {
+                float a = MathF.Min(1f, _chapterTitleRemaining / ChapterTitleFadeSeconds);
+                // Scale with the SHARED clamped HUD scale (BaseMax cap + the
+                // user's UI-Scale knob) — raw vh/480 blew the 256px art up
+                // fuzzy on 1440p/4K and ignored the knob every other HUD
+                // element honors.
+                float hs = Hud.HudScale.Hud(size.Y);
+                int side = (int)MathF.Round(256f * hs);
+                int cx = (size.X - side) / 2;
+                int cy = (int)MathF.Round(size.Y * (239f / 480f)) - side / 2;
+                _iconRenderer.DrawIcon(size.X, size.Y, _chapterCardTex, cx, cy, side, side,
+                    new Vector4(1f, 1f, 1f, a));
             }
 
             // DS1 save-confirmation banner — a dark status bar near the top
@@ -29570,6 +30526,77 @@ void main()
             }
             _textRenderer.EndPass();
         }
+        // SC-SCREENSHOT — grab the completed back buffer as the very last
+        // act of the frame, so the capture contains everything (HUD included)
+        // exactly as presented.
+        CaptureScreenshotIfPending();
+    }
+
+    /// <summary>SC-SCREENSHOT — Print Screen capture. Reads the back buffer
+    /// (GL thread only), writes a 24-bit BMP — the same format DS1 wrote
+    /// ("Dungeon Siege Screen - NNNN.bmp") — to
+    /// %LOCALAPPDATA%\SiegeFX\Screenshots\SiegeFX Screen - NNNN.bmp, and
+    /// confirms on the message strip like retail.</summary>
+    private void CaptureScreenshotIfPending()
+    {
+        if (!_screenshotPending || _gl is null || _window is null) return;
+        _screenshotPending = false;
+        try
+        {
+            var size = _window.FramebufferSize;
+            int w = size.X, h = size.Y;
+            if (w <= 0 || h <= 0) return;
+            var pixels = new byte[w * h * 3];
+            _gl.PixelStore(GLEnum.PackAlignment, 1);
+            unsafe
+            {
+                fixed (byte* p = pixels)
+                    _gl.ReadPixels(0, 0, (uint)w, (uint)h, GLEnum.Rgb, GLEnum.UnsignedByte, p);
+            }
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SiegeFX", "Screenshots");
+            Directory.CreateDirectory(dir);
+            string path;
+            int n = 1;
+            do { path = Path.Combine(dir, $"SiegeFX Screen - {n:D4}.bmp"); n++; }
+            while (File.Exists(path));
+            WriteBmp24(path, w, h, pixels);
+            AddGameMessage($"Screenshot successfully taken to '{Path.GetFileName(path)}'");
+        }
+        catch (Exception ex)
+        {
+            AddGameMessage("Screenshot failed.");
+            Console.WriteLine($"[screenshot] failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>24-bit bottom-up BMP writer. GL's ReadPixels rows are already
+    /// bottom-up, matching BMP's native row order — only the per-pixel
+    /// RGB→BGR swizzle is needed.</summary>
+    private static void WriteBmp24(string path, int w, int h, byte[] rgb)
+    {
+        int rowBytes = w * 3, pad = (4 - rowBytes % 4) % 4, stride = rowBytes + pad;
+        int dataSize = stride * h, fileSize = 54 + dataSize;
+        using var bw = new BinaryWriter(new FileStream(path, FileMode.Create, FileAccess.Write));
+        bw.Write((byte)'B'); bw.Write((byte)'M');
+        bw.Write(fileSize); bw.Write(0); bw.Write(54);
+        bw.Write(40); bw.Write(w); bw.Write(h);
+        bw.Write((short)1); bw.Write((short)24);
+        bw.Write(0); bw.Write(dataSize);
+        bw.Write(2835); bw.Write(2835); bw.Write(0); bw.Write(0);
+        var row = new byte[stride];
+        for (int y = 0; y < h; y++)
+        {
+            int src = y * rowBytes;
+            for (int x = 0; x < w; x++)
+            {
+                row[x * 3 + 0] = rgb[src + x * 3 + 2];
+                row[x * 3 + 1] = rgb[src + x * 3 + 1];
+                row[x * 3 + 2] = rgb[src + x * 3 + 0];
+            }
+            bw.Write(row, 0, stride);
+        }
     }
 
     /// <summary>Phase 21-SC-SCROLL-PRE-2 — start a scroll drag from the
@@ -29900,14 +30927,19 @@ void main()
 
 
     /// <summary>Phase 21-SC-INV-A2 (round 6) — map a spell to the per-skill
-    /// XP pool that ranks it. DS1 splits offensive (combat) from supportive
-    /// (nature) by keyword; we mirror that split through the
-    /// <see cref="SiegeFX.Core.Assets.SpellElement"/> bucket the template
-    /// already carries: Fire/Lightning/Death belong to Combat Magic, Ice/
-    /// Acid/Holy belong to Nature Magic. Generic falls to Combat as a
-    /// reasonable default for unrecognized templates.</summary>
+    /// XP pool that ranks it, so casting it advances the matching skill bar in
+    /// the character sheet. AUTHORITATIVE source is <see cref="SiegeFX.Core.
+    /// Assets.SpellTemplate.Class"/>: DS1's specializes chain marks every spell
+    /// base_spell_good (Nature Magic) or base_spell_dark (Combat Magic). Only
+    /// when the chain didn't resolve to one of those (Unknown / a monster
+    /// arsenal spell) do we fall back to the element-name heuristic — Ice/Acid/
+    /// Holy read as Nature, everything else as Combat.</summary>
     private static SiegeFX.Core.Assets.SkillKind SkillForSpell(SiegeFX.Core.Assets.SpellTemplate spell)
     {
+        if (spell.Class == SiegeFX.Core.Assets.SpellClass.NatureMagic)
+            return SiegeFX.Core.Assets.SkillKind.NatureMagic;
+        if (spell.Class == SiegeFX.Core.Assets.SpellClass.CombatMagic)
+            return SiegeFX.Core.Assets.SkillKind.CombatMagic;
         return spell.Element switch
         {
             SiegeFX.Core.Assets.SpellElement.Ice       => SiegeFX.Core.Assets.SkillKind.NatureMagic,
@@ -29916,6 +30948,16 @@ void main()
             _                                          => SiegeFX.Core.Assets.SkillKind.CombatMagic,
         };
     }
+
+    /// <summary>Skill-XP progress fraction for the spell sitting in an AWP
+    /// spell slot — the caster skill that spell trains (see
+    /// <see cref="SkillForSpell"/>), so the fill behind a nature primary
+    /// tracks Nature Magic and a combat primary tracks Combat Magic. An empty
+    /// slot returns 0 so no bar draws behind a blank frame.</summary>
+    private float SpellSlotProgress(SiegeFX.Core.Assets.SpellTemplate? spell)
+        => spell is null || _progression is null
+            ? 0f
+            : _progression.SkillProgressFraction(SkillForSpell(spell));
 
     /// <summary>Phase 21-SC-INV-A2 — three chevrons inside the open-panels
     /// strip. Drawn as five 1px stair-step rects per chevron (the BarRenderer
@@ -30270,6 +31312,11 @@ void main()
                 Strength      = _player.Actor.Stats.Strength     - _appliedEnchant.Str,
                 Dexterity     = _player.Actor.Stats.Dexterity    - _appliedEnchant.Dex,
                 Intelligence  = _player.Actor.Stats.Intelligence - _appliedEnchant.Int,
+                // Per-skill XP pools so attribute growth resumes from the right
+                // per-skill levels on load (see PlayerProgression.AwardXp).
+                SkillXp       = _progression is null
+                    ? new System.Collections.Generic.List<long>()
+                    : new System.Collections.Generic.List<long>(_progression.SkillXpSnapshot()),
                 Facing        = SiegeFX.Core.Save.Vec3.From(_playerFacing),
                 CameraMode    = (int)_cameraMode,
                 ChaseYaw      = _chaseYaw,
@@ -30607,7 +31654,7 @@ void main()
             }
             if (_progression is not null)
             {
-                _progression.RestoreFromSave(ps.TotalXp, ps.Level);
+                _progression.RestoreFromSave(ps.TotalXp, ps.Level, ps.SkillXp);
                 _progression.Journal.RestoreFromSave(
                     ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress, q.PickupProgress)));
                 // ALPHA-2G — the Show Dialogue chronicle survives reload.

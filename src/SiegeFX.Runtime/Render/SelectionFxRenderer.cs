@@ -159,21 +159,39 @@ void main() {
         Face(b0, b2, b1, 1.12f); // base, brightest (lit from above)
     }
 
-    /// <summary>Phase 22 — DS1's flat blue hover triangle around gold and
-    /// spells on the ground: a single ground-plane triangle, drawn with the
-    /// ring pass's polygon offset so it hugs the floor.</summary>
+    /// <summary>Phase 22 — DS1's blue hover triangle around gold and spells on
+    /// the ground. DS1 draws it HOLLOW: a thin triangular OUTLINE with a
+    /// transparent middle, not a filled tri. We shrink each corner toward the
+    /// centroid to get an inner triangle, then fill only the band between the
+    /// two (three edge quads) — the inner triangle is never emitted, so the
+    /// middle stays see-through. +0.05 above ground clears z-fighting at DS1's
+    /// camera pitch.</summary>
     public void AddFlatTriangle(Vector3 ground, float size, Vector4 color)
     {
         float y = ground.Y + 0.05f;
         var p0 = new Vector3(ground.X, y, ground.Z + size);
         var p1 = new Vector3(ground.X - size * 0.87f, y, ground.Z - size * 0.5f);
         var p2 = new Vector3(ground.X + size * 0.87f, y, ground.Z - size * 0.5f);
-        // Solid texture (full alpha) — the ring texture's band profile would
-        // gradient the corners away. +0.05 above ground keeps it clear of
-        // z-fighting at DS1's camera pitch without the ring pass's offset.
-        Emit(_solidVerts, p0, 0.5f, 0.5f, color);
-        Emit(_solidVerts, p1, 0.5f, 0.5f, color);
-        Emit(_solidVerts, p2, 0.5f, 0.5f, color);
+        // Inner corners pulled toward the centroid leave a ~22%-wide outline.
+        var ctr = (p0 + p1 + p2) / 3f;
+        const float borderFrac = 0.22f;
+        var q0 = ctr + (p0 - ctr) * (1f - borderFrac);
+        var q1 = ctr + (p1 - ctr) * (1f - borderFrac);
+        var q2 = ctr + (p2 - ctr) * (1f - borderFrac);
+        // One quad per edge (outer edge + matching inner edge) = the frame.
+        // CullFace is off in Draw(), so winding doesn't matter.
+        void EdgeQuad(Vector3 oa, Vector3 ob, Vector3 ib, Vector3 ia)
+        {
+            Emit(_solidVerts, oa, 0.5f, 0.5f, color);
+            Emit(_solidVerts, ob, 0.5f, 0.5f, color);
+            Emit(_solidVerts, ib, 0.5f, 0.5f, color);
+            Emit(_solidVerts, oa, 0.5f, 0.5f, color);
+            Emit(_solidVerts, ib, 0.5f, 0.5f, color);
+            Emit(_solidVerts, ia, 0.5f, 0.5f, color);
+        }
+        EdgeQuad(p0, p1, q1, q0);
+        EdgeQuad(p1, p2, q2, q1);
+        EdgeQuad(p2, p0, q0, q2);
     }
 
     private float[] _uploadBuf = Array.Empty<float>();

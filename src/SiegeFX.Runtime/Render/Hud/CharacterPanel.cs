@@ -28,10 +28,18 @@ public sealed class CharacterPanel
     public int OriginX { get; set; }
     public int OriginY { get; set; }
 
+    /// <summary>SC-EQUIP-ROUTING — the info-rail scale the last Draw used.
+    /// The hit rect must match the DRAWN panel: the old unscaled 165×460
+    /// both swallowed clicks it didn't render under (killing the paperdoll
+    /// slots that overlap the sheet) and let clicks on the scaled chrome
+    /// below y=460 fall through to the world (a dragged item thrown to the
+    /// ground instead of equipped).</summary>
+    public float LastScale { get; private set; } = 1f;
+
     public bool IsPointInPanel(int x, int y) =>
         x >= OriginX && y >= OriginY &&
-        x <  OriginX + PanelWidth &&
-        y <  OriginY + PanelHeight;
+        x <  OriginX + (int)(PanelWidth * LastScale) &&
+        y <  OriginY + (int)(PanelHeight * LastScale);
 
     public void Draw(BarRenderer bars, TextRenderer text,
                      int viewportW, int viewportH,
@@ -62,6 +70,7 @@ public sealed class CharacterPanel
         // scale (InfoRailLayout.Scale) so the upper panes match the
         // paperdoll + inventory + spellbook sizing on modern resolutions.
         float s = InfoRailLayout.Scale(viewportH);
+        LastScale = s; // SC-EQUIP-ROUTING — keep the hit rect in step with the drawn size
         int paneW = (int)System.Math.Round((254 - 87) * s);
         int pane1H = (int)System.Math.Round(116 * s);
         int pane2H = (int)System.Math.Round(112 * s); // 228-116
@@ -160,7 +169,12 @@ public sealed class CharacterPanel
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104,101, 211, 114), R(214,101, 236, 114),
                 "Intelligence",((int)player.Stats.Intelligence).ToString(),
-                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? skillXpFraction,
+                // INT is driven by BOTH magic schools (nature + combat); track
+                // whichever is closer to its next level so a nature caster's
+                // INT row shows progress, not just Combat Magic's.
+                progression is null ? skillXpFraction
+                    : MathF.Max(progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic),
+                                progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic)),
                 ink, slotBg, slotEm);
         }
 
@@ -344,7 +358,12 @@ public sealed class CharacterPanel
             // creator preview path still shows movement.
             float strFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? skillXpFraction;
             float dexFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? skillXpFraction;
-            float intFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? skillXpFraction;
+            // INT is driven by both magic schools — track whichever magic skill
+            // is closer to its next level (a nature caster's INT row shouldn't
+            // sit frozen on Combat Magic).
+            float intFrac = progression is null ? skillXpFraction
+                : MathF.Max(progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic),
+                            progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic));
             int statRowH = 11;
             int sy = statsTop + 12; // headroom for the HP|MP readout above
             DrawStatBarRow(bars, text, viewportW, viewportH, statsX, sy, statsW, statRowH,

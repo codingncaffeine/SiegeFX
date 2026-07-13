@@ -1169,6 +1169,13 @@ public sealed class SfxRuntime
         return right * off.X + Vector3.UnitY * off.Y + fwd * off.Z;
     }
 
+    /// <summary>SC-SPELL-VFX-FLASH — hard cap on a one-shot lightning bolt's
+    /// on-screen life. A cast beam fires at the hand-extended peak of the ~0.7s
+    /// magic clip; anything longer than a quick snap lingers past the hand-drop
+    /// and looks fake. Bolts are instantaneous by nature (a sustained beam is a
+    /// persistent emitter mode), so this never clips a legitimate effect.</summary>
+    private const float OneShotBoltMaxSeconds = 0.15f;
+
     void DispatchStart(Handle h, string? selfName)
     {
         switch (h.Mode)
@@ -1179,7 +1186,16 @@ public sealed class SfxRuntime
                 // beam. Phase 23d-2a passes the full SU-212 bolt shape:
                 // signed [mindisplace, maxdisplace] stray range plus
                 // subd/minsubd subdivision density.
-                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color, h.Duration,
+                // SC-SPELL-VFX-FLASH — a lightning bolt is an INSTANT strike; it
+                // must be gone before the caster's hand returns to his side
+                // (cast clip ~0.7s, beam fires near the hand-extended peak). The
+                // authored/default dur (0.35s+) lingered past the hand-drop and
+                // read as fake, so cap the on-screen life to a quick snap. Bolts
+                // are inherently one-frame-ish flashes, so this never truncates
+                // a "real" effect — a channeled beam would be a persistent mode.
+                float boltLife = MathF.Min(h.Duration > 0f ? h.Duration : OneShotBoltMaxSeconds,
+                                           OneShotBoltMaxSeconds);
+                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color, boltLife,
                     h.HasMinDisplace ? h.MinDisplaceY : -h.Displace,
                     h.Displace,
                     h.HasSubd    ? h.SubdLevel : 0f,

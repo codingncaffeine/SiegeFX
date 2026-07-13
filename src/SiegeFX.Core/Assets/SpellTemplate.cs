@@ -192,6 +192,14 @@ public sealed class SpellTemplate
     /// <summary>Phase 24a — chain descends from a base_summon_* template.</summary>
     public bool IsSummon { get; private set; }
 
+    /// <summary>SC-CORPSE-SPELLS — authored [magic] target_type_flags contains
+    /// tt_dead_enemy: the spell targets CORPSES (Burn Body, Explode Body,
+    /// Corpse Transmutation), never living actors. DS1's spell_body_bomb
+    /// component pops the body; only enemy (computer-controlled) corpses
+    /// qualify and nothing living takes damage unless the spell also authors
+    /// make_explosion (Explode Body).</summary>
+    public bool TargetsDeadEnemy { get; private set; }
+
     /// <summary>Phase 19 fix — WHICH cast sub-animation this spell uses
     /// (<c>[magic] cast_sub_animation</c>, components.gas: "Storage for what
     /// cast animation to use to cast this spell"). 0 = the quick mg cast;
@@ -250,6 +258,9 @@ public sealed class SpellTemplate
     {
         ActiveIcon = (store.GetAttribute(template, "gui", "active_icon") ?? "")
                      .Trim().Trim('"');
+        // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
+        TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
+            .Contains("tt_dead_enemy", StringComparison.OrdinalIgnoreCase);
         var goldStr = store.GetAttribute(template, "aspect", "gold_value");
         if (!string.IsNullOrEmpty(goldStr)
             && float.TryParse(goldStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var gv))
@@ -417,11 +428,20 @@ public sealed class SpellTemplate
             return off;
         }
 
-        // Self-heal path: spells DS1 marks with state_name = "heal". The heal
-        // amount lives in [magic][enchantments][*] where alteration=alter_life;
+        // Heal path — SC-HEAL-AUDIT: DS1 marks heals TWO ways, and only two of
+        // the five player heals author state_name="heal" (healing_wind,
+        // nurture). The canonical marker is usage_context_flags containing
+        // uc_life_giving — authored on ALL of them (healing_hands,
+        // battle_healing, major_heal included; those three used to fall into
+        // SpellKind.Other = VFX with no heal — "healing hands won't heal").
+        // Regeneration stays out (uc_defensive + alter_life_recovery_unit —
+        // it's a recovery-rate buff, not a direct heal). The heal amount
+        // lives in [magic][enchantments][*] where alteration=alter_life;
         // we take its value expression as the per-cast heal magnitude.
         string? stateName = store.GetAttribute(template, "magic", "state_name");
-        if (string.Equals((stateName ?? "").Trim().Trim('"'), "heal", StringComparison.OrdinalIgnoreCase))
+        string usageCtx = (store.GetAttribute(template, "magic", "usage_context_flags") ?? "");
+        if (string.Equals((stateName ?? "").Trim().Trim('"'), "heal", StringComparison.OrdinalIgnoreCase)
+            || usageCtx.Contains("uc_life_giving", StringComparison.OrdinalIgnoreCase))
         {
             var enchantments = store.GetSection(template, "magic", "enchantments");
             if (enchantments is not null)

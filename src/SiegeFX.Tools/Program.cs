@@ -3121,6 +3121,14 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                 }
                 float radius = MathF.Sqrt(maxR2);
                 if (radius < 0.5f) continue;
+                // SC-NAV-OBSTACLE-YGATE — mirror the in-game prop vertical
+                // band so the soak mesh gates obstacles per floor too.
+                var wBase = Vector3.Transform(
+                    new Vector3((minL.X + maxL.X) * 0.5f, minL.Y, (minL.Z + maxL.Z) * 0.5f), world);
+                var wTop = Vector3.Transform(
+                    new Vector3((minL.X + maxL.X) * 0.5f, maxL.Y, (minL.Z + maxL.Z) * 0.5f), world);
+                float propBaseY = MathF.Min(wBase.Y, wTop.Y);
+                float propTopY = MathF.Max(wBase.Y, wTop.Y);
                 var wcA = Vector3.Transform(corners[0], world);
                 var wcB = Vector3.Transform(corners[1], world);
                 var wcD = Vector3.Transform(corners[3], world);
@@ -3141,7 +3149,7 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                     {
                         float along = -halfLong + longLen * (di / (float)(n - 1));
                         var c = origin + axis * along;
-                        marked += mesh.MarkObstacle(c.X, c.Z, discR);
+                        marked += mesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY);
                     }
                 }
                 else if (shortLen > 2.4f)
@@ -3158,12 +3166,12 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                     {
                         var c = wcA + axU * (sideAB * iu / (nu - 1))
                                     + axV * (sideAD * iv / (nv - 1));
-                        marked += mesh.MarkObstacle(c.X, c.Z, gridR);
+                        marked += mesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY);
                     }
                 }
                 else
                 {
-                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius);
+                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY);
                 }
                 if (marked > 0) { props++; discs += marked; }
             }

@@ -173,14 +173,47 @@ public sealed class NavMesh
     /// derived from its model AABB. Pure data, no concurrency — call
     /// at region-load time after BuildForRegion.</summary>
     public int MarkObstacle(float worldX, float worldZ, float radius)
+        => MarkObstacle(worldX, worldZ, radius, float.NegativeInfinity, float.PositiveInfinity);
+
+    /// <summary>Below-floor slack for the Y-gated overload: how far under a
+    /// prop's world base a triangle may sit and still be its floor. Absorbs
+    /// step/slope and props sunk slightly into the ground, while staying well
+    /// clear of a stacked floor several units below (DS1 basements sit ~3u
+    /// under the ground floor in the same snode).</summary>
+    private const float ObstacleBelowFloorTol = 1.75f;
+
+    /// <summary>Above-top slack for the Y-gated overload — a hair over the
+    /// prop's world top so a floor tri right at the top edge still counts.</summary>
+    private const float ObstacleAboveTopTol = 0.5f;
+
+    /// <summary>SC-NAV-OBSTACLE-YGATE — Y-aware obstacle marking. Same XZ
+    /// footprint test as the 3-arg overload, but a triangle is only blocked
+    /// when its centroid Y falls within
+    /// [<paramref name="baseY"/> - <see cref="ObstacleBelowFloorTol"/>,
+    /// <paramref name="topY"/> + <see cref="ObstacleAboveTopTol"/>].
+    /// A does_block_path prop standing on an upper floor was blanket-blocking
+    /// the basement directly beneath it in the SAME snode — a ground-floor
+    /// wall/pillar/furniture cast its XZ footprint straight down onto the
+    /// cellar, severing the stair descent so the basement became its own
+    /// disconnected component and A* reported "no corridor". Gating to the
+    /// prop's own vertical band keeps each floor's obstacles on that floor.
+    /// The 3-arg overload passes an infinite band (all-Y), preserving the
+    /// old behavior for authored point-blockers with no measurable height.</summary>
+    public int MarkObstacle(float worldX, float worldZ, float radius, float baseY, float topY)
     {
         Blocked ??= new bool[TriangleCount];
         if (radius <= 0f) return 0;
         float r2 = radius * radius;
+        float loY = baseY - ObstacleBelowFloorTol;
+        float hiY = topY + ObstacleAboveTopTol;
         int marked = 0;
         for (int t = 0; t < TriangleCount; t++)
         {
             if (Blocked[t]) continue;
+            // Y-gate first — cheapest reject, and the whole point of this
+            // overload: skip triangles on a different floor than the prop.
+            float cy = Centroids[t].Y;
+            if (cy < loY || cy > hiY) continue;
             // SC-NAV-OBSTACLE-EDGE-TEST (audit fold #5) — was
             // centroid-in-disk, which missed long-thin triangles
             // whose edge crossed the prop but whose centroid was
@@ -1034,15 +1067,33 @@ public sealed class NavMesh
     /// involved are engage ranges (≤ ~4u), so this is a handful of grid
     /// lookups.</summary>
     public bool SegmentCrossesBlocked(Vector3 a, Vector3 b)
+        => SegmentCrossesBlocked(a, b, 0f);
+
+    /// <summary>SC-PROP-BREAK-REACH overload — same wall test, but samples
+    /// within <paramref name="skipRadiusAtB"/> of the target endpoint
+    /// <paramref name="b"/> are ignored. A breakable that is itself a
+    /// does_block_path prop (barrels, crates) marks its OWN footprint blocked,
+    /// so a melee reach-check straight at its center always crossed a blocked
+    /// tri in the last ~1u and refused the swing ("can't hit the barrel through
+    /// the barrel"). Excluding the target's footprint restores the break while
+    /// still catching a real wall between the attacker and the target.</summary>
+    public bool SegmentCrossesBlocked(Vector3 a, Vector3 b, float skipRadiusAtB)
     {
         float dx = b.X - a.X, dz = b.Z - a.Z;
         float len = MathF.Sqrt(dx * dx + dz * dz);
         if (len < 0.25f) return false;
+        float skip2 = skipRadiusAtB * skipRadiusAtB;
         int steps = Math.Clamp((int)(len / 0.5f), 1, 24);
         for (int i = 1; i < steps; i++)
         {
             float t = i / (float)steps;
-            var p = new Vector3(a.X + dx * t, (a.Y + b.Y) * 0.5f, a.Z + dz * t);
+            float px = a.X + dx * t, pz = a.Z + dz * t;
+            if (skip2 > 0f)
+            {
+                float bx = px - b.X, bz = pz - b.Z;
+                if (bx * bx + bz * bz <= skip2) continue; // inside the target's own footprint
+            }
+            var p = new Vector3(px, (a.Y + b.Y) * 0.5f, pz);
             if (!TryFindTriangle(p, out var tri, includeFadeHidden: true)) return true;
             if (IsBlocked(tri)) return true;
         }

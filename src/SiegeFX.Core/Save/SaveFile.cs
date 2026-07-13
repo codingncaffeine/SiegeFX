@@ -243,6 +243,13 @@ public sealed class PlayerSnapshot
     public float Dexterity    { get; set; }
     public float Intelligence { get; set; }
 
+    /// <summary>Per-skill XP pools (Melee, Ranged, NatureMagic, CombatMagic).
+    /// Empty on pre-persistence saves — the loader then seeds each skill to the
+    /// character level so attribute growth resumes without re-granting gains
+    /// already baked into <see cref="Strength"/>/<see cref="Dexterity"/>/<see
+    /// cref="Intelligence"/>.</summary>
+    public List<long> SkillXp { get; set; } = new();
+
     public Vec3  Facing       { get; set; }
 
     /// <summary>Camera mode index (0=fly, 1=chase) plus orbit params so a

@@ -119,7 +119,9 @@ public sealed class CharacterAwp
                      HitTarget hovered = HitTarget.None,
                      HitTarget pressed = HitTarget.None,
                      float slot1Progress = 0f, float slot2Progress = 0f,
-                     float slot3Progress = 0f, float slot4Progress = 0f)
+                     float slot3Progress = 0f, float slot4Progress = 0f,
+                     float slot1Flash = 0f, float slot2Flash = 0f,
+                     float slot3Flash = 0f, float slot4Flash = 0f)
     {
         if (awpAtlas is null) return;
         float s = Scale(viewportH);
@@ -224,6 +226,7 @@ public sealed class CharacterAwp
         // spell list — same gas messages as max mode's slot 1.
         var slotIcons = new[] { slot1Icon, slot2Icon, slot3Icon, slot4Icon };
         var slotProgs = new[] { slot1Progress, slot2Progress, slot3Progress, slot4Progress };
+        var slotFlash = new[] { slot1Flash, slot2Flash, slot3Flash, slot4Flash };
         int maxSlot = railOpen ? 1 : 4;
         for (int i = 0; i < maxSlot; i++)
         {
@@ -282,6 +285,26 @@ public sealed class CharacterAwp
                 int inset = (int)Math.Round(1 * s);
                 iconRenderer.DrawIcon(viewportW, viewportH, ico,
                     sx + inset, sy + inset, sw - 2 * inset, sh - 2 * inset, Vector4.One);
+            }
+            // SC-AWP-XP-PULSE — DS1's razor-thin green flash on each XP tick.
+            // A solid green line (the game's selection-green) sits at the TOP
+            // edge of the current fill and fades out as the pulse decays, so
+            // the box reads as "just nudged up". No gradient — that's on the
+            // persistent fill, not this tick. In min mode slot 0 mirrors the
+            // active slot's pulse, same as its progress/icon.
+            float flashVal = (railOpen && i == 0 && activeSlot >= 0 && activeSlot < 4)
+                ? slotFlash[activeSlot] : slotFlash[i];
+            if (flashVal > 0f)
+            {
+                int fillHnow = (int)Math.Round(sh * progFrac);
+                int thick = Math.Max(1, (int)Math.Round(1.3f * s)); // razor thin
+                int lineTop = sy + sh - fillHnow - thick;
+                if (lineTop < sy) lineTop = sy;
+                if (lineTop > sy + sh - thick) lineTop = sy + sh - thick;
+                int inx = (int)Math.Round(1 * s);
+                var green = new Vector4(0.05f, 0.78f, 0.10f, Math.Clamp(flashVal, 0f, 1f) * 0.95f);
+                barRenderer.DrawRect(viewportW, viewportH,
+                    sx + inx, lineTop, sw - 2 * inx, thick, green);
             }
             // Selection overlay on the active slot
             if (i == activeSlot)

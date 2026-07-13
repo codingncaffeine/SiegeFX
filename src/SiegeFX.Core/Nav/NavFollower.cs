@@ -106,6 +106,13 @@ public sealed class NavFollower
     // while rejecting cross-layer snaps (stacked floors are 3u+ apart).
     private const float MaxRebindDy = 2.0f;
 
+    // SC-NAV-STEP-DOWN-GATE — the largest per-sub-step DESCENT a walker may
+    // take. Legit ramp/stair descents move a few tenths per step (7u/s ×
+    // 50ms × 45° ≈ 0.35u); a bigger single-step drop is a coverage-seam
+    // fall-through onto the layer below (see the bridge-edge dip). Ascents
+    // are ungated (the ±MaxRebindDy probe already bounds them).
+    private const float MaxStepDownDy = 1.0f;
+
     /// <summary>Standing-triangle probe: <see cref="NavMesh.TryFindTriangleNear"/>
     /// including fade-hidden ground (it's physical), but only accepting a
     /// triangle within <see cref="MaxRebindDy"/> of the walker's current Y.
@@ -520,6 +527,30 @@ public sealed class NavFollower
                 nz = Position.Z;
             }
             float ny = standing >= 0 ? Mesh.SampleYOnTriangle(standing, new Vector3(nx, 0f, nz)) : Position.Y;
+            // SC-NAV-STEP-DOWN-GATE — a walker descends ramps/stairs a few
+            // tenths of a unit per sub-step; a DROP of more than ~1u in one
+            // step means the stand probe fell through a coverage seam onto
+            // the layer BELOW (bridge edge: deck Y8.9 → water sheet 7.5 →
+            // stream bed 4.7 — the "player dips into the ground + grey
+            // flash" report; each layer gap fit the ±2u rebind gate, so the
+            // walker slid down the whole stack). Refuse the drop: hold
+            // position + triangle this sub-step; the funnel retries next
+            // tick and, if the seam persists, stuck-recovery replans — whose
+            // rebind chain provably lands on the correct bank ground without
+            // the visible plunge. Same-triangle drops stay allowed (a single
+            // steep tri is legitimate slope, not a layer flip).
+            if (standing >= 0 && CurrentTriangle >= 0 && standing != CurrentTriangle
+                && ny < Position.Y - MaxStepDownDy)
+            {
+                if (DiagnosticLogging)
+                    System.Console.WriteLine(
+                        $"[nav-step-gate] refused {Position.Y - ny:F1}u drop " +
+                        $"tri {CurrentTriangle}->{standing} at ({nx:F1},{nz:F1}) — holding");
+                nx = Position.X;
+                nz = Position.Z;
+                standing = CurrentTriangle;
+                ny = Position.Y;
+            }
             Position = new Vector3(nx, ny, nz);
             CurrentTriangle = standing;
             remaining -= step;

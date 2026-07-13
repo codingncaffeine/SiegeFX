@@ -225,7 +225,50 @@ public static class NavPathfinder
                 ws.HeapPush(fScore[nb], nb);
             }
         }
-        LastFailure = $"no corridor from start tri {startTri} (snode=0x{mesh.SourceSnodeGuid[startTri]:X8} lnode={mesh.SourceLnodeIndex[startTri]}) to goal tri {goalTri} (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]}) (disconnected components)";
+        // SC-NAV-DIAG — the A* above honors obstacles (Blocked[]) and the
+        // logical-flags/traversal gates, so "no corridor" conflates two very
+        // different faults: a genuine mesh STITCH GAP (the two triangles are in
+        // different raw components — welding/cross-SNO stitch failed) vs an
+        // OBSTACLE/GATE SEVER (they ARE raw-connected, but props/flags block
+        // every route between them). Re-run a plain BFS over raw Neighbors —
+        // ignoring Blocked and every gate — to tell them apart in the log. This
+        // is what pinpoints basement descents: same raw component ⇒ an obstacle
+        // is sealing the seam (widen the Y-gate / move the prop); different raw
+        // component ⇒ the stair-bottom↔cellar edge never welded (stitch bug).
+        bool rawConnected = RawReachable(mesh, startTri, goalTri);
+        string verdict = rawConnected
+            ? "RAW-CONNECTED (obstacle/gate sever — a Blocked prop or logical-flag seals the only corridor)"
+            : "RAW-DISCONNECTED (mesh stitch gap — the connecting edge never welded)";
+        LastFailure = $"no corridor from start tri {startTri} (snode=0x{mesh.SourceSnodeGuid[startTri]:X8} lnode={mesh.SourceLnodeIndex[startTri]}) to goal tri {goalTri} (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]}) — {verdict}";
+        return false;
+    }
+
+    /// <summary>SC-NAV-DIAG — plain flood over raw <see cref="NavMesh.Neighbors"/>
+    /// adjacency, ignoring Blocked[] and every traversal/logical gate. Answers
+    /// "are these two triangles in the same connected component of the bare
+    /// mesh?" — the discriminator between a stitch gap and an obstacle sever.
+    /// Bounded by triangle count; only runs on a path FAILURE, which is rare.</summary>
+    private static bool RawReachable(NavMesh mesh, int startTri, int goalTri)
+    {
+        if (startTri == goalTri) return true;
+        int n = mesh.TriangleCount;
+        if (startTri < 0 || goalTri < 0 || startTri >= n || goalTri >= n) return false;
+        var seen = new bool[n];
+        var stack = new Stack<int>();
+        stack.Push(startTri);
+        seen[startTri] = true;
+        while (stack.Count > 0)
+        {
+            int t = stack.Pop();
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = mesh.Neighbors[3 * t + s];
+                if (nb < 0 || seen[nb]) continue;
+                if (nb == goalTri) return true;
+                seen[nb] = true;
+                stack.Push(nb);
+            }
+        }
         return false;
     }
 

@@ -145,8 +145,10 @@ public sealed class PlayerSpellbook
         float cd = slot == SpellSlot.Primary ? PrimaryCooldownRemaining : SecondaryCooldownRemaining;
         if (cd > 0f) return new CastResult(CastOutcome.OnCooldown, spell, 0, 0, 0, false);
 
+        // SC-HEAL-AUDIT — a heal's target (when supplied) is the party
+        // member to restore; TryCastSelfHeal falls back to the caster.
         if (spell.Kind == SpellKind.SelfHeal)
-            return TryCastSelfHeal(slot, spell, magicLevel);
+            return TryCastSelfHeal(slot, spell, magicLevel, target);
 
         if (target is null) return new CastResult(CastOutcome.NoTarget, spell, 0, 0, 0, false);
         if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, spell, 0, 0, 0, false);
@@ -194,7 +196,7 @@ public sealed class PlayerSpellbook
         float cd = slot == SpellSlot.Primary ? PrimaryCooldownRemaining : SecondaryCooldownRemaining;
         if (cd > 0f) return new CastResult(CastOutcome.OnCooldown, spell, 0, 0, 0, false);
         if (spell.Kind == SpellKind.SelfHeal)
-            return TryCastSelfHeal(slot, spell, magicLevel);
+            return TryCastSelfHeal(slot, spell, magicLevel, target);
         if (target is null) return new CastResult(CastOutcome.NoTarget, spell, 0, 0, 0, false);
         if (target.Combat.IsDead) return new CastResult(CastOutcome.TargetDead, spell, 0, 0, 0, false);
         if (distance > spell.CastRange) return new CastResult(CastOutcome.OutOfRange, spell, 0, 0, 0, false);
@@ -252,19 +254,25 @@ public sealed class PlayerSpellbook
         return new CastResult(CastOutcome.Cast, spell, spent, damage, 0f, false);
     }
 
-    CastResult TryCastSelfHeal(SpellSlot slot, SpellTemplate spell, float magicLevel)
+    CastResult TryCastSelfHeal(SpellSlot slot, SpellTemplate spell, float magicLevel,
+                               Actor? healTarget = null)
     {
+        // SC-HEAL-AUDIT — DS1's single-target heals (healing_hands /
+        // battle_healing / major_heal) restore "a single Party Member":
+        // the clicked member when the caller passes one, else the caster.
+        // Mana always comes from the CASTER (#src_*); the #maxlife/#life
+        // the heal formulas clamp against are the TARGET's.
+        var target = healTarget ?? _player;
         // No-op when already at full life — DS1 grays out heal icons in that
         // state. Better to refund the cast than to spend mana for nothing.
-        if (_player.Combat.CurrentLife >= _player.Stats.MaxLife)
+        if (target.Combat.CurrentLife >= target.Stats.MaxLife)
             return new CastResult(CastOutcome.AlreadyFull, spell, 0, 0, 0, false);
 
-        // Self-heal: caster *is* the target, so #maxlife / #life and
-        // #src_* all read from the player. spell_healing_hands' ternary
-        // (SC-A3 — once landed) clamps heal-against-mana with these values.
+        // spell_healing_hands' ternary clamps heal-against-mana with
+        // these values (heals only what the caster's mana can pay for).
         var ctx = new SpellEvalContext(magicLevel,
-            maxLife: _player.Stats.MaxLife,
-            life:    _player.Combat.CurrentLife,
+            maxLife: target.Stats.MaxLife,
+            life:    target.Combat.CurrentLife,
             srcMana: _player.Combat.CurrentMana,
             srcLife: _player.Combat.CurrentLife);
 
@@ -274,7 +282,7 @@ public sealed class PlayerSpellbook
 
         float spent = _player.Combat.SpendMana(cost);
         float heal  = spell.HealAmount(ctx);
-        if (heal > 0f) _player.Combat.Heal(heal);
+        if (heal > 0f) target.Combat.Heal(heal);
         StartCooldown(slot, spell.CastReloadDelay);
         return new CastResult(CastOutcome.Cast, spell, spent, 0f, heal, false);
     }
