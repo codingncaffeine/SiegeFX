@@ -694,18 +694,9 @@ public sealed class RenderHost : IDisposable
     // _formulas is also live; null-guarded everywhere because viewer modes that
     // don't TrySpawnPlayer leave both at null and we still want the world to load.
     private SiegeFX.Core.Actors.PlayerProgression? _progression;
-    // Phase 16d — seconds the "LEVEL UP!" banner stays on screen after a
-    // threshold crossing. Counts down each render frame; >0 means banner
-    // is currently being drawn near the top of the HUD.
-    private float _levelUpToastRemaining;
-    private int _levelUpToastLevel;
-    // SC-AWP-LEVEL-MATCH — which SKILL the toast announces. The AWP boxes track
-    // per-skill XP pools, so the banner must fire on skill-level crossings (the
-    // moment a box completes), not character-level ones — the aggregate TotalXp
-    // crosses its thresholds at times unrelated to any one box ("box still shows
-    // 30% to go" report).
-    private string _levelUpToastSkill = "";
-    private const float LevelUpToastDuration = 3f;
+    // Phase 16d/SC-AWP-LEVEL-MATCH history — the yellow "LEVEL UP!" banner
+    // was replaced by SC-MSG-STRIP's authored strip line + SC-LEVELUP-BOOK's
+    // spinning tome; its fields are gone.
     // Phase 17a — instant-hit spell catalog (parsed from spl_spell.gas via the
     // template store) and the player's single-slot spellbook. Built after the
     // template store is populated and the player has spawned. Both are null in
@@ -27203,8 +27194,10 @@ void main()
                     // at least visually originates *toward* the victim.
                     // _playerFacing normally only updates from movement deltas;
                     // without this, a player who casts while standing still
-                    // would shoot bolts out of his back.
-                    var tp = best.CurrentTransform.Translation;
+                    // would shoot bolts out of his back. (best is non-null on
+                    // every offensive Cast outcome — the NoTarget path returns
+                    // earlier — hence the assertion.)
+                    var tp = best!.CurrentTransform.Translation;
                     float fx = tp.X - playerPos.X;
                     float fz = tp.Z - playerPos.Z;
                     float fl2 = fx * fx + fz * fz;
@@ -28311,7 +28304,6 @@ void main()
         _frameStamp++; // ALPHA-PERF — gates once-per-frame uniform uploads
         if (_diagMode) DiagRecordFrame(dt);
         ReconcileTradeInventory();
-        if (_levelUpToastRemaining > 0f) _levelUpToastRemaining -= (float)dt;
         if (_saveToastRemaining > 0f) _saveToastRemaining -= (float)dt;
         // SC-MSG-STRIP / SC-CHAPTER-TITLE — tick + prune the message lines
         // and the chapter card.
