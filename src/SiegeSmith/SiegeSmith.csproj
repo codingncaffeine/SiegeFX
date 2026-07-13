@@ -43,4 +43,28 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
+  <!-- .NET 11 preview SDK bug: a self-contained publish omits ijwhost.dll, the
+       mixed-mode "IJW" host shim that WPF's DirectWriteForwarder.dll imports.
+       Without it a self-contained SiegeSmith crashes at startup with a
+       DirectWriteForwarder FileNotFoundException ("module could not be
+       found"). The framework-dependent dev build works because ijwhost.dll
+       lives in the shared WindowsDesktop runtime. Add it to the publish set
+       (so it also rides inside the single-file bundle and extracts alongside
+       DirectWriteForwarder) straight from the host pack. -->
+  <Target Name="IncludeIjwHostForSelfContained"
+          BeforeTargets="ComputeResolvedFilesToPublishList;_ComputeFilesToBundle"
+          Condition=" '$(RuntimeIdentifier)' != '' and '$(SelfContained)' == 'true' ">
+    <PropertyGroup>
+      <_IjwHostPath>$(NetCoreRoot)packs\Microsoft.NETCore.App.Host.$(RuntimeIdentifier)\$(BundledNETCoreAppPackageVersion)\runtimes\$(RuntimeIdentifier)\native\ijwhost.dll</_IjwHostPath>
+    </PropertyGroup>
+    <Error Condition=" !Exists('$(_IjwHostPath)') "
+           Text="ijwhost.dll not found at $(_IjwHostPath) — a self-contained WPF publish will crash. Check the host pack version." />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(_IjwHostPath)">
+        <RelativePath>ijwhost.dll</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>
