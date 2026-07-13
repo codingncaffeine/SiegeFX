@@ -512,3 +512,7 @@ eos_config.txt
 *.prs
 *.skrit
 *.dsres
+# Extraction/scratch dirs that must never return
+_re_dump/
+_scratch_creator/
+_frontend_textures/
