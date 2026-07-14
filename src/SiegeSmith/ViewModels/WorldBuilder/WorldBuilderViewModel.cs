@@ -4184,11 +4184,25 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         return new MapPackager.SeedActor(tpl, 0x00020001, s.NodeGuid, s.X, s.Z);
     }
 
+    /// <summary>Locates an install tank. EXACT filename first — the GOG install ships
+    /// both Logic.dsres and DevLogic.dsres, and a bare substring match on "logic"
+    /// returned DEVLOGIC (alphabetically first): a near-empty developer tank with one
+    /// sfx script and no templates, so every Play run reported "template not in store"
+    /// and skipped the hero spawn. The user's session log caught it. Dev* tanks are
+    /// never chosen by the fallback either.</summary>
     private string? FindTank(string substr)
     {
+        string exact = substr + ".dsres";
         foreach (var p in _tankPaths)
-            if (Path.GetFileName(p).Contains(substr, StringComparison.OrdinalIgnoreCase))
+            if (Path.GetFileName(p).Equals(exact, StringComparison.OrdinalIgnoreCase))
                 return p;
+        foreach (var p in _tankPaths)
+        {
+            var name = Path.GetFileName(p);
+            if (name.Contains(substr, StringComparison.OrdinalIgnoreCase)
+                && !name.StartsWith("dev", StringComparison.OrdinalIgnoreCase))
+                return p;
+        }
         return null;
     }
 
