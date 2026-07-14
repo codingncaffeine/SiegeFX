@@ -263,6 +263,57 @@ public static class GltfImporter
     /// <summary>Yields (meshIndex, worldMatrix, skinIndex) for every node that references a mesh,
     /// composing the scene → node transform chain. skinIndex is -1 for an unskinned node. Falls back to
     /// walking all nodes if no scene is declared.</summary>
+    /// <summary>SS-BLENDER — every NAMED, mesh-less node (a Blender "empty") with its
+    /// glTF-world position and +Z axis. The terrain importer maps nodes named
+    /// <c>door*</c> to SNO door frames — glTF and SNO are both Y-up, so these values
+    /// are consumed raw (no axis conversion, unlike the ASP mesh path).</summary>
+    public static List<(string Name, Vector3 Position, Vector3 AxisZ)> CollectMarkers(byte[] fileBytes)
+    {
+        var result = new List<(string, Vector3, Vector3)>();
+        string json;
+        if (fileBytes.Length >= 12 && BinaryPrimitives.ReadUInt32LittleEndian(fileBytes) == GlbMagic)
+            (json, _) = ReadGlb(fileBytes);
+        else
+            json = Encoding.UTF8.GetString(fileBytes);
+
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)
+            return result;
+
+        int[] roots;
+        if (root.TryGetProperty("scenes", out var scenes) && scenes.GetArrayLength() > 0)
+        {
+            int sceneIdx = root.TryGetProperty("scene", out var sc) ? sc.GetInt32() : 0;
+            var scene = scenes[Math.Clamp(sceneIdx, 0, scenes.GetArrayLength() - 1)];
+            var list = new List<int>();
+            if (scene.TryGetProperty("nodes", out var sn)) foreach (var e in sn.EnumerateArray()) list.Add(e.GetInt32());
+            roots = list.ToArray();
+        }
+        else roots = SequentialIndices(nodes.GetArrayLength());
+
+        var stack = new Stack<(int Node, Matrix4x4 Parent)>();
+        for (int i = roots.Length - 1; i >= 0; i--) stack.Push((roots[i], Matrix4x4.Identity));
+        var guard = new HashSet<int>();
+        while (stack.Count > 0)
+        {
+            var (ni, parent) = stack.Pop();
+            if (ni < 0 || ni >= nodes.GetArrayLength() || !guard.Add(ni)) continue;
+            var node = nodes[ni];
+            var world = LocalTransform(node) * parent;
+            if (!node.TryGetProperty("mesh", out _)
+                && node.TryGetProperty("name", out var nm) && nm.GetString() is { Length: > 0 } name)
+            {
+                var axisZ = Vector3.TransformNormal(Vector3.UnitZ, world);
+                if (axisZ.LengthSquared() > 1e-10f) axisZ = Vector3.Normalize(axisZ);
+                result.Add((name, world.Translation, axisZ));
+            }
+            if (node.TryGetProperty("children", out var ch))
+                foreach (var c in ch.EnumerateArray()) stack.Push((c.GetInt32(), world));
+        }
+        return result;
+    }
+
     private static IEnumerable<(int Mesh, Matrix4x4 World, int Skin)> EnumerateMeshNodes(JsonElement root)
     {
         if (!root.TryGetProperty("nodes", out var nodes) || nodes.ValueKind != JsonValueKind.Array)

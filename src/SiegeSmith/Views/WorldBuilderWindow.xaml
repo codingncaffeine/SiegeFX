@@ -462,6 +462,19 @@
                                           ToolTip="On: slope-classify triangles, flood-fill floor groupings, and build a nav BSP. Off: cosmetic geometry only."/>
                                 <Button Content="Generate terrain tile → .sno" Command="{Binding GenerateTerrainTileCommand}" Padding="8,5"
                                         ToolTip="Write a v7.0 .sno (verified against the engine reader) plus a [mesh_file] index entry into the custom assets, so the engine can resolve and load it"/>
+
+                                <TextBlock Text="Blender terrain import" Style="{StaticResource Header.Section}" Margin="0,10,0,4"/>
+                                <TextBlock Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,3"
+                                           Text="Model in Blender, export glTF (or OBJ), import here as a walkable siege node. Doors: add empties named door1, door2… with +Z aimed out of the room — or tick fallback sides below."/>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Fallback doors:" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <CheckBox Content="N" IsChecked="{Binding TerrainDoorN}" Margin="0,0,6,0" FontSize="11"/>
+                                    <CheckBox Content="E" IsChecked="{Binding TerrainDoorE}" Margin="0,0,6,0" FontSize="11"/>
+                                    <CheckBox Content="S" IsChecked="{Binding TerrainDoorS}" Margin="0,0,6,0" FontSize="11"/>
+                                    <CheckBox Content="W" IsChecked="{Binding TerrainDoorW}" FontSize="11"/>
+                                </StackPanel>
+                                <Button Content="Import terrain mesh (OBJ/glTF) → .sno" Command="{Binding ImportTerrainMeshCommand}" Padding="8,5"
+                                        ToolTip="Convert arbitrary Blender geometry to a walkable DS1 terrain node: Y-up SNO, nav floor + BSP from slope classification, doors from door* empties (or bounding-box edges), verified against the engine reader — placeable from the mesh palette immediately"/>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>

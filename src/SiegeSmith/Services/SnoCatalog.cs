@@ -173,6 +173,25 @@ public sealed class SnoCatalog : IDisposable
     public string NameOf(uint meshGuid) =>
         _guidToBare.TryGetValue(meshGuid, out var bare) ? bare : $"0x{meshGuid:X8}";
 
+    /// <summary>SS-BLENDER — registers a loose custom terrain tile (a generated or imported
+    /// <c>.sno</c> living in the assets folder, outside any tank) so it is immediately
+    /// placeable from the mesh palette. Re-registering the same guid replaces the cached
+    /// model, so a re-import updates the tile in place.</summary>
+    public void RegisterCustom(uint meshGuid, string bareName, SnoModel model)
+    {
+        _guidToBare[meshGuid] = bareName;
+        _snoCache[meshGuid] = model;
+        bool present = false;
+        foreach (var m in Meshes)
+            if (m.MeshGuid == meshGuid) { present = true; break; }
+        if (!present)
+        {
+            var list = new List<SnoMeshEntry>(Meshes) { new(meshGuid, bareName) };
+            list.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            Meshes = list;
+        }
+    }
+
     private static string BareName(string path)
     {
         int slash = path.LastIndexOf('/');

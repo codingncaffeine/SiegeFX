@@ -746,6 +746,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public RelayCommand OpenAssetsFolderCommand { get; }
     public RelayCommand ImportObjMeshCommand { get; }
     public RelayCommand GenerateTerrainTileCommand { get; }
+    public RelayCommand ImportTerrainMeshCommand { get; }
+
+    // SS-BLENDER — fallback edge-door sides for imported terrain (used only when the
+    // glTF carries no door* empties; OBJ always uses these).
+    private bool _terrainDoorN = true, _terrainDoorE = true, _terrainDoorS = true, _terrainDoorW = true;
+    public bool TerrainDoorN { get => _terrainDoorN; set => SetProperty(ref _terrainDoorN, value); }
+    public bool TerrainDoorE { get => _terrainDoorE; set => SetProperty(ref _terrainDoorE, value); }
+    public bool TerrainDoorS { get => _terrainDoorS; set => SetProperty(ref _terrainDoorS, value); }
+    public bool TerrainDoorW { get => _terrainDoorW; set => SetProperty(ref _terrainDoorW, value); }
     public RelayCommand PlaceObjectCommand { get; }
     public RelayCommand DeleteObjectCommand { get; }
     public RelayCommand TogglePlacingCommand { get; }
@@ -1720,6 +1729,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             OnPropertyChanged(nameof(QuestKeys));
         }, _ => _selectedQuest is not null);
         GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
+        ImportTerrainMeshCommand = new RelayCommand(_ => ImportTerrainMesh(), _ => _assetsFolder is not null);
         PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
@@ -4626,7 +4636,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         ImportTextureCommand.RaiseCanExecuteChanged();
         CreateTemplateCommand.RaiseCanExecuteChanged();
         ImportAudioCommand.RaiseCanExecuteChanged();
+        GenerateTerrainTileCommand.RaiseCanExecuteChanged();
+        ImportTerrainMeshCommand.RaiseCanExecuteChanged();
         Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
+        LoadCustomTerrainFromAssets(); // earlier sessions' tiles become placeable again
     }
 
     /// <summary>GAME-5 — import audio into the map bundle: WAV validated by the
@@ -4834,12 +4847,172 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         try { System.IO.File.WriteAllBytes(snoPath, sno); }
         catch (Exception ex) { Status = $"Couldn't save .sno: {ex.Message}"; return; }
         AppendMeshFileIndex(name, guid);
+        RegisterCustomTerrain(guid, name, check);
 
         OnPropertyChanged(nameof(AssetsLabel));
         int floors = check.LogicalGroupings.Count(g => g.Kind == SiegeFX.Core.Assets.SnoModel.FloorKind.Floor);
         Status = $"Generated {name}.sno ({TileKind.ToLowerInvariant()}, {tris.Count} tris, " +
                  $"{(_tileWalkable ? $"{floors} floor grouping(s)" : "cosmetic")}) guid=0x{guid:X8}. " +
-                 $"Round-trip OK → {snoPath}";
+                 $"Round-trip OK — placeable from the mesh palette now.";
+    }
+
+    /// <summary>SS-BLENDER — imports an OBJ or glTF (a Blender export) as a WALKABLE custom
+    /// terrain node (.sno). Geometry stays Y-up (SNO convention — the prop path's Z-up
+    /// swizzle is undone), nav floor groupings + BSP come from SnoNavGen slope classification,
+    /// and door frames come from glTF nodes named <c>door1</c>, <c>door2</c>… (Blender empties,
+    /// +Z aimed OUT of the room) or fall back to bounding-box edge midpoints on the ticked
+    /// sides. This is the no-Gmax path: model in Blender, export glTF, place the tile.</summary>
+    private void ImportTerrainMesh()
+    {
+        if (_assetsFolder is null)
+        { Status = "Set an assets folder first — the .sno and its index bundle into the mod."; return; }
+
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Filter = "Mesh (*.obj;*.gltf;*.glb)|*.obj;*.gltf;*.glb|Wavefront OBJ (*.obj)|*.obj|glTF 2.0 (*.gltf;*.glb)|*.gltf;*.glb|All files|*.*",
+            Title = "Import a mesh (OBJ or glTF) as walkable terrain (.sno)",
+        };
+        if (dlg.ShowDialog() != true) return;
+
+        ObjImporter.Result res;
+        List<(string Name, Vector3 Position, Vector3 AxisZ)> markers = new();
+        try
+        {
+            var ext = System.IO.Path.GetExtension(dlg.FileName).ToLowerInvariant();
+            if (ext is ".gltf" or ".glb")
+            {
+                var fileBytes = System.IO.File.ReadAllBytes(dlg.FileName);
+                res = GltfImporter.Parse(fileBytes, System.IO.Path.GetDirectoryName(dlg.FileName));
+                markers = GltfImporter.CollectMarkers(fileBytes);
+            }
+            else res = ObjImporter.Parse(System.IO.File.ReadAllText(dlg.FileName));
+        }
+        catch (Exception ex) { Status = $"Couldn't parse mesh: {ex.Message}"; return; }
+        ObjImporter.FillMissingNormals(res);
+        if (res.Faces.Count == 0) { Status = "That mesh produced no triangles."; return; }
+
+        // The importers hand back DS1 PROP space (Z-up, (x,z,-y)); SNO terrain is Y-up,
+        // so undo the swizzle. Pure rotation — winding and normals stay consistent.
+        static Vector3 ToYUp(Vector3 p) => new(p.X, -p.Z, p.Y);
+        var verts = new List<SnoWriter.Vertex>(res.Corners.Count);
+        foreach (var c in res.Corners)
+            verts.Add(SnoWriter.Vertex.White(ToYUp(res.Positions[c.VertexIndex]), ToYUp(c.Normal), c.Uv));
+        var tris = new List<SnoWriter.Tri>(res.Faces.Count);
+        foreach (var f in res.Faces) tris.Add(new SnoWriter.Tri(f.A, f.B, f.C));
+
+        Vector3 min = new(float.MaxValue), max = new(float.MinValue);
+        foreach (var v in verts) { min = Vector3.Min(min, v.Position); max = Vector3.Max(max, v.Position); }
+
+        // Doors: glTF door* empties win (position + the empty's +Z as outward);
+        // otherwise bounding-box edge midpoints on the ticked sides.
+        var doors = new List<SnoWriter.DoorDef>();
+        foreach (var (mName, mPos, mAxisZ) in markers)
+        {
+            if (!mName.StartsWith("door", StringComparison.OrdinalIgnoreCase)) continue;
+            uint id = 0;
+            var digits = new string(mName.Where(char.IsDigit).ToArray());
+            if (digits.Length > 0) _ = uint.TryParse(digits, out id);
+            if (id == 0) id = (uint)doors.Count + 1;
+            while (doors.Any(d => d.Id == id)) id++;
+            doors.Add(new SnoWriter.DoorDef(id, mPos, Array.Empty<uint>(), mAxisZ));
+        }
+        bool fromMarkers = doors.Count > 0;
+        if (!fromMarkers)
+        {
+            float y = Math.Clamp(0f, min.Y, max.Y);
+            float cx = (min.X + max.X) * 0.5f, cz = (min.Z + max.Z) * 0.5f;
+            uint id = 1;
+            if (_terrainDoorN) doors.Add(new SnoWriter.DoorDef(id++, new Vector3(cx, y, max.Z), Array.Empty<uint>(), Vector3.UnitZ));
+            if (_terrainDoorE) doors.Add(new SnoWriter.DoorDef(id++, new Vector3(max.X, y, cz), Array.Empty<uint>(), Vector3.UnitX));
+            if (_terrainDoorS) doors.Add(new SnoWriter.DoorDef(id++, new Vector3(cx, y, min.Z), Array.Empty<uint>(), -Vector3.UnitZ));
+            if (_terrainDoorW) doors.Add(new SnoWriter.DoorDef(id, new Vector3(min.X, y, cz), Array.Empty<uint>(), -Vector3.UnitX));
+        }
+
+        // Texture: the mesh's first material name, unless it's the importer placeholder —
+        // then the tile-panel texture field.
+        string tex = res.TextureNames.Count > 0 && !res.TextureNames[0].StartsWith("custom", StringComparison.OrdinalIgnoreCase)
+            ? LightSanitize(res.TextureNames[0])
+            : LightSanitize(_tileTexture);
+        if (tex.Length == 0) tex = "custom_terrain";
+
+        var groupings = _tileWalkable ? SnoNavGen.Build(verts, tris) : null;
+        byte[] sno;
+        try { sno = SnoWriter.Write(verts, tris, tex, doors, groupings); }
+        catch (Exception ex) { Status = $"SNO write failed: {ex.Message}"; return; }
+
+        // Reader-as-oracle round-trip (the format has no length fields).
+        SiegeFX.Core.Assets.SnoModel check;
+        try { check = SiegeFX.Core.Assets.SnoModel.Load(sno); }
+        catch (Exception ex) { Status = $"SNO round-trip failed ({ex.Message}) — not saved."; return; }
+        if (check.TotalTriangleCount != tris.Count || check.Doors.Length != doors.Count)
+        { Status = $"SNO round-trip mismatch ({check.TotalTriangleCount}/{tris.Count} tris, {check.Doors.Length}/{doors.Count} doors) — not saved."; return; }
+
+        string name = LightSanitize(System.IO.Path.GetFileNameWithoutExtension(dlg.FileName));
+        if (name.Length == 0) name = "custom_terrain";
+
+        uint guid = _nextTerrainGuid++;
+        var snoDir = System.IO.Path.Combine(_assetsFolder, "art", "terrain", "ss_custom");
+        System.IO.Directory.CreateDirectory(snoDir);
+        var snoPath = System.IO.Path.Combine(snoDir, name + ".sno");
+        try { System.IO.File.WriteAllBytes(snoPath, sno); }
+        catch (Exception ex) { Status = $"Couldn't save .sno: {ex.Message}"; return; }
+        AppendMeshFileIndex(name, guid);
+        RegisterCustomTerrain(guid, name, check);
+
+        OnPropertyChanged(nameof(AssetsLabel));
+        int floors = check.LogicalGroupings.Count(g => g.Kind == SiegeFX.Core.Assets.SnoModel.FloorKind.Floor);
+        int mats = res.TextureNames.Count;
+        Status = $"Imported {name}.sno — {tris.Count} tris, {doors.Count} door(s) " +
+                 $"({(fromMarkers ? "from door* empties" : "bounding-box edges")}), " +
+                 $"{(_tileWalkable ? $"{floors} floor grouping(s)" : "cosmetic")}" +
+                 (doors.Count == 0 ? ", NO DOORS — it can only be a region's anchor node" : "") +
+                 (mats > 1 ? $". Note: SNO is single-surface; {mats} materials collapsed onto '{tex}'" : "") +
+                 ". Placeable from the mesh palette now.";
+    }
+
+    /// <summary>Makes a custom tile placeable immediately: registers it with the catalog
+    /// (palette + Resolve) and the palette backing list.</summary>
+    private void RegisterCustomTerrain(uint guid, string name, SiegeFX.Core.Assets.SnoModel model)
+    {
+        if (_catalog is null) return;
+        _catalog.RegisterCustom(guid, name, model);
+        bool present = false;
+        foreach (var m in _allMeshes)
+            if (m.MeshGuid == guid) { present = true; break; }
+        if (!present)
+        {
+            _allMeshes.Add(new SnoMeshEntry(guid, name));
+            _allMeshes.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+        }
+        RefreshPalette();
+    }
+
+    /// <summary>Re-registers every custom tile already in the assets folder (index gas +
+    /// .sno files) so earlier sessions' tiles stay placeable, and bumps the guid counter
+    /// past them so new tiles never collide.</summary>
+    private void LoadCustomTerrainFromAssets()
+    {
+        if (_assetsFolder is null || _catalog is null) return;
+        var file = System.IO.Path.Combine(_assetsFolder, "world", "global", "siege_nodes", "ss_custom", "misc_ss_custom.gas");
+        if (!System.IO.File.Exists(file)) return;
+        int n = 0;
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            System.IO.File.ReadAllText(file), @"filename\s*=\s*([^;]+);\s*guid\s*=\s*(0x[0-9A-Fa-f]+)"))
+        {
+            var tileName = m.Groups[1].Value.Trim();
+            var hex = m.Groups[2].Value.Trim();
+            if (!uint.TryParse(hex.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var guid)) continue;
+            if (guid >= _nextTerrainGuid) _nextTerrainGuid = guid + 1;
+            var snoPath = System.IO.Path.Combine(_assetsFolder, "art", "terrain", "ss_custom", tileName + ".sno");
+            if (!System.IO.File.Exists(snoPath)) continue;
+            try
+            {
+                RegisterCustomTerrain(guid, tileName, SiegeFX.Core.Assets.SnoModel.Load(System.IO.File.ReadAllBytes(snoPath)));
+                n++;
+            }
+            catch { /* corrupt tile — regenerate it */ }
+        }
+        if (n > 0) Status = $"Registered {n} custom terrain tile(s) from the assets folder — placeable from the mesh palette.";
     }
 
     /// <summary>Rewrites the custom siege-node index (<c>world/global/siege_nodes/ss_custom/misc_ss_custom.gas</c>)
