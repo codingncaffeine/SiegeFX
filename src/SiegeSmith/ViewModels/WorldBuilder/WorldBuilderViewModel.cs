@@ -5707,7 +5707,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 }
             }
 
-            float doorSize = MathF.Max(0.14f, MarkerSize(_radius) * 0.5f);
+            // markers scale with the CAMERA, not the region — a fixed 0.3u cube is
+            // sub-pixel when a full shipped region is framed (the "where are the
+            // blue doors?" report); ~2% of orbit distance stays visible at any zoom
+            float doorSize = MathF.Max(MathF.Max(0.14f, MarkerSize(_radius) * 0.5f), _dist * 0.022f);
             foreach (var fd in PrimaryFreeDoors)
             {
                 if (!_nodeWorld.TryGetValue(fd.Snode, out var nw)) continue;
