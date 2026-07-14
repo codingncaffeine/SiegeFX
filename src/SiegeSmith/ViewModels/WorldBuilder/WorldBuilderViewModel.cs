@@ -1701,7 +1701,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         try
         {
             GasDocument.Parse(TemplateAuthor.Compose(spec)); // engine-grammar acceptance BEFORE writing
-            path = TemplateAuthor.Write(_assetsFolder, spec);
+            path = TemplateAuthor.Write(_assetsFolder!, spec);
         }
         catch (Exception ex) { Status = "Template failed: " + ex.Message; return; }
 
@@ -3168,7 +3168,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         }
         catch (Exception ex) { Status = "Prefab load failed: " + ex.Message; return; }
         if (data is null || data.Count == 0) { Status = "Prefab is empty."; return; }
-        uint node = _selectedNode.Guid;
+        uint node = _selectedNode!.Guid;
         if (!_nodeWorld.TryGetValue(node, out var nw) || !Matrix4x4.Invert(nw, out var inv))
         { Status = "Selected node has no transform yet — render once first."; return; }
 
@@ -4230,7 +4230,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private void PlaceObject()
     {
         if (_selectedProp is null || !EnsureNodeSelected()) return;
-        var node = _region.Find(_selectedNode.Guid);
+        var node = _region.Find(_selectedNode!.Guid);
         if (node is null) return;
         bool actor = _placingActors;
         PushUndo();
@@ -4401,8 +4401,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (!EnsureNodeSelected()) return;
         var e = new RegionEmitter
         {
-            Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid,
-            LocalPos = LocalCenter(_selectedNode.Guid), Smoke = smoke,
+            Scid = _nextEffectScid++, NodeGuid = _selectedNode!.Guid,
+            LocalPos = LocalCenter(_selectedNode!.Guid), Smoke = smoke,
         };
         Emitters.Add(e);
         SelectedEmitter = e;
@@ -4425,7 +4425,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PushUndo();
         var d = new RegionDecal
         {
-            Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid, OriginLocal = LocalCenter(_selectedNode.Guid),
+            Scid = _nextEffectScid++, NodeGuid = _selectedNode!.Guid, OriginLocal = LocalCenter(_selectedNode!.Guid),
         };
         Decals.Add(d);
         SelectedDecal = d;
@@ -4446,8 +4446,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PushUndo();
         _objects.Add(new PlacedObject
         {
-            Scid = NextScid(), Template = _soundTemplate.Trim(), NodeGuid = _selectedNode.Guid,
-            LocalPos = LocalCenter(_selectedNode.Guid), File = "sound.gas",
+            Scid = NextScid(), Template = _soundTemplate.Trim(), NodeGuid = _selectedNode!.Guid,
+            LocalPos = LocalCenter(_selectedNode!.Guid), File = "sound.gas",
         });
         RebuildPlacedRows();
         Render();
@@ -4468,7 +4468,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PushUndo();
         var t = new RegionTrigger
         {
-            Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
+            Scid = _nextLogicScid++, NodeGuid = _selectedNode!.Guid, LocalPos = LocalCenter(_selectedNode!.Guid),
         };
         t.Rows.Add(NewTriggerRow());
         Triggers.Add(t);
@@ -4484,7 +4484,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PushUndo();
         var c = new CommandPlacement
         {
-            Scid = _nextLogicScid++, NodeGuid = _selectedNode.Guid, LocalPos = LocalCenter(_selectedNode.Guid),
+            Scid = _nextLogicScid++, NodeGuid = _selectedNode!.Guid, LocalPos = LocalCenter(_selectedNode!.Guid),
         };
         Commands.Add(c);
         SelectedCommand = c;
@@ -4918,8 +4918,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (!EnsureNodeSelected()) return;
         PushUndo();
         foreach (var f in LogicalFlags)
-            if (f.SnodeGuid == _selectedNode.Guid && f.Lnode == 0) { SelectedFlag = f; Status = "This node already has a nav flag (lnode 0)."; return; }
-        var flag = new LogicalFlag { SnodeGuid = _selectedNode.Guid, Lnode = 0 };
+            if (f.SnodeGuid == _selectedNode!.Guid && f.Lnode == 0) { SelectedFlag = f; Status = "This node already has a nav flag (lnode 0)."; return; }
+        var flag = new LogicalFlag { SnodeGuid = _selectedNode!.Guid, Lnode = 0 };
         LogicalFlags.Add(flag);
         SelectedFlag = flag;
         Status = "Added a nav flag for the selected node — toggle human/computer passability (unset both = a wall).";
@@ -5034,7 +5034,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             {
                 var bytes = File.ReadAllBytes(dlg.FileName);
                 var clip = SiegeFX.Audio.WavLoader.Parse(bytes); // engine acceptance
-                var dir = Path.Combine(_assetsFolder, "sound");
+                var dir = Path.Combine(_assetsFolder!, "sound");
                 Directory.CreateDirectory(dir);
                 File.WriteAllBytes(Path.Combine(dir, name + ".wav"), bytes);
                 Status = $"Imported {name}.wav — {clip.Channels}ch {clip.BitsPerSample}-bit {clip.SampleRate}Hz, engine-verified. " +
@@ -5042,7 +5042,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             }
             else if (ext == ".mp3")
             {
-                var dir = Path.Combine(_assetsFolder, "music");
+                var dir = Path.Combine(_assetsFolder!, "music");
                 Directory.CreateDirectory(dir);
                 File.Copy(dlg.FileName, Path.Combine(dir, name + ".mp3"), overwrite: true);
                 Status = $"Imported {name}.mp3 — use '{name}' as a mood track (Region tab: ambient / standard / battle).";
@@ -5079,7 +5079,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             foreach (var ch in Path.GetFileNameWithoutExtension(dlg.FileName).ToLowerInvariant())
                 sb.Append(char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '_');
             var name = sb.Length > 0 ? sb.ToString() : "texture";
-            var dir = Path.Combine(_assetsFolder, "art", "bitmaps");
+            var dir = Path.Combine(_assetsFolder!, "art", "bitmaps");
             Directory.CreateDirectory(dir);
             File.WriteAllBytes(Path.Combine(dir, name + ".raw"), raw);
             Status = $"Imported {name}.raw — {img.Width}×{img.Height}, {img.SurfaceCount} mips, engine-verified. " +
