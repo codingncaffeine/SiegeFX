@@ -11,11 +11,14 @@ namespace SiegeSmith.Services;
 /// same group number; <c>WhenFalse</c> makes a condition fire on its falling edge.</summary>
 public sealed class TriggerCall
 {
-    public string Verb = "";
-    public string Args = "";
-    public int? Group;
-    public float? Delay;
-    public bool WhenFalse;
+    // Auto-properties, not fields — the trigger editor binds these directly from
+    // XAML, and WPF silently refuses to bind a field (the original field-based
+    // shape left every row list and flag in the Inspector blank).
+    public string Verb { get; set; } = "";
+    public string Args { get; set; } = "";
+    public int? Group { get; set; }
+    public float? Delay { get; set; }
+    public bool WhenFalse { get; set; }
 
     public TriggerCall Clone() => new() { Verb = Verb, Args = Args, Group = Group, Delay = Delay, WhenFalse = WhenFalse };
 
@@ -37,13 +40,13 @@ public sealed class TriggerCall
 /// <summary>One <c>[instance_triggers]</c> row: ANDed conditions, sequential actions, and the row flags.</summary>
 public sealed class TriggerRow
 {
-    public ObservableCollection<TriggerCall> Conditions = new();
-    public ObservableCollection<TriggerCall> Actions = new();
-    public bool SingleShot = true;
-    public bool FlipFlop;            // parsed but inert in SiegeFX (author-only)
-    public bool StartActive = true;
-    public float ResetDuration;
-    public string OccupantsGroup = "";
+    public ObservableCollection<TriggerCall> Conditions { get; set; } = new();
+    public ObservableCollection<TriggerCall> Actions { get; set; } = new();
+    public bool SingleShot { get; set; } = true;
+    public bool FlipFlop { get; set; }            // parsed but inert in SiegeFX (author-only)
+    public bool StartActive { get; set; } = true;
+    public float ResetDuration { get; set; }
+    public string OccupantsGroup { get; set; } = "";
 }
 
 /// <summary>A trigger volume placed on a node → <c>objects/special.gas</c>. A typo'd or absent template
@@ -51,11 +54,11 @@ public sealed class TriggerRow
 /// <c>we_trigger_activate</c> world message.</summary>
 public sealed class RegionTrigger
 {
-    public uint Scid;
-    public string Template = "trigger_generic";
-    public uint NodeGuid;
-    public Vector3 LocalPos;
-    public ObservableCollection<TriggerRow> Rows = new();
+    public uint Scid { get; set; }
+    public string Template { get; set; } = "trigger_generic";
+    public uint NodeGuid { get; set; }
+    public Vector3 LocalPos { get; set; }
+    public ObservableCollection<TriggerRow> Rows { get; set; } = new();
 
     public string Label => $"Trigger · {Template}";
     public string Detail
@@ -127,16 +130,16 @@ public enum CmdKind { AiPatrol, AiDoJob, AiAttackObject, AnimationCommand, Enter
 /// point at the actor(s) a command drives).</summary>
 public sealed class CommandPlacement
 {
-    public uint Scid;
-    public uint NodeGuid;
-    public Vector3 LocalPos;
-    public CmdKind Kind = CmdKind.AiPatrol;
-    public uint? NextScid;
-    public uint? Target1;
-    public uint? Target2;
-    public uint? ClientScid;
-    public float? Duration;
-    public string Order = "";
+    public uint Scid { get; set; }
+    public uint NodeGuid { get; set; }
+    public Vector3 LocalPos { get; set; }
+    public CmdKind Kind { get; set; } = CmdKind.AiPatrol;
+    public uint? NextScid { get; set; }
+    public uint? Target1 { get; set; }
+    public uint? Target2 { get; set; }
+    public uint? ClientScid { get; set; }
+    public float? Duration { get; set; }
+    public string Order { get; set; } = "";
 
     public string Template => Kind switch
     {
@@ -185,13 +188,13 @@ public static class CommandGasWriter
 /// <summary>One ordered line of a conversation. <c>ActivateQuest</c> references a QuestCatalog key.</summary>
 public sealed class DialogueLine
 {
-    public int Order = 1;
-    public string ScreenText = "";
-    public string Sample = "";
-    public string Choice = "";        // '' | more | potential_member
-    public string ActivateQuest = "";
-    public bool QuestDialog;
-    public bool Nis;
+    public int Order { get; set; } = 1;
+    public string ScreenText { get; set; } = "";
+    public string Sample { get; set; } = "";
+    public string Choice { get; set; } = "";        // '' | more | potential_member
+    public string ActivateQuest { get; set; } = "";
+    public bool QuestDialog { get; set; }
+    public bool Nis { get; set; }
 
     public string Label => string.IsNullOrWhiteSpace(ScreenText) ? $"line {Order}" : $"{Order}. {ScreenText}";
     public string Detail => (string.IsNullOrWhiteSpace(Sample) ? "" : $"vo:{Sample} ")
@@ -206,9 +209,9 @@ public sealed class DialogueLine
 /// records which placed actor it binds to (0 = unbound).</summary>
 public sealed class Conversation
 {
-    public string Key = "custom";
-    public uint BoundActorScid;
-    public ObservableCollection<DialogueLine> Nodes = new();
+    public string Key { get; set; } = "custom";
+    public uint BoundActorScid { get; set; }
+    public ObservableCollection<DialogueLine> Nodes { get; set; } = new();
 
     public string FullKey => Key.StartsWith("conversation_") ? Key : "conversation_" + Key;
     public string Label => FullKey;

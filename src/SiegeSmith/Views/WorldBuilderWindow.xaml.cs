@@ -22,6 +22,25 @@ public partial class WorldBuilderWindow : Window
 
     private readonly System.Windows.Threading.DispatcherTimer _flyTimer;
 
+    /// <summary>D1 — "⤢ Taller dock": toggles the bottom editor dock between its
+    /// normal height and ~62% of the window, for graph reading and long trigger
+    /// tables. The splitter still drags freely in either state.</summary>
+    private System.Windows.GridLength? _dockHeightBeforeExpand;
+
+    private void OnToggleDockHeight(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (_dockHeightBeforeExpand is { } prev)
+        {
+            BottomDockRow.Height = prev;
+            _dockHeightBeforeExpand = null;
+        }
+        else
+        {
+            _dockHeightBeforeExpand = BottomDockRow.Height;
+            BottomDockRow.Height = new System.Windows.GridLength(System.Math.Max(340, ActualHeight * 0.62));
+        }
+    }
+
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
     {
         InitializeComponent();

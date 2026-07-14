@@ -741,6 +741,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public RelayCommand PlayInEngineCommand { get; }
     public RelayCommand ValidateCommand { get; }
     public RelayCommand GoToValidationCommand { get; }
+    public RelayCommand OpenBottomTabCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
     public RelayCommand SetAssetsFolderCommand { get; }
@@ -1769,6 +1770,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
         GoToValidationCommand = new RelayCommand(p => GoToValidation(p as ValidationRow));
+        OpenBottomTabCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i)) BottomTabIndex = i; });
         UndoCommand = new RelayCommand(_ => Undo(), _ => _undo.Count > 0);
         RedoCommand = new RelayCommand(_ => Redo(), _ => _redo.Count > 0);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
@@ -3556,7 +3558,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         ValidationRows.Clear();
         foreach (var r in checks) ValidationRows.Add(r);
         foreach (var r in checks)
-            if (!r.Ok) { BottomTabIndex = 3; Status = "Can't play yet — " + r.Text; return; }
+            if (!r.Ok) { BottomTabIndex = 5; Status = "Can't play yet — " + r.Text; return; }
 
         var terrain = FindTank("terrain"); var logic = FindTank("logic"); var objects = FindTank("objects");
         var runtime = RuntimeLauncher.FindRuntime();
@@ -3625,9 +3627,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     }
 
     /// <summary>Runs the pre-launch checklist and shows it in the validation panel.</summary>
-    // Bottom dock tab (0=Region 1=Graph 2=World 3=Map) — settable from code so
-    // actions whose OUTPUT lives in a tab can reveal it instead of filling a
-    // hidden panel (the old Validate buried its own checklist).
+    // Bottom dock tab (0=Region 1=Triggers 2=Dialogue 3=Graph 4=World 5=Map) —
+    // settable from code so actions whose OUTPUT lives in a tab can reveal it
+    // instead of filling a hidden panel (the old Validate buried its checklist).
     private int _bottomTabIndex;
     public int BottomTabIndex { get => _bottomTabIndex; set => SetProperty(ref _bottomTabIndex, value); }
 
@@ -3638,7 +3640,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         foreach (var r in checks) ValidationRows.Add(r);
         int bad = 0;
         foreach (var r in checks) if (!r.Ok) bad++;
-        BottomTabIndex = 3; // show the checklist the click just filled
+        BottomTabIndex = 5; // show the checklist the click just filled (Map tab)
         Status = bad == 0
             ? $"Region valid — {NodeCount} node(s), ready to launch."
             : $"Region has {bad} problem(s) — see the checklist below.";
@@ -4261,8 +4263,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         t.Rows.Add(NewTriggerRow());
         Triggers.Add(t);
         SelectedTrigger = t;
+        BottomTabIndex = 1; // reveal the full-width trigger editor
         Render();
-        Status = "Added a trigger — edit its condition → action row(s). Boot rows should use receive_world_message(\"we_entered_world\").";
+        Status = "Added a trigger — edit its condition → action row(s) below. Boot rows should use receive_world_message(\"we_entered_world\").";
     }
 
     private void AddCommand()
@@ -4286,7 +4289,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         c.Nodes.Add(new DialogueLine { Order = 1, ScreenText = "Hello, traveler." });
         Conversations.Add(c);
         SelectedConversation = c;
-        Status = "Added a conversation. Bind it to a placed actor, then add dialogue lines.";
+        BottomTabIndex = 2; // reveal the full-width dialogue editor
+        Status = "Added a conversation — write its lines below, then bind it to a placed actor.";
     }
 
     private void AddDialogue()
