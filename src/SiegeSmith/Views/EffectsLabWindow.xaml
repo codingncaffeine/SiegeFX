@@ -47,12 +47,14 @@
             </DockPanel>
         </Border>
 
-        <!-- ░░ main: browser · editor · preview ░░ -->
+        <!-- ░░ main: browser · editor · preview — every divider drags (D2) ░░ -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="265"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="430"/>
+                <ColumnDefinition Width="265" MinWidth="200"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="320"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="430" MinWidth="300"/>
             </Grid.ColumnDefinitions>
 
             <!-- script browser -->
@@ -85,13 +87,17 @@
                 </DockPanel>
             </Border>
 
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          Background="{StaticResource Brush.Border}"/>
+
             <!-- editor + diagnostics -->
-            <Grid Grid.Column="1" Margin="8">
+            <Grid Grid.Column="2" Margin="8">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="150"/>
+                    <RowDefinition Height="*" MinHeight="140"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="170" MinHeight="90"/>
                 </Grid.RowDefinitions>
 
                 <DockPanel Grid.Row="0" Margin="0,0,0,6">
@@ -125,7 +131,9 @@
                 <controls:CodeEditor Grid.Row="2" Text="{Binding EditorText, UpdateSourceTrigger=PropertyChanged}"
                          IsReadOnly="{Binding EditorReadOnly}" Syntax="sfx"/>
 
-                <DockPanel Grid.Row="3" Margin="0,6,0,0">
+                <GridSplitter Grid.Row="3" Height="5" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                              Background="{StaticResource Brush.Border}" Margin="0,3"/>
+                <DockPanel Grid.Row="4" Margin="0,2,0,0">
                     <Border DockPanel.Dock="Top" Padding="6,3" Margin="0,0,0,4" CornerRadius="2">
                         <Border.Style>
                             <Style TargetType="Border">
@@ -153,8 +161,11 @@
                 </DockPanel>
             </Grid>
 
+            <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          Background="{StaticResource Brush.Border}"/>
+
             <!-- live preview + engine filmstrip -->
-            <Border Grid.Column="2" Background="{StaticResource Brush.Panel}"
+            <Border Grid.Column="4" Background="{StaticResource Brush.Panel}"
                     BorderBrush="{StaticResource Brush.Border}" BorderThickness="1,0,0,0">
                 <Grid Margin="8">
                     <Grid.RowDefinitions>
@@ -182,22 +193,22 @@
                                FontSize="11" Margin="0,4,0,8" TextTrimming="CharacterEllipsis"
                                ToolTip="Live VM + sink counters. Left-drag orbits, right-drag pans, wheel zooms."/>
 
-                    <DockPanel Grid.Row="3" Margin="0,0,0,4">
-                        <TextBlock Text="Engine filmstrip" FontWeight="SemiBold"/>
-                        <Button DockPanel.Dock="Right" Content="Render" Command="{Binding FilmstripCommand}" Padding="10,2" FontSize="11"
-                                ToolTip="Render this script through the engine's REAL GL particle system (9 frames over 1.8 s)"/>
-                        <Border/>
-                    </DockPanel>
-                    <StackPanel Grid.Row="4">
-                        <Border Background="#17181B" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
-                                Height="118">
-                            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                                <Image Source="{Binding FilmstripImage}" Stretch="Uniform" Height="100" HorizontalAlignment="Left"/>
-                            </ScrollViewer>
-                        </Border>
-                        <TextBlock Text="{Binding FilmstripLabel}" Foreground="{StaticResource Brush.Muted}" FontSize="11"
-                                   Margin="0,4,0,0" TextWrapping="Wrap"/>
-                    </StackPanel>
+                    <Expander Grid.Row="3" Grid.RowSpan="2" Header="ENGINE FILMSTRIP" IsExpanded="True">
+                        <StackPanel>
+                            <DockPanel Margin="0,2,0,4">
+                                <Button DockPanel.Dock="Right" Content="Render" Command="{Binding FilmstripCommand}" Padding="10,2" FontSize="11"
+                                        ToolTip="Render this script through the engine's REAL GL particle system (9 frames over 1.8 s)"/>
+                                <TextBlock Text="{Binding FilmstripLabel}" Foreground="{StaticResource Brush.Muted}" FontSize="11"
+                                           TextWrapping="Wrap" Margin="0,0,8,0"/>
+                            </DockPanel>
+                            <Border Background="#17181B" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                    Height="118">
+                                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                                    <Image Source="{Binding FilmstripImage}" Stretch="Uniform" Height="100" HorizontalAlignment="Left"/>
+                                </ScrollViewer>
+                            </Border>
+                        </StackPanel>
+                    </Expander>
                 </Grid>
             </Border>
         </Grid>

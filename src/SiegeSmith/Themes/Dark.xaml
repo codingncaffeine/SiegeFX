@@ -541,4 +541,52 @@
         </Setter>
     </Style>
 
+    <!-- ══════════ Expander (D2) ══════════
+         Chevron header matching Header.Section; collapsed-by-default sections
+         (Favorites/Recent, the Custom tab workflows) hang optional UI off it
+         without renting permanent panel height. -->
+    <Style TargetType="Expander">
+        <Setter Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Expander">
+                    <DockPanel Background="Transparent">
+                        <ToggleButton DockPanel.Dock="Top"
+                                      IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                      Cursor="Hand" Focusable="False">
+                            <ToggleButton.Template>
+                                <ControlTemplate TargetType="ToggleButton">
+                                    <Border Background="Transparent" Padding="0,4,0,3">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock x:Name="Chevron" Text="▸" FontSize="10" Margin="0,0,5,0"
+                                                       Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center"/>
+                                            <ContentPresenter Content="{Binding Header, RelativeSource={RelativeSource AncestorType=Expander}}"
+                                                              TextElement.Foreground="{StaticResource Brush.Muted}"
+                                                              TextElement.FontSize="11" TextElement.FontWeight="SemiBold"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsChecked" Value="True">
+                                            <Setter TargetName="Chevron" Property="Text" Value="▾"/>
+                                        </Trigger>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Chevron" Property="Foreground" Value="{StaticResource Brush.Foreground}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </ToggleButton.Template>
+                        </ToggleButton>
+                        <ContentPresenter x:Name="ExpanderContent" Visibility="Collapsed"/>
+                    </DockPanel>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsExpanded" Value="True">
+                            <Setter TargetName="ExpanderContent" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>

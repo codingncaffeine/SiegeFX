@@ -135,24 +135,25 @@
                                 <Button Grid.Column="1" Content="★" Padding="8,2" Command="{Binding ToggleFavoriteMeshCommand}"
                                         ToolTip="Star/unstar the selected mesh — favorites persist between sessions"/>
                             </Grid>
-                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasFavoriteMeshes, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="★ FAVORITES" Style="{StaticResource Header.Section}"/>
-                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding FavoriteMeshes}"
+                            <!-- D2 — Favorites/Recent stop renting permanent palette height -->
+                            <Expander DockPanel.Dock="Top" Header="★ FAVORITES" IsExpanded="False"
+                                      Visibility="{Binding HasFavoriteMeshes, Converter={StaticResource BoolToVis}}">
+                                <ListBox MaxHeight="150" Margin="0,0,0,4" ItemsSource="{Binding FavoriteMeshes}"
                                          SelectedItem="{Binding SelectedFavoriteMesh, Mode=TwoWay}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                            </StackPanel>
-                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasRecentMeshes, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="RECENT" Style="{StaticResource Header.Section}"/>
-                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding RecentMeshes}"
+                            </Expander>
+                            <Expander DockPanel.Dock="Top" Header="RECENT" IsExpanded="False"
+                                      Visibility="{Binding HasRecentMeshes, Converter={StaticResource BoolToVis}}">
+                                <ListBox MaxHeight="150" Margin="0,0,0,4" ItemsSource="{Binding RecentMeshes}"
                                          SelectedItem="{Binding SelectedRecentMesh, Mode=TwoWay}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                            </StackPanel>
+                            </Expander>
                             <StackPanel DockPanel.Dock="Bottom" Margin="10,4,10,10">
                                 <Button Content="Place as anchor" Command="{Binding PlaceAnchorCommand}" Margin="0,3" Padding="8,5"
                                         ToolTip="Start the region: the anchor node everything else connects to"/>
@@ -163,7 +164,7 @@
                                 <Button Content="Replace mesh on selected node" Command="{Binding ReplaceNodeMeshCommand}" Margin="0,3" Padding="8,5"
                                         ToolTip="Swap the selected node's mesh for this one IN PLACE — guid, door connections, and everything anchored to the node survive. Needs matching door ids on the new mesh."/>
                             </StackPanel>
-                            <ListBox DockPanel.Dock="Bottom" MaxHeight="110" Margin="0,2,0,0" ItemsSource="{Binding TargetDoors}"
+                            <ListBox DockPanel.Dock="Bottom" MaxHeight="150" Margin="0,2,0,0" ItemsSource="{Binding TargetDoors}"
                                      SelectedItem="{Binding SelectedTargetDoor, Mode=TwoWay}"
                                      ToolTip="Which door on the NEW node joins the existing region">
                                 <ListBox.ItemTemplate>
@@ -210,24 +211,25 @@
                                 <Button Grid.Column="2" Content="★" Padding="8,2" Command="{Binding ToggleFavoritePropCommand}"
                                         ToolTip="Star/unstar the selected template — favorites persist between sessions"/>
                             </Grid>
-                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasFavoriteProps, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="★ FAVORITES" Style="{StaticResource Header.Section}"/>
-                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding FavoriteProps}"
+                            <!-- D2 — Favorites/Recent stop renting permanent palette height -->
+                            <Expander DockPanel.Dock="Top" Header="★ FAVORITES" IsExpanded="False"
+                                      Visibility="{Binding HasFavoriteProps, Converter={StaticResource BoolToVis}}">
+                                <ListBox MaxHeight="150" Margin="0,0,0,4" ItemsSource="{Binding FavoriteProps}"
                                          SelectedItem="{Binding SelectedFavoriteProp, Mode=TwoWay}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                            </StackPanel>
-                            <StackPanel DockPanel.Dock="Top" Visibility="{Binding HasRecentProps, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="RECENT" Style="{StaticResource Header.Section}"/>
-                                <ListBox MaxHeight="90" Margin="0,0,0,4" ItemsSource="{Binding RecentProps}"
+                            </Expander>
+                            <Expander DockPanel.Dock="Top" Header="RECENT" IsExpanded="False"
+                                      Visibility="{Binding HasRecentProps, Converter={StaticResource BoolToVis}}">
+                                <ListBox MaxHeight="150" Margin="0,0,0,4" ItemsSource="{Binding RecentProps}"
                                          SelectedItem="{Binding SelectedRecentProp, Mode=TwoWay}">
                                     <ListBox.ItemTemplate>
                                         <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
                                     </ListBox.ItemTemplate>
                                 </ListBox>
-                            </StackPanel>
+                            </Expander>
                             <StackPanel DockPanel.Dock="Bottom" Margin="10,6,10,10">
                                 <Button Content="Place on selected node" Command="{Binding PlaceObjectCommand}" Padding="8,5"
                                         ToolTip="Drop the selected template onto the selected terrain node — then drag it in the viewport"/>
@@ -355,34 +357,44 @@
                                     <Button Grid.Column="0" Content="Set assets folder…" Command="{Binding SetAssetsFolderCommand}" Margin="0,0,3,0" Padding="8,5"/>
                                     <Button Grid.Column="1" Content="Open" Command="{Binding OpenAssetsFolderCommand}" Padding="8,5"/>
                                 </Grid>
-                                <Button Content="Import mesh (OBJ / glTF) → .asp…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,3" Padding="8,5"
-                                        ToolTip="Convert a Wavefront OBJ or glTF 2.0 model to a static DS1 .asp (Y-up→Z-up), verify it against the engine reader, and drop it in art/meshes so it bundles into the map"/>
-                                <Button Content="Import texture (PNG / JPG…) → .raw…" Command="{Binding ImportTextureCommand}" Margin="0,0,0,3" Padding="8,5"
-                                        ToolTip="Convert any image to a DS1 .raw (BGRA, power-of-two ≤512, full mip chain), verified by the engine reader — usable by decals, custom terrain tiles, and templates"/>
-                                <Button Content="Import audio (WAV / MP3)…" Command="{Binding ImportAudioCommand}" Margin="0,0,0,10" Padding="8,5"
-                                        ToolTip="WAV (engine-verified PCM) → sound/ for sound-emitter cues; MP3 → music/ for mood ambient/standard/battle tracks"/>
+                                <!-- D2 — each workflow is a collapsible section: open what you're doing,
+                                     the rest stays a one-line header instead of renting column height -->
+                                <Expander Header="IMPORT ART &amp; AUDIO" IsExpanded="True" Margin="0,4,0,0">
+                                    <StackPanel>
+                                        <Button Content="Import mesh (OBJ / glTF) → .asp…" Command="{Binding ImportObjMeshCommand}" Margin="0,3,0,3" Padding="8,5"
+                                                ToolTip="Convert a Wavefront OBJ or glTF 2.0 model to a static DS1 .asp (Y-up→Z-up), verify it against the engine reader, and drop it in art/meshes so it bundles into the map"/>
+                                        <Button Content="Import texture (PNG / JPG…) → .raw…" Command="{Binding ImportTextureCommand}" Margin="0,0,0,3" Padding="8,5"
+                                                ToolTip="Convert any image to a DS1 .raw (BGRA, power-of-two ≤512, full mip chain), verified by the engine reader — usable by decals, custom terrain tiles, and templates"/>
+                                        <Button Content="Import audio (WAV / MP3)…" Command="{Binding ImportAudioCommand}" Margin="0,0,0,6" Padding="8,5"
+                                                ToolTip="WAV (engine-verified PCM) → sound/ for sound-emitter cues; MP3 → music/ for mood ambient/standard/battle tracks"/>
+                                    </StackPanel>
+                                </Expander>
 
                                 <!-- ED-16 — prefab shelf (per-user, works across maps) -->
-                                <TextBlock Text="Prefabs (reusable groups)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
-                                <TextBlock Text="Save any multi-selection as a prefab from the Inspector's Selection page; place it here — everything lands on the selected node with fresh ids, grouped and ready to drag."
-                                           Foreground="{StaticResource Brush.Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"/>
-                                <ListBox MaxHeight="120" ItemsSource="{Binding Prefabs}" SelectedItem="{Binding SelectedPrefab, Mode=TwoWay}" Margin="0,0,0,3"
-                                         Visibility="{Binding HasPrefabs, Converter={StaticResource BoolToVis}}">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                                <Grid Margin="0,0,0,10">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Button Grid.Column="0" Content="Place prefab on selected node" Command="{Binding PlacePrefabCommand}" Margin="0,0,4,0" Padding="8,4"
-                                            ToolTip="Instantiate every piece of the prefab centred on the selected node — the copies become the selection"/>
-                                    <Button Grid.Column="1" Content="🗑" Command="{Binding DeletePrefabCommand}" Padding="8,4"
-                                            ToolTip="Delete the selected prefab from your library"/>
-                                </Grid>
+                                <Expander Header="PREFABS (reusable groups)" IsExpanded="False" Margin="0,4,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="Save any multi-selection as a prefab from the Inspector's Selection page; place it here — everything lands on the selected node with fresh ids, grouped and ready to drag."
+                                                   Foreground="{StaticResource Brush.Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,4"/>
+                                        <ListBox MaxHeight="220" ItemsSource="{Binding Prefabs}" SelectedItem="{Binding SelectedPrefab, Mode=TwoWay}" Margin="0,0,0,3"
+                                                 Visibility="{Binding HasPrefabs, Converter={StaticResource BoolToVis}}">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Button Grid.Column="0" Content="Place prefab on selected node" Command="{Binding PlacePrefabCommand}" Margin="0,0,4,0" Padding="8,4"
+                                                    ToolTip="Instantiate every piece of the prefab centred on the selected node — the copies become the selection"/>
+                                            <Button Grid.Column="1" Content="🗑" Command="{Binding DeletePrefabCommand}" Padding="8,4"
+                                                    ToolTip="Delete the selected prefab from your library"/>
+                                        </Grid>
+                                    </StackPanel>
+                                </Expander>
 
-                                <TextBlock Text="Custom templates (items · monsters · NPCs)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
+                                <Expander Header="CUSTOM TEMPLATES (items · monsters · NPCs)" IsExpanded="False" Margin="0,4,0,0">
+                                    <StackPanel>
                                 <TextBlock Text="Specialize a shipped template — the base supplies mesh, animation, sounds, and AI; you set the identity and stats. Bundles into the map and loads in-engine."
                                            Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,4"/>
                                 <ComboBox ItemsSource="{Binding TemplateKinds}" SelectedItem="{Binding TplKind, Mode=TwoWay}" Margin="0,0,0,3"/>
@@ -422,10 +434,13 @@
                                     <TextBlock Grid.Column="4" Text="to" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                     <TextBox Grid.Column="5" Text="{Binding TplDamageMax, UpdateSourceTrigger=LostFocus}" ToolTip="Melee damage maximum"/>
                                 </Grid>
-                                <Button Content="Create template" Command="{Binding CreateTemplateCommand}" Margin="0,0,0,10" Padding="8,5"
+                                <Button Content="Create template" Command="{Binding CreateTemplateCommand}" Margin="0,0,0,6" Padding="8,5"
                                         ToolTip="Write the template gas into the assets folder (world/contentdb/templates/custom) — monsters/NPCs whose base is placeable appear in the Objects palette immediately"/>
+                                    </StackPanel>
+                                </Expander>
 
-                                <TextBlock Text="Custom terrain tile (.sno)" Style="{StaticResource Header.Section}" Margin="0,0,0,4"/>
+                                <Expander Header="CUSTOM TERRAIN TILE (.sno)" IsExpanded="False" Margin="0,4,0,0">
+                                    <StackPanel>
                                 <Grid Margin="0,0,0,3">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
@@ -460,21 +475,26 @@
                                 <CheckBox Content="Walkable (generate nav floor + BSP)" IsChecked="{Binding TileWalkable, Mode=TwoWay}"
                                           Margin="0,0,0,4"
                                           ToolTip="On: slope-classify triangles, flood-fill floor groupings, and build a nav BSP. Off: cosmetic geometry only."/>
-                                <Button Content="Generate terrain tile → .sno" Command="{Binding GenerateTerrainTileCommand}" Padding="8,5"
+                                <Button Content="Generate terrain tile → .sno" Command="{Binding GenerateTerrainTileCommand}" Padding="8,5" Margin="0,0,0,6"
                                         ToolTip="Write a v7.0 .sno (verified against the engine reader) plus a [mesh_file] index entry into the custom assets, so the engine can resolve and load it"/>
+                                    </StackPanel>
+                                </Expander>
 
-                                <TextBlock Text="Blender terrain import" Style="{StaticResource Header.Section}" Margin="0,10,0,4"/>
-                                <TextBlock Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,3"
-                                           Text="Model in Blender, export glTF (or OBJ), import here as a walkable siege node. Doors: add empties named door1, door2… with +Z aimed out of the room — or tick fallback sides below."/>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                                    <TextBlock Text="Fallback doors:" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                                    <CheckBox Content="N" IsChecked="{Binding TerrainDoorN}" Margin="0,0,6,0" FontSize="11"/>
-                                    <CheckBox Content="E" IsChecked="{Binding TerrainDoorE}" Margin="0,0,6,0" FontSize="11"/>
-                                    <CheckBox Content="S" IsChecked="{Binding TerrainDoorS}" Margin="0,0,6,0" FontSize="11"/>
-                                    <CheckBox Content="W" IsChecked="{Binding TerrainDoorW}" FontSize="11"/>
-                                </StackPanel>
-                                <Button Content="Import terrain mesh (OBJ/glTF) → .sno" Command="{Binding ImportTerrainMeshCommand}" Padding="8,5"
-                                        ToolTip="Convert arbitrary Blender geometry to a walkable DS1 terrain node: Y-up SNO, nav floor + BSP from slope classification, doors from door* empties (or bounding-box edges), verified against the engine reader — placeable from the mesh palette immediately"/>
+                                <Expander Header="BLENDER TERRAIN IMPORT" IsExpanded="True" Margin="0,4,0,0">
+                                    <StackPanel>
+                                        <TextBlock Foreground="{StaticResource Brush.Muted}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,3"
+                                                   Text="Model in Blender, export glTF (or OBJ), import here as a walkable siege node. Doors: add empties named door1, door2… with +Z aimed out of the room — or tick fallback sides below."/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                            <TextBlock Text="Fallback doors:" Foreground="{StaticResource Brush.Muted}" FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                            <CheckBox Content="N" IsChecked="{Binding TerrainDoorN}" Margin="0,0,6,0" FontSize="11"/>
+                                            <CheckBox Content="E" IsChecked="{Binding TerrainDoorE}" Margin="0,0,6,0" FontSize="11"/>
+                                            <CheckBox Content="S" IsChecked="{Binding TerrainDoorS}" Margin="0,0,6,0" FontSize="11"/>
+                                            <CheckBox Content="W" IsChecked="{Binding TerrainDoorW}" FontSize="11"/>
+                                        </StackPanel>
+                                        <Button Content="Import terrain mesh (OBJ/glTF) → .sno" Command="{Binding ImportTerrainMeshCommand}" Padding="8,5" Margin="0,0,0,6"
+                                                ToolTip="Convert arbitrary Blender geometry to a walkable DS1 terrain node: Y-up SNO, nav floor + BSP from slope classification, doors from door* empties (or bounding-box edges), verified against the engine reader — placeable from the mesh palette immediately"/>
+                                    </StackPanel>
+                                </Expander>
                             </StackPanel>
                         </ScrollViewer>
                     </TabItem>
@@ -798,7 +818,7 @@
                                     <TextBox Text="{Binding QuestScreenName, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
                                              ToolTip="Journal display name"/>
                                     <TextBox Text="{Binding QuestDescription, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,3"
-                                             TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="70"
+                                             TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="110"
                                              ToolTip="Objective text shown in the journal"/>
                                     <Grid Margin="0,0,0,3">
                                         <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -897,7 +917,7 @@
                                     <ComboBox ItemsSource="{Binding AvailableTexsets}" SelectedItem="{Binding SelectedNodeTexset, Mode=TwoWay}"
                                               ToolTip="Re-skin this node with another texture set used in the region — the preview updates live"/>
                                     <TextBlock Text="Doors on this node" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,8,0,3"/>
-                                    <ListBox MaxHeight="120" ItemsSource="{Binding SourceDoors}"
+                                    <ListBox MaxHeight="170" ItemsSource="{Binding SourceDoors}"
                                              SelectedItem="{Binding SelectedSourceDoor, Mode=TwoWay}"
                                              ToolTip="Pick a FREE door here, then Connect (Nodes palette) or Link (below)">
                                         <ListBox.ItemTemplate>
@@ -918,7 +938,7 @@
                                         </ListBox.ItemTemplate>
                                     </ListBox>
                                     <TextBlock Text="Free doors on other nodes (link target)" Foreground="{StaticResource Brush.Muted}" FontSize="11" Margin="0,8,0,3"/>
-                                    <ListBox MaxHeight="100" ItemsSource="{Binding OtherFreeDoors}"
+                                    <ListBox MaxHeight="150" ItemsSource="{Binding OtherFreeDoors}"
                                              SelectedItem="{Binding SelectedOtherDoor, Mode=TwoWay}">
                                         <ListBox.ItemTemplate>
                                             <DataTemplate><TextBlock Text="{Binding Label}" FontFamily="Consolas" FontSize="12"/></DataTemplate>
