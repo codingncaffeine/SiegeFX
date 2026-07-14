@@ -1452,7 +1452,7 @@
                             </ListBox>
                         </DockPanel>
                         <DockPanel Grid.Column="4">
-                            <TextBlock DockPanel.Dock="Top" Text="Pick a free door on each side, then stitch:" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2"/>
+                            <TextBlock DockPanel.Dock="Top" Text="Pick a free door on each side — the join PREVIEWS in bronze; stitch to keep it:" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2" TextWrapping="Wrap"/>
                             <CheckBox DockPanel.Dock="Top" Content="Ghost neighbours in viewport" IsChecked="{Binding ShowNeighborGhosts}"
                                       FontSize="11" Margin="0,0,0,3"
                                       ToolTip="Draw stitched sibling regions translucent in the 3D viewport, composed by the engine's own world layout — free doors show as blue (this region) and violet (sibling) markers"/>

@@ -599,7 +599,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     }
 
     private int _ghostFingerprint;
-    private readonly List<(SnoModel Sno, Matrix4x4 World, bool Selected)> _ghostNodes = new();
+    private readonly List<(SnoModel Sno, Matrix4x4 World, bool Selected, bool Preview)> _ghostNodes = new();
     private readonly Dictionary<uint, Matrix4x4> _ghostNodeWorld = new();
     private readonly Dictionary<StitchRegionRef, (RegionGraph Graph, RegionLayout Layout)> _sibLayoutCache = new();
 
@@ -4629,6 +4629,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         }
         h.Add(_selectedSibling?.LeafName ?? "");
         h.Add(StitchPrimaryLeaf());
+        // the pre-commit join preview depends on the picked door pair
+        h.Add(_selectedPrimaryDoor?.Snode ?? 0u); h.Add(_selectedPrimaryDoor?.Door ?? -1);
+        h.Add(_selectedSiblingDoor?.Snode ?? 0u); h.Add(_selectedSiblingDoor?.Door ?? -1);
         int fp = h.ToHashCode();
         if (fp == _ghostFingerprint) return;
         _ghostFingerprint = fp;
@@ -4640,10 +4643,29 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             string primLeaf = StitchPrimaryLeaf();
             string primPath = "regions/" + primLeaf;
+
+            // SS-STITCH preview — SadowSon's actual ask: SEE the join BEFORE committing.
+            // With a door picked on each side and the sibling not yet placed by a real
+            // stitch, feed the world layout a CANDIDATE pair; the sibling ghosts at the
+            // prospective position in the preview tint, and "Create reciprocal stitch"
+            // just keeps what's on screen.
+            const uint previewPair = 0x7FFFFFFF;
+            bool previewActive = _selectedSibling is not null
+                                 && _selectedPrimaryDoor is not null && _selectedSiblingDoor is not null
+                                 && _selectedSibling.Stitches.Count == 0;
+
+            var primStitches = new List<RegionStitch>(PrimaryStitches);
+            if (previewActive)
+                primStitches.Add(new RegionStitch
+                {
+                    PairId = previewPair, LocalSnode = _selectedPrimaryDoor!.Snode,
+                    LocalDoor = _selectedPrimaryDoor.Door, DestRegion = _selectedSibling!.LeafName,
+                });
+
             var entries = new List<WorldLayout.RegionEntry>
             {
                 new(primPath, primaryGraph, primaryLayout,
-                    ParseStitchesForPreview(PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 1u, primLeaf, PrimaryStitches)),
+                    ParseStitchesForPreview(PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 1u, primLeaf, primStitches)),
             };
             foreach (var sib in Siblings)
             {
@@ -4653,8 +4675,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     built = (g, RegionLayout.Build(g, gg => _catalog.Resolve(gg)));
                     _sibLayoutCache[sib] = built;
                 }
+                var sibStitches = (IReadOnlyList<RegionStitch>)sib.Stitches;
+                if (previewActive && ReferenceEquals(sib, _selectedSibling))
+                    sibStitches = new List<RegionStitch>(sib.Stitches)
+                    {
+                        new RegionStitch
+                        {
+                            PairId = previewPair, LocalSnode = _selectedSiblingDoor!.Snode,
+                            LocalDoor = _selectedSiblingDoor.Door, DestRegion = primLeaf,
+                        },
+                    };
                 entries.Add(new("regions/" + sib.LeafName, built.Graph, built.Layout,
-                    ParseStitchesForPreview(sib.SourceGuid, sib.LeafName, sib.Stitches)));
+                    ParseStitchesForPreview(sib.SourceGuid, sib.LeafName, sibStitches)));
             }
 
             var world = WorldLayout.Build(entries, gg => _catalog.Resolve(gg), rootHint: primPath);
@@ -4669,7 +4701,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     if (_sibLayoutCache.TryGetValue(sib, out var built) && built.Graph.TryGetNode(kv.Key, out var node))
                     {
                         var sno = _catalog.Resolve(node.MeshGuid);
-                        if (sno is not null) _ghostNodes.Add((sno, kv.Value, ReferenceEquals(sib, _selectedSibling)));
+                        bool isPreview = previewActive && ReferenceEquals(sib, _selectedSibling);
+                        if (sno is not null) _ghostNodes.Add((sno, kv.Value, ReferenceEquals(sib, _selectedSibling), isPreview));
                     }
                     break;
                 }
@@ -5549,8 +5582,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 }
             }
 
-            foreach (var (gSno, gWorld, gSel) in _ghostNodes)
-                GhostTris(gSno, gWorld, (gSel ? 0x58 : 0x40) << 24 | (gSel ? 0x8FA0C8 : 0x76839F));
+            foreach (var (gSno, gWorld, gSel, gPrev) in _ghostNodes)
+                GhostTris(gSno, gWorld, gPrev
+                    ? 0x50 << 24 | 0xD8A657                                    // proposed join — accent bronze
+                    : (gSel ? 0x58 : 0x40) << 24 | (gSel ? 0x8FA0C8 : 0x76839F)); // committed — cool grey-blue
 
             // door markers — small opaque cubes at each free door frame
             void DoorCube(Vector3 c, float size, int rgb)
