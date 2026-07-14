@@ -18,7 +18,10 @@ namespace SiegeFX.Core.Assets;
 /// texture is treated as a static single-layer with no scroll.</para></summary>
 public sealed class TsdStore
 {
-    public enum ColorOp { Modulate, Modulate2x, Arg1, Arg2 }
+    // BlendCurrentAlpha: result = lerp(current, texture, currentAlpha) — the stage-1
+    // alpha is a MIX MASK, not transparency (lava crust: a=0 shows rock, a=1 shows the
+    // scrolling molten layer through the cracks; those recipes author hasalpha=false).
+    public enum ColorOp { Modulate, Modulate2x, Arg1, Arg2, BlendCurrentAlpha }
 
     public sealed class Layer
     {
@@ -57,6 +60,11 @@ public sealed class TsdStore
 
     private readonly Dictionary<string, Record> _byName =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Every parsed record — SC-ACTOR-TSD preloads all multi-layer recipes
+    /// at region load because actor skins (the lava spirit) reference recipes no
+    /// terrain subset in the region ever samples.</summary>
+    public IEnumerable<Record> All => _byName.Values;
 
     public Record? Get(string textureName) =>
         _byName.TryGetValue(textureName, out var r) ? r : null;
@@ -158,10 +166,11 @@ public sealed class TsdStore
 
     private static ColorOp ParseColorOp(string? raw) => raw?.Trim().ToLowerInvariant() switch
     {
-        "modulate2x" => ColorOp.Modulate2x,
-        "arg1"       => ColorOp.Arg1,
-        "arg2"       => ColorOp.Arg2,
-        _            => ColorOp.Modulate, // includes null + the explicit "modulate"
+        "modulate2x"        => ColorOp.Modulate2x,
+        "arg1"              => ColorOp.Arg1,
+        "arg2"              => ColorOp.Arg2,
+        "blendcurrentalpha" => ColorOp.BlendCurrentAlpha,
+        _                   => ColorOp.Modulate, // includes null + the explicit "modulate"
     };
 
     private static string? ReadString(GasNode node, string name)

@@ -259,6 +259,15 @@ public sealed class RenderHost : IDisposable
     // so identical template instances reuse one GL upload, and multi-subset characters
     // (farmboy = skin slot + clothing slot) cache each subset's texture independently.
     private readonly Dictionary<(SiegeFX.Core.Assets.Template, AspMesh, int), GlTexture?> _actorTextureCache = new();
+    // SC-ACTOR-TSD — DS1's glow creatures skin their ASP with TERRAIN TSD recipe
+    // names (the lava spirit's body is the lava-river crust whose alpha channel
+    // MIXES IN a scrolling molten layer via blendcurrentalpha; hasalpha=false so
+    // the result is opaque). Treating such a name as a plain bitmap cutout-
+    // discards ~89% of the body — the "lava spirits are mostly invisible" report.
+    // Recipe textures preload at region load (BuildTsdStoreAndPreload walks every
+    // multi-layer record) — the actor pass is a pure cache lookup, never IO.
+    private readonly Dictionary<(SiegeFX.Core.Assets.Template, AspMesh, int), string?> _actorTsdNameCache = new();
+    private bool _skinLayer2Active;
     // Phase 21c — static props streamed from non_interactive/container/inventory/
     // interactive/emitter .gas. No skrit, no animation, no nav — just transform +
     // mesh + (optional) texture, drawn through the static-mesh pipeline.
@@ -5417,6 +5426,7 @@ public sealed class RenderHost : IDisposable
         if (_gl is null) return;
         try { _tsdStore = TsdStore.LoadFromTerrain(terrainReader); }
         catch { _tsdStore = null; return; }
+        _actorTsdNameCache.Clear();
 
         // Walk the texture set referenced by every loaded subset and pull in
         // any extra textures the TSD points to. Textures the SNO subset already
@@ -5431,6 +5441,24 @@ public sealed class RenderHost : IDisposable
             if (rec.Layer2 is not null)
                 foreach (var t in rec.Layer2.Textures) PreloadTextureIfMissing(t, rawIndex, terrainReader);
         }
+
+        // SC-ACTOR-TSD — preload EVERY multi-layer recipe, referenced by terrain or
+        // not. Actor skins name recipes directly (the lava spirit's body is the
+        // lava-river crust + scrolling molten mix) and the actor pass runs long
+        // after this reader is gone, so draw-time loading is not an option. The
+        // multi-layer set is small — water/lava/mist dynamics — and idempotent
+        // against what the walks above already pulled in.
+        int recipeTex = 0;
+        foreach (var rec in _tsdStore.All)
+        {
+            if (rec.Layer2 is null) continue;
+            foreach (var t in rec.Layer1.Textures)
+                if (!_snoTextures.ContainsKey(t)) { PreloadTextureIfMissing(t, rawIndex, terrainReader); recipeTex++; }
+            foreach (var t in rec.Layer2.Textures)
+                if (!_snoTextures.ContainsKey(t)) { PreloadTextureIfMissing(t, rawIndex, terrainReader); recipeTex++; }
+        }
+        if (recipeTex > 0)
+            Console.WriteLine($"  tsd: preloaded {recipeTex} multi-layer recipe texture(s) for actor/prop skins");
     }
 
     private void PreloadTextureIfMissing(string name, Dictionary<string, string> rawIndex, TankReader terrainReader)
@@ -5443,7 +5471,13 @@ public sealed class RenderHost : IDisposable
             var raw = RawImage.Load(terrainReader.ExtractToMemory(path));
             _snoTextures[name] = new GlTexture(_gl, raw);
         }
-        catch { /* unreadable .raw — leave it; sample will fall through to the static base */ }
+        catch (Exception ex)
+        {
+            // Non-fatal (sample falls through to the static base) but never silent —
+            // a swallowed failure here cost a debugging session: the lava spirit drew
+            // WHITE because its recipe textures quietly failed to land in the cache.
+            Console.Error.WriteLine($"  tsd preload failed for '{name}': {ex.Message}");
+        }
     }
 
     /// <summary>SC-TSD-ANIM — resolve the *animated* binding for a texture
@@ -5463,11 +5497,18 @@ public sealed class RenderHost : IDisposable
     /// layer textures bind on Texture0 + Texture1 with independent UV
     /// offsets and a colorop selector. Caller must have set
     /// <c>uAlbedo2 = 1</c> once before the draw run.</summary>
-    private void ApplyAnimatedTextureBinding(string textureName)
+    private void ApplyAnimatedTextureBinding(string textureName) =>
+        ApplyAnimatedTextureBinding(_meshShader, textureName);
+
+    /// <summary>SC-ACTOR-TSD — shader-parameterized overload: the skinned-actor pass
+    /// binds the same two-layer animated recipes (both programs compile
+    /// MeshFragmentSource, so every layer-2 uniform already exists there).</summary>
+    private void ApplyAnimatedTextureBinding(Shader? shader, string textureName)
     {
-        if (_meshShader is null) return;
+        if (shader is null) return;
+        shader.SetInt("uAlbedo2", 1);
         var (l1, l1Off, l1Op, l2, l2Off, l2Op) = ResolveAnimatedTexture(textureName, _terrainTime);
-        _meshShader.SetInt("uColorop1", (int)l1Op);
+        shader.SetInt("uColorop1", (int)l1Op);
         // SC-TSD-ANIM direction fix — terrain renders with uFlipV=1 (vUv.y is
         // inverted before sampling). DS1 authored vshiftpersecond for D3D
         // where V=0 is at the top; after the GL V-flip, a positive +v scroll
@@ -5497,35 +5538,37 @@ public sealed class RenderHost : IDisposable
         if (_snoTextures.TryGetValue(l1, out var t1))
         {
             t1.Bind(TextureUnit.Texture0);
-            _meshShader.SetInt("uHasTexture", 1);
+            shader.SetInt("uHasTexture", 1);
         }
         else
         {
-            _meshShader.SetInt("uHasTexture", 0);
+            shader.SetInt("uHasTexture", 0);
         }
-        _meshShader.SetVec2("uUvOffset", l1Off);
+        shader.SetVec2("uUvOffset", l1Off);
         if (l2 is not null && _snoTextures.TryGetValue(l2, out var t2))
         {
             t2.Bind(TextureUnit.Texture1);
-            _meshShader.SetInt("uHasTexture2", 1);
-            _meshShader.SetVec2("uUvOffset2", l2Off);
-            _meshShader.SetInt("uColorop2", (int)l2Op);
+            shader.SetInt("uHasTexture2", 1);
+            shader.SetVec2("uUvOffset2", l2Off);
+            shader.SetInt("uColorop2", (int)l2Op);
         }
         else
         {
-            _meshShader.SetInt("uHasTexture2", 0);
+            shader.SetInt("uHasTexture2", 0);
         }
     }
 
     /// <summary>Restores layer-1-only state after a region/SNO draw run so
     /// the next pass (actors, weapons, props) doesn't accidentally inherit
     /// a stale UV offset or layer-2 binding. Called once after each loop.</summary>
-    private void ResetAnimatedTextureBinding()
+    private void ResetAnimatedTextureBinding() => ResetAnimatedTextureBinding(_meshShader);
+
+    private void ResetAnimatedTextureBinding(Shader? shader)
     {
-        if (_meshShader is null) return;
-        _meshShader.SetVec2("uUvOffset", Vector2.Zero);
-        _meshShader.SetInt("uHasTexture2", 0);
-        _meshShader.SetInt("uColorop1", 0);
+        if (shader is null) return;
+        shader.SetVec2("uUvOffset", Vector2.Zero);
+        shader.SetInt("uHasTexture2", 0);
+        shader.SetInt("uColorop1", 0);
     }
 
     private (string Layer1Tex, Vector2 Layer1Off, TsdStore.ColorOp Layer1Op,
@@ -5802,7 +5845,10 @@ void main()
     // layer-2 dynamic ever gets sampled. Drop the threshold to a near-zero
     // value when layer 2 is active so mist regions survive long enough for
     // the modulate2x blend below to paint the scrolling spray.
-    float discardThreshold = (uHasTexture2 != 0) ? 0.02 : 0.5;
+    // blendcurrentalpha recipes (uColorop2 == 4) never discard: their layer-1
+    // alpha is a MIX MASK (0 = crust, 1 = molten glow), not transparency — the
+    // TSD authors hasalpha=false. Cutting a<0.02 punched pinholes in the rock.
+    float discardThreshold = (uHasTexture2 != 0) ? ((uColorop2 == 4) ? -1.0 : 0.02) : 0.5;
     if (uHasTexture != 0 && sampled.a < discardThreshold) discard;
 
     // SC-TSD-ANIM — DS1 fixed-function pipeline equivalence. Stage 1 (layer 1)
@@ -5831,6 +5877,10 @@ void main()
             sampled.rgb = clamp(sampled.rgb * s2.rgb * 2.0, 0.0, 1.0);
         } else if (uColorop2 == 3) {
             sampled.rgb = s2.rgb;
+        } else if (uColorop2 == 4) {
+            // blendcurrentalpha — lerp toward the scrolling layer by the stage-1
+            // alpha mask (lava crust: rock where a=0, molten flow where a=1).
+            sampled.rgb = mix(sampled.rgb, s2.rgb, sampled.a);
         } else {
             sampled.rgb = sampled.rgb * s2.rgb;
         }
@@ -10839,6 +10889,68 @@ void main()
         if (texBytes is null) return null;
         try { return new GlTexture(_gl, RawImage.Load(texBytes)); }
         catch { return null; }
+    }
+
+    /// <summary>SC-ACTOR-TSD — the texture name for this actor slot IF it names a
+    /// multi-layer TSD recipe (else null). Resolution order mirrors
+    /// <see cref="ResolveActorTexture"/> (template [aspect][textures][slot] override,
+    /// else the ASP-embedded name). The lava spirit is the shipped case: template
+    /// authors NO texture, its ASP embeds b_t_lc01_rvr_08x08-LtoR-01 — the lava-river
+    /// crust whose TSD mixes a scrolling molten layer 2 in via the alpha channel.
+    /// First hit lazily preloads the recipe's textures from the terrain tank (no
+    /// terrain subset in a non-lava region ever references them).</summary>
+    private string? ActorTsdName(SiegeFX.Core.Actors.Actor actor, int textureIndex)
+    {
+        if (_tsdStore is null) return null;
+        var key = (actor.Template, actor.Mesh, textureIndex);
+        if (_actorTsdNameCache.TryGetValue(key, out var hit)) return hit;
+
+        string? baseName = null;
+        if (_templateStore is not null)
+            baseName = _templateStore.GetAttribute(actor.Template, "aspect", "textures",
+                textureIndex.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (string.IsNullOrEmpty(baseName) && textureIndex >= 0 && textureIndex < actor.Mesh.TextureNames.Count)
+            baseName = actor.Mesh.TextureNames[textureIndex];
+
+        string? result = null;
+        if (!string.IsNullOrEmpty(baseName))
+        {
+            var rec = _tsdStore.Get(baseName);
+            // Single-layer static TSDs add nothing over the plain bitmap path;
+            // only the multi-layer recipes (scrolling glow mixes) route through
+            // the animated binding.
+            if (rec is { Layer2: not null })
+            {
+                result = baseName;
+                Console.WriteLine($"  [actor-tsd] {actor.Template.Name} slot {textureIndex}: " +
+                                  $"'{baseName}' is a two-layer recipe (op={rec.Layer2.Op}) — " +
+                                  $"l1 cached={_snoTextures.ContainsKey(rec.Layer1.Textures[0])}, " +
+                                  $"l2 cached={_snoTextures.ContainsKey(rec.Layer2.Textures[0])}");
+            }
+        }
+        _actorTsdNameCache[key] = result;
+        return result;
+    }
+
+    /// <summary>SC-ACTOR-TSD — one actor texture-slot bind: multi-layer TSD recipes
+    /// route through the animated two-layer binding (crust + scrolling molten mix,
+    /// fresh offsets every frame), everything else takes the plain cached bitmap.
+    /// Clearing the layer-2 state on the way back to a plain bind keeps a farmboy
+    /// drawn after a lava spirit from inheriting the glow mix.</summary>
+    private void BindActorSlot(SiegeFX.Core.Actors.Actor actor, int textureIndex)
+    {
+        if (_skinShader is null) return;
+        var tsd = ActorTsdName(actor, textureIndex);
+        if (tsd is not null)
+        {
+            ApplyAnimatedTextureBinding(_skinShader, tsd);
+            _skinLayer2Active = true;
+            return;
+        }
+        if (_skinLayer2Active) { ResetAnimatedTextureBinding(_skinShader); _skinLayer2Active = false; }
+        var tex = ResolveActorTexture(actor, textureIndex);
+        if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
+        else _skinShader.SetInt("uHasTexture", 0);
     }
 
     // Phase 21-SC-INV-A — cache for one-off GUI textures pulled by basename.
@@ -29046,9 +29158,7 @@ void main()
                 var subsets = s.Actor.Mesh.Subsets;
                 if (subsets.Length == 0)
                 {
-                    var tex = ResolveActorTexture(s.Actor, 0);
-                    if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
-                    else _skinShader.SetInt("uHasTexture", 0);
+                    BindActorSlot(s.Actor, 0);
                     s.GlMesh.Draw();
                 }
                 else
@@ -29059,9 +29169,7 @@ void main()
                     {
                         if (sub.TextureIndex != lastSlot)
                         {
-                            var tex = ResolveActorTexture(s.Actor, sub.TextureIndex);
-                            if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
-                            else _skinShader.SetInt("uHasTexture", 0);
+                            BindActorSlot(s.Actor, sub.TextureIndex);
                             lastSlot = sub.TextureIndex;
                         }
                         if (_subsetTintActive)
@@ -29082,6 +29190,10 @@ void main()
                         _skinShader.SetInt("uSubsetTintActive", 0);
                 }
             }
+            // SC-ACTOR-TSD — never let a lava-spirit layer-2 binding leak into the
+            // equipment/weapon passes below (they bind Texture0 only and would
+            // otherwise composite the scrolling molten layer over armour).
+            if (_skinLayer2Active) { ResetAnimatedTextureBinding(_skinShader); _skinLayer2Active = false; }
 
             // Phase 21d-2a-vii — layered equipment pass. Each entry is a skinned
             // ASP that shares the player body's biped skeleton; we re-skin it
