@@ -592,7 +592,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public ObservableCollection<StitchDoor> SiblingFreeDoors { get; } = new();
 
     private StitchDoor? _selectedPrimaryDoor;
-    public StitchDoor? SelectedPrimaryDoor { get => _selectedPrimaryDoor; set { if (SetProperty(ref _selectedPrimaryDoor, value)) { RaiseCommands(); Render(); } } }
+    public StitchDoor? SelectedPrimaryDoor { get => _selectedPrimaryDoor; set { if (SetProperty(ref _selectedPrimaryDoor, value)) { RaiseCommands(); AnnouncePreviewIfPending(); Render(); } } }
 
     // ═══ SS-STITCH — connected-region ghost preview ═══
     // The neighbour region renders translucent in the viewport, composed through
@@ -619,7 +619,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public bool HasSelectedSibling => _selectedSibling is not null;
 
     private StitchDoor? _selectedSiblingDoor;
-    public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) { RaiseCommands(); Render(); } } }
+    public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) { RaiseCommands(); AnnouncePreviewIfPending(); Render(); } } }
+
+    /// <summary>The moment a full door pair is picked the bronze join previews — which reads
+    /// as "done" when it isn't (the field report: sibling imported, preview admired, Play run,
+    /// no flames, because no stitch was ever committed). Say so the instant it happens.</summary>
+    private void AnnouncePreviewIfPending()
+    {
+        if (_selectedPrimaryDoor is not null && _selectedSiblingDoor is not null
+            && _selectedSibling is not null && _selectedSibling.Stitches.Count == 0)
+            Status = $"Previewing the join with '{_selectedSibling.LeafName}' in bronze — NOT committed yet. Click 'Create reciprocal stitch' to keep it (then Play spawns you at the 🔥 doorway).";
+    }
 
     private RegionStitch? _selectedStitch;
     public RegionStitch? SelectedStitch { get => _selectedStitch; set { if (SetProperty(ref _selectedStitch, value)) { RaiseCommands(); Render(); } } }
@@ -3698,7 +3708,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
             TrackSession(RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath), play: false);
-            Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}). '⟲ Sync game' repacks + restarts it after edits.";
+            string unstitched = Siblings.Count > 0 && PrimaryStitches.Count == 0
+                ? " ⚠ Neighbour(s) imported but NOT stitched — they won't stream in-engine (World tab → Create reciprocal stitch)."
+                : "";
+            Status = $"Packed {Path.GetFileName(pkg.MapTankPath)} and launched SiegeFX ({pkg.RegionPath}).{unstitched} '⟲ Sync game' repacks + restarts it after edits.";
         }
         catch (Exception ex) { Status = "Test-in-engine failed: " + ex.Message; }
     }
@@ -3718,6 +3731,33 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         var runtime = RuntimeLauncher.FindRuntime();
         if (terrain is null || logic is null || objects is null || runtime is null)
         { Status = "Missing a required tank or the engine — see the checklist."; return; }
+
+        // The silent-standalone trap (hit twice in the field): a neighbour was imported —
+        // maybe even a door pair picked, bronze join previewing — but "Create reciprocal
+        // stitch" was never clicked, so the pack quietly ran a standalone region with no
+        // connection and no flames. Never pack that silently; offer to finish the stitch.
+        if (Siblings.Count > 0 && PrimaryStitches.Count == 0)
+        {
+            bool pairPicked = _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null;
+            if (pairPicked)
+            {
+                var choice = System.Windows.MessageBox.Show(
+                    $"The bronze join with '{_selectedSibling!.LeafName}' is only a PREVIEW — no stitch has been created, so Play would run this region standalone (no connection, no 🔥 flame markers).\n\n"
+                    + "Yes — create the stitch now and Play the connected world\nNo — Play standalone anyway\nCancel — go back",
+                    "Stitch not created yet", System.Windows.MessageBoxButton.YesNoCancel, System.Windows.MessageBoxImage.Question);
+                if (choice == System.Windows.MessageBoxResult.Cancel) { Status = "Play cancelled — the previewed join is still uncommitted."; return; }
+                if (choice == System.Windows.MessageBoxResult.Yes) CreateStitch();
+            }
+            else
+            {
+                var choice = System.Windows.MessageBox.Show(
+                    $"You imported {Siblings.Count} neighbour region(s) but created no stitch — Play will run this region standalone: no connection, no 🔥 flame markers.\n\n"
+                    + "To connect first: World tab → pick a free door on each side → Create reciprocal stitch.\n\nPlay standalone anyway?",
+                    "No stitches", System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxImage.Question);
+                if (choice != System.Windows.MessageBoxResult.Yes)
+                { BottomTabIndex = 4; Status = "Play cancelled — pick a door on each side, then 'Create reciprocal stitch'."; return; }
+            }
+        }
 
         try
         {
