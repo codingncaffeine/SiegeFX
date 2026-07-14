@@ -1,6 +1,7 @@
 <Window x:Class="SiegeSmith.EffectsLabWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:SiegeSmith.Controls"
         Title="Effects Lab — SiegeSmith"
         Width="1280" Height="820" WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.Window}"
@@ -114,13 +115,9 @@
                                Foreground="#D8A657" FontSize="12" TextWrapping="Wrap"/>
                 </Border>
 
-                <TextBox Grid.Row="2" Text="{Binding EditorText, UpdateSourceTrigger=PropertyChanged}"
-                         IsReadOnly="{Binding EditorReadOnly}"
-                         AcceptsReturn="True" AcceptsTab="True"
-                         FontFamily="Consolas" FontSize="13"
-                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                         Background="{StaticResource Brush.Surface}"
-                         Padding="6"/>
+                <!-- #35 — syntax-coloured SiegeFX effect DSL: verbs bronze, #HANDLES teal, params tinted -->
+                <controls:CodeEditor Grid.Row="2" Text="{Binding EditorText, UpdateSourceTrigger=PropertyChanged}"
+                         IsReadOnly="{Binding EditorReadOnly}" Syntax="sfx"/>
 
                 <DockPanel Grid.Row="3" Margin="0,6,0,0">
                     <Border DockPanel.Dock="Top" Padding="6,3" Margin="0,0,0,4" CornerRadius="2">

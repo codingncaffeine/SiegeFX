@@ -1395,7 +1395,25 @@
                                                     </TextBlock.Style>
                                                 </TextBlock>
                                                 <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="11"
-                                                           Foreground="{StaticResource Brush.Foreground}" MaxWidth="560"/>
+                                                           Foreground="{StaticResource Brush.Foreground}" MaxWidth="560">
+                                                    <TextBlock.InputBindings>
+                                                        <MouseBinding Gesture="LeftClick"
+                                                                      Command="{Binding DataContext.GoToValidationCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      CommandParameter="{Binding}"/>
+                                                    </TextBlock.InputBindings>
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                            <Style.Triggers>
+                                                                <!-- click-to-fix: a row that knows its offender is a link -->
+                                                                <DataTrigger Binding="{Binding HasTarget}" Value="True">
+                                                                    <Setter Property="Cursor" Value="Hand"/>
+                                                                    <Setter Property="TextDecorations" Value="Underline"/>
+                                                                    <Setter Property="ToolTip" Value="Click to select and focus the first offending item"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
                                             </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>

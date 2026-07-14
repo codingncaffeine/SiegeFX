@@ -740,6 +740,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public RelayCommand TestInEngineCommand { get; }
     public RelayCommand PlayInEngineCommand { get; }
     public RelayCommand ValidateCommand { get; }
+    public RelayCommand GoToValidationCommand { get; }
     public RelayCommand UndoCommand { get; }
     public RelayCommand RedoCommand { get; }
     public RelayCommand SetAssetsFolderCommand { get; }
@@ -1767,6 +1768,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
         ValidateCommand = new RelayCommand(_ => Validate(), _ => IsReady && !IsEmpty);
+        GoToValidationCommand = new RelayCommand(p => GoToValidation(p as ValidationRow));
         UndoCommand = new RelayCommand(_ => Undo(), _ => _undo.Count > 0);
         RedoCommand = new RelayCommand(_ => Redo(), _ => _redo.Count > 0);
         PlaceAnchorCommand = new RelayCommand(_ => PlaceAnchor(),
@@ -1881,6 +1883,27 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             // Autosave must never interrupt or alarm — the next tick retries.
         }
+    }
+
+    /// <summary>Click-to-fix: a failed validation row selects + focuses its first
+    /// offending item, so fix → re-validate walks the region clean.</summary>
+    private void GoToValidation(ValidationRow? row)
+    {
+        if (row?.Target is not { } target) return;
+        switch (target)
+        {
+            case BuilderNode bn:
+                foreach (var r in Nodes) if (r.Guid == bn.Guid) { SelectedNode = r; break; }
+                break;
+            case PlacedObject po:
+                foreach (var r in PlacedObjects) if (r.Scid == po.Scid) { SelectedPlacedObject = r; SelectMarker(r); break; }
+                break;
+            default:
+                SelectFromOutliner(target);
+                break;
+        }
+        FocusSelected();
+        Render();
     }
 
     /// <summary>Outliner click → the same selection the side panels and the
@@ -3640,43 +3663,51 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             anchor is not null ? $"Anchor node 0x{_region.TargetGuid:X8} present." : "No anchor node set."));
 
         int missMesh = 0;
-        foreach (var n in _region.Nodes) if (_catalog?.Resolve(n.MeshGuid) is null) missMesh++;
+        BuilderNode? firstMissMesh = null;
+        foreach (var n in _region.Nodes) if (_catalog?.Resolve(n.MeshGuid) is null) { missMesh++; firstMissMesh ??= n; }
         rows.Add(new ValidationRow(missMesh == 0,
-            missMesh == 0 ? $"All {_region.Nodes.Count} node meshes resolve." : $"{missMesh} node(s) reference a missing mesh."));
+            missMesh == 0 ? $"All {_region.Nodes.Count} node meshes resolve." : $"{missMesh} node(s) reference a missing mesh.",
+            firstMissMesh));
 
         var guids = new HashSet<uint>();
         foreach (var n in _region.Nodes) guids.Add(n.Guid);
         int badDoor = 0;
-        foreach (var n in _region.Nodes) foreach (var d in n.Doors) if (!guids.Contains(d.FarGuid)) badDoor++;
+        BuilderNode? firstBadDoor = null;
+        foreach (var n in _region.Nodes) foreach (var d in n.Doors) if (!guids.Contains(d.FarGuid)) { badDoor++; firstBadDoor ??= n; }
         rows.Add(new ValidationRow(badDoor == 0,
-            badDoor == 0 ? "All door links reference existing nodes." : $"{badDoor} door link(s) point to a missing node."));
+            badDoor == 0 ? "All door links reference existing nodes." : $"{badDoor} door link(s) point to a missing node.",
+            firstBadDoor));
 
         if (_objects.Count > 0)
         {
             int badObj = 0, actors = 0;
+            PlacedObject? firstBadObj = null;
             foreach (var o in _objects)
             {
-                if (string.IsNullOrEmpty(o.Template) || !guids.Contains(o.NodeGuid)) badObj++;
+                if (string.IsNullOrEmpty(o.Template) || !guids.Contains(o.NodeGuid)) { badObj++; firstBadObj ??= o; }
                 if (o.File.Equals("actor.gas", StringComparison.OrdinalIgnoreCase)) actors++;
             }
             int props = _objects.Count - actors;
             rows.Add(new ValidationRow(badObj == 0,
                 badObj == 0
                     ? $"All {_objects.Count} placed object(s) anchored — {props} prop(s), {actors} actor(s)."
-                    : $"{badObj} placed object(s) reference a missing node."));
+                    : $"{badObj} placed object(s) reference a missing node.",
+                firstBadObj));
 
             // ED-12 — template resolution: every placement's template must be
             // a known catalog entry or a created custom template, or the
             // engine spawns nothing there.
             int badTpl = 0;
+            PlacedObject? firstBadTpl = null;
             var badTplNames = new List<string>();
             foreach (var o in _objects)
                 if (!string.IsNullOrEmpty(o.Template) && !_templateModel.ContainsKey(o.Template)
                     && !o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase))
-                { badTpl++; if (badTplNames.Count < 3) badTplNames.Add(o.Template); }
+                { badTpl++; firstBadTpl ??= o; if (badTplNames.Count < 3) badTplNames.Add(o.Template); }
             rows.Add(new ValidationRow(badTpl == 0,
                 badTpl == 0 ? "Every placed template resolves in the catalog."
-                            : $"{badTpl} placement(s) use an unknown template ({string.Join(", ", badTplNames)}…)."));
+                            : $"{badTpl} placement(s) use an unknown template ({string.Join(", ", badTplNames)}…).",
+                firstBadTpl));
         }
 
         // ED-12 — duplicate SCIDs anywhere = two things claiming one identity;
@@ -3684,31 +3715,35 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             var seen = new HashSet<uint>();
             int dup = 0;
-            void Check(uint scid) { if (scid != 0 && !seen.Add(scid)) dup++; }
-            foreach (var o in _objects) Check(o.Scid);
-            foreach (var e in Emitters) Check(e.Scid);
-            foreach (var d in Decals) Check(d.Scid);
-            foreach (var l in Lights) Check(l.Scid);
-            foreach (var t in Triggers) Check(t.Scid);
-            foreach (var c in Commands) Check(c.Scid);
+            object? firstDup = null;
+            void Check(uint scid, object item) { if (scid != 0 && !seen.Add(scid)) { dup++; firstDup ??= item; } }
+            foreach (var o in _objects) Check(o.Scid, o);
+            foreach (var e in Emitters) Check(e.Scid, e);
+            foreach (var d in Decals) Check(d.Scid, d);
+            foreach (var l in Lights) Check(l.Scid, l);
+            foreach (var t in Triggers) Check(t.Scid, t);
+            foreach (var c in Commands) Check(c.Scid, c);
             rows.Add(new ValidationRow(dup == 0,
                 dup == 0 ? "All SCIDs unique across every family."
-                         : $"{dup} duplicate SCID(s) — two pieces claim one identity; delete and re-add the duplicates."));
+                         : $"{dup} duplicate SCID(s) — two pieces claim one identity; delete and re-add the duplicates.",
+                firstDup));
         }
 
         // ED-12 — dialogue quest references must resolve (map-local quests
         // count; a typo'd key silently never journals).
         {
             int badQuestRef = 0;
+            Conversation? firstBadConvo = null;
             var known = new HashSet<string>(QuestKeys, StringComparer.OrdinalIgnoreCase);
             foreach (var c in Conversations)
                 foreach (var n in c.Nodes)
                     if (!string.IsNullOrWhiteSpace(n.ActivateQuest) && !known.Contains(n.ActivateQuest.Split(',')[0].Trim()))
-                        badQuestRef++;
+                    { badQuestRef++; firstBadConvo ??= c; }
             if (Conversations.Count > 0 || MapQuests.Count > 0)
                 rows.Add(new ValidationRow(badQuestRef == 0,
                     badQuestRef == 0 ? "All dialogue quest references resolve (shipped + this map's quests)."
-                                     : $"{badQuestRef} dialogue line(s) activate an unknown quest key."));
+                                     : $"{badQuestRef} dialogue line(s) activate an unknown quest key.",
+                    firstBadConvo));
         }
 
         if (graph is not null && _catalog is not null)
@@ -3717,9 +3752,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             {
                 var layout = RegionLayout.Build(graph, g => _catalog.Resolve(g));
                 int noXform = 0;
-                foreach (var n in _region.Nodes) if (!layout.TryGetTransform(n.Guid, out _)) noXform++;
+                BuilderNode? firstUnplaced = null;
+                foreach (var n in _region.Nodes) if (!layout.TryGetTransform(n.Guid, out _)) { noXform++; firstUnplaced ??= n; }
                 rows.Add(new ValidationRow(noXform == 0,
-                    noXform == 0 ? "Layout solves for every node." : $"{noXform} node(s) not placed by the layout solver (disconnected?)."));
+                    noXform == 0 ? "Layout solves for every node." : $"{noXform} node(s) not placed by the layout solver (disconnected?).",
+                    firstUnplaced));
             }
             catch (Exception ex) { rows.Add(new ValidationRow(false, "Layout solve failed: " + ex.Message)); }
         }
@@ -3747,16 +3784,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             // ED-12 — beyond "has a name": the texture must actually RESOLVE
             // (install tanks or imported custom art) or the decal is invisible.
             int noTex = 0, unresolved = 0;
+            RegionDecal? firstBadDecal = null;
             foreach (var d in Decals)
             {
-                if (string.IsNullOrWhiteSpace(d.Texture)) { noTex++; continue; }
+                if (string.IsNullOrWhiteSpace(d.Texture)) { noTex++; firstBadDecal ??= d; continue; }
                 if (_textures?.Resolve(d.Texture) is not { Valid: true })
-                    unresolved++;
+                { unresolved++; firstBadDecal ??= d; }
             }
             rows.Add(new ValidationRow(noTex == 0 && unresolved == 0,
                 noTex == 0 && unresolved == 0
                     ? $"{Decals.Count} decal(s) → decals.gas, textures resolve."
-                    : $"Decals: {noTex} missing a texture name, {unresolved} texture(s) don't resolve (typo, or import it in the Custom tab)."));
+                    : $"Decals: {noTex} missing a texture name, {unresolved} texture(s) don't resolve (typo, or import it in the Custom tab).",
+                firstBadDecal));
         }
         int soundCount = 0;
         foreach (var o in _objects) if (o.File.Equals("sound.gas", StringComparison.OrdinalIgnoreCase)) soundCount++;
@@ -3766,6 +3805,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (Triggers.Count > 0)
         {
             int emptyRows = 0, unknownVerbs = 0, badQuest = 0;
+            RegionTrigger? firstEmptyTrigger = null;
             foreach (var t in Triggers)
                 foreach (var r in t.Rows)
                 {
@@ -3780,11 +3820,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                             if (System.Array.IndexOf(RegionTrigger.Actions, a.Verb) < 0) unknownVerbs++;
                             if (a.Verb == "change_quest_state" && !ArgsReferenceQuest(a.Args)) badQuest++;
                         }
-                    if (!hasCond || !hasAct) emptyRows++;
+                    if (!hasCond || !hasAct) { emptyRows++; firstEmptyTrigger ??= t; }
                 }
             rows.Add(new ValidationRow(emptyRows == 0, emptyRows == 0
                 ? $"{Triggers.Count} trigger(s) → special.gas."
-                : $"{emptyRows} trigger row(s) missing a condition or action (never fire)."));
+                : $"{emptyRows} trigger row(s) missing a condition or action (never fire).",
+                firstEmptyTrigger));
             if (unknownVerbs > 0)
                 rows.Add(new ValidationRow(false, $"{unknownVerbs} trigger verb(s) outside the live DSL — author-only (no-op in SiegeFX)."));
             if (badQuest > 0)
@@ -5964,10 +6005,13 @@ public sealed record NodeDoorRow(uint NodeGuid, int DoorId, string Mesh)
     public string Label => $"{Mesh}  ·  door {DoorId}";
 }
 
-/// <summary>One pre-launch check result: a green tick or red cross with an explanation.</summary>
-public sealed record ValidationRow(bool Ok, string Text)
+/// <summary>One pre-launch check result: a green tick or red cross with an explanation.
+/// <see cref="Target"/> is the first offending item (node, placement, trigger…) — clicking
+/// the row selects and focuses it, so fix → re-validate walks the region clean.</summary>
+public sealed record ValidationRow(bool Ok, string Text, object? Target = null)
 {
     public string Glyph => Ok ? "✓" : "✕";
+    public bool HasTarget => Target is not null;
 }
 
 /// <summary>A row in the placed-objects list.</summary>

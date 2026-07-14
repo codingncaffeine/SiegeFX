@@ -356,18 +356,12 @@
                                                     </HierarchicalDataTemplate>
                                                 </TreeView.Resources>
                                             </TreeView>
-                                            <TextBox Text="{Binding RawText, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
-                                                     Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
-                                                     BorderThickness="0" Padding="8"
-                                                     Visibility="{Binding ShowRaw, Converter={StaticResource BoolToVis}}"
-                                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                            <!-- #35 — syntax-coloured GAS: headers bronze, attr names blue, values/comments/hex tinted -->
+                                            <controls:CodeEditor Text="{Binding RawText, Mode=OneWay}" IsReadOnly="True" Syntax="gas"
+                                                     Visibility="{Binding ShowRaw, Converter={StaticResource BoolToVis}}"/>
 
-                                            <TextBox Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged, Delay=200}"
-                                                     AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="12.5"
-                                                     Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
-                                                     BorderThickness="0" Padding="8"
-                                                     Visibility="{Binding ShowEdit, Converter={StaticResource BoolToVis}}"
-                                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                            <controls:CodeEditor Text="{Binding EditText, UpdateSourceTrigger=PropertyChanged, Delay=200}" Syntax="gas"
+                                                     Visibility="{Binding ShowEdit, Converter={StaticResource BoolToVis}}"/>
                                         </Grid>
                                     </Border>
                                 </DockPanel>
@@ -409,12 +403,9 @@
                                         <!-- Editable source / read-only disassembly (mode-switched) -->
                                         <Border Grid.Column="0" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
                                             <Grid>
-                                                <TextBox Text="{Binding Source, UpdateSourceTrigger=PropertyChanged, Delay=250}"
-                                                         AcceptsReturn="True" AcceptsTab="True" FontFamily="Consolas" FontSize="12.5"
-                                                         Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
-                                                         BorderThickness="0" Padding="8"
-                                                         Visibility="{Binding ShowSource, Converter={StaticResource BoolToVis}}"
-                                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                                                <!-- #35 — syntax-coloured Skrit source -->
+                                                <controls:CodeEditor Text="{Binding Source, UpdateSourceTrigger=PropertyChanged, Delay=250}" Syntax="skrit"
+                                                         Visibility="{Binding ShowSource, Converter={StaticResource BoolToVis}}"/>
                                                 <TextBox Text="{Binding Disassembly, Mode=OneWay}" IsReadOnly="True" FontFamily="Consolas" FontSize="12.5"
                                                          Background="{StaticResource Brush.Panel}" Foreground="{StaticResource Brush.Foreground}"
                                                          BorderThickness="0" Padding="8"
