@@ -4121,10 +4121,28 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         return rows;
     }
 
-    /// <summary>The PC drop point: the anchor node's local X,Z centre (from its SNO corners), anchored
-    /// to the anchor guid. Y is nav-snapped by the engine at load.</summary>
+    /// <summary>The PC drop point. When stitches exist, Play starts AT THE CONNECTION
+    /// (the selected stitch wins, else the first) — you're usually testing the border,
+    /// so spawn on it, nudged ~1.5u inward from the door onto walkable floor. With no
+    /// stitches: the anchor node's local X,Z centre. Y is nav-snapped by the engine.</summary>
     private MapPackager.StartInfo? BuildStartInfo()
     {
+        var st = _selectedStitch ?? (PrimaryStitches.Count > 0 ? PrimaryStitches[0] : null);
+        if (st is not null && _region.Find(st.LocalSnode) is { } stNode
+            && _catalog?.Resolve(stNode.MeshGuid) is { } stSno)
+            foreach (var d in stSno.Doors)
+                if (d.Id == (uint)st.LocalDoor)
+                {
+                    var door = d.Transform.Translation;
+                    float cx = (stSno.MinBounds.X + stSno.MaxBounds.X) * 0.5f;
+                    float cz = (stSno.MinBounds.Z + stSno.MaxBounds.Z) * 0.5f;
+                    float inX = cx - door.X, inZ = cz - door.Z;
+                    float len = MathF.Sqrt(inX * inX + inZ * inZ);
+                    float ox = len > 0.01f ? door.X + inX / len * 1.5f : door.X;
+                    float oz = len > 0.01f ? door.Z + inZ / len * 1.5f : door.Z;
+                    return new MapPackager.StartInfo(st.LocalSnode, ox, oz, "default", $"{MapName} start (at the stitch)");
+                }
+
         uint g = _region.TargetGuid != 0 ? _region.TargetGuid : (_region.Nodes.Count > 0 ? _region.Nodes[0].Guid : 0);
         if (g == 0) return null;
         var node = _region.Find(g);
