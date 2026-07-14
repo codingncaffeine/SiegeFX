@@ -5868,6 +5868,9 @@ void main()
     if (uColorop1 == 1) {
         sampled.rgb = clamp(sampled.rgb * 2.0, 0.0, 1.0);
     }
+    // blendcurrentalpha's molten layer bypasses lighting (see the op-4 branch).
+    float glowMix = 0.0;
+    vec3 glowRgb = vec3(0.0);
     if (uHasTexture2 != 0) {
         vec2 uv2 = (uFlipV != 0) ? vec2(vUv.x, 1.0 - vUv.y) : vUv;
         uv2 = orientUv(uv2, uUvOrient);
@@ -5880,7 +5883,13 @@ void main()
         } else if (uColorop2 == 4) {
             // blendcurrentalpha — lerp toward the scrolling layer by the stage-1
             // alpha mask (lava crust: rock where a=0, molten flow where a=1).
-            sampled.rgb = mix(sampled.rgb, s2.rgb, sampled.a);
+            // Retail stage math lights ONLY layer 1 (its colorop modulates against
+            // diffuse); the molten texel mixes in raw afterwards — i.e. the lava
+            // veins are EMISSIVE. Defer the mix to after the lighting section so
+            // the crust shades with the room while the glow stays saturated in a
+            // pitch-dark cave, exactly the shipped look.
+            glowMix = sampled.a;
+            glowRgb = s2.rgb;
         } else {
             sampled.rgb = sampled.rgb * s2.rgb;
         }
@@ -5925,6 +5934,9 @@ void main()
         FragColor = uSubsetTint;
     } else {
         vec3 lit = sampled.rgb * lighting;
+        // Emissive molten mix — the lava shows at full authored brightness no
+        // matter how dark the cave; fog below still attenuates it with distance.
+        lit = mix(lit, glowRgb, glowMix);
         if (uFogOn != 0) {
             float fogD = distance(vWorldPos, uCameraPos);
             float fogF = clamp((fogD - uFogNear) / max(uFogFar - uFogNear, 0.001), 0.0, 1.0);
