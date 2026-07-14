@@ -111,15 +111,19 @@ public sealed class PlayerProgression
     // first few skill levels then climb ~1 per level, tracking the skill at
     // a roughly constant offset (a pure fighter's STR runs ~2 levels behind
     // Melee — at Melee 50 DS1 STR ≈ 58, where the old linear model gave 42).
-    // Pools are pure linear combinations of the per-skill XP pools plus a
-    // seed at the hero's authored base attributes, so saves need no new
-    // fields — RestoreFromSave re-derives them from the skill pools.
-    readonly long[] _attrXpSeed = new long[3];      // str/dex/int
-    readonly int[] _attrLevelApplied = new int[3];
+    // Pools are pure linear combinations of the per-skill XP pools and START
+    // AT ZERO — the attribute VALUE is authored base + (pool level − 1).
+    // Calibration check against retail outcomes: a pure archer at Ranged 10
+    // has DEX ≈ 10 + (LevelForXp(0.62·xp(10)) − 1) ≈ 17-18, matching DS1
+    // character tables. (The first cut seeded the pool at XpForLevel(base),
+    // which on the convex table priced DEX 10→11 at Ranged ~10 — attributes
+    // never visibly moved in the early game: "my int hasn't gone up once".)
+    // Saves need no new fields — RestoreFromSave re-derives from skill pools.
+    readonly int[] _attrLevelApplied = new int[3];  // str/dex/int pool levels
 
     long AttrXpPool(int attr)
     {
-        double pool = _attrXpSeed[attr];
+        double pool = 0;
         for (int s = 0; s < _skillXp.Length; s++)
         {
             var g = _formulas.ProportionalGains((SkillKind)s);
@@ -142,18 +146,38 @@ public sealed class PlayerProgression
     public IReadOnlyList<(int Attr, int NewLevel)> LastAttrLevelUps => _lastAttrLevelUps;
     readonly List<(int Attr, int NewLevel)> _lastAttrLevelUps = new();
 
+    /// <summary>SC-ATTR-XP — progress toward the NEXT attribute level (0..1),
+    /// attr 0=STR 1=DEX 2=INT. The character sheet's attribute bars read this
+    /// (they used to mirror the SKILL fractions, so a bar could reset without
+    /// the attribute number moving).</summary>
+    public float AttrProgressFraction(int attr)
+    {
+        long pool = AttrXpPool(attr);
+        int lvl = _formulas.LevelForXp(pool);
+        long floor = _formulas.XpForLevel(lvl);
+        long next = _formulas.XpForLevel(lvl + 1);
+        if (next <= floor) return 0f;
+        return Math.Clamp((float)(pool - floor) / (next - floor), 0f, 1f);
+    }
+
+    // SC-ATTR-XP — the hero's AUTHORED base attributes, captured at spawn
+    // (before any award or enchant). The attribute's natural value is the
+    // deterministic function base + (pool level − 1); the restore path
+    // reconciles saved stats against it.
+    readonly float[] _attrBase = new float[3];
+
     public PlayerProgression(Actor player, FormulasStore formulas)
     {
         _player = player;
         _formulas = formulas;
-        // Seed each attribute pool at the XP threshold of its authored base
-        // value (farmboy 10/10/10) so redistributed XP grows it FROM there.
         var st = player.Stats;
-        _attrXpSeed[0] = formulas.XpForLevel((int)MathF.Round(st.Strength));
-        _attrXpSeed[1] = formulas.XpForLevel((int)MathF.Round(st.Dexterity));
-        _attrXpSeed[2] = formulas.XpForLevel((int)MathF.Round(st.Intelligence));
+        _attrBase[0] = st.Strength;
+        _attrBase[1] = st.Dexterity;
+        _attrBase[2] = st.Intelligence;
+        // Pools start at zero: applied level = LevelForXp(0) = 1 per attribute
+        // (the authored base carries the rest of the value).
         for (int a = 0; a < 3; a++)
-            _attrLevelApplied[a] = _formulas.LevelForXp(_attrXpSeed[a]);
+            _attrLevelApplied[a] = _formulas.LevelForXp(0);
     }
 
     // Fractional XP carry — the authentic per-damage model produces non-integer
@@ -247,6 +271,15 @@ public sealed class PlayerProgression
                 MaxMana = _formulas.MaxMana(newStr, newDex, newInt),
             };
             _player.ResyncStats(newStats);
+            // SC-ATTR-XP diag — prove the applied value sticks on the live
+            // actor (chasing "bar moves, number doesn't"). The actor hash
+            // pairs with the [sheet] diag: mismatched hashes = the panel
+            // reads a DIFFERENT Actor object than progression writes.
+            Console.WriteLine(
+                $"[attr] crossing applied: str={newStr:F1} dex={newDex:F1} int={newInt:F1} " +
+                $"(pool lvls {_attrLevelApplied[0]}/{_attrLevelApplied[1]}/{_attrLevelApplied[2]}) " +
+                $"live-after-resync int={_player.Stats.Intelligence:F1} " +
+                $"actor#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_player):X8}");
         }
 
         if (newSkillLevel <= oldSkillLevel)
@@ -289,12 +322,32 @@ public sealed class PlayerProgression
         }
         // SC-ATTR-XP — re-derive each attribute's applied level from the
         // restored skill pools (the pools are linear combinations of them, so
-        // no new save fields are needed). The saved STATS carry whatever
-        // attribute values were earned; syncing the applied-level trackers to
-        // the pools means future awards only add levels earned PAST this
-        // point — never re-granting or clawing back saved attributes.
+        // no new save fields are needed) — then RECONCILE the stats upward.
+        // The natural attribute value is a deterministic function:
+        // base + (pool level − 1). A save written BEFORE a crossing carries
+        // the older value; the old sync-only restore silently FORFEITED the
+        // level earned between save and load ("int bar moving but the value
+        // isn't changing" — INT hit 11 in-session, the next load restored 10
+        // and marked level 2 already-granted). Never reconciles DOWN.
+        var st = _player.Stats;
+        float rs = st.Strength, rd = st.Dexterity, ri = st.Intelligence;
+        bool reconciled = false;
         for (int a = 0; a < 3; a++)
+        {
             _attrLevelApplied[a] = _formulas.LevelForXp(AttrXpPool(a));
+            float expected = _attrBase[a] + (_attrLevelApplied[a] - 1);
+            ref float cur = ref (a == 0 ? ref rs : ref (a == 1 ? ref rd : ref ri));
+            if (cur < expected) { cur = expected; reconciled = true; }
+        }
+        if (reconciled)
+        {
+            _player.ResyncStats(st with
+            {
+                Strength = rs, Dexterity = rd, Intelligence = ri,
+                MaxLife = _formulas.MaxLife(rs, rd, ri),
+                MaxMana = _formulas.MaxMana(rs, rd, ri),
+            });
+        }
     }
 
     /// <summary>One-shot edge consumer. Returns true exactly once after a level

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Silk.NET.OpenGL;
 using SiegeFX.Core.Save;
 
 namespace SiegeFX.Runtime.Render.Hud;
@@ -55,6 +56,32 @@ public sealed class SaveGameDialog
     private Btn _pressed = Btn.None;
     private Btn _hover = Btn.None;
 
+    // SC-SAVE-THUMB — preview thumbnail for the highlighted save, decoded
+    // lazily when the selection changes (same pattern as LoadGameDialog).
+    // The authored RPreview box existed but drew empty.
+    private GlTexture? _thumbTex;
+    private string? _thumbForPath;
+
+    private void EnsureThumb(GL gl)
+    {
+        if (Selected is not { } sel)
+        {
+            _thumbTex?.Dispose();
+            _thumbTex = null;
+            _thumbForPath = null;
+            return;
+        }
+        if (_thumbForPath == sel.Path) return;
+        _thumbTex?.Dispose();
+        _thumbTex = null;
+        _thumbForPath = sel.Path;
+        if (ThumbnailCodec.TryDecode(sel.Thumbnail, out int w, out int h, out var rgba))
+        {
+            try { _thumbTex = new GlTexture(gl, rgba, w, h, nearestFilter: false); }
+            catch { _thumbTex = null; }
+        }
+    }
+
     /// <summary>The player-typed save label (never null).</summary>
     public string NameText => _name;
 
@@ -78,7 +105,14 @@ public sealed class SaveGameDialog
         IsOpen = true;
     }
 
-    public void Close() { IsOpen = false; _pressed = Btn.None; }
+    public void Close()
+    {
+        IsOpen = false;
+        _pressed = Btn.None;
+        _thumbTex?.Dispose();
+        _thumbTex = null;
+        _thumbForPath = null;
+    }
 
     public void Tick(float dt) { if (IsOpen) _caret += dt; }
 
@@ -197,12 +231,13 @@ public sealed class SaveGameDialog
 
     // ---- draw --------------------------------------------------------------
 
-    public void Draw(BarRenderer bars, TextRenderer text, IconRenderer? icons,
+    public void Draw(GL gl, BarRenderer bars, TextRenderer text, IconRenderer? icons,
                      Func<string, GlTexture?>? guiTex, Func<string, GlTexture?>? commonChrome,
                      int vw, int vh)
     {
         if (!IsOpen) return;
         Layout(vw, vh);
+        EnsureThumb(gl);   // SC-SAVE-THUMB — decode on selection change
         float s = HudScale.Modal(vw, vh);
         int fs = Math.Max(1, (int)MathF.Round(s));
 
@@ -233,7 +268,24 @@ public sealed class SaveGameDialog
         }
 
         Frame(_sPanel);
-        Frame(Scr(RPreview, vw, vh));
+        var prev = Scr(RPreview, vw, vh);
+        Frame(prev);
+        // SC-SAVE-THUMB — screenshot of the highlighted save inside the
+        // preview frame, inset past the cpbox border (same treatment as the
+        // in-game Load window). No selection / no thumbnail → frame + hint.
+        if (_thumbTex is not null && icons is not null)
+        {
+            int ins = Math.Max(1, (int)MathF.Round(3 * s));
+            icons.DrawIcon(vw, vh, _thumbTex, prev.x + ins, prev.y + ins,
+                           prev.w - ins * 2, prev.h - ins * 2, Vector4.One);
+        }
+        else if (Selected is not null)
+        {
+            string nm = "NO PREVIEW";
+            int nmw = text.MeasureWidth(nm, fs);
+            text.DrawString(vw, vh, nm, prev.x + (prev.w - nmw) / 2,
+                            prev.y + (prev.h - 8 * fs) / 2, dim, fs);
+        }
         Frame(Scr(RDesc, vw, vh));
         Frame(_sList);
         Frame(_sEdit);

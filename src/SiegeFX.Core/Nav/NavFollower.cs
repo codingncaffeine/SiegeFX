@@ -95,6 +95,17 @@ public sealed class NavFollower
     // or out of a 1-unit-wide wedge against a wall/rail.
     private const float EscapeStepDist = 0.4f;
     private const int MaxRecoveryAttempts = 4;
+    // SC-NAV-RECOVERY-STICKY — the perpendicular escape itself displaces the
+    // walker ~0.4u, which the per-tick progress check used to read as "moving
+    // again" and RESET the escalation counter: wedge → escape → reset →
+    // wedge, forever. MaxRecoveryAttempts was unreachable, PathBlocked never
+    // fired, and the owning brain never re-rolled the leg — the field
+    // report's "frozen mobs in the open" (roam-audit: skrubb_farm jittering
+    // 0.36u between 15s-stall snapshots, spider bit-frozen all session).
+    // Attempts now clear only once the walker has genuinely LEFT the
+    // recovery neighborhood; anchor set on the first attempt of an episode.
+    private Vector3 _recoveryAnchor;
+    private const float RecoveryProgressDist = 1.25f;
 
     // SC-NAV-VERTICAL-REBIND — a walker can step, not teleport. Every
     // standing-triangle (re)bind must land within this much of the
@@ -313,6 +324,11 @@ public sealed class NavFollower
                     _stuckRecoveryAttempts++;
                     if (_stuckRecoveryAttempts == 1)
                     {
+                        // SC-NAV-RECOVERY-STICKY — anchor the episode at the
+                        // first attempt; progress is measured against THIS
+                        // spot, not the last tick, so escape-jiggle can't
+                        // reset the escalation.
+                        _recoveryAnchor = Position;
                         if (DiagnosticLogging)
                         {
                             var wpDbg = _waypointIdx < _waypoints.Count
@@ -391,7 +407,19 @@ public sealed class NavFollower
             else
             {
                 _stuckTicks = 0;
-                _stuckRecoveryAttempts = 0;
+                // SC-NAV-RECOVERY-STICKY — mere epsilon displacement (the
+                // 0.4u escape hop, wall-slide jitter) is not progress. Clear
+                // the escalation only once the walker has left the recovery
+                // neighborhood for real; otherwise attempts keep climbing to
+                // the give-up (PathBlocked) and the brain re-rolls the leg.
+                if (_stuckRecoveryAttempts > 0)
+                {
+                    float rdx = Position.X - _recoveryAnchor.X;
+                    float rdz = Position.Z - _recoveryAnchor.Z;
+                    if (rdx * rdx + rdz * rdz >
+                        RecoveryProgressDist * RecoveryProgressDist)
+                        _stuckRecoveryAttempts = 0;
+                }
             }
         }
         _hasLastTickPos = true;

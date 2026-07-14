@@ -95,6 +95,15 @@ public sealed class NavMesh
 
     public bool IsBlocked(int tri) => Blocked is not null && tri >= 0 && tri < Blocked.Length && Blocked[tri];
 
+    /// <summary>SC-DOORS-BLOCK — reset every obstacle mark so the map can be
+    /// re-stamped from live state (door opened, prop destroyed). Cheap:
+    /// one Array.Clear; the caller re-marks everything that still blocks.</summary>
+    public void ClearObstacles()
+    {
+        if (Blocked is not null) Array.Clear(Blocked);
+        if (BlockedTag is not null) Array.Clear(BlockedTag);
+    }
+
     /// <summary>SC-FADE-NODES-LNODE — per-triangle "currently hidden
     /// by a fade_nodes trigger" flag. Independent of <see cref="Blocked"/>
     /// (static prop footprints) so a fade can reveal/restore without
@@ -173,7 +182,17 @@ public sealed class NavMesh
     /// derived from its model AABB. Pure data, no concurrency — call
     /// at region-load time after BuildForRegion.</summary>
     public int MarkObstacle(float worldX, float worldZ, float radius)
-        => MarkObstacle(worldX, worldZ, radius, float.NegativeInfinity, float.PositiveInfinity);
+        => MarkObstacle(worldX, worldZ, radius, float.NegativeInfinity, float.PositiveInfinity, null);
+
+    /// <summary>SC-NAV-BLAME — which blocker marked each blocked triangle
+    /// (template#scid tag). Lets the pathfinder's failure diagnostics NAME
+    /// the prop sealing a corridor instead of reporting an anonymous
+    /// "obstacle sever". Allocated with <see cref="Blocked"/>.</summary>
+    public string?[]? BlockedTag { get; private set; }
+
+    /// <summary>Blame tag for a blocked triangle, or null.</summary>
+    public string? BlockerOf(int tri) =>
+        BlockedTag is not null && tri >= 0 && tri < BlockedTag.Length ? BlockedTag[tri] : null;
 
     /// <summary>Below-floor slack for the Y-gated overload: how far under a
     /// prop's world base a triangle may sit and still be its floor. Absorbs
@@ -200,8 +219,15 @@ public sealed class NavMesh
     /// The 3-arg overload passes an infinite band (all-Y), preserving the
     /// old behavior for authored point-blockers with no measurable height.</summary>
     public int MarkObstacle(float worldX, float worldZ, float radius, float baseY, float topY)
+        => MarkObstacle(worldX, worldZ, radius, baseY, topY, null);
+
+    /// <summary>SC-NAV-BLAME — tag-carrying overload: every triangle this
+    /// call blocks records <paramref name="tag"/> so path-failure
+    /// diagnostics can name the sealing prop.</summary>
+    public int MarkObstacle(float worldX, float worldZ, float radius, float baseY, float topY, string? tag)
     {
         Blocked ??= new bool[TriangleCount];
+        BlockedTag ??= new string?[TriangleCount];
         if (radius <= 0f) return 0;
         float r2 = radius * radius;
         float loY = baseY - ObstacleBelowFloorTol;
@@ -225,6 +251,11 @@ public sealed class NavMesh
             if (cdx * cdx + cdz * cdz <= r2)
             {
                 Blocked[t] = true;
+                // SC-NAV-BLAME — record the MECHANISM (centroid containment
+                // vs edge nick) + geometry so seal reports are tunable
+                // without another diagnostic round trip.
+                if (BlockedTag is not null)
+                    BlockedTag[t] = $"{tag}|centroid r={radius:F2} d={MathF.Sqrt(cdx * cdx + cdz * cdz):F2}";
                 marked++;
                 continue;
             }
@@ -235,12 +266,35 @@ public sealed class NavMesh
                 EdgeWithinDiskXZ(b, c, worldX, worldZ, r2) ||
                 EdgeWithinDiskXZ(c, a, worldX, worldZ, r2))
             {
+                // SC-NAV-EDGE-SEAL-AREA — the edge-clip test exists for
+                // long-THIN slivers whose centroid sits far from the prop
+                // (the walk-through-the-fence audit case). On DS1's COARSE
+                // interior meshes a corridor tile spans meters, and a shelf
+                // nicking its edge sealed the whole tile — two cellar
+                // shelves (shelf_glb_06) made the fh_r1 basement unwalkable.
+                // An edge nick may only seal SMALL triangles; big floor
+                // tiles block solely via centroid containment above.
+                float abx = b.X - a.X, abz = b.Z - a.Z;
+                float acx = c.X - a.X, acz = c.Z - a.Z;
+                float areaXZ = MathF.Abs(abx * acz - abz * acx) * 0.5f;
+                if (areaXZ > EdgeSealMaxAreaXZ) continue;
                 Blocked[t] = true;
+                if (BlockedTag is not null)
+                    BlockedTag[t] = $"{tag}|edge r={radius:F2} a={areaXZ:F2}";
                 marked++;
             }
         }
         return marked;
     }
+
+    /// <summary>SC-NAV-EDGE-SEAL-AREA — largest XZ triangle area (m²) the
+    /// edge-clip test may fully seal. Calibrated from live blame data
+    /// (session 2026-07-13): genuine sliver-seals (storm-door stairwell)
+    /// measured a=0.00–0.50, while the fh_r1 basement's corridor tiles —
+    /// walkable floor a shelf merely nicked — measured 0.75. The first cut
+    /// at 1.5 still sealed those corridor tiles; 0.6 splits the two
+    /// populations cleanly.</summary>
+    private const float EdgeSealMaxAreaXZ = 0.6f;
 
     private static bool EdgeWithinDiskXZ(Vector3 e0, Vector3 e1, float cx, float cz, float r2)
     {

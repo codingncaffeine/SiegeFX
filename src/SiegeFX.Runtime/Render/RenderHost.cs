@@ -2159,6 +2159,7 @@ public sealed class RenderHost : IDisposable
             if (s.IsDead || s.IsPlayer || s.IsPartyMember) continue;
             if (!s.Actor.Stats.IsCombatant || s.Actor.Combat.IsDead) continue;
             if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var p = s.CurrentTransform.Translation;
             float dx = p.X - pos.X, dz = p.Z - pos.Z;
             float d2 = dx * dx + dz * dz;
@@ -3193,6 +3194,12 @@ public sealed class RenderHost : IDisposable
         public GlTexture? Texture;
         public Matrix4x4 World;
         public string Template = "";
+        // SC-PROP-INVISIBLE — DS1 authors logic objects (life/mana shrines,
+        // blocking_object) with a dev-marker [aspect] model PLUS
+        // is_visible=false / force_no_render=true: the Siege Editor shows the
+        // striped marker, the game must not. The instance stays alive for
+        // logic (shrine use, nav blocking) — only the draw skips.
+        public bool ForceNoRender;
         // SC-DECAL-PROJECT — CPU-side mesh for decal projection onto props
         // (the broken barn doors receive the char decals). The ASP cache keeps
         // these alive regardless, so the reference adds no memory.
@@ -5201,6 +5208,14 @@ public sealed class RenderHost : IDisposable
         {
             bool bounds = _boundsCameraOverrides.TryGetValue(guid, out var ov) ? ov : boundsFlag;
             if (!bounds) continue;
+            // SC-CAM-FADED-BOUNDS — a faded-out node is INVISIBLE (the
+            // cutaway exists precisely so the camera can look in from
+            // outside), so it must not constrain the camera either. Without
+            // this, the basement cutaway hid the ceiling visually while its
+            // bounds still blocked every long camera ray — the constraint
+            // pulled the camera IN under an unseeable roof and tilted it to
+            // near-vertical: the "so zoomed overhead I can't click" report.
+            if (_fadedSnodeCounts.ContainsKey(guid)) continue;
             var lo = Vector3.Transform(origin, inv);
             var ld = Vector3.TransformNormal(dir, inv);
             // Slab test against the node bounds, generous by 0.25m.
@@ -11200,6 +11215,17 @@ void main()
                         }
                     }
 
+                    // SC-PROP-INVISIBLE — honor DS1's authored render gates:
+                    // is_visible=false / force_no_render=true mark editor-only
+                    // dev meshes (life/mana shrines, blocking_object carry the
+                    // striped marker model). The instance still loads for
+                    // logic; the draw skips it.
+                    var visAttr = ts.GetAttribute(template!, "aspect", "is_visible")?.Trim().Trim('"');
+                    var noRenderAttr = ts.GetAttribute(template!, "aspect", "force_no_render")?.Trim().Trim('"');
+                    bool forceNoRender =
+                        string.Equals(visAttr, "false", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(noRenderAttr, "true", StringComparison.OrdinalIgnoreCase);
+
                     var inst = new StaticPropInstance
                     {
                         Mesh          = glMesh,
@@ -11207,6 +11233,7 @@ void main()
                         World         = world,
                         Asp           = asp,
                         Template      = p.TemplateName,
+                        ForceNoRender = forceNoRender,
                         SpinAxis      = spinAxis,
                         SpinRadPerSec = spinRad,
                         IsBreakable   = isBreakable,
@@ -11659,6 +11686,8 @@ void main()
                         prop.IsDestroyed = true;
                         _particles?.SpawnSmoke(g.Position + new Vector3(0f, 0.6f, 0f),
                             new Vector4(0.65f, 0.6f, 0.5f, 0.8f), 0.7f, 1.1f, 14);
+                        // SC-DOORS-BLOCK — freed footprint for message-removed props.
+                        MarkAllObstacles();
                         break;
                     }
                 }
@@ -13533,6 +13562,9 @@ void main()
             _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
             _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
         }
+        // SC-DOORS-BLOCK — a destroyed blocker frees its footprint (marks
+        // used to accumulate: a shattered barrel kept blocking forever).
+        MarkAllObstacles();
     }
 
     private void TickScriptedSmashes(float dt)
@@ -14283,6 +14315,11 @@ void main()
     private void MarkAllObstacles()
     {
         if (_navMesh is null || _templateStore is null) return;
+        // SC-DOORS-BLOCK — the map re-stamps from LIVE state each call:
+        // clear first so an opened door or destroyed barrel actually FREES
+        // its triangles (marks used to accumulate forever — a shattered
+        // barrel's footprint outlived it).
+        _navMesh.ClearObstacles();
         _sightOccluders.Clear();
         int obstacles = 0;
         int triangles = 0;
@@ -14291,19 +14328,30 @@ void main()
         Span<Vector3> corners = stackalloc Vector3[4];
         foreach (var prop in _staticProps)
         {
-            if (prop.IsDoor || prop.IsDestroyed) continue;
+            if (prop.IsDestroyed) continue;
+            // SC-DOORS-BLOCK — DS1 authors doors with is_collidable=true
+            // (NOT does_block_path — the switch to does_block_path silently
+            // dropped every door from the obstacle map, letting the party
+            // walk through closed house doors). A CLOSED door blocks the
+            // doorway; opening it re-stamps the map (the swung-open leaf
+            // hugs the wall, so open doors don't mark).
+            bool closedDoor = prop.IsDoor && !prop.DoorTargetOpen;
+            if (prop.IsDoor && !closedDoor) continue;
             if (!_templateStore.TryGet(prop.Template, out var tpl)) continue;
-            // SC-PATHING — the authored walk-blocking field is [aspect]
-            // does_block_path ("prevents another from walking through it"),
-            // set true on the base non_interactive chain with explicit
-            // opt-outs (the *_nonblocking family). The old is_collidable
-            // read was the PROJECTILE flag and explicit-only, so fences and
-            // walls never blocked the nav mesh — mobs and clicks pathed
-            // straight through their line while the visuals said otherwise.
-            var blockAttr = _templateStore.GetAttribute(tpl, "aspect", "does_block_path")
-                         ?? _templateStore.GetAttribute(tpl, "physics", "does_block_path");
-            var blockTrim = (blockAttr ?? "").Trim().Trim('"').ToLowerInvariant();
-            if (blockTrim != "true" && blockTrim != "1") continue;
+            if (!closedDoor)
+            {
+                // SC-PATHING — the authored walk-blocking field is [aspect]
+                // does_block_path ("prevents another from walking through it"),
+                // set true on the base non_interactive chain with explicit
+                // opt-outs (the *_nonblocking family). The old is_collidable
+                // read was the PROJECTILE flag and explicit-only, so fences and
+                // walls never blocked the nav mesh — mobs and clicks pathed
+                // straight through their line while the visuals said otherwise.
+                var blockAttr = _templateStore.GetAttribute(tpl, "aspect", "does_block_path")
+                             ?? _templateStore.GetAttribute(tpl, "physics", "does_block_path");
+                var blockTrim = (blockAttr ?? "").Trim().Trim('"').ToLowerInvariant();
+                if (blockTrim != "true" && blockTrim != "1") continue;
+            }
             // World-space XZ radius: transform the local AABB's 4
             // XZ corners (Y collapsed) by the placement matrix,
             // then take the max distance from the translation
@@ -14358,6 +14406,9 @@ void main()
             // norm; min/max guards a flipped placement.
             float propBaseY = MathF.Min(wBase.Y, wTop.Y);
             bool occludesSight = MathF.Abs(wTop.Y - wBase.Y) >= SightOccluderMinHeight;
+            // SC-NAV-BLAME — every triangle this prop blocks remembers who
+            // sealed it, so a "no corridor" failure can name the culprit.
+            string blameTag = $"{prop.Template}#0x{prop.Scid:X8}";
             int marked = 0;
             if (longLen > shortLen * 2.2f && longLen > 2f)
             {
@@ -14371,7 +14422,7 @@ void main()
                 {
                     float along = -halfLong + longLen * (di / (float)(discs - 1));
                     var c = origin + axis * along;
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY);
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY, blameTag);
                     if (occludesSight)
                         _sightOccluders.Add((new Vector2(c.X, c.Z), discR, propTopY));
                 }
@@ -14393,14 +14444,14 @@ void main()
                 {
                     var c = wcA + axU * (sideAB * iu / (nu - 1))
                                 + axV * (sideAD * iv / (nv - 1));
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY);
+                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY, blameTag);
                     if (occludesSight)
                         _sightOccluders.Add((new Vector2(c.X, c.Z), gridR, propTopY));
                 }
             }
             else
             {
-                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY);
+                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, blameTag);
                 if (occludesSight)
                     _sightOccluders.Add((new Vector2(origin.X, origin.Z), radius, propTopY));
             }
@@ -14415,7 +14466,7 @@ void main()
         foreach (var b in _blockingGizmos)
         {
             if (!b.Active) continue;
-            int marked = _navMesh.MarkObstacle(b.Position.X, b.Position.Z, b.Radius);
+            int marked = _navMesh.MarkObstacle(b.Position.X, b.Position.Z, b.Radius, float.NegativeInfinity, float.PositiveInfinity, "blocking-gizmo");
             if (marked > 0) { obstacles++; triangles += marked; }
         }
         if (obstacles > 0)
@@ -14799,6 +14850,11 @@ void main()
     /// fidgeting). Up to three stalled actors get positions logged so a field
     /// report like "krug frozen in place" comes with coordinates for the
     /// headless repro (`region roam-sim --near=x,z,r`).</summary>
+    // SC-NAV-BLAME — scratch A* workspace for the stalled-actor path probes
+    // (audit fires every ~15s for at most 3 probes; sharing the player's
+    // workspace would race a mid-frame path request).
+    private readonly SiegeFX.Core.Nav.NavPathfinder.Workspace _roamAuditWorkspace = new();
+
     private void TickRoamAudit(float dt)
     {
         _roamAuditAccumulator += dt;
@@ -14827,7 +14883,26 @@ void main()
             {
                 stalled++;
                 if (stalledLines.Count < 3)
-                    stalledLines.Add($"  [roam-audit]   stalled {s.Actor.Template} at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
+                {
+                    // SC-NAV-BLAME — probe the stalled actor's path to its
+                    // wander target and capture the pathfinder's verdict
+                    // (incl. "sealed by: <prop>"), so a "krug frozen in
+                    // place" report names its own culprit. Was printing the
+                    // Template OBJECT (type name) instead of the name.
+                    string why = "";
+                    if (_navMesh is not null
+                        && _navMesh.TryFindTriangle(pos, out var sTri, includeFadeHidden: true)
+                        && _navMesh.TryFindTriangle(follower.Target, out var gTri, includeFadeHidden: true))
+                    {
+                        var probeBuf = new List<int>(64);
+                        if (!SiegeFX.Core.Nav.NavPathfinder.TryFindPath(
+                                _navMesh, sTri, gTri, probeBuf, _roamAuditWorkspace, follower.Traversal))
+                            why = $" — {SiegeFX.Core.Nav.NavPathfinder.LastFailure}";
+                    }
+                    stalledLines.Add($"  [roam-audit]   stalled {s.Actor.Template.Name} " +
+                        $"at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) " +
+                        $"target ({follower.Target.X:F1},{follower.Target.Z:F1}){why}");
+                }
             }
             _roamAuditLastPos[i] = pos;
         }
@@ -15569,6 +15644,8 @@ void main()
                 LogDoorDiag(d);
             }
             _audio?.PlayAt(SfxDoorOpen, seed);
+            // SC-DOORS-BLOCK — opened doors free their doorway triangles.
+            MarkAllObstacles();
             return;
         }
 
@@ -15577,6 +15654,8 @@ void main()
         _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
         NotifyDoorOpened(best);
         LogDoorDiag(best);
+        // SC-DOORS-BLOCK — opened doors free their doorway triangles.
+        MarkAllObstacles();
     }
 
     /// <summary>ALPHA-2E — door → trigger chaining: a door authoring
@@ -15602,6 +15681,9 @@ void main()
             NotifyDoorOpened(door);
         }
         Console.WriteLine($"[door] 0x{door.Scid:X8} {(opening ? "opened" : "closed")} by message");
+        // SC-DOORS-BLOCK — re-stamp the obstacle map for the new door state
+        // (message doors can CLOSE too, re-blocking the doorway).
+        MarkAllObstacles();
     }
 
     /// <summary>ALPHA-2E — message-broken rubble/blockers: frag the prop and
@@ -18540,6 +18622,29 @@ void main()
     /// <summary>Hover pick: nearest live, visible actor within ~1.3u of the
     /// cursor's ground point — party, NPCs and monsters alike (DS1 shows the
     /// status line for all of them).</summary>
+    /// <summary>SC-PICK-YBAND — the largest vertical gap (u) between the
+    /// player and an actor for the cursor to resolve them. Every ground-disc
+    /// picker projects the click onto the PLAYER's Y plane and picks by XZ
+    /// distance alone, so an NPC on the floor ABOVE the stairwell owned the
+    /// cursor while the player descended beneath them (the talk icon ate
+    /// every "keep going down" click — the SC-PICK-FADED filter didn't cover
+    /// it because halfway down the cutaway hasn't fired yet and the upper
+    /// floor isn't faded). DS1 floors stack 3-4u apart; 2.5 keeps same-floor
+    /// slopes pickable while excluding the story above/below.</summary>
+    private const float PickSameFloorYBand = 2.5f;
+
+    /// <summary>SC-PICK-FADED + SC-PICK-YBAND — may the cursor resolve this
+    /// actor from where the player stands? False when the actor is hidden
+    /// with a faded-out layer OR standing a floor above/below.</summary>
+    private bool PickableFromPlayerFloor(ActorRenderState s)
+    {
+        var p = s.CurrentTransform.Translation;
+        if (_player is not null
+            && MathF.Abs(p.Y - _player.CurrentTransform.Translation.Y) > PickSameFloorYBand)
+            return false;
+        return !IsPosInFadedSnode(p);
+    }
+
     private ActorRenderState? PickHoverActor()
     {
         if (_player is null || _window is null || _actors.Count == 0 || _cameraMode != CameraMode.Chase)
@@ -18569,6 +18674,11 @@ void main()
         foreach (var s in _actors)
         {
             if (s.Hidden || s.IsPlayer) continue;
+            // SC-PICK-FADED + SC-PICK-YBAND — invisible (faded-layer) actors
+            // and actors a FLOOR above/below never own the cursor. Repro:
+            // halfway down the basement stairs, the ground-floor NPC above
+            // hijacked the cursor into a talk icon on every descend click.
+            if (!PickableFromPlayerFloor(s)) continue;
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             float d = MathF.Sqrt(dx * dx + dz * dz);
@@ -21440,6 +21550,10 @@ void main()
             // Intro gizmos (the invisible narrator; the spent sleeping dog) are never
             // clickable — they don't draw, so they can't be a talk target either.
             if (s.Hidden) continue;
+            // SC-PICK-FADED + SC-PICK-YBAND — an NPC on a faded-out layer OR
+            // a floor above/below (the ground-floor NPC over the stairwell)
+            // must not swallow clicks as a talk target.
+            if (!PickableFromPlayerFloor(s)) continue;
             // SC-SELECTABLE — authored is_selectable=false is the general
             // form of the same rule (the narrator authors it explicitly).
             if (!s.IsSelectable) continue;
@@ -21952,6 +22066,7 @@ void main()
             // SC-ALIGNMENT — the attack cursor only ever offers evil-chain,
             // selectable actors (no sword cursor on Norick or the narrator).
             if (!s.IsEvilAligned || !s.IsSelectable) continue;
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var self = s;
             Consider(s.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f), 34f,
                 () => { bestEnemy = self; bestProp = null; bestPile = null; });
@@ -22091,6 +22206,7 @@ void main()
             if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
             if (!s.Actor.Stats.IsCombatant) continue;
             if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var pos = s.CurrentTransform.Translation;
             float dx = pos.X - groundHit.X;
             float dz = pos.Z - groundHit.Z;
@@ -22244,6 +22360,7 @@ void main()
         {
             if (!s.IsDead || s.Hidden || s.IsPlayer || s.IsPartyMember) continue;
             if (!s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-YBAND
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             float d = MathF.Sqrt(dx * dx + dz * dz);
@@ -22320,6 +22437,7 @@ void main()
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || !s.Actor.Stats.IsCombatant) continue;
             if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
@@ -22514,6 +22632,8 @@ void main()
                 _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
                 _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
             }
+            // SC-DOORS-BLOCK — a shattered blocker frees its footprint.
+            MarkAllObstacles();
         }
     }
 
@@ -26210,14 +26330,37 @@ void main()
                 {
                     missReason = "no gui.inventory_icon";
                 }
-                else if (!_playResolver.TryLoadByBasename(iconName + ".raw", out var iconBytes))
-                {
-                    missReason = $"icon load failed: {iconName}";
-                }
                 else
                 {
-                    try { result = new GlTexture(_gl, RawImage.Load(iconBytes)); }
-                    catch (Exception ex) { missReason = $"icon decode failed: {ex.GetType().Name}"; }
+                    // SC-POTION-ICON — DS1 potions author TWO icon layers:
+                    // gui:inventory_icon = the EMPTY glass bottle, and
+                    // [potion] inventory_icon_2 = the liquid FILL overlay
+                    // (retail scales it by remaining charge; partial drain
+                    // is unimplemented, so a carried potion draws full).
+                    // Rendering only layer one showed every looted vial as
+                    // an empty bottle.
+                    var fillName = _templateStore.GetAttribute(tpl!, "potion", "inventory_icon_2")
+                        ?.Trim().Trim('"');
+                    if (!string.IsNullOrEmpty(fillName))
+                    {
+                        var basePx = LoadRawRgba(iconName!.Trim().Trim('"'), out int iw, out int ih);
+                        if (basePx is not null)
+                        {
+                            AlphaOver(basePx, fillName, iw, ih);
+                            try { result = new GlTexture(_gl, basePx, iw, ih); }
+                            catch (Exception ex) { missReason = $"icon composite failed: {ex.GetType().Name}"; }
+                        }
+                    }
+                    if (result is null && missReason is null)
+                    {
+                        if (!_playResolver.TryLoadByBasename(iconName!.Trim().Trim('"') + ".raw", out var iconBytes))
+                            missReason = $"icon load failed: {iconName}";
+                        else
+                        {
+                            try { result = new GlTexture(_gl, RawImage.Load(iconBytes)); }
+                            catch (Exception ex) { missReason = $"icon decode failed: {ex.GetType().Name}"; }
+                        }
+                    }
                 }
             }
         }
@@ -27036,6 +27179,7 @@ void main()
                 if (s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
                 if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
                 float dz = pos.Z - groundHit.Z;
@@ -29067,6 +29211,9 @@ void main()
                 // the on-hit code already kicked debris particles at the
                 // origin so the disappearance reads as a break, not a pop.
                 if (prop.IsDestroyed) continue;
+                // SC-PROP-INVISIBLE — authored-invisible logic objects
+                // (shrines, blockers) never draw their dev-marker mesh.
+                if (prop.ForceNoRender) continue;
                 // SC-REGION-LAYER-HIDE — drop props belonging to regions
                 // above the player's current region. Same flip cadence as
                 // the terrain gate; stable across in-region movement,
@@ -29525,8 +29672,16 @@ void main()
             if (gripIdx < pcBones)
             {
                 var handPos = (_boneWorldsScratch[gripIdx] * _player.CurrentTransform).Translation;
-                // Nudge up into the palm; native item scale matches the ground bottle.
-                var bottleModel = Matrix4x4.CreateTranslation(handPos + new Vector3(0f, 0.06f, 0f));
+                // SC-POTION-DRINK-BOTTLE round 2 — face the bottle's SPOUT at
+                // the hero's mouth. The translation-only draw left the bottle
+                // at a fixed world orientation, so the raise gesture read as
+                // "drinking from the back of the bottle" at most facings.
+                // Yaw from the player's facing + 180° turns the pouring lip
+                // toward the face.
+                var drinkFwd = Vector3.TransformNormal(Vector3.UnitZ, _player.CurrentTransform);
+                float drinkYaw = MathF.Atan2(drinkFwd.X, drinkFwd.Z);
+                var bottleModel = Matrix4x4.CreateRotationY(drinkYaw + MathF.PI)
+                                * Matrix4x4.CreateTranslation(handPos + new Vector3(0f, 0.06f, 0f));
                 var bottleTex = _drinkIsHealth ? _bottleTexHealth : _bottleTexMana;
                 _meshShader.Use();
                 _meshShader.SetMatrix4("uViewProj", vp);
@@ -29738,15 +29893,19 @@ void main()
                     itemMesh.Mesh.Draw();
                     if (itemMesh.DisplayName is not null)
                     {
-                        // Sit the label nearly on top of the mesh — pile mesh
-                        // top is at pos.Y + pileSize (0.5), and a 0.05 gap
-                        // floats the text just above the surface without
-                        // clipping the textured top face. Was +pileSize+0.6
-                        // which floated the labels well above the items;
-                        // user feedback on SC-SCROLL ground pile asked for
-                        // "much closer to the objects, nearly right on top."
-                        var labelPos = new Vector3(pos.X, pos.Y + pileSize + 0.05f, pos.Z);
-                        _frameLootLabels.Add((labelPos, itemMesh.DisplayName));
+                        // SC-LOOT-LABEL-RANGE — labels only within a readable
+                        // radius of the PLAYER; distant piles showed a wall of
+                        // floating text across the whole screen. 14u ≈ the
+                        // area you'd plausibly walk to next (user-requested
+                        // "reasonable distance limit").
+                        float lblDx = pos.X - playerPos.X, lblDz = pos.Z - playerPos.Z;
+                        if (lblDx * lblDx + lblDz * lblDz <= 14f * 14f)
+                        {
+                            // Sit the label nearly on top of the mesh — a 0.05
+                            // gap floats the text just above the surface.
+                            var labelPos = new Vector3(pos.X, pos.Y + pileSize + 0.05f, pos.Z);
+                            _frameLootLabels.Add((labelPos, itemMesh.DisplayName));
+                        }
                     }
                 }
                 else if (_lootCube is not null && !pile.Items.Any(x => x.IsGold))
@@ -30042,6 +30201,14 @@ void main()
                 var portrait = isPlayerSheet
                     ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
                     : ResolveMemberPortrait(sheetMember.Actor.Template);
+                // SC-ATTR-XP diag — what the sheet READS, one-shot per value
+                // change. Pairs with [attr]'s actor hash: a mismatch means
+                // the panel and the progression hold different Actor objects.
+                if (isPlayerSheet)
+                    BodyDiag($"sheet-int-{(int)sheetMember.Actor.Stats.Intelligence}",
+                        $"[sheet] reads int={sheetMember.Actor.Stats.Intelligence:F1} " +
+                        $"str={sheetMember.Actor.Stats.Strength:F1} dex={sheetMember.Actor.Stats.Dexterity:F1} " +
+                        $"actor#{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(sheetMember.Actor):X8}");
                 _characterPanel.Draw(_barRenderer!, _textRenderer,
                     size.X, size.Y, sheetName, sheetMember.Actor, sheetProgression,
                     sheetAttack, armor, xpFrac,
@@ -30371,10 +30538,10 @@ void main()
             // modals opened from the pause menu / F12. Drawn above pause so
             // either owns the screen; both tick their own blink/animation off
             // render dt (gameplay dt is frozen while they're up).
-            if (_saveDialog.IsOpen && _barRenderer is not null)
+            if (_saveDialog.IsOpen && _barRenderer is not null && _gl is not null)
             {
                 _saveDialog.Tick((float)dt);
-                _saveDialog.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                _saveDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
                                  TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             // DS1 Load Game window (in-game pose). The frontend pose is drawn

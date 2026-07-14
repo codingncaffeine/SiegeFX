@@ -57,6 +57,19 @@ public sealed class ActorFollower
     int _idleTicksRemaining;
     const int IdleAfterFail = 20;
 
+    // SC-MOB-LEG-TIMEOUT — watchdog on a wander leg. A follower can end up
+    // pinned mid-leg without EVER reporting PathBlocked or ReachedGoal (the
+    // recovery-oscillation freeze), and this driver only re-rolls on those
+    // two flags — so one bad leg froze the mob for the whole session. Budget
+    // each pick at 3× the straight-line walk time + 2s slack; an expired leg
+    // is abandoned (idle a beat, then re-roll) exactly like a blocked one.
+    // Armed ONLY for legs picked here: Chase/Flee re-target the follower
+    // directly every tick, and the target-match check disarms the watchdog
+    // the moment the leg is no longer ours.
+    float _legTimeLeft;
+    Vector3 _legTarget;
+    bool _legArmed;
+
     /// <summary>SC-MOB-ROAM-AUDIT — computer-gated amphibious policy for actors
     /// AUTHORED on water (Dark Mire mucosa, pond fish). Their placement is the
     /// capability statement: with the land-only Computer policy their spawn tri
@@ -111,6 +124,28 @@ public sealed class ActorFollower
             _idleTicksRemaining--;
             if (_idleTicksRemaining == 0) PickNewTarget();
             return;
+        }
+
+        // SC-MOB-LEG-TIMEOUT — abandon a leg that has overrun its walk
+        // budget without arriving. Only for legs this driver picked; an
+        // external retarget (chase/flee steering the follower directly)
+        // disarms the watchdog until the next PickNewTarget.
+        if (_legArmed)
+        {
+            if (Follower.Target != _legTarget)
+            {
+                _legArmed = false;
+            }
+            else if (!Follower.ReachedGoal && !Follower.PathBlocked)
+            {
+                _legTimeLeft -= dt;
+                if (_legTimeLeft <= 0f)
+                {
+                    _legArmed = false;
+                    _idleTicksRemaining = IdleAfterFail;
+                    return;
+                }
+            }
         }
 
         var before = Follower.Position;
@@ -242,6 +277,13 @@ public sealed class ActorFollower
                 if (MathF.Abs(triY - origin.Y) > 3f) continue;
                 if (!Follower.Traversal.CanEnter(mesh.Kinds[tri])) continue;
                 Follower.SetTarget(candidate);
+                // SC-MOB-LEG-TIMEOUT — arm the watchdog for this leg.
+                float ldx = candidate.X - Follower.Position.X;
+                float ldz = candidate.Z - Follower.Position.Z;
+                float gait = Follower.Speed > 0.5f ? Follower.Speed : 4f;
+                _legTimeLeft = MathF.Sqrt(ldx * ldx + ldz * ldz) / gait * 3f + 2f;
+                _legTarget = Follower.Target;
+                _legArmed = true;
                 return;
             }
         }
@@ -254,7 +296,18 @@ public sealed class ActorFollower
         // freezing. Idle backoff scales the retry rate down so we
         // don't burn CPU on a permanently-pinned actor.
         if (mesh.TryFindTriangle(origin, out _))
+        {
             Follower.SetTarget(origin);
+            // SC-MOB-LEG-TIMEOUT — the walk-home fallback leg can be long
+            // (a mob returning to its anchor after a chase); watchdog it
+            // like any picked leg so a pin on the way home can't freeze.
+            float hdx = origin.X - Follower.Position.X;
+            float hdz = origin.Z - Follower.Position.Z;
+            float gait = Follower.Speed > 0.5f ? Follower.Speed : 4f;
+            _legTimeLeft = MathF.Sqrt(hdx * hdx + hdz * hdz) / gait * 3f + 2f;
+            _legTarget = Follower.Target;
+            _legArmed = true;
+        }
         _idleTicksRemaining = IdleAfterFail;
     }
 }

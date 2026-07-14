@@ -239,8 +239,60 @@ public static class NavPathfinder
         string verdict = rawConnected
             ? "RAW-CONNECTED (obstacle/gate sever — a Blocked prop or logical-flag seals the only corridor)"
             : "RAW-DISCONNECTED (mesh stitch gap — the connecting edge never welded)";
+        // SC-NAV-BLAME — when the corridor exists but is sealed, walk the
+        // RAW shortest route and NAME every blocker sitting on it (the
+        // MarkObstacle tags) so the log identifies the sealing prop directly.
+        if (rawConnected)
+        {
+            var culprits = BlameRawPath(mesh, startTri, goalTri);
+            if (culprits.Count > 0)
+                verdict += $" — sealed by: {string.Join(", ", culprits)}";
+            else
+                verdict += " — no tagged blocker on the raw route (logical-flag gate?)";
+        }
         LastFailure = $"no corridor from start tri {startTri} (snode=0x{mesh.SourceSnodeGuid[startTri]:X8} lnode={mesh.SourceLnodeIndex[startTri]}) to goal tri {goalTri} (snode=0x{mesh.SourceSnodeGuid[goalTri]:X8} lnode={mesh.SourceLnodeIndex[goalTri]}) — {verdict}";
         return false;
+    }
+
+    /// <summary>SC-NAV-BLAME — BFS the raw adjacency (ignoring Blocked) from
+    /// start to goal, reconstruct the route, and collect the DISTINCT blame
+    /// tags of every Blocked triangle on it (with the tri id of the first
+    /// occurrence). Only runs on a rare RAW-CONNECTED path failure.</summary>
+    private static List<string> BlameRawPath(NavMesh mesh, int startTri, int goalTri)
+    {
+        var result = new List<string>();
+        int n = mesh.TriangleCount;
+        if (startTri < 0 || goalTri < 0 || startTri >= n || goalTri >= n) return result;
+        var parent = new int[n];
+        Array.Fill(parent, -2);           // -2 = unvisited, -1 = start sentinel
+        parent[startTri] = -1;
+        var queue = new Queue<int>();
+        queue.Enqueue(startTri);
+        bool found = startTri == goalTri;
+        while (!found && queue.Count > 0)
+        {
+            int t = queue.Dequeue();
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = mesh.Neighbors[3 * t + s];
+                if (nb < 0 || parent[nb] != -2) continue;
+                parent[nb] = t;
+                if (nb == goalTri) { found = true; break; }
+                queue.Enqueue(nb);
+            }
+        }
+        if (!found) return result;
+        var seenTags = new HashSet<string>(StringComparer.Ordinal);
+        for (int cur = goalTri; cur >= 0; cur = parent[cur])
+        {
+            if (mesh.IsBlocked(cur))
+            {
+                var tag = mesh.BlockerOf(cur) ?? "<untagged>";
+                if (seenTags.Add(tag)) result.Add($"{tag} (tri {cur})");
+            }
+            if (parent[cur] == -1) break;
+        }
+        return result;
     }
 
     /// <summary>SC-NAV-DIAG — plain flood over raw <see cref="NavMesh.Neighbors"/>

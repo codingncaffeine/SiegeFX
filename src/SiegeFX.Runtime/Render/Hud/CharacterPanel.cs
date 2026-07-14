@@ -156,25 +156,26 @@ public sealed class CharacterPanel
                 $"{(int)player.Combat.CurrentMana}/{(int)player.Stats.MaxMana}", headInk);
 
             // STR/DEX/INT — labels left, bars middle, values right, all gas rects.
+            // SC-ATTR-XP — the bars track each ATTRIBUTE'S OWN pool progress
+            // (AttrProgressFraction), not the feeding skills'. The skill
+            // fractions fill ~37% faster (the skill takes 100% of an award,
+            // the attribute only its influence share) and reset on SKILL
+            // crossings — the user-reported "looks like INT is about to level,
+            // then the bar starts over" without the number moving.
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104, 73, 211, 86), R(214, 73, 236, 86),
                 "Strength",    ((int)player.Stats.Strength).ToString(),
-                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee) ?? skillXpFraction,
+                progression?.AttrProgressFraction(0) ?? skillXpFraction,
                 ink, slotBg, slotEm);
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104, 87, 211, 100), R(214, 87, 236, 100),
                 "Dexterity",   ((int)player.Stats.Dexterity).ToString(),
-                progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged) ?? skillXpFraction,
+                progression?.AttrProgressFraction(1) ?? skillXpFraction,
                 ink, slotBg, slotEm);
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104,101, 211, 114), R(214,101, 236, 114),
                 "Intelligence",((int)player.Stats.Intelligence).ToString(),
-                // INT is driven by BOTH magic schools (nature + combat); track
-                // whichever is closer to its next level so a nature caster's
-                // INT row shows progress, not just Combat Magic's.
-                progression is null ? skillXpFraction
-                    : MathF.Max(progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic),
-                                progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic)),
+                progression?.AttrProgressFraction(2) ?? skillXpFraction,
                 ink, slotBg, slotEm);
         }
 
@@ -352,18 +353,15 @@ public sealed class CharacterPanel
 
             // STR / DEX / INT — centered between the two vials. Each row's
             // progress fill tracks the skill that drives that attribute's
-            // auto-grow: STR grows fastest off Melee gains, DEX off Ranged,
-            // INT off Combat Magic (DS1 ProportionalGains rows). Until per-
-            // skill pools are bound, falls back to skillXpFraction so the
-            // creator preview path still shows movement.
-            float strFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? skillXpFraction;
-            float dexFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? skillXpFraction;
-            // INT is driven by both magic schools — track whichever magic skill
-            // is closer to its next level (a nature caster's INT row shouldn't
-            // sit frozen on Combat Magic).
-            float intFrac = progression is null ? skillXpFraction
-                : MathF.Max(progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic),
-                            progression.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.CombatMagic));
+            // SC-ATTR-XP — the attribute bars show progress toward the NEXT
+            // ATTRIBUTE level (the redistributed pool between its table
+            // thresholds). They used to mirror the SKILL fractions, so a bar
+            // could reset (skill leveled) while the attribute number stayed
+            // put — the user-reported "bar started over but the number
+            // didn't change".
+            float strFrac = progression?.AttrProgressFraction(0) ?? skillXpFraction;
+            float dexFrac = progression?.AttrProgressFraction(1) ?? skillXpFraction;
+            float intFrac = progression?.AttrProgressFraction(2) ?? skillXpFraction;
             int statRowH = 11;
             int sy = statsTop + 12; // headroom for the HP|MP readout above
             DrawStatBarRow(bars, text, viewportW, viewportH, statsX, sy, statsW, statRowH,
