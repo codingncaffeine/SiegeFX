@@ -606,8 +606,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     }
 
     private int _ghostFingerprint;
-    private readonly List<(SnoModel Sno, Matrix4x4 World, bool Selected, bool Preview)> _ghostNodes = new();
+    private readonly List<(SnoModel Sno, Matrix4x4 World, bool Selected, bool Preview, bool Clips)> _ghostNodes = new();
     private readonly Dictionary<uint, Matrix4x4> _ghostNodeWorld = new();
+    // How many neighbour nodes interpenetrate the primary region at the current join —
+    // computed with the ghost cache, drawn red, and surfaced in the preview status.
+    private int _ghostOverlapCount;
     private readonly Dictionary<StitchRegionRef, (RegionGraph Graph, RegionLayout Layout)> _sibLayoutCache = new();
 
     private StitchRegionRef? _selectedSibling;
@@ -628,7 +631,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     {
         if (_selectedPrimaryDoor is not null && _selectedSiblingDoor is not null
             && _selectedSibling is not null && _selectedSibling.Stitches.Count == 0)
-            Status = $"Previewing the join with '{_selectedSibling.LeafName}' in bronze — NOT committed yet. Click 'Create reciprocal stitch' to keep it (then Play spawns you at the 🔥 doorway).";
+        {
+            string clip = _ghostOverlapCount > 0
+                ? $" ⚠ {_ghostOverlapCount} neighbour node(s) clip INTO this region (red in the preview) — walls/cliffs will poke through near the seam; another door pair may fit cleaner."
+                : "";
+            Status = $"Previewing the join with '{_selectedSibling.LeafName}' in bronze — NOT committed yet. Click 'Create reciprocal stitch' to keep it (then Play spawns you at the 🔥 doorway).{clip}";
+        }
     }
 
     private RegionStitch? _selectedStitch;
@@ -4192,6 +4200,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     $"⛰ {_stitchScenery} stitch(es) use scenery sockets (no walkable floor at the opening) — the regions join visually but players can NOT cross. Re-stitch through 🚪 walkable doors.",
                     sceneryTarget));
             }
+            // Seam clipping: the join composes and walks fine, but neighbour geometry
+            // interpenetrates this region (count from the ghost preview's AABB pass) —
+            // players see walls/cliffs poking through near the crossing.
+            if (_ghostOverlapCount > 0)
+                rows.Add(new ValidationRow(false,
+                    $"⚠ {_ghostOverlapCount} neighbour node(s) interpenetrate this region at the join (red in the viewport) — geometry clips through near the seam; a different door pair may fit cleaner."));
         }
 
         // Within-region snode-guid uniqueness — WorldLayout throws on a collision even single-region.
@@ -5075,6 +5089,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         _ghostFingerprint = fp;
         _ghostNodes.Clear();
         _ghostNodeWorld.Clear();
+        _ghostOverlapCount = 0;
         if (_catalog is null) return;
 
         try
@@ -5128,6 +5143,62 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             }
 
             var world = WorldLayout.Build(entries, gg => _catalog.Resolve(gg), rootHint: primPath);
+
+            // ── seam fit — a door pair can mate PERFECTLY while the regions around it
+            // collide: a dungeon room grafted onto a hillside buries itself in the
+            // cliff, and the player walks through rock right at the crossing (field
+            // report). AABB pass with a shrink margin so legitimate face-contact at
+            // the door plane doesn't count; interpenetrating neighbours draw red.
+            const float clipShrink = 0.4f, clipCell = 16f;
+            var primGrid = new Dictionary<(int X, int Z), List<(Vector3 Min, Vector3 Max)>>();
+            (Vector3 Min, Vector3 Max) WorldAabb(SnoModel sno, in Matrix4x4 w)
+            {
+                var mn = new Vector3(float.MaxValue); var mx = new Vector3(float.MinValue);
+                for (int ci = 0; ci < 8; ci++)
+                {
+                    var p = Vector3.Transform(new Vector3(
+                        (ci & 1) == 0 ? sno.MinBounds.X : sno.MaxBounds.X,
+                        (ci & 2) == 0 ? sno.MinBounds.Y : sno.MaxBounds.Y,
+                        (ci & 4) == 0 ? sno.MinBounds.Z : sno.MaxBounds.Z), w);
+                    mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p);
+                }
+                return (mn, mx);
+            }
+            foreach (var kv in world.Transforms)
+            {
+                if (!world.GuidToRegion.TryGetValue(kv.Key, out var rp0)
+                    || !rp0.Equals(primPath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!primaryGraph.TryGetNode(kv.Key, out var pn)) continue;
+                var psno = _catalog.Resolve(pn.MeshGuid);
+                if (psno is null) continue;
+                var box = WorldAabb(psno, kv.Value);
+                int bx0 = (int)MathF.Floor(box.Min.X / clipCell), bx1 = (int)MathF.Floor(box.Max.X / clipCell);
+                int bz0 = (int)MathF.Floor(box.Min.Z / clipCell), bz1 = (int)MathF.Floor(box.Max.Z / clipCell);
+                for (int gx = bx0; gx <= bx1; gx++)
+                    for (int gz = bz0; gz <= bz1; gz++)
+                    {
+                        if (!primGrid.TryGetValue((gx, gz), out var cellList)) primGrid[(gx, gz)] = cellList = new();
+                        cellList.Add(box);
+                    }
+            }
+            bool ClipsPrimary(SnoModel sno, in Matrix4x4 w)
+            {
+                var b = WorldAabb(sno, w);
+                int bx0 = (int)MathF.Floor(b.Min.X / clipCell), bx1 = (int)MathF.Floor(b.Max.X / clipCell);
+                int bz0 = (int)MathF.Floor(b.Min.Z / clipCell), bz1 = (int)MathF.Floor(b.Max.Z / clipCell);
+                for (int gx = bx0; gx <= bx1; gx++)
+                    for (int gz = bz0; gz <= bz1; gz++)
+                    {
+                        if (!primGrid.TryGetValue((gx, gz), out var cand)) continue;
+                        foreach (var p in cand)
+                            if (b.Min.X + clipShrink < p.Max.X - clipShrink && p.Min.X + clipShrink < b.Max.X - clipShrink
+                             && b.Min.Y + clipShrink < p.Max.Y - clipShrink && p.Min.Y + clipShrink < b.Max.Y - clipShrink
+                             && b.Min.Z + clipShrink < p.Max.Z - clipShrink && p.Min.Z + clipShrink < b.Max.Z - clipShrink)
+                                return true;
+                    }
+                return false;
+            }
+
             foreach (var kv in world.Transforms)
             {
                 if (!world.GuidToRegion.TryGetValue(kv.Key, out var rp)
@@ -5140,11 +5211,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     {
                         var sno = _catalog.Resolve(node.MeshGuid);
                         bool isPreview = previewActive && ReferenceEquals(sib, _selectedSibling);
-                        if (sno is not null) _ghostNodes.Add((sno, kv.Value, ReferenceEquals(sib, _selectedSibling), isPreview));
+                        if (sno is not null)
+                        {
+                            bool clips = ClipsPrimary(sno, kv.Value);
+                            if (clips) _ghostOverlapCount++;
+                            _ghostNodes.Add((sno, kv.Value, ReferenceEquals(sib, _selectedSibling), isPreview, clips));
+                        }
                     }
                     break;
                 }
             }
+            if (previewActive) AnnouncePreviewIfPending();
         }
         catch (Exception ex)
         {
@@ -6047,10 +6124,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 }
             }
 
-            foreach (var (gSno, gWorld, gSel, gPrev) in _ghostNodes)
-                GhostTris(gSno, gWorld, gPrev
-                    ? 0x50 << 24 | 0xD8A657                                    // proposed join — accent bronze
-                    : (gSel ? 0x58 : 0x40) << 24 | (gSel ? 0x8FA0C8 : 0x76839F)); // committed — cool grey-blue
+            foreach (var (gSno, gWorld, gSel, gPrev, gClips) in _ghostNodes)
+                GhostTris(gSno, gWorld, gClips
+                    ? 0x5C << 24 | 0xE05548                                    // interpenetrates this region — clipping
+                    : gPrev
+                        ? 0x50 << 24 | 0xD8A657                                // proposed join — accent bronze
+                        : (gSel ? 0x58 : 0x40) << 24 | (gSel ? 0x8FA0C8 : 0x76839F)); // committed — cool grey-blue
 
             // door markers — small opaque cubes at each free door frame
             void DoorCube(Vector3 c, float size, int rgb)
