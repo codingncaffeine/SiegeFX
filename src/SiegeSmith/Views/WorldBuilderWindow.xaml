@@ -1033,7 +1033,7 @@
         <!-- ░░ Bottom dock: Region | World | Map ░░ -->
         <Border Grid.Row="3" Background="{StaticResource Brush.Panel}"
                 BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,1,0,0">
-            <TabControl>
+            <TabControl SelectedIndex="{Binding BottomTabIndex, Mode=TwoWay}">
                 <TabItem Header="Region" ToolTip="Load/save this region and set its mood + music">
                     <Grid Margin="10,8">
                         <Grid.ColumnDefinitions>

@@ -3556,7 +3556,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         ValidationRows.Clear();
         foreach (var r in checks) ValidationRows.Add(r);
         foreach (var r in checks)
-            if (!r.Ok) { Status = "Can't play yet — " + r.Text; return; }
+            if (!r.Ok) { BottomTabIndex = 3; Status = "Can't play yet — " + r.Text; return; }
 
         var terrain = FindTank("terrain"); var logic = FindTank("logic"); var objects = FindTank("objects");
         var runtime = RuntimeLauncher.FindRuntime();
@@ -3625,6 +3625,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     }
 
     /// <summary>Runs the pre-launch checklist and shows it in the validation panel.</summary>
+    // Bottom dock tab (0=Region 1=Graph 2=World 3=Map) — settable from code so
+    // actions whose OUTPUT lives in a tab can reveal it instead of filling a
+    // hidden panel (the old Validate buried its own checklist).
+    private int _bottomTabIndex;
+    public int BottomTabIndex { get => _bottomTabIndex; set => SetProperty(ref _bottomTabIndex, value); }
+
     private void Validate()
     {
         var checks = RunChecks(play: true);
@@ -3632,6 +3638,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         foreach (var r in checks) ValidationRows.Add(r);
         int bad = 0;
         foreach (var r in checks) if (!r.Ok) bad++;
+        BottomTabIndex = 3; // show the checklist the click just filled
         Status = bad == 0
             ? $"Region valid — {NodeCount} node(s), ready to launch."
             : $"Region has {bad} problem(s) — see the checklist below.";

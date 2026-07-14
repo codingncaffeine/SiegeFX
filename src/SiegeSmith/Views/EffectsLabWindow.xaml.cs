@@ -14,6 +14,7 @@ public partial class EffectsLabWindow : Window
     public EffectsLabWindow(IReadOnlyList<string> tankPaths)
     {
         InitializeComponent();
+        SiegeSmith.Services.WindowPlacement.Track(this, "effectslab");
         _vm = new EffectsLabViewModel(tankPaths);
         DataContext = _vm;
         Closed += (_, _) => _vm.Shutdown();

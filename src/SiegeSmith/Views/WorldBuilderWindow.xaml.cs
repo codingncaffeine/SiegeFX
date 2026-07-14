@@ -25,6 +25,7 @@ public partial class WorldBuilderWindow : Window
     public WorldBuilderWindow(IReadOnlyList<string> tankPaths)
     {
         InitializeComponent();
+        SiegeSmith.Services.WindowPlacement.Track(this, "worldbuilder");
         _vm = new WorldBuilderViewModel(tankPaths);
         DataContext = _vm;
 

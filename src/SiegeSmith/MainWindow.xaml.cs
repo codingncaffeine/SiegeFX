@@ -12,7 +12,11 @@ namespace SiegeSmith;
 /// <summary>Interaction logic for MainWindow.xaml — the SiegeSmith shell window.</summary>
 public partial class MainWindow : Window
 {
-    public MainWindow() => InitializeComponent();
+    public MainWindow()
+    {
+        InitializeComponent();
+        SiegeSmith.Services.WindowPlacement.Track(this, "studio");
+    }
 
     private void OnBuildTank(object sender, RoutedEventArgs e) =>
         new BuildTankWindow { Owner = this }.ShowDialog();

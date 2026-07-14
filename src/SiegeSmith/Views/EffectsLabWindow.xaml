@@ -6,6 +6,11 @@
         Width="1280" Height="820" WindowStartupLocation="CenterOwner"
         Background="{StaticResource Brush.Window}"
         FontFamily="Segoe UI" FontSize="13" TextOptions.TextFormattingMode="Display">
+    <Window.InputBindings>
+        <KeyBinding Key="S" Modifiers="Control" Command="{Binding SaveScriptCommand}"/>
+        <KeyBinding Key="F5" Command="{Binding PlayCommand}"/>
+        <KeyBinding Key="F5" Modifiers="Shift" Command="{Binding StopCommand}"/>
+    </Window.InputBindings>
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -19,8 +24,9 @@
             <DockPanel Margin="10,6">
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
                     <Button Content="▶ Play" Command="{Binding PlayCommand}" Padding="10,3" Margin="0,0,6,0"
-                            ToolTip="Compile the current script and run it through the engine's SfxRuntime VM"/>
-                    <Button Content="■ Stop" Command="{Binding StopCommand}" Padding="10,3" Margin="0,0,10,0"/>
+                            ToolTip="Compile the current script and run it through the engine's SfxRuntime VM (F5)"/>
+                    <Button Content="■ Stop" Command="{Binding StopCommand}" Padding="10,3" Margin="0,0,10,0"
+                            ToolTip="Stop and clear the preview (Shift+F5)"/>
                     <CheckBox Content="Auto-play on edit" IsChecked="{Binding AutoPlay}" VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <CheckBox Content="Loop" IsChecked="{Binding Loop}" VerticalAlignment="Center" Margin="0,0,14,0"/>
                     <TextBlock Text="Target" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" Margin="0,0,4,0"/>
@@ -93,7 +99,7 @@
                     <TextBox Width="220" Text="{Binding ScriptName, UpdateSourceTrigger=PropertyChanged, Delay=250}" Padding="3,2"
                              IsReadOnly="{Binding EditorReadOnly}"/>
                     <Button DockPanel.Dock="Right" Content="Save" Command="{Binding SaveScriptCommand}" Padding="12,3"
-                            ToolTip="Save into the assets folder — bundles into every packaged map, callable via call_sfx_script"/>
+                            ToolTip="Save into the assets folder — bundles into every packaged map, callable via call_sfx_script (Ctrl+S)"/>
                     <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedDetail}" Foreground="{StaticResource Brush.Muted}"
                                VerticalAlignment="Center" Margin="0,0,10,0"/>
                     <Border/>

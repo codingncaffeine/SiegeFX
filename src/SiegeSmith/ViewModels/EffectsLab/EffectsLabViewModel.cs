@@ -80,6 +80,16 @@ public sealed class EffectsLabViewModel : ObservableObject
         FilmstripCommand = new RelayCommand(_ => _ = RenderFilmstripAsync(), _ => _selected is not null && !_filmstripBusy);
         ResetViewCommand = new RelayCommand(_ => { _yaw = -2.05f; _pitch = 0.42f; _dist = 9.5f; _pan = Vector3.Zero; RenderViewport(); });
 
+        _targetDebounce = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(220),
+        };
+        _targetDebounce.Tick += (_, _) =>
+        {
+            _targetDebounce.Stop();
+            if (_selected is not null) Respawn();
+        };
+
         _editDebounce = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(450),
@@ -417,8 +427,18 @@ public sealed class EffectsLabViewModel : ObservableObject
     public double TargetDist
     {
         get => _targetDist;
-        set { if (SetProperty(ref _targetDist, Math.Clamp(value, 1.0, 16.0))) { if (AutoPlay) Respawn(); else RenderViewport(); } }
+        set
+        {
+            if (!SetProperty(ref _targetDist, Math.Clamp(value, 1.0, 16.0))) return;
+            // Dragging the slider fires per pixel — move the target cube live but
+            // debounce the (store-clone + VM restart) respawn until the drag settles.
+            RenderViewport();
+            if (!AutoPlay) return;
+            _targetDebounce.Stop();
+            _targetDebounce.Start();
+        }
     }
+    private readonly System.Windows.Threading.DispatcherTimer _targetDebounce;
 
     // ── diagnostics ──────────────────────────────────────────────
     private string _coverage = "";
