@@ -647,7 +647,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public bool HideSceneryDoors
     {
         get => _hideSceneryDoors;
-        set { if (SetProperty(ref _hideSceneryDoors, value)) { RefreshStitchState(); RaiseSiblingDoors(); } }
+        set { if (SetProperty(ref _hideSceneryDoors, value)) { RefreshStitchState(); RaiseSiblingDoors(); Render(); } }
     }
 
     /// <summary>Drops a door-socket flame to standing height: walkable sockets sit AT floor
@@ -6076,6 +6076,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             // sub-pixel when a full shipped region is framed (the "where are the
             // blue doors?" report); ~2% of orbit distance stays visible at any zoom
             float doorSize = MathF.Max(MathF.Max(0.14f, MarkerSize(_radius) * 0.5f), _dist * 0.022f);
+            // Usability tiers, matching the picker: 🚪 walkable = full side colour,
+            // ⚠ off-path = dimmed, ⛰ scenery = dark grey and smaller (drawn only when
+            // "Hide ⛰ scenery doors" is off — both loops iterate the FILTERED lists, so
+            // the viewport shows exactly the doors the picker offers).
             foreach (var fd in PrimaryFreeDoors)
             {
                 if (!_nodeWorld.TryGetValue(fd.Snode, out var nw)) continue;
@@ -6087,14 +6091,14 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     {
                         bool sel = _selectedPrimaryDoor == fd;
                         var pos = Vector3.Transform(d.Transform.Translation, nw);
-                        // off-path doors (no walkable route from the region start) draw dimmed
-                        int rgb = fd.Reachable ? 0x4C9EE8 : 0x33506E;
-                        DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(rgb) : rgb);
+                        int rgb = !fd.Walkable ? 0x3A3F46 : fd.Reachable ? 0x4C9EE8 : 0x33506E;
+                        float sz = fd.Walkable ? doorSize : doorSize * 0.7f;
+                        DoorCube(pos, sel ? sz * 1.5f : sz, sel ? Brighten(rgb) : rgb);
                         break;
                     }
             }
             if (_selectedSibling is not null && _sibLayoutCache.TryGetValue(_selectedSibling, out var sibBuilt))
-                foreach (var fd in _selectedSibling.FreeDoors)
+                foreach (var fd in SiblingFreeDoors)
                 {
                     if (!_ghostNodeWorld.TryGetValue(fd.Snode, out var gw)) continue;
                     if (!sibBuilt.Graph.TryGetNode(fd.Snode, out var gnode)) continue;
@@ -6105,8 +6109,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                         {
                             bool sel = _selectedSiblingDoor == fd;
                             var pos = Vector3.Transform(d.Transform.Translation, gw);
-                            int rgb = fd.Reachable ? 0xC77DD8 : 0x6E4E78;
-                            DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(rgb) : rgb);
+                            int rgb = !fd.Walkable ? 0x3A3F46 : fd.Reachable ? 0xC77DD8 : 0x6E4E78;
+                            float sz = fd.Walkable ? doorSize : doorSize * 0.7f;
+                            DoorCube(pos, sel ? sz * 1.5f : sz, sel ? Brighten(rgb) : rgb);
                             break;
                         }
                 }
