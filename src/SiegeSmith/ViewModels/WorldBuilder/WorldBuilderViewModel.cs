@@ -1410,7 +1410,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         foreach (var m in _multiSel.ToArray())
             switch (m)
             {
-                case PlacedObject p: _objects.Remove(p); break;
+                case PlacedObject p: RemoveActorCommandChain(p); _objects.Remove(p); break;
                 case RegionEmitter e: Emitters.Remove(e); break;
                 case RegionDecal d: Decals.Remove(d); break;
                 case AuthoredLight l: Lights.Remove(l); break;
@@ -4430,12 +4430,51 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (_selectedPlacedObject is null) return;
         PushUndo();
         uint scid = _selectedPlacedObject.Scid;
+        if (_objects.Find(o => o.Scid == scid) is { } obj)
+            RemoveActorCommandChain(obj);
         _objects.RemoveAll(o => o.Scid == scid);
         _selectedPlacedObject = null;
         OnPropertyChanged(nameof(SelectedPlacedObject));
         RebuildPlacedRows();
         Status = $"Deleted object 0x{scid:X8}.";
         RaiseCommands();
+        Render();
+    }
+
+    /// <summary>ED-11 follow-up — deleting an actor takes its command chain with it.
+    /// Patrol waypoints are CommandPlacements linked by NextScid and rooted at the
+    /// actor's InitialCommand; leaving them behind kept ghost routes in the preview
+    /// and packed orphaned cmd_ai_patrol rows nothing referenced. Cycle-safe (retail
+    /// patrols loop back to their first waypoint), and duplicate-safe: Clone() copies
+    /// InitialCommand, so the chain survives while ANY other actor still points at it.
+    /// Also cancels an in-progress patrol draw on the dying actor.</summary>
+    private void RemoveActorCommandChain(PlacedObject o)
+    {
+        if (ReferenceEquals(_patrolActor, o))
+        {
+            _patrolMode = false;
+            OnPropertyChanged(nameof(PatrolMode));
+            _patrolActor = null;
+            _patrolFirst = _patrolPrev = 0;
+            _patrolCount = 0;
+        }
+        if (o.InitialCommand == 0) return;
+        foreach (var other in _objects)
+            if (!ReferenceEquals(other, o) && other.InitialCommand == o.InitialCommand)
+            { o.InitialCommand = 0; return; }
+
+        var seen = new HashSet<uint>();
+        uint cur = o.InitialCommand;
+        while (cur != 0 && seen.Add(cur))
+        {
+            CommandPlacement? hit = null;
+            foreach (var c in Commands) if (c.Scid == cur) { hit = c; break; }
+            if (hit is null) break;
+            cur = hit.NextScid ?? 0;
+            Commands.Remove(hit);
+            if (ReferenceEquals(_selectedCommand, hit)) SelectedCommand = null;
+        }
+        o.InitialCommand = 0;
     }
 
     private void RebuildPlacedRows()
