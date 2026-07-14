@@ -17,7 +17,7 @@
     <!-- Early alpha: feature-complete per plan but not yet field-tested by
          the public. Without this property the assembly defaulted to 1.0.0,
          which the About dialog dutifully over-promised. -->
-    <Version>0.0.4</Version>
+    <Version>0.0.5</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
