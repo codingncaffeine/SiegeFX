@@ -29,10 +29,13 @@ public sealed class LabParticleSink : IParticleSink
     }
 
     /// <summary>Parametric shapes (bolts, rings, swarms) that compute their look
-    /// from age each frame instead of integrating a pool particle.</summary>
+    /// from age each frame instead of integrating a pool particle. ALL state
+    /// mutation and pool spawning happens in Tick; Emit must stay pure — the
+    /// viewport re-Collects without ticking on every camera move, so an impure
+    /// Emit double-spawns.</summary>
     private interface ILabFx
     {
-        bool Tick(float dt);                       // false = expired
+        bool Tick(float dt, LabParticleSink sink); // false = expired
         void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink);
     }
 
@@ -72,7 +75,7 @@ public sealed class LabParticleSink : IParticleSink
             _pool[i] = p;
         }
         for (int i = _fx.Count - 1; i >= 0; i--)
-            if (!_fx[i].Tick(dt)) _fx.RemoveAt(i);
+            if (!_fx[i].Tick(dt, this)) _fx.RemoveAt(i);
     }
 
     /// <summary>Convert the live state to render splats (Z-up preview space).</summary>
@@ -506,7 +509,7 @@ public sealed class LabParticleSink : IParticleSink
     {
         public Vector3 A, B; public Vector4 Color; public float Life, Age, MinD, MaxD; public int Segments; public uint Seed;
 
-        public bool Tick(float dt) { Age += dt; return Age < Life; }
+        public bool Tick(float dt, LabParticleSink sink) { Age += dt; return Age < Life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -539,7 +542,7 @@ public sealed class LabParticleSink : IParticleSink
     {
         public Vector3 A, B; public Vector4 C0, C1; public float FadeRate, Tin, Tout, Life, Age;
 
-        public bool Tick(float dt) { Age += dt; return Age < Life; }
+        public bool Tick(float dt, LabParticleSink sink) { Age += dt; return Age < Life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -560,28 +563,25 @@ public sealed class LabParticleSink : IParticleSink
         public float Remaining, Rate, Life, Age, LifeEach, Carry;
         public ExplosionSpec Spec;
 
-        public bool Tick(float dt)
+        public bool Tick(float dt, LabParticleSink sink)
         {
             Age += dt;
             Carry += Rate * dt;
-            return Age < Life && Remaining > 0f;
-        }
-
-        public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
-        {
             int k = (int)Carry;
-            if (k <= 0) return;
             Carry -= k;
             for (int i = 0; i < k && Remaining > 0f; i++, Remaining--)
                 sink.EmitExplosionParticle(Spec, LifeEach);
+            return Age < Life && Remaining > 0f;
         }
+
+        public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink) { }
     }
 
     private sealed class CylFx : ILabFx
     {
         public CylinderSpec S; public float Life, Age;
 
-        public bool Tick(float dt) { Age += dt; return Age < Life; }
+        public bool Tick(float dt, LabParticleSink sink) { Age += dt; return Age < Life; }
 
         static float Profile(Vector3 p, float t, float dur)
         {
@@ -629,11 +629,9 @@ public sealed class LabParticleSink : IParticleSink
         {
             _s = s;
             _life = s.Duration > 0.01f ? s.Duration : 1.6f;
-            _seedSink = sink;
         }
-        readonly LabParticleSink _seedSink;
 
-        public bool Tick(float dt)
+        public bool Tick(float dt, LabParticleSink sink)
         {
             _age += dt;
             int cap = _s.Count <= 0 ? 16 : Math.Clamp(_s.Count, 1, 64);
@@ -642,7 +640,7 @@ public sealed class LabParticleSink : IParticleSink
             while (_spawnCarry >= 1f && _rays.Count < cap)
             {
                 _spawnCarry -= 1f;
-                var sk = _seedSink;
+                var sk = sink;
                 _rays.Add((
                     sk.Rnd(MathF.Min(_s.LMin, _s.LMax), MathF.Max(_s.LMin, _s.LMax) <= 0f ? 10f : MathF.Max(_s.LMin, _s.LMax)),
                     _s.Theta.X, _s.Phi.X,
@@ -707,7 +705,7 @@ public sealed class LabParticleSink : IParticleSink
             }
         }
 
-        public bool Tick(float dt) { _age += dt; return _age < _life; }
+        public bool Tick(float dt, LabParticleSink sink) { _age += dt; return _age < _life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -733,7 +731,7 @@ public sealed class LabParticleSink : IParticleSink
     {
         public SpeSpec S; public float Life, Age;
 
-        public bool Tick(float dt) { Age += dt; return Age < Life; }
+        public bool Tick(float dt, LabParticleSink sink) { Age += dt; return Age < Life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -776,7 +774,7 @@ public sealed class LabParticleSink : IParticleSink
             }
         }
 
-        public bool Tick(float dt) { _age += dt; return _age < _life; }
+        public bool Tick(float dt, LabParticleSink sink) { _age += dt; return _age < _life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -808,7 +806,7 @@ public sealed class LabParticleSink : IParticleSink
             for (int i = 0; i < n; i++) { _dirs[i] = sink.RndOnSphere(); _stagger[i] = sink.Rnd() * 0.35f; }
         }
 
-        public bool Tick(float dt) { _age += dt; return _age < _life; }
+        public bool Tick(float dt, LabParticleSink sink) { _age += dt; return _age < _life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -840,7 +838,7 @@ public sealed class LabParticleSink : IParticleSink
     {
         public SphereMeshSpec S; public float Life, Age;
 
-        public bool Tick(float dt) { Age += dt; return Age < Life; }
+        public bool Tick(float dt, LabParticleSink sink) { Age += dt; return Age < Life; }
 
         public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
         {
@@ -869,38 +867,38 @@ public sealed class LabParticleSink : IParticleSink
     {
         public Vector3 Pos, Target; public Vector4 Color; public float Scale, Speed, Life, Age;
         public int ImpactKind;
-        bool _arrived;
 
-        public bool Tick(float dt)
+        public bool Tick(float dt, LabParticleSink sink)
         {
             Age += dt;
-            if (_arrived || Age >= Life) return false;
+            if (Age >= Life) return false;
             var to = Target - Pos;
             float dist = to.Length();
             float step = Speed * dt;
-            if (step >= dist) { Pos = Target; _arrived = true; return true; } // final Emit paints the impact
-            Pos += to / dist * step;
-            return true;
-        }
-
-        public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
-        {
-            if (_arrived)
+            if (step >= dist)
             {
+                // arrival: paint the impact ONCE, here in Tick, then die
                 var impact = ImpactKind switch
                 {
                     1 => new Vector4(0.6f, 0.85f, 1f, 0.9f),   // ice/frost
                     2 => new Vector4(0.85f, 0.8f, 1f, 0.95f),  // lightning crack
                     _ => new Vector4(1f, 0.6f, 0.2f, 0.9f),    // fire
                 };
-                sink.SpawnSpark(Pos, impact, Scale, 0.5f, 22);
-                sink.SpawnFire(Pos, impact, Scale * 1.2f, 0.45f, 10);
-                return;
+                sink.SpawnSpark(Target, impact, Scale, 0.5f, 22);
+                sink.SpawnFire(Target, impact, Scale * 1.2f, 0.45f, 10);
+                return false;
             }
-            // glowing head + short-lived trail stamps
-            AddSplat(into, Pos, 0.16f * Scale, Color, Math.Clamp(Color.W, 0f, 1f), additive: true);
+            Pos += to / dist * step;
+            // short-lived trail stamp rides in the pool
             sink.Emit(Pos, new Vector3(sink.RndSym(0.3f), sink.Rnd(0.3f, 0.9f), sink.RndSym(0.3f)),
                 Vector3.Zero, Color, 0.09f * Scale, 0.35f, additive: true);
+            return true;
+        }
+
+        public void Emit(List<SoftwareRenderer.Splat> into, LabParticleSink sink)
+        {
+            // glowing head only — pure draw, no state
+            AddSplat(into, Pos, 0.16f * Scale, Color, Math.Clamp(Color.W, 0f, 1f), additive: true);
         }
     }
 }

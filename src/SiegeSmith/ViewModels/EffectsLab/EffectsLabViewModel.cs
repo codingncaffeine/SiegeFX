@@ -144,11 +144,15 @@ public sealed class EffectsLabViewModel : ObservableObject
     }
 
     private LabScriptItem? _selected;
+    private bool _rebuildingList;
     public LabScriptItem? SelectedScript
     {
         get => _selected;
         set
         {
+            // Refilling the ListBox pushes a null selection through the binding —
+            // ignore it or a rename/filter keystroke wipes the open editor.
+            if (_rebuildingList) return;
             if (!SetProperty(ref _selected, value)) return;
             _suppressEdit = true;
             EditorText = value?.Body ?? "";
@@ -169,11 +173,18 @@ public sealed class EffectsLabViewModel : ObservableObject
 
     private void RebuildVisible()
     {
+        var keep = _selected;
+        _rebuildingList = true;
         Scripts.Clear();
         foreach (var s in _all
                      .Where(s => _filter.Length == 0 || s.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase))
                      .OrderByDescending(s => s.IsProject).ThenBy(s => s.Name, StringComparer.OrdinalIgnoreCase))
             Scripts.Add(s);
+        _rebuildingList = false;
+        // Restore the selection without the full setter (no editor reload); if the
+        // filter hid it, the editor keeps its content with no list highlight.
+        if (keep is not null && Scripts.Contains(keep))
+            OnPropertyChanged(nameof(SelectedScript));
         OnPropertyChanged(nameof(BrowserLabel));
     }
 
@@ -448,6 +459,10 @@ public sealed class EffectsLabViewModel : ObservableObject
                     }
                     break;
                 case StatementKind.Raw:
+                    // Several verbs compile as Raw but ARE executed by the VM
+                    // (worldmsg / randrange / frandrange / camerashake / exit) —
+                    // consult the engine's own truth table, not the statement kind.
+                    if (SfxRuntime.HandledRawVerbs.Contains(st.Verb)) break;
                     raws++;
                     Diagnostics.Add(new LabDiagRow { Icon = "⚠", Text = $"'{st.Verb} {string.Join(' ', st.Tokens)}' — unknown to the engine VM (logged + skipped)", IsWarning = true });
                     break;

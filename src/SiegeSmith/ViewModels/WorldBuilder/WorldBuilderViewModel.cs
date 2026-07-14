@@ -4887,7 +4887,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         var snoPath = System.IO.Path.Combine(snoDir, name + ".sno");
         try { System.IO.File.WriteAllBytes(snoPath, sno); }
         catch (Exception ex) { Status = $"Couldn't save .sno: {ex.Message}"; return; }
-        AppendMeshFileIndex(name, guid);
+        guid = AppendMeshFileIndex(name, guid); // same-named re-import keeps its published guid
         RegisterCustomTerrain(guid, name, check);
 
         OnPropertyChanged(nameof(AssetsLabel));
@@ -4997,7 +4997,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         var snoPath = System.IO.Path.Combine(snoDir, name + ".sno");
         try { System.IO.File.WriteAllBytes(snoPath, sno); }
         catch (Exception ex) { Status = $"Couldn't save .sno: {ex.Message}"; return; }
-        AppendMeshFileIndex(name, guid);
+        guid = AppendMeshFileIndex(name, guid); // same-named re-import keeps its published guid
         RegisterCustomTerrain(guid, name, check);
 
         OnPropertyChanged(nameof(AssetsLabel));
@@ -5058,10 +5058,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     /// <summary>Rewrites the custom siege-node index (<c>world/global/siege_nodes/ss_custom/misc_ss_custom.gas</c>)
     /// with every generated tile's <c>[mesh_file*]</c> entry, matching DS1's exact shape so SnoMeshIndex maps
-    /// mesh_guid → bare .sno name.</summary>
-    private void AppendMeshFileIndex(string filename, uint guid)
+    /// mesh_guid → bare .sno name. Returns the AUTHORITATIVE guid: re-generating a same-named tile keeps its
+    /// existing index guid (the .sno updates in place) — otherwise placed nodes would reference a fresh guid
+    /// the packaged index never maps, and the region would silently lose the tile in-engine.</summary>
+    private uint AppendMeshFileIndex(string filename, uint guid)
     {
-        if (_assetsFolder is null) return;
+        if (_assetsFolder is null) return guid;
         var dir = System.IO.Path.Combine(_assetsFolder, "world", "global", "siege_nodes", "ss_custom");
         System.IO.Directory.CreateDirectory(dir);
         var file = System.IO.Path.Combine(dir, "misc_ss_custom.gas");
@@ -5072,6 +5074,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 System.IO.File.ReadAllText(file), @"filename\s*=\s*([^;]+);\s*guid\s*=\s*(0x[0-9A-Fa-f]+)"))
                 entries.Add((m.Groups[1].Value.Trim(), m.Groups[2].Value.Trim()));
 
+        foreach (var e in entries)
+            if (e.Name.Equals(filename, StringComparison.OrdinalIgnoreCase)
+                && uint.TryParse(e.Guid.AsSpan(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var existing))
+                guid = existing;
+
         if (!entries.Any(e => e.Name.Equals(filename, StringComparison.OrdinalIgnoreCase)))
             entries.Add((filename, $"0x{guid:X8}"));
 
@@ -5081,6 +5088,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             sb.Append($"\t[mesh_file*] {{ filename={e.Name}; guid={e.Guid}; }}\r\n");
         sb.Append("}\r\n");
         System.IO.File.WriteAllText(file, sb.ToString());
+        return guid;
     }
 
     /// <summary>Appends a self-contained placeable template (no <c>specializes</c>, so it resolves without
