@@ -72,8 +72,11 @@ public sealed class EffectsLabViewModel : ObservableObject
 
         PlayCommand = new RelayCommand(_ => Respawn(), _ => _selected is not null);
         StopCommand = new RelayCommand(_ => StopSim());
-        NewScriptCommand = new RelayCommand(_ => NewScript(), _ => _assetsFolder is not null);
-        CopyToProjectCommand = new RelayCommand(_ => CopyToProject(), _ => _selected is { IsProject: false } && _assetsFolder is not null);
+        // No assets-folder gate on the buttons: if the folder isn't set yet, clicking
+        // PROMPTS for it and continues — a button that silently does nothing is how
+        // "the app is broken" reports happen.
+        NewScriptCommand = new RelayCommand(_ => NewScript());
+        CopyToProjectCommand = new RelayCommand(_ => CopyToProject(), _ => _selected is { IsProject: false });
         SaveScriptCommand = new RelayCommand(_ => SaveScript(), _ => _selected is { IsProject: true });
         DeleteScriptCommand = new RelayCommand(_ => DeleteScript(), _ => _selected is { IsProject: true });
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
@@ -255,13 +258,31 @@ public sealed class EffectsLabViewModel : ObservableObject
     {
         var folder = DialogService.PickFolder("Choose the custom-assets folder (same folder the World Builder bundles)");
         if (folder is null) return;
+        ApplyAssetsFolder(folder);
+    }
+
+    private void ApplyAssetsFolder(string folder)
+    {
         _assetsFolder = folder;
+        AppSettings.SaveAssetsFolder(folder); // shared with the World Builder, survives sessions
         OnPropertyChanged(nameof(AssetsLabel));
         _all.RemoveAll(s => s.IsProject);
         LoadProjectScripts();
         RebuildVisible();
         RaiseCommands();
         SavePrefs();
+    }
+
+    /// <summary>True once an assets folder exists — prompting for it on the spot if
+    /// needed, so folder-dependent actions are never dead buttons.</summary>
+    private bool EnsureAssetsFolder()
+    {
+        if (_assetsFolder is not null) return true;
+        Status = "Pick the folder your custom content lives in — it bundles into every map you pack.";
+        var folder = DialogService.PickFolder("First, choose your custom-assets folder (scripts save into world/global/effects inside it)");
+        if (folder is null) { Status = "No folder picked — the script wasn't saved. Set one via 'Assets folder…' any time."; return false; }
+        ApplyAssetsFolder(folder);
+        return true;
     }
 
     private void LoadProjectScripts()
@@ -289,7 +310,7 @@ public sealed class EffectsLabViewModel : ObservableObject
 
     private void NewScript()
     {
-        if (_assetsFolder is null) return;
+        if (!EnsureAssetsFolder()) return;
         var baseName = "my_effect";
         int n = 1;
         while (_all.Any(s => s.Name.Equals($"{baseName}_{n}", StringComparison.OrdinalIgnoreCase))) n++;
@@ -316,7 +337,7 @@ public sealed class EffectsLabViewModel : ObservableObject
 
     private void CopyToProject()
     {
-        if (_selected is null || _assetsFolder is null) return;
+        if (_selected is null || !EnsureAssetsFolder()) return;
         var baseName = _selected.Name;
         var name = baseName;
         if (_all.Any(s => s.IsProject && s.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
@@ -808,6 +829,8 @@ public sealed class EffectsLabViewModel : ObservableObject
             if (p is null) return;
             if (p.AssetsFolder is not null && Directory.Exists(p.AssetsFolder)) _assetsFolder = p.AssetsFolder;
             _targetDist = Math.Clamp(p.TargetDist, 1.0, 16.0);
+            // the shared app-wide folder (set here OR in the World Builder) wins
+            _assetsFolder = AppSettings.LoadAssetsFolder() ?? _assetsFolder;
             OnPropertyChanged(nameof(AssetsLabel));
         }
         catch { /* prefs are a convenience */ }

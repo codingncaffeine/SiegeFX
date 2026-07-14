@@ -1650,7 +1650,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     /// resolves so they can be placed immediately.</summary>
     private void CreateTemplate()
     {
-        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        if (!EnsureAssetsFolder()) return;
         var name = TemplateAuthor.SanitizeName(_tplName);
         var baseName = _tplBase.Trim();
         if (string.IsNullOrEmpty(baseName)) { Status = "Pick a base template to specialize (e.g. farmgirl, sword_bastard)."; return; }
@@ -1700,9 +1700,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         SetAssetsFolderCommand = new RelayCommand(_ => SetAssetsFolder());
         OpenAssetsFolderCommand = new RelayCommand(_ => OpenAssetsFolder(), _ => _assetsFolder is not null);
         ImportObjMeshCommand = new RelayCommand(_ => ImportObjMesh());
-        ImportTextureCommand = new RelayCommand(_ => ImportTexture(), _ => _assetsFolder is not null);
-        CreateTemplateCommand = new RelayCommand(_ => CreateTemplate(), _ => _assetsFolder is not null);
-        ImportAudioCommand = new RelayCommand(_ => ImportAudio(), _ => _assetsFolder is not null);
+        ImportTextureCommand = new RelayCommand(_ => ImportTexture());
+        CreateTemplateCommand = new RelayCommand(_ => CreateTemplate());
+        ImportAudioCommand = new RelayCommand(_ => ImportAudio());
         DuplicateCommand = new RelayCommand(_ => DuplicateSelected());
         FocusSelectedCommand = new RelayCommand(_ => FocusSelected());
         CopyCommand = new RelayCommand(_ => CopySelected());
@@ -1720,7 +1720,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         ToggleHotkeysCommand = new RelayCommand(_ => ShowHotkeys = !ShowHotkeys);
         SavePrefabCommand = new RelayCommand(_ => SavePrefab(), _ => _multiSel.Count >= 2);
         PlacePrefabCommand = new RelayCommand(_ => PlacePrefab(),
-            _ => _selectedPrefab is not null && _selectedNode is not null);
+            _ => _selectedPrefab is not null && IsReady && !IsEmpty);
         DeletePrefabCommand = new RelayCommand(_ => DeletePrefab(), _ => _selectedPrefab is not null);
         TakeBaselineCommand = new RelayCommand(_ => TakeBaseline());
         CompareBaselineCommand = new RelayCommand(_ => CompareBaseline(), _ => _diffBaseline is not null);
@@ -1748,22 +1748,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             SelectedQuest = null;
             OnPropertyChanged(nameof(QuestKeys));
         }, _ => _selectedQuest is not null);
-        GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile(), _ => _assetsFolder is not null);
-        ImportTerrainMeshCommand = new RelayCommand(_ => ImportTerrainMesh(), _ => _assetsFolder is not null);
-        PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && _selectedProp is not null && _selectedNode is not null);
+        GenerateTerrainTileCommand = new RelayCommand(_ => GenerateTerrainTile());
+        ImportTerrainMeshCommand = new RelayCommand(_ => ImportTerrainMesh());
+        PlaceObjectCommand = new RelayCommand(_ => PlaceObject(), _ => IsReady && !IsEmpty && _selectedProp is not null);
         DeleteObjectCommand = new RelayCommand(_ => DeleteObject(), _ => _selectedPlacedObject is not null);
         TogglePlacingCommand = new RelayCommand(_ => PlacingActors = !PlacingActors);
         AddDirectionalLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Directional), _ => IsReady);
-        AddPointLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Point), _ => IsReady && _selectedNode is not null);
+        AddPointLightCommand = new RelayCommand(_ => AddLight(AuthoredLightKind.Point), _ => IsReady && !IsEmpty);
         DeleteLightCommand = new RelayCommand(_ => DeleteLight(), _ => _selectedLight is not null);
         ToggleMoodInteriorCommand = new RelayCommand(_ => MoodInterior = !MoodInterior);
-        AddFireEmitterCommand = new RelayCommand(_ => AddEmitter(false), _ => IsReady && _selectedNode is not null);
-        AddSmokeEmitterCommand = new RelayCommand(_ => AddEmitter(true), _ => IsReady && _selectedNode is not null);
+        AddFireEmitterCommand = new RelayCommand(_ => AddEmitter(false), _ => IsReady && !IsEmpty);
+        AddSmokeEmitterCommand = new RelayCommand(_ => AddEmitter(true), _ => IsReady && !IsEmpty);
         DeleteEmitterCommand = new RelayCommand(_ => DeleteEmitter(), _ => _selectedEmitter is not null);
-        AddDecalCommand = new RelayCommand(_ => AddDecal(), _ => IsReady && _selectedNode is not null);
+        AddDecalCommand = new RelayCommand(_ => AddDecal(), _ => IsReady && !IsEmpty);
         DeleteDecalCommand = new RelayCommand(_ => DeleteDecal(), _ => _selectedDecal is not null);
-        AddSoundCommand = new RelayCommand(_ => AddSound(), _ => IsReady && _selectedNode is not null && !string.IsNullOrWhiteSpace(_soundTemplate));
-        AddTriggerCommand = new RelayCommand(_ => AddTrigger(), _ => IsReady && _selectedNode is not null);
+        AddSoundCommand = new RelayCommand(_ => AddSound(), _ => IsReady && !IsEmpty && !string.IsNullOrWhiteSpace(_soundTemplate));
+        AddTriggerCommand = new RelayCommand(_ => AddTrigger(), _ => IsReady && !IsEmpty);
         DeleteTriggerCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { PushUndo(); Triggers.Remove(_selectedTrigger); SelectedTrigger = null; Render(); } }, _ => _selectedTrigger is not null);
         AddTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null) { PushUndo(); var r = NewTriggerRow(); _selectedTrigger.Rows.Add(r); SelectedTriggerRow = r; } }, _ => _selectedTrigger is not null);
         DeleteTriggerRowCommand = new RelayCommand(_ => { if (_selectedTrigger is not null && _selectedTriggerRow is not null) { PushUndo(); _selectedTrigger.Rows.Remove(_selectedTriggerRow); SelectedTriggerRow = _selectedTrigger.Rows.Count > 0 ? _selectedTrigger.Rows[0] : null; } }, _ => _selectedTriggerRow is not null);
@@ -1771,18 +1771,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         DeleteConditionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedCondition is not null) { PushUndo(); _selectedTriggerRow.Conditions.Remove(_selectedCondition); SelectedCondition = _selectedTriggerRow.Conditions.Count > 0 ? _selectedTriggerRow.Conditions[0] : null; } }, _ => _selectedCondition is not null);
         AddActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null) { PushUndo(); var a = new TriggerCall { Verb = RegionTrigger.Actions[0] }; _selectedTriggerRow.Actions.Add(a); SelectedAction = a; } }, _ => _selectedTriggerRow is not null);
         DeleteActionCommand = new RelayCommand(_ => { if (_selectedTriggerRow is not null && _selectedAction is not null) { PushUndo(); _selectedTriggerRow.Actions.Remove(_selectedAction); SelectedAction = _selectedTriggerRow.Actions.Count > 0 ? _selectedTriggerRow.Actions[0] : null; } }, _ => _selectedAction is not null);
-        AddCommandCommand = new RelayCommand(_ => AddCommand(), _ => IsReady && _selectedNode is not null);
+        AddCommandCommand = new RelayCommand(_ => AddCommand(), _ => IsReady && !IsEmpty);
         DeleteCommandCommand = new RelayCommand(_ => { if (_selectedCommand is not null) { PushUndo(); Commands.Remove(_selectedCommand); SelectedCommand = null; Render(); } }, _ => _selectedCommand is not null);
         AddConversationCommand = new RelayCommand(_ => AddConversation(), _ => IsReady);
         DeleteConversationCommand = new RelayCommand(_ => { if (_selectedConversation is not null) { PushUndo(); Conversations.Remove(_selectedConversation); SelectedConversation = null; } }, _ => _selectedConversation is not null);
         AddDialogueCommand = new RelayCommand(_ => AddDialogue(), _ => _selectedConversation is not null);
         DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { PushUndo(); _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
-        BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null && _selectedPlacedObject is not null);
+        BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null);
         ImportSiblingCommand = new RelayCommand(_ => ImportSibling());
         RemoveSiblingCommand = new RelayCommand(_ => RemoveSibling(), _ => _selectedSibling is not null);
         CreateStitchCommand = new RelayCommand(_ => CreateStitch(), _ => _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null);
         DeleteStitchCommand = new RelayCommand(_ => DeleteStitch(), _ => _selectedStitch is not null);
-        AddNavFlagCommand = new RelayCommand(_ => AddNavFlag(), _ => IsReady && _selectedNode is not null);
+        AddNavFlagCommand = new RelayCommand(_ => AddNavFlag(), _ => IsReady && !IsEmpty);
         DeleteNavFlagCommand = new RelayCommand(_ => { if (_selectedFlag is not null) { PushUndo(); LogicalFlags.Remove(_selectedFlag); SelectedFlag = null; } }, _ => _selectedFlag is not null);
         TestInEngineCommand = new RelayCommand(_ => TestInEngine(), _ => IsReady && !IsEmpty);
         PlayInEngineCommand = new RelayCommand(_ => PlayInEngine(), _ => IsReady && !IsEmpty);
@@ -1980,6 +1980,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             RebuildPropTags(); // ED-7 — tag combo derives from the loaded catalog
             RefreshPropPalette();
             foreach (var r in cat.Regions) InstallRegions.Add(r);
+            // usability audit — the shared assets folder persists across sessions;
+            // restore it here (needs the catalog) so custom tiles are placeable
+            // and folder-dependent actions work without re-picking every launch
+            if (_assetsFolder is null && AppSettings.LoadAssetsFolder() is { } savedAssets)
+            {
+                AssetsFolder = savedAssets;
+                OpenAssetsFolderCommand.RaiseCanExecuteChanged();
+                LoadCustomTerrainFromAssets();
+            }
             IsLoading = false;
             Status = _allMeshes.Count > 0
                 ? $"{_allMeshes.Count:N0} node meshes · {InstallRegions.Count:N0} shipped regions. Place a node to start, or load a region to edit."
@@ -3111,7 +3120,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     /// pieces become the multi-selection so one drag moves the group.</summary>
     private void PlacePrefab()
     {
-        if (_selectedPrefab is null || _selectedNode is null) return;
+        if (_selectedPrefab is null || !EnsureNodeSelected()) return;
         PrefabData? data;
         try
         {
@@ -4118,7 +4127,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     /// Both appear in the preview and when the map is tested/played.</summary>
     private void PlaceObject()
     {
-        if (_selectedProp is null || _selectedNode is null) return;
+        if (_selectedProp is null || !EnsureNodeSelected()) return;
         var node = _region.Find(_selectedNode.Guid);
         if (node is null) return;
         bool actor = _placingActors;
@@ -4169,6 +4178,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     // ── lighting & mood (LE-6) ──────────────────────────────────
     private void AddLight(AuthoredLightKind kind)
     {
+        if (kind == AuthoredLightKind.Point && !EnsureNodeSelected()) return;
         PushUndo();
         var l = new AuthoredLight { Kind = kind, Scid = _nextLightScid++ };
         if (kind == AuthoredLightKind.Point && _selectedNode is not null)
@@ -4286,7 +4296,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     // ── effects: emitters, decals, placed sound (LE-7) ──────────
     private void AddEmitter(bool smoke)
     {
-        if (_selectedNode is null) return;
+        if (!EnsureNodeSelected()) return;
         var e = new RegionEmitter
         {
             Scid = _nextEffectScid++, NodeGuid = _selectedNode.Guid,
@@ -4309,7 +4319,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     private void AddDecal()
     {
-        if (_selectedNode is null) return;
+        if (!EnsureNodeSelected()) return;
         PushUndo();
         var d = new RegionDecal
         {
@@ -4330,7 +4340,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     private void AddSound()
     {
-        if (_selectedNode is null || string.IsNullOrWhiteSpace(_soundTemplate)) return;
+        if (!EnsureNodeSelected() || string.IsNullOrWhiteSpace(_soundTemplate)) return;
         PushUndo();
         _objects.Add(new PlacedObject
         {
@@ -4352,7 +4362,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     private void AddTrigger()
     {
-        if (_selectedNode is null) return;
+        if (!EnsureNodeSelected()) return;
         PushUndo();
         var t = new RegionTrigger
         {
@@ -4368,7 +4378,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     private void AddCommand()
     {
-        if (_selectedNode is null) return;
+        if (!EnsureNodeSelected()) return;
         PushUndo();
         var c = new CommandPlacement
         {
@@ -4403,7 +4413,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
 
     private void BindConversation()
     {
-        if (_selectedConversation is null || _selectedPlacedObject is null) return;
+        if (_selectedConversation is null) return;
+        if (_selectedPlacedObject is null)
+        {
+            Status = "Select the placed NPC first (Outliner ▸ Objects, or click it in the viewport), then bind.";
+            return;
+        }
         if (!_selectedPlacedObject.IsActor)
         {
             Status = "Select a placed ACTOR (not a prop) to bind a conversation to.";
@@ -4731,7 +4746,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     // ── nav flags (LE-10) ──────────────────────────────────────
     private void AddNavFlag()
     {
-        if (_selectedNode is null) return;
+        if (!EnsureNodeSelected()) return;
         PushUndo();
         foreach (var f in LogicalFlags)
             if (f.SnodeGuid == _selectedNode.Guid && f.Lnode == 0) { SelectedFlag = f; Status = "This node already has a nav flag (lnode 0)."; return; }
@@ -4782,15 +4797,46 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     {
         var folder = DialogService.PickFolder("Pick a custom-assets folder (laid out like a tank: art/…, world/…)");
         if (folder is null) return;
+        ApplyAssetsFolder(folder);
+    }
+
+    private void ApplyAssetsFolder(string folder)
+    {
         AssetsFolder = folder;
+        AppSettings.SaveAssetsFolder(folder); // shared with the Effects Lab; survives sessions
         OpenAssetsFolderCommand.RaiseCanExecuteChanged();
-        ImportTextureCommand.RaiseCanExecuteChanged();
-        CreateTemplateCommand.RaiseCanExecuteChanged();
-        ImportAudioCommand.RaiseCanExecuteChanged();
-        GenerateTerrainTileCommand.RaiseCanExecuteChanged();
-        ImportTerrainMeshCommand.RaiseCanExecuteChanged();
         Status = $"Custom assets: {MapPackager.CountAssets(folder):N0} file(s) will bundle into the map.";
         LoadCustomTerrainFromAssets(); // earlier sessions' tiles become placeable again
+    }
+
+    /// <summary>Usability audit — folder-dependent actions PROMPT for the folder on
+    /// the spot instead of sitting disabled behind an invisible prerequisite.</summary>
+    private bool EnsureAssetsFolder()
+    {
+        if (_assetsFolder is not null) return true;
+        var folder = DialogService.PickFolder("First, choose your custom-assets folder (laid out like a tank: art/…, world/…) — everything in it bundles into the maps you pack");
+        if (folder is null)
+        {
+            Status = "No folder picked — nothing saved. Set one any time: Custom tab ▸ Set assets folder.";
+            return false;
+        }
+        ApplyAssetsFolder(folder);
+        return true;
+    }
+
+    /// <summary>Usability audit — node-anchored adds fall back to the anchor (then the
+    /// first) node when nothing is selected, selecting it for real so the viewport and
+    /// Inspector agree. Returns false only when the region has no nodes at all.</summary>
+    private bool EnsureNodeSelected()
+    {
+        if (_selectedNode is not null) return true;
+        NodeRow? pick = null;
+        foreach (var r in Nodes) if (r.IsAnchor) { pick = r; break; }
+        if (pick is null && Nodes.Count > 0) pick = Nodes[0];
+        if (pick is null) { Status = "Place a terrain node first — everything anchors to one."; return false; }
+        SelectedNode = pick;
+        Status = "No node was selected — it landed on the anchor node; drag it wherever you want.";
+        return true;
     }
 
     /// <summary>GAME-5 — import audio into the map bundle: WAV validated by the
@@ -4799,7 +4845,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     /// track by basename).</summary>
     private void ImportAudio()
     {
-        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        if (!EnsureAssetsFolder()) return;
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
             Filter = "Audio (*.wav;*.mp3)|*.wav;*.mp3|WAV (*.wav)|*.wav|MP3 (*.mp3)|*.mp3|All files|*.*",
@@ -4841,7 +4887,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     /// texture name usable by decals, custom terrain texsets, and templates.</summary>
     private void ImportTexture()
     {
-        if (_assetsFolder is null) { Status = "Set the assets folder first (Custom tab)."; return; }
+        if (!EnsureAssetsFolder()) return;
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
             Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*",
