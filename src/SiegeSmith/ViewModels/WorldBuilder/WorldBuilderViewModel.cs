@@ -578,6 +578,13 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private uint _nextRegionGuid = 0x0A000001;
     private uint _nextPairId = 0x0B000001;
     private uint _primarySourceGuid;
+    // Off-path door tagging: the primary region's nav-reachability, rebuilt only when the
+    // door graph fingerprint changes (RefreshStitchState fires on every selection too).
+    private NavReachability? _primaryReach;
+    private int? _primaryReachFp;
+    // True while RestoreWorldState replays saved siblings/stitches — suppresses the
+    // per-mutation SaveWorldState calls so a restore never rewrites its own source file.
+    private bool _restoringWorld;
     private int _stitchDangling, _stitchCollisions, _stitchUnreachable;
     public ObservableCollection<RegionStitch> PrimaryStitches { get; } = new();
     public ObservableCollection<StitchDoor> PrimaryFreeDoors { get; } = new();
@@ -3443,8 +3450,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (region.Nodes.Count == 0) { Status = "No snodes found in that region."; return; }
         PushUndo();
         ReplaceRegion(region);
+        string restored = RestoreWorldState(); // world state is keyed to the NEW region
         _dist = 0f; // reframe the camera onto the loaded region
-        AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.");
+        AfterModelChanged($"Loaded {_region.Nodes.Count} node(s) from {label}.{restored}");
     }
 
     /// <summary>Swaps the whole region contents in place (nodes, doors, anchor) and resets guid state.
@@ -3730,7 +3738,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     Status = $"Engine exited with code {code} — {FirstLine(err)}";
                     ValidationRows.Add(new ValidationRow(false, $"Runtime exited {code}: {FirstLine(err)}"));
                 })), play: true);
-            Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}). '⟲ Sync game' repacks + restarts it after edits.";
+            // The "where's my flaming door?" report: flames only mark STITCHED doorways,
+            // so say up front when this run has none to mark.
+            string stitchNote = PrimaryStitches.Count > 0
+                ? $" 🔥 flames mark your {PrimaryStitches.Count} connection doorway(s)."
+                : " Standalone region — no stitches yet, so no connection flames.";
+            Status = $"Launched playable {Path.GetFileName(pkg.MapTankPath)} — walk it as a PC ({pkg.RegionPath}).{stitchNote} '⟲ Sync game' repacks + restarts it after edits.";
         }
         catch (Exception ex) { Status = "Play-in-engine failed: " + ex.Message; }
     }
@@ -4044,6 +4057,29 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 rows.Add(new ValidationRow(false, $"{_stitchCollisions} snode guid(s) collide across regions (WorldLayout throws — needs world-unique guids)."));
             if (_stitchUnreachable > 0)
                 rows.Add(new ValidationRow(true, $"{_stitchUnreachable} region(s) unreachable from the primary via stitches."));
+            // Off-path stitches: the connection exists, but a nav mesh has no walkable route
+            // to one of its doorways — players can never use it on foot. BOTH ends are
+            // checked: our side against the primary's reachability, the reciprocal door
+            // against the SIBLING's own nav (a join into the neighbour's sealed backdrop
+            // terrain is just as dead as one starting on ours).
+            {
+                int offPath = 0;
+                RegionStitch? offTarget = null;
+                foreach (var ps in PrimaryStitches)
+                {
+                    bool off = _primaryReach is not null && !_primaryReach.ReachableSnodes.Contains(ps.LocalSnode);
+                    if (!off)
+                        foreach (var sib in Siblings)
+                            if (sib.LeafName.Equals(ps.DestRegion, StringComparison.OrdinalIgnoreCase) && sib.ReachableSnodes is not null)
+                                foreach (var ss in sib.Stitches)
+                                    if (ss.PairId == ps.PairId && !sib.ReachableSnodes.Contains(ss.LocalSnode)) { off = true; break; }
+                    if (off) { offPath++; offTarget ??= ps; }
+                }
+                if (offPath > 0)
+                    rows.Add(new ValidationRow(false,
+                        $"{offPath} stitch(es) land on terrain players can't walk to — both ends checked against each region's nav mesh (static check; elevator/lever transport not simulated).",
+                        offTarget));
+            }
         }
 
         // Within-region snode-guid uniqueness — WorldLayout throws on a collision even single-region.
@@ -4558,22 +4594,127 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         return _primarySourceGuid;
     }
 
+    // ── world-state persistence ─────────────────────────────────
+    // Stitching is WORLD data — it references other regions — so it can't ride in
+    // nodes.gas and used to evaporate with the view-model on every app restart:
+    // stitch one evening, relaunch, and Play silently ran a standalone region with
+    // no connection flames. Every sibling/stitch mutation now writes a per-region
+    // sidecar, and loading a region replays it.
+
+    private string WorldStateKey() =>
+        _region.TargetGuid != 0 ? $"0x{_region.TargetGuid:X8}" : StitchPrimaryLeaf();
+
+    private void SaveWorldState()
+    {
+        if (_restoringWorld) return;
+        string key = WorldStateKey();
+        if (Siblings.Count == 0 && PrimaryStitches.Count == 0) { WorldStateStore.Delete(key); return; }
+        var ws = new WorldState();
+        foreach (var s in PrimaryStitches)
+            ws.PrimaryStitches.Add(new WorldStitchState { PairId = s.PairId, LocalSnode = s.LocalSnode, LocalDoor = s.LocalDoor, DestRegion = s.DestRegion });
+        foreach (var sib in Siblings)
+        {
+            var st = new WorldSiblingState { Leaf = sib.LeafName, NodesGas = sib.NodesGas };
+            foreach (var s in sib.Stitches)
+                st.Stitches.Add(new WorldStitchState { PairId = s.PairId, LocalSnode = s.LocalSnode, LocalDoor = s.LocalDoor, DestRegion = s.DestRegion });
+            ws.Siblings.Add(st);
+        }
+        WorldStateStore.Save(key, ws);
+    }
+
+    /// <summary>Replays the loaded region's saved world state (siblings + stitches), clearing
+    /// whatever the previous region left behind first. Returns a status suffix ("" when there
+    /// was nothing to restore) so the caller folds it into its own load message.</summary>
+    private string RestoreWorldState()
+    {
+        Siblings.Clear();
+        PrimaryStitches.Clear();
+        _sibLayoutCache.Clear();
+        _primarySourceGuid = 0;
+        SelectedSibling = null;
+        SelectedStitch = null;
+        var ws = WorldStateStore.Load(WorldStateKey());
+        if (ws is null || (ws.Siblings.Count == 0 && ws.PrimaryStitches.Count == 0)) return "";
+        _restoringWorld = true;
+        try
+        {
+            foreach (var sibState in ws.Siblings)
+            {
+                AddSiblingFromGas(sibState.NodesGas, sibState.Leaf);
+                StitchRegionRef? reff = null;
+                foreach (var s in Siblings)
+                    if (s.LeafName.Equals(sibState.Leaf, StringComparison.OrdinalIgnoreCase)) { reff = s; break; }
+                if (reff is null) continue; // unparsable sibling — diagnostics flag the dangle
+                foreach (var st in sibState.Stitches)
+                {
+                    reff.Stitches.Add(new RegionStitch { PairId = st.PairId, LocalSnode = st.LocalSnode, LocalDoor = st.LocalDoor, DestRegion = st.DestRegion });
+                    if (st.PairId >= _nextPairId) _nextPairId = st.PairId + 1;
+                }
+            }
+            foreach (var st in ws.PrimaryStitches)
+            {
+                PrimaryStitches.Add(new RegionStitch { PairId = st.PairId, LocalSnode = st.LocalSnode, LocalDoor = st.LocalDoor, DestRegion = st.DestRegion });
+                if (st.PairId >= _nextPairId) _nextPairId = st.PairId + 1;
+            }
+        }
+        finally { _restoringWorld = false; }
+        RecomputeStitchDiagnostics();
+        RaiseCommands();
+        return $" Restored {ws.Siblings.Count} stitch neighbour(s) + {ws.PrimaryStitches.Count} stitch(es) from your last session.";
+    }
+
     /// <summary>Rebuilds the primary region's free-door list (stitch endpoints) and refreshes
     /// diagnostics. Called whenever the region's door graph changes.</summary>
     public void RefreshStitchState()
     {
         PrimaryFreeDoors.Clear();
         if (_catalog is not null)
+        {
+            EnsureNavReachability();
+            var doors = new List<StitchDoor>();
             foreach (var n in _region.Nodes)
             {
                 var s = _catalog.Resolve(n.MeshGuid);
                 if (s is null) continue;
                 foreach (var d in s.Doors)
                     if (!n.UsesDoor((int)d.Id))
-                        PrimaryFreeDoors.Add(new StitchDoor(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}"));
+                        doors.Add(new StitchDoor(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}")
+                        { Reachable = _primaryReach?.ReachableSnodes.Contains(n.Guid) ?? true });
             }
+            // Walkable doors first, off-path (decorative/sealed terrain) last — two passes
+            // keep the original node order within each group.
+            foreach (var d in doors) if (d.Reachable) PrimaryFreeDoors.Add(d);
+            foreach (var d in doors) if (!d.Reachable) PrimaryFreeDoors.Add(d);
+        }
         RecomputeStitchDiagnostics();
         RaiseCommands();
+    }
+
+    /// <summary>Rebuilds <see cref="_primaryReach"/> from the region's REAL nav mesh (the
+    /// engine's own <see cref="SiegeFX.Core.Nav.NavMesh.BuildForRegion"/>) when the door
+    /// graph changed. Seeded at the region's target/anchor node — the same node Play's
+    /// fallback start uses — so "reachable" matches what a spawned test hero can walk to.</summary>
+    private void EnsureNavReachability()
+    {
+        if (_catalog is null || _region.Nodes.Count == 0) { _primaryReach = null; _primaryReachFp = null; return; }
+        var h = new HashCode();
+        foreach (var n in _region.Nodes)
+        {
+            h.Add(n.Guid); h.Add(n.MeshGuid);
+            foreach (var d in n.Doors) { h.Add(d.LocalId); h.Add(d.FarGuid); h.Add(d.FarDoorId); }
+        }
+        int fp = h.ToHashCode();
+        if (fp == _primaryReachFp) return;
+        _primaryReachFp = fp;
+        _primaryReach = null;
+        try
+        {
+            var graph = RegionGraph.FromDocument(GasDocument.Parse(NodesGasWriter.Write(_region)));
+            var layout = RegionLayout.Build(graph, g => _catalog.Resolve(g));
+            uint seed = _region.TargetGuid != 0 ? _region.TargetGuid : _region.Nodes[0].Guid;
+            _primaryReach = NavReachability.Compute(graph, layout, g => _catalog.Resolve(g), seed);
+        }
+        catch { /* advisory tagging — a nav failure must never block the door lists */ }
     }
 
     private void RaiseSiblingDoors()
@@ -4639,6 +4780,24 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         if (parsed.Nodes.Count == 0) { Status = "That nodes.gas had no snodes to import."; return; }
 
         var reff = new StitchRegionRef { LeafName = leaf, SourceGuid = _nextRegionGuid++, NodesGas = gas, IsPrimary = false };
+
+        // Walkability for the SIBLING's doors, seeded at its own target node: a free door
+        // on the neighbour's decorative terrain is just as much a stitch trap as one on ours.
+        // Building the graph+layout here also primes the ghost cache for the render pass.
+        NavReachability? sibReach = null;
+        if (_catalog is not null)
+            try
+            {
+                var g = RegionGraph.FromDocument(GasDocument.Parse(gas));
+                var l = RegionLayout.Build(g, gg => _catalog.Resolve(gg));
+                _sibLayoutCache[reff] = (g, l);
+                uint seed = parsed.TargetGuid != 0 ? parsed.TargetGuid : parsed.Nodes[0].Guid;
+                sibReach = NavReachability.Compute(g, l, gg => _catalog.Resolve(gg), seed);
+            }
+            catch { /* advisory tagging only */ }
+        reff.ReachableSnodes = sibReach?.ReachableSnodes;
+
+        var doors = new List<StitchDoor>();
         foreach (var sn in parsed.Nodes)
         {
             reff.SnodeGuids.Add(sn.Guid);
@@ -4646,14 +4805,22 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             if (sno is not null)
                 foreach (var d in sno.Doors)
                     if (!sn.UsesDoor((int)d.Id))
-                        reff.FreeDoors.Add(new StitchDoor(sn.Guid, (int)d.Id, _catalog?.NameOf(sn.MeshGuid) ?? $"0x{sn.MeshGuid:X8}"));
+                        doors.Add(new StitchDoor(sn.Guid, (int)d.Id, _catalog?.NameOf(sn.MeshGuid) ?? $"0x{sn.MeshGuid:X8}")
+                        { Reachable = sibReach?.ReachableSnodes.Contains(sn.Guid) ?? true });
         }
+        foreach (var d in doors) if (d.Reachable) reff.FreeDoors.Add(d);
+        foreach (var d in doors) if (!d.Reachable) reff.FreeDoors.Add(d);
+
         Siblings.Add(reff);
         SelectedSibling = reff;
         RecomputeStitchDiagnostics();
-        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s). " +
-                 "Stitch a door pair and the neighbour ghosts into the viewport.";
+        int offPath = 0;
+        foreach (var d in doors) if (!d.Reachable) offPath++;
+        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s)"
+               + (offPath > 0 ? $" ({offPath} off-path, listed last)." : ".")
+               + " Stitch a door pair and the neighbour ghosts into the viewport.";
         RaiseCommands();
+        SaveWorldState();
         Render();
     }
 
@@ -4681,6 +4848,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         SelectedSibling = null;
         RecomputeStitchDiagnostics();
         RaiseCommands();
+        SaveWorldState();
         Render();
     }
 
@@ -4693,8 +4861,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PrimaryStitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedPrimaryDoor.Snode, LocalDoor = _selectedPrimaryDoor.Door, DestRegion = _selectedSibling.LeafName });
         _selectedSibling.Stitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedSiblingDoor.Snode, LocalDoor = _selectedSiblingDoor.Door, DestRegion = primLeaf });
         RecomputeStitchDiagnostics();
-        Status = $"Stitched {primLeaf}·door {_selectedPrimaryDoor.Door} ⇄ {_selectedSibling.LeafName}·door {_selectedSiblingDoor.Door} (pair 0x{pair:X8}).";
+        string offNote = !_selectedPrimaryDoor.Reachable || !_selectedSiblingDoor.Reachable
+            ? " ⚠ One end is off-path — players can't walk to it (details in Validate)."
+            : "";
+        Status = $"Stitched {primLeaf}·door {_selectedPrimaryDoor.Door} ⇄ {_selectedSibling.LeafName}·door {_selectedSiblingDoor.Door} (pair 0x{pair:X8}).{offNote}";
         RaiseCommands();
+        SaveWorldState();
         Render();
     }
 
@@ -4708,6 +4880,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         SelectedStitch = null;
         RecomputeStitchDiagnostics();
         RaiseCommands();
+        SaveWorldState();
         Render();
     }
 
@@ -5722,7 +5895,9 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     {
                         bool sel = _selectedPrimaryDoor == fd;
                         var pos = Vector3.Transform(d.Transform.Translation, nw);
-                        DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(0x4C9EE8) : 0x4C9EE8);
+                        // off-path doors (no walkable route from the region start) draw dimmed
+                        int rgb = fd.Reachable ? 0x4C9EE8 : 0x33506E;
+                        DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(rgb) : rgb);
                         break;
                     }
             }
@@ -5738,7 +5913,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                         {
                             bool sel = _selectedSiblingDoor == fd;
                             var pos = Vector3.Transform(d.Transform.Translation, gw);
-                            DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(0xC77DD8) : 0xC77DD8);
+                            int rgb = fd.Reachable ? 0xC77DD8 : 0x6E4E78;
+                            DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(rgb) : rgb);
                             break;
                         }
                 }

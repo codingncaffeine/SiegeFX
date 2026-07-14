@@ -23,8 +23,20 @@ public sealed class RegionStitch
 /// <summary>A free (unconnected) boundary door on a region — a candidate stitch endpoint.</summary>
 public sealed record StitchDoor(uint Snode, int Door, string Mesh)
 {
-    public string Label => $"snode 0x{Snode:X8} · door {Door}";
+    /// <summary>False when the region's own nav mesh has no walkable route from the region
+    /// start to this door's node — DS1 ships plenty of decorative terrain (backdrop cliffs,
+    /// sealed caps) whose doors would stitch a connection no player can ever reach. Static
+    /// estimate: elevator/lever/teleporter transport isn't simulated, so off-path doors stay
+    /// pickable — just flagged and sorted last.</summary>
+    public bool Reachable { get; init; } = true;
+
+    public string Label => Reachable ? $"snode 0x{Snode:X8} · door {Door}" : $"⚠ snode 0x{Snode:X8} · door {Door} · off-path";
     public string Detail => Mesh;
+    public string Tip => Reachable
+        ? Mesh
+        : Mesh + "\nOff-path: the nav mesh has no walkable route from the region start to this door "
+              + "(static check — elevators/levers/teleporters aren't simulated). A stitch here lands "
+              + "in an area players may never reach on foot.";
 }
 
 /// <summary>A region participating in the world graph — the primary (the region being edited) or a
@@ -39,6 +51,11 @@ public sealed class StitchRegionRef
     public List<uint> SnodeGuids = new();
     public List<StitchDoor> FreeDoors = new();
     public ObservableCollection<RegionStitch> Stitches = new();
+
+    /// <summary>Snodes walkable from THIS region's own start, per its nav mesh — computed at
+    /// import so validation can prove BOTH ends of a stitch are player-reachable, not just
+    /// the primary's. Null = nav unavailable (treat every door as reachable).</summary>
+    public HashSet<uint>? ReachableSnodes;
 
     public string Label => IsPrimary ? $"{LeafName}  (primary)" : LeafName;
     public string Detail => $"guid 0x{SourceGuid:X8} · {SnodeGuids.Count} snode(s) · {FreeDoors.Count} free door(s) · {Stitches.Count} stitch(es)";

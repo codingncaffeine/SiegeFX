@@ -1475,7 +1475,16 @@
                                     <TextBlock DockPanel.Dock="Top" Text="this region" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
                                     <ListBox ItemsSource="{Binding PrimaryFreeDoors}" SelectedItem="{Binding SelectedPrimaryDoor, Mode=TwoWay}">
                                         <ListBox.ItemTemplate><DataTemplate>
-                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"
+                                                       ToolTip="{Binding Tip}">
+                                                <TextBlock.Style><Style TargetType="TextBlock">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Reachable}" Value="False">
+                                                            <Setter Property="Opacity" Value="0.55"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style></TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate></ListBox.ItemTemplate>
                                     </ListBox>
                                 </DockPanel>
@@ -1483,7 +1492,16 @@
                                     <TextBlock DockPanel.Dock="Top" Text="sibling region" Foreground="{StaticResource Brush.Muted}" FontSize="10"/>
                                     <ListBox ItemsSource="{Binding SiblingFreeDoors}" SelectedItem="{Binding SelectedSiblingDoor, Mode=TwoWay}">
                                         <ListBox.ItemTemplate><DataTemplate>
-                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"/>
+                                            <TextBlock Text="{Binding Label}" Foreground="{StaticResource Brush.Foreground}" FontFamily="Consolas" FontSize="10"
+                                                       ToolTip="{Binding Tip}">
+                                                <TextBlock.Style><Style TargetType="TextBlock">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Reachable}" Value="False">
+                                                            <Setter Property="Opacity" Value="0.55"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style></TextBlock.Style>
+                                            </TextBlock>
                                         </DataTemplate></ListBox.ItemTemplate>
                                     </ListBox>
                                 </DockPanel>
