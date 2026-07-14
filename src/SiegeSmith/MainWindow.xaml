@@ -42,6 +42,7 @@
             </MenuItem>
             <MenuItem Header="_World">
                 <MenuItem Header="Open _World Builder…" Click="OnWorldBuilder"/>
+                <MenuItem Header="Open _Effects Lab…" Click="OnEffectsLab"/>
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_About SiegeSmith" Click="OnAbout"/>

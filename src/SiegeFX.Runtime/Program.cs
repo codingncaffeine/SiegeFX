@@ -163,16 +163,21 @@ else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
 {
     // Phase 23c — offscreen spell filmstrip renders. Hidden window, real
     // ParticleSystem, FBO readback to PNG strips + one contact sheet.
+    // SS-FXLAB — --script renders ONE effect script by name (no spell
+    // wrapper), --effects-dir merges loose .gas files over the stock store
+    // (same-name wins) so an in-progress script renders true-to-engine.
     // usage: --sfx-filmstrip <Logic.dsres> <Objects.dsres> <spell|--all>
     //        [--out=DIR] [--frames=N] [--strip=N] [--seed=N] [--size=N]
+    //        [--script=NAME] [--effects-dir=DIR]
     if (args.Length < 4)
     {
-        Console.Error.WriteLine("usage: SiegeFX.Runtime --sfx-filmstrip <Logic.dsres> <Objects.dsres> <spell|--all> [--out=DIR] [--frames=N] [--strip=N] [--seed=N] [--size=N]");
+        Console.Error.WriteLine("usage: SiegeFX.Runtime --sfx-filmstrip <Logic.dsres> <Objects.dsres> <spell|--all> [--out=DIR] [--frames=N] [--strip=N] [--seed=N] [--size=N] [--script=NAME] [--effects-dir=DIR]");
         return 1;
     }
     string fsOut = System.IO.Path.Combine("goldens", "sfx-filmstrips");
     int fsFrames = 40, fsStrip = 8, fsSeed = 1, fsSize = 256;
     float fsTargetDist = 4f;   // caster→target distance; longer exposes moving-projectile trails
+    string? fsScript = null, fsEffectsDir = null;
     for (int i = 4; i < args.Length; i++)
     {
         if (args[i].StartsWith("--out=", StringComparison.Ordinal)) fsOut = args[i]["--out=".Length..];
@@ -181,8 +186,10 @@ else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
         else if (args[i].StartsWith("--seed=", StringComparison.Ordinal) && int.TryParse(args[i]["--seed=".Length..], out var v3)) fsSeed = v3;
         else if (args[i].StartsWith("--size=", StringComparison.Ordinal) && int.TryParse(args[i]["--size=".Length..], out var v4)) fsSize = v4;
         else if (args[i].StartsWith("--target-dist=", StringComparison.Ordinal) && float.TryParse(args[i]["--target-dist=".Length..], System.Globalization.CultureInfo.InvariantCulture, out var v5)) fsTargetDist = v5;
+        else if (args[i].StartsWith("--script=", StringComparison.Ordinal)) fsScript = args[i]["--script=".Length..];
+        else if (args[i].StartsWith("--effects-dir=", StringComparison.Ordinal)) fsEffectsDir = args[i]["--effects-dir=".Length..];
     }
-    return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize, fsTargetDist);
+    return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize, fsTargetDist, fsScript, fsEffectsDir);
 }
 else if (args.Length >= 1 && args[0] == "--selftest-save")
 {

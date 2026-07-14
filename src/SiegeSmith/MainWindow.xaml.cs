@@ -37,6 +37,25 @@ public partial class MainWindow : Window
         _worldBuilder.Show();
     }
 
+    private EffectsLabWindow? _effectsLab;
+
+    private void OnEffectsLab(object sender, RoutedEventArgs e)
+    {
+        // SS-FXLAB — same shape as the World Builder: a full non-modal tool
+        // window, re-activated instead of stacked.
+        if (_effectsLab is { IsLoaded: true })
+        {
+            _effectsLab.Activate();
+            return;
+        }
+        var paths = new List<string>();
+        if (DataContext is MainViewModel vm)
+            foreach (var t in vm.Tanks) paths.Add(t.FullPath);
+        _effectsLab = new EffectsLabWindow(paths) { Owner = this };
+        _effectsLab.Closed += (_, _) => _effectsLab = null;
+        _effectsLab.Show();
+    }
+
     private void OnProjectFiles(object sender, RoutedEventArgs e)
     {
         if (DataContext is not MainViewModel vm) return;

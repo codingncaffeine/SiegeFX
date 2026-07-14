@@ -60,6 +60,25 @@ public sealed class SfxScriptStore
     public static SfxScriptStore LoadFromTank(TankReader tank)
     {
         var store = new SfxScriptStore();
+        store.MergeTank(tank);
+        return store;
+    }
+
+    /// <summary>Multi-tank load: tanks are merged in argument order, so a
+    /// later tank's script overrides an earlier one's on a name collision.
+    /// Used to let a map tank ship custom effect scripts over the stock
+    /// Logic.dsres set — inert for stock maps, which bundle no
+    /// <c>/world/global/effects</c> tree at all.</summary>
+    public static SfxScriptStore LoadFromTank(params TankReader[] tanks)
+    {
+        var store = new SfxScriptStore();
+        foreach (var tank in tanks)
+            if (tank is not null) store.MergeTank(tank);
+        return store;
+    }
+
+    void MergeTank(TankReader tank)
+    {
         var dir = EffectsDir + "/";
 
         foreach (var path in tank.ListFiles())
@@ -75,26 +94,58 @@ public sealed class SfxScriptStore
             try { doc = GasDocument.Load(bytes); }
             catch { continue; }
 
-            foreach (var node in doc.Roots)
-            {
-                if (!IsEffectScriptHeader(node.Header)) continue;
-
-                string? name = null;
-                string? body = null;
-                foreach (var attr in node.Attributes)
-                {
-                    if (string.Equals(attr.Name, "name",   StringComparison.OrdinalIgnoreCase))
-                        name = attr.Value.Trim();
-                    else if (string.Equals(attr.Name, "script", StringComparison.OrdinalIgnoreCase))
-                        body = attr.Value;
-                }
-                if (string.IsNullOrEmpty(name) || body is null) continue;
-
-                store._byName[name] = new SfxScript(name, body, path);
-            }
+            HarvestDocument(doc, path);
         }
+    }
 
-        return store;
+    /// <summary>Harvest <c>[effect_script*]</c> blocks out of loose GAS text
+    /// (a file on disk rather than a tank entry), overriding any existing
+    /// script of the same name. This is the hot-reload path: the Effects
+    /// Lab and the filmstrip's <c>--effects-dir</c> override feed edited
+    /// script files through here over the stock store.</summary>
+    public int AddFromGasText(string gasText, string sourcePath)
+    {
+        GasDocument doc;
+        try { doc = GasDocument.Parse(gasText); }
+        catch { return 0; }
+        return HarvestDocument(doc, sourcePath);
+    }
+
+    /// <summary>Insert or override a single script by name.</summary>
+    public void AddOrReplace(SfxScript script) => _byName[script.Name] = script;
+
+    /// <summary>Shallow copy — scripts are immutable, so a clone is a cheap
+    /// independent overlay target (stock store stays pristine while a lab
+    /// session layers edits on the copy).</summary>
+    public SfxScriptStore Clone()
+    {
+        var copy = new SfxScriptStore();
+        foreach (var kv in _byName) copy._byName[kv.Key] = kv.Value;
+        return copy;
+    }
+
+    int HarvestDocument(GasDocument doc, string path)
+    {
+        int added = 0;
+        foreach (var node in doc.Roots)
+        {
+            if (!IsEffectScriptHeader(node.Header)) continue;
+
+            string? name = null;
+            string? body = null;
+            foreach (var attr in node.Attributes)
+            {
+                if (string.Equals(attr.Name, "name",   StringComparison.OrdinalIgnoreCase))
+                    name = attr.Value.Trim();
+                else if (string.Equals(attr.Name, "script", StringComparison.OrdinalIgnoreCase))
+                    body = attr.Value;
+            }
+            if (string.IsNullOrEmpty(name) || body is null) continue;
+
+            _byName[name] = new SfxScript(name, body, path);
+            added++;
+        }
+        return added;
     }
 
     /// <summary>DS1 spells-style headers can take the form

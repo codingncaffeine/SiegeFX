@@ -1,0 +1,209 @@
+<Window x:Class="SiegeSmith.EffectsLabWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Effects Lab — SiegeSmith"
+        Width="1280" Height="820" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Brush.Window}"
+        FontFamily="Segoe UI" FontSize="13" TextOptions.TextFormattingMode="Display">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- ░░ toolbar ░░ -->
+        <Border Grid.Row="0" Background="{StaticResource Brush.Panel}"
+                BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,0,1">
+            <DockPanel Margin="10,6">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                    <Button Content="▶ Play" Command="{Binding PlayCommand}" Padding="10,3" Margin="0,0,6,0"
+                            ToolTip="Compile the current script and run it through the engine's SfxRuntime VM"/>
+                    <Button Content="■ Stop" Command="{Binding StopCommand}" Padding="10,3" Margin="0,0,10,0"/>
+                    <CheckBox Content="Auto-play on edit" IsChecked="{Binding AutoPlay}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <CheckBox Content="Loop" IsChecked="{Binding Loop}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                    <TextBlock Text="Target" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <Slider Width="110" Minimum="1" Maximum="16" Value="{Binding TargetDist}" VerticalAlignment="Center"
+                            ToolTip="Distance from #SOURCE to #TARGET_KB in metres"/>
+                    <TextBlock Text="{Binding TargetDist, StringFormat='{}{0:0.#} m'}" Foreground="{StaticResource Brush.Muted}"
+                               VerticalAlignment="Center" Margin="4,0,14,0"/>
+                    <TextBlock Text="Args" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <TextBox Width="110" Text="{Binding ScriptArgs, UpdateSourceTrigger=PropertyChanged}" Padding="3,2"
+                             ToolTip="Optional caller arguments, space-separated ($1, $2, … in the script)"/>
+                </StackPanel>
+                <TextBlock DockPanel.Dock="Right" Text="{Binding AssetsLabel}" Foreground="{StaticResource Brush.Muted}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="360"/>
+                <Button DockPanel.Dock="Right" Content="Assets folder…" Command="{Binding SetAssetsFolderCommand}"
+                        Padding="8,3" Margin="10,0,8,0"
+                        ToolTip="The custom-assets folder (the same one the World Builder bundles). Saved scripts land in world/global/effects/ inside it."/>
+                <Border/>
+            </DockPanel>
+        </Border>
+
+        <!-- ░░ main: browser · editor · preview ░░ -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="265"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="430"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- script browser -->
+            <Border Grid.Column="0" Background="{StaticResource Brush.Panel}"
+                    BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,0,1,0">
+                <DockPanel Margin="8">
+                    <TextBox DockPanel.Dock="Top" Padding="4,3" Margin="0,0,0,6"
+                             Text="{Binding FilterText, UpdateSourceTrigger=PropertyChanged, Delay=120}"
+                             ToolTip="Filter scripts by name"/>
+                    <TextBlock DockPanel.Dock="Top" Text="{Binding BrowserLabel}" Foreground="{StaticResource Brush.Muted}"
+                               FontSize="11" Margin="2,0,0,6"/>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="New" Command="{Binding NewScriptCommand}" Padding="9,3" Margin="0,0,6,0"
+                                ToolTip="Create a new project effect script"/>
+                        <Button Content="Copy to project" Command="{Binding CopyToProjectCommand}" Padding="9,3" Margin="0,0,6,0"
+                                ToolTip="Copy this stock script into the project so you can edit it (same name = overrides the stock effect in your maps)"/>
+                        <Button Content="Delete" Command="{Binding DeleteScriptCommand}" Padding="9,3"/>
+                    </StackPanel>
+                    <ListBox ItemsSource="{Binding Scripts}" SelectedItem="{Binding SelectedScript}"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="2,3">
+                                    <TextBlock Text="{Binding Label}" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource Brush.Muted}" FontSize="11"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Border>
+
+            <!-- editor + diagnostics -->
+            <Grid Grid.Column="1" Margin="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="150"/>
+                </Grid.RowDefinitions>
+
+                <DockPanel Grid.Row="0" Margin="0,0,0,6">
+                    <TextBlock Text="Script" Foreground="{StaticResource Brush.Muted}" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBox Width="220" Text="{Binding ScriptName, UpdateSourceTrigger=PropertyChanged, Delay=250}" Padding="3,2"
+                             IsReadOnly="{Binding EditorReadOnly}"/>
+                    <Button DockPanel.Dock="Right" Content="Save" Command="{Binding SaveScriptCommand}" Padding="12,3"
+                            ToolTip="Save into the assets folder — bundles into every packaged map, callable via call_sfx_script"/>
+                    <TextBlock DockPanel.Dock="Right" Text="{Binding SelectedDetail}" Foreground="{StaticResource Brush.Muted}"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <Border/>
+                </DockPanel>
+
+                <Border Grid.Row="1" Background="#2E2A20" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                        Padding="8,4" Margin="0,0,0,6">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ShowStockBanner}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="Stock script (read-only) — Copy to project to edit it. A project copy with the same name overrides the stock effect in your maps."
+                               Foreground="#D8A657" FontSize="12" TextWrapping="Wrap"/>
+                </Border>
+
+                <TextBox Grid.Row="2" Text="{Binding EditorText, UpdateSourceTrigger=PropertyChanged}"
+                         IsReadOnly="{Binding EditorReadOnly}"
+                         AcceptsReturn="True" AcceptsTab="True"
+                         FontFamily="Consolas" FontSize="13"
+                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                         Background="{StaticResource Brush.Surface}"
+                         Padding="6"/>
+
+                <DockPanel Grid.Row="3" Margin="0,6,0,0">
+                    <Border DockPanel.Dock="Top" Padding="6,3" Margin="0,0,0,4" CornerRadius="2">
+                        <Border.Style>
+                            <Style TargetType="Border">
+                                <Setter Property="Background" Value="#26382A"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding CoverageOk}" Value="False">
+                                        <Setter Property="Background" Value="#3A3223"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Border.Style>
+                        <TextBlock Text="{Binding CoverageBadge}" FontSize="12"/>
+                    </Border>
+                    <ListBox ItemsSource="{Binding Diagnostics}" FontSize="12"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel Margin="1">
+                                    <TextBlock Text="{Binding Icon}" Foreground="{Binding Tint}" Margin="0,0,6,0"/>
+                                    <TextBlock Text="{Binding Text}" TextWrapping="Wrap"/>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </Grid>
+
+            <!-- live preview + engine filmstrip -->
+            <Border Grid.Column="2" Background="{StaticResource Brush.Panel}"
+                    BorderBrush="{StaticResource Brush.Border}" BorderThickness="1,0,0,0">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="0,0,0,4">
+                        <TextBlock Text="Live preview" FontWeight="SemiBold"/>
+                        <Button DockPanel.Dock="Right" Content="Reset view" Command="{Binding ResetViewCommand}" Padding="8,2" FontSize="11"/>
+                        <Border/>
+                    </DockPanel>
+
+                    <Border Grid.Row="1" Background="#17181B" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1">
+                        <Image x:Name="PreviewImage" Source="{Binding Image}" Stretch="Fill"
+                               MouseDown="OnPreviewMouseDown" MouseUp="OnPreviewMouseUp"
+                               MouseMove="OnPreviewMouseMove" MouseWheel="OnPreviewMouseWheel"
+                               SizeChanged="OnPreviewSizeChanged"/>
+                    </Border>
+
+                    <TextBlock Grid.Row="2" Text="{Binding LiveStats}" Foreground="{StaticResource Brush.Muted}"
+                               FontSize="11" Margin="0,4,0,8" TextTrimming="CharacterEllipsis"
+                               ToolTip="Live VM + sink counters. Left-drag orbits, right-drag pans, wheel zooms."/>
+
+                    <DockPanel Grid.Row="3" Margin="0,0,0,4">
+                        <TextBlock Text="Engine filmstrip" FontWeight="SemiBold"/>
+                        <Button DockPanel.Dock="Right" Content="Render" Command="{Binding FilmstripCommand}" Padding="10,2" FontSize="11"
+                                ToolTip="Render this script through the engine's REAL GL particle system (9 frames over 1.8 s)"/>
+                        <Border/>
+                    </DockPanel>
+                    <StackPanel Grid.Row="4">
+                        <Border Background="#17181B" BorderBrush="{StaticResource Brush.Border}" BorderThickness="1"
+                                Height="118">
+                            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                                <Image Source="{Binding FilmstripImage}" Stretch="Uniform" Height="100" HorizontalAlignment="Left"/>
+                            </ScrollViewer>
+                        </Border>
+                        <TextBlock Text="{Binding FilmstripLabel}" Foreground="{StaticResource Brush.Muted}" FontSize="11"
+                                   Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- ░░ status ░░ -->
+        <Border Grid.Row="2" Background="{StaticResource Brush.Panel}"
+                BorderBrush="{StaticResource Brush.Border}" BorderThickness="0,1,0,0">
+            <TextBlock Text="{Binding Status}" Margin="10,4" Foreground="{StaticResource Brush.Muted}"
+                       TextTrimming="CharacterEllipsis"/>
+        </Border>
+    </Grid>
+</Window>

@@ -21,7 +21,7 @@ public static class SfxFilmstripHost
 {
     public static int Run(string logicTankPath, string objectsTankPath, string spellFilter,
                           string outDir, int frames, int stripCount, int seed, int size,
-                          float targetDist = 4f)
+                          float targetDist = 4f, string? scriptName = null, string? effectsDir = null)
     {
         int exit = 0;
         var opts = WindowOptions.Default with
@@ -34,7 +34,7 @@ public static class SfxFilmstripHost
         var window = Window.Create(opts);
         window.Load += () =>
         {
-            try { exit = RenderAll(window, logicTankPath, objectsTankPath, spellFilter, outDir, frames, stripCount, seed, size, targetDist); }
+            try { exit = RenderAll(window, logicTankPath, objectsTankPath, spellFilter, outDir, frames, stripCount, seed, size, targetDist, scriptName, effectsDir); }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"filmstrip: {ex}");
@@ -47,7 +47,8 @@ public static class SfxFilmstripHost
     }
 
     static int RenderAll(IWindow window, string logicTankPath, string objectsTankPath, string spellFilter,
-                         string outDir, int frames, int stripCount, int seed, int size, float targetDist)
+                         string outDir, int frames, int stripCount, int seed, int size, float targetDist,
+                         string? scriptName, string? effectsDir)
     {
         var gl = GL.GetApi(window);
 
@@ -81,6 +82,21 @@ public static class SfxFilmstripHost
         var spells = SpellCatalog.Build(templates);
         var sfxStore = SfxScriptStore.LoadFromTank(logicReader);
 
+        // SS-FXLAB — loose-directory override: every .gas in the folder is
+        // harvested OVER the stock store (same-name wins), so an in-progress
+        // Effects Lab script renders through the real ParticleSystem without
+        // repacking a tank.
+        if (!string.IsNullOrEmpty(effectsDir) && System.IO.Directory.Exists(effectsDir))
+        {
+            int merged = 0;
+            foreach (var f in System.IO.Directory.EnumerateFiles(effectsDir, "*.gas", System.IO.SearchOption.AllDirectories))
+            {
+                try { merged += sfxStore.AddFromGasText(System.IO.File.ReadAllText(f), f); }
+                catch (Exception ex) { Console.Error.WriteLine($"filmstrip: skipped {f}: {ex.Message}"); }
+            }
+            Console.WriteLine($"filmstrip: merged {merged} loose script(s) from {effectsDir}");
+        }
+
         using var objectsTank = TankFile.Open(objectsTankPath);
         var objectsReader = new TankReader(objectsTank);
         using var particles = new ParticleSystem(gl);
@@ -107,11 +123,28 @@ public static class SfxFilmstripHost
         bool all = string.Equals(spellFilter, "--all", StringComparison.OrdinalIgnoreCase);
         System.IO.Directory.CreateDirectory(outDir);
 
-        var roster = spells.All
-            .Where(s => !string.IsNullOrEmpty(s.CastSfxScript) && sfxStore.TryGet(s.CastSfxScript!, out _))
-            .Where(s => all || s.Name.IndexOf(spellFilter, StringComparison.OrdinalIgnoreCase) >= 0)
-            .OrderBy(s => s.Name, StringComparer.Ordinal)
-            .ToList();
+        // Each job = one strip: normally every matching spell's cast script;
+        // in script-direct mode (SS-FXLAB) exactly the named effect script,
+        // no spell wrapper required.
+        List<(string Name, string Script)> roster;
+        if (!string.IsNullOrEmpty(scriptName))
+        {
+            if (!sfxStore.TryGet(scriptName, out _))
+            {
+                Console.Error.WriteLine($"filmstrip: effect script '{scriptName}' not found (store has {sfxStore.Count})");
+                return 4;
+            }
+            roster = new List<(string, string)> { (scriptName!, scriptName!) };
+        }
+        else
+        {
+            roster = spells.All
+                .Where(s => !string.IsNullOrEmpty(s.CastSfxScript) && sfxStore.TryGet(s.CastSfxScript!, out _))
+                .Where(s => all || s.Name.IndexOf(spellFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(s => s.Name, StringComparer.Ordinal)
+                .Select(s => (s.Name, s.CastSfxScript!))
+                .ToList();
+        }
         if (roster.Count == 0)
         {
             Console.Error.WriteLine($"filmstrip: no runnable spell matches '{spellFilter}'");
@@ -133,7 +166,7 @@ public static class SfxFilmstripHost
             particles.Clear();
             var rt = new SfxRuntime(sfxStore, particles);
             rt.SetDeterministicSeed(seed);
-            rt.Spawn(spell.CastSfxScript!, ctx, null);
+            rt.Spawn(spell.Script, ctx, null);
 
             Array.Clear(stripPixels);
             int tile = 0;

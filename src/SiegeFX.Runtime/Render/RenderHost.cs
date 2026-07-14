@@ -9240,9 +9240,12 @@ void main()
         // SfxRuntime walks these on demand when the trigger runtime fires
         // call_sfx_script. Failure is non-fatal; without the store, emitter
         // calls just no-op (the matrix still ticks).
+        // SS-FXLAB — the map tank merges AFTER Logic.dsres so a custom map
+        // can bundle its own /world/global/effects scripts (and override a
+        // stock name). Stock maps ship no effects tree, so this is inert.
         try
         {
-            _sfxStore = SiegeFX.Core.Assets.SfxScriptStore.LoadFromTank(logicReader);
+            _sfxStore = SiegeFX.Core.Assets.SfxScriptStore.LoadFromTank(logicReader, mapReader);
             if (_particles is not null)
             {
                 _sfxRuntime = new SiegeFX.Core.Sfx.SfxRuntime(_sfxStore, _particles);
