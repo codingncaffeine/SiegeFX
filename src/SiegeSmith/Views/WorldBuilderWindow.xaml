@@ -1456,6 +1456,9 @@
                             <CheckBox DockPanel.Dock="Top" Content="Ghost neighbours in viewport" IsChecked="{Binding ShowNeighborGhosts}"
                                       FontSize="11" Margin="0,0,0,3"
                                       ToolTip="Draw stitched sibling regions translucent in the 3D viewport, composed by the engine's own world layout — free doors show as blue (this region) and violet (sibling) markers"/>
+                            <CheckBox DockPanel.Dock="Bottom" Content="🔥 Mark connections in Play" IsChecked="{Binding MarkStitchDoorsInPlay}"
+                                      FontSize="11" Margin="0,4,0,0"
+                                      ToolTip="Test/Play only: a flame burns at your side of every stitched doorway in-engine so the crossing is easy to find while walking. Never saved into your region data. (Test terrain shows geometry only — flames appear in Play.)"/>
                             <Button DockPanel.Dock="Bottom" Content="Delete selected stitch" Command="{Binding DeleteStitchCommand}" Margin="0,3,0,0" Padding="8,4"/>
                             <ListBox DockPanel.Dock="Bottom" MaxHeight="140" ItemsSource="{Binding PrimaryStitches}" SelectedItem="{Binding SelectedStitch, Mode=TwoWay}" Margin="0,3,0,0">
                                 <ListBox.ItemTemplate><DataTemplate>

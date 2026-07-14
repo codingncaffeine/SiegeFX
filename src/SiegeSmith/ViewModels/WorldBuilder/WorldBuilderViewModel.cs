@@ -615,7 +615,40 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) { RaiseCommands(); Render(); } } }
 
     private RegionStitch? _selectedStitch;
-    public RegionStitch? SelectedStitch { get => _selectedStitch; set { if (SetProperty(ref _selectedStitch, value)) RaiseCommands(); } }
+    public RegionStitch? SelectedStitch { get => _selectedStitch; set { if (SetProperty(ref _selectedStitch, value)) { RaiseCommands(); Render(); } } }
+
+    /// <summary>Play/Test seam markers — a flame at each cross-region doorway so the
+    /// connection is findable while walking the map in-engine.</summary>
+    private bool _markStitchDoors = true;
+    public bool MarkStitchDoorsInPlay { get => _markStitchDoors; set => SetProperty(ref _markStitchDoors, value); }
+
+    /// <summary>The emitter list Test/Play pack: the authored emitters, plus (when enabled)
+    /// an injected flame at the primary side of every stitch doorway. Injection is
+    /// PACK-TIME ONLY — the markers never enter the authored region data or saves.</summary>
+    private List<RegionEmitter> EmittersForPack()
+    {
+        var list = new List<RegionEmitter>(Emitters);
+        if (!_markStitchDoors || PrimaryStitches.Count == 0 || _catalog is null) return list;
+        uint scid = 0x7E000001; // far outside the authored scid ranges
+        foreach (var s in PrimaryStitches)
+        {
+            var node = _region.Find(s.LocalSnode);
+            var sno = node is null ? null : _catalog.Resolve(node.MeshGuid);
+            if (sno is null) continue;
+            foreach (var d in sno.Doors)
+                if (d.Id == (uint)s.LocalDoor)
+                {
+                    list.Add(new RegionEmitter
+                    {
+                        Scid = scid++, Template = "emt_generic", NodeGuid = s.LocalSnode,
+                        LocalPos = d.Transform.Translation,
+                        Smoke = false, Count = 26, Fade = 0.9f, ParticleSize = 0.5f,
+                    });
+                    break;
+                }
+        }
+        return list;
+    }
 
     private string _stitchDiagnostics = "No stitches — the region is a standalone (isolated) world.";
     public string StitchDiagnostics { get => _stitchDiagnostics; private set => SetProperty(ref _stitchDiagnostics, value); }
@@ -1916,6 +1949,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             case PlacedObject po:
                 foreach (var r in PlacedObjects) if (r.Scid == po.Scid) { SelectedPlacedObject = r; SelectMarker(r); break; }
                 break;
+            case RegionStitch rs:
+                SelectedStitch = rs;       // lights the connection gold in the viewport
+                BottomTabIndex = 4;        // and opens the World tab where it lives
+                return;
             default:
                 SelectFromOutliner(target);
                 break;
@@ -3645,7 +3682,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(),
                 assetsRoot: _assetsFolder, placements: _objects,
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
-                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
+                emitters: EmittersForPack(), decals: new List<RegionDecal>(Decals),
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
@@ -3680,7 +3717,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             var outDir = Path.Combine(Path.GetTempPath(), "SiegeSmith", "maps");
             var pkg = MapPackager.PackStartableMap(nodesGas, MapName, RegionName, outDir, BuildStartInfo(), BuildSeedActor(), _assetsFolder, _objects,
                 lights: new List<AuthoredLight>(Lights), mood: BuildMood(),
-                emitters: new List<RegionEmitter>(Emitters), decals: new List<RegionDecal>(Decals),
+                emitters: EmittersForPack(), decals: new List<RegionDecal>(Decals),
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
@@ -3985,9 +4022,24 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         }
         if (Siblings.Count > 0 || PrimaryStitches.Count > 0)
         {
+            // click-to-fix target: the first dangling stitch, else the first stitch —
+            // selecting it lights the connection gold in the viewport
+            RegionStitch? stitchTarget = null;
+            if (_stitchDangling > 0)
+                foreach (var ps in PrimaryStitches)
+                {
+                    bool recip = false;
+                    foreach (var sib in Siblings)
+                        if (sib.LeafName.Equals(ps.DestRegion, StringComparison.OrdinalIgnoreCase))
+                            foreach (var ss in sib.Stitches)
+                                if (ss.PairId == ps.PairId) recip = true;
+                    if (!recip) { stitchTarget = ps; break; }
+                }
+            stitchTarget ??= PrimaryStitches.Count > 0 ? PrimaryStitches[0] : null;
             rows.Add(new ValidationRow(_stitchDangling == 0, _stitchDangling == 0
                 ? $"{PrimaryStitches.Count} reciprocal world stitch(es) → stitch_helper.gas."
-                : $"{_stitchDangling} stitch(es) have no reciprocal (dangling — neighbour never streams)."));
+                : $"{_stitchDangling} stitch(es) have no reciprocal (dangling — neighbour never streams).",
+                stitchTarget));
             if (_stitchCollisions > 0)
                 rows.Add(new ValidationRow(false, $"{_stitchCollisions} snode guid(s) collide across regions (WorldLayout throws — needs world-unique guids)."));
             if (_stitchUnreachable > 0)
@@ -4060,10 +4112,11 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 FindTank("logic") is not null ? "Logic.dsres found." : "Logic.dsres not found."));
             rows.Add(new ValidationRow(FindTank("objects") is not null,
                 FindTank("objects") is not null ? "Objects.dsres found." : "Objects.dsres not found."));
-            rows.Add(new ValidationRow(_seedTemplate is not null,
-                _seedTemplate is not null
-                    ? $"Seed actor '{_seedTemplate}' ready (a PC will spawn)."
-                    : "No seed actor — load a shipped region first so the engine spawns a PC."));
+            var seedTpl = ResolveSeedTemplate();
+            rows.Add(new ValidationRow(seedTpl is not null,
+                seedTpl is not null
+                    ? $"Seed actor '{seedTpl}' ready — Play spawns a controllable test hero."
+                    : "No spawnable actor template found — Play would show terrain only (wait for the catalog to finish loading)."));
         }
         return rows;
     }
@@ -4091,11 +4144,26 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         return new MapPackager.StartInfo(g, x, z, "default", $"{MapName} start");
     }
 
+    /// <summary>The template Play spawns the test hero against. The old path blindly
+    /// harvested the first actor.gas root of the last-loaded region and handed the
+    /// engine templates it can't resolve (user's own log: "skeleton_large: template
+    /// not in store") — the seed died and Play silently degraded into a terrain view.
+    /// Now: prefer the real DS1 hero templates, else any actor from the palette (all
+    /// catalog-verified spawnable); the harvested name is a last resort only.</summary>
+    private string? ResolveSeedTemplate()
+    {
+        foreach (var pref in new[] { "farmgirl", "farmboy" })
+            foreach (var a in _allActors)
+                if (a.Name.Equals(pref, StringComparison.OrdinalIgnoreCase)) return a.Name;
+        if (_allActors.Count > 0) return _allActors[0].Name;
+        return string.IsNullOrWhiteSpace(_seedTemplate) ? null : _seedTemplate;
+    }
+
     private MapPackager.SeedActor? BuildSeedActor()
     {
-        if (string.IsNullOrWhiteSpace(_seedTemplate)) return null;
+        if (ResolveSeedTemplate() is not { } tpl) return null;
         if (BuildStartInfo() is not { } s) return null;
-        return new MapPackager.SeedActor(_seedTemplate!, 0x00020001, s.NodeGuid, s.X, s.Z);
+        return new MapPackager.SeedActor(tpl, 0x00020001, s.NodeGuid, s.X, s.Z);
     }
 
     private string? FindTank(string substr)
@@ -5639,6 +5707,38 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                             break;
                         }
                 }
+
+            // selecting a stitch (list or a validation row) lights the CONNECTION:
+            // both door frames gold, tied by a dotted gold line across the seam
+            if (_selectedStitch is { } st)
+            {
+                Vector3? aPos = null, bPos = null;
+                var pNode = _region.Nodes.Find(n => n.Guid == st.LocalSnode);
+                var pSno = pNode is null ? null : _catalog.Resolve(pNode.MeshGuid);
+                if (pSno is not null && _nodeWorld.TryGetValue(st.LocalSnode, out var pw))
+                    foreach (var d in pSno.Doors)
+                        if (d.Id == (uint)st.LocalDoor) { aPos = Vector3.Transform(d.Transform.Translation, pw); break; }
+
+                foreach (var sib in Siblings)
+                    foreach (var ss in sib.Stitches)
+                        if (ss.PairId == st.PairId && !ReferenceEquals(ss, st)
+                            && _ghostNodeWorld.TryGetValue(ss.LocalSnode, out var gw2)
+                            && _sibLayoutCache.TryGetValue(sib, out var built2)
+                            && built2.Graph.TryGetNode(ss.LocalSnode, out var gn2))
+                        {
+                            var gsno = _catalog.Resolve(gn2.MeshGuid);
+                            if (gsno is null) continue;
+                            foreach (var d in gsno.Doors)
+                                if (d.Id == (uint)ss.LocalDoor) { bPos = Vector3.Transform(d.Transform.Translation, gw2); break; }
+                        }
+
+                const int gold = 0xF2C14E;
+                if (aPos is { } ap) DoorCube(ap, doorSize * 1.9f, gold);
+                if (bPos is { } bp) DoorCube(bp, doorSize * 1.9f, gold);
+                if (aPos is { } a2 && bPos is { } b2)
+                    for (int i = 1; i <= 7; i++)
+                        DoorCube(Vector3.Lerp(a2, b2, i / 8f), doorSize * 0.45f, gold);
+            }
         }
 
         // GAME-1 (reworked) — LIVE effects: fire/smoke emitters preview as
