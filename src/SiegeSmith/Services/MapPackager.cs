@@ -17,13 +17,19 @@ public static class MapPackager
 {
     public readonly record struct Packaged(string MapTankPath, string RegionPath, string MapName, string RegionName);
 
-    /// <summary>The PC drop point: a node-local X,Z (Y is nav-snapped at load) anchored to a real
-    /// snode <paramref name="NodeGuid"/> in the region.</summary>
-    public readonly record struct StartInfo(uint NodeGuid, float X, float Z, string Group, string ScreenName);
+    /// <summary>The PC drop point: a node-local X,Y,Z anchored to a real snode
+    /// <paramref name="NodeGuid"/> in the region. <paramref name="Y"/> should be the FLOOR
+    /// height at (X,Z) in node-local space — node origins sit anywhere relative to their
+    /// walkable floors (a mesa piece's origin is ~17u above its doorway), and the engine
+    /// only nav-snaps Y within a narrow window around the authored value; a wrong Y used
+    /// to spawn the PC off-mesh and unable to move.</summary>
+    public readonly record struct StartInfo(uint NodeGuid, float X, float Z, string Group, string ScreenName, float Y = 0f);
 
     /// <summary>One seed actor so LoadPlayActors runs the PC spawn (it skips it when no actor spawns).
-    /// <paramref name="Template"/> must be a stock template that resolves in Logic/Objects.</summary>
-    public readonly record struct SeedActor(string Template, uint Scid, uint NodeGuid, float X, float Z);
+    /// <paramref name="Template"/> must be a stock template that resolves in Logic/Objects.
+    /// <paramref name="Y"/> is the node-local floor height at (X,Z) — same rule as
+    /// <see cref="StartInfo.Y"/>, else the actor floats pinned off-mesh.</summary>
+    public readonly record struct SeedActor(string Template, uint Scid, uint NodeGuid, float X, float Z, float Y = 0f);
 
     /// <summary>Writes <paramref name="nodesGas"/> under the required path tree and packs it into
     /// <c>map_&lt;map&gt;.dsmap</c> in <paramref name="outputDir"/>. Returns the tank path and the in-tank
@@ -86,7 +92,7 @@ public static class MapPackager
             objs.Add(new PlacedObject
             {
                 Scid = a.Scid, Template = a.Template, NodeGuid = a.NodeGuid,
-                LocalPos = new Vector3(a.X, 0f, a.Z), Orientation = Quaternion.Identity, File = "actor.gas",
+                LocalPos = new Vector3(a.X, a.Y, a.Z), Orientation = Quaternion.Identity, File = "actor.gas",
             });
         // Actor↔conversation bindings: a conversation bound to a placed actor injects the
         // [conversation][conversations] block into that actor's placement.
@@ -214,7 +220,7 @@ public static class MapPackager
             "\t\tdefault = true;\r\n" +
             $"\t\tscreen_name = \"{name}\";\r\n" +
             "\t\t[start_position]\r\n\t\t{\r\n" +
-            $"\t\t\tid = 1;\r\n\t\t\tposition = {F(s.X)},0,{F(s.Z)},0x{s.NodeGuid:X8};\r\n" +
+            $"\t\t\tid = 1;\r\n\t\t\tposition = {F(s.X)},{F(s.Y)},{F(s.Z)},0x{s.NodeGuid:X8};\r\n" +
             "\t\t}\r\n\t}\r\n}\r\n";
     }
 

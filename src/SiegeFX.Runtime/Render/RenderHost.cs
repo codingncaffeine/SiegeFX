@@ -20339,6 +20339,19 @@ void main()
         }
         if (navMesh is not null && navMesh.TryFindTriangle(spawnPos, out var tri))
             spawnPos = spawnPos with { Y = navMesh.SampleYOnTriangle(tri, spawnPos) };
+        else if (navMesh is not null
+                 && navMesh.TryFindNearestEnterable(spawnPos, radius: 6f, maxDy: 64f,
+                        SiegeFX.Core.Nav.NavTraversal.LandOnly, out _, out var rescued))
+        {
+            // An authored start whose Y is wrong spawns the PC off-mesh and
+            // permanently unable to move (every path request refuses an off-mesh
+            // start). Node origins sit ANYWHERE relative to their walkable floors —
+            // a desert mesa's origin is ~17u above its doorway — so a start written
+            // as node-local (x, 0, z) can land far outside TryFindTriangle's window.
+            // Trust the authored XZ; take the floor from nav, wherever it is.
+            Console.WriteLine($"  player: authored spawn off-mesh at Y={spawnPos.Y:F1} — snapped to nav floor ({rescued.X:F1},{rescued.Y:F1},{rescued.Z:F1})");
+            spawnPos = rescued;
+        }
 
         // 21d-2a-viii-c — remember the variant + name so quicksave persists
         // them through F5; F9 restores into these fields via ApplySave.

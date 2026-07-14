@@ -4302,7 +4302,17 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     float len = MathF.Sqrt(inX * inX + inZ * inZ);
                     float ox = len > 0.01f ? door.X + inX / len * 1.5f : door.X;
                     float oz = len > 0.01f ? door.Z + inZ / len * 1.5f : door.Z;
-                    return new MapPackager.StartInfo(st.LocalSnode, ox, oz, "default", $"{MapName} start (at the stitch)");
+                    // Author the FLOOR height at the drop point, not 0: node origins sit
+                    // anywhere relative to their floors, and a wrong Y strands the PC
+                    // off-mesh (the desert-mesa report: origin ~17u above the doorway).
+                    // Query at door height — the walkable-door check proved floor there.
+                    float oy = 0f;
+                    EnsureNavReachability();
+                    if (_primaryReach is not null
+                        && _primaryReach.IsDoorWalkable(st.LocalSnode, new Vector3(ox, door.Y, oz), out var floorY)
+                        && _primaryReach.NodeTransforms.TryGetValue(st.LocalSnode, out var nxf))
+                        oy = floorY - nxf.Translation.Y + 0.1f;
+                    return new MapPackager.StartInfo(st.LocalSnode, ox, oz, "default", $"{MapName} start (at the stitch)", oy);
                 }
 
         uint g = _region.TargetGuid != 0 ? _region.TargetGuid : (_region.Nodes.Count > 0 ? _region.Nodes[0].Guid : 0);
@@ -4343,7 +4353,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     {
         if (ResolveSeedTemplate() is not { } tpl) return null;
         if (BuildStartInfo() is not { } s) return null;
-        return new MapPackager.SeedActor(tpl, 0x00020001, s.NodeGuid, s.X, s.Z);
+        return new MapPackager.SeedActor(tpl, 0x00020001, s.NodeGuid, s.X, s.Z, s.Y);
     }
 
     /// <summary>Locates an install tank. EXACT filename first — the GOG install ships
