@@ -678,6 +678,24 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     }
     public string TexturedLabel => _textured ? "Flat" : "Textured"; // name the action, matching Wireframe
 
+    // D3 — checkable View-menu state. The toggle commands route through these so
+    // the menu checkmarks, the labels, and the palette all stay in lock-step.
+    public bool WireframeOn
+    {
+        get => _wireframe;
+        set { if (_wireframe == value) return; _wireframe = value; OnPropertyChanged(); OnPropertyChanged(nameof(WireframeLabel)); Render(); }
+    }
+    public bool OrthoOn
+    {
+        get => _ortho;
+        set { if (_ortho == value) return; _ortho = value; OnPropertyChanged(); OnPropertyChanged(nameof(OrthoLabel)); Render(); }
+    }
+    public bool LiveFxOn
+    {
+        get => _liveFx;
+        set { if (_liveFx == value) return; _liveFx = value; OnPropertyChanged(); OnPropertyChanged(nameof(LiveFxLabel)); Render(); }
+    }
+
     // ── startable map export ────────────────────────────────────
     private readonly IReadOnlyList<string> _tankPaths;
     private string _mapName = "custom";
@@ -1691,7 +1709,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         PasteCommand = new RelayCommand(_ => PasteClipboard(), _ => _clipboard is not null);
         ToggleFavoriteMeshCommand = new RelayCommand(_ => ToggleFavorite(FavoriteMeshes, _selectedMesh?.Name, "node mesh"));
         ToggleFavoritePropCommand = new RelayCommand(_ => ToggleFavorite(FavoriteProps, _selectedProp?.Name, "template"));
-        OrthoCommand = new RelayCommand(_ => { _ortho = !_ortho; OnPropertyChanged(nameof(OrthoLabel)); Render(); });
+        OrthoCommand = new RelayCommand(_ => OrthoOn = !OrthoOn);
         StoreBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) StoreBookmark(i); });
         RecallBookmarkCommand = new RelayCommand(p => { if (int.TryParse(p as string, out var i) && i is >= 0 and < 4) RecallBookmark(i); });
         ReplaceNodeMeshCommand = new RelayCommand(_ => ReplaceNodeMesh(),
@@ -1784,7 +1802,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         SaveNodesCommand = new RelayCommand(_ => SaveNodes(), _ => !IsEmpty);
         ImportNodesCommand = new RelayCommand(_ => ImportNodes(), _ => IsReady);
         ResetViewCommand = new RelayCommand(_ => ResetView());
-        WireframeCommand = new RelayCommand(_ => { _wireframe = !_wireframe; OnPropertyChanged(nameof(WireframeLabel)); Render(); });
+        WireframeCommand = new RelayCommand(_ => WireframeOn = !WireframeOn);
         DeleteSelectedAnyCommand = new RelayCommand(_ => DeleteSelectedAny());
 
         OutlineGroups = new[]
@@ -1805,12 +1823,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         // GAME-1 — the live-FX clock: ~15fps re-render while emitters exist
         // and FX are live. Deterministic particle time, so toggling live/
         // static freezes and resumes rather than restarting.
-        LiveFxCommand = new RelayCommand(_ =>
-        {
-            _liveFx = !_liveFx;
-            OnPropertyChanged(nameof(LiveFxLabel));
-            Render();
-        });
+        LiveFxCommand = new RelayCommand(_ => LiveFxOn = !LiveFxOn);
         _fxTimer = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(66),
@@ -1834,6 +1847,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         };
         _autosaveTimer.Tick += (_, _) => Autosave();
         _autosaveTimer.Start();
+
+        BuildCommandRegistry(); // D3 — after every RelayCommand exists
 
         LoadCatalogAsync(tankPaths);
     }
@@ -2812,22 +2827,54 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         set
         {
             if (!SetProperty(ref _selectedHit, value) || value?.Target is null) return;
+            // D3 — command hits EXECUTE (the palette); content hits select + focus.
+            if (value.Target is PaletteCommand pc)
+            {
+                if (pc.CanRun?.Invoke() ?? true) { SearchEverywhereText = ""; pc.Run(); }
+                else Status = $"'{pc.Name}' isn't available right now.";
+                return;
+            }
             SelectFromOutliner(value.Target);
             FocusSelected(); // jump the camera to it
         }
+    }
+
+    /// <summary>D3 — runs the first hit in the popup (Enter in the search box).</summary>
+    public void RunFirstSearchHit()
+    {
+        if (SearchHits.Count > 0) SelectedSearchHit = SearchHits[0];
     }
 
     private void RunSearchEverywhere()
     {
         SearchHits.Clear();
         var q = _searchEverywhere.Trim();
-        if (q.Length >= 2)
+
+        // D3 — command palette: a ">" prefix (or the Commands button / Ctrl+Shift+P,
+        // which prefill it) lists every editor command, filtered as you type.
+        // Commands ALSO surface in plain searches, after content hits — the palette
+        // is an accelerator, never the only path (the research's discoverability rule).
+        bool cmdMode = q.StartsWith(">", StringComparison.Ordinal);
+        if (cmdMode) q = q[1..].Trim();
+
+        bool M(string? s) => s is not null && s.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
+        void Add(string label, string detail, object target)
         {
-            bool M(string? s) => s is not null && s.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0;
-            void Add(string label, string detail, object target)
-            {
-                if (SearchHits.Count < 40) SearchHits.Add(new SearchHit { Label = label, Detail = detail, Target = target });
-            }
+            if (SearchHits.Count < 40) SearchHits.Add(new SearchHit { Label = label, Detail = detail, Target = target });
+        }
+        void AddCommands()
+        {
+            foreach (var c in _paletteCommands)
+                if (q.Length == 0 || M(c.Name))
+                    Add("▸ " + c.Name, c.Gesture.Length > 0 ? $"command · {c.Gesture}" : "command", c);
+        }
+
+        if (cmdMode)
+        {
+            AddCommands();
+        }
+        else if (q.Length >= 2)
+        {
             foreach (var n in Nodes) if (M(n.Mesh)) Add(n.Mesh, $"node · {n.Detail}", n);
             foreach (var r in PlacedObjects) if (M(r.Label) || M(r.Detail)) Add(r.Label, $"object · {r.Detail}", r);
             foreach (var e in Emitters) if (M(e.Template) || M("emitter")) Add(e.Template, $"emitter · 0x{e.Scid:X8}", e);
@@ -2841,8 +2888,59 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 if (hit) Add(cv.FullKey, $"conversation · {cv.Nodes.Count} line(s)", cv);
             }
             foreach (var qm in MapQuests) if (M(qm.Key) || M(qm.ScreenName) || M(qm.Description)) Add(qm.Key, "quest", qm);
+            AddCommands();
         }
         OnPropertyChanged(nameof(HasSearchHits));
+    }
+
+    // ── D3 — the command registry behind the palette ────────────
+    public sealed record PaletteCommand(string Name, string Gesture, Action Run, Func<bool>? CanRun = null);
+
+    private readonly List<PaletteCommand> _paletteCommands = new();
+
+    private void BuildCommandRegistry()
+    {
+        void C(string name, RelayCommand cmd, string gesture = "", object? param = null)
+            => _paletteCommands.Add(new PaletteCommand(name, gesture, () => cmd.Execute(param), () => cmd.CanExecute(param)));
+
+        C("Validate region", ValidateCommand);
+        C("Play map in engine", PlayInEngineCommand);
+        C("Test terrain in engine", TestInEngineCommand);
+        C("Sync running game", SyncGameCommand);
+        C("Save region (nodes.gas)…", SaveNodesCommand);
+        C("Undo", UndoCommand, "Ctrl+Z");
+        C("Redo", RedoCommand, "Ctrl+Y");
+        C("Duplicate selection", DuplicateCommand, "Ctrl+D");
+        C("Copy selection", CopyCommand, "Ctrl+C");
+        C("Paste", PasteCommand, "Ctrl+V");
+        C("Focus selected", FocusSelectedCommand, "F");
+        C("Reset view", ResetViewCommand);
+        C("Toggle textured / flat", TexturedCommand);
+        C("Toggle wireframe", WireframeCommand);
+        C("Toggle live FX", LiveFxCommand);
+        C("Toggle orthographic", OrthoCommand);
+        C("Add trigger volume", AddTriggerCommand);
+        C("Add command / NIS gizmo", AddCommandCommand);
+        C("Add conversation", AddConversationCommand);
+        C("Add fire emitter", AddFireEmitterCommand);
+        C("Add smoke emitter", AddSmokeEmitterCommand);
+        C("Add ground decal", AddDecalCommand);
+        C("Add sun (directional light)", AddDirectionalLightCommand);
+        C("Add point light", AddPointLightCommand);
+        C("Add quest", AddQuestCommand);
+        C("Add nav flag for selected node", AddNavFlagCommand);
+        C("Import mesh (OBJ/glTF) → .asp…", ImportObjMeshCommand);
+        C("Import terrain mesh (OBJ/glTF) → .sno…", ImportTerrainMeshCommand);
+        C("Import texture → .raw…", ImportTextureCommand);
+        C("Import audio…", ImportAudioCommand);
+        C("Generate terrain tile → .sno", GenerateTerrainTileCommand);
+        C("Import sibling region (nodes.gas)…", ImportSiblingCommand);
+        C("Show Region panel", OpenBottomTabCommand, "", "0");
+        C("Show Triggers panel", OpenBottomTabCommand, "", "1");
+        C("Show Dialogue panel", OpenBottomTabCommand, "", "2");
+        C("Show Graph panel", OpenBottomTabCommand, "", "3");
+        C("Show World (stitching) panel", OpenBottomTabCommand, "", "4");
+        C("Show Map panel (quests + validation)", OpenBottomTabCommand, "", "5");
     }
 
     /// <summary>ED-13 — batch template swap: every placed object in the

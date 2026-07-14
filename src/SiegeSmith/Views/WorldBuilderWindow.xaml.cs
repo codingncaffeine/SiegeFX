@@ -22,6 +22,60 @@ public partial class WorldBuilderWindow : Window
 
     private readonly System.Windows.Threading.DispatcherTimer _flyTimer;
 
+    // ── D3 — command palette + viewport maximize ─────────────────
+
+    /// <summary>"▤ Commands" / Ctrl+Shift+P: prefill the search box with the
+    /// '>' command prefix and focus it — the popup lists every editor command.</summary>
+    private void OnOpenCommands(object sender, System.Windows.RoutedEventArgs e)
+    {
+        _vm.SearchEverywhereText = ">";
+        SearchEverywhereBox.Focus();
+        SearchEverywhereBox.CaretIndex = SearchEverywhereBox.Text.Length;
+    }
+
+    /// <summary>Enter runs the first hit; Escape clears and closes the popup.</summary>
+    private void OnSearchBoxKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            // flush the 150ms-delayed binding so Enter acts on what's typed
+            SearchEverywhereBox.GetBindingExpression(System.Windows.Controls.TextBox.TextProperty)?.UpdateSource();
+            _vm.RunFirstSearchHit();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            _vm.SearchEverywhereText = "";
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>F11 / ⛶ — viewport takes the whole window: palette, right column
+    /// and bottom dock collapse; toggling again restores every width exactly.</summary>
+    private (System.Windows.GridLength Palette, System.Windows.GridLength Right, System.Windows.GridLength Dock)? _preMaximize;
+
+    private void OnToggleViewportMax(object sender, System.Windows.RoutedEventArgs e) => ToggleViewportMax();
+
+    private void ToggleViewportMax()
+    {
+        if (_preMaximize is { } prev)
+        {
+            PaletteCol.MinWidth = 230; RightCol.MinWidth = 260; BottomDockRow.MinHeight = 160;
+            PaletteCol.Width = prev.Palette;
+            RightCol.Width = prev.Right;
+            BottomDockRow.Height = prev.Dock;
+            _preMaximize = null;
+        }
+        else
+        {
+            _preMaximize = (PaletteCol.Width, RightCol.Width, BottomDockRow.Height);
+            PaletteCol.MinWidth = 0; RightCol.MinWidth = 0; BottomDockRow.MinHeight = 0;
+            PaletteCol.Width = new System.Windows.GridLength(0);
+            RightCol.Width = new System.Windows.GridLength(0);
+            BottomDockRow.Height = new System.Windows.GridLength(0);
+        }
+    }
+
     /// <summary>D1 — "⤢ Taller dock": toggles the bottom editor dock between its
     /// normal height and ~62% of the window, for graph reading and long trigger
     /// tables. The splitter still drags freely in either state.</summary>
@@ -47,6 +101,22 @@ public partial class WorldBuilderWindow : Window
         SiegeSmith.Services.WindowPlacement.Track(this, "worldbuilder");
         _vm = new WorldBuilderViewModel(tankPaths);
         DataContext = _vm;
+
+        // D3 — chrome-level keys: F11 viewport maximize, Ctrl+Shift+P command palette.
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.F11)
+            {
+                ToggleViewportMax();
+                e.Handled = true;
+            }
+            else if (e.Key == System.Windows.Input.Key.P
+                     && System.Windows.Input.Keyboard.Modifiers == (System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift))
+            {
+                OnOpenCommands(this, new System.Windows.RoutedEventArgs());
+                e.Handled = true;
+            }
+        };
 
         // ED-2 — WASD/QE fly while the cursor is over the viewport (Shift =
         // fast, Ctrl = slow). Polled at ~30fps; never steals keys from a

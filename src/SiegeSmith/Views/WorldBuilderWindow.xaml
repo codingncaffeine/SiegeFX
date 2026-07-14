@@ -44,7 +44,8 @@
                     <Grid Margin="0,0,10,0" VerticalAlignment="Center">
                         <TextBox x:Name="SearchEverywhereBox" Width="170" Padding="4,3"
                                  Text="{Binding SearchEverywhereText, UpdateSourceTrigger=PropertyChanged, Delay=150}"
-                                 ToolTip="Search everywhere (Ctrl+F): nodes, objects, effects, logic, dialogue text, quests — pick a result to select it and jump the camera there"/>
+                                 PreviewKeyDown="OnSearchBoxKeyDown"
+                                 ToolTip="Search everywhere (Ctrl+F): nodes, objects, effects, logic, dialogue text, quests — pick a result to select it and jump the camera there. Type '>' for the command palette; Enter runs the first hit."/>
                         <TextBlock Text="🔍 search everything…" Foreground="{StaticResource Brush.Muted}" FontSize="11"
                                    Margin="7,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False">
                             <TextBlock.Style>
@@ -87,23 +88,36 @@
                             ToolTip="ED-14 — one-click edit→see loop: closes the running engine session, repacks the region with your latest edits, and relaunches the same mode. Enabled while a Test/Play session is running."/>
                 </StackPanel>
                 <StackPanel Orientation="Horizontal">
-                    <Button Content="{Binding TexturedLabel}" Command="{Binding TexturedCommand}" Padding="10,4" Margin="0,0,6,0"
-                            ToolTip="Toggle in-game textures vs. flat shading"/>
-                    <Button Content="{Binding WireframeLabel}" Command="{Binding WireframeCommand}" Padding="10,4" Margin="0,0,6,0"
-                            ToolTip="Toggle wireframe"/>
-                    <Button Content="{Binding LiveFxLabel}" Command="{Binding LiveFxCommand}" Padding="10,4" Margin="0,0,6,0"
-                            ToolTip="Animate fire/smoke emitters live in the preview (pause on very large regions if it feels heavy)"/>
-                    <Button Content="Reset view" Command="{Binding ResetViewCommand}" Padding="10,4" Margin="0,0,6,0"
-                            ToolTip="Frame the whole region at the default angle"/>
-                    <Button Content="{Binding OrthoLabel}" Command="{Binding OrthoCommand}" Padding="10,4" Margin="0,0,6,0"
-                            ToolTip="Toggle orthographic / perspective projection (picking follows the same projection)"/>
+                    <!-- D3 — view toggles live in ONE labeled, checkable menu (research:
+                         a labeled dropdown; never an unlabeled icon junk drawer) -->
+                    <Menu Background="Transparent" VerticalAlignment="Center" Margin="0,0,6,0">
+                        <MenuItem Header="View ▾" Padding="10,4">
+                            <MenuItem Header="Textured" IsCheckable="True" IsChecked="{Binding Textured}"
+                                      ToolTip="In-game textures vs. flat shading"/>
+                            <MenuItem Header="Wireframe" IsCheckable="True" IsChecked="{Binding WireframeOn}"/>
+                            <MenuItem Header="Live FX (fire/smoke animate)" IsCheckable="True" IsChecked="{Binding LiveFxOn}"
+                                      ToolTip="Pause on very large regions if the preview feels heavy"/>
+                            <MenuItem Header="Orthographic projection" IsCheckable="True" IsChecked="{Binding OrthoOn}"
+                                      ToolTip="Picking follows the same projection"/>
+                            <MenuItem Header="15° rotation snap" IsCheckable="True" IsChecked="{Binding SnapAngle}"
+                                      ToolTip="Shift-drag rotation snaps to 15° steps"/>
+                            <MenuItem Header="Ghost neighbour regions" IsCheckable="True" IsChecked="{Binding ShowNeighborGhosts}"
+                                      ToolTip="Stitched siblings render translucent at their engine-derived position"/>
+                            <Separator/>
+                            <MenuItem Header="Reset view" Command="{Binding ResetViewCommand}"/>
+                            <MenuItem Header="Maximize viewport (F11)" Click="OnToggleViewportMax"
+                                      ToolTip="Collapse palettes and docks so the viewport takes the whole window; F11 again restores"/>
+                        </MenuItem>
+                    </Menu>
+                    <Button Content="▤ Commands" Click="OnOpenCommands" Padding="10,4" Margin="0,0,10,0"
+                            ToolTip="Command palette (Ctrl+Shift+P): every editor action, filtered as you type — also reachable by typing '>' in search"/>
                     <TextBlock Text="Speed" Foreground="{StaticResource Brush.Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,4,0"/>
                     <ComboBox Width="62" ItemsSource="{Binding CamSpeeds}" SelectedItem="{Binding CamSpeed, Mode=TwoWay}" Margin="0,0,12,0"
                               ToolTip="WASD fly speed multiplier (hold Shift for 3×, Ctrl for slow)"/>
-                    <CheckBox Content="15° rot snap" IsChecked="{Binding SnapAngle, Mode=TwoWay}" VerticalAlignment="Center" Margin="0,0,12,0"
-                              ToolTip="Snap Shift-drag rotation to 15° steps — exact right angles and clean diagonals without eyeballing"/>
                     <Button Content="↶ Undo" Command="{Binding UndoCommand}" Padding="10,4" Margin="0,0,6,0" ToolTip="Undo (Ctrl+Z)"/>
-                    <Button Content="↷ Redo" Command="{Binding RedoCommand}" Padding="10,4" ToolTip="Redo (Ctrl+Y)"/>
+                    <Button Content="↷ Redo" Command="{Binding RedoCommand}" Padding="10,4" Margin="0,0,6,0" ToolTip="Redo (Ctrl+Y)"/>
+                    <Button Content="⛶" Click="OnToggleViewportMax" Padding="10,4" FontSize="14"
+                            ToolTip="Maximize the viewport (F11) — palettes and docks collapse; press again to restore"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -111,11 +125,11 @@
         <!-- ░░ Main: Palette | Viewport | Outliner + Inspector ░░ -->
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" MinWidth="230"/>
+                <ColumnDefinition x:Name="PaletteCol" Width="300" MinWidth="230"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="360" MinWidth="260"/>
+                <ColumnDefinition x:Name="RightCol" Width="360" MinWidth="260"/>
             </Grid.ColumnDefinitions>
 
             <!-- ── Palette (tabbed asset browser) ── -->
@@ -539,7 +553,7 @@
                                 <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Left-drag — orbit&#x0a;Right-drag — pan&#x0a;Middle-drag — spin&#x0a;Wheel — zoom&#x0a;W A S D / Q E — fly (Shift fast, Ctrl slow)&#x0a;Ctrl+1–4 — save camera bookmark&#x0a;1–4 — recall bookmark&#x0a;F — focus selection"/>
                             </StackPanel>
                             <StackPanel>
-                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Click — select · Ctrl+click — multi-select&#x0a;Drag — move · Shift-drag — rotate (15° snap toggle)&#x0a;Ctrl+D — duplicate · Del — delete&#x0a;Ctrl+C / Ctrl+V — copy / paste&#x0a;Ctrl+Z / Ctrl+Y — undo / redo&#x0a;Ctrl+F — search everything&#x0a;Drag a number box — scrub it (Shift fine · Ctrl coarse)&#x0a;Drag palette entry into viewport — place it&#x0a;Brushes: 🖌 paint terrain · 🌿 scatter · 🚶 patrol"/>
+                                <TextBlock Foreground="{StaticResource Brush.Foreground}" FontSize="12" LineHeight="20" Text="Click — select · Ctrl+click — multi-select&#x0a;Drag — move · Shift-drag — rotate (15° snap toggle)&#x0a;Ctrl+D — duplicate · Del — delete&#x0a;Ctrl+C / Ctrl+V — copy / paste&#x0a;Ctrl+Z / Ctrl+Y — undo / redo&#x0a;Ctrl+F — search everything · type '>' for commands&#x0a;Ctrl+Shift+P — command palette · F11 — maximize viewport&#x0a;Drag a number box — scrub it (Shift fine · Ctrl coarse)&#x0a;Drag palette entry into viewport — place it&#x0a;Brushes: 🖌 paint terrain · 🌿 scatter · 🚶 patrol"/>
                             </StackPanel>
                         </UniformGrid>
                     </StackPanel>
