@@ -31,7 +31,7 @@
     <!-- Release version. Surfaces in the MP diagnostics header (as
          "<Version>+<git-sha>") so two players can confirm they're on the same
          build. Bump alongside each release tag. -->
-    <Version>0.0.6</Version>
+    <Version>0.0.7</Version>
     <!-- Explorer / exe file icon. The taskbar + title-bar icon is set
          separately at runtime (RenderHost.ApplyWindowIcon) because GLFW does
          not pick up ApplicationIcon for its window. -->
