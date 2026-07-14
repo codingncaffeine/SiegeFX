@@ -27,7 +27,11 @@ public partial class EffectsLabWindow : Window
     {
         if (sender is not IInputElement el) return;
         _last = e.GetPosition(el);
-        if (e.ChangedButton == MouseButton.Left) _orbiting = true;
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            if (_vm.TrySnapView(_last.X, _last.Y)) return; // clicked the triad — snapped, don't orbit
+            _orbiting = true;
+        }
         else if (e.ChangedButton == MouseButton.Right) _panning = true;
         else return;
         el.CaptureMouse();

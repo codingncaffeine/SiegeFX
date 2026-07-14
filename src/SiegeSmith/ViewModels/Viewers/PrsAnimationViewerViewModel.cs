@@ -184,7 +184,8 @@ public sealed class PrsAnimationViewerViewModel : ObservableObject, IDisposable
                     norms[t * 3 + e] = _rig.Corners[ci].Normal; // bind normals — fine for a preview
                 }
             var bgra = SoftwareRenderer.Render(verts, norms, 460, 340,
-                _rigCenter, _rigRadius, yaw: -2.3f, pitch: 0.25f, dist: _rigRadius * 2.4f, wireframe: false);
+                _rigCenter, _rigRadius, yaw: -2.3f, pitch: 0.25f, dist: _rigRadius * 2.4f, wireframe: false,
+                drawGizmo: false); // fixed-camera playback — no clickable-looking triad
             var bmp = BitmapSource.Create(460, 340, 96, 96, PixelFormats.Bgra32, null, bgra, 460 * 4);
             bmp.Freeze();
             Frame = bmp;

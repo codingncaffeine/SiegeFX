@@ -556,6 +556,34 @@ public sealed class EffectsLabViewModel : ObservableObject
         RenderViewport();
     }
 
+    /// <summary>Click-to-snap on the corner triad — same behaviour as the World
+    /// Builder and model viewer, so the gizmo means the same thing everywhere:
+    /// axis tip snaps the camera down that axis (again = opposite side), hub
+    /// resets to the default view. True = the click was consumed, don't orbit.</summary>
+    public bool TrySnapView(double sx, double sy)
+    {
+        int hit = SoftwareRenderer.HitGizmo(sx, sy, _yaw, _pitch, _vw, _vh);
+        if (hit < 0) return false;
+        const float H = MathF.PI / 2f;
+        switch (hit)
+        {
+            case 0: _yaw = -2.05f; _pitch = 0.42f; _pan = Vector3.Zero; break;                                 // hub → default
+            case 1: (_yaw, _pitch) = NearAngle(_yaw, 0f) && NearAngle(_pitch, 0f) ? (MathF.PI, 0f) : (0f, 0f); break; // ±X
+            case 2: (_yaw, _pitch) = NearAngle(_yaw, H) && NearAngle(_pitch, 0f) ? (-H, 0f) : (H, 0f); break;         // ±Y
+            case 3: _pitch = _pitch > 0.9f ? -1.45f : 1.45f; break;                                            // Z top/bottom
+        }
+        RenderViewport();
+        return true;
+    }
+
+    private static bool NearAngle(float a, float b)
+    {
+        float d = a - b;
+        while (d > MathF.PI) d -= 2f * MathF.PI;
+        while (d < -MathF.PI) d += 2f * MathF.PI;
+        return MathF.Abs(d) < 0.16f;
+    }
+
     public void Orbit(double dx, double dy)
     {
         _yaw -= (float)dx * 0.008f;
