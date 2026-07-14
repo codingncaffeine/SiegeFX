@@ -31,9 +31,12 @@ public static class SnoWriter
     /// <summary>A render triangle referencing the vertex pool by global index.</summary>
     public readonly record struct Tri(int A, int B, int C);
 
-    /// <summary>An edge door that stitches this tile to a neighbour. Rotation is identity; only translation
-    /// and the perimeter hot-spot corner indices are authored.</summary>
-    public readonly record struct DoorDef(uint Id, Vector3 Translation, uint[] HotSpots);
+    /// <summary>An edge door that stitches this tile to a neighbour. <paramref name="Outward"/> is the
+    /// horizontal direction the door faces (away from the tile body); retail tiles author the door's
+    /// 3×3 basis rotated about Y so local +Z points outward, and the engine's flip-180 door composition
+    /// RELIES on it — identity bases make two joined tiles overlap instead of sitting side-by-side.
+    /// Zero means +Z (identity basis).</summary>
+    public readonly record struct DoorDef(uint Id, Vector3 Translation, uint[] HotSpots, Vector3 Outward = default);
 
     /// <summary>A nav face in SNO-local space (positions, not indices) — the shape the engine's NavMesh
     /// builder consumes.</summary>
@@ -97,11 +100,20 @@ public static class SnoWriter
         for (int i = 0; i < 7; i++) w.Write(0u); // unused1..7
         w.Write(0u);                        // checksum (v7 field; 0 = unverified)
 
-        // --- Doors --- (translation first, then row-major 3x3 identity, per the reader)
+        // --- Doors --- (translation first, then the row-major 3x3 basis, per the reader).
+        // Basis = RotY mapping local +Z onto the door's outward direction, matching retail
+        // (verified against t_cd01 4x4: +X door authors rows [0,0,-1][0,1,0][1,0,0]).
         foreach (var d in doors)
         {
             w.Write(d.Id);
-            WriteXform(w, d.Translation, Vector3.UnitX, Vector3.UnitY, Vector3.UnitZ);
+            var o = d.Outward;
+            o.Y = 0f;
+            if (o.LengthSquared() < 1e-6f) o = Vector3.UnitZ;
+            else o = Vector3.Normalize(o);
+            WriteXform(w, d.Translation,
+                new Vector3(o.Z, 0f, -o.X),
+                Vector3.UnitY,
+                new Vector3(o.X, 0f, o.Z));
             var hs = d.HotSpots ?? Array.Empty<uint>();
             w.Write((uint)hs.Length);
             foreach (var h in hs) w.Write(h);
@@ -229,17 +241,17 @@ public static class SnoWriter
         return (verts, tris);
     }
 
-    /// <summary>Edge doors on the four sides of a centred square tile (index N,E,S,W bits in
-    /// <paramref name="sides"/>), each with an identity rotation and the mid-edge translation. Door ids start
-    /// at 1. Path shapes (corner/T/cross) are just which sides carry a door.</summary>
+    /// <summary>Edge doors on the four sides of a centred square tile, each with the mid-edge
+    /// translation and an outward-facing basis (retail convention — see <see cref="DoorDef"/>).
+    /// Door ids start at 1. Path shapes (corner/T/cross) are just which sides carry a door.</summary>
     public static List<DoorDef> EdgeDoors(float sizeX, float sizeZ, bool north, bool east, bool south, bool west)
     {
         var doors = new List<DoorDef>();
         uint id = 1;
-        if (north) doors.Add(new DoorDef(id++, new Vector3(0, 0, sizeZ * 0.5f), Array.Empty<uint>()));
-        if (east) doors.Add(new DoorDef(id++, new Vector3(sizeX * 0.5f, 0, 0), Array.Empty<uint>()));
-        if (south) doors.Add(new DoorDef(id++, new Vector3(0, 0, -sizeZ * 0.5f), Array.Empty<uint>()));
-        if (west) doors.Add(new DoorDef(id++, new Vector3(-sizeX * 0.5f, 0, 0), Array.Empty<uint>()));
+        if (north) doors.Add(new DoorDef(id++, new Vector3(0, 0, sizeZ * 0.5f), Array.Empty<uint>(), Vector3.UnitZ));
+        if (east) doors.Add(new DoorDef(id++, new Vector3(sizeX * 0.5f, 0, 0), Array.Empty<uint>(), Vector3.UnitX));
+        if (south) doors.Add(new DoorDef(id++, new Vector3(0, 0, -sizeZ * 0.5f), Array.Empty<uint>(), -Vector3.UnitZ));
+        if (west) doors.Add(new DoorDef(id++, new Vector3(-sizeX * 0.5f, 0, 0), Array.Empty<uint>(), -Vector3.UnitX));
         return doors;
     }
 

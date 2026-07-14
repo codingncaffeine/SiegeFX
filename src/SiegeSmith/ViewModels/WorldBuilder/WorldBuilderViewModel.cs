@@ -585,18 +585,34 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public ObservableCollection<StitchDoor> SiblingFreeDoors { get; } = new();
 
     private StitchDoor? _selectedPrimaryDoor;
-    public StitchDoor? SelectedPrimaryDoor { get => _selectedPrimaryDoor; set { if (SetProperty(ref _selectedPrimaryDoor, value)) RaiseCommands(); } }
+    public StitchDoor? SelectedPrimaryDoor { get => _selectedPrimaryDoor; set { if (SetProperty(ref _selectedPrimaryDoor, value)) { RaiseCommands(); Render(); } } }
+
+    // ═══ SS-STITCH — connected-region ghost preview ═══
+    // The neighbour region renders translucent in the viewport, composed through
+    // the reciprocal stitch pairs by the ENGINE's own WorldLayout — so what you
+    // see stitched is exactly what streams in-game.
+    private bool _showNeighborGhosts = true;
+    public bool ShowNeighborGhosts
+    {
+        get => _showNeighborGhosts;
+        set { if (SetProperty(ref _showNeighborGhosts, value)) Render(); }
+    }
+
+    private int _ghostFingerprint;
+    private readonly List<(SnoModel Sno, Matrix4x4 World, bool Selected)> _ghostNodes = new();
+    private readonly Dictionary<uint, Matrix4x4> _ghostNodeWorld = new();
+    private readonly Dictionary<StitchRegionRef, (RegionGraph Graph, RegionLayout Layout)> _sibLayoutCache = new();
 
     private StitchRegionRef? _selectedSibling;
     public StitchRegionRef? SelectedSibling
     {
         get => _selectedSibling;
-        set { if (SetProperty(ref _selectedSibling, value)) { OnPropertyChanged(nameof(HasSelectedSibling)); RaiseSiblingDoors(); RaiseCommands(); } }
+        set { if (SetProperty(ref _selectedSibling, value)) { OnPropertyChanged(nameof(HasSelectedSibling)); RaiseSiblingDoors(); RaiseCommands(); Render(); } }
     }
     public bool HasSelectedSibling => _selectedSibling is not null;
 
     private StitchDoor? _selectedSiblingDoor;
-    public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) RaiseCommands(); } }
+    public StitchDoor? SelectedSiblingDoor { get => _selectedSiblingDoor; set { if (SetProperty(ref _selectedSiblingDoor, value)) { RaiseCommands(); Render(); } } }
 
     private RegionStitch? _selectedStitch;
     public RegionStitch? SelectedStitch { get => _selectedStitch; set { if (SetProperty(ref _selectedStitch, value)) RaiseCommands(); } }
@@ -4323,8 +4339,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         Siblings.Add(reff);
         SelectedSibling = reff;
         RecomputeStitchDiagnostics();
-        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s).";
+        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s). " +
+                 "Stitch a door pair and the neighbour ghosts into the viewport.";
         RaiseCommands();
+        Render();
     }
 
     private static string DeriveLeaf(string nodesGasPath)
@@ -4346,10 +4364,12 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         for (int i = PrimaryStitches.Count - 1; i >= 0; i--)
             if (PrimaryStitches[i].DestRegion.Equals(_selectedSibling.LeafName, StringComparison.OrdinalIgnoreCase))
                 PrimaryStitches.RemoveAt(i);
+        _sibLayoutCache.Remove(_selectedSibling);
         Siblings.Remove(_selectedSibling);
         SelectedSibling = null;
         RecomputeStitchDiagnostics();
         RaiseCommands();
+        Render();
     }
 
     private void CreateStitch()
@@ -4363,6 +4383,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         RecomputeStitchDiagnostics();
         Status = $"Stitched {primLeaf}·door {_selectedPrimaryDoor.Door} ⇄ {_selectedSibling.LeafName}·door {_selectedSiblingDoor.Door} (pair 0x{pair:X8}).";
         RaiseCommands();
+        Render();
     }
 
     private void DeleteStitch()
@@ -4375,6 +4396,84 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         SelectedStitch = null;
         RecomputeStitchDiagnostics();
         RaiseCommands();
+        Render();
+    }
+
+    /// <summary>SS-STITCH — recompute the neighbour-ghost transforms when the stitch
+    /// topology (or the primary region) changed. The stitch model round-trips through
+    /// <see cref="StitchHelperWriter"/> → <see cref="RegionStitchHelper"/> and composes
+    /// via the engine's <see cref="WorldLayout"/>, so the ghost sits EXACTLY where the
+    /// engine will stream the region. Siblings without a reciprocal stitch have no
+    /// derivable position (DS1 has no world coords) and simply don't ghost yet.</summary>
+    private void RebuildGhostCache(RegionGraph primaryGraph, RegionLayout primaryLayout)
+    {
+        var h = new HashCode();
+        foreach (var n in _region.Nodes) { h.Add(n.Guid); h.Add(n.MeshGuid); foreach (var d in n.Doors) { h.Add(d.LocalId); h.Add(d.FarGuid); h.Add(d.FarDoorId); } }
+        foreach (var s in PrimaryStitches) { h.Add(s.PairId); h.Add(s.LocalSnode); h.Add(s.LocalDoor); h.Add(s.DestRegion, StringComparer.OrdinalIgnoreCase); }
+        foreach (var sib in Siblings)
+        {
+            h.Add(sib.LeafName, StringComparer.OrdinalIgnoreCase);
+            foreach (var s in sib.Stitches) { h.Add(s.PairId); h.Add(s.LocalSnode); h.Add(s.LocalDoor); }
+        }
+        h.Add(_selectedSibling?.LeafName ?? "");
+        h.Add(StitchPrimaryLeaf());
+        int fp = h.ToHashCode();
+        if (fp == _ghostFingerprint) return;
+        _ghostFingerprint = fp;
+        _ghostNodes.Clear();
+        _ghostNodeWorld.Clear();
+        if (_catalog is null) return;
+
+        try
+        {
+            string primLeaf = StitchPrimaryLeaf();
+            string primPath = "regions/" + primLeaf;
+            var entries = new List<WorldLayout.RegionEntry>
+            {
+                new(primPath, primaryGraph, primaryLayout,
+                    ParseStitchesForPreview(PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 1u, primLeaf, PrimaryStitches)),
+            };
+            foreach (var sib in Siblings)
+            {
+                if (!_sibLayoutCache.TryGetValue(sib, out var built))
+                {
+                    var g = RegionGraph.FromDocument(GasDocument.Parse(sib.NodesGas));
+                    built = (g, RegionLayout.Build(g, gg => _catalog.Resolve(gg)));
+                    _sibLayoutCache[sib] = built;
+                }
+                entries.Add(new("regions/" + sib.LeafName, built.Graph, built.Layout,
+                    ParseStitchesForPreview(sib.SourceGuid, sib.LeafName, sib.Stitches)));
+            }
+
+            var world = WorldLayout.Build(entries, gg => _catalog.Resolve(gg), rootHint: primPath);
+            foreach (var kv in world.Transforms)
+            {
+                if (!world.GuidToRegion.TryGetValue(kv.Key, out var rp)
+                    || rp.Equals(primPath, StringComparison.OrdinalIgnoreCase)) continue;
+                _ghostNodeWorld[kv.Key] = kv.Value;
+                foreach (var sib in Siblings)
+                {
+                    if (!rp.Equals("regions/" + sib.LeafName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (_sibLayoutCache.TryGetValue(sib, out var built) && built.Graph.TryGetNode(kv.Key, out var node))
+                    {
+                        var sno = _catalog.Resolve(node.MeshGuid);
+                        if (sno is not null) _ghostNodes.Add((sno, kv.Value, ReferenceEquals(sib, _selectedSibling)));
+                    }
+                    break;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // guid collision or malformed stitch — the diagnostics panel already flags these
+            Status = "Neighbour ghost unavailable: " + ex.Message;
+        }
+    }
+
+    private static RegionStitchHelper? ParseStitchesForPreview(uint sourceGuid, string leaf, IReadOnlyList<RegionStitch> stitches)
+    {
+        if (stitches.Count == 0) return null;
+        return RegionStitchHelper.FromDocument(GasDocument.Parse(StitchHelperWriter.Write(sourceGuid, leaf, stitches)));
     }
 
     private void RecomputeStitchDiagnostics()
@@ -4994,6 +5093,95 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             var v = dc.AxisV * (dc.VertExtent * 0.5f);
             AppendQuad(o - h - v, o + h - v, o + h + v, o - h + v, slot, -1, dc.Scid,
                 verts, normals, uvs, triTex, triColor, pickGuid, pickScid);
+        }
+
+        // ═══ SS-STITCH — connected-region ghosts ═══
+        // The neighbour region draws translucent at its engine-derived stitch
+        // position (unpickable, never in the camera bounds), with free doors on
+        // both sides as blue/violet markers so door picking is visual. A sibling
+        // gains a ghost the moment its first reciprocal stitch lands.
+        if (_showNeighborGhosts && Siblings.Count > 0)
+        {
+            RebuildGhostCache(graph, layout);
+
+            void GhostTris(SnoModel sno, in Matrix4x4 world, int packedColor)
+            {
+                foreach (var s in sno.Surfaces)
+                {
+                    var idx = s.TriangleIndices;
+                    for (int k = 0; k + 2 < idx.Length; k += 3)
+                    {
+                        int g0 = (int)s.StartCorner + idx[k];
+                        int g1 = (int)s.StartCorner + idx[k + 1];
+                        int g2 = (int)s.StartCorner + idx[k + 2];
+                        if ((uint)g0 >= (uint)sno.Corners.Length || (uint)g1 >= (uint)sno.Corners.Length || (uint)g2 >= (uint)sno.Corners.Length)
+                            continue;
+                        AddCorner(sno.Corners[g0], world, verts, normals, uvs);
+                        AddCorner(sno.Corners[g1], world, verts, normals, uvs);
+                        AddCorner(sno.Corners[g2], world, verts, normals, uvs);
+                        triTex.Add(-1);
+                        triColor.Add(packedColor);
+                        pickGuid.Add(0u);
+                        pickScid.Add(0u);
+                    }
+                }
+            }
+
+            foreach (var (gSno, gWorld, gSel) in _ghostNodes)
+                GhostTris(gSno, gWorld, (gSel ? 0x58 : 0x40) << 24 | (gSel ? 0x8FA0C8 : 0x76839F));
+
+            // door markers — small opaque cubes at each free door frame
+            void DoorCube(Vector3 c, float size, int rgb)
+            {
+                for (int i = 0; i < CubeTris.Length; i += 3)
+                {
+                    var a = c + CubeCorners[CubeTris[i]] * size;
+                    var b = c + CubeCorners[CubeTris[i + 1]] * size;
+                    var d2 = c + CubeCorners[CubeTris[i + 2]] * size;
+                    var n2 = Vector3.Cross(b - a, d2 - a);
+                    if (n2.LengthSquared() > 1e-10f) n2 = Vector3.Normalize(n2);
+                    verts.Add(a); verts.Add(b); verts.Add(d2);
+                    normals.Add(n2); normals.Add(n2); normals.Add(n2);
+                    uvs.Add(default); uvs.Add(default); uvs.Add(default);
+                    triTex.Add(-1);
+                    triColor.Add(rgb);
+                    pickGuid.Add(0u);
+                    pickScid.Add(0u);
+                }
+            }
+
+            float doorSize = MathF.Max(0.14f, MarkerSize(_radius) * 0.5f);
+            foreach (var fd in PrimaryFreeDoors)
+            {
+                if (!_nodeWorld.TryGetValue(fd.Snode, out var nw)) continue;
+                var node = _region.Nodes.Find(n => n.Guid == fd.Snode);
+                var sno = node is null ? null : _catalog.Resolve(node.MeshGuid);
+                if (sno is null) continue;
+                foreach (var d in sno.Doors)
+                    if (d.Id == (uint)fd.Door)
+                    {
+                        bool sel = _selectedPrimaryDoor == fd;
+                        var pos = Vector3.Transform(d.Transform.Translation, nw);
+                        DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(0x4C9EE8) : 0x4C9EE8);
+                        break;
+                    }
+            }
+            if (_selectedSibling is not null && _sibLayoutCache.TryGetValue(_selectedSibling, out var sibBuilt))
+                foreach (var fd in _selectedSibling.FreeDoors)
+                {
+                    if (!_ghostNodeWorld.TryGetValue(fd.Snode, out var gw)) continue;
+                    if (!sibBuilt.Graph.TryGetNode(fd.Snode, out var gnode)) continue;
+                    var sno = _catalog.Resolve(gnode.MeshGuid);
+                    if (sno is null) continue;
+                    foreach (var d in sno.Doors)
+                        if (d.Id == (uint)fd.Door)
+                        {
+                            bool sel = _selectedSiblingDoor == fd;
+                            var pos = Vector3.Transform(d.Transform.Translation, gw);
+                            DoorCube(pos, sel ? doorSize * 1.5f : doorSize, sel ? Brighten(0xC77DD8) : 0xC77DD8);
+                            break;
+                        }
+                }
         }
 
         // GAME-1 (reworked) — LIVE effects: fire/smoke emitters preview as
