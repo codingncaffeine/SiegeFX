@@ -1426,8 +1426,21 @@
                             </Border>
                         </DockPanel>
                         <DockPanel Grid.Column="2">
-                            <Button DockPanel.Dock="Top" Content="Import sibling region (nodes.gas)…" Command="{Binding ImportSiblingCommand}" Margin="0,0,0,3" Padding="8,5"
-                                    ToolTip="Add a neighbouring region to the world so it can be stitched to this one"/>
+                            <!-- shipped regions come from the game's own tanks — no file hunting -->
+                            <TextBlock DockPanel.Dock="Top" Text="Add a neighbour — from the game:" Foreground="{StaticResource Brush.Muted}" FontSize="10" Margin="0,0,0,2"/>
+                            <Grid DockPanel.Dock="Top" Margin="0,0,0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <ComboBox Grid.Column="0" ItemsSource="{Binding InstallRegions}" SelectedItem="{Binding SelectedSiblingInstallRegion, Mode=TwoWay}"
+                                          DisplayMemberPath="Display" Margin="0,0,3,0"
+                                          ToolTip="Every region shipped in the installed game — nodes.gas is pulled straight from the tanks"/>
+                                <Button Grid.Column="1" Content="Add" Command="{Binding AddSiblingFromGameCommand}" Padding="10,4"
+                                        ToolTip="Import the selected shipped region as a stitch neighbour"/>
+                            </Grid>
+                            <Button DockPanel.Dock="Top" Content="…or browse for a custom nodes.gas" Command="{Binding ImportSiblingCommand}" Margin="0,0,0,3" Padding="8,4"
+                                    ToolTip="For regions exported from SiegeSmith or other tools — opens where you last picked one"/>
                             <Button DockPanel.Dock="Bottom" Content="Remove sibling region" Command="{Binding RemoveSiblingCommand}" Margin="0,3,0,0" Padding="8,4"/>
                             <ListBox ItemsSource="{Binding Siblings}" SelectedItem="{Binding SelectedSibling, Mode=TwoWay}">
                                 <ListBox.ItemTemplate><DataTemplate>

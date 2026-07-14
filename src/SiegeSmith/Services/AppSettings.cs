@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 
@@ -12,6 +13,27 @@ public sealed class AppSettings
 {
     public string? InstallPath { get; set; }
     public string? AssetsFolder { get; set; }
+
+    /// <summary>Last-used directory per purpose ("mesh", "texture", "audio", "region") —
+    /// file dialogs open where the user last worked instead of making them hunt.</summary>
+    public Dictionary<string, string>? LastDirs { get; set; }
+
+    public static string? GetLastDir(string key)
+    {
+        var d = Load().LastDirs;
+        return d is not null && d.TryGetValue(key, out var v) && Directory.Exists(v) ? v : null;
+    }
+
+    public static void SaveLastDir(string key, string? fileOrDir)
+    {
+        if (string.IsNullOrEmpty(fileOrDir)) return;
+        var dir = Directory.Exists(fileOrDir) ? fileOrDir : Path.GetDirectoryName(fileOrDir);
+        if (string.IsNullOrEmpty(dir)) return;
+        var s = Load();
+        s.LastDirs ??= new Dictionary<string, string>();
+        s.LastDirs[key] = dir;
+        s.Save();
+    }
 
     /// <summary>Reads the shared custom-assets folder (null if unset or gone).</summary>
     public static string? LoadAssetsFolder()

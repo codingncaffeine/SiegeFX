@@ -17,15 +17,18 @@ public static class DialogService
         return dlg.ShowDialog() == true ? dlg.FileName : null;
     }
 
-    public static string? SaveFileAs(string suggestedName)
+    public static string? SaveFileAs(string suggestedName, string? rememberKey = null)
     {
         var dlg = new SaveFileDialog
         {
             Title = "Extract file as",
             FileName = suggestedName,
             OverwritePrompt = true,
+            InitialDirectory = (rememberKey is not null ? AppSettings.GetLastDir(rememberKey) : null) ?? "",
         };
-        return dlg.ShowDialog() == true ? dlg.FileName : null;
+        if (dlg.ShowDialog() != true) return null;
+        if (rememberKey is not null) AppSettings.SaveLastDir(rememberKey, dlg.FileName);
+        return dlg.FileName;
     }
 
     public static string? PickFolder(string title)
@@ -59,16 +62,20 @@ public static class DialogService
     }
 
     /// <summary>Generic open-file picker. <paramref name="filter"/> is a standard WPF dialog filter
-    /// (e.g. "GAS files (*.gas)|*.gas|All files (*.*)|*.*").</summary>
-    public static string? OpenFile(string title, string filter)
+    /// (e.g. "GAS files (*.gas)|*.gas|All files (*.*)|*.*"). <paramref name="rememberKey"/> makes the
+    /// dialog open in the last directory used for that purpose.</summary>
+    public static string? OpenFile(string title, string filter, string? rememberKey = null)
     {
         var dlg = new OpenFileDialog
         {
             Title = title,
             Filter = filter,
             CheckFileExists = true,
+            InitialDirectory = (rememberKey is not null ? AppSettings.GetLastDir(rememberKey) : null) ?? "",
         };
-        return dlg.ShowDialog() == true ? dlg.FileName : null;
+        if (dlg.ShowDialog() != true) return null;
+        if (rememberKey is not null) AppSettings.SaveLastDir(rememberKey, dlg.FileName);
+        return dlg.FileName;
     }
 
     public static string? SaveProjectFile(string name)

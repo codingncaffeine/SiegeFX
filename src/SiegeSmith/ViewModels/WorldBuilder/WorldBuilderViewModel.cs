@@ -1779,6 +1779,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         DeleteDialogueCommand = new RelayCommand(_ => { if (_selectedConversation is not null && _selectedDialogue is not null) { PushUndo(); _selectedConversation.Nodes.Remove(_selectedDialogue); SelectedDialogue = _selectedConversation.Nodes.Count > 0 ? _selectedConversation.Nodes[0] : null; } }, _ => _selectedDialogue is not null);
         BindConversationCommand = new RelayCommand(_ => BindConversation(), _ => _selectedConversation is not null);
         ImportSiblingCommand = new RelayCommand(_ => ImportSibling());
+        AddSiblingFromGameCommand = new RelayCommand(_ => AddSiblingFromGame(), _ => _selectedSiblingInstallRegion is not null);
         RemoveSiblingCommand = new RelayCommand(_ => RemoveSibling(), _ => _selectedSibling is not null);
         CreateStitchCommand = new RelayCommand(_ => CreateStitch(), _ => _selectedPrimaryDoor is not null && _selectedSibling is not null && _selectedSiblingDoor is not null);
         DeleteStitchCommand = new RelayCommand(_ => DeleteStitch(), _ => _selectedStitch is not null);
@@ -2944,6 +2945,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         C("Import audio…", ImportAudioCommand);
         C("Generate terrain tile → .sno", GenerateTerrainTileCommand);
         C("Import sibling region (nodes.gas)…", ImportSiblingCommand);
+        C("Add sibling region from game", AddSiblingFromGameCommand);
         C("Show Region panel", OpenBottomTabCommand, "", "0");
         C("Show Triggers panel", OpenBottomTabCommand, "", "1");
         C("Show Dialogue panel", OpenBottomTabCommand, "", "2");
@@ -3393,7 +3395,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private void ImportNodes()
     {
         if (!IsReady) return;
-        var path = DialogService.OpenFile("Open a region's nodes.gas", "GAS files (*.gas)|*.gas|All files (*.*)|*.*");
+        var path = DialogService.OpenFile("Open a region's nodes.gas", "GAS files (*.gas)|*.gas|All files (*.*)|*.*", "region");
         if (path is null) return;
         try { ApplyImportedRegion(NodesGasReader.Read(GasDocument.Load(File.ReadAllBytes(path))), Path.GetFileName(path)); }
         catch (Exception ex) { Status = "Import failed: " + ex.Message; }
@@ -4483,20 +4485,54 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         OnPropertyChanged(nameof(SelectedSiblingDoor));
     }
 
+    /// <summary>Browse path — for CUSTOM regions on disk. Shipped regions come
+    /// straight from the game via <see cref="AddSiblingFromGame"/>, no hunting.</summary>
     private void ImportSibling()
     {
         var dlg = new Microsoft.Win32.OpenFileDialog
         {
             Filter = "Region nodes (nodes.gas)|nodes.gas;*.gas|All files|*.*",
-            Title = "Import a sibling region's nodes.gas",
+            Title = "Import a sibling region's nodes.gas (shipped regions: use 'Add from game' instead)",
+            InitialDirectory = AppSettings.GetLastDir("region") ?? "",
         };
         if (dlg.ShowDialog() != true) return;
+        AppSettings.SaveLastDir("region", dlg.FileName);
         string gas;
         try { gas = System.IO.File.ReadAllText(dlg.FileName); }
         catch (System.Exception ex) { Status = $"Couldn't read nodes.gas: {ex.Message}"; return; }
 
         string leaf = LightSanitize(DeriveLeaf(dlg.FileName));
         if (leaf.Length == 0) leaf = $"region_r{Siblings.Count + 2}";
+        AddSiblingFromGas(gas, leaf);
+    }
+
+    /// <summary>One click adds a SHIPPED region as a stitch neighbour — the nodes.gas
+    /// comes out of the game's own tanks (they never exist as loose files), so there
+    /// is no directory to find.</summary>
+    private void AddSiblingFromGame()
+    {
+        if (_selectedSiblingInstallRegion is null || _catalog is null) return;
+        var entry = _selectedSiblingInstallRegion;
+        var bytes = _catalog.ReadRegionNodes(entry);
+        if (bytes is null) { Status = $"Couldn't read {entry.Display} from the install tanks."; return; }
+        AddSiblingFromGas(System.Text.Encoding.UTF8.GetString(bytes), LightSanitize(entry.Region));
+    }
+
+    private RegionEntry? _selectedSiblingInstallRegion;
+    public RegionEntry? SelectedSiblingInstallRegion
+    {
+        get => _selectedSiblingInstallRegion;
+        set { if (SetProperty(ref _selectedSiblingInstallRegion, value)) AddSiblingFromGameCommand.RaiseCanExecuteChanged(); }
+    }
+    public RelayCommand AddSiblingFromGameCommand { get; private set; } = null!;
+
+    private void AddSiblingFromGas(string gas, string leaf)
+    {
+        if (leaf.Length == 0) leaf = $"region_r{Siblings.Count + 2}";
+        foreach (var s in Siblings)
+            if (s.LeafName.Equals(leaf, StringComparison.OrdinalIgnoreCase))
+            { Status = $"'{leaf}' is already imported as a sibling."; SelectedSibling = s; return; }
+
         BuilderRegion parsed;
         try { parsed = NodesGasReader.Read(GasDocument.Parse(gas)); }
         catch (System.Exception ex) { Status = $"Couldn't parse nodes.gas: {ex.Message}"; return; }
@@ -4850,8 +4886,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             Filter = "Audio (*.wav;*.mp3)|*.wav;*.mp3|WAV (*.wav)|*.wav|MP3 (*.mp3)|*.mp3|All files|*.*",
             Title = "Import audio (WAV for sound effects, MP3 for music)",
+            InitialDirectory = AppSettings.GetLastDir("audio") ?? "",
         };
         if (dlg.ShowDialog() != true) return;
+        AppSettings.SaveLastDir("audio", dlg.FileName);
         try
         {
             var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
@@ -4892,8 +4930,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             Filter = "Images (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff)|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff|All files|*.*",
             Title = "Import an image as a DS1 .raw texture",
+            InitialDirectory = AppSettings.GetLastDir("texture") ?? "",
         };
         if (dlg.ShowDialog() != true) return;
+        AppSettings.SaveLastDir("texture", dlg.FileName);
         try
         {
             var decoder = System.Windows.Media.Imaging.BitmapDecoder.Create(
@@ -4932,8 +4972,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             Filter = "Mesh (*.obj;*.gltf;*.glb)|*.obj;*.gltf;*.glb|Wavefront OBJ (*.obj)|*.obj|glTF 2.0 (*.gltf;*.glb)|*.gltf;*.glb|All files|*.*",
             Title = "Import a mesh (OBJ or glTF) as a custom .asp",
+            InitialDirectory = AppSettings.GetLastDir("mesh") ?? "",
         };
         if (dlg.ShowDialog() != true) return;
+        AppSettings.SaveLastDir("mesh", dlg.FileName);
 
         ObjImporter.Result res;
         try
@@ -4978,7 +5020,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         }
         else
         {
-            var picked = DialogService.SaveFileAs(baseName + ".asp");
+            var picked = DialogService.SaveFileAs(baseName + ".asp", "mesh");
             if (picked is null) return;
             outPath = picked;
         }
@@ -5068,8 +5110,10 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         {
             Filter = "Mesh (*.obj;*.gltf;*.glb)|*.obj;*.gltf;*.glb|Wavefront OBJ (*.obj)|*.obj|glTF 2.0 (*.gltf;*.glb)|*.gltf;*.glb|All files|*.*",
             Title = "Import a mesh (OBJ or glTF) as walkable terrain (.sno)",
+            InitialDirectory = AppSettings.GetLastDir("mesh") ?? "",
         };
         if (dlg.ShowDialog() != true) return;
+        AppSettings.SaveLastDir("mesh", dlg.FileName);
 
         ObjImporter.Result res;
         List<(string Name, Vector3 Position, Vector3 AxisZ)> markers = new();
@@ -5275,7 +5319,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private void SaveNodes()
     {
         if (IsEmpty) return;
-        var dest = DialogService.SaveFileAs("nodes.gas");
+        var dest = DialogService.SaveFileAs("nodes.gas", "region");
         if (dest is null) return;
         try
         {
