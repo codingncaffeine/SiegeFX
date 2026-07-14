@@ -1318,6 +1318,44 @@ public sealed class NavMesh
     // is now carried by SC-NAV-BSP-LOOKUP (BSP-accelerated point-in-
     // mesh) and SC-NAV-OBSTACLE-AVOID (prop-based no-go zones).
 
+    /// <summary>SC-NAV-SEAM-HOP — nearest point of triangle <paramref name="tri"/> to
+    /// <paramref name="p"/> in XZ, pulled a few centimeters toward the centroid so the
+    /// result robustly passes <see cref="PointInTriangleXZ"/> on later stand probes.
+    /// Live call site: <see cref="NavFollower"/>'s door-seam hop, which needs a landing
+    /// point ON the far triangle when stepping across a stitched seam's coverage gap.</summary>
+    public Vector3 NearestPointInTriangleXZ(int tri, Vector3 p)
+    {
+        var a = Vertices[Indices[3 * tri + 0]];
+        var b = Vertices[Indices[3 * tri + 1]];
+        var c = Vertices[Indices[3 * tri + 2]];
+        Vector3 q;
+        if (PointInTriangleXZ(p, a, b, c))
+        {
+            q = p;
+        }
+        else
+        {
+            var pab = ClosestPointOnSegmentXZ(p, a, b);
+            var pbc = ClosestPointOnSegmentXZ(p, b, c);
+            var pca = ClosestPointOnSegmentXZ(p, c, a);
+            float dab = (pab.X - p.X) * (pab.X - p.X) + (pab.Z - p.Z) * (pab.Z - p.Z);
+            float dbc = (pbc.X - p.X) * (pbc.X - p.X) + (pbc.Z - p.Z) * (pbc.Z - p.Z);
+            float dca = (pca.X - p.X) * (pca.X - p.X) + (pca.Z - p.Z) * (pca.Z - p.Z);
+            q = dab <= dbc ? (dab <= dca ? pab : pca) : (dbc <= dca ? pbc : pca);
+        }
+        // Nudge off the edge toward the centroid (absolute distance, capped so
+        // sliver triangles don't overshoot past their own far edge).
+        var cen = Centroids[tri];
+        float cx = cen.X - q.X, cz = cen.Z - q.Z;
+        float clen = MathF.Sqrt(cx * cx + cz * cz);
+        if (clen > 1e-4f)
+        {
+            float nudge = MathF.Min(0.05f, clen * 0.25f);
+            q = new Vector3(q.X + cx / clen * nudge, q.Y, q.Z + cz / clen * nudge);
+        }
+        return new Vector3(q.X, SampleYOnTriangle(tri, q), q.Z);
+    }
+
     public static bool PointInTriangleXZ(Vector3 p, Vector3 a, Vector3 b, Vector3 c)
     {
         // Sign-of-cross-product test in the XZ plane. Accepts either winding.

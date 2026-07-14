@@ -124,6 +124,23 @@ public sealed class NavFollower
     // are ungated (the ±MaxRebindDy probe already bounds them).
     private const float MaxStepDownDy = 1.0f;
 
+    // SC-NAV-SEAM-HOP — door-stitched seams (NavMesh.StitchSnoDoorSeams) wire
+    // A* adjacency between boundary edges up to DoorSeamEdgePairDistance
+    // (1.5u) apart WITHOUT any covering geometry: the strip between the two
+    // edges has no triangles. A walker whose per-tick step (~0.22u at
+    // 4.5u/s / 20Hz) is shorter than that gap can never land a stand probe
+    // on the far side — the containment clamp pins it at the near edge and
+    // stuck-recovery loops to PathBlocked. Field case: the path2crypts
+    // crypt-stair seam (gap 0.94u) — paths reported blocked=False but the
+    // player jiggled at the stair lip and never descended; the fh_r1→hc_r1
+    // basement seam only ever worked because its gap is narrower than one
+    // tick's step. When a forward sub-step leaves the mesh but the active
+    // path's next triangle is a direct (stitched) neighbor of the one we're
+    // standing on, step ACROSS the seam onto the nearest point of that
+    // triangle. Bounds: XZ hop ≤ MaxSeamHopDist, Y within MaxRebindDy,
+    // descent within MaxStepDownDy — inside every anti-teleport gate above.
+    private const float MaxSeamHopDist = 2.0f;
+
     /// <summary>Standing-triangle probe: <see cref="NavMesh.TryFindTriangleNear"/>
     /// including fade-hidden ground (it's physical), but only accepting a
     /// triangle within <see cref="MaxRebindDy"/> of the walker's current Y.
@@ -520,7 +537,22 @@ public sealed class NavFollower
                     }
                 }
             }
-            if (!onMesh)
+            if (!onMesh && TrySeamHop(nx, nz, out var hopTri, out var hopPathIdx, out var hopX, out var hopZ))
+            {
+                // SC-NAV-SEAM-HOP — the step left the mesh because the
+                // corridor crosses a stitched door seam's coverage gap;
+                // land on the far triangle instead of clamping at the edge.
+                nx = hopX;
+                nz = hopZ;
+                standing = hopTri;
+                _pathIdx = hopPathIdx;
+                advanced = true;
+                if (DiagnosticLogging)
+                    System.Console.WriteLine(
+                        $"[nav-seam-hop] tri {CurrentTriangle}->{hopTri} " +
+                        $"to ({nx:F1},{nz:F1}) at ({Position.X:F1},{Position.Z:F1})");
+            }
+            else if (!onMesh)
             {
                 // SC-NAV-CONTAIN — the step would leave the walkable floor
                 // (a wall, a building side, the world edge). NEVER move off
@@ -584,5 +616,45 @@ public sealed class NavFollower
             remaining -= step;
         }
         _lastTickPos = tickStartPos;
+    }
+
+    /// <summary>SC-NAV-SEAM-HOP — when a forward sub-step's stand probe fails
+    /// (landing point over a seam's coverage gap), find the next triangle on
+    /// the active path that is a direct neighbor of the standing triangle and
+    /// return a bounded landing point on it. Only path triangles qualify —
+    /// A* already vetted them for traversal/blocking — and only within the
+    /// vertical gates that keep this from ever re-introducing the cross-layer
+    /// teleport (SC-NAV-VERTICAL-REBIND).</summary>
+    private bool TrySeamHop(float nx, float nz, out int hopTri, out int hopPathIdx, out float hopX, out float hopZ)
+    {
+        hopTri = -1;
+        hopPathIdx = -1;
+        hopX = nx;
+        hopZ = nz;
+        if (CurrentTriangle < 0 || _path.Count == 0) return false;
+        int maxK = Math.Min(_pathIdx + 2, _path.Count - 1);
+        for (int k = _pathIdx; k <= maxK; k++)
+        {
+            int far = _path[k];
+            if (far < 0 || far == CurrentTriangle) continue;
+            bool linked = false;
+            for (int slot = 0; slot < 3; slot++)
+            {
+                if (Mesh.Neighbors[3 * CurrentTriangle + slot] == far) { linked = true; break; }
+            }
+            if (!linked) continue;
+            var landing = Mesh.NearestPointInTriangleXZ(far, new Vector3(nx, Position.Y, nz));
+            float dx = landing.X - Position.X;
+            float dz = landing.Z - Position.Z;
+            if (dx * dx + dz * dz > MaxSeamHopDist * MaxSeamHopDist) continue;
+            if (MathF.Abs(landing.Y - Position.Y) > MaxRebindDy) continue;
+            if (landing.Y < Position.Y - MaxStepDownDy) continue;
+            hopTri = far;
+            hopPathIdx = k;
+            hopX = landing.X;
+            hopZ = landing.Z;
+            return true;
+        }
+        return false;
     }
 }
