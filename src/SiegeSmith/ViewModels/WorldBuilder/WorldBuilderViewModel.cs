@@ -2511,7 +2511,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         foreach (var p in v) { min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
         var c = (min + max) * 0.5f;
         float r = MathF.Max((max - min).Length() * 0.5f, 0.001f);
-        var bgra = SoftwareRenderer.Render(v, n, w, h, c, r, yaw: -2.35f, pitch: 0.5f, dist: r * 2.2f, wireframe: false);
+        var bgra = SoftwareRenderer.Render(v, n, w, h, c, r, yaw: -2.35f, pitch: 0.5f, dist: r * 2.2f, wireframe: false,
+            drawGizmo: false); // static snapshot — no clickable-looking triad
         var bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);
         bmp.Freeze(); // rendered off-thread; frozen bitmaps cross to the UI thread safely
         return bmp;

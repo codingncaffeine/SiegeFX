@@ -156,7 +156,8 @@ public static class SoftwareRenderer
         Vector3 center, float radius,
         float yaw, float pitch, float dist,
         bool wireframe, DirLight[]? lights = null, int[]? triColor = null,
-        bool ortho = false, Fog? fog = null, IReadOnlyList<Splat>? splats = null)
+        bool ortho = false, Fog? fog = null, IReadOnlyList<Splat>? splats = null,
+        bool drawGizmo = true)
     {
         width = Math.Max(1, width);
         height = Math.Max(1, height);
@@ -256,7 +257,9 @@ public static class SoftwareRenderer
         if (fog is { } fp && !wireframe) ApplyFog(px, zbuf, fp); // gizmo stays crisp above the fog
         if (splats is { Count: > 0 } && !wireframe)
             DrawSplats(px, zbuf, width, height, view, proj, splats, fog); // soft particles over the fogged scene
-        DrawAxisGizmo(px, width, height, yaw, pitch);
+        // The triad is a live-viewport affordance (click-to-snap); thumbnails opt
+        // out so a static image doesn't advertise a control that isn't there.
+        if (drawGizmo) DrawAxisGizmo(px, width, height, yaw, pitch);
         return px;
     }
 
