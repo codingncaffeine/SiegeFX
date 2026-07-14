@@ -585,7 +585,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     // True while RestoreWorldState replays saved siblings/stitches — suppresses the
     // per-mutation SaveWorldState calls so a restore never rewrites its own source file.
     private bool _restoringWorld;
-    private int _stitchDangling, _stitchCollisions, _stitchUnreachable;
+    private int _stitchDangling, _stitchCollisions, _stitchUnreachable, _stitchScenery;
     public ObservableCollection<RegionStitch> PrimaryStitches { get; } = new();
     public ObservableCollection<StitchDoor> PrimaryFreeDoors { get; } = new();
     public ObservableCollection<StitchRegionRef> Siblings { get; } = new();
@@ -639,6 +639,31 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private bool _markStitchDoors = true;
     public bool MarkStitchDoorsInPlay { get => _markStitchDoors; set => SetProperty(ref _markStitchDoors, value); }
 
+    /// <summary>Hides scenery sockets (free doors with no walkable floor at the opening —
+    /// cliff/wall alignment seams) from both door pickers. Default ON: nearly every stitch
+    /// is meant to be walked through, and scenery sockets outnumber real doorways on most
+    /// region boundaries. Turn OFF to build visual-only backdrop joins.</summary>
+    private bool _hideSceneryDoors = true;
+    public bool HideSceneryDoors
+    {
+        get => _hideSceneryDoors;
+        set { if (SetProperty(ref _hideSceneryDoors, value)) { RefreshStitchState(); RaiseSiblingDoors(); } }
+    }
+
+    /// <summary>Drops a door-socket flame to standing height: walkable sockets sit AT floor
+    /// level already, but multi-storey pieces put the socket at the walk surface of an upper
+    /// level — the flame should burn ~0.35u above THAT floor, not at the socket's own Y when
+    /// floor and socket disagree slightly. No-op when nav has no floor at the door
+    /// (scenery seam — the flame still marks the visual join).</summary>
+    private static Vector3 FloorSnapFlame(NavReachability? reach, uint snode, Vector3 doorLocal)
+    {
+        if (reach is not null
+            && reach.IsDoorWalkable(snode, doorLocal, out var floorY)
+            && reach.NodeTransforms.TryGetValue(snode, out var nx))
+            doorLocal.Y += floorY - Vector3.Transform(doorLocal, nx).Y + 0.35f;
+        return doorLocal;
+    }
+
     /// <summary>The emitter list Test/Play pack: the authored emitters, plus (when enabled)
     /// an injected flame at the primary side of every stitch doorway. Injection is
     /// PACK-TIME ONLY — the markers never enter the authored region data or saves.</summary>
@@ -646,6 +671,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     {
         var list = new List<RegionEmitter>(Emitters);
         if (!_markStitchDoors || PrimaryStitches.Count == 0 || _catalog is null) return list;
+        EnsureNavReachability();
         uint scid = 0x7E000001; // far outside the authored scid ranges
         foreach (var s in PrimaryStitches)
         {
@@ -658,13 +684,47 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     list.Add(new RegionEmitter
                     {
                         Scid = scid++, Template = "emt_generic", NodeGuid = s.LocalSnode,
-                        LocalPos = d.Transform.Translation,
+                        LocalPos = FloorSnapFlame(_primaryReach, s.LocalSnode, d.Transform.Translation),
                         Smoke = false, Count = 26, Fade = 0.9f, ParticleSize = 0.5f,
                     });
                     break;
                 }
         }
         return list;
+    }
+
+    /// <summary>Pack-time sibling list: rebuilds each sibling's <see cref="StitchRegionRef.PackFlames"/>
+    /// (its side of every stitch doorway, floor-snapped) so MapPackager stages flames on BOTH
+    /// sides of a connection — previously only the primary's side burned and a player looking
+    /// back from the neighbour saw nothing. Same pack-time-only rule as the primary markers.</summary>
+    private List<StitchRegionRef> SiblingsForPack()
+    {
+        for (int i = 0; i < Siblings.Count; i++)
+        {
+            var sib = Siblings[i];
+            sib.PackFlames.Clear();
+            if (!_markStitchDoors || _catalog is null || sib.Stitches.Count == 0) continue;
+            if (!_sibLayoutCache.TryGetValue(sib, out var gl)) continue;
+            uint scid = 0x7E001001 + (uint)(i << 8); // region-distinct block, clear of authored ranges
+            foreach (var s in sib.Stitches)
+            {
+                if (!gl.Graph.TryGetNode(s.LocalSnode, out var ni)) continue;
+                var sno = _catalog.Resolve(ni.MeshGuid);
+                if (sno is null) continue;
+                foreach (var d in sno.Doors)
+                    if (d.Id == (uint)s.LocalDoor)
+                    {
+                        sib.PackFlames.Add(new RegionEmitter
+                        {
+                            Scid = scid++, Template = "emt_generic", NodeGuid = s.LocalSnode,
+                            LocalPos = FloorSnapFlame(sib.Reach, s.LocalSnode, d.Transform.Translation),
+                            Smoke = false, Count = 26, Fade = 0.9f, ParticleSize = 0.5f,
+                        });
+                        break;
+                    }
+            }
+        }
+        return new List<StitchRegionRef>(Siblings);
     }
 
     private string _stitchDiagnostics = "No stitches — the region is a standalone (isolated) world.";
@@ -1941,7 +2001,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
-                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: SiblingsForPack(),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
             _lastAutosaveFingerprint = fp;
@@ -3704,7 +3764,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
-                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: SiblingsForPack(),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
             TrackSession(RuntimeLauncher.LaunchRegion(runtime, pkg.MapTankPath, terrain, pkg.RegionPath), play: false);
@@ -3769,7 +3829,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                 triggers: new List<RegionTrigger>(Triggers), commands: new List<CommandPlacement>(Commands),
                 conversations: new List<Conversation>(Conversations),
                 sourceGuid: PrimaryStitches.Count > 0 ? PrimarySourceGuid() : 0,
-                stitches: new List<RegionStitch>(PrimaryStitches), siblings: new List<StitchRegionRef>(Siblings),
+                stitches: new List<RegionStitch>(PrimaryStitches), siblings: SiblingsForPack(),
                 logicalFlags: new List<LogicalFlag>(LogicalFlags),
                 questsGas: ComposeQuests(), manifestText: ComposeManifest());
             TrackSession(RuntimeLauncher.LaunchPlayRegion(runtime, pkg.MapTankPath, terrain, logic, objects, pkg.RegionPath,
@@ -4119,6 +4179,18 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
                     rows.Add(new ValidationRow(false,
                         $"{offPath} stitch(es) land on terrain players can't walk to — both ends checked against each region's nav mesh (static check; elevator/lever transport not simulated).",
                         offTarget));
+            }
+            // Scenery stitches: door-granular — a socket with no floor at the opening can
+            // never carry a player even when its NODE touches walkable terrain (a cliff
+            // piece's rim meets the town while its socket hangs mid-air). The nav weld
+            // refuses such seams, so the join is visual-only.
+            if (_stitchScenery > 0)
+            {
+                RegionStitch? sceneryTarget = null;
+                foreach (var ps in PrimaryStitches) if (StitchIsScenery(ps)) { sceneryTarget = ps; break; }
+                rows.Add(new ValidationRow(false,
+                    $"⛰ {_stitchScenery} stitch(es) use scenery sockets (no walkable floor at the opening) — the regions join visually but players can NOT cross. Re-stitch through 🚪 walkable doors.",
+                    sceneryTarget));
             }
         }
 
@@ -4708,27 +4780,51 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     public void RefreshStitchState()
     {
         PrimaryFreeDoors.Clear();
+        _primaryAllDoors.Clear();
         if (_catalog is not null)
         {
             EnsureNavReachability();
-            var doors = new List<StitchDoor>();
             foreach (var n in _region.Nodes)
             {
                 var s = _catalog.Resolve(n.MeshGuid);
                 if (s is null) continue;
                 foreach (var d in s.Doors)
                     if (!n.UsesDoor((int)d.Id))
-                        doors.Add(new StitchDoor(n.Guid, (int)d.Id, _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}")
-                        { Reachable = _primaryReach?.ReachableSnodes.Contains(n.Guid) ?? true });
+                        _primaryAllDoors.Add(TagDoor(_primaryReach, n.Guid, (int)d.Id, d.Transform.Translation,
+                            _catalog.NameOf(n.MeshGuid) ?? $"0x{n.MeshGuid:X8}"));
             }
-            // Walkable doors first, off-path (decorative/sealed terrain) last — two passes
-            // keep the original node order within each group.
-            foreach (var d in doors) if (d.Reachable) PrimaryFreeDoors.Add(d);
-            foreach (var d in doors) if (!d.Reachable) PrimaryFreeDoors.Add(d);
+            foreach (var d in SortAndFilterDoors(_primaryAllDoors)) PrimaryFreeDoors.Add(d);
         }
         RecomputeStitchDiagnostics();
         RaiseCommands();
     }
+
+    /// <summary>Classifies one free door: 🚪 walkable doorway (floor reaches the socket),
+    /// ⚠ off-path (floor at the socket, but on an island the region start can't reach), or
+    /// ⛰ scenery (no floor at the socket at all — cliff/wall alignment seam). Nav
+    /// unavailable → everything passes; the tags are advisory, never blocking.</summary>
+    private static StitchDoor TagDoor(NavReachability? reach, uint snode, int door, Vector3 doorLocal, string mesh)
+    {
+        bool walkable = true; float floorY = 0f;
+        if (reach is not null) walkable = reach.IsDoorWalkable(snode, doorLocal, out floorY);
+        return new StitchDoor(snode, door, mesh)
+        {
+            Walkable = walkable,
+            FloorY = floorY,
+            Reachable = reach?.ReachableSnodes.Contains(snode) ?? true,
+        };
+    }
+
+    /// <summary>Real doorways first, off-path next, scenery sockets last (hidden entirely
+    /// while <see cref="HideSceneryDoors"/>). Passes keep node order within each tier.</summary>
+    private IEnumerable<StitchDoor> SortAndFilterDoors(List<StitchDoor> doors)
+    {
+        foreach (var d in doors) if (d.Walkable && d.Reachable) yield return d;
+        foreach (var d in doors) if (d.Walkable && !d.Reachable) yield return d;
+        if (_hideSceneryDoors) yield break;
+        foreach (var d in doors) if (!d.Walkable) yield return d;
+    }
+    private readonly List<StitchDoor> _primaryAllDoors = new();
 
     /// <summary>Rebuilds <see cref="_primaryReach"/> from the region's REAL nav mesh (the
     /// engine's own <see cref="SiegeFX.Core.Nav.NavMesh.BuildForRegion"/>) when the door
@@ -4761,7 +4857,7 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     {
         SiblingFreeDoors.Clear();
         if (_selectedSibling is not null)
-            foreach (var d in _selectedSibling.FreeDoors) SiblingFreeDoors.Add(d);
+            foreach (var d in SortAndFilterDoors(_selectedSibling.FreeDoors)) SiblingFreeDoors.Add(d);
         _selectedSiblingDoor = null;
         OnPropertyChanged(nameof(SelectedSiblingDoor));
     }
@@ -4836,8 +4932,8 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             }
             catch { /* advisory tagging only */ }
         reff.ReachableSnodes = sibReach?.ReachableSnodes;
+        reff.Reach = sibReach;
 
-        var doors = new List<StitchDoor>();
         foreach (var sn in parsed.Nodes)
         {
             reff.SnodeGuids.Add(sn.Guid);
@@ -4845,20 +4941,24 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             if (sno is not null)
                 foreach (var d in sno.Doors)
                     if (!sn.UsesDoor((int)d.Id))
-                        doors.Add(new StitchDoor(sn.Guid, (int)d.Id, _catalog?.NameOf(sn.MeshGuid) ?? $"0x{sn.MeshGuid:X8}")
-                        { Reachable = sibReach?.ReachableSnodes.Contains(sn.Guid) ?? true });
+                        reff.FreeDoors.Add(TagDoor(sibReach, sn.Guid, (int)d.Id, d.Transform.Translation,
+                            _catalog?.NameOf(sn.MeshGuid) ?? $"0x{sn.MeshGuid:X8}"));
         }
-        foreach (var d in doors) if (d.Reachable) reff.FreeDoors.Add(d);
-        foreach (var d in doors) if (!d.Reachable) reff.FreeDoors.Add(d);
 
         Siblings.Add(reff);
         SelectedSibling = reff;
         RecomputeStitchDiagnostics();
-        int offPath = 0;
-        foreach (var d in doors) if (!d.Reachable) offPath++;
-        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {reff.FreeDoors.Count} free door(s)"
-               + (offPath > 0 ? $" ({offPath} off-path, listed last)." : ".")
-               + " Stitch a door pair and the neighbour ghosts into the viewport.";
+        int offPath = 0, scenery = 0, walkable = 0;
+        foreach (var d in reff.FreeDoors)
+        {
+            if (!d.Walkable) scenery++;
+            else if (!d.Reachable) offPath++;
+            else walkable++;
+        }
+        Status = $"Imported region '{leaf}' — {reff.SnodeGuids.Count} snode(s), {walkable} walkable doorway(s)"
+               + (offPath > 0 ? $", {offPath} off-path" : "")
+               + (scenery > 0 ? $", {scenery} scenery socket(s){(HideSceneryDoors ? " (hidden)" : "")}" : "")
+               + ". Stitch a door pair and the neighbour ghosts into the viewport.";
         RaiseCommands();
         SaveWorldState();
         Render();
@@ -4895,15 +4995,40 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
     private void CreateStitch()
     {
         if (_selectedPrimaryDoor is null || _selectedSibling is null || _selectedSiblingDoor is null) return;
+        // A scenery end can never carry a player: no floor at the socket means the engine's
+        // nav weld refuses the seam — the join is visual-only. Legitimate for backdrops,
+        // a silent trap for everyone else, so say it BEFORE the stitch exists.
+        if (!_selectedPrimaryDoor.Walkable || !_selectedSiblingDoor.Walkable)
+        {
+            string end = !_selectedPrimaryDoor.Walkable && !_selectedSiblingDoor.Walkable
+                ? "BOTH ends are scenery sockets"
+                : !_selectedPrimaryDoor.Walkable
+                    ? $"this region's door {_selectedPrimaryDoor.Door} is a scenery socket"
+                    : $"'{_selectedSibling.LeafName}' door {_selectedSiblingDoor.Door} is a scenery socket";
+            var res = System.Windows.MessageBox.Show(
+                $"⛰ {end} — no walkable floor reaches the opening (cliff/wall alignment seam).\n\n"
+                + "The regions will join VISUALLY, but players can never cross here: the engine's nav "
+                + "weld refuses a seam without floor on both sides.\n\n"
+                + "Create it anyway as a visual-only backdrop join?",
+                "Scenery seam — players can't cross", System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning);
+            if (res != System.Windows.MessageBoxResult.Yes)
+            {
+                Status = "Stitch cancelled — pick 🚪 walkable doors on both sides for a crossable connection.";
+                return;
+            }
+        }
         uint pair = _nextPairId++;
         string primLeaf = StitchPrimaryLeaf();
         // Reciprocal pair sharing one pairId — both sides written atomically at pack time.
         PrimaryStitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedPrimaryDoor.Snode, LocalDoor = _selectedPrimaryDoor.Door, DestRegion = _selectedSibling.LeafName });
         _selectedSibling.Stitches.Add(new RegionStitch { PairId = pair, LocalSnode = _selectedSiblingDoor.Snode, LocalDoor = _selectedSiblingDoor.Door, DestRegion = primLeaf });
         RecomputeStitchDiagnostics();
-        string offNote = !_selectedPrimaryDoor.Reachable || !_selectedSiblingDoor.Reachable
-            ? " ⚠ One end is off-path — players can't walk to it (details in Validate)."
-            : "";
+        string offNote = !_selectedPrimaryDoor.Walkable || !_selectedSiblingDoor.Walkable
+            ? " ⛰ Scenery seam — visual join only, players can't cross (details in Validate)."
+            : !_selectedPrimaryDoor.Reachable || !_selectedSiblingDoor.Reachable
+                ? " ⚠ One end is off-path — players can't walk to it (details in Validate)."
+                : "";
         Status = $"Stitched {primLeaf}·door {_selectedPrimaryDoor.Door} ⇄ {_selectedSibling.LeafName}·door {_selectedSiblingDoor.Door} (pair 0x{pair:X8}).{offNote}";
         RaiseCommands();
         SaveWorldState();
@@ -5034,6 +5159,27 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
         return RegionStitchHelper.FromDocument(GasDocument.Parse(StitchHelperWriter.Write(sourceGuid, leaf, stitches)));
     }
 
+    /// <summary>True when either socket of a committed stitch is scenery (no floor at the
+    /// opening). Ends whose door tag is missing (nav unavailable) count as walkable —
+    /// the check is advisory and must never cry wolf on regions we couldn't analyse.</summary>
+    private bool StitchIsScenery(RegionStitch ps)
+    {
+        if (FindDoorTag(_primaryAllDoors, ps.LocalSnode, ps.LocalDoor) is { Walkable: false }) return true;
+        foreach (var sib in Siblings)
+            if (sib.LeafName.Equals(ps.DestRegion, StringComparison.OrdinalIgnoreCase))
+                foreach (var ss in sib.Stitches)
+                    if (ss.PairId == ps.PairId
+                        && FindDoorTag(sib.FreeDoors, ss.LocalSnode, ss.LocalDoor) is { Walkable: false })
+                        return true;
+        return false;
+    }
+
+    private static StitchDoor? FindDoorTag(List<StitchDoor> doors, uint snode, int door)
+    {
+        foreach (var d in doors) if (d.Snode == snode && d.Door == door) return d;
+        return null;
+    }
+
     private void RecomputeStitchDiagnostics()
     {
         // Snode-guid world-uniqueness (WorldLayout throws on collision).
@@ -5078,9 +5224,15 @@ public sealed class WorldBuilderViewModel : ObservableObject, IDisposable, IScru
             if (sib.Stitches.Count == 0) isolated++;
         }
 
+        // Scenery stitches: committed pairs where either socket has no floor — the join
+        // composes visually but the nav weld refuses it, so players can never cross.
+        _stitchScenery = 0;
+        foreach (var ps in PrimaryStitches) if (StitchIsScenery(ps)) _stitchScenery++;
+
         StitchDiagnostics = PrimaryStitches.Count == 0 && Siblings.Count == 0
             ? "No stitches — the region is a standalone (isolated) world."
-            : $"{1 + Siblings.Count} region(s) · {PrimaryStitches.Count} stitch(es) · dangling {_stitchDangling} · unreachable {_stitchUnreachable} · isolated {isolated} · guid-collisions {_stitchCollisions}";
+            : $"{1 + Siblings.Count} region(s) · {PrimaryStitches.Count} stitch(es) · dangling {_stitchDangling} · unreachable {_stitchUnreachable} · isolated {isolated} · guid-collisions {_stitchCollisions}"
+              + (_stitchScenery > 0 ? $" · ⛰ scenery {_stitchScenery}" : "");
 
         RebuildWorldGraph(reached: reached, byLeaf: byLeaf);
     }

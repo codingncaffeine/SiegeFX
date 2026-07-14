@@ -30,13 +30,34 @@ public sealed record StitchDoor(uint Snode, int Door, string Mesh)
     /// pickable — just flagged and sorted last.</summary>
     public bool Reachable { get; init; } = true;
 
-    public string Label => Reachable ? $"snode 0x{Snode:X8} · door {Door}" : $"⚠ snode 0x{Snode:X8} · door {Door} · off-path";
+    /// <summary>False when no walkable floor reaches THIS door socket. Free doors on a
+    /// region boundary are mostly cliff/wall ALIGNMENT sockets (a 32 m corner piece has
+    /// "doors" 16 m up a bare rock face) — stitching one composes the regions visually but
+    /// players can never cross, and the nav weld correctly refuses the seam. Node-level
+    /// <see cref="Reachable"/> can't catch this: a cliff piece whose rim touches town
+    /// terrain counts as reachable while its socket hangs in mid-air. Door-granular check:
+    /// floor within 2 m XZ / 0.75 Y of the socket.</summary>
+    public bool Walkable { get; init; } = true;
+
+    /// <summary>Walkable floor height at the socket (region frame) when <see cref="Walkable"/> —
+    /// flame markers and the Play spawn use it to sit at standing height.</summary>
+    public float FloorY { get; init; }
+
+    public string Label =>
+        !Walkable ? $"⛰ snode 0x{Snode:X8} · door {Door} · scenery"
+        : !Reachable ? $"⚠ snode 0x{Snode:X8} · door {Door} · off-path"
+        : $"🚪 snode 0x{Snode:X8} · door {Door}";
     public string Detail => Mesh;
-    public string Tip => Reachable
-        ? Mesh
-        : Mesh + "\nOff-path: the nav mesh has no walkable route from the region start to this door "
-              + "(static check — elevators/levers/teleporters aren't simulated). A stitch here lands "
-              + "in an area players may never reach on foot.";
+    public string Tip =>
+        !Walkable
+            ? Mesh + "\nScenery seam: no walkable floor reaches this door socket (cliff/wall alignment "
+                  + "doors sit metres from any floor). Stitching here joins the regions VISUALLY but "
+                  + "players cannot cross — the engine's nav weld refuses seams without floor on both sides."
+        : !Reachable
+            ? Mesh + "\nOff-path: the nav mesh has no walkable route from the region start to this door "
+                  + "(static check — elevators/levers/teleporters aren't simulated). A stitch here lands "
+                  + "in an area players may never reach on foot."
+        : Mesh + "\nWalkable doorway — floor reaches the socket on this side.";
 }
 
 /// <summary>A region participating in the world graph — the primary (the region being edited) or a
@@ -56,6 +77,16 @@ public sealed class StitchRegionRef
     /// import so validation can prove BOTH ends of a stitch are player-reachable, not just
     /// the primary's. Null = nav unavailable (treat every door as reachable).</summary>
     public HashSet<uint>? ReachableSnodes;
+
+    /// <summary>Full nav analysis for this sibling (door-socket floor queries) — kept from
+    /// import so pack time can floor-snap the sibling-side flame markers. Null = nav
+    /// unavailable.</summary>
+    public NavReachability? Reach;
+
+    /// <summary>Flame markers for THIS sibling's side of every stitch doorway, rebuilt at
+    /// pack time (never persisted — same pack-time-only rule as the primary's markers).
+    /// MapPackager writes them to <c>regions/&lt;leaf&gt;/objects/emitter.gas</c>.</summary>
+    public List<RegionEmitter> PackFlames = new();
 
     public string Label => IsPrimary ? $"{LeafName}  (primary)" : LeafName;
     public string Detail => $"guid 0x{SourceGuid:X8} · {SnodeGuids.Count} snode(s) · {FreeDoors.Count} free door(s) · {Stitches.Count} stitch(es)";

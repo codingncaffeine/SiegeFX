@@ -1456,6 +1456,9 @@
                             <CheckBox DockPanel.Dock="Top" Content="Ghost neighbours in viewport" IsChecked="{Binding ShowNeighborGhosts}"
                                       FontSize="11" Margin="0,0,0,3"
                                       ToolTip="Draw stitched sibling regions translucent in the 3D viewport, composed by the engine's own world layout — free doors show as blue (this region) and violet (sibling) markers"/>
+                            <CheckBox DockPanel.Dock="Top" Content="Hide ⛰ scenery doors" IsChecked="{Binding HideSceneryDoors}"
+                                      FontSize="11" Margin="0,0,0,3"
+                                      ToolTip="Most free doors on a region boundary are cliff/wall ALIGNMENT sockets — no walkable floor reaches them, so a stitch there joins the regions visually but players can never cross. Hidden by default; untick to build visual-only backdrop joins. 🚪 = walkable doorway, ⚠ = walkable but off-path, ⛰ = scenery."/>
                             <CheckBox DockPanel.Dock="Bottom" Content="🔥 Mark connections in Play" IsChecked="{Binding MarkStitchDoorsInPlay}"
                                       FontSize="11" Margin="0,4,0,0"
                                       ToolTip="Test/Play only: a flame burns at your side of every stitched doorway in-engine so the crossing is easy to find while walking. Never saved into your region data. (Test terrain shows geometry only — flames appear in Play.)"/>
@@ -1482,6 +1485,9 @@
                                                         <DataTrigger Binding="{Binding Reachable}" Value="False">
                                                             <Setter Property="Opacity" Value="0.55"/>
                                                         </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Walkable}" Value="False">
+                                                            <Setter Property="Opacity" Value="0.4"/>
+                                                        </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style></TextBlock.Style>
                                             </TextBlock>
@@ -1498,6 +1504,9 @@
                                                     <Style.Triggers>
                                                         <DataTrigger Binding="{Binding Reachable}" Value="False">
                                                             <Setter Property="Opacity" Value="0.55"/>
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding Walkable}" Value="False">
+                                                            <Setter Property="Opacity" Value="0.4"/>
                                                         </DataTrigger>
                                                     </Style.Triggers>
                                                 </Style></TextBlock.Style>

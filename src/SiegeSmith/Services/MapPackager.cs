@@ -182,6 +182,14 @@ public static class MapPackager
                     Directory.CreateDirectory(sibEd);
                     File.WriteAllText(Path.Combine(sibEd, "stitch_helper.gas"), StitchHelperWriter.Write(sib.SourceGuid, leaf, sib.Stitches));
                 }
+                // Sibling-side flame markers: without these only the primary's side of a
+                // doorway burns, so a player looking back from the neighbour sees nothing.
+                if (sib.PackFlames.Count > 0)
+                {
+                    string sibObj = Path.Combine(mapDir, "regions", leaf, "objects");
+                    Directory.CreateDirectory(sibObj);
+                    File.WriteAllText(Path.Combine(sibObj, "emitter.gas"), EmitterGasWriter.Write(sib.PackFlames));
+                }
             }
         }
 
