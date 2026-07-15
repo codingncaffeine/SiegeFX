@@ -3362,9 +3362,13 @@ public sealed class RenderHost : IDisposable
         public bool   IsLever;
         public bool   LeverOn;
         public float  LeverUseRange = 2f;
-        public uint   LeverOnScid, LeverOffScid;
-        public string LeverOnMessage  = "we_req_activate";
-        public string LeverOffMessage = "we_req_activate";
+        // SC-LEVER-MULTISEND — DS1 authors numbered send pairs
+        // (on_scid/on_message, on_scid_2/on_message_2, …): cr_r1's stairwell
+        // lever fans out to a fade trigger plus two mechanism scids. Every
+        // pair fires on pull; the old single on/off pair dropped all but the
+        // first target ("the wall switch does nothing").
+        public (uint Scid, string Msg)[] LeverOnSends  = Array.Empty<(uint, string)>();
+        public (uint Scid, string Msg)[] LeverOffSends = Array.Empty<(uint, string)>();
         // ALPHA-2 USE-POINTS — [placement] use_point_scids: DS1's authored
         // stand spots for operating this lever. The farm winch authors one ON
         // the elevator grate (ride down with it) and one at the landing (call
@@ -11437,8 +11441,8 @@ void main()
                     // template chain is the fallback. A lever posts its
                     // on/off message at its on/off scid when used.
                     bool isLever = false;
-                    uint levOnScid = 0, levOffScid = 0;
-                    string levOnMsg = "we_req_activate", levOffMsg = "we_req_activate";
+                    var levOnSends  = new List<(uint Scid, string Msg)>();
+                    var levOffSends = new List<(uint Scid, string Msg)>();
                     float levUseRange = 2f;
                     uint[] levUsePoints = Array.Empty<uint>();
                     {
@@ -11459,10 +11463,25 @@ void main()
                         if (onOff is not null || onScidS is not null || offScidS is not null)
                         {
                             isLever = true;
-                            levOnScid  = ParseHexScid(onScidS);
-                            levOffScid = ParseHexScid(offScidS);
-                            levOnMsg   = TrimGasString(levAttr("on_message"))  is { Length: > 0 } om ? om : "we_req_activate";
-                            levOffMsg  = TrimGasString(levAttr("off_message")) is { Length: > 0 } fm ? fm : "we_req_activate";
+                            // SC-LEVER-MULTISEND — collect every numbered
+                            // on_scid_N/off_scid_N pair; a missing
+                            // *_message_N falls back to the base message,
+                            // then we_req_activate.
+                            string baseOn  = TrimGasString(levAttr("on_message"))  is { Length: > 0 } om ? om : "we_req_activate";
+                            string baseOff = TrimGasString(levAttr("off_message")) is { Length: > 0 } fm ? fm : "we_req_activate";
+                            void CollectSends(string scidPrefix, string msgPrefix, string baseMsg, List<(uint, string)> dest)
+                            {
+                                for (int n = 1; n <= 8; n++)
+                                {
+                                    string suffix = n == 1 ? "" : $"_{n}";
+                                    uint sc = ParseHexScid(levAttr(scidPrefix + suffix));
+                                    if (sc == 0) continue;
+                                    string m = TrimGasString(levAttr(msgPrefix + suffix)) is { Length: > 0 } mm ? mm : baseMsg;
+                                    dest.Add((sc, m));
+                                }
+                            }
+                            CollectSends("on_scid", "on_message", baseOn, levOnSends);
+                            CollectSends("off_scid", "off_message", baseOff, levOffSends);
                             // use_range: instance [aspect] override first, then template.
                             string? ur = null;
                             foreach (var c in p.Node.Children)
@@ -11530,10 +11549,8 @@ void main()
                         DoorUseRange  = useRange,
                         IsLever         = isLever,
                         LeverUseRange   = levUseRange,
-                        LeverOnScid     = levOnScid,
-                        LeverOffScid    = levOffScid,
-                        LeverOnMessage  = levOnMsg,
-                        LeverOffMessage = levOffMsg,
+                        LeverOnSends    = levOnSends.ToArray(),
+                        LeverOffSends   = levOffSends.ToArray(),
                         LeverUsePointScids = levUsePoints,
                         IsChest         = isChest,
                         ChestWaitsForActivate = chestWaits,
@@ -11588,7 +11605,8 @@ void main()
                     {
                         _leverProps.Add(inst);
                         Console.WriteLine($"[lever] 0x{inst.Scid:X8} {inst.Template} " +
-                            $"on=0x{levOnScid:X8}/'{levOnMsg}' off=0x{levOffScid:X8}/'{levOffMsg}' " +
+                            $"on=[{string.Join(",", levOnSends.Select(s => $"0x{s.Scid:X8}/'{s.Msg}'"))}] " +
+                            $"off=[{string.Join(",", levOffSends.Select(s => $"0x{s.Scid:X8}/'{s.Msg}'"))}] " +
                             $"range={levUseRange:F1} at ({world.Translation.X:F1},{world.Translation.Y:F1},{world.Translation.Z:F1})");
                     }
 
@@ -15524,10 +15542,13 @@ void main()
     private void PullLever(StaticPropInstance lever)
     {
         lever.LeverOn = !lever.LeverOn;
-        var msg = lever.LeverOn ? lever.LeverOnMessage : lever.LeverOffMessage;
-        var scid = lever.LeverOn ? lever.LeverOnScid : lever.LeverOffScid;
-        Console.WriteLine($"[lever] 0x{lever.Scid:X8} pulled -> {(lever.LeverOn ? "on" : "off")}: '{msg}' -> 0x{scid:X8}");
-        if (scid != 0) PostTriggerWorldMessage(msg, lever.Scid, scid);
+        // SC-LEVER-MULTISEND — every authored send pair fires on the pull.
+        var sends = lever.LeverOn ? lever.LeverOnSends : lever.LeverOffSends;
+        Console.WriteLine($"[lever] 0x{lever.Scid:X8} pulled -> {(lever.LeverOn ? "on" : "off")}: " +
+            (sends.Length == 0 ? "(no targets)"
+             : string.Join(", ", sends.Select(s => $"'{s.Msg}' -> 0x{s.Scid:X8}"))));
+        foreach (var (scid, msg) in sends)
+            if (scid != 0) PostTriggerWorldMessage(msg, lever.Scid, scid);
     }
 
     // ────────────────────────────────────────────────────────────────────

@@ -800,6 +800,7 @@ static int DispatchRegion(string[] a)
         "mob-loot" => CmdRegionMobLoot(a[1..]),
         "drop-sweep" => CmdRegionDropSweep(a[1..]),
         "find-template" => CmdRegionFindTemplate(a[1..]),
+        "switch-audit" => CmdRegionSwitchAudit(a[1..]),
         "actor-coverage" => CmdRegionActorCoverage(a[1..]),
         "nav"         => CmdRegionNav(a[1..]),
         "nav-fuzz"    => CmdRegionNavFuzz(a[1..]),
@@ -7059,6 +7060,225 @@ static void CountBucketKinds(SiegeFX.Core.Actors.LootBucket bucket, ref int gold
 // Phase 25c — where is a template placed? Sweeps every region's
 // actor.gas placements for names containing the given substring
 // (locating shopkeepers/hireables: `region find-template World.dsmap adwana`).
+// SC-SWITCH-AUDIT — map-wide "do the wall switches work?" audit. For every
+// [on_off_lever] placement: collect its numbered send pairs (multi-send,
+// mirroring the runtime's SC-LEVER-MULTISEND parse), resolve each target
+// scid across the region's objects/*.gas, and chase trigger
+// send_world_message fan-out one extra hop. Verdicts name exactly why a
+// lever is dead: MISSING target scid, an elevator component the engine
+// skips (no elevator_node — e.g. elevator_hidden_stairwell), or a trigger
+// row using a condition/action verb the TriggerRuntime doesn't implement.
+// Verb sets mirror TriggerRuntime's dispatch — keep in sync.
+static int CmdRegionSwitchAudit(string[] a)
+{
+    if (a.Length < 2)
+    {
+        Console.Error.WriteLine("usage: siegefx region switch-audit <map-tank> <region-path|all>");
+        Console.Error.WriteLine("       audits every [on_off_lever] switch: send targets resolved + verdicts");
+        return 1;
+    }
+    var supportedTriggerConditions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "actor_within_bounding_box", "actor_within_sphere",
+        "go_within_bounding_box", "go_within_sphere", "has_go_in_inventory",
+        "party_member_entered_trigger_group", "party_member_left_trigger_group",
+        "party_member_within_bounding_box", "party_member_within_node",
+        "party_member_within_sphere", "receive_world_message",
+    };
+    var supportedTriggerActions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "call_sfx_script", "change_actor_life", "change_quest_state",
+        "fade_node", "fade_nodes", "fade_nodes_global", "mood_change",
+        "send_world_message", "set_bounds_camera_node", "set_camera_fade_node",
+        "set_interest_radius",
+    };
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    var allFiles = mapReader.ListFiles().ToList();
+
+    var regionPaths = new List<string>();
+    if (a[1].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in allFiles)
+        {
+            var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) continue;
+            var rest = path[(idx + "/regions/".Length)..];
+            var slash = rest.IndexOf('/');
+            if (slash < 0) continue;
+            var regionPath = path[..(idx + "/regions/".Length + slash)];
+            if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+        }
+        regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+    }
+    else
+    {
+        var rp = a[1].Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        regionPaths.Add(rp.TrimEnd('/'));
+    }
+
+    static (string Tpl, uint Scid) ParseHeader(string? header)
+    {
+        string tpl = ""; uint scid = 0;
+        foreach (var part in (header ?? "").Split(','))
+        {
+            var kv = part.Split(':', 2);
+            if (kv.Length != 2) continue;
+            if (kv[0].Trim().Equals("t", StringComparison.OrdinalIgnoreCase)) tpl = kv[1].Trim();
+            else if (kv[0].Trim().Equals("n", StringComparison.OrdinalIgnoreCase))
+            {
+                var s = kv[1].Trim();
+                if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
+                uint.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out scid);
+            }
+        }
+        return (tpl, scid);
+    }
+
+    int totalLevers = 0, okLevers = 0, partialLevers = 0, deadLevers = 0;
+    foreach (var rp in regionPaths)
+    {
+        // Index every placed object in the region: scid -> (template, node).
+        var byScid = new Dictionary<uint, (string Tpl, SiegeFX.Core.Assets.GasNode Node)>();
+        var levers = new List<(uint Scid, string Tpl, SiegeFX.Core.Assets.GasNode Node)>();
+        foreach (var file in allFiles)
+        {
+            if (!file.StartsWith(rp + "/objects/", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+            SiegeFX.Core.Assets.GasDocument doc;
+            try { doc = SiegeFX.Core.Assets.GasDocument.Load(mapReader.ExtractToMemory(file)); }
+            catch { continue; }
+            foreach (var root in doc.Roots)
+            {
+                var (tpl, scid) = ParseHeader(root.Header);
+                if (scid == 0) continue;
+                byScid[scid] = (tpl, root);
+                foreach (var c in root.Children)
+                    if (string.Equals(c.Header, "on_off_lever", StringComparison.OrdinalIgnoreCase))
+                    { levers.Add((scid, tpl, root)); break; }
+            }
+        }
+        if (levers.Count == 0) continue;
+
+        string leaf = rp[(rp.LastIndexOf('/') + 1)..];
+        Console.WriteLine($"== {leaf}: {levers.Count} switch(es)");
+        foreach (var lv in levers)
+        {
+            totalLevers++;
+            SiegeFX.Core.Assets.GasNode? onOff = null;
+            foreach (var c in lv.Node.Children)
+                if (string.Equals(c.Header, "on_off_lever", StringComparison.OrdinalIgnoreCase)) { onOff = c; break; }
+            string? Attr(string name)
+            {
+                foreach (var at in onOff!.Attributes)
+                    if (string.Equals(at.Name, name, StringComparison.OrdinalIgnoreCase)) return at.Value;
+                return null;
+            }
+            static uint Hex(string? v)
+            {
+                var s = (v ?? "").Trim().Trim('"');
+                if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) s = s[2..];
+                return uint.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out var u) ? u : 0;
+            }
+            var targets = new List<uint>();
+            foreach (var prefix in new[] { "on_scid", "off_scid" })
+                for (int n = 1; n <= 8; n++)
+                {
+                    uint sc = Hex(Attr(prefix + (n == 1 ? "" : $"_{n}")));
+                    if (sc != 0 && !targets.Contains(sc)) targets.Add(sc);
+                }
+
+            var problems = new List<string>();
+            var okNotes = new List<string>();
+            var visited = new HashSet<uint>();
+            void ResolveTarget(uint scid, int depth)
+            {
+                if (!visited.Add(scid) || depth > 3) return;
+                if (!byScid.TryGetValue(scid, out var target))
+                { problems.Add($"0x{scid:X8} MISSING (no placement in this region's objects)"); return; }
+                // Elevator-family mechanism: supported iff a component block
+                // authors a nonzero elevator_node (what ElevatorStore parses).
+                bool isMech = target.Tpl.StartsWith("elevator", StringComparison.OrdinalIgnoreCase);
+                if (isMech)
+                {
+                    bool hasCar = false;
+                    foreach (var c in target.Node.Children)
+                        foreach (var at in c.Attributes)
+                            if (string.Equals(at.Name, "elevator_node", StringComparison.OrdinalIgnoreCase)
+                                && Hex(at.Value) != 0) { hasCar = true; break; }
+                    if (hasCar) okNotes.Add($"0x{scid:X8} elevator '{target.Tpl}'");
+                    else problems.Add($"0x{scid:X8} UNSUPPORTED mechanism '{target.Tpl}' (no elevator_node — engine skips it)");
+                    return;
+                }
+                // Trigger: check each row's condition/action verbs; follow
+                // send_world_message fan-out.
+                SiegeFX.Core.Assets.GasNode? common = null;
+                foreach (var c in target.Node.Children)
+                    if (string.Equals(c.Header, "common", StringComparison.OrdinalIgnoreCase)) { common = c; break; }
+                var instTrig = common is null ? null : SiegeFX.Core.Assets.TemplateStore.FindChild(common, "instance_triggers");
+                if (instTrig is not null)
+                {
+                    int rows = 0;
+                    foreach (var row in instTrig.Children)
+                    {
+                        rows++;
+                        foreach (var at in row.Attributes)
+                        {
+                            bool isCond = at.Name.TrimEnd('*').Equals("condition", StringComparison.OrdinalIgnoreCase);
+                            bool isAct  = at.Name.TrimEnd('*').Equals("action", StringComparison.OrdinalIgnoreCase);
+                            if (!isCond && !isAct) continue;
+                            // A row value can hold several verb(...) clauses.
+                            foreach (var clause in at.Value.Split(new[] { "), " }, StringSplitOptions.None))
+                            {
+                                var verb = clause.TrimStart().Split('(')[0].Trim();
+                                if (verb.Length == 0) continue;
+                                // Row metadata, not verbs: ", group(N)" pairs a
+                                // condition row with its action rows; stray doc
+                                // text sometimes rides the value.
+                                if (verb.Equals("group", StringComparison.OrdinalIgnoreCase)
+                                    || verb.Equals("doc", StringComparison.OrdinalIgnoreCase)) continue;
+                                var set = isCond ? supportedTriggerConditions : supportedTriggerActions;
+                                if (!set.Contains(verb))
+                                    problems.Add($"0x{scid:X8} trigger '{target.Tpl}' row uses unsupported {(isCond ? "condition" : "action")} '{verb}'");
+                                if (isAct && verb.Equals("send_world_message", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    foreach (System.Text.RegularExpressions.Match hx in
+                                             System.Text.RegularExpressions.Regex.Matches(clause, "0x[0-9A-Fa-f]{8}"))
+                                        ResolveTarget(Hex(hx.Value), depth + 1);
+                                }
+                            }
+                        }
+                    }
+                    okNotes.Add($"0x{scid:X8} trigger '{target.Tpl}' ({rows} row(s))");
+                    return;
+                }
+                okNotes.Add($"0x{scid:X8} '{target.Tpl}'");
+            }
+            foreach (var t in targets) ResolveTarget(t, 0);
+
+            string pos = "";
+            foreach (var c in lv.Node.Children)
+                if (string.Equals(c.Header, "placement", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var at in c.Attributes)
+                        if (string.Equals(at.Name, "position", StringComparison.OrdinalIgnoreCase)) { pos = at.Value; break; }
+                    break;
+                }
+            string verdict = problems.Count == 0 ? "OK"
+                : okNotes.Count == 0 ? "DEAD" : "PARTIAL";
+            if (verdict == "OK") okLevers++; else if (verdict == "DEAD") deadLevers++; else partialLevers++;
+            Console.WriteLine($"  [{verdict,-7}] 0x{lv.Scid:X8} {lv.Tpl}  pos={pos}");
+            foreach (var n in okNotes) Console.WriteLine($"      ok: {n}");
+            foreach (var pr in problems) Console.WriteLine($"      !! {pr}");
+            if (targets.Count == 0) Console.WriteLine("      !! no send targets authored");
+        }
+    }
+    Console.WriteLine($"TOTAL: {totalLevers} switch(es) — {okLevers} OK, {partialLevers} PARTIAL, {deadLevers} DEAD");
+    return 0;
+}
+
 static int CmdRegionFindTemplate(string[] a)
 {
     if (a.Length < 2)
