@@ -14642,7 +14642,6 @@ void main()
     /// player's ranged/cast click gates.</summary>
     private bool IsSightBlocked(Vector3 fromFeet, Vector3 toFeet)
     {
-        if (_sightOccluders.Count == 0) return false;
         var a = new Vector2(fromFeet.X, fromFeet.Z);
         var b = new Vector2(toFeet.X, toFeet.Z);
         var ab = b - a;
@@ -14657,6 +14656,29 @@ void main()
             if (Vector2.DistanceSquared(p, oc.C) > oc.R * oc.R) continue;
             float sightY = eyeA + (eyeB - eyeA) * t;
             if (sightY < oc.TopY - 0.1f) return true;
+        }
+        // SC-LOS-TERRAIN — floors and ceilings occlude: cast the eye-to-eye
+        // segment against the nav mesh, INCLUDING fade-hidden tris (a
+        // de-roofed crypt cap is a camera-side fade; the surface floor above
+        // still physically separates the layers — the field report was
+        // surface mobs aggroing and melee-swinging at the party 10u below
+        // through the crypt ceiling). Segment ends pull in 0.3u each so the
+        // caster's/target's own floor tri can't self-occlude; two actors on
+        // the same flat floor keep a clear line because both eye points sit
+        // 1.2u+ above it. A genuine ridge/ledge lip between them blocks,
+        // which matches retail (step to the edge to shoot down).
+        if (_navMesh is not null)
+        {
+            var eA = new Vector3(fromFeet.X, eyeA, fromFeet.Z);
+            var eB = new Vector3(toFeet.X, eyeB, toFeet.Z);
+            var seg = eB - eA;
+            float len = seg.Length();
+            if (len > 0.8f)
+            {
+                var d = seg / len;
+                if (_navMesh.TryRaycast(eA + d * 0.3f, d, len - 0.6f, out _, out _, includeFadeHidden: true))
+                    return true;
+            }
         }
         return false;
     }

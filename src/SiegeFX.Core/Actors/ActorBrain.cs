@@ -150,9 +150,15 @@ public sealed class ActorBrain
     public float DisengageRadius { get; set; } = 14f;
 
     /// <summary>SC-MOB-AGGRO-VERTICAL — max height difference for the initial
-    /// spot. ~One story; substitutes for the line-of-sight test DS1 runs
-    /// (we have no wall-occlusion raycast yet).</summary>
+    /// spot. ~One story; combined with the host's <see cref="SightBlocked"/>
+    /// terrain-aware test (SC-LOS-TERRAIN) for shallow floors within the band.</summary>
     public const float AggroVerticalBand = 4f;
+
+    /// <summary>SC-LOS-MELEE-VERTICAL — max height difference a melee swing can
+    /// span. A mob 1u away in XZ but a storey above/below (surface krug over a
+    /// de-roofed crypt room) must not land hits through the floor. Generous
+    /// enough for stair fights and big-vs-small reach.</summary>
+    public const float MeleeVerticalReach = 2.5f;
 
     /// <summary>Melee reach. Pulled from the actor's <see cref="ActorStats.AttackRange"/>
     /// when the template authors one (krug grunt = 1.8u); otherwise a 2u fallback.</summary>
@@ -292,6 +298,10 @@ public sealed class ActorBrain
                 // engage/hold band already keeps the fight at MeleeRange-ish
                 // center distance, so only a real escape should whiff.
                 if (DistXZ(Wander.Position, targetPos.Value) > MeleeRange * 1.5f + 1.5f) continue;
+                // SC-LOS-MELEE-VERTICAL — reach is 3D: a mob 1u away in XZ
+                // but a storey above/below (surface krug over a de-roofed
+                // crypt room) cannot land a swing through the floor.
+                if (MathF.Abs(Wander.Position.Y - targetPos.Value.Y) > MeleeVerticalReach) continue;
             }
             float raw = CombatResolver.RollDamage(_selfStats, targetStats, _swingRng,
                 attackerIsPlayer: PartyAligned, ranged: _activeSwingRanged);
@@ -360,8 +370,15 @@ public sealed class ActorBrain
                 // "spotted me from really far"). Require the target within
                 // roughly one story vertically; engaged states keep chasing
                 // across height changes (stairs mid-fight don't drop aggro).
+                // SC-LOS-TERRAIN — the spot itself also needs LINE OF SIGHT:
+                // the vertical band alone let shallow-dungeon mobs and the
+                // party see each other through a floor less than one story
+                // thick (crypt end room, ~4u under the surface). The host
+                // test now includes terrain, so a floor/ceiling/ridge between
+                // the two blocks the spot outright.
                 if (targetAlive && distXZ <= AggroRadius &&
-                    MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand)
+                    MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand &&
+                    SightBlocked?.Invoke(Wander.Position, targetPos!.Value) != true)
                     EnterChase(targetPos!.Value);
                 else if (PatrolRoute is not null) { _attackFacing = null; TickPatrol(dt); }
                 else { _attackFacing = null; Wander.Tick(dt); }
@@ -377,11 +394,19 @@ public sealed class ActorBrain
                 if (distXZ <= EngageRange
                     && !(Mode == AttackMode.Melee
                          && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value))
+                    // SC-LOS-MELEE-VERTICAL — melee reach is 3D: directly
+                    // above/below in XZ range is NOT engageable (surface mob
+                    // over a de-roofed crypt room swung "through" the floor).
+                    && !(Mode == AttackMode.Melee
+                         && MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) > MeleeVerticalReach)
                     // SC-PATHING-LOS — standoff modes need SIGHT, not floor:
                     // an archer/caster with a building between it and the
                     // target keeps chasing around it instead of firing
                     // through the wall. Low fences don't block (height-aware
                     // host test) so bows still loose over them like retail.
+                    // SC-LOS-TERRAIN — the host test now also treats floors/
+                    // ceilings as occluders, so this same gate stops fire
+                    // through a de-roofed dungeon's missing ceiling.
                     && !(Mode != AttackMode.Melee
                          && SightBlocked?.Invoke(Wander.Position, targetPos!.Value) == true))
                 { EnterAttack(targetPos!.Value); break; }
@@ -407,6 +432,11 @@ public sealed class ActorBrain
                 // mid-fight (fence, cart) breaks the hold: back to Chase so
                 // the follower paths around instead of zombie-reaching.
                 if (meleeNow && Wander.Follower.Mesh.SegmentCrossesBlocked(Wander.Position, targetPos!.Value))
+                { State = BrainState.Chase; _attackFacing = null; break; }
+                // SC-LOS-MELEE-VERTICAL — a melee target that dropped/climbed
+                // a level mid-hold is out of reach: back to Chase (whose
+                // pathing finds the stairs, or gives up at the leash).
+                if (meleeNow && MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) > MeleeVerticalReach)
                 { State = BrainState.Chase; _attackFacing = null; break; }
                 // SC-PATHING-LOS — a standoff target that stepped behind a
                 // tall occluder mid-fight breaks the hold the same way.
@@ -638,6 +668,8 @@ public sealed class ActorBrain
         // Same vertical band as the direct spot — a packmate's shout doesn't
         // carry through a floor.
         if (MathF.Abs(Wander.Position.Y - targetPos.Y) > AggroVerticalBand) return;
+        // SC-LOS-TERRAIN — nor through a shallow floor within the band.
+        if (SightBlocked?.Invoke(Wander.Position, targetPos) == true) return;
         EnterChase(targetPos);
     }
 

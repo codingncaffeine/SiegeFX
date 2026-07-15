@@ -1323,8 +1323,11 @@ public sealed class NavMesh
     /// picks the surface the user actually pointed at — on stairs and
     /// multi-floor overlaps the plane-at-player-Y method resolved to the
     /// wrong floor AND the wrong XZ. Blocked tris are valid hits (visible
-    /// ground; the pathfinder still refuses them as goals).</summary>
-    public bool TryRaycast(Vector3 origin, Vector3 direction, float maxDist, out int triIndex, out Vector3 hitPoint)
+    /// ground; the pathfinder still refuses them as goals).
+    /// SC-LOS-TERRAIN — <paramref name="includeFadeHidden"/> hits faded tris
+    /// too: fades are camera-side, the surface physically remains, so sight
+    /// rays must treat a de-roofed layer's floor as opaque.</summary>
+    public bool TryRaycast(Vector3 origin, Vector3 direction, float maxDist, out int triIndex, out Vector3 hitPoint, bool includeFadeHidden = false)
     {
         triIndex = -1;
         hitPoint = default;
@@ -1343,7 +1346,7 @@ public sealed class NavMesh
             for (int i = 0; i < bucket.Length; i++)
             {
                 int t = bucket[i];
-                if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+                if (!includeFadeHidden && FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
                 var a = Vertices[Indices[3 * t + 0]];
                 var b = Vertices[Indices[3 * t + 1]];
                 var c = Vertices[Indices[3 * t + 2]];
