@@ -2688,24 +2688,56 @@ public sealed class RenderHost : IDisposable
         else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
         if (wasUnderground != _isUnderground)
             Console.WriteLine($"[underground] flip -> {_isUnderground} at player Y={y:F1}");
+        RecomputeUpperHiddenRegions(wasUnderground != _isUnderground);
     }
 
-    private bool IsAbovePlayer(float originY)
+    // SC-REGION-LAYER-HIDE (revived) — regions hidden as "upper layer" while
+    // the player is underground. REGION-granular, not per-drawable-Y: the
+    // first attempt's pure Y-cutoff died on test-102's outdoor basement-bowl
+    // spawn (surface terrain dips below any sane threshold). Region means
+    // sidestep that: a region only hides when its WHOLE terrain sits clearly
+    // above the player's current region's mean, so the region around you —
+    // stairs, entrance shaft, outdoor bowls — can never self-hide, and
+    // surface-vs-surface neighbors have comparable means and stay visible.
+    // Field case: crypt end room (cr_r1, mean ~-9) under the surface region
+    // (mean well above) — the authored fades legitimately de-roof the crypt,
+    // and without this gate the surface region's trees rendered overhead in
+    // place of retail's blackness ("seeing the underside of the trees").
+    private readonly HashSet<string> _upperHiddenRegions = new(StringComparer.OrdinalIgnoreCase);
+    private const float UpperRegionMarginY = 5.0f;
+    private int _lastUpperHiddenCount;
+
+    private void RecomputeUpperHiddenRegions(bool logChange)
     {
-        // SC-REGION-LAYER-HIDE PARKED — the underground-mode latch +
-        // Y-cutoff approach didn't land cleanly: test-102 spawns the
-        // PC in the outdoor basement-bowl at Y=-4 which sits below any
-        // reasonable "enter underground" threshold, so the latch
-        // either fired at spawn (breaking surface render) or stayed
-        // off through the basement (no cutaway). The gas data driving
-        // DS1's actual mechanism is still unknown — camera_fade alone
-        // only marks ~7 small roof pieces, not the whole upper layer.
-        // Disabling the gate so the rest of the render keeps working
-        // until we figure out how DS1 actually does this. All the
-        // plumbing (RegionPath on instances/props, _isUnderground,
-        // RecomputeRegionMeanY) stays in place for a future attempt.
-        return false;
+        _upperHiddenRegions.Clear();
+        // _currentPlayerRegion tracks streaming; _regionPath is the boot region.
+        string? playerRegion = _currentPlayerRegion;
+        if (_isUnderground && !string.IsNullOrEmpty(playerRegion)
+            && _regionMeanY.TryGetValue(playerRegion!, out float mine))
+        {
+            foreach (var kv in _regionMeanY)
+            {
+                if (string.Equals(kv.Key, playerRegion, StringComparison.OrdinalIgnoreCase)) continue;
+                if (kv.Value > mine + UpperRegionMarginY) _upperHiddenRegions.Add(kv.Key);
+            }
+        }
+        if ((logChange || _upperHiddenRegions.Count != _lastUpperHiddenCount)
+            && (_upperHiddenRegions.Count > 0 || _lastUpperHiddenCount > 0))
+            Console.WriteLine(
+                $"[region-layer-hide] underground={_isUnderground} in '{playerRegion}' — hiding " +
+                $"{_upperHiddenRegions.Count} upper region(s): " +
+                string.Join(", ", _upperHiddenRegions.Select(r => r[(r.LastIndexOf('/') + 1)..])));
+        _lastUpperHiddenCount = _upperHiddenRegions.Count;
     }
+
+    /// <summary>True when the drawable's owning region is currently hidden as
+    /// an upper layer (player underground beneath it). Terrain instances and
+    /// static props pass their stamped RegionPath. Actors are NOT yet gated —
+    /// ActorRenderState carries no region stamp (SC-REGION-LAYER-HIDE-ACTORS
+    /// follow-up); surface actors overhead are rare and small vs terrain/trees.</summary>
+    private bool IsAbovePlayer(string regionPath) =>
+        _upperHiddenRegions.Count > 0 && regionPath.Length != 0
+        && _upperHiddenRegions.Contains(regionPath);
 
     private int _camFadeHeartbeat;
     private void UpdateCameraFade()
@@ -29067,10 +29099,10 @@ void main()
             else if (forceFlipEnv == "1") defaultFlipV = 1;
             foreach (var s in _actors)
             {
-                // SC-REGION-LAYER-HIDE — skip actors that belong to the
-                // upper layer when the player is below. Pure Y test,
-                // matched to the terrain and prop gates above.
-                if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
+                // SC-REGION-LAYER-HIDE-ACTORS (follow-up) — actors carry no
+                // region stamp yet, so the region-layer gate can't apply;
+                // the IsPosInFadedSnode gate below covers actors standing on
+                // fade-hidden surface terrain, which is the common overhead case.
                 // SC-FADE-GROUPS — actors standing in a faded-out layer
                 // (the farmhouse surface while the party is in the cellar)
                 // hide with their terrain. NEVER the player (the cutaway
@@ -29358,7 +29390,7 @@ void main()
                 // above the player's current region. Same flip cadence as
                 // the terrain gate; stable across in-region movement,
                 // only restored on region change back.
-                if (IsAbovePlayer(prop.CenterY)) continue;
+                if (IsAbovePlayer(prop.RegionPath)) continue;
                 // SC-FADE-GROUPS — hide with the anchor snode's fade state.
                 if (prop.NodeGuid != 0 && _fadedSnodeCounts.Count > 0
                     && _fadedSnodeCounts.ContainsKey(prop.NodeGuid)) continue;
@@ -29461,7 +29493,8 @@ void main()
             {
                 if (s.IsPlayer || s.Hidden) continue;
                 if (s.WeaponMesh is null && s.ShieldMesh is null) continue;
-                if (IsAbovePlayer(s.Actor.WorldTransform.Translation.Y)) continue;
+                // SC-REGION-LAYER-HIDE-ACTORS (follow-up) — no region stamp on
+                // actors yet; gear hides with the faded-snode gate below.
                 if (IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
                 var npcClips = s.Actor.Clips;
                 int npcBones = s.Actor.Mesh.BoneCount;
@@ -30117,7 +30150,7 @@ void main()
                     // stable while the player climbs a staircase inside
                     // the lower region — only flips back on region
                     // change.
-                    if (IsAbovePlayer(0.5f * (inst.WorldAabbMin.Y + inst.WorldAabbMax.Y))) continue;
+                    if (IsAbovePlayer(inst.RegionPath)) continue;
                     var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                     bool modelSet = false;
                     for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
