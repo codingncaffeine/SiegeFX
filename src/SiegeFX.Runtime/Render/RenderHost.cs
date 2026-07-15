@@ -380,6 +380,32 @@ public sealed class RenderHost : IDisposable
     // ("...,in,4.5" = fire 4.5s after departure).
     private readonly List<(float FireIn, string[] Args)> _elevatorDelayedFades = new();
 
+    // SC-STAIRWELL — the crypt rotating stairwell (elevator_hidden_stairwell):
+    // N stair-segment snodes realign together between the shaft node's _up
+    // and _down door sets. Segment overrides ride _elevatorNodeOverrides so
+    // EffectiveNavLayout + nav re-bakes see the CURRENT configuration.
+    private sealed class StairwellRuntime
+    {
+        public required SiegeFX.Core.Assets.StairwellDef Def;
+        public sealed class Seg
+        {
+            public uint NodeGuid;
+            public int SegDoorId;         // stair-side door (from authored link)
+            public int UpDoorId, DownDoorId;
+            public Matrix4x4 UpPose, DownPose;
+            public int InstanceIdx = -1;
+            public Vector3 PrevPos;
+            public readonly List<ActorRenderState> Riders = new();
+        }
+        public readonly List<Seg> Segments = new();
+        public bool AtDown;               // current parked configuration
+        public bool Moving;
+        public bool TargetDown;
+        public float T;
+    }
+    private readonly List<StairwellRuntime> _stairwells = new();
+    private readonly Dictionary<uint, StairwellRuntime> _stairwellsByScid = new();
+
     // ALPHA-2A — message-driven logic gizmos (set_bool / check_bool /
     // generic_accumtrigger / msg_switch) + the WORLD-scoped named booleans
     // they read and write. The bools cross regions (bt_r1 checks flags that
@@ -2347,6 +2373,9 @@ public sealed class RenderHost : IDisposable
             // we_req_activate at the gizmo from both lever states).
             if (_elevatorsByScid.TryGetValue(toScid, out var elv))
                 StartElevatorRide(elv);
+            // SC-STAIRWELL — rotate the hidden crypt stairwell.
+            if (_stairwellsByScid.TryGetValue(toScid, out var sw))
+                StartStairwellRide(sw);
             // ALPHA-2A — logic gizmos (set_bool / check_bool / accumulate /
             // msg_switch) respond to activation messages at their scid.
             if (_logicGizmos.TryGetValue(toScid, out var lg))
@@ -14947,7 +14976,7 @@ void main()
     /// stop as a disconnected nav island and the rider can't walk off.</summary>
     private SiegeFX.Core.Assets.RegionGraph InjectElevatorDoorLinks(SiegeFX.Core.Assets.RegionGraph navGraph)
     {
-        if (_elevators.Count == 0) return navGraph;
+        if (_elevators.Count == 0 && _stairwells.Count == 0) return navGraph;
         var extra = new Dictionary<uint, List<SiegeFX.Core.Assets.RegionGraph.DoorLink>>();
         void Add(uint snode, SiegeFX.Core.Assets.RegionGraph.DoorLink link)
         {
@@ -14967,6 +14996,19 @@ void main()
             Add(d.CarNodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(carDoor, connect, connectDoor));
             Add(connect, new SiegeFX.Core.Assets.RegionGraph.DoorLink(connectDoor, d.CarNodeGuid, carDoor));
         }
+        // SC-STAIRWELL — each segment welds to the shaft at its CURRENT
+        // configuration socket (the authored nodes.gas link describes only
+        // the start pose; after a rotation the nav must stitch the other set).
+        foreach (var sw in _stairwells)
+        {
+            uint shaft = sw.Def.StairwellNodeGuid;
+            foreach (var seg in sw.Segments)
+            {
+                int shaftDoor = sw.AtDown ? seg.DownDoorId : seg.UpDoorId;
+                Add(seg.NodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(seg.SegDoorId, shaft, shaftDoor));
+                Add(shaft, new SiegeFX.Core.Assets.RegionGraph.DoorLink(shaftDoor, seg.NodeGuid, seg.SegDoorId));
+            }
+        }
         return SiegeFX.Core.Assets.RegionGraph.WithExtraDoors(navGraph, extra);
     }
 
@@ -14978,13 +15020,17 @@ void main()
         if (_playMapTank is null || _regionLayout is null || _regionTerrainTankPath is null) return;
         var mapReader = new TankReader(_playMapTank);
         var defs = new List<SiegeFX.Core.Assets.ElevatorDef>();
+        var swDefs = new List<SiegeFX.Core.Assets.StairwellDef>();
         foreach (var rp in regionPaths)
         {
             var (d, diags) = SiegeFX.Core.Assets.ElevatorStore.Load(mapReader, rp);
             foreach (var dg in diags) Console.WriteLine("  " + dg);
             defs.AddRange(d);
+            var (sd, sdiags) = SiegeFX.Core.Assets.ElevatorStore.LoadStairwells(mapReader, rp);
+            foreach (var dg in sdiags) Console.WriteLine("  " + dg);
+            swDefs.AddRange(sd);
         }
-        if (defs.Count == 0) return;
+        if (defs.Count == 0 && swDefs.Count == 0) return;
 
         using var terrainTank = TankFile.Open(_regionTerrainTankPath);
         var terrainReader = new TankReader(terrainTank);
@@ -15054,6 +15100,134 @@ void main()
         }
         if (placed > 0 || skipped > 0)
             Console.WriteLine($"  elevators: {placed} placed, {skipped} deferred/skipped");
+
+        // SC-STAIRWELL — hidden rotating stairwells. Each segment's two stop
+        // poses come from aligning ITS authored shaft-facing door (derived
+        // from the nodes.gas [door*] link) to the shaft's _up / _down socket
+        // — the same TryAlignThroughDoor math as elevator car stops. The
+        // authored nodes.gas composition IS one of the stops, which also
+        // tells us which configuration the mechanism starts in.
+        (int LocalDoor, int FarDoor)? AuthoredShaftLink(uint stairGuid, uint shaftGuid)
+        {
+            foreach (var (_, graph, _) in _worldRegionGraphs)
+                if (graph.TryGetNode(stairGuid, out var node))
+                {
+                    foreach (var d in node.Doors)
+                        if (d.FarGuid == shaftGuid) return (d.LocalId, d.FarDoorId);
+                    return null;
+                }
+            return null;
+        }
+        foreach (var def in swDefs)
+        {
+            if (_stairwellsByScid.ContainsKey(def.Scid)) continue;
+            if (!TryGetNodeMeshGuid(def.StairwellNodeGuid, out var shaftMesh)) continue; // not streamed yet
+            var shaftSno = Resolve(shaftMesh);
+            if (shaftSno is null || !_regionLayout.TryGetTransform(def.StairwellNodeGuid, out var shaftWorld))
+            { Console.WriteLine($"[stairwell] 0x{def.Scid:X8} shaft unresolved — skipped"); continue; }
+
+            var rt = new StairwellRuntime { Def = def };
+            int atDownVotes = 0, atUpVotes = 0;
+            foreach (var (stairGuid, upId, downId) in def.Segments)
+            {
+                if (!TryGetNodeMeshGuid(stairGuid, out var stairMesh)) continue;
+                var stairSno = Resolve(stairMesh);
+                var link = AuthoredShaftLink(stairGuid, def.StairwellNodeGuid);
+                if (stairSno is null || link is null)
+                {
+                    Console.WriteLine($"[stairwell] 0x{def.Scid:X8} segment 0x{stairGuid:X8} " +
+                        $"{(stairSno is null ? "SNO unresolved" : "has no authored door link to the shaft")} — segment skipped");
+                    continue;
+                }
+                if (!SiegeFX.Core.Assets.RegionLayout.TryAlignThroughDoor(
+                        shaftSno, shaftWorld, upId, stairSno, link.Value.LocalDoor, out var upPose) ||
+                    !SiegeFX.Core.Assets.RegionLayout.TryAlignThroughDoor(
+                        shaftSno, shaftWorld, downId, stairSno, link.Value.LocalDoor, out var downPose))
+                {
+                    Console.WriteLine($"[stairwell] 0x{def.Scid:X8} segment 0x{stairGuid:X8} door alignment failed — segment skipped");
+                    continue;
+                }
+                if (link.Value.FarDoor == downId) atDownVotes++; else atUpVotes++;
+                rt.Segments.Add(new StairwellRuntime.Seg
+                {
+                    NodeGuid = stairGuid,
+                    SegDoorId = link.Value.LocalDoor,
+                    UpDoorId = upId,
+                    DownDoorId = downId,
+                    UpPose = upPose,
+                    DownPose = downPose,
+                });
+            }
+            if (rt.Segments.Count == 0)
+            { Console.WriteLine($"[stairwell] 0x{def.Scid:X8} no usable segments — skipped"); continue; }
+            rt.AtDown = atDownVotes > atUpVotes;
+            foreach (var seg in rt.Segments)
+                seg.PrevPos = (rt.AtDown ? seg.DownPose : seg.UpPose).Translation;
+            _stairwells.Add(rt);
+            _stairwellsByScid[def.Scid] = rt;
+            Console.WriteLine($"[stairwell] 0x{def.Scid:X8} {def.TemplateName} shaft=0x{def.StairwellNodeGuid:X8} " +
+                $"{rt.Segments.Count}/{def.Segments.Count} segment(s), parked {(rt.AtDown ? "DOWN" : "UP")}, " +
+                $"dur={def.DurationSeconds:F1}s");
+        }
+    }
+
+    /// <summary>SC-STAIRWELL — lever/trigger activation: toggle the whole
+    /// spiral toward the other configuration. Re-activating mid-ride reverses
+    /// from the current progress (1-T), same feel as re-calling an elevator.</summary>
+    private void StartStairwellRide(StairwellRuntime sw)
+    {
+        if (sw.Moving)
+        {
+            sw.TargetDown = !sw.TargetDown;
+            sw.T = 1f - Math.Clamp(sw.T, 0f, 1f);
+        }
+        else
+        {
+            sw.TargetDown = !sw.AtDown;
+            sw.T = 0f;
+            sw.Moving = true;
+            CaptureStairwellRiders(sw);
+        }
+        Console.WriteLine($"[stairwell] 0x{sw.Def.Scid:X8} -> rotating {(sw.TargetDown ? "DOWN" : "UP")}");
+    }
+
+    private void CaptureStairwellRiders(StairwellRuntime sw)
+    {
+        foreach (var seg in sw.Segments) seg.Riders.Clear();
+        void Place(ActorRenderState a, SiegeFX.Core.Nav.NavFollower? f)
+        {
+            if (a.IsDead || f is null || _navMesh is null) return;
+            int tri = f.CurrentTriangle;
+            if (tri < 0 || tri >= _navMesh.SourceSnodeGuid.Length) return;
+            uint g = _navMesh.SourceSnodeGuid[tri];
+            foreach (var seg in sw.Segments)
+                if (seg.NodeGuid == g) { seg.Riders.Add(a); return; }
+        }
+        if (_player is not null) Place(_player, _playerFollower);
+        foreach (var m in _party)
+        {
+            if (m.PartyIndex == 0) continue;
+            Place(m, m.Brain?.Wander?.Follower);
+        }
+    }
+
+    /// <summary>Write a stair segment's pose into its render instance (guid
+    /// lookup cached per segment) — the stairwell twin of
+    /// <see cref="UpdateElevatorCarInstance"/>.</summary>
+    private void UpdateStairSegmentInstance(StairwellRuntime.Seg seg, Matrix4x4 pose)
+    {
+        int idx = seg.InstanceIdx;
+        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != seg.NodeGuid)
+        {
+            idx = -1;
+            for (int i = 0; i < _regionInstances.Count; i++)
+                if (_regionInstances[i].SnodeGuid == seg.NodeGuid) { idx = i; break; }
+            seg.InstanceIdx = idx;
+        }
+        if (idx < 0) return;
+        var inst = _regionInstances[idx];
+        var (mn, mx) = TransformAabb(inst.Mesh.Min, inst.Mesh.Max, pose);
+        _regionInstances[idx] = inst with { World = pose, WorldAabbMin = mn, WorldAabbMax = mx };
     }
 
     /// <summary>Write <paramref name="pose"/> into the car node's render
@@ -15452,6 +15626,79 @@ void main()
                 }
                 el.Riders.Clear();
                 Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
+            }
+        }
+
+        // SC-STAIRWELL — rotate every moving stairwell's segments in lockstep
+        // (LerpPose slerps, so segments swing around the shaft correctly).
+        foreach (var sw in _stairwells)
+        {
+            if (!sw.Moving) continue;
+            sw.T += dt / MathF.Max(0.25f, sw.Def.DurationSeconds);
+            float k = Math.Clamp(sw.T, 0f, 1f);
+            k = k * k * (3f - 2f * k);
+            foreach (var seg in sw.Segments)
+            {
+                var from = sw.TargetDown ? seg.UpPose : seg.DownPose;
+                var to   = sw.TargetDown ? seg.DownPose : seg.UpPose;
+                var pose = LerpPose(from, to, k);
+                UpdateStairSegmentInstance(seg, pose);
+                var delta = pose.Translation - seg.PrevPos;
+                seg.PrevPos = pose.Translation;
+                if (delta != Vector3.Zero)
+                {
+                    foreach (var r in seg.Riders)
+                    {
+                        if (r.IsDead) continue;
+                        var t = r.CurrentTransform;
+                        t.Translation += delta;
+                        r.CurrentTransform = t;
+                        if (ReferenceEquals(r, _player))
+                        { _playerFollower?.Teleport(t.Translation); _playerRenderInit = false; }
+                        else
+                        { r.Brain?.Wander?.Follower.Teleport(t.Translation); r.PartyRenderInit = false; }
+                    }
+                }
+            }
+            if (sw.T >= 1f)
+            {
+                sw.Moving = false;
+                sw.AtDown = sw.TargetDown;
+                foreach (var seg in sw.Segments)
+                {
+                    var final = sw.AtDown ? seg.DownPose : seg.UpPose;
+                    UpdateStairSegmentInstance(seg, final);
+                    // EffectiveNavLayout consumes these — the nav re-bake and
+                    // any node-anchored placements see the new configuration.
+                    _elevatorNodeOverrides[seg.NodeGuid] = final;
+                }
+                var nav = RebuildNavMesh();
+                if (nav is not null)
+                {
+                    _navMesh = nav;
+                    MarkAllObstacles();
+                    if (_player is not null && _playerFollower is not null)
+                    {
+                        var pos = _player.CurrentTransform.Translation;
+                        var speed = _playerFollower.Speed;
+                        _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
+                        {
+                            Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            DiagnosticLogging = true,
+                        };
+                    }
+                    foreach (var seg in sw.Segments)
+                    foreach (var r in seg.Riders)
+                    {
+                        if (ReferenceEquals(r, _player) || !r.IsPartyMember || r.IsDead) continue;
+                        var baseStats = r.Actor.Stats;
+                        var combatStats = InjectFollowerWeapon(r.Actor.Template, baseStats) ?? baseStats;
+                        RebuildFollowerBrain(r, combatStats, remesh: true);
+                    }
+                    RescueOffMeshAfterRebuild(nav);
+                }
+                foreach (var seg in sw.Segments) seg.Riders.Clear();
+                Console.WriteLine($"[stairwell] 0x{sw.Def.Scid:X8} parked {(sw.AtDown ? "DOWN" : "UP")} — nav rebaked");
             }
         }
     }

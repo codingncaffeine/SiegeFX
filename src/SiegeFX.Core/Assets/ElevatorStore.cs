@@ -34,9 +34,74 @@ public sealed record ElevatorDef(
     uint Moving1Scid, uint Moving2Scid,
     uint Level2Scid);
 
+/// <summary>SC-STAIRWELL — the crypt rotating-stairwell mechanism
+/// (<c>elevator_hidden_stairwell</c> / <c>_act_deact</c>): N stair-segment
+/// snodes realign between the shaft node's authored <c>_up</c> and
+/// <c>_down</c> door sets when a lever activates the gizmo — DS1's "secret
+/// staircase rotates to the lower exit". Segment i mates one of ITS doors to
+/// <c>stairwell_door{i}_up</c> or <c>_down</c> on
+/// <see cref="StairwellNodeGuid"/>; the segment-side door is derived at load
+/// from the authored nodes.gas link (whichever pose nodes.gas composes IS
+/// one of the two stops).</summary>
+public sealed record StairwellDef(
+    uint Scid,
+    string TemplateName,
+    string RegionPath,
+    uint StairwellNodeGuid,
+    float DurationSeconds,
+    IReadOnlyList<(uint StairNodeGuid, int UpDoorId, int DownDoorId)> Segments);
+
 public static class ElevatorStore
 {
     public const string FileName = "elevator.gas";
+
+    /// <summary>SC-STAIRWELL — parse every hidden-stairwell gizmo in the
+    /// region (component header contains "hidden_stairwell"). Same file as
+    /// the 2-stop elevators; those parse via <see cref="Load"/>.</summary>
+    public static (IReadOnlyList<StairwellDef> Defs, IReadOnlyList<string> Diagnostics) LoadStairwells(
+        TankReader tank, string regionPath)
+    {
+        var (placements, diags) = RegionObjects.LoadPlacements(tank, regionPath, FileName);
+        if (placements.Count == 0) return (Array.Empty<StairwellDef>(), diags);
+        var extraDiags = new List<string>();
+        var defs = new List<StairwellDef>();
+        foreach (var p in placements)
+        {
+            GasNode? comp = null;
+            foreach (var c in p.Node.Children)
+                if ((c.Header ?? "").Contains("hidden_stairwell", StringComparison.OrdinalIgnoreCase))
+                { comp = c; break; }
+            if (comp is null) continue;
+            uint shaft = Hex(Attr(comp, "stairwell_node"));
+            if (shaft == 0)
+            {
+                extraDiags.Add($"{regionPath}: stairwell 0x{p.Scid:X8} authors no stairwell_node — skipped");
+                continue;
+            }
+            var segs = new List<(uint, int, int)>();
+            for (int n = 1; n <= 24; n++)
+            {
+                uint node = Hex(Attr(comp, $"stair_node_{n}"));
+                if (node == 0) continue;
+                int up = Int(Attr(comp, $"stairwell_door{n}_up"), 0);
+                int down = Int(Attr(comp, $"stairwell_door{n}_down"), 0);
+                if (up == 0 || down == 0)
+                {
+                    extraDiags.Add($"{regionPath}: stairwell 0x{p.Scid:X8} segment {n} missing up/down door ids — segment skipped");
+                    continue;
+                }
+                segs.Add((node, up, down));
+            }
+            if (segs.Count == 0)
+            {
+                extraDiags.Add($"{regionPath}: stairwell 0x{p.Scid:X8} authors no stair segments — skipped");
+                continue;
+            }
+            defs.Add(new StairwellDef(p.Scid, p.TemplateName, regionPath, shaft,
+                Float(Attr(comp, "duration"), 5f), segs));
+        }
+        return (defs, extraDiags);
+    }
 
     /// <summary>Parse every elevator gizmo in <paramref name="regionPath"/>.
     /// Regions without the file (or with the 39-byte empty stub DS1 ships
