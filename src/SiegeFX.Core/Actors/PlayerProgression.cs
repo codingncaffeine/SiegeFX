@@ -292,6 +292,41 @@ public sealed class PlayerProgression
         return true;
     }
 
+    /// <summary>SC-COMPANION-PROGRESSION — initialize pools from a template's
+    /// authored [actor][skills] levels (pm_*.gas authors fractional levels:
+    /// ulora uber=1.24 with all class skills at 1, boryev combat_magic=34).
+    /// The authored ATTRIBUTES already bake these skill levels' growth, so the
+    /// applied-level markers sync to the seeded pools and growth resumes only
+    /// PAST the authored levels — the same "already baked in" rule as the
+    /// pre-persistence save restore below. Templates that author no uber get
+    /// a character level derived from their highest class skill. Call once,
+    /// right after construction, before any award.</summary>
+    public void SeedAuthoredLevels(float uber, float melee, float ranged, float natureMagic, float combatMagic)
+    {
+        _skillXp[(int)SkillKind.Melee]       = XpForFractionalLevel(melee);
+        _skillXp[(int)SkillKind.Ranged]      = XpForFractionalLevel(ranged);
+        _skillXp[(int)SkillKind.NatureMagic] = XpForFractionalLevel(natureMagic);
+        _skillXp[(int)SkillKind.CombatMagic] = XpForFractionalLevel(combatMagic);
+        long maxSkillXp = Math.Max(
+            Math.Max(_skillXp[(int)SkillKind.Melee], _skillXp[(int)SkillKind.Ranged]),
+            Math.Max(_skillXp[(int)SkillKind.NatureMagic], _skillXp[(int)SkillKind.CombatMagic]));
+        TotalXp = Math.Max(XpForFractionalLevel(uber), maxSkillXp);
+        Level = _formulas.LevelForXp(TotalXp);
+        JustLeveledUp = false;
+        for (int a = 0; a < 3; a++)
+            _attrLevelApplied[a] = _formulas.LevelForXp(AttrXpPool(a));
+    }
+
+    long XpForFractionalLevel(float level)
+    {
+        if (level <= 0f) return 0;
+        int floor = Math.Max(1, (int)level);
+        long lo = _formulas.XpForLevel(floor);
+        long hi = _formulas.XpForLevel(floor + 1);
+        float frac = Math.Clamp(level - floor, 0f, 1f);
+        return lo + (long)((hi - lo) * frac);
+    }
+
     /// <summary>Phase 19b — set XP + level directly from a save snapshot.
     /// Bypasses <see cref="AwardXp"/>'s level-up math because the auto-grown
     /// stats were saved separately and re-applied on the actor before this

@@ -1692,6 +1692,13 @@ public sealed class RenderHost : IDisposable
     internal int PartyFollowerCount => Math.Max(0, _party.Count - 1);
     internal const int MaxPartySize = 8;   // party.gas max_party_size
 
+    // SC-COMPANION-PROGRESSION — each recruit's own XP pools, keyed by
+    // PartyIndex (same lifecycle as GetMemberInventory's bags). Seeded at
+    // recruit from the template's authored [actor][skills] levels so the
+    // character sheet shows Ulora as the level-1 Scribe she's authored as
+    // (uber 1.24, all class skills 1) instead of a null-progression level 0.
+    private readonly Dictionary<int, SiegeFX.Core.Actors.PlayerProgression> _memberProgression = new();
+
     // ---- Phase 26b/26c — recruitment + follow ---------------------------
 
     /// <summary>Phase 26b — is this template a hireable companion? DS1
@@ -1763,6 +1770,23 @@ public sealed class RenderHost : IDisposable
         // brain resolves its cast from.
         SeedCompanionKit(npc);
 
+        // SC-COMPANION-PROGRESSION — the recruit's own XP pools, seeded from
+        // the authored skill levels (idempotent per PartyIndex, like the kit).
+        if (_formulas is not null && !_memberProgression.ContainsKey(npc.PartyIndex))
+        {
+            var prog = new SiegeFX.Core.Actors.PlayerProgression(npc.Actor, _formulas);
+            var st = npc.Actor.Stats;
+            prog.SeedAuthoredLevels(st.UberLevel, st.MeleeSkill, st.RangedSkill,
+                                    st.NatureMagicSkill, st.CombatMagicSkill);
+            _memberProgression[npc.PartyIndex] = prog;
+            Console.WriteLine(
+                $"party: {npc.Actor.Template.Name} progression seeded — level {prog.Level} " +
+                $"(uber {st.UberLevel:F2}) melee {prog.SkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)} " +
+                $"ranged {prog.SkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)} " +
+                $"nmag {prog.SkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic)} " +
+                $"cmag {prog.SkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic)}");
+        }
+
         // Resolve the follower's fighting profile from its starting weapon.
         var baseStats = npc.Actor.Stats;
         var combatStats = InjectFollowerWeapon(npc.Actor.Template, baseStats) ?? baseStats;
@@ -1831,6 +1855,23 @@ public sealed class RenderHost : IDisposable
     // recruit and again when a weapon is equipped/removed on their paperdoll.
     private void RebuildFollowerBrain(ActorRenderState npc, SiegeFX.Core.Actors.ActorStats combatStats, bool remesh = false)
     {
+        // SC-COMPANION-FISTS — retail DS1 lets any party member punch (the
+        // farmboy opens the game bare-handed). A recruit with no resolvable
+        // weapon and no castable spell (Ulora: authored kit is a lore book +
+        // cap, melee skill 1) previously landed CanFight=false and stood by
+        // as decoration. Fall back to bare hands: token 1-2 damage at close
+        // reach — the resolver's stat/skill scaling applies on top, and
+        // equipping a real weapon later rebuilds the brain over this.
+        if (combatStats.DamageMax <= 0f && string.IsNullOrWhiteSpace(combatStats.PrimarySpell))
+        {
+            combatStats = combatStats with
+            {
+                DamageMin = 1f,
+                DamageMax = 2f,
+                AttackRange = MathF.Max(combatStats.AttackRange, 1.2f),
+            };
+            Console.WriteLine($"party: {npc.Actor.Template.Name} has no weapon or spell — fighting bare-handed");
+        }
         // SC-ELEVATOR — remesh forces a fresh ActorFollower on the CURRENT
         // _navMesh at the actor's current position: an elevator rider's old
         // follower still references the pre-ride mesh (car at the departure
@@ -1863,12 +1904,39 @@ public sealed class RenderHost : IDisposable
                 PartyAligned = true,
                 SightBlocked = IsSightBlocked,
             };
+            // SC-COMPANION-PROGRESSION — this member's damage feeds its OWN
+            // XP pool (skill-by-use, like the PC): the brain fires the award
+            // at each FIRE note with the rolled damage + victim profile.
+            int memberIdx = npc.PartyIndex;
+            npc.Brain.OnDamageDealt = (removed, victim, skill) =>
+                AwardMemberXp(memberIdx, removed, victim, skill);
             npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
         }
         else
         {
             npc.Brain = null;
             npc.CanFight = false;
+        }
+    }
+
+    /// <summary>SC-COMPANION-PROGRESSION — route a follower's dealt damage
+    /// into its own XP pool (authentic per-damage model, same caps as the
+    /// PC's). Attribute growth from skill crossings applies to the member's
+    /// live Actor via PlayerProgression's ResyncStats path.</summary>
+    private void AwardMemberXp(int partyIndex, float lifeRemoved,
+                               SiegeFX.Core.Actors.ActorStats victim,
+                               SiegeFX.Core.Assets.SkillKind skill)
+    {
+        if (!_memberProgression.TryGetValue(partyIndex, out var prog)) return;
+        int oldLevel = prog.Level;
+        int oldSkill = prog.SkillLevel(skill);
+        prog.AwardDamageXp(lifeRemoved, victim.ExperienceValue, victim.MaxLife, skill);
+        if (prog.Level > oldLevel || prog.SkillLevel(skill) > oldSkill)
+        {
+            var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+            string who = member is not null ? ResolveMemberName(member) : $"member {partyIndex}";
+            Console.WriteLine($"party: {who} leveled — level {prog.Level}, " +
+                              $"{SkillDisplayName(skill)} {prog.SkillLevel(skill)}");
         }
     }
 
@@ -5092,6 +5160,10 @@ public sealed class RenderHost : IDisposable
     /// can put it back where it was if the user later cancels. -1
     /// when the cursor item came from an equipment slot.</summary>
     private int _cursorItemFromInventoryIdx = -1;
+    // SC-PARTY-MULTI-INV-ITEMS — which member's bag sourced the cursor item:
+    // -1 = the active sheet's inventory (legacy path), else the PartyIndex of
+    // the tiled companion bag it was picked from (RMB-cancel restores there).
+    private int _cursorItemFromMemberIdx = -1;
 
     /// <summary>Where the spell currently being dragged came from. Used so
     /// a Cancel (ESC / right-click) can restore it to the source slot
@@ -6527,6 +6599,11 @@ void main()
                         _paperdollTargetIndex = 0; // I opens the player's own rail
                         _charPanelOpen = true;
                         _inventoryOpen = true;
+                        // SC-PARTY-MULTI-INV — retail shows EVERY member's
+                        // pack when the inventory opens, tiled beside the
+                        // player's, so items drag between characters without
+                        // panel juggling. Chevrons still toggle individuals.
+                        OpenAllPartyInventories();
                         if (_spellbookWithI)
                         {
                             _spellBookOpen = true;
@@ -7144,6 +7221,7 @@ void main()
                             _paperdollTargetIndex = 0;
                             _charPanelOpen = true;
                             _inventoryOpen = true;
+                            OpenAllPartyInventories(); // SC-PARTY-MULTI-INV
                             if (_spellbookWithI)
                             {
                                 _spellBookOpen = true;
@@ -7376,6 +7454,55 @@ void main()
                         _audio?.Play(SfxGuiPutDownScroll);
                         Console.WriteLine($"  scroll drag: drop {spell.Name} into inventory grid");
                         ClearScrollDrag();
+                        return;
+                    }
+                    // SC-PARTY-MULTI-INV-ITEMS — pick from / drop into a tiled
+                    // companion bag. Tested BEFORE the player panel (the row
+                    // draws on top when the two overlap). Clicks inside the
+                    // row are always swallowed so they can't fall through to
+                    // click-to-move.
+                    if (_cursorScroll is null && _inventoryOpen
+                        && CompanionBagAt(imx, imy) is { } bagHit)
+                    {
+                        var memberBag = GetMemberInventory(bagHit.PartyIndex);
+                        _companionInvPanel.OriginX = bagHit.OriginX;
+                        _companionInvPanel.OriginY = bagHit.OriginY;
+                        if (_cursorItem is null)
+                        {
+                            int mIdx = _companionInvPanel.TryHitTestItem(imx, imy,
+                                _window.Size.X, _window.Size.Y, memberBag, TryGetItemGridSize);
+                            if (mIdx >= 0)
+                            {
+                                var clicked = memberBag[mIdx];
+                                _cursorItem = clicked;
+                                _cursorItemFromInventoryIdx = mIdx;
+                                _cursorItemFromMemberIdx = bagHit.PartyIndex;
+                                _cursorItemIcon = TryGetItemIcon(clicked.Reference);
+                                memberBag.RemoveAt(mIdx);
+                                _audio?.Play(SfxGuiPickup);
+                                Console.WriteLine($"  cursor item: pickup {clicked.Reference} from member[{bagHit.PartyIndex}] bag[{mIdx}]");
+                            }
+                            return;
+                        }
+                        int occupied = _companionInvPanel.TryHitTestItem(imx, imy,
+                            _window.Size.X, _window.Size.Y, memberBag, TryGetItemGridSize);
+                        if (occupied < 0)
+                        {
+                            memberBag.Add(new SiegeFX.Core.Actors.LootEntry(
+                                Slot: "", Reference: _cursorItem.Value.Reference));
+                            if (!Hud.InventoryPanel.CanFitAll(memberBag, TryGetItemGridSize))
+                            {
+                                memberBag.RemoveAt(memberBag.Count - 1);
+                                Console.WriteLine($"  cursor item: member[{bagHit.PartyIndex}] bag full — {_cursorItem.Value.Reference} stays on cursor");
+                            }
+                            else
+                            {
+                                PlayPutDownSfx(_cursorItem.Value.Reference,
+                                    _player?.CurrentTransform.Translation ?? Vector3.Zero);
+                                Console.WriteLine($"  cursor item: placed {_cursorItem.Value.Reference} into member[{bagHit.PartyIndex}] bag");
+                                ClearCursorItem();
+                            }
+                        }
                         return;
                     }
                     // Phase 21-SC-SCROLL-E-2 — LMB-without-cursor on a SCROLL
@@ -21899,6 +22026,30 @@ void main()
         _lastTalkedTemplate = null; // one-shot per talk
     }
 
+    /// <summary>SC-PARTY-MULTI-INV — populate the tiled-inventory row with
+    /// every follower so the whole party's packs open together (retail's
+    /// behavior; the team-strip chevrons still toggle individual bags).</summary>
+    private void OpenAllPartyInventories()
+    {
+        _openInventoryMembers.Clear();
+        foreach (var m in _party)
+            if (m.PartyIndex > 0) _openInventoryMembers.Add(m.PartyIndex);
+    }
+
+    /// <summary>SC-PARTY-MULTI-INV-ITEMS — which open companion bag sits under
+    /// the cursor, with that tile's panel origin (mirrors the draw loop's
+    /// stride layout) so item hit-tests can position the shared tile panel.</summary>
+    private (int PartyIndex, int OriginX, int OriginY)? CompanionBagAt(int mx, int my)
+    {
+        var cr = _companionRowRect;
+        if (cr.W <= 0 || _openInventoryMembers.Count == 0) return null;
+        if (mx < cr.X || mx >= cr.X + cr.W || my < cr.Y || my >= cr.Y + cr.H) return null;
+        int stride = Hud.InventoryPanel.PanelWidth(_window.Size.Y);
+        int slot = Math.Clamp((mx - cr.X) / Math.Max(1, stride), 0, _openInventoryMembers.Count - 1);
+        int pidx = _openInventoryMembers.OrderBy(x => x).ElementAt(slot);
+        return (pidx, cr.X + slot * stride, cr.Y);
+    }
+
     // Phase 25-fold D — DS1 opens your inventory beside the store so you
     // can click your own items to sell. Remember whether the inventory
     // was already open so closing trade restores the prior state instead
@@ -30381,16 +30532,20 @@ void main()
                 _characterPanel.IsOpen  = true;
                 // Armor + weapon stats come from the active character's live equipment.
                 int armor = ComputeArmorRating(ActiveEquipment);
-                // Phase 21-SC-INV-B — skill XP fraction (player only; companions
-                // have no progression pool yet, so their skill bars read flat).
+                // SC-COMPANION-PROGRESSION — companions read their OWN seeded
+                // pool (authored levels + earned XP), same shape as the PC's.
+                var sheetProgression = isPlayerSheet
+                    ? _progression
+                    : _memberProgression.GetValueOrDefault(_paperdollTargetIndex);
+                // Phase 21-SC-INV-B — skill XP fraction from whichever pool
+                // the sheet is showing.
                 float xpFrac = 0f;
-                if (isPlayerSheet && _progression is not null)
+                if (sheetProgression is not null)
                 {
-                    long span = _progression.XpForNextLevel - _progression.XpForCurrentLevel;
-                    if (span > 0) xpFrac = (float)_progression.XpIntoCurrentLevel / span;
+                    long span = sheetProgression.XpForNextLevel - sheetProgression.XpForCurrentLevel;
+                    if (span > 0) xpFrac = (float)sheetProgression.XpIntoCurrentLevel / span;
                 }
                 string sheetName = isPlayerSheet ? _heroName : ResolveMemberName(sheetMember);
-                var sheetProgression = isPlayerSheet ? _progression : null;
                 var sheetAttack = isPlayerSheet ? GetPlayerAttackStats() : sheetMember.Actor.Stats;
                 string sheetClassTitle = isPlayerSheet ? _playerStartingClass : ResolveMemberClass(sheetMember);
                 var portrait = isPlayerSheet
@@ -31230,6 +31385,7 @@ void main()
         _cursorItem = null;
         _cursorItemIcon = null;
         _cursorItemFromInventoryIdx = -1;
+        _cursorItemFromMemberIdx = -1;
     }
 
     /// <summary>Phase 22-INFORAIL-PAPERDOLL-INTERACT (audit fold) — RMB
@@ -31250,6 +31406,17 @@ void main()
             int reTarget = _paperdollTargetIndex;
             ClearCursorItem();
             ApplyEquipmentChange(entry.Slot, reTarget);
+            return;
+        }
+        // SC-PARTY-MULTI-INV-ITEMS — picked from a tiled companion bag:
+        // restore to THAT bag, not whichever sheet is currently active.
+        if (_cursorItemFromMemberIdx >= 0 && _cursorItemFromInventoryIdx >= 0)
+        {
+            var memberBag = GetMemberInventory(_cursorItemFromMemberIdx);
+            int mIdx = System.Math.Clamp(_cursorItemFromInventoryIdx, 0, memberBag.Count);
+            memberBag.Insert(mIdx, new SiegeFX.Core.Actors.LootEntry(Slot: "", Reference: entry.Reference));
+            Console.WriteLine($"  cursor item: cancel → restored {entry.Reference} to member[{_cursorItemFromMemberIdx}] bag[{mIdx}]");
+            ClearCursorItem();
             return;
         }
         if (_cursorItemFromInventoryIdx >= 0)
@@ -31902,6 +32069,13 @@ void main()
                 { Slot = it.Slot, Reference = it.Reference });
             foreach (var kv in GetEquipmentDict(m.PartyIndex))
                 cs.Equipment[kv.Key] = kv.Value;
+            // SC-COMPANION-PROGRESSION — persist earned XP so a load doesn't
+            // reset the member to its authored starting levels.
+            if (_memberProgression.TryGetValue(m.PartyIndex, out var mprog))
+            {
+                cs.TotalXp = mprog.TotalXp;
+                cs.SkillXp = new List<long>(mprog.SkillXpSnapshot());
+            }
             save.Party.Add(cs);
         }
         return save;
@@ -32344,6 +32518,13 @@ void main()
             eq.Clear();
             foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
             SyncMemberArmorDefense(npc.PartyIndex);
+            // SC-COMPANION-PROGRESSION — earned XP overrides the authored
+            // re-seed RecruitActor applied. Pre-field saves carry 0 and keep
+            // the authored levels.
+            if (cs.TotalXp > 0 && _formulas is not null
+                && _memberProgression.TryGetValue(npc.PartyIndex, out var mprog))
+                mprog.RestoreFromSave(cs.TotalXp, _formulas.LevelForXp(cs.TotalXp),
+                    cs.SkillXp.Count > 0 ? cs.SkillXp : null);
             npc.Actor.Combat.RestoreFromSave(cs.CurrentLife, cs.CurrentMana, dead: false);
             var cpos = cs.Position.ToVector3();
             if (npc.Brain is not null) npc.Brain.Teleport(cpos);

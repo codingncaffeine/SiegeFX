@@ -149,6 +149,14 @@ public sealed class ActorBrain
     /// Hysteresis prevents flicker at the radius boundary.</summary>
     public float DisengageRadius { get; set; } = 14f;
 
+    /// <summary>SC-COMPANION-PROGRESSION — fired when THIS brain rolls damage
+    /// at its FIRE moment: (damage, victimStats, skill). The host routes party
+    /// followers' awards to their own XP pools; enemy brains leave it null.
+    /// Ranged/launch payloads award at FIRE too — projectiles home on their
+    /// captured target, so impact is effectively guaranteed; a death
+    /// mid-flight forfeits nothing worth modeling.</summary>
+    public Action<float, ActorStats, Assets.SkillKind>? OnDamageDealt;
+
     /// <summary>SC-MOB-AGGRO-VERTICAL — max height difference for the initial
     /// spot. ~One story; combined with the host's <see cref="SightBlocked"/>
     /// terrain-aware test (SC-LOS-TERRAIN) for shallow floors within the band.</summary>
@@ -315,10 +323,12 @@ public sealed class ActorBrain
                 _lastFireTarget = targetPos.Value;
                 _pendingRangedDamage = raw;
                 _pendingRangedTargetCombat = targetCombat;
+                if (raw > 0f) OnDamageDealt?.Invoke(raw, targetStats, Assets.SkillKind.Ranged);
             }
             else
             {
-                targetCombat.ApplyDamage(raw);
+                float removedNow = targetCombat.ApplyDamage(raw);
+                if (removedNow > 0f) OnDamageDealt?.Invoke(removedNow, targetStats, Assets.SkillKind.Melee);
             }
         }
         if (sw.Complete) _activeSwing = null;
@@ -466,7 +476,8 @@ public sealed class ActorBrain
                                     attackerIsPlayer: PartyAligned, ranged: !meleeNow);
                                 if (meleeNow)
                                 {
-                                    targetCombat!.ApplyDamage(raw);
+                                    float removedNow = targetCombat!.ApplyDamage(raw);
+                                    if (removedNow > 0f) OnDamageDealt?.Invoke(removedNow, targetStats, Assets.SkillKind.Melee);
                                 }
                                 else
                                 {
@@ -474,6 +485,7 @@ public sealed class ActorBrain
                                     // payload as the scheduled-swing path.
                                     _pendingRangedDamage = raw;
                                     _pendingRangedTargetCombat = targetCombat;
+                                    if (raw > 0f) OnDamageDealt?.Invoke(raw, targetStats, Assets.SkillKind.Ranged);
                                 }
                             }
                             JustSwung = true;
@@ -579,12 +591,21 @@ public sealed class ActorBrain
         // hit to projectile impact: park the payload for the host's ammo GO,
         // exactly like the ranged-weapon FIRE deferral above. Instant spells
         // keep applying at the FIRE note.
+        float castRemoved;
         if (spell.IsLaunch)
         {
             _pendingCastDamage = damage;
             _pendingCastTargetCombat = targetCombat;
+            castRemoved = damage;
         }
-        else if (damage > 0f) targetCombat.ApplyDamage(damage);
+        else
+        {
+            castRemoved = damage > 0f ? targetCombat.ApplyDamage(damage) : 0f;
+        }
+        if (castRemoved > 0f)
+            OnDamageDealt?.Invoke(castRemoved, targetStats,
+                spell.Class == Assets.SpellClass.NatureMagic
+                    ? Assets.SkillKind.NatureMagic : Assets.SkillKind.CombatMagic);
         // Deliberately NOT JustSwung — casts fire the authored 'cast' voice
         // state (123 DS1 templates), not the melee 'attack' cue.
         _justCast = true;

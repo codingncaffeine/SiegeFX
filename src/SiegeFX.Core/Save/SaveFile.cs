@@ -153,6 +153,11 @@ public sealed class CompanionSnapshot
     /// <summary>Worn-slot deltas (es_* → template ref), mirroring
     /// _memberEquipment. Empty = template defaults.</summary>
     public Dictionary<string, string> Equipment { get; set; } = new();
+    /// <summary>SC-COMPANION-PROGRESSION — the member's earned XP pools.
+    /// Zero/empty on saves written before the field existed; the load path
+    /// then keeps the authored starting levels the recruit re-seed applied.</summary>
+    public long TotalXp { get; set; }
+    public List<long> SkillXp { get; set; } = new();
 }
 
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
