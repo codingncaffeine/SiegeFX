@@ -642,6 +642,12 @@ public sealed class NavFollower
             {
                 if (Mesh.Neighbors[3 * CurrentTriangle + slot] == far) { linked = true; break; }
             }
+            // SC-NAV-SEAM-OVERFLOW — door-authored adjacency carried outside
+            // the 3-slot array (see NavMesh.ExtraLinks) is hoppable too.
+            if (!linked && Mesh.ExtraLinks is not null
+                && Mesh.ExtraLinks.TryGetValue(CurrentTriangle, out var extra)
+                && Array.IndexOf(extra, far) >= 0)
+                linked = true;
             if (!linked) continue;
             var landing = Mesh.NearestPointInTriangleXZ(far, new Vector3(nx, Position.Y, nz));
             float dx = landing.X - Position.X;

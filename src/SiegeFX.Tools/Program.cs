@@ -1301,13 +1301,14 @@ static int CmdRegionGenAudit(string[] a)
 
 static int DispatchWorld(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx world <layout|path|follow> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx world <layout|path|follow|probe|seam-audit> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
         "layout" => CmdWorldLayout(a[1..]),
         "path"   => CmdWorldPath(a[1..]),
         "follow" => CmdWorldFollow(a[1..]),
         "probe"  => CmdWorldProbe(a[1..]),
+        "seam-audit" => CmdWorldSeamAudit(a[1..]),
         "campaign-audit" => CmdWorldCampaignAudit(a[1..]),
         "map-point" => CmdWorldMapPoint(a[1..]),
         _        => UnknownCommand("world " + a[0]),
@@ -3383,6 +3384,162 @@ static int CmdWorldProbe(string[] a)
         float ddx = world.M41 - probe.X, ddz = world.M43 - probe.Z;
         if (ddx * ddx + ddz * ddz > 5f * 5f) continue;
         Console.WriteLine($"  near-origin snode=0x{guid:X8} mesh=0x{meshGuid:X8} region={region} t=({world.M41:F2},{world.M42:F2},{world.M43:F2})");
+    }
+    return 0;
+}
+
+/// <summary>SC-NAV-SEAM-AUDIT — replay <c>NavMesh.StitchSnoDoorSeams</c>' candidate
+/// search for ONE snode pair, with per-candidate rejection reasons. Answers "the map
+/// authors a door link between these nodes; why is the seam RAW-DISCONNECTED?" without
+/// rebuild-and-guess. Prints (1) every authored door link between the pair with its
+/// composed world anchor, (2) every nav edge of either node near each anchor and who
+/// currently claims it (a boundary edge, a vertex weld, or a stitch to some OTHER
+/// node — claim starvation is a failure mode: an edge consumed by one door link is
+/// invisible to the next), and (3) the stitcher's gate verdict for every still-boundary
+/// A×B edge pair. Gate constants mirror NavMesh's privates — keep in sync.</summary>
+static int CmdWorldSeamAudit(string[] a)
+{
+    if (a.Length != 5)
+    {
+        Console.Error.WriteLine("usage: siegefx world seam-audit <map-tank> <terrain-tank> <region1,region2,...> <0xGUID-A> <0xGUID-B>");
+        Console.Error.WriteLine("       explains why a door-authored snode pair did (not) stitch in the unified nav mesh");
+        return 1;
+    }
+    const float AnchorRadius = 4.0f;      // NavMesh.DoorSeamAnchorRadius
+    const float PairDist = 1.5f;          // NavMesh.DoorSeamEdgePairDistance
+    const float YTol = 0.6f;              // NavMesh.DoorSeamEdgeYTolerance
+    const float CosMin = 0.85f;           // NavMesh.DoorSeamCollinearityCosMin
+    uint ga = Convert.ToUInt32(a[3], 16);
+    uint gb = Convert.ToUInt32(a[4], 16);
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.DoorSeamCount} door seam(s), {mesh.DoorSeamOverflowCount} overflow link(s)");
+    if (mesh.ExtraLinks is not null)
+    {
+        foreach (var kv in mesh.ExtraLinks)
+        {
+            uint sg = mesh.SourceSnodeGuid[kv.Key];
+            if (sg != ga && sg != gb) continue;
+            foreach (var nb in kv.Value)
+                Console.WriteLine($"  extra-link: tri {kv.Key} (0x{sg:X8}) <-> tri {nb} (0x{mesh.SourceSnodeGuid[nb]:X8})");
+        }
+    }
+
+    // Rebuild graphs + layout for door anchors (CmdWorldProbe's pattern).
+    using var mapTank = TankFile.Open(a[0]);
+    var mapReader = new TankReader(mapTank);
+    using var terrainTank = TankFile.Open(a[1]);
+    var terrainReader = new TankReader(terrainTank);
+    var meshIndex = SnoMeshIndex.Build(terrainReader);
+    var snoCache = new Dictionary<uint, SnoModel?>();
+    SnoModel? Resolve(uint meshGuid)
+    {
+        if (snoCache.TryGetValue(meshGuid, out var cached)) return cached;
+        SnoModel? sno = null;
+        if (meshIndex.TryResolve(meshGuid, out var path))
+        {
+            try { sno = SnoModel.Load(terrainReader.ExtractToMemory(path)); }
+            catch { sno = null; }
+        }
+        snoCache[meshGuid] = sno;
+        return sno;
+    }
+    var entries = new List<WorldLayout.RegionEntry>();
+    foreach (var raw in a[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        var rp = raw.Replace('\\', '/');
+        if (!rp.StartsWith('/')) rp = "/" + rp;
+        if (rp.EndsWith('/')) rp = rp[..^1];
+        var graph = RegionGraph.Load(mapReader.ExtractToMemory(rp + "/terrain_nodes/nodes.gas"));
+        var layout = RegionLayout.Build(graph, Resolve);
+        RegionStitchHelper? stitches = null;
+        try { stitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(rp + "/editor/stitch_helper.gas")); }
+        catch { }
+        entries.Add(new WorldLayout.RegionEntry(rp, graph, layout, stitches));
+    }
+    var world = WorldLayout.Build(entries, Resolve, entries[0].Path);
+
+    // 1. Authored door links between the pair, with composed anchors.
+    var anchors = new List<Vector3>();
+    foreach (var entry in entries)
+    foreach (var n in entry.Graph.Nodes)
+    {
+        if (n.Guid != ga && n.Guid != gb) continue;
+        if (!world.Transforms.TryGetValue(n.Guid, out var w)) continue;
+        var sno = Resolve(n.MeshGuid);
+        var leaf = entry.Path[(entry.Path.LastIndexOf('/') + 1)..];
+        Console.WriteLine($"snode 0x{n.Guid:X8} mesh=0x{n.MeshGuid:X8} region={leaf} origin=({w.M41:F2},{w.M42:F2},{w.M43:F2}) snoDoors={sno?.Doors.Length ?? -1}");
+        foreach (var link in n.Doors)
+        {
+            uint other = n.Guid == ga ? gb : ga;
+            if (link.FarGuid != other) continue;
+            Vector3? anchor = null;
+            if (sno is not null)
+            {
+                foreach (var d in sno.Doors)
+                {
+                    if (d.Id != (uint)link.LocalId) continue;
+                    anchor = Vector3.Transform(d.Transform.Translation, w);
+                    break;
+                }
+            }
+            Console.WriteLine(anchor is Vector3 av
+                ? $"  door id={link.LocalId} <-> 0x{link.FarGuid:X8} door {link.FarDoorId}: anchor=({av.X:F2},{av.Y:F2},{av.Z:F2})"
+                : $"  door id={link.LocalId} <-> 0x{link.FarGuid:X8} door {link.FarDoorId}: LOCAL DOOR NOT IN SNO (stitcher skips this link)");
+            if (anchor is Vector3 av2) anchors.Add(av2);
+        }
+    }
+    if (anchors.Count == 0)
+    {
+        Console.WriteLine("NO authored door links between the pair (stitcher never considers them) — if the seam should walk, it must weld by vertex equality or route via other nodes.");
+        return 0;
+    }
+
+    // 2 + 3. Per anchor: edge inventory + pairing replay on still-boundary edges.
+    foreach (var anchor in anchors)
+    {
+        Console.WriteLine($"-- anchor ({anchor.X:F2},{anchor.Y:F2},{anchor.Z:F2}), radius {AnchorRadius} --");
+        var edgesA = new List<(int tri, int slot, Vector3 mid, float dirX, float dirZ)>();
+        var edgesB = new List<(int tri, int slot, Vector3 mid, float dirX, float dirZ)>();
+        for (int t = 0; t < mesh.TriangleCount; t++)
+        {
+            uint sg = mesh.SourceSnodeGuid[t];
+            if (sg != ga && sg != gb) continue;
+            for (int s = 0; s < 3; s++)
+            {
+                var va = mesh.Vertices[mesh.Indices[3 * t + (s + 1) % 3]];
+                var vb = mesh.Vertices[mesh.Indices[3 * t + (s + 2) % 3]];
+                var mid = 0.5f * (va + vb);
+                if (Vector3.DistanceSquared(mid, anchor) > (AnchorRadius + 1f) * (AnchorRadius + 1f)) continue;
+                float dx = vb.X - va.X, dz = vb.Z - va.Z;
+                float len = MathF.Sqrt(dx * dx + dz * dz);
+                int nb = mesh.Neighbors[3 * t + s];
+                string state = nb < 0 ? "BOUNDARY"
+                    : $"claimed -> tri {nb} (snode 0x{mesh.SourceSnodeGuid[nb]:X8})";
+                string degen = len < 0.05f ? "  [degenerate-XZ: stitcher excludes]" : "";
+                Console.WriteLine($"  0x{sg:X8} tri={t,-6} slot={s} mid=({mid.X:F2},{mid.Y:F2},{mid.Z:F2}) len={len:F2} {state}{degen}");
+                if (nb >= 0 || len < 0.05f) continue;
+                if (sg == ga) edgesA.Add((t, s, mid, dx / len, dz / len));
+                else          edgesB.Add((t, s, mid, dx / len, dz / len));
+            }
+        }
+        Console.WriteLine($"  boundary candidates in radius: A={edgesA.Count}, B={edgesB.Count}");
+        foreach (var (t1, s1, mid1, ux1, uz1) in edgesA)
+        foreach (var (t2, s2, mid2, ux2, uz2) in edgesB)
+        {
+            float dy = MathF.Abs(mid1.Y - mid2.Y);
+            float ddx = mid1.X - mid2.X, ddz = mid1.Z - mid2.Z;
+            float dxz = MathF.Sqrt(ddx * ddx + ddz * ddz);
+            float cos = MathF.Abs(ux1 * ux2 + uz1 * uz2);
+            bool inA = Vector3.DistanceSquared(mid1, anchor) <= AnchorRadius * AnchorRadius;
+            bool inB = Vector3.DistanceSquared(mid2, anchor) <= AnchorRadius * AnchorRadius;
+            string verdict =
+                !inA || !inB   ? $"REJECT anchor-radius (A {(inA ? "in" : "OUT")}, B {(inB ? "in" : "OUT")})"
+                : dy > YTol    ? $"REJECT dy {dy:F2} > {YTol}"
+                : dxz > PairDist ? $"REJECT dxz {dxz:F2} > {PairDist}"
+                : cos < CosMin ? $"REJECT collinearity {cos:F2} < {CosMin}"
+                : "WOULD PAIR";
+            Console.WriteLine($"  tri{t1}/s{s1} x tri{t2}/s{s2}: dy={dy:F2} dxz={dxz:F2} cos={cos:F2} -> {verdict}");
+        }
     }
     return 0;
 }

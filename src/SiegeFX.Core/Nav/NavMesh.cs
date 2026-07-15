@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Numerics;
 using SiegeFX.Core.Assets;
 
@@ -340,6 +341,21 @@ public sealed class NavMesh
     /// a nonzero count for the stair-bottom ↔ basement-floor seams.</summary>
     public int DoorSeamCount { get; }
 
+    /// <summary>SC-NAV-SEAM-OVERFLOW — sparse tri→tri adjacency for door-authored
+    /// links the 3-slot <see cref="Neighbors"/> array could not hold. Failure mode
+    /// (cr_r1 secret passage, t_cry01_sec_str-1b/-1c): node A's seam edges are all
+    /// legitimately vertex-welded to a THIRD interleaved node, so the door stitcher
+    /// finds zero boundary edges on A — and A's tris have no free neighbor slot
+    /// either. The authored [door*] link still says "connected"; these entries carry
+    /// it. Symmetric (both directions present). Consumers: A* expansion, raw
+    /// reachability/blame floods, and NavFollower's seam-hop. The funnel needs no
+    /// change — a portal-less hop falls back to its degenerate centroid portal.</summary>
+    public IReadOnlyDictionary<int, int[]>? ExtraLinks { get; }
+
+    /// <summary>Count of symmetric overflow links added by the door stitcher's
+    /// slot-starved fallback (see <see cref="ExtraLinks"/>).</summary>
+    public int DoorSeamOverflowCount { get; }
+
     public int TriangleCount => Indices.Length / 3;
 
     // XZ uniform-grid spatial index. Built once at construction and queried by
@@ -368,6 +384,8 @@ public sealed class NavMesh
         int nonManifoldEdgeCount,
         int seamEdgeCount,
         int doorSeamCount,
+        Dictionary<int, int[]>? extraLinks,
+        int doorSeamOverflowCount,
         float gridMinX,
         float gridMinZ,
         int gridCellsX,
@@ -387,6 +405,8 @@ public sealed class NavMesh
         NonManifoldEdgeCount = nonManifoldEdgeCount;
         SeamEdgeCount = seamEdgeCount;
         DoorSeamCount = doorSeamCount;
+        ExtraLinks = extraLinks;
+        DoorSeamOverflowCount = doorSeamOverflowCount;
         _gridMinX = gridMinX;
         _gridMinZ = gridMinZ;
         _gridCellsX = gridCellsX;
@@ -564,7 +584,8 @@ public sealed class NavMesh
         // tried to walk from the stair bottom into the basement.
         // Runs BEFORE land↔water stitching so this pass's newly-paired
         // edges aren't counted as boundary candidates by the water pass.
-        int doorSeams = StitchSnoDoorSeams(graph, layout, resolveSno, sourceSnodeGuid.ToArray(), indices, neighbors, vertsArr);
+        var extraLinksBuild = new Dictionary<int, List<int>>();
+        int doorSeams = StitchSnoDoorSeams(graph, layout, resolveSno, sourceSnodeGuid.ToArray(), indices, neighbors, vertsArr, extraLinksBuild, out int doorSeamOverflow);
         // Land↔water seam stitching: shoreline Floor and Water SNOs are authored in
         // separate meshes whose vertices don't fall inside the WeldToleranceUnits bucket,
         // so the manifold pass leaves them on disconnected components. Wire cross-kind
@@ -652,6 +673,10 @@ public sealed class NavMesh
             nonManifoldEdges,
             seamEdges,
             doorSeams,
+            extraLinksBuild.Count == 0
+                ? null
+                : extraLinksBuild.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray()),
+            doorSeamOverflow,
             originX,
             originZ,
             cellsX,
@@ -693,8 +718,11 @@ public sealed class NavMesh
         uint[] sourceSnodeGuid,
         int[] indices,
         int[] neighbors,
-        Vector3[] verts)
+        Vector3[] verts,
+        Dictionary<int, List<int>> extraLinks,
+        out int overflowLinks)
     {
+        overflowLinks = 0;
         int triCount = indices.Length / 3;
         // Index unwelded edges by snode guid. Each entry is (tri, slot,
         // midpoint, unit XZ direction, XZ length) — slot s is the edge
@@ -725,6 +753,69 @@ public sealed class NavMesh
         if (unweldedBySnode.Count == 0) return 0;
 
         int stitched = 0;
+        // SC-NAV-SEAM-OVERFLOW — tri buckets + centroid/adjacency helpers for
+        // the slot-starved fallback below. One pass, reused per door link.
+        var trisBySnode = new Dictionary<uint, List<int>>();
+        for (int t = 0; t < triCount; t++)
+        {
+            if (!trisBySnode.TryGetValue(sourceSnodeGuid[t], out var list))
+            {
+                list = new List<int>();
+                trisBySnode[sourceSnodeGuid[t]] = list;
+            }
+            list.Add(t);
+        }
+        Vector3 TriCentroid(int t) =>
+            (verts[indices[3 * t + 0]] + verts[indices[3 * t + 1]] + verts[indices[3 * t + 2]]) / 3f;
+        // Split a small tri set into its slot-connected local components.
+        // Stepped pieces fragment internally: riser faces are degenerate in XZ
+        // and dropped from the mesh, so each tread strip is its own island —
+        // a fallback link must land on EVERY island, not just the nearest tri
+        // (linking only the nearest wired a 4-tri step island and left the
+        // piece's main floor disconnected).
+        List<List<int>> LocalComponents(List<int> tris)
+        {
+            var comps = new List<List<int>>();
+            var inSet = new HashSet<int>(tris);
+            var visited = new HashSet<int>();
+            foreach (var seed in tris)
+            {
+                if (!visited.Add(seed)) continue;
+                var comp = new List<int> { seed };
+                var stack = new Stack<int>();
+                stack.Push(seed);
+                while (stack.Count > 0)
+                {
+                    int t = stack.Pop();
+                    for (int s = 0; s < 3; s++)
+                    {
+                        int nb = neighbors[3 * t + s];
+                        if (nb < 0 || !inSet.Contains(nb)) continue;
+                        if (!visited.Add(nb)) continue;
+                        comp.Add(nb);
+                        stack.Push(nb);
+                    }
+                }
+                comps.Add(comp);
+            }
+            return comps;
+        }
+        // Any existing adjacency (slot or overflow) between two tri sets?
+        bool AnyLink(List<int> ca, List<int> cb)
+        {
+            var bset = new HashSet<int>(cb);
+            foreach (var t in ca)
+            {
+                for (int s = 0; s < 3; s++)
+                    if (bset.Contains(neighbors[3 * t + s])) return true;
+                if (extraLinks.TryGetValue(t, out var ex))
+                {
+                    foreach (var nb in ex)
+                        if (bset.Contains(nb)) return true;
+                }
+            }
+            return false;
+        }
         // Candidate pairs for one door link, scored by combined XZ+Y midpoint
         // distance and claimed best-first (the water stitcher's pattern) so a
         // clean mating edge wins over a marginal diagonal one regardless of
@@ -736,7 +827,10 @@ public sealed class NavMesh
             if (!layout.TryGetTransform(node.Guid, out var aWorld)) continue;
             var sno = resolveSno(node.MeshGuid);
             if (sno is null || sno.Doors.Length == 0) continue;
-            if (!unweldedBySnode.TryGetValue(node.Guid, out var aEdges)) continue;
+            // SC-NAV-SEAM-OVERFLOW — a node with zero unwelded boundary edges
+            // (aEdges null) can still be slot-starved at an authored door; the
+            // pairing loop is skipped but the overflow fallback below must run.
+            unweldedBySnode.TryGetValue(node.Guid, out var aEdges);
 
             foreach (var link in node.Doors)
             {
@@ -748,11 +842,11 @@ public sealed class NavMesh
                 }
                 if (localDoor is null) continue;
                 if (!graph.TryGetNode(link.FarGuid, out var farNode)) continue;
-                if (!unweldedBySnode.TryGetValue(farNode.Guid, out var bEdges)) continue;
+                unweldedBySnode.TryGetValue(farNode.Guid, out var bEdges);
                 var doorAnchor = Vector3.Transform(localDoor.Value.Transform.Translation, aWorld);
 
                 pairs.Clear();
-                for (int i = 0; i < aEdges.Count; i++)
+                for (int i = 0; aEdges is not null && bEdges is not null && i < aEdges.Count; i++)
                 {
                     var (t1, s1, mid1, ux1, uz1) = aEdges[i];
                     if (neighbors[3 * t1 + s1] != -1) continue;
@@ -773,15 +867,67 @@ public sealed class NavMesh
                         pairs.Add((t1, s1, t2, s2, MathF.Sqrt(dxz2) + dy));
                     }
                 }
-                if (pairs.Count == 0) continue;
-                pairs.Sort((a, b) => a.score.CompareTo(b.score));
-                foreach (var p in pairs)
+                int linkStitched = 0;
+                if (pairs.Count > 0)
                 {
-                    if (neighbors[3 * p.t1 + p.s1] != -1) continue;
-                    if (neighbors[3 * p.t2 + p.s2] != -1) continue;
-                    neighbors[3 * p.t1 + p.s1] = p.t2;
-                    neighbors[3 * p.t2 + p.s2] = p.t1;
-                    stitched++;
+                    pairs.Sort((a, b) => a.score.CompareTo(b.score));
+                    foreach (var p in pairs)
+                    {
+                        if (neighbors[3 * p.t1 + p.s1] != -1) continue;
+                        if (neighbors[3 * p.t2 + p.s2] != -1) continue;
+                        neighbors[3 * p.t1 + p.s1] = p.t2;
+                        neighbors[3 * p.t2 + p.s2] = p.t1;
+                        stitched++;
+                        linkStitched++;
+                    }
+                }
+                if (linkStitched > 0) continue;
+                // SC-NAV-SEAM-OVERFLOW — the authored door link produced no
+                // boundary-edge pair. Field case (cr_r1 secret passage,
+                // t_cry01_sec_str-1b/-1c): every seam edge on one side is
+                // legitimately vertex-welded to a THIRD interleaved node, so
+                // there is neither a boundary edge to pair nor a free neighbor
+                // slot to write into — yet the map authors [door*] between the
+                // pair, and retail treats that as "connected". Carry the link
+                // in the sparse overflow table instead: for every pair of
+                // near-anchor LOCAL COMPONENTS (one per tread strip on stepped
+                // pieces) not already adjacent, wire the best centroid pair,
+                // Y-gated (1.0u) so stacked layers can't join (same reasoning
+                // as the walker's rebind gate).
+                if (!trisBySnode.TryGetValue(node.Guid, out var nearTris)
+                    || !trisBySnode.TryGetValue(farNode.Guid, out var farTris)) continue;
+                var aNear = new List<int>();
+                foreach (var t in nearTris)
+                    if (Vector3.DistanceSquared(TriCentroid(t), doorAnchor) <= 36f) aNear.Add(t);
+                var bNear = new List<int>();
+                foreach (var t in farTris)
+                    if (Vector3.DistanceSquared(TriCentroid(t), doorAnchor) <= 36f) bNear.Add(t);
+                if (aNear.Count == 0 || bNear.Count == 0) continue;
+                foreach (var compA in LocalComponents(aNear))
+                foreach (var compB in LocalComponents(bNear))
+                {
+                    if (AnyLink(compA, compB)) continue;
+                    int bestA = -1, bestB = -1;
+                    float bestScore = float.MaxValue;
+                    foreach (var tA in compA)
+                    {
+                        var ca = TriCentroid(tA);
+                        foreach (var tB in compB)
+                        {
+                            var cb = TriCentroid(tB);
+                            float dy = MathF.Abs(ca.Y - cb.Y);
+                            if (dy > 1.0f) continue;
+                            float ddx = ca.X - cb.X, ddz = ca.Z - cb.Z;
+                            float score = MathF.Sqrt(ddx * ddx + ddz * ddz) + dy;
+                            if (score < bestScore) { bestScore = score; bestA = tA; bestB = tB; }
+                        }
+                    }
+                    if (bestA < 0) continue;
+                    if (!extraLinks.TryGetValue(bestA, out var la)) extraLinks[bestA] = la = new List<int>();
+                    if (!la.Contains(bestB)) la.Add(bestB);
+                    if (!extraLinks.TryGetValue(bestB, out var lb)) extraLinks[bestB] = lb = new List<int>();
+                    if (!lb.Contains(bestA)) lb.Add(bestA);
+                    overflowLinks++;
                 }
             }
         }

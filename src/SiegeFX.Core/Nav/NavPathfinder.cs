@@ -192,6 +192,25 @@ public static class NavPathfinder
         fScore[startTri] = Vector3.Distance(mesh.Centroids[startTri], mesh.Centroids[goalTri]);
         ws.HeapPush(fScore[startTri], startTri);
 
+        // Shared relaxation body for slot neighbors AND overflow links.
+        // SC-NAV-OBSTACLE-AVOID — A* never expands into an obstacle-blocked
+        // triangle. (Fade-hidden tris DO expand — see SC-FADE-WALKABLE above.)
+        void Consider(int from, int nb)
+        {
+            if (nb < 0 || closed[nb]) return;
+            if (mesh.IsBlocked(nb)) return;
+            float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
+            if (float.IsPositiveInfinity(mul)) return;
+            if (!TriPasses(nb)) return;
+            float stepCost = Vector3.Distance(mesh.Centroids[from], mesh.Centroids[nb]) * mul;
+            float tentative = gScore[from] + stepCost;
+            if (tentative >= gScore[nb]) return;
+            cameFrom[nb] = from;
+            gScore[nb] = tentative;
+            fScore[nb] = tentative + Vector3.Distance(mesh.Centroids[nb], mesh.Centroids[goalTri]);
+            ws.HeapPush(fScore[nb], nb);
+        }
+
         while (ws.HeapPop(out _, out int curTri))
         {
             if (curTri == goalTri)
@@ -206,24 +225,11 @@ public static class NavPathfinder
             closed[curTri] = true;
 
             for (int slot = 0; slot < 3; slot++)
-            {
-                int nb = mesh.Neighbors[3 * curTri + slot];
-                if (nb < 0 || closed[nb]) continue;
-                // SC-NAV-OBSTACLE-AVOID — A* never expands into an
-                // obstacle-blocked triangle. (Fade-hidden tris DO expand —
-                // see SC-FADE-WALKABLE above.)
-                if (mesh.IsBlocked(nb)) continue;
-                float mul = traversal.GetMultiplier(mesh.Kinds[nb]);
-                if (float.IsPositiveInfinity(mul)) continue;
-                if (!TriPasses(nb)) continue;
-                float stepCost = Vector3.Distance(mesh.Centroids[curTri], mesh.Centroids[nb]) * mul;
-                float tentative = gScore[curTri] + stepCost;
-                if (tentative >= gScore[nb]) continue;
-                cameFrom[nb] = curTri;
-                gScore[nb] = tentative;
-                fScore[nb] = tentative + Vector3.Distance(mesh.Centroids[nb], mesh.Centroids[goalTri]);
-                ws.HeapPush(fScore[nb], nb);
-            }
+                Consider(curTri, mesh.Neighbors[3 * curTri + slot]);
+            // SC-NAV-SEAM-OVERFLOW — door-authored adjacency the 3-slot array
+            // couldn't hold (see NavMesh.ExtraLinks).
+            if (mesh.ExtraLinks is not null && mesh.ExtraLinks.TryGetValue(curTri, out var extra))
+                foreach (var nb in extra) Consider(curTri, nb);
         }
         // SC-NAV-DIAG — the A* above honors obstacles (Blocked[]) and the
         // logical-flags/traversal gates, so "no corridor" conflates two very
@@ -280,6 +286,16 @@ public static class NavPathfinder
                 if (nb == goalTri) { found = true; break; }
                 queue.Enqueue(nb);
             }
+            if (!found && mesh.ExtraLinks is not null && mesh.ExtraLinks.TryGetValue(t, out var extra))
+            {
+                foreach (var nb in extra)
+                {
+                    if (nb < 0 || parent[nb] != -2) continue;
+                    parent[nb] = t;
+                    if (nb == goalTri) { found = true; break; }
+                    queue.Enqueue(nb);
+                }
+            }
         }
         if (!found) return result;
         var seenTags = new HashSet<string>(StringComparer.Ordinal);
@@ -319,6 +335,16 @@ public static class NavPathfinder
                 if (nb == goalTri) return true;
                 seen[nb] = true;
                 stack.Push(nb);
+            }
+            if (mesh.ExtraLinks is not null && mesh.ExtraLinks.TryGetValue(t, out var extra))
+            {
+                foreach (var nb in extra)
+                {
+                    if (nb < 0 || seen[nb]) continue;
+                    if (nb == goalTri) return true;
+                    seen[nb] = true;
+                    stack.Push(nb);
+                }
             }
         }
         return false;
