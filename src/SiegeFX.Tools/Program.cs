@@ -7137,7 +7137,36 @@ static int CmdRegionSwitchAudit(string[] a)
         return (tpl, scid);
     }
 
+    // Global scid index across EVERY region's objects. DS1's world message
+    // bus is global, so a lever legitimately sends to a mechanism placed in a
+    // neighbouring region (e.g. a stairway crank in path2sd that drives an
+    // elevator in sd_r1). The per-region pass below can't see those, so it
+    // would flag a valid cross-region send as MISSING; this map is the
+    // fallback that tells "lives in another region" apart from "exists
+    // nowhere". Scanned once up front and reused by every region.
+    var globalByScid = new Dictionary<uint, (string Tpl, SiegeFX.Core.Assets.GasNode Node, string Region)>();
+    foreach (var file in allFiles)
+    {
+        var oidx = file.IndexOf("/objects/", StringComparison.OrdinalIgnoreCase);
+        if (oidx < 0 || !file.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+        // Only region object files (…/regions/<name>/objects/…).
+        var ridx = file.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+        if (ridx < 0 || ridx > oidx) continue;
+        var owner = file[..oidx];
+        string ownerLeaf = owner[(owner.LastIndexOf('/') + 1)..];
+        SiegeFX.Core.Assets.GasDocument gdoc;
+        try { gdoc = SiegeFX.Core.Assets.GasDocument.Load(mapReader.ExtractToMemory(file)); }
+        catch { continue; }
+        foreach (var root in gdoc.Roots)
+        {
+            var (tpl, scid) = ParseHeader(root.Header);
+            if (scid == 0) continue;
+            globalByScid[scid] = (tpl, root, ownerLeaf);
+        }
+    }
+
     int totalLevers = 0, okLevers = 0, partialLevers = 0, deadLevers = 0;
+    int crossRegionResolved = 0;
     foreach (var rp in regionPaths)
     {
         // Index every placed object in the region: scid -> (template, node).
@@ -7196,20 +7225,43 @@ static int CmdRegionSwitchAudit(string[] a)
             void ResolveTarget(uint scid, int depth)
             {
                 if (!visited.Add(scid) || depth > 3) return;
+                string xr = "";
                 if (!byScid.TryGetValue(scid, out var target))
-                { problems.Add($"0x{scid:X8} MISSING (no placement in this region's objects)"); return; }
-                // Elevator-family mechanism: supported iff a component block
-                // authors a nonzero elevator_node (what ElevatorStore parses).
+                {
+                    // Not in this region — fall back to the global index. A hit
+                    // there is a legitimate cross-region send, not a dead switch.
+                    if (globalByScid.TryGetValue(scid, out var g))
+                    {
+                        target = (g.Tpl, g.Node);
+                        xr = $" (cross-region: {g.Region})";
+                        crossRegionResolved++;
+                    }
+                    else
+                    { problems.Add($"0x{scid:X8} MISSING (no placement anywhere in the map)"); return; }
+                }
+                // Elevator-family mechanism: a 2-stop lift is supported iff a
+                // component authors a nonzero elevator_node; a hidden stairwell
+                // is supported iff a component authors a nonzero stairwell_node
+                // plus at least one stair_node_N (what ElevatorStore parses via
+                // Load / LoadStairwells respectively).
                 bool isMech = target.Tpl.StartsWith("elevator", StringComparison.OrdinalIgnoreCase);
                 if (isMech)
                 {
-                    bool hasCar = false;
+                    bool hasCar = false, hasShaft = false, hasSeg = false;
                     foreach (var c in target.Node.Children)
                         foreach (var at in c.Attributes)
+                        {
                             if (string.Equals(at.Name, "elevator_node", StringComparison.OrdinalIgnoreCase)
-                                && Hex(at.Value) != 0) { hasCar = true; break; }
-                    if (hasCar) okNotes.Add($"0x{scid:X8} elevator '{target.Tpl}'");
-                    else problems.Add($"0x{scid:X8} UNSUPPORTED mechanism '{target.Tpl}' (no elevator_node — engine skips it)");
+                                && Hex(at.Value) != 0) hasCar = true;
+                            else if (string.Equals(at.Name, "stairwell_node", StringComparison.OrdinalIgnoreCase)
+                                && Hex(at.Value) != 0) hasShaft = true;
+                            else if (at.Name.StartsWith("stair_node_", StringComparison.OrdinalIgnoreCase)
+                                && Hex(at.Value) != 0) hasSeg = true;
+                        }
+                    if (hasCar) okNotes.Add($"0x{scid:X8} elevator '{target.Tpl}'{xr}");
+                    else if (hasShaft && hasSeg) okNotes.Add($"0x{scid:X8} stairwell '{target.Tpl}'{xr}");
+                    else if (hasShaft) problems.Add($"0x{scid:X8} stairwell '{target.Tpl}' authors stairwell_node but no stair_node_N segments");
+                    else problems.Add($"0x{scid:X8} UNSUPPORTED mechanism '{target.Tpl}' (no elevator_node/stairwell_node — engine skips it)");
                     return;
                 }
                 // Trigger: check each row's condition/action verbs; follow
@@ -7234,10 +7286,19 @@ static int CmdRegionSwitchAudit(string[] a)
                             {
                                 var verb = clause.TrimStart().Split('(')[0].Trim();
                                 if (verb.Length == 0) continue;
-                                // Row metadata, not verbs: ", group(N)" pairs a
-                                // condition row with its action rows; stray doc
-                                // text sometimes rides the value.
+                                // Trailing call-option tags, not verbs. DS1
+                                // appends these after the verb call in the same
+                                // action*/condition* value: "group(N)" pairs a
+                                // condition with its action rows, "delay(N)"
+                                // defers the preceding call (parsed into
+                                // TriggerCall.CallDelay and honoured by
+                                // ScheduleAction's _delayed queue), and "doc(..)"
+                                // is editor text. The real matrix parser consumes
+                                // all three as options of the leading call; this
+                                // cruder split-on-"), " sees them as bare verbs,
+                                // so skip them the same way.
                                 if (verb.Equals("group", StringComparison.OrdinalIgnoreCase)
+                                    || verb.Equals("delay", StringComparison.OrdinalIgnoreCase)
                                     || verb.Equals("doc", StringComparison.OrdinalIgnoreCase)) continue;
                                 var set = isCond ? supportedTriggerConditions : supportedTriggerActions;
                                 if (!set.Contains(verb))
@@ -7251,10 +7312,10 @@ static int CmdRegionSwitchAudit(string[] a)
                             }
                         }
                     }
-                    okNotes.Add($"0x{scid:X8} trigger '{target.Tpl}' ({rows} row(s))");
+                    okNotes.Add($"0x{scid:X8} trigger '{target.Tpl}' ({rows} row(s)){xr}");
                     return;
                 }
-                okNotes.Add($"0x{scid:X8} '{target.Tpl}'");
+                okNotes.Add($"0x{scid:X8} '{target.Tpl}'{xr}");
             }
             foreach (var t in targets) ResolveTarget(t, 0);
 
@@ -7275,7 +7336,8 @@ static int CmdRegionSwitchAudit(string[] a)
             if (targets.Count == 0) Console.WriteLine("      !! no send targets authored");
         }
     }
-    Console.WriteLine($"TOTAL: {totalLevers} switch(es) — {okLevers} OK, {partialLevers} PARTIAL, {deadLevers} DEAD");
+    Console.WriteLine($"TOTAL: {totalLevers} switch(es) — {okLevers} OK, {partialLevers} PARTIAL, {deadLevers} DEAD"
+        + (crossRegionResolved > 0 ? $" ({crossRegionResolved} target(s) resolved cross-region)" : ""));
     return 0;
 }
 
