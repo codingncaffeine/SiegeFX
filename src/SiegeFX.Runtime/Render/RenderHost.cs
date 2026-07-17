@@ -25260,9 +25260,31 @@ void main()
         lines.Add((name, white));
         var dmin = _templateStore.GetAttribute(tpl, "attack", "damage_min");
         var dmax = _templateStore.GetAttribute(tpl, "attack", "damage_max");
-        if (float.TryParse(dmax, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var dmx) && dmx > 0f)
-            lines.Add(($"Damage: {float.Parse(dmin ?? "0", System.Globalization.CultureInfo.InvariantCulture):F0}-{dmx:F0}", dim));
+        bool isWeapon = float.TryParse(dmax, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var dmx) && dmx > 0f;
+        if (isWeapon)
+        {
+            // SC-TOOLTIP-AUTH — retail's weapon card lines (screen 0026:
+            // "Normal Attack Speed / Two Handed Weapon / Damage: 5 to 9 /
+            // Range: 10 Meters"). Speed derives from the authored
+            // [attack] reload_delay (the short bow's 0.3 reads Normal);
+            // handedness from is_two_handed; Range shows for standoff
+            // weapons only (melee reaches ~2u and retail omits it).
+            float reload = 0f;
+            float.TryParse(_templateStore.GetAttribute(tpl, "attack", "reload_delay"),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out reload);
+            lines.Add((reload <= 0.45f ? "Normal Attack Speed" : "Slow Attack Speed", dim));
+            bool twoHanded = (_templateStore.GetAttribute(tpl, "attack", "is_two_handed") ?? "")
+                .Contains("true", StringComparison.OrdinalIgnoreCase);
+            lines.Add((twoHanded ? "Two Handed Weapon" : "One Handed Weapon", dim));
+            lines.Add(($"Damage: {float.Parse(dmin ?? "0", System.Globalization.CultureInfo.InvariantCulture):F0} to {dmx:F0}", dim));
+            if (float.TryParse(_templateStore.GetAttribute(tpl, "attack", "attack_range"),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var arange)
+                && arange >= 4f)
+                lines.Add(($"Range: {arange:0} Meters", dim));
+        }
         var def = _templateStore.GetAttribute(tpl, "defend", "defense");
         if (float.TryParse(def, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var dv) && dv > 0f)
@@ -25300,21 +25322,23 @@ void main()
         if (long.TryParse(gv?.Trim(), out var gvv) && gvv > 0)
             lines.Add(($"Value: {gvv} gold", gold));
 
-        // Layout: fixed-advance estimate; clamp to the viewport.
-        const int charW = 8, lineH = 16, pad = 8;
+        // SC-TOOLTIP-AUTH — retail card layout (screen 0026/0028): centered
+        // lines on the near-black plate, same language as the spell card.
+        if (_textRenderer is null) return;
+        const int lineH = 13, pad = 10;
         int wpx = 0;
-        foreach (var (t, _) in lines) wpx = Math.Max(wpx, t.Length * charW);
+        foreach (var (t, _) in lines) wpx = Math.Max(wpx, _textRenderer.MeasureWidth(t, 1));
         wpx += pad * 2;
         int hpx = lines.Count * lineH + pad * 2;
         int x = Math.Min(mx + 18, vw - wpx - 4);
         int y = Math.Min(my + 18, vh - hpx - 4);
-        var bg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
-        if (bg is not null && _iconRenderer is not null)
-            _iconRenderer.DrawIcon(vw, vh, bg, x, y, wpx, hpx, new Vector4(1f, 1f, 1f, 0.92f));
-        if (_textRenderer is null) return;
+        _barRenderer?.DrawRect(vw, vh, x, y, wpx, hpx, new Vector4(0.02f, 0.02f, 0.02f, 0.94f));
         for (int li = 0; li < lines.Count; li++)
-            _textRenderer.DrawString(vw, vh, lines[li].Text, x + pad, y + pad + li * lineH,
-                lines[li].Color, 1);
+        {
+            var (t, c) = lines[li];
+            int tw = _textRenderer.MeasureWidth(t, 1);
+            _textRenderer.DrawString(vw, vh, t, x + (wpx - tw) / 2, y + pad + li * lineH, c, 1);
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -33564,7 +33588,23 @@ void main()
             // DisplayName is deliberately NOT in this chain — it labels the
             // FILE, not the character, and using it painted the save's
             // filename onto the character sheet.
-            if (!string.IsNullOrWhiteSpace(ps.HeroName)) _heroName = ps.HeroName;
+            // SANITIZER: saves written while the (removed) DisplayName
+            // fallback was live carry the slot label BAKED INTO HeroName
+            // ("first companion added"). The leak's signature is the
+            // DisplayName beginning with the HeroName (slot names get a
+            // " (elapsed)" suffix); such values are ignored rather than
+            // painted onto the character. A player who genuinely names the
+            // save slot exactly after their hero loses nothing — the
+            // session already carries that same name.
+            bool poisoned = !string.IsNullOrWhiteSpace(ps.HeroName)
+                && !string.IsNullOrWhiteSpace(save.DisplayName)
+                && save.DisplayName.StartsWith(ps.HeroName, StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(ps.HeroName, _heroName, StringComparison.OrdinalIgnoreCase);
+            if (poisoned)
+                Console.WriteLine($"  load: ignoring save HeroName '{ps.HeroName}' " +
+                                  "(matches the save-slot label — legacy DisplayName leak)");
+            else if (!string.IsNullOrWhiteSpace(ps.HeroName))
+                _heroName = ps.HeroName;
             // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
             // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
             // uses). Sessions started without the creator save a placeholder
