@@ -204,13 +204,15 @@ else if (args.Length >= 1 && args[0] == "--frontend-shot")
     }
     string shotOut = System.IO.Path.Combine("goldens", "frontend-shots", args[3] + ".png");
     int shotW = 1600, shotH = 1200;
+    float shotT = 0f;
     for (int i = 4; i < args.Length; i++)
     {
         if (args[i].StartsWith("--out=", StringComparison.Ordinal)) shotOut = args[i]["--out=".Length..];
         else if (args[i].StartsWith("--w=", StringComparison.Ordinal) && int.TryParse(args[i]["--w=".Length..], out var sw)) shotW = sw;
         else if (args[i].StartsWith("--h=", StringComparison.Ordinal) && int.TryParse(args[i]["--h=".Length..], out var sh)) shotH = sh;
+        else if (args[i].StartsWith("--t=", StringComparison.Ordinal) && float.TryParse(args[i]["--t=".Length..], System.Globalization.CultureInfo.InvariantCulture, out var st)) shotT = st;
     }
-    return SiegeFX.Runtime.Render.FrontendShotHost.Run(args[1], args[2], args[3], shotOut, shotW, shotH);
+    return SiegeFX.Runtime.Render.FrontendShotHost.Run(args[1], args[2], args[3], shotOut, shotW, shotH, shotT);
 }
 else if (args.Length >= 1 && args[0] == "--selftest-save")
 {

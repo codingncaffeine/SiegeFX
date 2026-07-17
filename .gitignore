@@ -492,6 +492,7 @@ anim-diag.log
 .claude/
 
 goldens/sfx-filmstrips/
+goldens/frontend-shots/
 capture-kit/
 
 # SC-MP-EOS — EOS SDK (Epic's, licensed) + live credentials never committed

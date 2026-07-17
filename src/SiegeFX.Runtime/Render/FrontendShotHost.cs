@@ -17,7 +17,7 @@ namespace SiegeFX.Runtime.Render;
 public static class FrontendShotHost
 {
     public static int Run(string logicTankPath, string objectsTankPath, string stateName,
-                          string outPath, int width, int height)
+                          string outPath, int width, int height, float timeSec = 0f)
     {
         int exit = 0;
         var opts = WindowOptions.Default with
@@ -30,7 +30,7 @@ public static class FrontendShotHost
         var window = Window.Create(opts);
         window.Load += () =>
         {
-            try { exit = RenderShot(window, logicTankPath, objectsTankPath, stateName, outPath, width, height); }
+            try { exit = RenderShot(window, logicTankPath, objectsTankPath, stateName, outPath, width, height, timeSec); }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"frontend-shot: {ex}");
@@ -43,7 +43,7 @@ public static class FrontendShotHost
     }
 
     static int RenderShot(IWindow window, string logicTankPath, string objectsTankPath,
-                          string stateName, string outPath, int width, int height)
+                          string stateName, string outPath, int width, int height, float timeSec)
     {
         if (!Enum.TryParse<FrontendScene.ScreenState>(stateName, ignoreCase: true, out var state))
         {
@@ -81,6 +81,11 @@ public static class FrontendShotHost
 
         using var scene = new FrontendScene(gl, resolver);
         scene.SetState(state);
+        // --t=SECONDS advances the state clock for mid-transition
+        // receipts (e.g. IntroMenuFlyIn at t=2.0 shows the gear
+        // flourish partway). Keep t below the state's duration or the
+        // machine auto-advances past it.
+        if (timeSec > 0f) scene.Tick(timeSec);
 
         // Same GL state as RenderHost's HUD pass around _frontendScene.Draw:
         // depth off, alpha blend on, back-face culling ON (culling is what
@@ -129,7 +134,7 @@ public static class FrontendShotHost
         if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
         using (var fs = System.IO.File.Create(outPath))
             SiegeFX.Core.IO.Png.EncodeRgba(fs, flipped, width, height);
-        Console.WriteLine($"frontend-shot: {state} -> {outPath} ({width}x{height})");
+        Console.WriteLine($"frontend-shot: {scene.State}@t={timeSec:0.##} -> {outPath} ({width}x{height})");
         return 0;
     }
 }

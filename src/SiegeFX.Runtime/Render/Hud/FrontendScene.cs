@@ -193,7 +193,19 @@ public sealed class FrontendScene : IDisposable
     const float LogoEnterDur    = 2.1667f;
     const float LogoExitDur     = 0.5833f;
     const float LogoHoldDur     = 1.0f;
-    const float MenuFlyInDur    = 1.6667f; // mainmenu_flyin / menubars_flyin both 1.6667s
+    // SC-FRONTEND-GEARS-FLYIN — the flyin clips have DIFFERENT authored
+    // lengths and DS1 plays each at native speed: the inner panel lands
+    // first (mainmenu 1.6667s / menubars 1.5s) while the pillar gear
+    // flourish keeps running (leftside/rightside/backbutton 3.3333s —
+    // MAINGear 34 rot keys, TOP/BOTGear 58, BOTInnerGear 39/46). The
+    // state lasts as long as the longest clip; shorter clips hold their
+    // end pose. The old shared 1.6667s window played the 3.33s gear
+    // flourish at double speed and cut it off halfway — "the gears
+    // never animate at first launch".
+    const float MenuFlyInDur         = 3.3333f;
+    const float FlyInLenSides        = 3.3333f; // leftside_flyin / rightside_flyin
+    const float FlyInLenMainmenu     = 1.6667f;
+    const float FlyInLenMenubars     = 1.5000f;
     /// <summary>Phase 24-MAINMENU — exposed for the host's logo-drop
     /// renderer so it knows the time fraction to evaluate
     /// <c>logo-enter.prs</c> at. Clamped to [0, 1] for hold semantics.</summary>
@@ -453,12 +465,12 @@ public sealed class FrontendScene : IDisposable
                 DrawLogoExitState(fullW, fullH);
                 return;
             case ScreenState.IntroMenuFlyIn:
-                // Phase 25-CHROME — main menu chrome drops down from
-                // above. mainmenu_flyin / menubars_flyin / leftside_flyin
-                // / rightside_flyin / backbutton_flyin all share the
-                // same MenuFlyInTimeFraction so the parts arrive in
-                // sync. End-pose matches MainMenu's resting state so
-                // the transition is seamless.
+                // Phase 25-CHROME / SC-FRONTEND-GEARS-FLYIN — main menu
+                // chrome drops down from above, each flyin clip at its
+                // native speed: the panel lands at ~1.5-1.7s while the
+                // pillar gear flourish runs the full 3.33s. End-pose
+                // matches MainMenu's resting state so the transition is
+                // seamless.
                 DrawMenuFlyInState(fullW, fullH);
                 return;
             case ScreenState.MainMenu:
@@ -920,11 +932,11 @@ public sealed class FrontendScene : IDisposable
 
     /// <summary>Phase 25-CHROME — main menu chrome flies in. mainmenu_flyin
     /// (1.6667s, drops Bone01 from Y=2.94 to Y=2.01) + menubars_flyin
-    /// (drops menubars from above into screen) + leftside_flyin /
-    /// rightside_flyin (gear flourishes) + backbutton_flyin run together.
-    /// All driven by the same MenuFlyInTimeFraction so they stay synced.
-    /// End pose matches MainMenu's rest pose, making the transition
-    /// to MainMenu state visually seamless.</summary>
+    /// (1.5s, drops menubars into screen) + leftside_flyin /
+    /// rightside_flyin (3.3333s gear flourishes) run together, EACH AT
+    /// NATIVE SPEED (SC-FRONTEND-GEARS-FLYIN): shorter clips hold their
+    /// end pose while the pillar gears keep turning. End pose matches
+    /// MainMenu's rest pose, making the transition visually seamless.</summary>
     private void DrawMenuFlyInState(int vw, int vh)
     {
         // Phase 25-CHROME-FOLD2 — same subset masks as DrawMainMenuState
@@ -935,11 +947,18 @@ public sealed class FrontendScene : IDisposable
         var mainmenuMask = new[] { true, true, true, true, true, false };
         var menubarsMask = new bool[17];
         for (int i = 0; i < 16; i++) menubarsMask[i] = true;
-        DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,                   vw, vh);
-        DrawSideChrome(vw, vh, "leftside_flyin", MenuFlyInTimeFraction,
-                               "rightside_flyin", MenuFlyInTimeFraction);
-        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: MenuFlyInTimeFraction, vw, vh, mainmenuMask);
-        DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: MenuFlyInTimeFraction, vw, vh, menubarsMask);
+        // Per-clip native-speed holds (SC-FRONTEND-GEARS-FLYIN): hold is
+        // the fraction of THAT clip's authored length, clamped so the
+        // shorter panel clips park on their end pose while the 3.33s
+        // pillar gear flourish plays out in full.
+        float sidesHold    = Math.Clamp(_stateTime / FlyInLenSides,    0f, 1f);
+        float mainmenuHold = Math.Clamp(_stateTime / FlyInLenMainmenu, 0f, 1f);
+        float menubarsHold = Math.Clamp(_stateTime / FlyInLenMenubars, 0f, 1f);
+        DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,           vw, vh);
+        DrawSideChrome(vw, vh, "leftside_flyin", sidesHold,
+                               "rightside_flyin", sidesHold);
+        DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: mainmenuHold, vw, vh, mainmenuMask);
+        DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: menubarsHold, vw, vh, menubarsMask);
         // backbutton has its own flyin too — keep it in the assembly
         // even though MainMenu state itself doesn't draw the back button.
         // Wait — actually MainMenu DOES NOT show backbutton (no Previous/Next

@@ -6446,24 +6446,31 @@ void main()
                         BeginNisLeave(0.8f);
                         return;
                     }
-                    // Phase 24-MAINMENU step 1+2-FOLD — Esc during the splash
-                    // sequence skips straight to the main menu state (DS1's
-                    // canonical "skip the intro" behavior). Without this gate,
-                    // Esc fell through to _pauseMenu.Toggle() which opened a
-                    // Save/Load/Resume menu over a half-faded splash with no
-                    // _player to act on.
+                    // Phase 24-MAINMENU step 1+2-FOLD / SC-FRONTEND-GEARS-FLYIN
+                    // — Esc during the splash/logo sequence skips the INTRO
+                    // but lands on IntroMenuFlyIn, not MainMenu: the chrome
+                    // assembly (gear flourish + menu_enter cue) is part of
+                    // the menu itself and always plays, exactly like DS1's
+                    // nointro behavior. Without this gate, Esc fell through
+                    // to _pauseMenu.Toggle() which opened a Save/Load/Resume
+                    // menu over a half-faded splash with no _player to act on.
                     if (_bootMode && _frontendScene is not null
                         && (_frontendScene.State == Hud.FrontendScene.ScreenState.IntroMicrosoft
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroGaspowered
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroBink
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoDrop
                          || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoHold
-                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoExit
-                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn))
+                         || _frontendScene.State == Hud.FrontendScene.ScreenState.IntroLogoExit))
                     {
-                        _frontendScene.SetState(Hud.FrontendScene.ScreenState.MainMenu);
+                        _frontendScene.SetState(Hud.FrontendScene.ScreenState.IntroMenuFlyIn);
                         return;
                     }
+                    // Esc during the assembly itself: swallow. The machine
+                    // finishes building (it's ~3.3s); letting Esc fall
+                    // through here would re-open the old pause-menu bug.
+                    if (_bootMode && _frontendScene is not null
+                        && _frontendScene.State == Hud.FrontendScene.ScreenState.IntroMenuFlyIn)
+                        return;
                     // Phase 24-MAINMENU step 6 — About overlay closes on
                     // Esc before any other handler. Gameplay-stack pause
                     // menu has no business in boot mode anyway since
@@ -8840,13 +8847,18 @@ void main()
         EnsureFrontendScene();
         if (_frontendScene is not null)
         {
-            // --noVideo (DS1 nointro=true) skips both splashes and the logo
-            // drop, jumping straight to the main menu state. Otherwise we
-            // start at the Microsoft splash and let the state machine
-            // advance through GPG → logo drop → main menu on its own.
+            // --noVideo (DS1 nointro=true) skips the splash movies and the
+            // logo drop but NOT the chrome assembly — the gear-flourish
+            // fly-in (+ menu_enter cue) is the menu arriving, so it plays
+            // on every boot path. Otherwise we start at the Microsoft
+            // splash and let the state machine advance on its own.
             _frontendScene.SetState(noVideo
-                ? SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.MainMenu
+                ? SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.IntroMenuFlyIn
                 : SiegeFX.Runtime.Render.Hud.FrontendScene.ScreenState.IntroMicrosoft);
+            // The OnUpdate edge listener deliberately skips the boot
+            // frame's initial state, so the --noVideo path fires its
+            // assembly cue here instead.
+            if (noVideo) _audio?.Play(SfxFrontendMenuEnter);
             _bootSplashActive = !noVideo;
         }
         // Phase 24-POLISH-B — preload the DS1 wood-button textures so
