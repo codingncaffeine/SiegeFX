@@ -31230,7 +31230,7 @@ void main()
                         _companionInvPanel.OriginY     = compBaseY;
                         _companionInvPanel.DimBackdrop = false;
                         _companionInvPanel.Gold        = 0;
-                        _companionInvPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                        _companionInvPanel.Draw(_barRenderer, _textRenderer!, _iconRenderer,
                             size.X, size.Y, GetMemberInventory(pidx), TryGetItemIcon, TryGetItemGridSize,
                             invClose, goldCoin,
                             resolveCommonChrome: GetCommonTexture,
@@ -31255,7 +31255,7 @@ void main()
                 // common_template=x). Matches the inventory's close X.
                 var spellClose = GetCommonTexture("button_x_up")
                                  ?? TryGetGuiTexture("b_gui_cmn_button_x_up");
-                _spellBookPanel.Draw(_barRenderer, _textRenderer,
+                _spellBookPanel.Draw(_barRenderer, _textRenderer!,
                     size.X, size.Y, _playerSpellbook?.Primary, _playerSpellbook?.Secondary, placed,
                     _iconRenderer, spellClose, ResolveSpellInventoryIcon);
             }
@@ -31270,7 +31270,7 @@ void main()
             {
                 float hs = Hud.HudScale.Hud(size.Y);
                 int fscale = Math.Max(1, (int)MathF.Round(hs));
-                int lineH = _textRenderer.LineHeight * fscale + 2 * fscale;
+                int lineH = _textRenderer!.LineHeight * fscale + 2 * fscale;
                 int padX = 8 * fscale, padY = 3 * fscale;
                 int bandW = (int)(size.X * 0.655f);
                 int bandX = (size.X - bandW) / 2;
@@ -31325,7 +31325,7 @@ void main()
             {
                 float hs = Hud.HudScale.Hud(size.Y);
                 int fscale = Math.Max(1, (int)MathF.Round(hs));
-                int tw = _textRenderer.MeasureWidth(_saveToastText, fscale);
+                int tw = _textRenderer!.MeasureWidth(_saveToastText, fscale);
                 int th = _textRenderer.LineHeight * fscale;
                 int padX = 18 * fscale, padY = 5 * fscale;
                 int boxW = tw + padX * 2, boxH = th + padY * 2;
@@ -31387,7 +31387,7 @@ void main()
             // visually overlap if so. The pause menu still draws on top.
             if (_questLogOpen && _barRenderer is not null && _progression is not null)
             {
-                _questLogPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                _questLogPanel.Draw(_barRenderer, _textRenderer!, _iconRenderer,
                                     size.X, size.Y, _progression.Journal, TryGetGuiTexture);
             }
             // Phase 20a: dialogue panel. Sits above the inventory but under the
@@ -31395,7 +31395,7 @@ void main()
             // overlay if the dialogue close-on-Esc somehow misses.
             if (_dialogue.IsOpen && _barRenderer is not null)
             {
-                _dialogue.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                _dialogue.Draw(_barRenderer, _textRenderer!, _iconRenderer,
                                TryGetGuiTexture, size.X, size.Y);
             }
             // Phase 20d: vendor trade overlay. Same z-tier as the dialogue —
@@ -31403,7 +31403,7 @@ void main()
             // dialogue closes) but the explicit draw keeps both branches local.
             if (_vendor.IsOpen && _barRenderer is not null)
             {
-                _vendor.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                _vendor.Draw(_barRenderer, _textRenderer!, _iconRenderer,
                              TryGetGuiTexture, TryGetItemIcon,
                              size.X, size.Y, _progression?.Gold ?? 0);
             }
@@ -31411,7 +31411,7 @@ void main()
             // backdrop dims the inventory grid too — pause is the topmost UI.
             if (_pauseMenu.IsOpen && _barRenderer is not null)
             {
-                _pauseMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
+                _pauseMenu.Draw(_barRenderer, _textRenderer!, _iconRenderer, TryGetGuiTexture, size.X, size.Y);
             }
             // DS1 Save Game window + Adventurer's Handbook — self-contained
             // modals opened from the pause menu / F12. Drawn above pause so
@@ -31420,7 +31420,7 @@ void main()
             if (_saveDialog.IsOpen && _barRenderer is not null && _gl is not null)
             {
                 _saveDialog.Tick((float)dt);
-                _saveDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
+                _saveDialog.Draw(_gl, _barRenderer, _textRenderer!, _iconRenderer,
                                  TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             // DS1 Load Game window (in-game pose). The frontend pose is drawn
@@ -31428,12 +31428,12 @@ void main()
             // upload the preview thumbnail.
             if (_loadDialog.IsOpen && !_loadDialog.MainMenuStyle && _barRenderer is not null && _gl is not null)
             {
-                _loadDialog.Draw(_gl, _barRenderer, _textRenderer, _iconRenderer,
+                _loadDialog.Draw(_gl, _barRenderer, _textRenderer!, _iconRenderer,
                                  TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             if (_handbook.IsOpen && _barRenderer is not null)
             {
-                _handbook.Draw(_barRenderer, _textRenderer, _iconRenderer,
+                _handbook.Draw(_barRenderer, _textRenderer!, _iconRenderer,
                                TryGetGuiTexture, GetCommonTexture, size.X, size.Y);
             }
             // SC-MOUSE-FX — the drag marquee + bottom-center hover status line.
@@ -31448,7 +31448,7 @@ void main()
             // visually correctly (Options on top of Pause's dim layer).
             if (_optionsMenu.IsOpen && _barRenderer is not null)
             {
-                _optionsMenu.Draw(_barRenderer, _textRenderer, _iconRenderer, _frontendScene, size.X, size.Y,
+                _optionsMenu.Draw(_barRenderer, _textRenderer!, _iconRenderer, _frontendScene, size.X, size.Y,
                     commonChrome: GetCommonTexture);
             }
             // Phase 21d-2a-viii-b: character creator. Topmost UI when open
@@ -31563,7 +31563,7 @@ void main()
                     if (ndcX < -1.2f || ndcX > 1.2f || ndcY < -1.2f || ndcY > 1.2f) continue;
                     int sx = (int)((ndcX * 0.5f + 0.5f) * size.X);
                     int sy = (int)((1f - (ndcY * 0.5f + 0.5f)) * size.Y);
-                    int textW = _textRenderer.MeasureWidth(label);
+                    int textW = _textRenderer!.MeasureWidth(label);
                     int textH = _textRenderer.Font?.Height ?? 14;
                     int padX = 4, padY = 2;
                     int boxW = textW + padX * 2;
@@ -31602,7 +31602,7 @@ void main()
                         : ft.Remaining / (ft.Total * 0.33f);
                     var c = ft.Color; c.W *= a;
                     int textW = ft.Text.Length * 7;
-                    _textRenderer.DrawString(size.X, size.Y, ft.Text, sx - textW / 2, sy, c);
+                    _textRenderer!.DrawString(size.X, size.Y, ft.Text, sx - textW / 2, sy, c);
                 }
             }
             // Phase 21-SC-SCROLL-PRE-1 — cursor-anchored spell-scroll overlay.
@@ -31652,7 +31652,7 @@ void main()
                     var border = new Vector4(0.86f, 0.83f, 0.69f, 1f);
                     _barRenderer.DrawRect  (size.X, size.Y, cx, cy, iconSize, iconSize, bg);
                     _barRenderer.DrawBorder(size.X, size.Y, cx, cy, iconSize, iconSize, border);
-                    _textRenderer.DrawString(size.X, size.Y, "?",
+                    _textRenderer!.DrawString(size.X, size.Y, "?",
                         cx + iconSize / 2 - 3, cy + iconSize / 2 - 4, border);
                 }
             }
@@ -31674,7 +31674,7 @@ void main()
                     _iconRenderer.DrawIcon(size.X, size.Y, cTex, cx, cy, sz, sz, Vector4.One);
                 }
             }
-            _textRenderer.EndPass();
+            _textRenderer!.EndPass();
         }
         // SC-SCREENSHOT — grab the completed back buffer as the very last
         // act of the frame, so the capture contains everything (HUD included)
