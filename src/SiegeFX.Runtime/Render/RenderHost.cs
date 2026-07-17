@@ -34344,13 +34344,30 @@ void main()
         _sceneThumbnail = SiegeFX.Core.Save.ThumbnailCodec.Encode(ThumbW, ThumbH, dst);
     }
 
+    /// <summary>SC-SAVE-REGION — the truthful region for a save record.</summary>
+    private string PlayerRegionForSave()
+    {
+        if (_player is not null
+            && RegionAtWorldPos(_player.CurrentTransform.Translation) is { Length: > 0 } byPos)
+            return byPos;
+        if (!string.IsNullOrEmpty(_currentPlayerRegion)) return _currentPlayerRegion!;
+        return _regionPath ?? "";
+    }
+
     internal SiegeFX.Core.Save.SaveFile CaptureSave()
     {
         var save = new SiegeFX.Core.Save.SaveFile
         {
             SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
             SavedAt       = DateTime.UtcNow,
-            RegionPath    = _regionPath ?? "",
+            // SC-SAVE-REGION — the region the player IS IN, never the region
+            // the process happened to boot into. Every save used to stamp the
+            // boot region (fh_r1 for a normal campaign), so loading one made
+            // hours away anchored the world at the farmhouse and dropped the
+            // player into wrongly-anchored geometry (grey world, wrong
+            // underground state). Position-derived region wins; the streaming
+            // tracker seconds it; the boot region is the pre-spawn last resort.
+            RegionPath    = PlayerRegionForSave(),
             NextTipIndex  = _nextTipIndex,
             TipsDisabled  = _tipsDisabled,
             // v12 — Load window preview metadata. HeroName/MapName/ElapsedSeconds
@@ -34750,6 +34767,21 @@ void main()
             {
                 _playerFollower.Teleport(pos);
                 Console.WriteLine($"  load: player -> ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
+                // SC-SAVE-REGION (load-side self-heal) — older saves stamp the
+                // BOOT region regardless of where the player actually stood
+                // (every pre-fix save says fh_r1). If the restored position
+                // resolves to a different region, re-anchor immediately —
+                // streaming, ambience, underground state and the region-keyed
+                // math all follow the normal region-change path instead of
+                // waiting for the walk detector to notice (or never noticing).
+                var trueRegion = RegionAtWorldPos(pos);
+                if (!string.IsNullOrEmpty(trueRegion)
+                    && !string.Equals(trueRegion, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine($"  load: position is in '{trueRegion}' " +
+                                      $"(save named '{save.RegionPath}') — re-anchoring");
+                    OnPlayerRegionChanged(trueRegion!);
+                }
             }
             s.CurrentTransform = Matrix4x4.CreateTranslation(pos);
             patched++;
