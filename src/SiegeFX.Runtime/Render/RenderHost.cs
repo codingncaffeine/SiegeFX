@@ -144,12 +144,22 @@ public sealed class RenderHost : IDisposable
                 }
                 if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
                 if (n.BoundsCamera) camBounds++;
-                if (n.OccludesCamera) { camOccl++; _occludesCameraGuids.Add(n.Guid); }
+                if (n.OccludesCamera) camOccl++;
                 added++;
                 _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera || n.OccludesCamera, path));
             }
             if (added > 0)
+            {
+                // SC-REGION-LAYER-HIDE (corrected ×2) — region interior-ness is
+                // the occludes_camera MAJORITY. The 81-region survey separates
+                // cleanly: dungeons author it on ~90-100% of nodes (crypt
+                // 1241/1241, sd_r1 1444/1528, dm_* ~100%), surface regions on
+                // 0-8% (their few flags are underpasses/buildings — the nodes
+                // that made a per-node test false-positive on the Stonebridge
+                // road, and absolute Y false-positived on the same valley).
+                _regionOcclFraction[path] = camOccl / (float)added;
                 Console.WriteLine($"  [camera] {path}: {added} nodes, bounds_camera={camBounds}, occludes_camera={camOccl}");
+            }
         }
     }
     private WorldLayout? _worldLayout;
@@ -3075,38 +3085,51 @@ public sealed class RenderHost : IDisposable
     // hiding the top-of-stairs entry piece and everything above ground.
     private const float UpperLayerCutoffY = -4.0f;
     private bool _isUnderground;
-    /// <summary>SC-REGION-LAYER-HIDE (corrected) — GUIDs of every siege node
-    /// authored <c>occludes_camera=true</c>. That flag IS the interior
-    /// classification: crypts author it on all nodes, the farmhouse on
-    /// exactly its basement pieces, and surface terrain never — including
-    /// valleys that legitimately descend far below Y=0.</summary>
-    private readonly HashSet<uint> _occludesCameraGuids = new();
+    /// <summary>SC-REGION-LAYER-HIDE (corrected ×2) — fraction of each
+    /// region's nodes authored <c>occludes_camera=true</c>. Majority-occl
+    /// regions ARE the dungeons; surface regions carry only scattered flags
+    /// (underpasses, building shells). Absolute player Y false-positived on
+    /// deep valleys; single-node tests false-positived under bridges; the
+    /// region majority separates perfectly across all 81 shipped regions.</summary>
+    private readonly Dictionary<string, float> _regionOcclFraction = new(StringComparer.OrdinalIgnoreCase);
 
     private void UpdateUndergroundMode()
     {
         if (_playerFollower is null) return;
         bool wasUnderground = _isUnderground;
-        // Underground = STANDING ON an authored interior node, not altitude.
-        // The old absolute-Y latch fired on the Stonebridge road (surface
-        // path descends past Y=-13) and hid the whole surface world after a
-        // load there. The authored occludes_camera flag can't false-positive:
-        // the data says what's interior. Y hysteresis remains only as the
-        // fallback when the player is momentarily off-mesh or a region
-        // shipped no flags.
-        if (_navMesh is not null && _occludesCameraGuids.Count > 0
-            && _navMesh.TryFindTriangle(_playerFollower.Position, out int ptri, includeFadeHidden: true))
+        string? reg = _currentPlayerRegion;
+        float frac = -1f;
+        if (!string.IsNullOrEmpty(reg) && !_regionOcclFraction.TryGetValue(reg!, out frac))
         {
-            _isUnderground = _occludesCameraGuids.Contains(_navMesh.SourceSnodeGuid[ptri]);
+            // Producers of region paths differ in prefix/slash details across
+            // the codebase; region FOLDER names are unique map-wide, so a
+            // trailing-segment match is a safe format-proof fallback.
+            frac = -1f;
+            string tail = reg!.TrimEnd('/');
+            tail = tail[(tail.LastIndexOf('/') + 1)..];
+            foreach (var kv in _regionOcclFraction)
+            {
+                string ktail = kv.Key.TrimEnd('/');
+                ktail = ktail[(ktail.LastIndexOf('/') + 1)..];
+                if (string.Equals(ktail, tail, StringComparison.OrdinalIgnoreCase))
+                { frac = kv.Value; break; }
+            }
+        }
+        if (frac >= 0f)
+        {
+            _isUnderground = frac > 0.5f;
         }
         else
         {
+            // Region unknown (boot instant, off-map dev spawns): legacy Y
+            // hysteresis as the only remaining fallback.
             float y = _playerFollower.Position.Y;
             if (!_isUnderground && y < UndergroundEnterY) _isUnderground = true;
             else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
         }
         if (wasUnderground != _isUnderground)
-            Console.WriteLine($"[underground] flip -> {_isUnderground} at player " +
-                              $"Y={_playerFollower.Position.Y:F1} (authored node flag)");
+            Console.WriteLine($"[underground] flip -> {_isUnderground} region='{reg}' " +
+                              $"occlFrac={frac:F2} playerY={_playerFollower.Position.Y:F1}");
         RecomputeUpperHiddenRegions(wasUnderground != _isUnderground);
     }
 
@@ -10855,7 +10878,7 @@ void main()
         _decalQuadsAll.Clear();
         _decalTrisAll.Clear();
         _drapeNodes.Clear();
-        _occludesCameraGuids.Clear();
+        _regionOcclFraction.Clear();
         _drapeSnoCache.Clear();
         _decalSampleWorldHeight = null;
         _decalCollectWorldTris = null;
