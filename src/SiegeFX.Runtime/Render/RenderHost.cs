@@ -1521,6 +1521,10 @@ public sealed class RenderHost : IDisposable
         public Hud.FieldCommandsPanel.Action FcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback;
         public Hud.FieldCommandsPanel.Action FcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
         public bool FcFollow = true;
+        // Seconds a follower has been TRYING to reach its slot without
+        // actually moving (blocked path / lost around geometry). Drives the
+        // DS1-style catch-up teleport in TickPartyFollowers.
+        public float FollowStuckSec;
 
         // SC-MP-INGAME P2 — a stand-in avatar for another human player, driven
         // entirely by the player-pose stream (never by a Brain, and excluded
@@ -2430,6 +2434,39 @@ public sealed class RenderHost : IDisposable
             var after = follower.Position;
             float dx = after.X - before.X, dz = after.Z - before.Z;
             float len2 = dx * dx + dz * dz;
+
+            // SC-PARTY-CATCHUP — DS1's companions never get permanently lost:
+            // left far behind, or grinding against geometry for a while, they
+            // warp to their formation slot. Two triggers, both general:
+            //   far   — leader gap over 40u (ran ahead / elevator / portal);
+            //   stuck — wants to move, isn't moving, gap over 8u for 2.5s.
+            if (foe is null && m.FcFollow && !m.IsDead)
+            {
+                float lgx = after.X - leaderPos.X, lgz = after.Z - leaderPos.Z;
+                float leaderGap2 = lgx * lgx + lgz * lgz;
+                bool wantedMove = leaderGap2 > 4f;   // outside the hold ring by a margin
+                if (wantedMove && len2 < 1e-4f && leaderGap2 > 64f)
+                    m.FollowStuckSec += dt;
+                else
+                    m.FollowStuckSec = 0f;
+                if (leaderGap2 > 40f * 40f || m.FollowStuckSec > 2.5f)
+                {
+                    var wslot = SnapToNavmesh(
+                        PartyFormationSlot(_partyFormation, m.PartyIndex, leaderPos, leaderFace),
+                        leaderPos);
+                    m.Brain.Teleport(wslot);
+                    m.CurrentTransform =
+                        Matrix4x4.CreateRotationY(MathF.Atan2(leaderFace.X, leaderFace.Z))
+                        * Matrix4x4.CreateTranslation(wslot);
+                    m.PartyRenderInit = false;   // interp buffers re-seed, no streak
+                    m.IsMoving = false;
+                    m.FollowStuckSec = 0f;
+                    Console.WriteLine($"party: {m.Actor.Template.Name} caught up " +
+                                      $"(teleport, gap {MathF.Sqrt(leaderGap2):F0}u)");
+                    continue;
+                }
+            }
+            else m.FollowStuckSec = 0f;
 
             if (!m.PartyRenderInit)
             {
@@ -3850,6 +3887,10 @@ public sealed class RenderHost : IDisposable
     private uint _portraitFbo, _portraitFboColor, _portraitFboDepth;
     private GlTexture? _playerPortraitLive;
     private bool _portraitDirty;
+    // One delayed re-render after each real trigger so late-arriving textures
+    // (first frames after spawn/load) settle into the final shot.
+    private double _portraitRefreshAt = -1;
+    private int _portraitChainLeft;
     private const int PortraitPx = 128;
 
     /// <summary>Render the player's head-and-shoulders to a small offscreen
@@ -3894,9 +3935,17 @@ public sealed class RenderHost : IDisposable
         else _gl.BindFramebuffer(GLEnum.Framebuffer, _portraitFbo);
 
         _gl.Viewport(0, 0, PortraitPx, PortraitPx);
-        _gl.ClearColor(0f, 0f, 0f, 0f);
+        // Opaque dark backdrop — the cell reads as a framed bust, and a failed
+        // draw is detectable (brightness guard below) instead of black-on-black.
+        _gl.ClearColor(0.055f, 0.05f, 0.045f, 1f);
         _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
         _gl.Enable(EnableCap.DepthTest);
+        // Regression fix: the first cut built its camera from raw head-BONE
+        // axes (authored up = bone X). That view mirrored the winding, and
+        // with global backface culling on, every triangle culled → a black
+        // portrait. World-space camera + culling off for the pass is robust
+        // for any pose/skeleton.
+        _gl.Disable(GLEnum.CullFace);
 
         // Pose: the body's current clip/time (same pick as the main loop).
         var clips = _player.Actor.Clips;
@@ -3913,24 +3962,29 @@ public sealed class RenderHost : IDisposable
             _boneWorldsScratch = new Matrix4x4[Math.Max(bones, 64)];
         AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _boneWorldsScratch);
 
-        // Authored [portrait_camera] (character_camera.gas): offsets in the
-        // head-bone frame; farmboy and farmgirl share the same block —
-        // viewer (0.5, 3.0, -0.5), target (0.1, 0, 0), up (1, 0, 0).
+        // Camera: the authored [portrait_camera] intent (character_camera.gas
+        // frames the head from ~3u in front of the face) executed in WORLD
+        // space with the world up-axis — the same conventions as the scene
+        // camera, so handedness/winding can never flip. Head position comes
+        // from the posed bone, facing from the player's live heading.
         int headIdx = -1;
         for (int i = 0; i < mesh.BoneNames.Count; i++)
             if (mesh.BoneNames[i].EndsWith("bip01_head", StringComparison.OrdinalIgnoreCase))
             { headIdx = i; break; }
-        var H = headIdx >= 0 ? _boneWorldsScratch[headIdx] : Matrix4x4.Identity;
-        var eye = Vector3.Transform(new Vector3(0.5f, 3.0f, -0.5f), H);
-        var at  = Vector3.Transform(new Vector3(0.1f, 0f, 0f), H);
-        var upv = Vector3.TransformNormal(new Vector3(1f, 0f, 0f), H);
-        if (upv.LengthSquared() < 1e-6f) upv = Vector3.UnitY;
-        var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.Normalize(upv))
-                * Matrix4x4.CreatePerspectiveFieldOfView(0.45f, 1f, 0.1f, 50f);
+        var headMesh = headIdx >= 0 ? _boneWorldsScratch[headIdx].Translation
+                                    : new Vector3(0f, 1.7f, 0f);
+        var headWorld = Vector3.Transform(headMesh, _player.CurrentTransform);
+        var face = _playerFacing.LengthSquared() > 0.01f
+            ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
+            : Vector3.UnitZ;
+        var eye = headWorld + face * 2.7f + new Vector3(0f, 0.18f, 0f);
+        var at  = headWorld + new Vector3(0f, 0.05f, 0f);
+        var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.UnitY)
+                * Matrix4x4.CreatePerspectiveFieldOfView(0.42f, 1f, 0.1f, 50f);
 
         _skinShader.Use();
         _skinShader.SetMatrix4("uViewProj", pvp);
-        _skinShader.SetMatrix4("uModel", Matrix4x4.Identity);
+        _skinShader.SetMatrix4("uModel", _player.CurrentTransform);
         _skinShader.SetInt("uAlbedo", 0);
         _skinShader.SetInt("uFlipV", 0);
         // Fixed studio key so the portrait reads the same in a crypt as in a
@@ -4001,19 +4055,43 @@ public sealed class RenderHost : IDisposable
         var rgba = new byte[PortraitPx * PortraitPx * 4];
         fixed (byte* p = rgba)
             _gl.ReadPixels(0, 0, PortraitPx, PortraitPx, GLEnum.Rgba, GLEnum.UnsignedByte, p);
-        var flipped = new byte[rgba.Length];
-        int stride = PortraitPx * 4;
-        for (int y = 0; y < PortraitPx; y++)
-            System.Buffer.BlockCopy(rgba, (PortraitPx - 1 - y) * stride, flipped, y * stride, stride);
-        _playerPortraitLive?.Dispose();
-        _playerPortraitLive = new GlTexture(_gl, flipped, PortraitPx, PortraitPx, nearestFilter: false);
+
+        // Brightness guard — the general defense against every way a render
+        // can silently fail (bad camera, culled geometry, missing textures):
+        // a shot darker than the bare backdrop is REJECTED, the painted
+        // template icon keeps showing, and the settle-retry gets another go.
+        long lumSum = 0; int lumN = 0;
+        for (int i = 0; i < rgba.Length; i += 4 * 13)
+        { lumSum += rgba[i] + rgba[i + 1] + rgba[i + 2]; lumN += 3; }
+        float avgLum = lumN > 0 ? lumSum / (float)lumN / 255f : 0f;
+        if (avgLum > 0.075f)
+        {
+            var flipped = new byte[rgba.Length];
+            int stride = PortraitPx * 4;
+            for (int y = 0; y < PortraitPx; y++)
+                System.Buffer.BlockCopy(rgba, (PortraitPx - 1 - y) * stride, flipped, y * stride, stride);
+            _playerPortraitLive?.Dispose();
+            _playerPortraitLive = new GlTexture(_gl, flipped, PortraitPx, PortraitPx, nearestFilter: false);
+            Console.WriteLine($"[portrait] live portrait rendered (avg luma {avgLum:F2})");
+        }
+        else
+        {
+            Console.WriteLine($"[portrait] render came back dark (avg luma {avgLum:F2}) — keeping fallback icon");
+        }
+        // One settle re-render shortly after each trigger so textures that
+        // loaded a frame late land in the final shot.
+        if (_portraitChainLeft > 0)
+        {
+            _portraitChainLeft--;
+            _portraitRefreshAt = _playSeconds + 2.0;
+        }
 
         // Restore world rendering state.
+        _gl.Enable(GLEnum.CullFace);
         _gl.BindFramebuffer(GLEnum.Framebuffer, 0);
         var fbsz = _window.FramebufferSize;
         _gl.Viewport(0, 0, (uint)fbsz.X, (uint)fbsz.Y);
         _skinLightingStamp = ulong.MaxValue;   // force lighting re-upload
-        Console.WriteLine("[portrait] live portrait rendered");
     }
     // INFORAIL-CHAR-NAME-CLASS — per-template [actor]screen_class
     // (heroes.gas:376 farmboy = "Farmer"). Set at LoadPlayActors
@@ -19801,6 +19879,20 @@ void main()
                 if (v.BodyTypeIdx >= 0) psi.Environment["SIEGEFX_HERO_BODY"] = (v.BodyTypeIdx + 1).ToString();
                 if (!string.IsNullOrEmpty(v.SkinSuffix))  psi.Environment["SIEGEFX_HERO_SKIN"]  = v.SkinSuffix;
                 if (!string.IsNullOrEmpty(v.PantsSuffix)) psi.Environment["SIEGEFX_HERO_PANTS"] = v.PantsSuffix;
+                // SC-CD-PERSIST (load side) — the composite axes are the look
+                // the body actually renders with. The New Game relaunch always
+                // forwarded them; this path forwarded only the legacy suffixes,
+                // so a cross-session load spawned a default-look body and
+                // depended on the ApplySave patch to fix it later. Forward the
+                // full set so EVERY character loads looking right from frame 0.
+                if (v.FaceIdx >= 0)
+                {
+                    psi.Environment["SIEGEFX_HERO_FACE"]     = v.FaceIdx.ToString();
+                    psi.Environment["SIEGEFX_HERO_STYLE"]    = Math.Max(0, v.StyleIdx).ToString();
+                    psi.Environment["SIEGEFX_HERO_COLOR"]    = Math.Max(0, v.ColorIdx).ToString();
+                    psi.Environment["SIEGEFX_HERO_SHIRT"]    = Math.Max(0, v.ShirtIdx).ToString();
+                    psi.Environment["SIEGEFX_HERO_PANTSIDX"] = Math.Max(0, v.PantsIdx).ToString();
+                }
             }
             string heroName = save.HeroName;
             if (string.IsNullOrEmpty(heroName)) heroName = save.Player?.HeroName ?? "";
@@ -22163,7 +22255,7 @@ void main()
         TryAutoSave();
         if (!string.IsNullOrEmpty(_heroName))
             Console.WriteLine($"  player: hero '{_heroName}' recorded in the autosave slot");
-        _portraitDirty = true;   // SC-HERO-PORTRAIT — first live head-shot
+        _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — first live head-shot
         if (_playerEquipment.Count > 0)
         {
             var slots = new List<string>(_playerEquipment.Count);
@@ -22397,7 +22489,7 @@ void main()
                         $"  equip: layered '{layer.SlotName}' = '{layer.ItemRef}' " +
                         $"mesh='{layer.MeshBaseName}' bones={asp.BoneCount} tex='{texName}' " +
                         $"({(tex is null ? "MISS" : "OK")})");
-                    _portraitDirty = true;   // SC-HERO-PORTRAIT — gear shows in the live portrait
+                    _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — gear shows in the live portrait
                     break;
 
                 case SiegeFX.Core.Assets.EquipmentResolver.Strategy.ChestTexture:
@@ -31047,6 +31139,11 @@ void main()
         }
         // SC-HERO-PORTRAIT — re-render the live head-shot before the world
         // pass whenever appearance changed (spawn, load, variant, gear).
+        if (_portraitRefreshAt > 0 && _playSeconds >= _portraitRefreshAt)
+        {
+            _portraitRefreshAt = -1;
+            _portraitDirty = true;
+        }
         if (_portraitDirty && _player is not null && _skinShader is not null)
         {
             _portraitDirty = false;
@@ -34680,7 +34777,7 @@ void main()
         if (save.Party.Count > 0)
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
 
-        _portraitDirty = true;   // SC-HERO-PORTRAIT — restored appearance → fresh head-shot
+        _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — restored appearance → fresh head-shot
         Console.WriteLine($"  load: patched {patched}/{save.Actors.Count} actor(s), " +
                           $"{(missing > 0 ? $"{missing} missing from scene, " : "")}" +
                           $"{save.LootPiles.Count} loot pile(s) restored");
