@@ -5272,6 +5272,19 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    /// <summary>SC-PARTY-REGEN — one character's passive recovery tick, the
+    /// same formulas.gas rates the player uses, scaled by that character's
+    /// own Strength/Intelligence. Shared by the player, local companions,
+    /// and (host-side) remote players' hires.</summary>
+    private void RegenActor(ActorRenderState? s, float dt)
+    {
+        if (s is null || s.IsDead || _formulas is null) return;
+        var combat = s.Actor.Combat;
+        if (combat.IsDead) return;
+        combat.Heal       (_formulas.LifeRecoveryRate(s.Actor.Stats.Strength)     * dt);
+        combat.RestoreMana(_formulas.ManaRecoveryRate(s.Actor.Stats.Intelligence) * dt);
+    }
+
     /// <summary>Host: heel remote players' companions to their owners and
     /// let them fight with the DS1 default orders. Runs on the fixed step
     /// next to TickPartyFollowers; poses stream out with the world delta.</summary>
@@ -19302,18 +19315,29 @@ void main()
                         }
                     }
 
-                    // Phase 16b — passive HP/MP regen. Rates come from formulas.gas
-                    // (lr_unit/lr_period and mr_unit/mr_period; STR/INT-scaled). At
-                    // 10/10/10 a fresh hero gains 0.25 HP/sec and 0.333 MP/sec, so a
-                    // full HP refill takes ~3min and a full MP refill ~90s — slow
-                    // enough that you can't tank by waiting between hits in a fight,
-                    // fast enough to recover between encounters without a healer.
+                    // Phase 16b / SC-PARTY-REGEN — passive HP/MP regen for the
+                    // player AND every party-owned companion, one authored
+                    // formula for all (formulas.gas lr/mr units, scaled by
+                    // each character's own STR/INT — exactly how retail
+                    // recovers the whole party). At 10/10/10 that's 0.25
+                    // HP/sec and 0.333 MP/sec: slow enough that you can't
+                    // tank by waiting mid-fight, fast enough to recover
+                    // between encounters without a healer.
                     if (_formulas is not null)
                     {
-                        var stats  = _player.Actor.Stats;
-                        var combat = _player.Actor.Combat;
-                        combat.Heal       (_formulas.LifeRecoveryRate(stats.Strength)    * (float)stepSec);
-                        combat.RestoreMana(_formulas.ManaRecoveryRate(stats.Intelligence) * (float)stepSec);
+                        RegenActor(_player, (float)stepSec);
+                        foreach (var pm in _party)
+                            if (pm.PartyIndex > 0 && !pm.IsNetworkOwned)
+                                RegenActor(pm, (float)stepSec);
+                        // Host: remote players' hires are host-simulated —
+                        // regen here; their life reaches every client through
+                        // the world delta. (A client's own companion is
+                        // IsNetworkOwned and skipped above for the same
+                        // reason: the host's stream is the truth.)
+                        if (_mpNetSession is { IsHost: true })
+                            foreach (var ra in _actors)
+                                if (ra.NetFollowPlayerId >= 0)
+                                    RegenActor(ra, (float)stepSec);
                     }
                     // Phase 17a — countdown the spell cooldown on the same 20Hz
                     // tick the rest of player state runs on. Trip-key checks in
