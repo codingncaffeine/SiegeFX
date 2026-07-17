@@ -25274,6 +25274,19 @@ void main()
                 var desc = SiegeFX.Core.Assets.TemplateStore.FindAttr(child, "description")?.Trim().Trim('"');
                 if (!string.IsNullOrWhiteSpace(desc))
                     lines.Add((desc!, new Vector4(0.55f, 0.75f, 1f, 1f)));
+                // SC-TOOLTIP-AUTH — potions author their strength as an
+                // alter_life / alter_mana enchantment value; retail's card
+                // prints it as "Restore Health: N" (screen 0028).
+                var alter = SiegeFX.Core.Assets.TemplateStore.FindAttr(child, "alteration")?.Trim();
+                var valStr = SiegeFX.Core.Assets.TemplateStore.FindAttr(child, "value")?.Trim();
+                if (alter is not null && float.TryParse(valStr, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var av) && av > 0f)
+                {
+                    if (alter.Equals("alter_life", StringComparison.OrdinalIgnoreCase))
+                        lines.Add(($"Restore Health: {av:0}", new Vector4(0.85f, 0.35f, 0.35f, 1f)));
+                    else if (alter.Equals("alter_mana", StringComparison.OrdinalIgnoreCase))
+                        lines.Add(($"Restore Mana: {av:0}", new Vector4(0.45f, 0.55f, 1f, 1f)));
+                }
             }
         var req = _templateStore.GetAttribute(tpl, "gui", "equip_requirements")?.Trim();
         if (!string.IsNullOrWhiteSpace(req))
@@ -25335,45 +25348,106 @@ void main()
         return false;
     }
 
-    /// <summary>Resolve the tip for the current hover, or null. Panel
-    /// chrome first (immediate), then the world classes (after dwell).</summary>
-    private (string Text, int X, int Y)? ComputeEduTip(int vw, int vh)
+    /// <summary>SC-TOOLTIP-AUTH — resolve the bottom-strip help for the
+    /// current hover: (line1, line1 color, optional line2). Line 1 is the
+    /// SUBJECT (item/spell name, or "Name: Health x/y, Mana x/y" for
+    /// portraits — the retail screenshots show the pale-gold subject over
+    /// the white education sentence); line 2 is the authored hint.</summary>
+    private (string L1, Vector4 C1, string? L2)? ComputeBottomHelp(int vw, int vh)
     {
         int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
+        var gold  = new Vector4(0.91f, 0.85f, 0.63f, 1f);
+        var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
         string Key(string action)
         {
             var slot0 = _keyBindings.Get(action)[0];
             return string.IsNullOrEmpty(slot0) ? "unbound" : slot0.ToUpperInvariant();
         }
+        string Vitals(ActorRenderState a, string name) =>
+            $"{name}: Health {MathF.Round(a.Actor.Combat.CurrentLife)}/{MathF.Round(a.Actor.Stats.MaxLife)}, " +
+            $"Mana {MathF.Round(a.Actor.Combat.CurrentMana)}/{MathF.Round(a.Actor.Stats.MaxMana)}";
 
         if (_inventoryOpen)
         {
             if (_inventoryPanel.IsPointInArrange(mx, my) && !_invArrangePressed)
-                return ($"Auto-arrange Inventory (Hotkey: {Key("sort_inventory")})", mx, my + 22);
+                return ($"Auto-arrange Inventory (Hotkey: {Key("sort_inventory")})", white, null);
             if (_inventoryPanel.IsPointInClose(mx, my))
-                return ("Close Inventory", mx, my + 22);
+                return ("Close Inventory", white, null);
             if (_inventoryPanel.IsPointInGold(mx, my))
-                return ("Click to select an amount of gold from Inventory.", mx, my + 22);
+                return ("Click to select an amount of gold from Inventory.", white, null);
+            // Hovered backpack item: subject + the authored action hint.
+            var inv = ActiveInventory;
+            int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            if (idx >= 0 && idx < inv.Count && _templateStore is not null)
+            {
+                var itemRef = ResolveItemRef(inv[idx].Reference);
+                _templateStore.TryGet(itemRef, out var tpl);
+                string nm = tpl is not null
+                    ? (_templateStore.GetAttribute(tpl, "common", "screen_name") ?? itemRef).Trim().Trim('"')
+                    : itemRef;
+                string? hint = null;
+                if (inv[idx].Reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
+                    hint = "Drag to Spell Book or right-click to add to equipped Spell Book";
+                else if (itemRef.Contains("book_glb_magic", StringComparison.OrdinalIgnoreCase))
+                    hint = "Drag to Equipment Panel to equip or right-click to read";
+                else if (tpl is not null &&
+                         (!string.IsNullOrEmpty(_templateStore.GetAttribute(tpl, "attack", "damage_max"))
+                          || !string.IsNullOrEmpty(_templateStore.GetAttribute(tpl, "defend", "defense"))))
+                    hint = "Drag to Equipment Panel or right-click to equip";
+                return (nm, gold, hint);
+            }
+        }
+        // Spell book rows (player + companion panels): spell name in its
+        // class tint + the authored book hint for that row kind.
+        {
+            var hover = HoveredSpellbookRow(mx, my);
+            if (hover is { } h && h.Spell is not null)
+            {
+                var cls = h.Spell.IsNatureMagic
+                    ? new Vector4(67f / 255f, 202f / 255f, 131f / 255f, 1f)
+                    : new Vector4(234f / 255f, 169f / 255f, 53f / 255f, 1f);
+                string hint = h.Kind == Hud.SpellBookPanel.SlotKind.Placed
+                    ? "Drag to Active Spell slots above to prepare. Drag to Inventory to remove from Spell Book"
+                    : "Drag to Inventory to remove from Spell Book";
+                return (h.Spell.ScreenName is { Length: > 0 } sn ? sn : h.Spell.Name, cls, hint);
+            }
         }
         if (_spellBookOpen && _spellBookPanel.IsPointInClose(mx, my))
-            return ("Close Spell Book", mx, my + 22);
+            return ("Close Spell Book", white, null);
         if (_inventoryOpen && _companionSpellPanel.IsPointInClose(mx, my)
             && CompanionSpellPanelAt(mx, my) is not null)
-            return ("Close Spell Book", mx, my + 22);
+            return ("Close Spell Book", white, null);
 
-        // AWP widget — the always-on top-left player box.
+        // AWP widget — portrait shows the character's vitals over the
+        // education sentence (retail screen 0029).
         switch (_awpHover)
         {
-            case Hud.CharacterAwp.HitTarget.Portrait:
-                return ("Click to select character, or drag to change party order.", mx, my + 22);
+            case Hud.CharacterAwp.HitTarget.Portrait when _player is not null:
+                return (Vitals(_player, string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName),
+                        gold, "Click to select character, or drag to change party order.");
             case Hud.CharacterAwp.HitTarget.Slot1:
-                return ("Click to select melee weapon.", mx, my + 22);
+                return ("Click to select melee weapon.", white, null);
             case Hud.CharacterAwp.HitTarget.Slot2:
-                return ("Click to select ranged weapon.", mx, my + 22);
+                return ("Click to select ranged weapon.", white, null);
             case Hud.CharacterAwp.HitTarget.Slot3:
-                return ("Click to select Active Spell 1.", mx, my + 22);
+                return ("Click to select Active Spell 1.", white, null);
             case Hud.CharacterAwp.HitTarget.Slot4:
-                return ("Click to select Active Spell 2.", mx, my + 22);
+                return ("Click to select Active Spell 2.", white, null);
+        }
+
+        // Team-portrait strip — each companion cell mirrors the portrait
+        // treatment with THEIR vitals + the authored guard line.
+        if (_party.Count > 1)
+        {
+            var followers = _party.Where(p => p.PartyIndex > 0)
+                                  .OrderBy(p => p.PartyIndex).ToList();
+            var hit = _teamPortraits.HitTest(mx, my, vh, followers.Count);
+            if (hit.Member >= 0 && hit.Member < followers.Count)
+            {
+                var m = followers[hit.Member];
+                return (Vitals(m, ResolveMemberName(m)), gold,
+                        "Click to guard this character. Issuing other orders will cancel this command.");
+            }
         }
 
         // Paperdoll equipment slots (character panel open).
@@ -25401,14 +25475,13 @@ void main()
                                     => "Drag ring here to equip",
                         _ => null,
                     };
-                if (tip is not null) return (tip, mx, my + 22);
+                if (tip is not null) return (tip, white, null);
             }
         }
 
-        // World hovers — the authored click hints, shown after a dwell so
-        // combat doesn't strobe text. Panel-covered ground never gets here
-        // (UpdateCursorState pinned the state to Pointer via the shared
-        // CursorOverUiPanel gate).
+        // World hovers — the authored click hints, after a dwell so combat
+        // doesn't strobe text. Panel-covered ground never gets here
+        // (UpdateCursorState pinned the state via CursorOverUiPanel).
         string? world = _cursorState switch
         {
             CursorState.Attack     => "Left-click to attack",
@@ -25422,25 +25495,164 @@ void main()
         if (_cursorState != _worldTipLastState) { _worldTipDwell = 0f; _worldTipLastState = _cursorState; }
         _worldTipDwell += (float)_frameDtSeconds;
         if (_worldTipDwell < 0.6f) return null;
-        return (world, mx + 16, my + 26);
+        return (world, white, null);
     }
 
-    private void DrawEduTip(int vw, int vh)
+    /// <summary>Which spellbook row (player panel or a companion tile) the
+    /// point is over, with the spell in it. Null when none.</summary>
+    private (SiegeFX.Core.Assets.SpellTemplate? Spell, Hud.SpellBookPanel.SlotKind Kind, int OwnerPidx)?
+        HoveredSpellbookRow(int mx, int my)
     {
-        if (_textRenderer is null) return;
-        var tip = ComputeEduTip(vw, vh);
-        if (tip is null) return;
-        var (text, tx, ty) = tip.Value;
-        int tw = _textRenderer.MeasureWidth(text, 1);
-        int th = _textRenderer.LineHeight;
-        tx = System.Math.Clamp(tx, 4, System.Math.Max(4, vw - tw - 20));
-        ty = System.Math.Clamp(ty, 4, System.Math.Max(4, vh - th - 16));
-        var tipBg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
-        if (tipBg is not null && _iconRenderer is not null)
-            _iconRenderer.DrawIcon(vw, vh, tipBg,
-                tx - 8, ty - 6, tw + 16, th + 12, new Vector4(1f, 1f, 1f, 0.92f));
-        _textRenderer.DrawString(vw, vh, text, tx, ty,
-            new Vector4(0.95f, 0.93f, 0.85f, 1f), 1);
+        if (_spellBookOpen && _spellBookPanel.IsPointInPanel(mx, my))
+        {
+            var hit = _spellBookPanel.HitTestSlot(mx, my);
+            if (hit.Kind != Hud.SpellBookPanel.SlotKind.None)
+                return (ReadSpellbookSlot(_playerSpellbook, hit.Kind, hit.Index), hit.Kind, 0);
+        }
+        if (_inventoryOpen && CompanionSpellPanelAt(mx, my) is { } msp
+            && BookFor(msp.PartyIndex) is { } mbook)
+        {
+            _companionSpellPanel.OriginX = msp.OriginX;
+            _companionSpellPanel.OriginY = msp.OriginY;
+            var hit = _companionSpellPanel.HitTestSlot(mx, my);
+            if (hit.Kind != Hud.SpellBookPanel.SlotKind.None)
+                return (ReadSpellbookSlot(mbook, hit.Kind, hit.Index), hit.Kind, msp.PartyIndex);
+        }
+        return null;
+    }
+
+    /// <summary>SC-TOOLTIP-AUTH — the retail spell stat card (screen 0027):
+    /// name + class in the class tint, the authored description, current
+    /// Damage/Heals + Range + Mana Cost at the OWNER's magic skill, and a
+    /// green "At Skill Level N:" block previewing the next level. Centered
+    /// text on the near-black plate, anchored beside the hovered row.</summary>
+    private void DrawSpellRowTooltip(int vw, int vh)
+    {
+        if (_textRenderer is null || _cursorScroll is not null) return;
+        int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
+        var hover = HoveredSpellbookRow(mx, my);
+        if (hover is not { } h || h.Spell is null) return;
+        var spell = h.Spell;
+
+        var caster = h.OwnerPidx <= 0 ? _player
+            : _party.FirstOrDefault(p => p.PartyIndex == h.OwnerPidx);
+        if (caster is null) return;
+        float skill = MathF.Max(1f, MathF.Floor(spell.IsNatureMagic
+            ? caster.Actor.Stats.NatureMagicSkill
+            : caster.Actor.Stats.CombatMagicSkill));
+
+        var cls = spell.IsNatureMagic
+            ? new Vector4(67f / 255f, 202f / 255f, 131f / 255f, 1f)
+            : new Vector4(234f / 255f, 169f / 255f, 53f / 255f, 1f);
+        var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
+        var green = new Vector4(0.42f, 0.79f, 0.45f, 1f);
+
+        var lines = new List<(string T, Vector4 C)>
+        {
+            (spell.ScreenName is { Length: > 0 } sn ? sn : spell.Name, cls),
+            (spell.IsNatureMagic ? "Nature Magic" : "Combat Magic", cls),
+        };
+        // Authored description; templated <value> tags stripped (their
+        // numbers live in per-level enchantment exprs).
+        var desc = System.Text.RegularExpressions.Regex
+            .Replace(spell.Description, "<[^>]*>", "").Replace("  ", " ").Trim();
+        foreach (var wrapped in WrapText(desc, 46)) lines.Add((wrapped, white));
+
+        void StatBlock(float atSkill, bool nextHeader)
+        {
+            var ctx = new SiegeFX.Core.Assets.SpellEvalContext(atSkill,
+                maxLife: caster.Actor.Stats.MaxLife,
+                life:    caster.Actor.Combat.CurrentLife,
+                srcMana: caster.Actor.Combat.CurrentMana,
+                srcLife: caster.Actor.Combat.CurrentLife);
+            if (nextHeader)
+            {
+                lines.Add(("", white));
+                lines.Add(($"At Skill Level {atSkill:0}:", green));
+            }
+            if (!string.IsNullOrEmpty(spell.AttackDamageMinExpr)
+                || !string.IsNullOrEmpty(spell.AttackDamageMaxExpr))
+            {
+                float dmin = SiegeFX.Core.Assets.SpellExpr.Eval(spell.AttackDamageMinExpr, ctx);
+                float dmax = SiegeFX.Core.Assets.SpellExpr.Eval(spell.AttackDamageMaxExpr, ctx);
+                if (dmax > 0f) lines.Add(($"Damage: {dmin:0} to {dmax:0}", white));
+            }
+            else if (!string.IsNullOrEmpty(spell.HealAmountExpr))
+            {
+                float heal = SiegeFX.Core.Assets.SpellExpr.Eval(spell.HealAmountExpr, ctx);
+                if (heal > 0f) lines.Add(($"Heals: {heal:0}", white));
+            }
+            if (!nextHeader && spell.CastRange > 0f)
+                lines.Add(($"Range: {spell.CastRange:0}", white));
+            float mana = spell.ManaCost(ctx);
+            if (mana > 0f) lines.Add(($"Mana Cost: {mana:0}", white));
+        }
+        StatBlock(skill, nextHeader: false);
+        if (spell.MaxLevel <= 0 || skill + 1 <= spell.MaxLevel)
+            StatBlock(skill + 1, nextHeader: true);
+
+        // Layout — centered lines on the near-black plate, clamped on-screen.
+        const int lineH = 13, pad = 10;
+        int wpx = 0;
+        foreach (var (t, _) in lines)
+            wpx = Math.Max(wpx, _textRenderer.MeasureWidth(t, 1));
+        wpx += pad * 2;
+        int hpx = lines.Count * lineH + pad * 2;
+        int x = Math.Clamp(mx + 20, 4, Math.Max(4, vw - wpx - 4));
+        int y = Math.Clamp(my - hpx / 2, 4, Math.Max(4, vh - hpx - 4));
+        _barRenderer?.DrawRect(vw, vh, x, y, wpx, hpx, new Vector4(0.02f, 0.02f, 0.02f, 0.94f));
+        for (int li = 0; li < lines.Count; li++)
+        {
+            var (t, c) = lines[li];
+            if (t.Length == 0) continue;
+            int tw = _textRenderer.MeasureWidth(t, 1);
+            _textRenderer.DrawString(vw, vh, t, x + (wpx - tw) / 2, y + pad + li * lineH, c, 1);
+        }
+    }
+
+    private static IEnumerable<string> WrapText(string text, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(text)) yield break;
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var line = new System.Text.StringBuilder();
+        foreach (var w in words)
+        {
+            if (line.Length > 0 && line.Length + 1 + w.Length > maxChars)
+            {
+                yield return line.ToString();
+                line.Clear();
+            }
+            if (line.Length > 0) line.Append(' ');
+            line.Append(w);
+        }
+        if (line.Length > 0) yield return line.ToString();
+    }
+
+    /// <summary>SC-TOOLTIP-AUTH — the bottom-center help strip (retail
+    /// screens 0026-0029): subject line over the education sentence, on the
+    /// same translucent band language the top message strip uses.</summary>
+    private void DrawBottomHelpStrip(int vw, int vh)
+    {
+        if (_textRenderer is null || _barRenderer is null) return;
+        var help = ComputeBottomHelp(vw, vh);
+        if (help is null) return;
+        var (l1, c1, l2) = help.Value;
+        const int lineH = 14;
+        int linesN = l2 is null ? 1 : 2;
+        int bandH = linesN * lineH + 8;
+        int bandW = (int)(vw * 0.62f);
+        int bandX = (vw - bandW) / 2;
+        int bandY = vh - bandH - 4;
+        _barRenderer.DrawRect(vw, vh, bandX, bandY, bandW, bandH,
+            new Vector4(0f, 0f, 0f, 0.55f));
+        int w1 = _textRenderer.MeasureWidth(l1, 1);
+        _textRenderer.DrawString(vw, vh, l1, (vw - w1) / 2, bandY + 4, c1, 1);
+        if (l2 is not null)
+        {
+            int w2 = _textRenderer.MeasureWidth(l2, 1);
+            _textRenderer.DrawString(vw, vh, l2, (vw - w2) / 2, bandY + 4 + lineH,
+                new Vector4(0.95f, 0.93f, 0.85f, 1f), 1);
+        }
     }
 
     /// <summary>ALPHA-PACKAGING — F11: one-file bug report. Zip contains the
@@ -31501,10 +31713,6 @@ void main()
                 // red when the wearer fails them — and value).
                 DrawItemTooltip(size.X, size.Y);
 
-                // SC-EDU-TIPS — the authored rollover/help text layer:
-                // user_education_tooltips.gas strings for the panel buttons,
-                // AWP widget, paperdoll slots and (delayed) world hovers.
-                DrawEduTip(size.X, size.Y);
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
@@ -32012,6 +32220,15 @@ void main()
                     int cy = (int)_currentMousePos.Y - hsy;
                     _iconRenderer.DrawIcon(size.X, size.Y, cTex, cx, cy, sz, sz, Vector4.One);
                 }
+            }
+            // SC-TOOLTIP-AUTH — the retail help layer: the spell stat card
+            // beside a hovered spellbook row, then the bottom-center strip
+            // (subject + authored education line) for whatever the cursor
+            // is over. Drawn last so nothing paints across them.
+            if (_player is not null)
+            {
+                DrawSpellRowTooltip(size.X, size.Y);
+                DrawBottomHelpStrip(size.X, size.Y);
             }
             _textRenderer!.EndPass();
         }

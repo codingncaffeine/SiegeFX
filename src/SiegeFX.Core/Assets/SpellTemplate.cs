@@ -132,6 +132,11 @@ public sealed class SpellTemplate
     /// green and combat-magic names amber.</summary>
     public bool IsNatureMagic { get; private set; }
 
+    /// <summary>SC-TOOLTIP-AUTH — authored <c>[common] description</c>, the
+    /// sentence the retail spell tooltip card shows under the class line.
+    /// Empty when the template ships none.</summary>
+    public string Description { get; private set; } = "";
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -267,6 +272,9 @@ public sealed class SpellTemplate
         // SC-SPELLBOOK-AUTHENTIC — authored magic_class for name tinting.
         IsNatureMagic = (store.GetAttribute(template, "magic", "magic_class") ?? "")
             .Contains("nature", StringComparison.OrdinalIgnoreCase);
+        // SC-TOOLTIP-AUTH — the card's description sentence.
+        Description = (store.GetAttribute(template, "common", "description") ?? "")
+            .Trim().Trim('"');
         // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
         TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
             .Contains("tt_dead_enemy", StringComparison.OrdinalIgnoreCase);
