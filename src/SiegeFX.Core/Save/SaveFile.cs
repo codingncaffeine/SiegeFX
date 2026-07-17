@@ -165,6 +165,15 @@ public sealed class CompanionSnapshot
     public string PrimarySpell   { get; set; } = "";
     public string SecondarySpell { get; set; } = "";
     public List<string> PlacedSpells { get; set; } = new();
+    /// <summary>SC-FC-ORDERS — the member's standing field-command orders
+    /// (0/1/2 within each authored radio group: movement free/engage/hold,
+    /// attack free/fightback/holdfire, target closest/strongest/weakest).
+    /// -1 = save predates the field; the load path then keeps the DS1
+    /// defaults (Engage / Defend / Target Closest).</summary>
+    public int  MoveOrder { get; set; } = -1;
+    public int  AtkOrder  { get; set; } = -1;
+    public int  TgtOrder  { get; set; } = -1;
+    public bool FollowOn  { get; set; } = true;
 }
 
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
@@ -183,6 +192,14 @@ public sealed class WorldStateSnapshot
     /// Empty on saves written before the field existed (triggers then
     /// boot at their authored defaults, the old behavior).</summary>
     public List<TriggerStateSnapshot> Triggers { get; set; } = new();
+    /// <summary>SC-FC-ORDERS — the party's active formation
+    /// (PartyFormation enum name). Empty = save predates the field;
+    /// the load path keeps the DoubleColumn default.</summary>
+    public string PartyFormation { get; set; } = "";
+    /// <summary>SC-PARTY-LIFECYCLE — companions the player has paid the hire
+    /// cost for at least once. A re-invite after disband stays free across
+    /// save/load.</summary>
+    public List<uint> HiredScids { get; set; } = new();
 }
 
 public sealed class AccumSnapshot

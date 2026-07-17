@@ -122,7 +122,12 @@ public sealed class FieldCommandsPanel
 
     public readonly record struct State(
         Action Formation, Action Movement, Action Attack, Action Targeting,
-        bool Follow, bool CommandsCollapsed, bool Minimized);
+        bool Follow, bool CommandsCollapsed, bool Minimized,
+        // The chat button is authored visible=false / group=mp_chat — it only
+        // exists in a multiplayer session (single-player never shows it).
+        bool ShowChat);
+
+    static readonly (int, int, int, int) ChatRect = (540, 425, 572, 445);
 
     static (int x, int y, int w, int h) Px((int x0, int y0, int x1, int y1) r,
                                            float s, int originX, int originY)
@@ -133,7 +138,7 @@ public sealed class FieldCommandsPanel
         => px >= p.x && px < p.x + p.w && py >= p.y && py < p.y + p.h;
 
     public Action HitTest(int px, int py, int viewportW, int viewportH,
-                          bool minimized, bool commandsCollapsed)
+                          bool minimized, bool commandsCollapsed, bool showChat = false)
     {
         float s = Scale(viewportH);
         var (originX, originY) = Origin(viewportW, viewportH, s);
@@ -163,6 +168,7 @@ public sealed class FieldCommandsPanel
 
         foreach (var b in TopIcons) if (In(Px(b.R, s, originX, originY), px, py)) return b.A;
         if (In(Px(LootBag, s, originX, originY), px, py)) return Action.CollectLoot;
+        if (showChat && In(Px(ChatRect, s, originX, originY), px, py)) return Action.Chat;
         return Action.None;
     }
 
@@ -272,10 +278,12 @@ public sealed class FieldCommandsPanel
                  FollowRect, 0f, 0.25f, 0.6875f, 1f);
         }
 
-        // Bottom utility row: chat (MP), collect-loot bag, minimize button.
-        Blit("b_gui_ig_mnu_chat_up",     (540, 425, 572, 445), 0f, 0.375f, 1f,        1f);
-        Blit("b_gui_ig_mnu_get_loot_up", LootBag,              0f, 0.375f, 1f,        1f);
-        Blit("b_gui_ig_mnu_minimize-up", MiniButton,           0f, 0.375f, 0.515625f, 1f);
+        // Bottom utility row: chat (MP sessions only — authored visible=false,
+        // group=mp_chat), collect-loot bag, minimize button.
+        if (st.ShowChat)
+            Blit("b_gui_ig_mnu_chat_up", ChatRect, 0f, 0.375f, 1f, 1f);
+        Blit("b_gui_ig_mnu_get_loot_up", LootBag,    0f, 0.375f, 1f,        1f);
+        Blit("b_gui_ig_mnu_minimize-up", MiniButton, 0f, 0.375f, 0.515625f, 1f);
 
         // Right-edge command-fold tab: fieldcom_r when open, fieldcom_l folded.
         Blit(st.CommandsCollapsed ? "b_gui_ig_mnu_fieldcom_l_up" : "b_gui_ig_mnu_fieldcom_r_up",

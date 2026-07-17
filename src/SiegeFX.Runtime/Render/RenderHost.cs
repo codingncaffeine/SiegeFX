@@ -1511,6 +1511,17 @@ public sealed class RenderHost : IDisposable
         // follower: the player stands still until the user clicks somewhere.
         public bool IsPlayer;
 
+        // SC-FC-ORDERS — this member's standing field-command orders. The
+        // authored rollover text speaks per-character ("Character stays in the
+        // vicinity…"), and disband/collect-loot say "selected member(s)", so
+        // orders live on the member, applied to the current selection by
+        // OnFieldCommand. Defaults are DS1's Engage / Defend / Target Closest,
+        // follow on — what every fresh recruit starts with.
+        public Hud.FieldCommandsPanel.Action FcMovement  = Hud.FieldCommandsPanel.Action.MoveEngage;
+        public Hud.FieldCommandsPanel.Action FcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback;
+        public Hud.FieldCommandsPanel.Action FcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
+        public bool FcFollow = true;
+
         // SC-MP-INGAME P2 — a stand-in avatar for another human player, driven
         // entirely by the player-pose stream (never by a Brain, and excluded
         // from the host's world-actor delta). NetTargetPos/Yaw is the last
@@ -1756,6 +1767,156 @@ public sealed class RenderHost : IDisposable
     // (uber 1.24, all class skills 1) instead of a null-progression level 0.
     private readonly Dictionary<int, SiegeFX.Core.Actors.PlayerProgression> _memberProgression = new();
 
+    // ---- SC-PARTY-LIFECYCLE — per-member state vs PartyIndex ------------
+    // Every per-member dict below keys by PartyIndex, and disband re-indexes
+    // the remaining followers — so removal must extract the leaver's entries
+    // and SHIFT the tail, or members inherit each other's XP/gear/spellbooks.
+    // These three helpers own the complete dict list; add new per-member
+    // dicts HERE, not ad hoc.
+
+    /// <summary>Data-only (so it round-trips through saves as a
+    /// PartyIndex=-1 CompanionSnapshot): live progression/spellbook objects
+    /// are rebuilt from these fields at rejoin time by
+    /// <see cref="RestoreMemberState"/>.</summary>
+    private sealed class DismissedBundle
+    {
+        public List<SiegeFX.Core.Actors.LootEntry> Inventory = new();
+        public Dictionary<string, string> Equipment = new(StringComparer.OrdinalIgnoreCase);
+        public long TotalXp;
+        public List<long> SkillXp = new();
+        public string PrimarySpell = "";
+        public string SecondarySpell = "";
+        public List<string> PlacedSpells = new();
+        public (float BaseDefense, int InitialArmor)? ArmorBaseline;
+        public int? ActiveSlot;
+        public int MoveOrder = -1, AtkOrder = -1, TgtOrder = -1;
+        public bool FollowOn = true;
+    }
+    /// <summary>Dismissed companions' kept state, by SCID. A dismissed member
+    /// stays in the world (talkable); re-inviting them restores this bundle so
+    /// they come back with the XP, backpack and spellbook they left with.</summary>
+    private readonly Dictionary<uint, DismissedBundle> _dismissedCompanions = new();
+    /// <summary>SCIDs the player has already paid the hire cost for — a
+    /// re-invite after disband is free (the gold bought the companion once).</summary>
+    private readonly HashSet<uint> _hiredScids = new();
+
+    private DismissedBundle ExtractMemberState(ActorRenderState m)
+    {
+        int idx = m.PartyIndex;
+        var b = new DismissedBundle
+        {
+            MoveOrder = FcOrderToInt(m.FcMovement),
+            AtkOrder  = FcOrderToInt(m.FcAttack),
+            TgtOrder  = FcOrderToInt(m.FcTargeting),
+            FollowOn  = m.FcFollow,
+        };
+        if (_companionInventories.Remove(idx, out var inv)) b.Inventory = inv;
+        if (_memberEquipment.Remove(idx, out var eq))       b.Equipment = eq;
+        if (_memberProgression.Remove(idx, out var pr))
+        {
+            b.TotalXp = pr.TotalXp;
+            b.SkillXp = new List<long>(pr.SkillXpSnapshot());
+        }
+        if (_memberSpellbooks.Remove(idx, out var sb))
+        {
+            b.PrimarySpell   = sb.Primary?.Name ?? "";
+            b.SecondarySpell = sb.Secondary?.Name ?? "";
+            foreach (var sp in sb.Placed) b.PlacedSpells.Add(sp?.Name ?? "");
+        }
+        if (_memberArmorBaseline.Remove(idx, out var ab)) b.ArmorBaseline = ab;
+        if (_memberActiveSlot.Remove(idx, out var slot))  b.ActiveSlot = slot;
+        _openInventoryMembers.Remove(idx);
+        return b;
+    }
+
+    private void RemapMemberIndex(int from, int to)
+    {
+        if (from == to) return;
+        if (_memberProgression.Remove(from, out var pr))    _memberProgression[to] = pr;
+        if (_companionInventories.Remove(from, out var inv)) _companionInventories[to] = inv;
+        if (_memberSpellbooks.Remove(from, out var sb))     _memberSpellbooks[to] = sb;
+        if (_memberEquipment.Remove(from, out var eq))      _memberEquipment[to] = eq;
+        if (_memberArmorBaseline.Remove(from, out var ab))  _memberArmorBaseline[to] = ab;
+        if (_memberActiveSlot.Remove(from, out var slot))   _memberActiveSlot[to] = slot;
+        if (_openInventoryMembers.Remove(from)) _openInventoryMembers.Add(to);
+    }
+
+    /// <summary>Materialize a dismissed member's kept state at their new
+    /// PartyIndex. Runs inside RecruitActor BEFORE the seed calls, whose
+    /// idempotence guards (non-empty bag / progression present) then skip.</summary>
+    private void RestoreMemberState(ActorRenderState npc, DismissedBundle b)
+    {
+        int idx = npc.PartyIndex;
+        _companionInventories[idx] = b.Inventory;
+        _memberEquipment[idx] = b.Equipment;
+        if (b.ArmorBaseline is not null) _memberArmorBaseline[idx] = b.ArmorBaseline.Value;
+        if (b.ActiveSlot is not null)    _memberActiveSlot[idx] = b.ActiveSlot.Value;
+        if (b.MoveOrder >= 0) npc.FcMovement  = FcMoveFromInt(b.MoveOrder);
+        if (b.AtkOrder  >= 0) npc.FcAttack    = FcAtkFromInt(b.AtkOrder);
+        if (b.TgtOrder  >= 0) npc.FcTargeting = FcTgtFromInt(b.TgtOrder);
+        npc.FcFollow = b.FollowOn;
+        if (_formulas is not null)
+        {
+            var prog = new SiegeFX.Core.Actors.PlayerProgression(npc.Actor, _formulas);
+            var st = npc.Actor.Stats;
+            prog.SeedAuthoredLevels(st.UberLevel, st.MeleeSkill, st.RangedSkill,
+                                    st.NatureMagicSkill, st.CombatMagicSkill);
+            if (b.TotalXp > 0)
+                prog.RestoreFromSave(b.TotalXp, _formulas.LevelForXp(b.TotalXp),
+                                     b.SkillXp.Count > 0 ? b.SkillXp : null);
+            _memberProgression[idx] = prog;
+        }
+        if (!string.IsNullOrEmpty(b.PrimarySpell) || !string.IsNullOrEmpty(b.SecondarySpell)
+            || b.PlacedSpells.Any(sp => !string.IsNullOrEmpty(sp)))
+        {
+            _memberSpellbooks.Remove(idx);
+            if (BookFor(idx) is { } rbook)
+            {
+                SiegeFX.Core.Assets.SpellTemplate? R(string name) =>
+                    string.IsNullOrEmpty(name) ? null : ResolveSlottableSpell(name, debugSpellsEnv: null);
+                rbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   R(b.PrimarySpell));
+                rbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, R(b.SecondarySpell));
+                for (int i = 0; i < rbook.PlacedCount && i < b.PlacedSpells.Count; i++)
+                    rbook.SetPlaced(i, R(b.PlacedSpells[i]));
+                SyncMemberCastFromBook(idx);
+            }
+        }
+    }
+
+    // SC-FC-ORDERS — save-schema mapping: 0/1/2 within each authored radio
+    // group, in the gas's left→right crystal order.
+    private static int FcOrderToInt(Hud.FieldCommandsPanel.Action a) => a switch
+    {
+        Hud.FieldCommandsPanel.Action.MoveFree       => 0,
+        Hud.FieldCommandsPanel.Action.MoveEngage     => 1,
+        Hud.FieldCommandsPanel.Action.MoveHoldGround => 2,
+        Hud.FieldCommandsPanel.Action.AtkFree        => 0,
+        Hud.FieldCommandsPanel.Action.AtkFightback   => 1,
+        Hud.FieldCommandsPanel.Action.AtkHoldFire    => 2,
+        Hud.FieldCommandsPanel.Action.TgtClosest     => 0,
+        Hud.FieldCommandsPanel.Action.TgtStrongest   => 1,
+        Hud.FieldCommandsPanel.Action.TgtWeakest     => 2,
+        _ => -1,
+    };
+    private static Hud.FieldCommandsPanel.Action FcMoveFromInt(int v) => v switch
+    {
+        0 => Hud.FieldCommandsPanel.Action.MoveFree,
+        2 => Hud.FieldCommandsPanel.Action.MoveHoldGround,
+        _ => Hud.FieldCommandsPanel.Action.MoveEngage,
+    };
+    private static Hud.FieldCommandsPanel.Action FcAtkFromInt(int v) => v switch
+    {
+        0 => Hud.FieldCommandsPanel.Action.AtkFree,
+        2 => Hud.FieldCommandsPanel.Action.AtkHoldFire,
+        _ => Hud.FieldCommandsPanel.Action.AtkFightback,
+    };
+    private static Hud.FieldCommandsPanel.Action FcTgtFromInt(int v) => v switch
+    {
+        1 => Hud.FieldCommandsPanel.Action.TgtStrongest,
+        2 => Hud.FieldCommandsPanel.Action.TgtWeakest,
+        _ => Hud.FieldCommandsPanel.Action.TgtClosest,
+    };
+
     // ---- Phase 26b/26c — recruitment + follow ---------------------------
 
     /// <summary>Phase 26b — is this template a hireable companion? DS1
@@ -1790,7 +1951,11 @@ public sealed class RenderHost : IDisposable
             Console.WriteLine($"party: full ({MaxPartySize} max) — can't recruit {hire.Value.Name}");
             return false;
         }
-        if (hire.Value.Cost > 0)
+        // SC-PARTY-LIFECYCLE — a re-invite after disband is free; the hire
+        // cost was paid the first time (the authored hire conversation
+        // replays, but the debit doesn't).
+        bool rejoining = _hiredScids.Contains(npc.Actor.Instance.Scid) || _dismissedCompanions.ContainsKey(npc.Actor.Instance.Scid);
+        if (hire.Value.Cost > 0 && !rejoining)
         {
             if (_progression is null || !_progression.TryDebitGold(hire.Value.Cost))
             {
@@ -1799,9 +1964,12 @@ public sealed class RenderHost : IDisposable
                 return false;
             }
         }
+        _hiredScids.Add(npc.Actor.Instance.Scid);
         RecruitActor(npc);
-        Console.WriteLine($"party: recruited {hire.Value.Name} for {hire.Value.Cost}g " +
-                          $"(party now {_party.Count}/{MaxPartySize})");
+        Console.WriteLine(rejoining
+            ? $"party: {hire.Value.Name} rejoined (party now {_party.Count}/{MaxPartySize})"
+            : $"party: recruited {hire.Value.Name} for {hire.Value.Cost}g " +
+              $"(party now {_party.Count}/{MaxPartySize})");
         return true;
     }
 
@@ -1817,6 +1985,13 @@ public sealed class RenderHost : IDisposable
         npc.PartyIndex = _party.Count;   // leader is 0; append behind
         _party.Add(npc);
         npc.PartyRenderInit = false;
+        npc.CanFight = true;             // disband clears it; rejoin re-arms
+
+        // SC-PARTY-LIFECYCLE — a returning companion gets their kept state
+        // back (XP, backpack, spellbook, worn gear) BEFORE the seed calls
+        // below, whose idempotence guards then skip re-seeding.
+        if (_dismissedCompanions.Remove(npc.Actor.Instance.Scid, out var dismissed))
+            RestoreMemberState(npc, dismissed);
 
         // SC-COMPANION-KIT — seed the recruit's backpack from its authored
         // [inventory][other] il_main carry list (Merik's spell pages, Ulora's
@@ -2170,17 +2345,17 @@ public sealed class RenderHost : IDisposable
             // slot; Engage (default) fights but won't leave the leader's
             // side; Move Freely roams to whatever it can see.
             ActorRenderState? foe = null;
-            if (m.CanFight && _fcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
+            if (m.CanFight && m.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
             {
-                float radius = _fcMovement switch
+                float radius = m.FcMovement switch
                 {
                     Hud.FieldCommandsPanel.Action.MoveHoldGround => 3.5f,
                     Hud.FieldCommandsPanel.Action.MoveFree => m.Brain.AggroRadius * 1.5f,
                     _ => m.Brain.AggroRadius,
                 };
-                foe = SelectEnemyFor(before, radius);
+                foe = SelectEnemyFor(before, radius, m.FcAttack, m.FcTargeting);
                 if (foe is not null
-                    && _fcMovement == Hud.FieldCommandsPanel.Action.MoveEngage)
+                    && m.FcMovement == Hud.FieldCommandsPanel.Action.MoveEngage)
                 {
                     // Engage leash — don't chase a foe that would pull the
                     // follower far off the leader.
@@ -2206,7 +2381,7 @@ public sealed class RenderHost : IDisposable
                 // follower along a stale wander leg when it's parked.)
                 m.Brain.ForceIdle();
                 bool moving = false;
-                if (_fcFollow)
+                if (m.FcFollow)
                 {
                     var slot = SnapToNavmesh(
                         PartyFormationSlot(_partyFormation, m.PartyIndex, leaderPos, leaderFace),
@@ -2280,10 +2455,11 @@ public sealed class RenderHost : IDisposable
     /// weakest (by MaxLife); attack=fightback restricts to enemies already
     /// aggroed (their brain is chasing/attacking). Skips the player and party
     /// members so a follower only ever swings at real enemies.</summary>
-    private ActorRenderState? SelectEnemyFor(Vector3 pos, float radius)
+    private ActorRenderState? SelectEnemyFor(Vector3 pos, float radius,
+        Hud.FieldCommandsPanel.Action atkOrder, Hud.FieldCommandsPanel.Action tgtOrder)
     {
-        bool fightback = _fcAttack == Hud.FieldCommandsPanel.Action.AtkFightback;
-        var mode = _fcTargeting;
+        bool fightback = atkOrder == Hud.FieldCommandsPanel.Action.AtkFightback;
+        var mode = tgtOrder;
         ActorRenderState? best = null;
         float bestScore = 0f; bool have = false;
         float r2 = radius * radius;
@@ -3660,17 +3836,185 @@ public sealed class RenderHost : IDisposable
     // placeholder cell.
     private string _playerPortraitIconName = "";
 
-    // SC-HERO-PORTRAIT (corrected 2026-07-17) — the player portrait is the
-    // TEMPLATE's authored [actor]portrait_icon, full stop. Receipts: heroes.gas
-    // authors exactly one portrait per gender (base_farmboy = fb_01 paired with
-    // skin_04; base_farmgirl = fg_a_01 with skin_01); character_defaults.gas —
-    // retail's creator persistence — stores chosen face/hair TEXTURES but no
-    // portrait key; no UI gas maps face→portrait. The numbered siblings
-    // (fb_02..06, fg_a_02..) belong to other premade hero templates, not to a
-    // face axis. An earlier face-indexed mapping here was invented and produced
-    // portraits that never matched anything authored; a colorimetric-match
-    // attempt also failed the one authored anchor pair. Both spawn and load now
-    // read the template attribute so every surface shows the same authored art.
+    // SC-HERO-PORTRAIT (corrected ×2, 2026-07-17) — retail renders the player
+    // portrait LIVE from the customized 3D model: /ui/config/character_camera/
+    // character_camera.gas ships a [portrait_camera] block with per-hero
+    // viewer/target offsets and an up vector in the head-bone frame (that's
+    // why no gas maps face→portrait — the portrait IS the character; user
+    // screenshots confirm custom-face portraits in retail). The template's
+    // authored [actor]portrait_icon (heroes.gas: farmboy=fb_01, farmgirl=
+    // fg_a_01) stays as the fallback when the live render isn't available.
+    // RenderPlayerPortrait() below implements the live path; _portraitDirty
+    // re-renders on spawn, load, variant apply and equipment changes.
+
+    private uint _portraitFbo, _portraitFboColor, _portraitFboDepth;
+    private GlTexture? _playerPortraitLive;
+    private bool _portraitDirty;
+    private const int PortraitPx = 128;
+
+    /// <summary>Render the player's head-and-shoulders to a small offscreen
+    /// target using the authored [portrait_camera] frame and rebuild
+    /// <see cref="_playerPortraitLive"/> from the pixels. Runs between frames
+    /// on the GL thread; scene lighting is swapped for a fixed studio key so
+    /// a dark crypt doesn't produce a black portrait, then the lighting
+    /// stamp is invalidated so the world pass re-uploads its own values.</summary>
+    private unsafe void RenderPlayerPortrait()
+    {
+        if (_gl is null || _skinShader is null || _player is null) return;
+        var mesh = _player.Actor.Mesh;
+        if (mesh.BoneCount == 0) return;
+
+        // Lazy FBO: color texture + depth renderbuffer at PortraitPx².
+        if (_portraitFbo == 0)
+        {
+            _portraitFboColor = _gl.GenTexture();
+            _gl.BindTexture(GLEnum.Texture2D, _portraitFboColor);
+            _gl.TexImage2D(GLEnum.Texture2D, 0, (int)GLEnum.Rgba8,
+                           PortraitPx, PortraitPx, 0, GLEnum.Rgba, GLEnum.UnsignedByte, null);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
+            _portraitFboDepth = _gl.GenRenderbuffer();
+            _gl.BindRenderbuffer(GLEnum.Renderbuffer, _portraitFboDepth);
+            _gl.RenderbufferStorage(GLEnum.Renderbuffer, GLEnum.DepthComponent24,
+                                    PortraitPx, PortraitPx);
+            _portraitFbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(GLEnum.Framebuffer, _portraitFbo);
+            _gl.FramebufferTexture2D(GLEnum.Framebuffer, GLEnum.ColorAttachment0,
+                                     GLEnum.Texture2D, _portraitFboColor, 0);
+            _gl.FramebufferRenderbuffer(GLEnum.Framebuffer, GLEnum.DepthAttachment,
+                                        GLEnum.Renderbuffer, _portraitFboDepth);
+            if (_gl.CheckFramebufferStatus(GLEnum.Framebuffer) != GLEnum.FramebufferComplete)
+            {
+                Console.WriteLine("[portrait] FBO incomplete — live portrait disabled");
+                _gl.BindFramebuffer(GLEnum.Framebuffer, 0);
+                _gl.DeleteFramebuffer(_portraitFbo); _portraitFbo = 0;
+                return;
+            }
+        }
+        else _gl.BindFramebuffer(GLEnum.Framebuffer, _portraitFbo);
+
+        _gl.Viewport(0, 0, PortraitPx, PortraitPx);
+        _gl.ClearColor(0f, 0f, 0f, 0f);
+        _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
+        _gl.Enable(EnableCap.DepthTest);
+
+        // Pose: the body's current clip/time (same pick as the main loop).
+        var clips = _player.Actor.Clips;
+        SiegeFX.Core.Assets.PrsAnimation? clip = null;
+        float t = 0f;
+        if (clips.Length > 0)
+        {
+            int cidx = Math.Min(_player.Actor.CurrentClipIndex, clips.Length - 1);
+            clip = clips[cidx];
+            t = clip.AnimLength > 0f ? (float)(_player.AnimTime % clip.AnimLength) : 0f;
+        }
+        int bones = mesh.BoneCount;
+        if (_boneWorldsScratch.Length < bones)
+            _boneWorldsScratch = new Matrix4x4[Math.Max(bones, 64)];
+        AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _boneWorldsScratch);
+
+        // Authored [portrait_camera] (character_camera.gas): offsets in the
+        // head-bone frame; farmboy and farmgirl share the same block —
+        // viewer (0.5, 3.0, -0.5), target (0.1, 0, 0), up (1, 0, 0).
+        int headIdx = -1;
+        for (int i = 0; i < mesh.BoneNames.Count; i++)
+            if (mesh.BoneNames[i].EndsWith("bip01_head", StringComparison.OrdinalIgnoreCase))
+            { headIdx = i; break; }
+        var H = headIdx >= 0 ? _boneWorldsScratch[headIdx] : Matrix4x4.Identity;
+        var eye = Vector3.Transform(new Vector3(0.5f, 3.0f, -0.5f), H);
+        var at  = Vector3.Transform(new Vector3(0.1f, 0f, 0f), H);
+        var upv = Vector3.TransformNormal(new Vector3(1f, 0f, 0f), H);
+        if (upv.LengthSquared() < 1e-6f) upv = Vector3.UnitY;
+        var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.Normalize(upv))
+                * Matrix4x4.CreatePerspectiveFieldOfView(0.45f, 1f, 0.1f, 50f);
+
+        _skinShader.Use();
+        _skinShader.SetMatrix4("uViewProj", pvp);
+        _skinShader.SetMatrix4("uModel", Matrix4x4.Identity);
+        _skinShader.SetInt("uAlbedo", 0);
+        _skinShader.SetInt("uFlipV", 0);
+        // Fixed studio key so the portrait reads the same in a crypt as in a
+        // meadow; stamp invalidated below so the world re-uploads its own.
+        _skinShader.SetInt("uDirCount", 1);
+        _skinShader.SetFloat("uAmbient", 0.52f);
+        Span<Vector3> pdir = stackalloc Vector3[1];
+        pdir[0] = Vector3.Normalize(at - eye);
+        Span<Vector3> pcol = stackalloc Vector3[1];
+        pcol[0] = new Vector3(0.85f, 0.82f, 0.75f);
+        _skinShader.SetVec3Array("uDirDir", pdir);
+        _skinShader.SetVec3Array("uDirColor", pcol);
+        _skinShader.SetInt("uPointCount", 0);
+        _skinShader.SetInt("uUseBakedLight", 0);
+
+        if (_skinScratch.Length < bones)
+            _skinScratch = new Matrix4x4[Math.Max(bones, 64)];
+        if (clip is not null)
+            AnimationRuntime.ComputeSkinMatrices(mesh, clip, t, _skinScratch);
+        else
+            for (int i = 0; i < bones; i++) _skinScratch[i] = Matrix4x4.Identity;
+        _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, bones));
+
+        var subsets = mesh.Subsets;
+        if (subsets.Length == 0)
+        {
+            BindActorSlot(_player.Actor, 0);
+            _player.GlMesh.Draw();
+        }
+        else
+        {
+            int lastSlot = -1;
+            foreach (var sub in subsets)
+            {
+                if (sub.TextureIndex != lastSlot)
+                {
+                    BindActorSlot(_player.Actor, sub.TextureIndex);
+                    lastSlot = sub.TextureIndex;
+                }
+                _player.GlMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+            }
+        }
+
+        // Worn equipment layers (helmet/armor) share the biped skeleton, so
+        // the portrait shows gear exactly like retail's live portrait does.
+        foreach (var layer in _equippedLayers)
+        {
+            int lb = layer.Asp.BoneCount;
+            if (lb == 0 || lb > SkinnedMesh.MaxBones) continue;
+            if (_skinScratch.Length < lb) _skinScratch = new Matrix4x4[Math.Max(lb, 64)];
+            if (clip is not null)
+                AnimationRuntime.ComputeSkinMatrices(layer.Asp, clip, t, _skinScratch);
+            else
+                for (int i = 0; i < lb; i++) _skinScratch[i] = Matrix4x4.Identity;
+            _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, lb));
+            if (layer.Texture is not null)
+            {
+                layer.Texture.Bind(TextureUnit.Texture0);
+                _skinShader.SetInt("uHasTexture", 1);
+            }
+            else _skinShader.SetInt("uHasTexture", 0);
+            var lsub = layer.Asp.Subsets;
+            if (lsub.Length == 0) layer.Mesh.Draw();
+            else foreach (var sub in lsub) layer.Mesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+        }
+
+        // Read back, flip rows (GL reads bottom-up), rebuild the HUD texture.
+        var rgba = new byte[PortraitPx * PortraitPx * 4];
+        fixed (byte* p = rgba)
+            _gl.ReadPixels(0, 0, PortraitPx, PortraitPx, GLEnum.Rgba, GLEnum.UnsignedByte, p);
+        var flipped = new byte[rgba.Length];
+        int stride = PortraitPx * 4;
+        for (int y = 0; y < PortraitPx; y++)
+            System.Buffer.BlockCopy(rgba, (PortraitPx - 1 - y) * stride, flipped, y * stride, stride);
+        _playerPortraitLive?.Dispose();
+        _playerPortraitLive = new GlTexture(_gl, flipped, PortraitPx, PortraitPx, nearestFilter: false);
+
+        // Restore world rendering state.
+        _gl.BindFramebuffer(GLEnum.Framebuffer, 0);
+        var fbsz = _window.FramebufferSize;
+        _gl.Viewport(0, 0, (uint)fbsz.X, (uint)fbsz.Y);
+        _skinLightingStamp = ulong.MaxValue;   // force lighting re-upload
+        Console.WriteLine("[portrait] live portrait rendered");
+    }
     // INFORAIL-CHAR-NAME-CLASS — per-template [actor]screen_class
     // (heroes.gas:376 farmboy = "Farmer"). Set at LoadPlayActors
     // alongside _playerPortraitIconName. Default "Farmer" matches
@@ -6697,7 +7041,7 @@ void main()
                         // Nobody to recruit → dump party follow state so a
                         // not-following member's cause is visible in the console.
                         var lp = _player.CurrentTransform.Translation;
-                        Console.WriteLine($"[dev] party dump: {_party.Count} members, follow={_fcFollow}, formation={_partyFormation}");
+                        Console.WriteLine($"[dev] party dump: {_party.Count} members, formation={_partyFormation}");
                         foreach (var mm in _party)
                         {
                             if (mm.PartyIndex == 0) continue;
@@ -6843,11 +7187,7 @@ void main()
                 }
                 else if (Is("select_all_party_members"))
                 {
-                    _selectedPartyIdx.Clear();
-                    _selectedPartyIdx.Add(0);
-                    foreach (var mem in _party)
-                        if (mem is not null && mem.PartyIndex > 0 && mem.IsPartyMember && !mem.IsDead)
-                            _selectedPartyIdx.Add(mem.PartyIndex);
+                    SetPartySelection(-1);
                     Console.WriteLine($"[cmd] select all ({_selectedPartyIdx.Count} member(s))");
                 }
                 // Field-command orders — movement (authored Alt+Q/W/E),
@@ -7276,7 +7616,8 @@ void main()
                     // not), so its clicks are always live; the team-portrait
                     // cells only exist once followers have joined.
                     var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y,
-                                                 _fcMinimized, _fcCommandsCollapsed);
+                                                 _fcMinimized, _fcCommandsCollapsed,
+                                                 showChat: _mpNetSession is not null);
                     if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
 
                     if (_party.Count > 1)
@@ -7294,7 +7635,7 @@ void main()
                                     // cursor-held item stays bound to its source list.
                                     if (_cursorItem is null)
                                     {
-                                        _selectedPartyIndex = pidx;
+                                        SetPartySelection(pidx);
                                         _paperdollTargetIndex = pidx;
                                         _charPanelOpen = true;
                                         _inventoryOpen = true;
@@ -7305,14 +7646,14 @@ void main()
                                     // >>> toggles this companion's inventory panel
                                     // in the multi-inventory row (opening the main
                                     // inventory too, which it tiles beside).
-                                    _selectedPartyIndex = pidx;
+                                    SetPartySelection(pidx);
                                     _inventoryOpen = true;
                                     if (!_openInventoryMembers.Add(pidx))
                                         _openInventoryMembers.Remove(pidx);
                                     break;
                                 case Hud.TeamPortraits.HitKind.Slot:
                                     // Switch this companion's active combat mode.
-                                    _selectedPartyIndex = pidx;
+                                    SetPartySelection(pidx);
                                     _memberActiveSlot[pidx] = th.Slot;
                                     break;
                             }
@@ -21642,6 +21983,7 @@ void main()
         TryAutoSave();
         if (!string.IsNullOrEmpty(_heroName))
             Console.WriteLine($"  player: hero '{_heroName}' recorded in the autosave slot");
+        _portraitDirty = true;   // SC-HERO-PORTRAIT — first live head-shot
         if (_playerEquipment.Count > 0)
         {
             var slots = new List<string>(_playerEquipment.Count);
@@ -21875,6 +22217,7 @@ void main()
                         $"  equip: layered '{layer.SlotName}' = '{layer.ItemRef}' " +
                         $"mesh='{layer.MeshBaseName}' bones={asp.BoneCount} tex='{texName}' " +
                         $"({(tex is null ? "MISS" : "OK")})");
+                    _portraitDirty = true;   // SC-HERO-PORTRAIT — gear shows in the live portrait
                     break;
 
                 case SiegeFX.Core.Assets.EquipmentResolver.Strategy.ChestTexture:
@@ -24291,7 +24634,7 @@ void main()
         }
         _awpProgSeeded = true;
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
-                           _awpAtlas, _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
+                           _awpAtlas, _playerPortraitLive ?? _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
                            slot1, slot2, slot3, slot4, _awpInvBtnTex,
                            railOpen: railOpen,
                            inventoryBtnHovAtlas: _awpInvBtnHovTex,
@@ -24339,7 +24682,7 @@ void main()
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
                     st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
                     m.IsDead || c.IsDead,
-                    _selectedPartyIndex == m.PartyIndex,
+                    _selectedPartyIdx.Contains(m.PartyIndex),
                     mSlot1, mSlot2, mSpellIcon, null, mActive));
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
@@ -24351,9 +24694,18 @@ void main()
         // so it draws unconditionally, NOT gated on having followers (the
         // formation/order controls simply have no party to act on until one is
         // recruited).
+        // SC-FC-ORDERS — the crystals/labels show the selected member's
+        // standing orders (retail swaps the rollover text per selection the
+        // same way); solo shows the DS1 defaults the first recruit will get.
+        var fcDisp = FcDisplayMember();
         var fcState = new Hud.FieldCommandsPanel.State(
-            FormationAction(), _fcMovement, _fcAttack, _fcTargeting, _fcFollow,
-            _fcCommandsCollapsed, _fcMinimized);
+            FormationAction(),
+            fcDisp?.FcMovement  ?? Hud.FieldCommandsPanel.Action.MoveEngage,
+            fcDisp?.FcAttack    ?? Hud.FieldCommandsPanel.Action.AtkFightback,
+            fcDisp?.FcTargeting ?? Hud.FieldCommandsPanel.Action.TgtClosest,
+            fcDisp?.FcFollow ?? true,
+            _fcCommandsCollapsed, _fcMinimized,
+            ShowChat: _mpNetSession is not null);
         _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                          TryGetGuiTexture, viewportW, viewportH, fcState);
     }
@@ -24362,7 +24714,6 @@ void main()
     // currently selected party member (leader = 0). Portrait textures are
     // resolved from each member template's [actor]portrait_icon and cached.
     private readonly Hud.TeamPortraits _teamPortraits = new();
-    private int _selectedPartyIndex = -1;
     // Per-companion active combat slot (PartyIndex → 0 melee/1 ranged/2·3 spell),
     // set by clicking a strip slot; absent = auto (their equipped weapon's slot).
     private readonly Dictionary<int, int> _memberActiveSlot = new();
@@ -24571,12 +24922,52 @@ void main()
     // selections drive follower AI in the behavior slice; defaults match DS1
     // (movement engage, attack free, target closest, follow on).
     private readonly Hud.FieldCommandsPanel _fieldPanel = new();
-    private Hud.FieldCommandsPanel.Action _fcMovement  = Hud.FieldCommandsPanel.Action.MoveEngage;
-    private Hud.FieldCommandsPanel.Action _fcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback; // DS1 default: Defend
-    private Hud.FieldCommandsPanel.Action _fcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
-    private bool _fcFollow = true;
     private bool _fcCommandsCollapsed;  // tall tab folds the order/formation controls
     private bool _fcMinimized;          // small button minimizes the panel to the loot bag
+
+    /// <summary>SC-FC-ORDERS — one write path for party selection so the
+    /// selection SET (marquee/hotkeys/movement clicks) and every panel
+    /// consumer (rail highlight, disband, orders scope) can never disagree.
+    /// -1 = the leader plus every living follower ("select all").</summary>
+    private void SetPartySelection(int idx)
+    {
+        _selectedPartyIdx.Clear();
+        if (idx < 0)
+        {
+            _selectedPartyIdx.Add(0);
+            foreach (var mem in _party)
+                if (mem is not null && mem.PartyIndex > 0 && mem.IsPartyMember && !mem.IsDead)
+                    _selectedPartyIdx.Add(mem.PartyIndex);
+        }
+        else _selectedPartyIdx.Add(idx);
+    }
+
+    /// <summary>Followers an order click applies to: the selected followers
+    /// when any are selected, else the whole party (clicking orders with just
+    /// the leader selected commands everyone, the pre-selection behavior).</summary>
+    private IEnumerable<ActorRenderState> FcOrderTargets()
+    {
+        bool anySelected = false;
+        foreach (var i in _selectedPartyIdx) if (i > 0) { anySelected = true; break; }
+        foreach (var m in _party)
+            if (m.PartyIndex > 0 && (!anySelected || _selectedPartyIdx.Contains(m.PartyIndex)))
+                yield return m;
+    }
+
+    /// <summary>The member whose orders the panel displays: the lowest-index
+    /// selected follower, else the lowest-index follower, else null (solo —
+    /// the panel shows the DS1 defaults).</summary>
+    private ActorRenderState? FcDisplayMember()
+    {
+        ActorRenderState? best = null;
+        foreach (var m in _party)
+            if (m.PartyIndex > 0 && _selectedPartyIdx.Contains(m.PartyIndex)
+                && (best is null || m.PartyIndex < best.PartyIndex)) best = m;
+        if (best is null)
+            foreach (var m in _party)
+                if (m.PartyIndex > 0 && (best is null || m.PartyIndex < best.PartyIndex)) best = m;
+        return best;
+    }
 
     private Hud.FieldCommandsPanel.Action FormationAction() => _partyFormation switch
     {
@@ -24588,9 +24979,17 @@ void main()
         _                           => Hud.FieldCommandsPanel.Action.FormDoubleColumn,
     };
 
-    /// <summary>Phase 27 — apply a field_commands click.</summary>
+    /// <summary>Phase 27 / SC-FC-ORDERS — apply a field_commands click. Order
+    /// and follow changes hit the selected followers (or the whole party when
+    /// only the leader is selected), matching the authored per-character
+    /// rollover text; formation is party-wide (one radio_formations group).</summary>
     private void OnFieldCommand(Hud.FieldCommandsPanel.Action a)
     {
+        void SetMove(Hud.FieldCommandsPanel.Action v) { foreach (var m in FcOrderTargets()) m.FcMovement = v; }
+        void SetAtk(Hud.FieldCommandsPanel.Action v)  { foreach (var m in FcOrderTargets()) m.FcAttack = v; }
+        void SetTgt(Hud.FieldCommandsPanel.Action v)  { foreach (var m in FcOrderTargets()) m.FcTargeting = v; }
+        var disp = FcDisplayMember();
+
         switch (a)
         {
             case Hud.FieldCommandsPanel.Action.FormRow:          _partyFormation = PartyFormation.Row; break;
@@ -24602,45 +25001,54 @@ void main()
 
             case Hud.FieldCommandsPanel.Action.MoveFree:
             case Hud.FieldCommandsPanel.Action.MoveEngage:
-            case Hud.FieldCommandsPanel.Action.MoveHoldGround:   _fcMovement = a; break;
+            case Hud.FieldCommandsPanel.Action.MoveHoldGround:   SetMove(a); break;
             case Hud.FieldCommandsPanel.Action.AtkFree:
             case Hud.FieldCommandsPanel.Action.AtkFightback:
-            case Hud.FieldCommandsPanel.Action.AtkHoldFire:      _fcAttack = a; break;
+            case Hud.FieldCommandsPanel.Action.AtkHoldFire:      SetAtk(a); break;
             case Hud.FieldCommandsPanel.Action.TgtClosest:
             case Hud.FieldCommandsPanel.Action.TgtStrongest:
-            case Hud.FieldCommandsPanel.Action.TgtWeakest:       _fcTargeting = a; break;
+            case Hud.FieldCommandsPanel.Action.TgtWeakest:       SetTgt(a); break;
 
-            // Clicking an order label cycles that group to its next order.
+            // Clicking an order label cycles that group to its next order,
+            // starting from the value the panel is displaying.
             case Hud.FieldCommandsPanel.Action.CycleMovement:
-                _fcMovement = _fcMovement switch
+                SetMove((disp?.FcMovement ?? Hud.FieldCommandsPanel.Action.MoveEngage) switch
                 {
                     Hud.FieldCommandsPanel.Action.MoveFree       => Hud.FieldCommandsPanel.Action.MoveEngage,
                     Hud.FieldCommandsPanel.Action.MoveEngage     => Hud.FieldCommandsPanel.Action.MoveHoldGround,
                     _                                            => Hud.FieldCommandsPanel.Action.MoveFree,
-                };
+                });
                 break;
             case Hud.FieldCommandsPanel.Action.CycleAttack:
-                _fcAttack = _fcAttack switch
+                SetAtk((disp?.FcAttack ?? Hud.FieldCommandsPanel.Action.AtkFightback) switch
                 {
                     Hud.FieldCommandsPanel.Action.AtkFree        => Hud.FieldCommandsPanel.Action.AtkFightback,
                     Hud.FieldCommandsPanel.Action.AtkFightback   => Hud.FieldCommandsPanel.Action.AtkHoldFire,
                     _                                            => Hud.FieldCommandsPanel.Action.AtkFree,
-                };
+                });
                 break;
             case Hud.FieldCommandsPanel.Action.CycleTargeting:
-                _fcTargeting = _fcTargeting switch
+                SetTgt((disp?.FcTargeting ?? Hud.FieldCommandsPanel.Action.TgtClosest) switch
                 {
                     Hud.FieldCommandsPanel.Action.TgtClosest     => Hud.FieldCommandsPanel.Action.TgtStrongest,
                     Hud.FieldCommandsPanel.Action.TgtStrongest   => Hud.FieldCommandsPanel.Action.TgtWeakest,
                     _                                            => Hud.FieldCommandsPanel.Action.TgtClosest,
-                };
+                });
                 break;
 
-            case Hud.FieldCommandsPanel.Action.ToggleFollow:     _fcFollow = !_fcFollow; break;
-            case Hud.FieldCommandsPanel.Action.SelectAll:        _selectedPartyIndex = -1; break; // -1 = whole party
-            case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollower(); break;
+            case Hud.FieldCommandsPanel.Action.ToggleFollow:
+            {
+                bool newVal = !(disp?.FcFollow ?? true);
+                foreach (var m in FcOrderTargets()) m.FcFollow = newVal;
+                break;
+            }
+            case Hud.FieldCommandsPanel.Action.SelectAll:        SetPartySelection(-1); break;
+            case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollowers(); break;
             case Hud.FieldCommandsPanel.Action.CollectLoot:      CollectNearbyLoot(); break;
-            case Hud.FieldCommandsPanel.Action.Chat:             break; // MP chat — no-op in single-player
+            case Hud.FieldCommandsPanel.Action.Chat:
+                // MP-only button (hidden in SP). Chat overlay ships with the
+                // MP in-game slice; until then the click is consumed silently.
+                break;
 
             // The tall tab folds just the command controls; the small button
             // minimizes the whole panel. Both play the inventory min/max sound
@@ -24651,24 +25059,50 @@ void main()
         _audio?.Play(SfxGuiInventory);
     }
 
-    /// <summary>Phase 27 — dismiss a recruited follower back to the world (the
-    /// selected member, or the last-recruited if none selected). The NPC keeps
-    /// its brain but reverts to a wandering world actor.</summary>
-    private void DisbandSelectedFollower()
+    /// <summary>Phase 27 / SC-FC-ORDERS — dismiss the SELECTED followers
+    /// (authored: notify(disband_selected_members); no follower selected =
+    /// nothing to disband). Dismissed members stay in the world as friendly,
+    /// talkable NPCs holding their position — talk to them again to re-invite
+    /// (their recruit conversation re-arms in EndConversation's party gate).</summary>
+    private void DisbandSelectedFollowers()
     {
-        ActorRenderState? target = null;
+        var targets = new List<ActorRenderState>();
         foreach (var m in _party)
-            if (m.PartyIndex != 0 && (_selectedPartyIndex < 0 || m.PartyIndex == _selectedPartyIndex))
-                target = m; // last match wins → highest index when "all"
-        if (target is null) return;
-        target.IsPartyMember = false;
-        target.CanFight = false;
-        _party.Remove(target);
-        // Re-index the remaining followers so formation slots stay contiguous.
-        int idx = 1;
-        foreach (var m in _party) if (m.PartyIndex != 0) m.PartyIndex = idx++;
-        _selectedPartyIndex = -1;
-        Console.WriteLine($"party: disbanded {target.Actor.Template.Name} (now {_party.Count}/{MaxPartySize})");
+            if (m.PartyIndex > 0 && _selectedPartyIdx.Contains(m.PartyIndex))
+                targets.Add(m);
+        if (targets.Count == 0)
+        {
+            Console.WriteLine("party: disband — no member selected");
+            return;
+        }
+        foreach (var target in targets)
+        {
+            target.IsPartyMember = false;
+            target.CanFight = false;
+            // Hold position where dismissed, stay alive and clickable: the
+            // brain idles in place (no wander leg dragging them away from
+            // where the player parked them, same as DS1's dismissed guards).
+            // Talking to them re-offers the authored hire conversation
+            // (choice=potential_member re-arms once IsPartyMember is false),
+            // and TryRecruit waives the cost on a rejoin.
+            target.Brain?.ForceIdle();
+            // Keep their per-member state by SCID so a re-invite restores it.
+            _dismissedCompanions[target.Actor.Instance.Scid] = ExtractMemberState(target);
+            _party.Remove(target);
+            Console.WriteLine($"party: disbanded {target.Actor.Template.Name} (now {_party.Count}/{MaxPartySize})");
+        }
+        // Re-index the remaining followers so formation slots stay contiguous —
+        // shifting each member's keyed state (XP, packs, spellbooks) with them.
+        var remaining = new List<ActorRenderState>();
+        foreach (var m in _party) if (m.PartyIndex > 0) remaining.Add(m);
+        remaining.Sort((a2, b2) => a2.PartyIndex.CompareTo(b2.PartyIndex));
+        for (int i = 0; i < remaining.Count; i++)
+        {
+            int newIdx = i + 1;
+            RemapMemberIndex(remaining[i].PartyIndex, newIdx);
+            remaining[i].PartyIndex = newIdx;
+        }
+        SetPartySelection(0);
     }
     private readonly System.Collections.Generic.Dictionary<string, GlTexture?> _memberPortraitCache =
         new(System.StringComparer.OrdinalIgnoreCase);
@@ -25396,6 +25830,10 @@ void main()
             || _handbook.IsOpen || _aboutOpen || DefeatDialogActive) return true;
         // The always-on AWP box (its hover tracker already knows).
         if (_awpHover != Hud.CharacterAwp.HitTarget.None) return true;
+        // The always-on field-commands cluster (bottom right).
+        if (_fieldPanel.HitTest(mx, my, sz.X, sz.Y, _fcMinimized, _fcCommandsCollapsed,
+                                showChat: _mpNetSession is not null)
+            != Hud.FieldCommandsPanel.Action.None) return true;
         return false;
     }
 
@@ -25498,6 +25936,81 @@ void main()
                 var m = followers[hit.Member];
                 return (Vitals(m, ResolveMemberName(m)), gold,
                         "Click to guard this character. Issuing other orders will cancel this command.");
+            }
+        }
+
+        // Field-commands cluster — the authored rollover strings from
+        // /ui/user_education_tooltips.gas, swapped per state the way retail
+        // does (cycle buttons name the ACTIVE order; follow reads on/off;
+        // min/max swap with the fold they'd perform).
+        {
+            var fcHit = _fieldPanel.HitTest(mx, my, vw, vh, _fcMinimized, _fcCommandsCollapsed,
+                                            showChat: _mpNetSession is not null);
+            if (fcHit != Hud.FieldCommandsPanel.Action.None)
+            {
+                var d = FcDisplayMember();
+                var mov = d?.FcMovement  ?? Hud.FieldCommandsPanel.Action.MoveEngage;
+                var atk = d?.FcAttack    ?? Hud.FieldCommandsPanel.Action.AtkFightback;
+                var tgt = d?.FcTargeting ?? Hud.FieldCommandsPanel.Action.TgtClosest;
+                (string, Vector4, string?)? Two(string title, string body) => (title, gold, body);
+                (string, Vector4, string?)? One(string line) => (line, white, null);
+                switch (fcHit)
+                {
+                    case Hud.FieldCommandsPanel.Action.CycleMovement:
+                        return mov switch
+                        {
+                            Hud.FieldCommandsPanel.Action.MoveFree       => Two("Movement Commands - Move Freely", "Character moves anywhere to pursue enemy"),
+                            Hud.FieldCommandsPanel.Action.MoveHoldGround => Two("Movement Commands - Hold Ground", "Character does not move but fights back if attacked"),
+                            _                                            => Two("Movement Commands - Engage", "Character stays in the vicinity to pursue enemy"),
+                        };
+                    case Hud.FieldCommandsPanel.Action.CycleAttack:
+                        return atk switch
+                        {
+                            Hud.FieldCommandsPanel.Action.AtkFree     => Two("Attack Commands - Attack Freely", "Character attacks any enemy"),
+                            Hud.FieldCommandsPanel.Action.AtkHoldFire => Two("Attack Commands - Hold Fire", "Character does not fight, even if attacked"),
+                            _                                         => Two("Attack Commands - Defend", "Character does not attack, only fights back"),
+                        };
+                    case Hud.FieldCommandsPanel.Action.CycleTargeting:
+                        return tgt switch
+                        {
+                            Hud.FieldCommandsPanel.Action.TgtStrongest => Two("Targeting Commands - Target Strongest", "Character attacks strongest enemy in view"),
+                            Hud.FieldCommandsPanel.Action.TgtWeakest   => Two("Targeting Commands - Target Weakest", "Character attacks weakest enemy in view"),
+                            _                                          => Two("Targeting Commands - Target Closest", "Character attacks closest enemy in view"),
+                        };
+                    case Hud.FieldCommandsPanel.Action.MoveFree:       return One("Move Freely - Character moves anywhere to pursue enemy.");
+                    case Hud.FieldCommandsPanel.Action.MoveEngage:     return One("Engage - Character stays in the vicinity to pursue enemy.");
+                    case Hud.FieldCommandsPanel.Action.MoveHoldGround: return One("Hold Ground - Character holds position.");
+                    case Hud.FieldCommandsPanel.Action.AtkFree:        return One("Attack Freely - Character attacks any enemy.");
+                    case Hud.FieldCommandsPanel.Action.AtkFightback:   return One("Defend - Character does not attack, only fights back.");
+                    case Hud.FieldCommandsPanel.Action.AtkHoldFire:    return One("Hold Fire - Character does not fight, even if attacked.");
+                    case Hud.FieldCommandsPanel.Action.TgtClosest:     return One("Target Closest - Character attacks closest enemy in view.");
+                    case Hud.FieldCommandsPanel.Action.TgtStrongest:   return One("Target Strongest - Character attacks strongest enemy in view.");
+                    case Hud.FieldCommandsPanel.Action.TgtWeakest:     return One("Target Weakest - Character attacks weakest enemy in view.");
+                    case Hud.FieldCommandsPanel.Action.FormRow:          return One("Arrange party in a row formation.");
+                    case Hud.FieldCommandsPanel.Action.FormDoubleRow:    return One("Arrange party in a double-row formation.");
+                    case Hud.FieldCommandsPanel.Action.FormColumn:       return One("Arrange party in a column formation.");
+                    case Hud.FieldCommandsPanel.Action.FormDoubleColumn: return One("Arrange party in a double-column formation.");
+                    case Hud.FieldCommandsPanel.Action.FormPyramid:      return One("Arrange party in a wedge formation.");
+                    case Hud.FieldCommandsPanel.Action.FormCircle:       return One("Arrange party in a circle formation.");
+                    case Hud.FieldCommandsPanel.Action.ToggleFollow:
+                        return One((d?.FcFollow ?? true) ? "Disengage follow mode" : "Engage follow mode");
+                    case Hud.FieldCommandsPanel.Action.SelectAll:
+                        return One($"Select all party members (Hotkey: {Key("select_all_party_members")})");
+                    case Hud.FieldCommandsPanel.Action.Disband:
+                        return One("Disband selected party members. You must keep at least one human or dwarven member in your party.");
+                    case Hud.FieldCommandsPanel.Action.CollectLoot:
+                        return One("Order selected member(s) to collect items. If party includes a packmule, items are loaded on the packmule first.");
+                    case Hud.FieldCommandsPanel.Action.Chat:
+                        return One("Click to talk with other players");
+                    case Hud.FieldCommandsPanel.Action.MinimizeFc:
+                        return One(_fcMinimized
+                            ? $"View Field Command Buttons (Hotkey: {Key("field_commands")})"
+                            : $"Hide Field Command Buttons (Hotkey: {Key("field_commands")})");
+                    case Hud.FieldCommandsPanel.Action.CollapseFc:
+                        return One(_fcCommandsCollapsed
+                            ? "View Engagement and Formation Standing Orders"
+                            : "Hide Engagement and Formation Standing Orders");
+                }
             }
         }
 
@@ -29949,16 +30462,27 @@ void main()
     private void CollectNearbyLoot()
     {
         if (_player is null || _lootPiles.Count == 0) return;
-        var pp = _player.CurrentTransform.Translation;
+        // SC-FC-ORDERS — authored: "Order selected member(s) to collect
+        // items." Reach is measured from every selected character (leader
+        // included), so members standing over a pile the leader can't reach
+        // still gather it.
+        var origins = new List<Vector3> { _player.CurrentTransform.Translation };
+        foreach (var m in _party)
+            if (m.PartyIndex > 0 && !m.IsDead && _selectedPartyIdx.Contains(m.PartyIndex))
+                origins.Add(m.CurrentTransform.Translation);
         const float reach = 8f;
         int looted = 0;
         for (int i = _lootPiles.Count - 1; i >= 0; i--)
         {
             var pile = _lootPiles[i];
             if (pile.Throw is not null) continue;
-            float dx = pile.Position.X - pp.X;
-            float dz = pile.Position.Z - pp.Z;
-            if (dx * dx + dz * dz > reach * reach) continue;
+            bool inReach = false;
+            foreach (var o in origins)
+            {
+                float dx = pile.Position.X - o.X, dz = pile.Position.Z - o.Z;
+                if (dx * dx + dz * dz <= reach * reach) { inReach = true; break; }
+            }
+            if (!inReach) continue;
             if (LootPileNow(pile, i)) looted++;
         }
         if (looted > 0) Console.WriteLine($"[cmd] collect loot: {looted} pile(s)");
@@ -30255,6 +30779,14 @@ void main()
         {
             DrawBootScene((float)dt, size.X, size.Y);
             return; // Silk.NET swaps buffers automatically when OnRender returns
+        }
+        // SC-HERO-PORTRAIT — re-render the live head-shot before the world
+        // pass whenever appearance changed (spawn, load, variant, gear).
+        if (_portraitDirty && _player is not null && _skinShader is not null)
+        {
+            _portraitDirty = false;
+            try { RenderPlayerPortrait(); }
+            catch (Exception ex) { Console.WriteLine($"[portrait] render failed: {ex.Message}"); }
         }
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
@@ -31650,7 +32182,8 @@ void main()
                 var sheetAttack = isPlayerSheet ? GetPlayerAttackStats() : sheetMember.Actor.Stats;
                 string sheetClassTitle = isPlayerSheet ? _playerStartingClass : ResolveMemberClass(sheetMember);
                 var portrait = isPlayerSheet
-                    ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
+                    ? (_playerPortraitLive
+                       ?? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName)))
                     : ResolveMemberPortrait(sheetMember.Actor.Template);
                 // SC-ATTR-XP diag — what the sheet READS, one-shot per value
                 // change. Pairs with [attr]'s actor hash: a mismatch means
@@ -32859,7 +33392,7 @@ void main()
         _actors.Clear();
         _roamAuditLastPos.Clear();   // SC-MOB-ROAM-AUDIT — indices are per-load
         _party.Clear();          // Phase 26a — party roster is per-region-load
-        _selectedPartyIndex = -1; // Phase 27 — clear selection with the roster
+        SetPartySelection(0); // Phase 27 — reset selection with the roster
         _paperdollTargetIndex = 0; // sheet returns to the player on region reload
         _memberActiveSlot.Clear();
         _openInventoryMembers.Clear();
@@ -33072,6 +33605,9 @@ void main()
         // cascades, any future NIS) doesn't re-arm or replay on load.
         if (_triggerRuntime is not null)
             world.Triggers = _triggerRuntime.SnapshotStates();
+        // SC-FC-ORDERS — party-wide formation + paid-hire ledger.
+        world.PartyFormation = _partyFormation.ToString();
+        foreach (var sc in _hiredScids) world.HiredScids.Add(sc);
         save.World = world;
 
         foreach (var s in _actors)
@@ -33270,7 +33806,33 @@ void main()
                 cs.SecondarySpell = mbook.Secondary?.Name ?? "";
                 foreach (var sp in mbook.Placed) cs.PlacedSpells.Add(sp?.Name ?? "");
             }
+            // SC-FC-ORDERS — the member's standing orders.
+            cs.MoveOrder = FcOrderToInt(m.FcMovement);
+            cs.AtkOrder  = FcOrderToInt(m.FcAttack);
+            cs.TgtOrder  = FcOrderToInt(m.FcTargeting);
+            cs.FollowOn  = m.FcFollow;
             save.Party.Add(cs);
+        }
+        // SC-PARTY-LIFECYCLE — dismissed companions' kept state rides along as
+        // PartyIndex=-1 rows (their world actor is in save.Actors like any
+        // NPC; this is just the bundle a re-invite restores).
+        foreach (var kv in _dismissedCompanions)
+        {
+            var b = kv.Value;
+            var ds = new SiegeFX.Core.Save.CompanionSnapshot
+            {
+                Scid = kv.Key, PartyIndex = -1,
+                TotalXp = b.TotalXp, SkillXp = new List<long>(b.SkillXp),
+                PrimarySpell = b.PrimarySpell, SecondarySpell = b.SecondarySpell,
+                PlacedSpells = new List<string>(b.PlacedSpells),
+                MoveOrder = b.MoveOrder, AtkOrder = b.AtkOrder,
+                TgtOrder = b.TgtOrder, FollowOn = b.FollowOn,
+            };
+            foreach (var it in b.Inventory)
+                ds.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                { Slot = it.Slot, Reference = it.Reference });
+            foreach (var kv2 in b.Equipment) ds.Equipment[kv2.Key] = kv2.Value;
+            save.Party.Add(ds);
         }
         return save;
     }
@@ -33754,9 +34316,41 @@ void main()
             _companionInventories.Remove(k);
         foreach (var k in _memberEquipment.Keys.Where(k => k > 0).ToList())
             _memberEquipment.Remove(k);
+        // SC-FC-ORDERS / SC-PARTY-LIFECYCLE — party-wide formation, the
+        // paid-hire ledger, and dismissed-companion bundles come off the
+        // save wholesale (runtime state fully replaced, per the ApplySave
+        // runtime-state rule).
+        _hiredScids.Clear();
+        _dismissedCompanions.Clear();
+        if (save.World is { } wsFc)
+        {
+            foreach (var sc in wsFc.HiredScids) _hiredScids.Add(sc);
+            if (!string.IsNullOrEmpty(wsFc.PartyFormation)
+                && Enum.TryParse<PartyFormation>(wsFc.PartyFormation, out var pf))
+                _partyFormation = pf;
+        }
         int partyRestored = 0;
         foreach (var cs in save.Party.OrderBy(c => c.PartyIndex))
         {
+            // Dismissed companion: no roster slot — just re-shelve the bundle
+            // their next re-invite restores. Their world actor was already
+            // patched by the actor loop like any NPC.
+            if (cs.PartyIndex < 0)
+            {
+                var db = new DismissedBundle
+                {
+                    TotalXp = cs.TotalXp, SkillXp = new List<long>(cs.SkillXp),
+                    PrimarySpell = cs.PrimarySpell, SecondarySpell = cs.SecondarySpell,
+                    PlacedSpells = new List<string>(cs.PlacedSpells),
+                    MoveOrder = cs.MoveOrder, AtkOrder = cs.AtkOrder,
+                    TgtOrder = cs.TgtOrder, FollowOn = cs.FollowOn,
+                };
+                foreach (var e in cs.Inventory)
+                    db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                foreach (var kv in cs.Equipment) db.Equipment[kv.Key] = kv.Value;
+                _dismissedCompanions[cs.Scid] = db;
+                continue;
+            }
             ActorRenderState? npc = byScid.TryGetValue(cs.Scid, out var found) ? found : null;
             // Recruited in a region that isn't loaded here → respawn from
             // the template at the saved spot (synthetic instance, same scid).
@@ -33806,6 +34400,12 @@ void main()
                     SyncMemberCastFromBook(npc.PartyIndex);
                 }
             }
+            // SC-FC-ORDERS — the member's saved standing orders (pre-field
+            // saves carry -1 and keep the DS1 defaults RecruitActor set).
+            if (cs.MoveOrder >= 0) npc.FcMovement  = FcMoveFromInt(cs.MoveOrder);
+            if (cs.AtkOrder  >= 0) npc.FcAttack    = FcAtkFromInt(cs.AtkOrder);
+            if (cs.TgtOrder  >= 0) npc.FcTargeting = FcTgtFromInt(cs.TgtOrder);
+            npc.FcFollow = cs.FollowOn;
             var cpos = cs.Position.ToVector3();
             if (npc.Brain is not null) npc.Brain.Teleport(cpos);
             npc.CurrentTransform = Matrix4x4.CreateTranslation(cpos);
@@ -33815,6 +34415,7 @@ void main()
         if (save.Party.Count > 0)
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
 
+        _portraitDirty = true;   // SC-HERO-PORTRAIT — restored appearance → fresh head-shot
         Console.WriteLine($"  load: patched {patched}/{save.Actors.Count} actor(s), " +
                           $"{(missing > 0 ? $"{missing} missing from scene, " : "")}" +
                           $"{save.LootPiles.Count} loot pile(s) restored");
