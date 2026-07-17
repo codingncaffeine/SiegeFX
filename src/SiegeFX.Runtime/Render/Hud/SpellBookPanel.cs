@@ -245,7 +245,7 @@ public sealed class SpellBookPanel
         int slotX = bandX + (int)System.Math.Round(134 * s);
         int iconSz = (int)System.Math.Round(16 * s);
         int iconY = bandY + (bandH - iconSz) / 2;
-        GlTexture? iconTex = spell is null ? null : resolveSpellIcon?.Invoke(spell);
+        GlTexture? iconTex = resolveSpellIcon?.Invoke(spell);
         if (iconTex is not null && icons is not null)
         {
             icons.DrawIcon(vw, vh, iconTex, slotX, iconY, iconSz, iconSz,
