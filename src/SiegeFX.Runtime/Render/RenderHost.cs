@@ -1529,6 +1529,11 @@ public sealed class RenderHost : IDisposable
         // actually moving (blocked path / lost around geometry). Drives the
         // DS1-style catch-up teleport in TickPartyFollowers.
         public float FollowStuckSec;
+        // Set each tick the follow branch actually drove the nav follower —
+        // distinguishes "tried to move and failed" (stuck) from "parked".
+        public bool TriedFollowMove;
+        // Next _playSeconds a stuck-diagnostic line may print (2s throttle).
+        public double FollowDiagAt;
         // SC-MP-RECRUIT — host side: the remote player this NPC companion
         // heels to (-1 = none). Driven by TickRemoteCompanions; poses reach
         // clients through the normal world delta.
@@ -2417,6 +2422,7 @@ public sealed class RenderHost : IDisposable
                 // follower along a stale wander leg when it's parked.)
                 m.Brain.ForceIdle();
                 bool moving = false;
+                m.TriedFollowMove = false;
                 if (m.FcFollow)
                 {
                     var slot = SnapToNavmesh(
@@ -2447,6 +2453,7 @@ public sealed class RenderHost : IDisposable
                             follower.SetTarget(slot);
                         follower.Tick(dt);
                         moving = true;
+                        m.TriedFollowMove = true;
                     }
                 }
                 if (moving)
@@ -2468,20 +2475,37 @@ public sealed class RenderHost : IDisposable
             float len2 = dx * dx + dz * dz;
 
             // SC-PARTY-CATCHUP — DS1's companions never get permanently lost:
-            // left far behind, or grinding against geometry for a while, they
-            // warp to their formation slot. Two triggers, both general:
-            //   far   — leader gap over 40u (ran ahead / elevator / portal);
-            //   stuck — wants to move, isn't moving, gap over 8u for 2.5s.
+            // left far behind, or unable to produce ANY motion while trying
+            // to follow (blocked/off-mesh path start), they warp to their
+            // formation slot. "Tried and failed" keys on the actual nav tick
+            // (TriedFollowMove + no displacement), so a correctly parked
+            // member never counts as stuck, and a blocked one recovers even
+            // right next to the leader.
             if (foe is null && m.FcFollow && !m.IsDead)
             {
                 float lgx = after.X - leaderPos.X, lgz = after.Z - leaderPos.Z;
                 float leaderGap2 = lgx * lgx + lgz * lgz;
-                bool wantedMove = leaderGap2 > 4f;   // outside the hold ring by a margin
-                if (wantedMove && len2 < 1e-4f && leaderGap2 > 64f)
+                if (m.TriedFollowMove && len2 < 1e-4f)
+                {
                     m.FollowStuckSec += dt;
+                    // The receipts the stuck state needs: why is nav refusing?
+                    if (m.FollowStuckSec >= 1.0f && _playSeconds >= m.FollowDiagAt)
+                    {
+                        m.FollowDiagAt = _playSeconds + 2.0;
+                        var fl = m.Brain.Wander.Follower;
+                        bool posOnMesh = _navMesh is not null && _navMesh.TryFindTriangle(before, out _);
+                        bool tgtOnMesh = _navMesh is not null && _navMesh.TryFindTriangle(fl.Target, out _);
+                        Console.WriteLine(
+                            $"[party-diag] {m.Actor.Template.Name}: stuck {m.FollowStuckSec:F1}s " +
+                            $"leaderGap={MathF.Sqrt(leaderGap2):F1} pos=({before.X:F1},{before.Z:F1}) " +
+                            $"target=({fl.Target.X:F1},{fl.Target.Z:F1}) blocked={fl.PathBlocked} " +
+                            $"reached={fl.ReachedGoal} posOnMesh={posOnMesh} tgtOnMesh={tgtOnMesh} " +
+                            $"speed={fl.Speed:F1}");
+                    }
+                }
                 else
                     m.FollowStuckSec = 0f;
-                if (leaderGap2 > 40f * 40f || m.FollowStuckSec > 2.5f)
+                if (leaderGap2 > 40f * 40f || m.FollowStuckSec > 2.0f)
                 {
                     var wslot = SnapToNavmesh(
                         PartyFormationSlot(_partyFormation, m.PartyIndex, leaderPos, leaderFace),
@@ -4009,10 +4033,12 @@ public sealed class RenderHost : IDisposable
         var face = _playerFacing.LengthSquared() > 0.01f
             ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
             : Vector3.UnitZ;
-        var eye = headWorld + face * 2.7f + new Vector3(0f, 0.18f, 0f);
-        var at  = headWorld + new Vector3(0f, 0.05f, 0f);
+        // Tight head-and-shoulders bust: ~1.15u out along the facing, wide
+        // enough FOV that the head fills most of the 128² cell.
+        var eye = headWorld + face * 1.15f + new Vector3(0f, 0.10f, 0f);
+        var at  = headWorld + new Vector3(0f, 0.02f, 0f);
         var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.UnitY)
-                * Matrix4x4.CreatePerspectiveFieldOfView(0.42f, 1f, 0.1f, 50f);
+                * Matrix4x4.CreatePerspectiveFieldOfView(0.50f, 1f, 0.05f, 50f);
 
         _skinShader.Use();
         _skinShader.SetMatrix4("uViewProj", pvp);
@@ -4098,12 +4124,12 @@ public sealed class RenderHost : IDisposable
         float avgLum = lumN > 0 ? lumSum / (float)lumN / 255f : 0f;
         if (avgLum > 0.075f)
         {
-            var flipped = new byte[rgba.Length];
-            int stride = PortraitPx * 4;
-            for (int y = 0; y < PortraitPx; y++)
-                System.Buffer.BlockCopy(rgba, (PortraitPx - 1 - y) * stride, flipped, y * stride, stride);
+            // NO row flip: ReadPixels returns rows bottom-up, which is exactly
+            // the DS1 .raw convention every icon texture already uses — the
+            // HUD's portrait draw samples that orientation correctly. The
+            // earlier pre-flip double-flipped and showed the head upside down.
             _playerPortraitLive?.Dispose();
-            _playerPortraitLive = new GlTexture(_gl, flipped, PortraitPx, PortraitPx, nearestFilter: false);
+            _playerPortraitLive = new GlTexture(_gl, rgba, PortraitPx, PortraitPx, nearestFilter: false);
             Console.WriteLine($"[portrait] live portrait rendered (avg luma {avgLum:F2})");
         }
         else
