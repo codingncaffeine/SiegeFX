@@ -13033,8 +13033,13 @@ void main()
         _characterAwp.OffsetY = s.AwpPosY >= 0f ? (int)MathF.Round(s.AwpPosY * vh) : 0;
         float ts = Hud.TeamPortraits.Scale(vh);
         int stripTop = (int)MathF.Round(Hud.TeamPortraits.CellTop0 * ts);
-        _teamPortraits.OffsetX = s.TeamPosX >= 0f ? (int)MathF.Round(s.TeamPosX * vw) : 0;
-        _teamPortraits.OffsetY = s.TeamPosY >= 0f ? (int)MathF.Round(s.TeamPosY * vh) - stripTop : 0;
+        // SC-PARTY-RAIL — unless the strip has its OWN dragged position, it
+        // rides the player's portrait box: new companions dock directly
+        // beneath the leader (and follow if the leader box is moved), each
+        // cell stacking below the previous. An explicit strip drag still
+        // wins — the pieces stay movable.
+        _teamPortraits.OffsetX = s.TeamPosX >= 0f ? (int)MathF.Round(s.TeamPosX * vw) : _characterAwp.OffsetX;
+        _teamPortraits.OffsetY = s.TeamPosY >= 0f ? (int)MathF.Round(s.TeamPosY * vh) - stripTop : _characterAwp.OffsetY;
         var (fcDefX, fcDefY) = FieldCmdDefaultTopLeft(vw, vh);
         _fieldPanel.OffsetX = s.FieldCmdPosX >= 0f ? (int)MathF.Round(s.FieldCmdPosX * vw) - fcDefX : 0;
         _fieldPanel.OffsetY = s.FieldCmdPosY >= 0f ? (int)MathF.Round(s.FieldCmdPosY * vh) - fcDefY : 0;
@@ -17490,8 +17495,22 @@ void main()
     {
         if (_gl is null) return (0, 0);
         int onMesh = 0, offMesh = 0;
+        // SC-PARTY-NO-CLONE — a streamed region must not re-materialize an
+        // actor whose SCID is already live. Field case: recruit Ulora in the
+        // crypt, save elsewhere, reload — the party restore runs before her
+        // home region streams in, so it respawns her (same scid) at the
+        // party's position; when cr_r1 arrived, its placement spawned a
+        // SECOND Ulora standing at the authored recruit spot.
+        var liveScids = new HashSet<uint>(_actors.Count);
+        foreach (var live in _actors) liveScids.Add(live.Actor.Instance.Scid);
         foreach (var actor in actors)
         {
+            if (!liveScids.Add(actor.Instance.Scid))
+            {
+                Console.WriteLine($"  [stream] skip duplicate scid 0x{actor.Instance.Scid:x8} " +
+                                  $"({actor.Template.Name}) — already live (recruited or previously streamed)");
+                continue;
+            }
             if (!_actorMeshCache.TryGetValue(actor.Mesh, out var gl))
             {
                 gl = new SkinnedMesh(_gl, actor.Mesh);
@@ -32989,13 +33008,12 @@ void main()
             }
 
             // SC-HERO-NAME — never DOWNGRADE the name: prefer the save's
-            // HeroName; older saves that predate name persistence fall back
-            // to the save's typed DisplayName, then to whatever this session
-            // already knows. Blanking it here is what surfaced as the
-            // character sheet reading "Adventurer" after a load.
-            _heroName = !string.IsNullOrWhiteSpace(ps.HeroName) ? ps.HeroName
-                      : !string.IsNullOrWhiteSpace(save.DisplayName) ? save.DisplayName
-                      : _heroName;
+            // HeroName; a save that predates name persistence keeps the
+            // session's current (creator/env) name. The save-slot
+            // DisplayName is deliberately NOT in this chain — it labels the
+            // FILE, not the character, and using it painted the save's
+            // filename onto the character sheet.
+            if (!string.IsNullOrWhiteSpace(ps.HeroName)) _heroName = ps.HeroName;
             // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
             // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
             // uses). Sessions started without the creator save a placeholder
