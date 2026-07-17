@@ -32,6 +32,16 @@ public enum MpMsg : byte
     GameStart   = 17,  // host→client: leave staging and relaunch into the region: [regionLen u8][region utf8][difficulty u8]
     PlayerInfo  = 18,  // host→client: a player's character card (relayed ClientInfo, host-stamped id):
                        // [player u8][ClientInfo body]
+    // Host-authoritative loot (SC-MP-LOOT): piles carry a host-issued net id;
+    // clients request takes/drops and mutate only on the host's answer, so two
+    // players can never double-grab one pile.
+    LootTake    = 19,  // client→host: request pile [netId u32]
+    LootDrop    = 20,  // client→host: player dropped items at [x f32][y f32][z f32][count u8][(slotLen u8,slot,refLen u8,ref)*]
+    LootSpawn   = 21,  // host→client: authoritative pile [netId u32][x][y][z][count u8][(slot,ref)*]
+    LootGone    = 22,  // host→client: pile resolved [netId u32][taker u8] — taker adds contents, everyone removes
+    ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][slotLen slot][refLen ref]
+    RecruitRequest = 24, // client→host: hire NPC companion [scid u32]
+    RecruitGrant   = 25, // host→all: NPC joined a player's party [scid u32][player u8]
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a

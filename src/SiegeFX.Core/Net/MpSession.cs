@@ -59,6 +59,23 @@ public sealed class MpSession : IDisposable
     public Action<MpPlayerInfo>? OnPlayerInfo;
     readonly Dictionary<int, MpPlayerInfo> _infos = new(); // host: relay store for late joiners
 
+    // ── SC-MP-LOOT / give / recruit ─────────────────────────────────────
+    /// <summary>Host: a client asks to take pile netId (peer, netId).</summary>
+    public Action<int, uint>? OnLootTake;
+    /// <summary>Host: a client dropped items at (x,y,z) (peer, x, y, z, entries).</summary>
+    public Action<int, float, float, float, List<(string Slot, string Ref)>>? OnLootDrop;
+    /// <summary>Client: the host announced an authoritative pile.</summary>
+    public Action<uint, float, float, float, List<(string Slot, string Ref)>>? OnLootSpawn;
+    /// <summary>Client: a pile resolved (netId, takerPlayer).</summary>
+    public Action<uint, int>? OnLootGone;
+    /// <summary>Both: an item was handed over (fromPlayer, targetPlayer, slot, ref).
+    /// Fires on the machine whose player is the target (host relays).</summary>
+    public Action<int, int, string, string>? OnItemGive;
+    /// <summary>Host: a client asks to hire NPC scid (peer, scid).</summary>
+    public Action<int, uint>? OnRecruitRequest;
+    /// <summary>Both: the host granted a hire (scid, owningPlayer).</summary>
+    public Action<uint, int>? OnRecruitGrant;
+
     /// <summary>This machine's player id (host = 0; client = the id the host
     /// assigned in JoinAccept). Remote-avatar rendering filters this out.</summary>
     public int LocalPlayerId { get; private set; }
@@ -146,6 +163,83 @@ public sealed class MpSession : IDisposable
         var w = new MpWriter().U8((byte)MpMsg.PlayerInfo).U8(info.Player);
         info.WriteBody(w);
         return w.ToArray();
+    }
+
+    static void WriteEntries(MpWriter w, IReadOnlyList<(string Slot, string Ref)> entries)
+    {
+        int n = Math.Min(entries.Count, byte.MaxValue);
+        w.U8((byte)n);
+        for (int i = 0; i < n; i++) { w.Str(entries[i].Slot); w.Str(entries[i].Ref); }
+    }
+    static List<(string Slot, string Ref)> ReadEntries(ref MpReader r)
+    {
+        int n = r.U8();
+        var list = new List<(string, string)>(n);
+        for (int i = 0; i < n && !r.Bad; i++) list.Add((r.Str(), r.Str()));
+        return list;
+    }
+
+    /// <summary>Host: announce an authoritative pile (toPeer -1 = everyone).</summary>
+    public void SendLootSpawn(uint netId, float x, float y, float z,
+                              IReadOnlyList<(string Slot, string Ref)> entries, int toPeer = -1)
+    {
+        if (!IsHost) return;
+        var w = new MpWriter().U8((byte)MpMsg.LootSpawn).U32(netId).F32(x).F32(y).F32(z);
+        WriteEntries(w, entries);
+        if (toPeer < 0) Broadcast(w.ToArray()); else _t.Send(toPeer, w.Span);
+    }
+
+    /// <summary>Host: resolve a pile — taker adds contents, everyone removes.</summary>
+    public void SendLootGone(uint netId, int taker)
+    {
+        if (!IsHost) return;
+        Broadcast(new MpWriter().U8((byte)MpMsg.LootGone).U32(netId).U8((byte)taker).ToArray());
+    }
+
+    public void SendLootTake(uint netId)
+    {
+        if (IsHost) return;
+        _t.Send(0, new MpWriter().U8((byte)MpMsg.LootTake).U32(netId).Span);
+    }
+
+    public void SendLootDrop(float x, float y, float z, IReadOnlyList<(string Slot, string Ref)> entries)
+    {
+        if (IsHost) return;
+        var w = new MpWriter().U8((byte)MpMsg.LootDrop).F32(x).F32(y).F32(z);
+        WriteEntries(w, entries);
+        _t.Send(0, w.Span);
+    }
+
+    /// <summary>Hand an item to another player. The host applies/relays;
+    /// a client sends up for routing.</summary>
+    public void SendItemGive(int targetPlayer, string slot, string itemRef)
+    {
+        var w = new MpWriter().U8((byte)MpMsg.ItemGive)
+            .U8((byte)LocalPlayerId).U8((byte)targetPlayer).Str(slot).Str(itemRef, u16Len: true);
+        if (IsHost) RouteItemGive(LocalPlayerId, targetPlayer, slot, itemRef);
+        else _t.Send(0, w.Span);
+    }
+
+    void RouteItemGive(int from, int target, string slot, string itemRef)
+    {
+        if (target == LocalPlayerId) { OnItemGive?.Invoke(from, target, slot, itemRef); return; }
+        var w = new MpWriter().U8((byte)MpMsg.ItemGive)
+            .U8((byte)from).U8((byte)target).Str(slot).Str(itemRef, u16Len: true);
+        _t.Send(target, w.Span);
+    }
+
+    public void SendRecruitRequest(uint scid)
+    {
+        if (IsHost) return;
+        _t.Send(0, new MpWriter().U8((byte)MpMsg.RecruitRequest).U32(scid).Span);
+    }
+
+    /// <summary>Host: announce a granted hire to every machine (self included).</summary>
+    public void SendRecruitGrant(uint scid, int owningPlayer)
+    {
+        if (!IsHost) return;
+        OnRecruitGrant?.Invoke(scid, owningPlayer);
+        Broadcast(new MpWriter().U8((byte)MpMsg.RecruitGrant).U32(scid).U8((byte)owningPlayer).ToArray());
     }
 
     /// <summary>Pump: drain received frames and (host) tick out state deltas.
@@ -331,6 +425,60 @@ public sealed class MpSession : IDisposable
                 var info = MpPlayerInfo.ReadBody(ref r, pid);
                 if (r.Bad) { NetLog.Warn("session: malformed PlayerInfo — dropped"); return; }
                 OnPlayerInfo?.Invoke(info);
+                break;
+            }
+            case MpMsg.LootTake when IsHost:
+            {
+                uint id = r.U32();
+                if (r.Bad || id == 0) return;
+                OnLootTake?.Invoke(peer, id);
+                break;
+            }
+            case MpMsg.LootDrop when IsHost:
+            {
+                float x = r.F32(), y = r.F32(), z = r.F32();
+                var entries = ReadEntries(ref r);
+                if (r.Bad) { NetLog.Warn($"session: malformed LootDrop from peer {peer} — dropped"); return; }
+                OnLootDrop?.Invoke(peer, x, y, z, entries);
+                break;
+            }
+            case MpMsg.LootSpawn when !IsHost:
+            {
+                uint id = r.U32();
+                float x = r.F32(), y = r.F32(), z = r.F32();
+                var entries = ReadEntries(ref r);
+                if (r.Bad || id == 0) { NetLog.Warn("session: malformed LootSpawn — dropped"); return; }
+                OnLootSpawn?.Invoke(id, x, y, z, entries);
+                break;
+            }
+            case MpMsg.LootGone when !IsHost:
+            {
+                uint id = r.U32(); int taker = r.U8();
+                if (r.Bad || id == 0) return;
+                OnLootGone?.Invoke(id, taker);
+                break;
+            }
+            case MpMsg.ItemGive:
+            {
+                int from = r.U8(), target = r.U8();
+                string slot = r.Str(); string itemRef = r.Str(u16Len: true);
+                if (r.Bad || string.IsNullOrEmpty(itemRef)) return;
+                if (IsHost) RouteItemGive(from, target, slot, itemRef);
+                else if (target == LocalPlayerId) OnItemGive?.Invoke(from, target, slot, itemRef);
+                break;
+            }
+            case MpMsg.RecruitRequest when IsHost:
+            {
+                uint scid = r.U32();
+                if (r.Bad || scid == 0) return;
+                OnRecruitRequest?.Invoke(peer, scid);
+                break;
+            }
+            case MpMsg.RecruitGrant when !IsHost:
+            {
+                uint scid = r.U32(); int player = r.U8();
+                if (r.Bad || scid == 0) return;
+                OnRecruitGrant?.Invoke(scid, player);
                 break;
             }
             case MpMsg.JoinAccept when !IsHost:

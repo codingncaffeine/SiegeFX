@@ -1364,6 +1364,10 @@ public sealed class RenderHost : IDisposable
         public float RestPitch;
         public readonly List<SiegeFX.Core.Actors.LootEntry> Items;
         public LootThrow? Throw;
+        /// <summary>SC-MP-LOOT — host-issued pile id in an MP session
+        /// (0 = local/solo pile). Clients only mutate id-carrying piles
+        /// through the host's LootGone answer.</summary>
+        public uint NetId;
         /// <summary>ALPHA-2C — template used for the ground mesh when the
         /// entries themselves aren't resolvable item templates (world-placed
         /// gold carries a synthetic "lo-hi" gold entry but should render the
@@ -1525,6 +1529,10 @@ public sealed class RenderHost : IDisposable
         // actually moving (blocked path / lost around geometry). Drives the
         // DS1-style catch-up teleport in TickPartyFollowers.
         public float FollowStuckSec;
+        // SC-MP-RECRUIT — host side: the remote player this NPC companion
+        // heels to (-1 = none). Driven by TickRemoteCompanions; poses reach
+        // clients through the normal world delta.
+        public int NetFollowPlayerId = -1;
 
         // SC-MP-INGAME P2 — a stand-in avatar for another human player, driven
         // entirely by the player-pose stream (never by a Brain, and excluded
@@ -1955,6 +1963,22 @@ public sealed class RenderHost : IDisposable
             Console.WriteLine($"party: full ({MaxPartySize} max) — can't recruit {hire.Value.Name}");
             return false;
         }
+        // SC-MP-RECRUIT — a client asks the host to grant the hire (NPCs are
+        // host-simulated); the grant folds the companion into this machine's
+        // party UI. Gold debits locally, friend-trust like damage rolls.
+        if (_mpNetSession is { IsHost: false } recruitClient)
+        {
+            if (hire.Value.Cost > 0
+                && (_progression is null || !_progression.TryDebitGold(hire.Value.Cost)))
+            {
+                Console.WriteLine($"party: can't afford {hire.Value.Name} " +
+                                  $"({hire.Value.Cost}g, have {_progression?.Gold ?? 0}g)");
+                return false;
+            }
+            recruitClient.SendRecruitRequest(npc.Actor.Instance.Scid);
+            Console.WriteLine($"party: hire request sent for {hire.Value.Name}");
+            return true;   // the accept line plays; the grant completes the join
+        }
         // SC-PARTY-LIFECYCLE — a re-invite after disband is free; the hire
         // cost was paid the first time (the authored hire conversation
         // replays, but the debit doesn't).
@@ -1970,6 +1994,10 @@ public sealed class RenderHost : IDisposable
         }
         _hiredScids.Add(npc.Actor.Instance.Scid);
         RecruitActor(npc);
+        // SC-MP-RECRUIT — the host's own hires announce too, so clients mark
+        // the NPC party-owned (out of the hireable pool, follows visibly).
+        _mpNetSession?.SendRecruitGrant(npc.Actor.Instance.Scid,
+                                        _mpNetSession.LocalPlayerId);
         Console.WriteLine(rejoining
             ? $"party: {hire.Value.Name} rejoined (party now {_party.Count}/{MaxPartySize})"
             : $"party: recruited {hire.Value.Name} for {hire.Value.Cost}g " +
@@ -2334,6 +2362,10 @@ public sealed class RenderHost : IDisposable
         {
             var m = _party[i];
             if (m.PartyIndex == 0 || m.IsDead || m.Brain is null) continue;
+            // SC-MP-RECRUIT — a CLIENT's companion is host-simulated: its
+            // pose arrives via the world delta; driving the local brain too
+            // would fight the stream. It still holds its rail/inventory slot.
+            if (m.IsNetworkOwned) continue;
             m.Actor.Host.TickOverride(dt);
             var follower = m.Brain.Wander.Follower;
             var before = follower.Position;
@@ -4858,11 +4890,40 @@ public sealed class RenderHost : IDisposable
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
         session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"Player {id} left the game"); };
-        session.OnPlayerJoined = (id, nm) => { _mpPlayerNames[id] = nm; MpToast($"{nm} joined the game"); };
+        session.OnPlayerJoined = (id, nm) =>
+        {
+            _mpPlayerNames[id] = nm;
+            MpToast($"{nm} joined the game");
+            // SC-MP-LOOT — catch the joiner up on every live pile (piles
+            // created before the session got no id yet; stamp lazily).
+            if (session.IsHost)
+                foreach (var pl in _lootPiles)
+                {
+                    if (pl.NetId == 0) pl.NetId = ++_netPileSeq;
+                    session.SendLootSpawn(pl.NetId, pl.Position.X, pl.Position.Y, pl.Position.Z,
+                                          PileWireEntries(pl), toPeer: id);
+                }
+        };
         // SC-MP-PLAYERS — character cards + in-game chat overlay.
         session.OnPlayerInfo = MpApplyPlayerInfo;
         session.OnChatFrom += MpOnChatLine;
         _mpPlayerNames[asHost ? 0 : -1] = name;
+        // SC-MP-LOOT / GIVE / RECRUIT — host-authoritative piles, item
+        // hand-offs, and companions for remote players. All callbacks fire
+        // inside session.Tick on the render thread.
+        session.OnItemGive = (from, _, slot, itemRef) => MpOnItemGive(from, slot, itemRef);
+        session.OnRecruitGrant = MpOnRecruitGrant;
+        if (asHost)
+        {
+            session.OnLootTake = MpOnLootTakeHost;
+            session.OnLootDrop = (_, x, y, z, entries) => MpOnLootDropHost(x, y, z, entries);
+            session.OnRecruitRequest = MpOnRecruitRequestHost;
+        }
+        else
+        {
+            session.OnLootSpawn = MpOnLootSpawnClient;
+            session.OnLootGone = MpOnLootGoneClient;
+        }
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
         if (!asHost) session.OnJoinAccepted = id =>
         {
@@ -5010,6 +5071,230 @@ public sealed class RenderHost : IDisposable
             ? n : $"Player {player}";
         _mpChatLog.Add(($"{name}: {text}", _playSeconds + 12.0));
         while (_mpChatLog.Count > 8) _mpChatLog.RemoveAt(0);
+    }
+
+    // ── SC-MP-LOOT — host-authoritative loot piles ───────────────────────
+    private uint _netPileSeq;
+
+    private static List<(string Slot, string Ref)> PileWireEntries(LootPile pile)
+    {
+        var list = new List<(string, string)>(pile.Items.Count);
+        foreach (var it in pile.Items) list.Add((it.Slot ?? "", it.Reference));
+        return list;
+    }
+
+    /// <summary>The single pile-creation chokepoint every code path uses.
+    /// Solo: plain add. Host: stamp a net id and announce. Client: never
+    /// materialize locally — the drop goes up as a request and comes back
+    /// as the host's authoritative LootSpawn (kill loot never spawns
+    /// client-side at all; deaths arrive as corpse flags).</summary>
+    private void AddLootPile(LootPile pile)
+    {
+        if (_mpNetSession is { IsHost: false } c)
+        {
+            c.SendLootDrop(pile.Position.X, pile.Position.Y, pile.Position.Z, PileWireEntries(pile));
+            return;
+        }
+        _lootPiles.Add(pile);
+        if (_mpNetSession is { IsHost: true } h)
+        {
+            if (pile.NetId == 0) pile.NetId = ++_netPileSeq;
+            h.SendLootSpawn(pile.NetId, pile.Position.X, pile.Position.Y, pile.Position.Z,
+                            PileWireEntries(pile));
+        }
+    }
+
+    private int FindPileIndexByNetId(uint id)
+    {
+        for (int i = 0; i < _lootPiles.Count; i++)
+            if (_lootPiles[i].NetId == id) return i;
+        return -1;
+    }
+
+    /// <summary>Host: a client asked for a pile. First request wins — the
+    /// pile resolves for that taker and vanishes for everyone; a losing
+    /// request finds nothing and dies silently (its pile already vanished
+    /// via the winner's LootGone).</summary>
+    private void MpOnLootTakeHost(int peer, uint id)
+    {
+        int idx = FindPileIndexByNetId(id);
+        if (idx < 0) return;
+        _mpNetSession?.SendLootGone(id, peer);
+        _lootPiles.RemoveAt(idx);
+    }
+
+    private void MpOnLootDropHost(float x, float y, float z, List<(string Slot, string Ref)> entries)
+    {
+        var items = new List<SiegeFX.Core.Actors.LootEntry>(entries.Count);
+        foreach (var (slot, rf) in entries)
+            items.Add(new SiegeFX.Core.Actors.LootEntry(slot, rf));
+        AddLootPile(new LootPile(new Vector3(x, y, z), items));
+    }
+
+    private void MpOnLootSpawnClient(uint id, float x, float y, float z, List<(string Slot, string Ref)> entries)
+    {
+        var items = new List<SiegeFX.Core.Actors.LootEntry>(entries.Count);
+        foreach (var (slot, rf) in entries)
+            items.Add(new SiegeFX.Core.Actors.LootEntry(slot, rf));
+        int idx = FindPileIndexByNetId(id);
+        if (idx >= 0)
+        {
+            // Re-announce (partial host pickup): replace contents in place.
+            var p = _lootPiles[idx];
+            p.Items.Clear();
+            p.Items.AddRange(items);
+            p.Position = new Vector3(x, y, z);
+            return;
+        }
+        _lootPiles.Add(new LootPile(new Vector3(x, y, z), items) { NetId = id });
+    }
+
+    private void MpOnLootGoneClient(uint id, int taker)
+    {
+        int idx = FindPileIndexByNetId(id);
+        if (idx < 0) return;
+        var pile = _lootPiles[idx];
+        if (taker == (_mpNetSession?.LocalPlayerId ?? -1))
+        {
+            // Ours — run the normal local pickup (NetId cleared so the
+            // client gate in LootPileNow doesn't re-request).
+            pile.NetId = 0;
+            LootPileNow(pile, idx);
+        }
+        else _lootPiles.RemoveAt(idx);
+    }
+
+    /// <summary>The nearest living remote-player avatar within hand-off
+    /// range of a point (the give-item drop gesture).</summary>
+    private ActorRenderState? RemoteAvatarNear(Vector3 p)
+    {
+        ActorRenderState? best = null;
+        float bd = 1.8f * 1.8f;
+        foreach (var a in _actors)
+        {
+            if (!a.IsRemotePlayer || a.IsDead) continue;
+            var ap = a.CurrentTransform.Translation;
+            float dx = ap.X - p.X, dz = ap.Z - p.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bd) { bd = d2; best = a; }
+        }
+        return best;
+    }
+
+    private void MpOnItemGive(int from, string slot, string itemRef)
+    {
+        var entry = new SiegeFX.Core.Actors.LootEntry(slot ?? "", itemRef);
+        var working = new List<SiegeFX.Core.Actors.LootEntry>(_playerInventory) { entry };
+        string nm = _mpPlayerNames.TryGetValue(from, out var n) && n.Length > 0 ? n : $"Player {from}";
+        if (Hud.InventoryPanel.CanFitAll(working, TryGetItemGridSize))
+        {
+            _playerInventory.Add(entry);
+            _inventoryPanel.NotifyItemAdded();
+            PlayPutDownSfx(itemRef, _player?.CurrentTransform.Translation ?? default);
+        }
+        else if (_player is not null)
+        {
+            // No room — it lands at your feet (host materializes the pile).
+            AddLootPile(new LootPile(_player.CurrentTransform.Translation,
+                new List<SiegeFX.Core.Actors.LootEntry> { entry }));
+        }
+        _saveToastText = $"{nm} gave you an item.";
+        _saveToastRemaining = SaveToastDuration;
+    }
+
+    // ── SC-MP-RECRUIT — NPC companions for remote players ────────────────
+    /// <summary>Host: validate and grant a client's hire request. The NPC
+    /// stays a host-simulated world actor that now heels to the owner's
+    /// avatar (TickRemoteCompanions); its poses reach every machine through
+    /// the normal world delta.</summary>
+    private void MpOnRecruitRequestHost(int peer, uint scid)
+    {
+        ActorRenderState? npc = null;
+        foreach (var a in _actors)
+            if (a.Actor.Instance.Scid == scid) { npc = a; break; }
+        if (npc is null || npc.IsDead || npc.IsPartyMember) return;
+        if (ResolveHireable(npc.Actor.Template) is null) return;
+        npc.IsPartyMember = true;
+        npc.CanFight = true;
+        npc.NetFollowPlayerId = peer;
+        _mpNetSession?.SendRecruitGrant(scid, peer);
+        Console.WriteLine($"[mp] granted hire of {npc.Actor.Template.Name} to player {peer}");
+    }
+
+    /// <summary>Both roles: a hire was granted. The owning machine folds the
+    /// NPC into its own party UI (rail, inventory, spellbook); everyone else
+    /// just marks it party-owned so it leaves the hireable/enemy pools.</summary>
+    private void MpOnRecruitGrant(uint scid, int player)
+    {
+        ActorRenderState? npc = null;
+        foreach (var a in _actors)
+            if (a.Actor.Instance.Scid == scid) { npc = a; break; }
+        if (npc is null) return;
+        int localId = _mpNetSession?.LocalPlayerId ?? 0;
+        if (player == localId)
+        {
+            if (!_party.Contains(npc))
+            {
+                npc.IsPartyMember = false;   // RecruitActor re-sets it
+                RecruitActor(npc);
+            }
+        }
+        else
+        {
+            npc.IsPartyMember = true;
+            npc.NetFollowPlayerId = player;
+        }
+    }
+
+    /// <summary>Host: heel remote players' companions to their owners and
+    /// let them fight with the DS1 default orders. Runs on the fixed step
+    /// next to TickPartyFollowers; poses stream out with the world delta.</summary>
+    private void TickRemoteCompanions(float dt)
+    {
+        if (_mpNetSession is not { IsHost: true }) return;
+        foreach (var m in _actors)
+        {
+            if (m.NetFollowPlayerId < 0 || m.IsDead || m.Brain is null || m.IsRemotePlayer) continue;
+            var avatar = FindRemoteAvatar(m.NetFollowPlayerId);
+            if (avatar is null) continue;
+            var lp = avatar.CurrentTransform.Translation;
+            var follower = m.Brain.Wander.Follower;
+            var before = follower.Position;
+            var foe = m.CanFight
+                ? SelectEnemyFor(before, m.Brain.AggroRadius, m.FcAttack, m.FcTargeting)
+                : null;
+            if (foe is not null)
+            {
+                m.Brain.Tick(dt, foe.CurrentTransform.Translation, foe.Actor.Combat, foe.Actor.Stats);
+            }
+            else
+            {
+                m.Brain.ForceIdle();
+                float gx = lp.X - before.X, gz = lp.Z - before.Z;
+                float gap2 = gx * gx + gz * gz;
+                if (gap2 > 40f * 40f)
+                {
+                    m.Brain.Teleport(lp);
+                }
+                else if (gap2 > 3.5f * 3.5f)
+                {
+                    follower.Speed = MathF.Max(m.Actor.Stats.WalkSpeed, 3.5f)
+                                     * (gap2 > 36f ? 2.2f : 1.2f);
+                    float tdx = follower.Target.X - lp.X, tdz = follower.Target.Z - lp.Z;
+                    if (follower.ReachedGoal || follower.PathBlocked
+                        || (tdx * tdx + tdz * tdz) > 1.0f)
+                        follower.SetTarget(lp);
+                    follower.Tick(dt);
+                }
+            }
+            var after = follower.Position;
+            var mv = after - before;
+            m.IsMoving = (mv.X * mv.X + mv.Z * mv.Z) > 0.0025f;
+            var facev = m.IsMoving
+                ? Vector3.Normalize(new Vector3(mv.X, 0f, mv.Z)) : m.Brain.Facing;
+            m.CurrentTransform = Matrix4x4.CreateRotationY(MathF.Atan2(facev.X, facev.Z))
+                                 * Matrix4x4.CreateTranslation(after);
+        }
     }
 
     // SC-MP-EOS P6 — opt-in AEAD wrap. When SIEGEFX_MP_PASSPHRASE is set (same
@@ -12631,7 +12916,7 @@ void main()
                     SourceScid       = p.Scid,
                     DisplayOverride  = entry.IsGold ? p.TemplateName : "",
                 };
-                _lootPiles.Add(pile);
+                AddLootPile(pile);
                 spawned++;
             }
         }
@@ -19012,6 +19297,7 @@ void main()
                 // Phase 26c — recruited followers trail the leader on the same
                 // fixed cadence (after the leader has moved this tick).
                 TickPartyFollowers((float)stepSec);
+                TickRemoteCompanions((float)stepSec);   // SC-MP-RECRUIT (host only)
                 // Phase 26 — resolve enemies a follower just killed (the player
                 // kill paths self-report; this catches ally kills).
                 SweepCombatDeaths();
@@ -20516,7 +20802,7 @@ void main()
         if (fwd.LengthSquared() < 1e-4f) fwd = Vector3.UnitZ;
         fwd = Vector3.Normalize(new Vector3(fwd.X, 0f, fwd.Z));
         var dropPos = _player.CurrentTransform.Translation + fwd * 1.2f;
-        _lootPiles.Add(new LootPile(dropPos,
+        AddLootPile(new LootPile(dropPos,
             new List<SiegeFX.Core.Actors.LootEntry> { new("", text) })
         {
             RestPitch = ComputeLootRestPitch(text),
@@ -22184,7 +22470,7 @@ void main()
                         // lands near the player so click-to-loot is fast.
                         // Was 2.0u (felt like a mini-trebuchet shot).
                         var dropPos = origin + face * 0.7f;
-                        _lootPiles.Add(new LootPile(dropPos, pileItems));
+                        AddLootPile(new LootPile(dropPos, pileItems));
                         Console.WriteLine($"  ground scrolls: pile of {pileItems.Count} scrolls at " +
                                           $"({dropPos.X:F1},{dropPos.Z:F1}) — walk over to pick up");
                     }
@@ -22314,7 +22600,7 @@ void main()
             var dropSlot = parts.Length == 2 ? parts[0].Trim() : "";
             var dropRef  = parts.Length == 2 ? parts[1].Trim() : debugDrop.Trim();
             var dropPos  = spawnPos + new Vector3(1.5f, 0f, 0f);
-            _lootPiles.Add(new LootPile(dropPos,
+            AddLootPile(new LootPile(dropPos,
                 new List<SiegeFX.Core.Actors.LootEntry> {
                     new(dropSlot, dropRef)
                 })
@@ -28344,7 +28630,7 @@ void main()
                 StartRotation = MathF.Atan2(facing.X, facing.Z),
             }
         };
-        _lootPiles.Add(pile);
+        AddLootPile(pile);
         Console.WriteLine($"  drop: {entry.Reference} at {dropPos.X:F1},{dropPos.Z:F1}");
         // SC-AUDIO-ITEMS — DS1's put_down_toss at the throw ( = the pick_up
         // wav per [global_voice]); the item's own put_down fires when the
@@ -30200,7 +30486,7 @@ void main()
                 var pitch = ComputeLootRestPitch(d.Reference);
                 if (pitch != 0f) { itemPile.RestPitch = pitch; break; }
             }
-            _lootPiles.Add(itemPile);
+            AddLootPile(itemPile);
         }
         if (goldTotal > 0)
         {
@@ -30209,7 +30495,7 @@ void main()
                 new SiegeFX.Core.Actors.LootEntry("gold", $"{goldTotal}-{goldTotal}"),
             };
             var goldTarget = deathPos + new Vector3(-dropDir.X * 0.6f, 0f, -dropDir.Y * 0.6f);
-            _lootPiles.Add(new LootPile(deathPos, goldItems) { Throw = MakeThrow(goldTarget) });
+            AddLootPile(new LootPile(deathPos, goldItems) { Throw = MakeThrow(goldTarget) });
         }
     }
 
@@ -30345,7 +30631,7 @@ void main()
             var pitch = ComputeLootRestPitch(d.Reference);
             if (pitch != 0f) { pile.RestPitch = pitch; break; }
         }
-        _lootPiles.Add(pile);
+        AddLootPile(pile);
     }
 
     // Phase 14c — a dropped "weapon_hand" entry is an upgrade iff its template has
@@ -30575,6 +30861,15 @@ void main()
     {
         if (pile.Throw is not null) return false;
 
+        // SC-MP-LOOT — a client never mutates an id-carrying pile directly:
+        // it asks the host, and the contents come back through LootGone
+        // (first request wins; a race loser's pile simply vanishes).
+        if (_mpNetSession is { IsHost: false } lootClient && pile.NetId != 0)
+        {
+            lootClient.SendLootTake(pile.NetId);
+            return false;
+        }
+
         // ALPHA-2C — piles can carry synthetic gold entries (world-placed
         // gold coins). Credit as currency; never let them reach inventory.
         long pileGold = 0;
@@ -30722,7 +31017,15 @@ void main()
 
         // SC-INV-OVERFLOW — a pile with refused items stays on the ground
         // (the pcontent source counts as consumed only when it empties).
-        if (pile.Items.Count > 0) return accepted.Count > 0 || pileGold > 0;
+        if (pile.Items.Count > 0)
+        {
+            // SC-MP-LOOT — host partial pickup: re-announce the remainder so
+            // every client's copy of the pile matches.
+            if (pile.NetId != 0 && _mpNetSession is { IsHost: true } hsPartial)
+                hsPartial.SendLootSpawn(pile.NetId, pile.Position.X, pile.Position.Y,
+                                        pile.Position.Z, PileWireEntries(pile));
+            return accepted.Count > 0 || pileGold > 0;
+        }
 
         // SC-WORLD-INVENTORY-CONSUMED — record the source SCID before removing
         // so the pile doesn't respawn on next region stream / save-reload.
@@ -30732,6 +31035,9 @@ void main()
             _consumedInventoryScids.Add(pile.SourceScid);
         }
         _lootPiles.RemoveAt(pileIndex);
+        // SC-MP-LOOT — host's own pickup resolves the pile for every client.
+        if (pile.NetId != 0)
+            _mpNetSession?.SendLootGone(pile.NetId, _mpNetSession.LocalPlayerId);
         return true;
     }
 
@@ -33418,6 +33724,21 @@ void main()
         var facing = _playerFacing.LengthSquared() > 0.01f
             ? _playerFacing : new Vector3(1f, 0f, 0f);
         var target = origin + facing * 0.7f;
+        // SC-MP-GIVE — dropping the held item while standing next to a
+        // friend hands it to them instead of tossing it on the ground.
+        if (_mpNetSession is not null && RemoteAvatarNear(target) is { } recv)
+        {
+            string itemRef = _cursorItem.Value.Reference;
+            _mpNetSession.SendItemGive(recv.NetPlayerId, "", itemRef);
+            string rn = _mpPlayerNames.TryGetValue(recv.NetPlayerId, out var rname) && rname.Length > 0
+                ? rname : $"Player {recv.NetPlayerId}";
+            _saveToastText = $"Gave an item to {rn}.";
+            _saveToastRemaining = SaveToastDuration;
+            _audio?.Play(SfxGuiPickup);
+            Console.WriteLine($"  cursor item: gave {itemRef} to player {recv.NetPlayerId}");
+            ClearCursorItem();
+            return;
+        }
         // Strip any es_* tag so the dropped pile is a plain inventory
         // entry. The Slot field comes back when the user picks it up
         // (auto-route currently doesn't re-equip; that lands later).
@@ -33438,7 +33759,7 @@ void main()
                 StartRotationX = 0f,
             },
         };
-        _lootPiles.Add(pile);
+        AddLootPile(pile);
         // SC-AUDIO-ITEMS — toss cue at release; the item's OWN put_down
         // (sword clank, potion clink — not the scroll swish this hardcoded)
         // fires at landing via PlayPileLandSfx.
@@ -33527,7 +33848,7 @@ void main()
                 StartRotationX = 0f,                                     // start flat, tumble forward
             },
         };
-        _lootPiles.Add(pile);
+        AddLootPile(pile);
         // SC-AUDIO-ITEMS — toss at release; the scroll's authored put_down
         // fires at landing (scrolls resolve to s_e_gui_put_down_scroll anyway,
         // so the landing sound matches what this used to hardcode).
@@ -34381,13 +34702,18 @@ void main()
         _playerScriptedNext = 0;
         _scriptedMoves.Clear();
         _nextGeneratorChildScid = 0xFE000001;
-        foreach (var pileSnap in save.LootPiles)
-        {
-            var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
-            foreach (var e in pileSnap.Entries)
-                items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
-            _lootPiles.Add(new LootPile(pileSnap.Position.ToVector3(), items));
-        }
+        // SC-MP-LOOT — a CLIENT restores no piles from the host's snapshot:
+        // the host streams every live pile as an authoritative LootSpawn on
+        // join, so a snapshot restore here would double them (and echo the
+        // dropped ones back to the host as bogus drop requests).
+        if (_mpNetSession is not { IsHost: false })
+            foreach (var pileSnap in save.LootPiles)
+            {
+                var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
+                foreach (var e in pileSnap.Entries)
+                    items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                AddLootPile(new LootPile(pileSnap.Position.ToVector3(), items));
+            }
         // SC-WORLD-INVENTORY-CONSUMED — restore the consumed-pickup set before
         // LoadWorldInventory re-fires; otherwise the re-spawn pass wouldn't
         // know which placements the player already grabbed.
