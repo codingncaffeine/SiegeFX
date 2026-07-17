@@ -3660,25 +3660,17 @@ public sealed class RenderHost : IDisposable
     // placeholder cell.
     private string _playerPortraitIconName = "";
 
-    /// <summary>SC-HERO-PORTRAIT — retail ships one portrait raw per creator
-    /// skin variant (b_gui_ig_i_ic_c_fb_01..06; fg_a_01..03 / fg_b_01..02 /
-    /// fg_c_01) but heroes.gas only authors the per-gender default — the
-    /// variant→portrait mapping is engine-side. The numbered suffixes align
-    /// with the creator's face/skin axis, so index by FaceIdx (naming-derived
-    /// inference; the blonde/darkhair extras stay unused until their axis is
-    /// pinned down). Falls back to the template default on placeholder picks.</summary>
-    private static string PortraitForVariant(HeroVariantPicker? pick, string templateDefault)
-    {
-        if (pick is null) return templateDefault;
-        string[] set = pick.Gender == HeroGender.Girl
-            ? new[] { "b_gui_ig_i_ic_c_fg_a_01", "b_gui_ig_i_ic_c_fg_a_02", "b_gui_ig_i_ic_c_fg_a_03",
-                      "b_gui_ig_i_ic_c_fg_b_01", "b_gui_ig_i_ic_c_fg_b_02", "b_gui_ig_i_ic_c_fg_c_01" }
-            : new[] { "b_gui_ig_i_ic_c_fb_01", "b_gui_ig_i_ic_c_fb_02", "b_gui_ig_i_ic_c_fb_03",
-                      "b_gui_ig_i_ic_c_fb_04", "b_gui_ig_i_ic_c_fb_05", "b_gui_ig_i_ic_c_fb_06" };
-        int i = pick.FaceIdx % set.Length;
-        if (i < 0) i += set.Length;
-        return set[i];
-    }
+    // SC-HERO-PORTRAIT (corrected 2026-07-17) — the player portrait is the
+    // TEMPLATE's authored [actor]portrait_icon, full stop. Receipts: heroes.gas
+    // authors exactly one portrait per gender (base_farmboy = fb_01 paired with
+    // skin_04; base_farmgirl = fg_a_01 with skin_01); character_defaults.gas —
+    // retail's creator persistence — stores chosen face/hair TEXTURES but no
+    // portrait key; no UI gas maps face→portrait. The numbered siblings
+    // (fb_02..06, fg_a_02..) belong to other premade hero templates, not to a
+    // face axis. An earlier face-indexed mapping here was invented and produced
+    // portraits that never matched anything authored; a colorimetric-match
+    // attempt also failed the one authored anchor pair. Both spawn and load now
+    // read the template attribute so every surface shows the same authored art.
     // INFORAIL-CHAR-NAME-CLASS — per-template [actor]screen_class
     // (heroes.gas:376 farmboy = "Farmer"). Set at LoadPlayActors
     // alongside _playerPortraitIconName. Default "Farmer" matches
@@ -6235,6 +6227,9 @@ void main()
         if (string.IsNullOrEmpty(_bootLoadSavePath)) _bootLoadSavePath = null;
         var bootHeroName = Environment.GetEnvironmentVariable("SIEGEFX_HERO_NAME");
         if (!string.IsNullOrWhiteSpace(bootHeroName)) _heroName = bootHeroName;
+        // SC-HERO-NAME receipts — every hop of the name chain logs, so a
+        // dropped name is visible in the session log instead of silent.
+        Console.WriteLine($"[hero] boot name: '{_heroName}' (env {(string.IsNullOrWhiteSpace(bootHeroName) ? "unset" : "set")})");
         // ALPHA-2V — persisted options load BEFORE window creation so the
         // last windowed size (or fullscreen mode), vsync, and MSAA surface
         // apply from the first frame. No prefs file = the historical
@@ -11066,6 +11061,21 @@ void main()
         _ccShirt = StrippedSorted("b_c_pos_a1_shrt_");
         _ccPant  = StrippedSorted("b_c_pos_a1_pant_");
         var skins = StrippedSorted($"b_c_gah_{stem}_skin_");
+        // Two skin families ship under one prefix: 3-digit skin_NNN are the
+        // BALD face bases retail's creator composites hair overlays onto
+        // (character_defaults.gas stores e.g. b_c_gah_fb_skin_007), while
+        // 2-digit skin_NN are pre-baked face+hair atlases used by fixed
+        // templates (heroes.gas farmboy = skin_04). Our creator layers hair
+        // like retail's, so the Face axis must walk only the bald bases —
+        // a baked atlas under a hair overlay double-draws hair. 3-digit
+        // names sort ahead of 2-digit, so saved FaceIdx values keep meaning.
+        var faceBases = new List<string>();
+        foreach (var s in skins)
+        {
+            int us = s.LastIndexOf('_');
+            if (us >= 0 && s.Length - us - 1 == 3) faceBases.Add(s);
+        }
+        if (faceBases.Count > 0) skins = faceBases;
         _ccSkin = new List<string>();
         foreach (var s in skins) if (!IsBlankTexture(s)) _ccSkin.Add(s);
         if (_ccSkin.Count == 0) _ccSkin = skins; // never leave the face with nothing
@@ -13971,6 +13981,12 @@ void main()
             z.Norick.LastClipIndex = di;
             z.Norick.AnimTime = MathF.Max(0f, z.Norick.Actor.Clips[di].AnimLength - 0.02f);
         }
+        // SC-WORLD-SCRIPT-PERSIST — the scripted kill must be a REAL kill:
+        // IsDead drives the actor snapshot (the persistence path that has
+        // existed since Phase 12), the corpse restore on load, the talk/
+        // cursor gates, and this sequence's own re-entry guard. Without it
+        // the save recorded a living NPC and every load stood him back up.
+        z.Norick.IsDead = true;
         z.Phase = NorickPhase.Dead;
         Console.WriteLine("[norick] dead");
         // Hero stands out of the kneel as control returns.
@@ -21291,14 +21307,12 @@ void main()
             // Phase 21-SC-INV-B (round 2) — portrait icon for the Character
             // pane / mini-HUD lives on [actor]portrait_icon. Farmboy ships
             // b_gui_ig_i_ic_c_fb_01; farmgirl variants point at b_gui_ig_i_ic_c_fg_*.
+            // SC-HERO-PORTRAIT — authored value only; the gender pick already
+            // selected the farmboy/farmgirl template, so this is the portrait
+            // retail shows for that hero regardless of face customization.
             _playerPortraitIconName =
                 (_templateStore.GetAttribute(pcTpl, "actor", "portrait_icon") ?? "")
                 .Trim().Trim('"');
-            // SC-HERO-PORTRAIT — heroes.gas authors only the per-gender
-            // default, but retail ships a numbered portrait per creator
-            // skin variant; pick the one matching the chosen face so the
-            // mini-HUD + character sheet show the character you built.
-            _playerPortraitIconName = PortraitForVariant(pick, _playerPortraitIconName);
             // INFORAIL-CHAR-NAME-CLASS — pull the template's
             // [actor]screen_class (heroes.gas:376 farmboy="Farmer").
             // ClassTitleResolver returns this verbatim until any skill
@@ -26920,13 +26934,18 @@ void main()
     /// holds its final pose rather than looping. Falls back silently if the
     /// template doesn't ship a chore_die (Phase 10-SC-2 catalogue showed 179/179
     /// fh_r1 combatants do).</summary>
-    static void BeginDeathChore(ActorRenderState s)
+    static void BeginDeathChore(ActorRenderState s, bool settled = false)
     {
         int dieIdx = s.Actor.GetClipIndex("chore_die");
         if (dieIdx < 0) return;
         s.Actor.PlayChoreOnce("chore_die", float.PositiveInfinity);
-        s.AnimTime = 0;
         s.LastClipIndex = dieIdx;
+        // A load restores corpses, it doesn't re-run deaths: settled lands on
+        // the clip's final frame (same trick as SettleNorickDead) so a scene
+        // full of prior kills comes back still instead of dying in unison.
+        s.AnimTime = settled && dieIdx < s.Actor.Clips.Length
+            ? MathF.Max(0f, s.Actor.Clips[dieIdx].AnimLength - 0.02f)
+            : 0f;
     }
 
     /// <summary>Phase 20c — single funnel for "an actor just died". Credits
@@ -33030,6 +33049,8 @@ void main()
             ElapsedSeconds  = _playSeconds,
             Thumbnail       = _sceneThumbnail,
         };
+        Console.WriteLine($"[save] hero='{_heroName}' variant face={_heroVariant?.FaceIdx ?? -1} " +
+                          $"(empty name here = the chain broke upstream, check [hero] boot line)");
 
         // ALPHA-2G — cross-region world state a long run accumulates.
         var world = new SiegeFX.Core.Save.WorldStateSnapshot();
@@ -33352,7 +33373,7 @@ void main()
             // Phase 12-SC-4 — restored corpses re-enter the death pose so they
             // don't pop back to idle after a quickload. BeginDeathChore is a
             // no-op when the template doesn't ship chore_die.
-            if (snap.IsDead) { s.Brain = null; BeginDeathChore(s); }
+            if (snap.IsDead) { s.Brain = null; BeginDeathChore(s, settled: true); }
             // SC-LOAD-AFTER-DEATH — the mirror case: an actor who is DEAD in
             // the live world but ALIVE in the save (loading after a party
             // wipe) still has chore_die pinned; cancel it so locomotion
@@ -33691,12 +33712,17 @@ void main()
                 // with the saved one (cross-session load), in which case the warn
                 // tells the user the model on screen doesn't match the bytes.
                 string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
-                // SC-HERO-PORTRAIT — the portrait follows the restored
-                // variant's face pick, same mapping the spawn path uses.
-                _playerPortraitIconName = PortraitForVariant(restored, _playerPortraitIconName);
                 if (_templateStore is not null
                     && _templateStore.TryGet(playerTpl, out var pickTpl))
                 {
+                    // SC-HERO-PORTRAIT — same authored read as the spawn path:
+                    // the restored gender's template says which portrait retail
+                    // shows. No derived mapping, so spawn and load can't differ.
+                    var authoredPortrait =
+                        (_templateStore.GetAttribute(pickTpl, "actor", "portrait_icon") ?? "")
+                        .Trim().Trim('"');
+                    if (!string.IsNullOrEmpty(authoredPortrait))
+                        _playerPortraitIconName = authoredPortrait;
                     var ov = restored.BuildOverride(_templateStore, pickTpl);
                     _skinTexOverrideName  = ov?.SkinTextureName;
                     _pantsTexOverrideName = ov?.ClothingTextureName;
