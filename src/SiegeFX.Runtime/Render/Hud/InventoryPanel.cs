@@ -419,14 +419,21 @@ public sealed class InventoryPanel
                 uv.X, uv.Y, uv.Z, uv.W);
         }
 
-        // arrange button: shifted right to rect 279,2,303,30 → panel-rel x=26
-        // (the portrait took the leftmost slot).
-        int arrangeX  = px + (int)System.Math.Round(26 * s);
-        int arrangeY  = py + (int)System.Math.Round(2  * s);
+        // SC-INV-AUTHENTIC-HEADER — DS1 makes the header's leftmost slot
+        // (rect 255,2,279,30 → panel-rel x=2) MUTUALLY EXCLUSIVE: the
+        // single inventory puts button_arrange there and authors NO
+        // portrait; the multi panels put multi_portrait_human_N there
+        // (slot_type=picture, same rect) and author NO arrange. The old
+        // layout crammed both in by shifting arrange right — the
+        // "scrunched header" vs the retail screenshot.
+        int arrangeX  = px + (int)System.Math.Round(2 * s);
+        int arrangeY  = py + (int)System.Math.Round(2 * s);
         int arrangeW  = (int)System.Math.Round(RefArrangeW * s);
         int arrangeH  = (int)System.Math.Round(RefArrangeH * s);
-        ArrangeRect = (arrangeX, arrangeY, arrangeW, arrangeH);
-        if (arrangeUp is not null && icons is not null)
+        ArrangeRect = headerPortrait is null
+            ? (arrangeX, arrangeY, arrangeW, arrangeH)
+            : (0, 0, 0, 0);
+        if (headerPortrait is null && arrangeUp is not null && icons is not null)
         {
             // gas uvcoords = 0,0.125,0.75,1 — bottom-up V-flip rule from the
             // data_bar fold applies (DS1 RAWs are stored bottom-up and gas
@@ -439,12 +446,13 @@ public sealed class InventoryPanel
                 0f, 0f, 0.75f, 1f - 0.125f);
         }
 
-        // gold readout bg: compressed to panel-rel x=49 y=2 w=58 h=28 (302-360)
-        // now the portrait + shifted arrange occupy the header's left. Frames the
-        // button_4 gold box + coin below.
-        int goldBgX = px + (int)System.Math.Round(49 * s);
+        // gold readout bg: authored window_gold_bg rect 279,2,362,30 →
+        // panel-rel x=26 w=83 h=28 (was compressed to x=49 w=58 while the
+        // shifted arrange occupied its left edge). Frames the button_4 gold
+        // box + coin below.
+        int goldBgX = px + (int)System.Math.Round(26 * s);
         int goldBgY = py + (int)System.Math.Round(2  * s);
-        int goldBgW = (int)System.Math.Round(RefGoldTextW * s);
+        int goldBgW = (int)System.Math.Round(83 * s);
         int goldBgH = (int)System.Math.Round(RefGoldBgH * s);
         if (goldBg is not null && icons is not null)
         {
@@ -472,11 +480,11 @@ public sealed class InventoryPanel
                               goldBoxX, goldBoxY, goldBoxW, goldBoxH, "button4", ButtonChrome.State.Up);
         }
 
-        // gold coin pile: multi rect 304,8,320,24 → panel-rel x=51 y=8 w=16 h=16.
-        // The authored rect OVERLAPS the button_gold box's left cap (302..360),
-        // so the coin renders on top of the chrome — over the box's left edge,
-        // reading as "coins at the left of the gold frame".
-        int coinX = px + (int)System.Math.Round(51 * s);
+        // gold coin pile: authored window_gold_icon rect 285,8,301,24 →
+        // panel-rel x=32 y=8 w=16 h=16 — left of the gold box, inside the
+        // wide gold bg frame (the multi-variant x=51 rect was a stopgap
+        // while the shifted arrange covered the authored spot).
+        int coinX = px + (int)System.Math.Round(32 * s);
         int coinY = py + (int)System.Math.Round(8  * s);
         int coinSz = (int)System.Math.Round(RefGoldIconSz * s);
         bool coinDrawn = goldCoinIcon is not null && icons is not null;

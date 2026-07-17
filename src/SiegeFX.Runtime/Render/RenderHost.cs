@@ -19246,6 +19246,15 @@ void main()
             case DefeatPhase.Dialog:
             case DefeatPhase.DialogClosed:
                 _defeatTimer += dt;
+                // SC-LOAD-AFTER-DEATH — belt-and-braces: if the party is no
+                // longer wiped (a load restored them, or a future revive
+                // mechanic), the defeat presentation has no basis — drop it.
+                if (!PartyWiped())
+                {
+                    _defeatPhase = DefeatPhase.None;
+                    _defeatReopenOnLoadClose = false;
+                    break;
+                }
                 if (_defeatReopenOnLoadClose && !_loadDialog.IsOpen)
                 {
                     _defeatReopenOnLoadClose = false;
@@ -31144,8 +31153,13 @@ void main()
                 // The main panel shows the ACTIVE character's backpack + face
                 // (player, or a companion whose sheet was opened by clicking their
                 // portrait). Gold is party-wide, so it always shows the shared purse.
+                // SC-INV-AUTHENTIC-HEADER — DS1's single inventory has NO
+                // header portrait (the party rail carries the faces); the
+                // header slot belongs to button_arrange. Companion views
+                // keep the face there per multi_portrait_human_N (which
+                // replaces arrange on those panels).
                 var activePortrait = _paperdollTargetIndex <= 0
-                    ? (string.IsNullOrEmpty(_playerPortraitIconName) ? null : TryGetGuiTexture(_playerPortraitIconName))
+                    ? null
                     : (_party.FirstOrDefault(m => m.PartyIndex == _paperdollTargetIndex) is { } mem
                         ? ResolveMemberPortrait(mem.Actor.Template) : null);
                 _inventoryPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
@@ -31161,6 +31175,29 @@ void main()
                 // (name, damage/armor, enchant descriptions, requirements —
                 // red when the wearer fails them — and value).
                 DrawItemTooltip(size.X, size.Y);
+
+                // SC-INV-ARRANGE-TIP — authored rollover_help for the arrange
+                // button: user_education_tooltips.gas inventory_arrange =
+                // "Auto-arrange Inventory (Hotkey: <sort_inventory>)", with
+                // the placeholder resolved from the live binding registry.
+                if (_invArrangeHovered && !_invArrangePressed && _textRenderer is not null)
+                {
+                    var slot0 = _keyBindings.Get("sort_inventory")[0];
+                    string hotkey = string.IsNullOrEmpty(slot0) ? "unbound" : slot0.ToUpperInvariant();
+                    string tip = $"Auto-arrange Inventory (Hotkey: {hotkey})";
+                    int tw = _textRenderer.MeasureWidth(tip, 1);
+                    int th = _textRenderer.LineHeight;
+                    var ar = _inventoryPanel.ArrangeRect;
+                    int tx = System.Math.Clamp(ar.X, 4, System.Math.Max(4, size.X - tw - 20));
+                    int ty = ar.Y + ar.H + 4;
+                    // Same authored plate the item stat card uses.
+                    var tipBg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
+                    if (tipBg is not null && _iconRenderer is not null)
+                        _iconRenderer.DrawIcon(size.X, size.Y, tipBg,
+                            tx - 8, ty - 6, tw + 16, th + 12, new Vector4(1f, 1f, 1f, 0.92f));
+                    _textRenderer.DrawString(size.X, size.Y, tip, tx, ty,
+                        new Vector4(0.95f, 0.93f, 0.85f, 1f), 1);
+                }
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
@@ -32621,6 +32658,17 @@ void main()
         // and older default ElapsedSeconds to 0, which is correct for them).
         _playSeconds = save.ElapsedSeconds;
 
+        // SC-LOAD-AFTER-DEATH — the Defeat presentation is pure runtime
+        // state; a load lands the party in the saved (alive) condition, so
+        // the dim + dialog + input swallow must drop. Without this reset,
+        // loading from the defeat screen kept _defeatPhase at Dialog: the
+        // death overlay stayed up over the freshly-loaded game and ate
+        // every click — "I load and immediately die, whichever save".
+        _defeatPhase = DefeatPhase.None;
+        _defeatTimer = 0f;
+        _defeatReopenOnLoadClose = false;
+        _defeatHover = _defeatPressed = "";
+
         // Phase 22-SC-MUSIC-FOLD — clear runtime music state so the
         // post-load region apply re-fires the mood + standard track.
         // Without this reset, a save mid-combat reloaded into a fresh
@@ -32654,12 +32702,20 @@ void main()
         foreach (var snap in save.Actors)
         {
             if (!byScid.TryGetValue(snap.Scid, out var s)) { missing++; continue; }
+            bool wasDead = s.IsDead;
             s.Actor.Combat.RestoreFromSave(snap.CurrentLife, snap.CurrentMana, snap.IsDead);
             s.IsDead = snap.IsDead;
             // Phase 12-SC-4 — restored corpses re-enter the death pose so they
             // don't pop back to idle after a quickload. BeginDeathChore is a
             // no-op when the template doesn't ship chore_die.
             if (snap.IsDead) { s.Brain = null; BeginDeathChore(s); }
+            // SC-LOAD-AFTER-DEATH — the mirror case: an actor who is DEAD in
+            // the live world but ALIVE in the save (loading after a party
+            // wipe) still has chore_die pinned; cancel it so locomotion
+            // resumes — same revive semantics as MpSetNetActorDead. Without
+            // this the hero came back with full HP but stayed collapsed and
+            // "died again" on every load taken from the defeat screen.
+            else if (wasDead) s.Actor.Host.OverrideAnimIndex(-1, 0f);
             // Position restore: actors with a brain (on-mesh) teleport via
             // the follower; off-mesh pinned actors get their CurrentTransform
             // updated directly since they have no follower to drive movement.
