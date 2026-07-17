@@ -191,6 +191,27 @@ else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
     }
     return SfxFilmstripHost.Run(args[1], args[2], args[3], fsOut, fsFrames, fsStrip, fsSeed, fsSize, fsTargetDist, fsScript, fsEffectsDir);
 }
+else if (args.Length >= 1 && args[0] == "--frontend-shot")
+{
+    // Offscreen frontend-chrome still: render FrontendScene at a named
+    // ScreenState into a hidden-window FBO and write a PNG receipt.
+    // usage: --frontend-shot <Logic.dsres> <Objects.dsres> <state>
+    //        [--out=PATH] [--w=N] [--h=N]
+    if (args.Length < 4)
+    {
+        Console.Error.WriteLine("usage: SiegeFX.Runtime --frontend-shot <Logic.dsres> <Objects.dsres> <state> [--out=PATH] [--w=N] [--h=N]");
+        return 1;
+    }
+    string shotOut = System.IO.Path.Combine("goldens", "frontend-shots", args[3] + ".png");
+    int shotW = 1600, shotH = 1200;
+    for (int i = 4; i < args.Length; i++)
+    {
+        if (args[i].StartsWith("--out=", StringComparison.Ordinal)) shotOut = args[i]["--out=".Length..];
+        else if (args[i].StartsWith("--w=", StringComparison.Ordinal) && int.TryParse(args[i]["--w=".Length..], out var sw)) shotW = sw;
+        else if (args[i].StartsWith("--h=", StringComparison.Ordinal) && int.TryParse(args[i]["--h=".Length..], out var sh)) shotH = sh;
+    }
+    return SiegeFX.Runtime.Render.FrontendShotHost.Run(args[1], args[2], args[3], shotOut, shotW, shotH);
+}
 else if (args.Length >= 1 && args[0] == "--selftest-save")
 {
     // Phase 19a self-test. Builds a synthetic SaveFile, writes it through

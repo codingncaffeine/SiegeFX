@@ -184,6 +184,7 @@ echo  111. ALPHA-2: STAR DEVICE         - gd_a_r1: locked usable reports Locked.
 echo  112. NAV VERTICAL-REBIND REPRO    - sd_r1 mine ledge (headless): horseshoe walk must reach at Y=17, never teleport to the Y=44 mountain top
 echo  113. ENEMY ROAM-SIM               - headless 90s wander soak over the path2sd..sd_r2 set; expect 0 FROZEN and no field-report piles
 echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapshot+state-delta+input-authority+chat+malformed-frame safety (loopback)
+echo  115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens\frontend-shots; compare vs retail)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -304,6 +305,7 @@ if /i "%CHOICE%"=="111" goto T111
 if /i "%CHOICE%"=="112" goto T112
 if /i "%CHOICE%"=="113" goto T113
 if /i "%CHOICE%"=="114" goto T114
+if /i "%CHOICE%"=="115" goto T115
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2643,6 +2645,22 @@ echo  chat relays both ways, and the bounds-checked protocol reader
 echo  flags a truncated frame instead of throwing. Expect ALL PASS.]
 echo.
 dotnet "%RUN%" --selftest-net
+echo.
+pause
+goto MENU
+
+:T115
+echo.
+echo --- FRONTEND CHROME SHOTS: offscreen PNG receipts ---
+echo [Renders the FrontendScene chrome at the MainMenu + SinglePlayer
+echo  settled states into goldens\frontend-shots\*.png via a hidden
+echo  window - no clicking through the boot flow needed. Open the PNGs
+echo  and compare against retail screenshots. Chrome layer only: the
+echo  per-widget hover swaps + settled-pose labels RenderHost layers on
+echo  top are not part of the receipt.]
+echo.
+dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" MainMenu
+dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" SinglePlayer
 echo.
 pause
 goto MENU

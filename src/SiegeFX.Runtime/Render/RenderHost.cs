@@ -1035,6 +1035,18 @@ public sealed class RenderHost : IDisposable
     // logo flies up off-screen.
     const string SfxFrontendLogoFlyin  = "frontend_logo_flyin";
     const string SfxFrontendLogoFlyout = "frontend_logo_flyout";
+    // SC-FRONTEND-GEARS — the machinery cues DS1 ships for the menu
+    // chrome itself. Trigger mapping is inferred from the sample names
+    // + durations (the packed retail exe exposes no trigger strings):
+    // menu_enter (5.71s) ≈ the authored to_main_menu ramp_duration=6.0
+    // — the whole machine assembling at boot; menu_open/menu_close
+    // (5.71s/4.89s) = a submenu folding open / closing back; menu_roll
+    // (2.99s) ≈ the 3.33s transition-clip family — the inner-screen
+    // rolls (title drum + rows + window drops).
+    const string SfxFrontendMenuEnter = "frontend_menu_enter";
+    const string SfxFrontendMenuOpen  = "frontend_menu_open";
+    const string SfxFrontendMenuClose = "frontend_menu_close";
+    const string SfxFrontendMenuRoll  = "frontend_menu_roll";
     // Phase 9-SC-2 — death cues are derived from the actor's template's
     // [aspect][voice][die] `*` attribute (universal DS1 pattern). Cache the
     // cue stems we've already pulled out of Sound.dsres so the per-kill
@@ -5070,6 +5082,10 @@ public sealed class RenderHost : IDisposable
     // _playResolver) and disposed on shutdown. Replaces the viii-d
     // BarRenderer scaffolding + viii-e single-mesh CreatorChrome.
     private FrontendScene? _frontendScene;
+    // SC-FRONTEND-GEARS — last frontend state the OnUpdate edge listener
+    // processed; SetState calls land from many places (click handlers,
+    // dialog closes) and every entry edge must fire its machinery cue.
+    private Hud.FrontendScene.ScreenState? _frontendStateSeen;
     // Phase 21d-2a-viii-FE-2 — live 3D hero preview rendered into the
     // character_select listener rect. Owns its own ActorSpawner +
     // SkritRuntime + WorldMessageBus so the preview actor never registers
@@ -8802,6 +8818,15 @@ void main()
                         "/sound/effects/s_e_frontend_logo_flyin.wav");
                     TryRegisterSfx(soundReader, SfxFrontendLogoFlyout,
                         "/sound/effects/s_e_frontend_logo_flyout.wav");
+                    // SC-FRONTEND-GEARS — the chrome's own machinery cues.
+                    TryRegisterSfx(soundReader, SfxFrontendMenuEnter,
+                        "/sound/effects/s_e_frontend_menu_enter.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendMenuOpen,
+                        "/sound/effects/s_e_frontend_menu_open.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendMenuClose,
+                        "/sound/effects/s_e_frontend_menu_close.wav");
+                    TryRegisterSfx(soundReader, SfxFrontendMenuRoll,
+                        "/sound/effects/s_e_frontend_menu_roll.wav");
                 }
                 // SC-MENU-MUSIC — DS1's frontend theme loops under the menu;
                 // region moods take the channel over once a game starts.
@@ -17533,9 +17558,18 @@ void main()
         // owns the timing; this just listens at the boundary.
         if (_bootMode && _frontendScene is not null)
         {
-            var prev = _frontendScene.State;
+            // SC-FRONTEND-GEARS — compare against the last state THIS
+            // block processed, not a same-frame before/after pair around
+            // Tick: the click handlers (Flush*Menu) run AFTER this block
+            // and their SetState edges were invisible to a pre/post-Tick
+            // diff, so entry-edge cues for click-driven transitions
+            // (Main→SP etc) never fired. The persistent-field diff sees
+            // both those (one frame later, imperceptible) and the Tick
+            // auto-advances.
+            var prev = _frontendStateSeen ?? _frontendScene.State;
             _frontendScene.Tick((float)rawDt);
             var now = _frontendScene.State;
+            _frontendStateSeen = now;
             if (prev != now)
             {
                 Console.WriteLine($"[frontend] {prev} -> {now}");
@@ -17543,17 +17577,30 @@ void main()
                     _audio?.Play(SfxFrontendLogoFlyin);
                 else if (now == Hud.FrontendScene.ScreenState.IntroLogoExit)
                     _audio?.Play(SfxFrontendLogoFlyout);
-                // Phase 27-SP-FLYOUT — panel-morph swoosh on the Main ↔ SP
-                // transitions. The big-button click already played on the
-                // press; this is the layered "panel slides" cue so the
-                // motion has audible weight. Reuses the logo-flyout wav
-                // (wood-panel chrome swoosh) since DS1 doesn't ship a
-                // dedicated sub-menu transition wav.
+                // SC-FRONTEND-GEARS — DS1's own machinery cues per state
+                // edge (replaces the logo-flyout placeholder that used to
+                // stand in for "panel slides"; DS1 DOES ship dedicated
+                // menu wavs — see the const block for the name/duration
+                // receipts). menu_enter = the chrome assembling at boot;
+                // menu_open / menu_close = a submenu folding open /
+                // unwinding back to the main menu; menu_roll = the inner
+                // screen-to-screen rolls (title drum, row folds, the
+                // Load-Game window drop, creator + difficulty flips).
+                else if (now == Hud.FrontendScene.ScreenState.IntroMenuFlyIn)
+                    _audio?.Play(SfxFrontendMenuEnter);
                 else if (now == Hud.FrontendScene.ScreenState.MainMenuToSp
-                      || now == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                      || now == Hud.FrontendScene.ScreenState.MainMenuToMp)
+                    _audio?.Play(SfxFrontendMenuOpen);
+                else if (now == Hud.FrontendScene.ScreenState.SinglePlayerToMm
+                      || now == Hud.FrontendScene.ScreenState.MpToMainMenu)
+                    _audio?.Play(SfxFrontendMenuClose);
+                else if (now == Hud.FrontendScene.ScreenState.SinglePlayerToLg
+                      || now == Hud.FrontendScene.ScreenState.LgToSinglePlayer
                       || now == Hud.FrontendScene.ScreenState.SinglePlayerToCd
-                      || now == Hud.FrontendScene.ScreenState.CharacterSelectToSp)
-                    _audio?.Play(SfxFrontendLogoFlyout);
+                      || now == Hud.FrontendScene.ScreenState.CharacterSelectToSp
+                      || now == Hud.FrontendScene.ScreenState.CharacterSelectToDifficulty
+                      || now == Hud.FrontendScene.ScreenState.DifficultyToCharacterSelect)
+                    _audio?.Play(SfxFrontendMenuRoll);
                 // Phase 29-CD-CREATOR-FIX2 — one-shot creator reset on
                 // ENTRY to CharacterSelect (from the SP→CD transition).
                 // Previously Reset() was called every frame whenever

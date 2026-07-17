@@ -591,41 +591,37 @@ public sealed class FrontendScene : IDisposable
     /// add a state-specific subset mask the way <c>DrawCharacterSelectState</c>
     /// masks out text-02 to keep DIFFICULTY from painting over CHOOSE
     /// HERO. Splinter SC-MAINMENU-MENUBARS-LABELS tracks the mask.</para></summary>
+    /// <summary>Side pillars for every non-creator chrome state, following
+    /// the pattern DrawCdChrome proved out: shadows (subset 5, authored
+    /// LAST) as a pre-pass so they sit UNDER everything, then subsets 0-4
+    /// in authored order — doors (0,1) first, columns (2), pillar
+    /// machinery (3) and the door-socket gear + piston ornaments (4) on
+    /// top. Receipts: trace-pose leftside subset 4 (background-02,
+    /// DoorBase/PistonBase bones) lands in the door's round sockets at
+    /// mesh (±0.33, -0.84) ≈ gas (322/476, 499), and the retail SP-menu
+    /// screenshot shows those gear wheels painted OVER the door tile.
+    /// The previous body-then-doors split (Phase 25-CHROME-FOLD6) drew
+    /// the door tile last, blanking the socket gears at every state.
+    /// Right side is the REAL rightside.asp (v2.2 BTRI parse fixed since
+    /// the mirror workaround) — DS1's right pillar carries the framed
+    /// hero-window arch, not a mirror of the left machinery.</summary>
+    private void DrawSideChrome(int vw, int vh, string leftClip, float leftHold,
+                                string rightClip, float rightHold)
+    {
+        var shadowMask = new[] { false, false, false, false, false, true  };
+        var pillarMask = new[] { true,  true,  true,  true,  true,  false };
+        DrawMesh("leftside-shadow",  "leftside",  clip: leftClip,  hold: leftHold,  vw, vh, shadowMask);
+        DrawMesh("rightside-shadow", "rightside", clip: rightClip, hold: rightHold, vw, vh, shadowMask);
+        DrawMesh("leftside",         "leftside",  clip: leftClip,  hold: leftHold,  vw, vh, pillarMask);
+        DrawMesh("rightside",        "rightside", clip: rightClip, hold: rightHold, vw, vh, pillarMask);
+    }
+
     private void DrawMainMenuState(int vw, int vh)
     {
         // Backdrop + side pillars: same poses as cd-state (these are the
         // always-on chrome that doesn't morph between menu screens).
-        // Phase 25-CHROME-FOLD — rightside replaced by an X-mirrored
-        // leftside.asp draw because rightside.asp ships as ASP v2.2 (the
-        // others are v2.3) and the parser produces a stretched render
-        // with the gear bones not animating. Mirroring leftside gives a
-        // symmetric pair with the gear spinning the same on both sides.
-        // Phase 25-CHROME-FOLD4 — leftside.asp ships shadows (subset 5)
-        // that draws AFTER columns (subset 2) in asp subset order, so
-        // alpha-over reads as a dark stripe over the pillars; mask off.
-        // Phase 25-CHROME-FOLD6 — leftside.asp also ships doors-01
-        // (subset 0) and doors-03 (subset 1) BEFORE columns (subset 2)
-        // in the authored subset order, so the pillar columns paint
-        // OVER the door panels — exactly the inverse of DS1's intended
-        // depth (doors are static wood panels that sit IN FRONT of the
-        // pillar, immediately to the left and right of each menu
-        // button). DS1's render order is implicit-3D; ours is 2D draw-
-        // order. Two-pass fix: leftsideBodyMask draws columns +
-        // backgrounds (no doors, no shadows); leftsideDoorsMask draws
-        // doors only on a second pass so they end up on top.
-        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
-        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
-        // Doors second pass — draws AFTER mainmenu+menubars below would
-        // also be valid (then doors would sit above the menu chrome)
-        // but DS1's intent reads as "doors sit on the PILLAR, in front
-        // of columns but behind the menu panel," so we draw doors
-        // before the menu chrome and let the menu paint over them
-        // where they overlap.
-        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
-        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
 
         // Phase 25-CHROME-FOLD2 — subset masks. mainmenu.asp ships 6
         // subsets: 0=chrome, 1+2=text-01L/R (SP-tree labels per atlas
@@ -711,14 +707,9 @@ public sealed class FrontendScene : IDisposable
     /// those clips.</summary>
     private void DrawSpChrome(int vw, int vh, float hold, bool mmToSp)
     {
-        // Backdrop + sides: same masks as MainMenu state.
-        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
-        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
+        // Backdrop + sides: same poses as MainMenu state.
         DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
-        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
-        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
 
         // mainmenu text-01 (subsets 1+2) renders the "SINGLE PLAYER"
         // title at the panel header at SP state — leave enabled.
@@ -787,13 +778,8 @@ public sealed class FrontendScene : IDisposable
     /// backbutton_e2b morphs EXIT → BACK. Reverse = mp2mm / b2e.</summary>
     private void DrawMultiplayerChrome(int vw, int vh, float hold, bool toMp)
     {
-        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
-        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
-        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
-        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
 
         // Title drum: MAIN MENU (text-01, subsets 1+2) rolls away while
         // MULTIPLAYER (text-02, subsets 3+4) rolls in — both atlases ride
@@ -927,13 +913,8 @@ public sealed class FrontendScene : IDisposable
     /// posed.</summary>
     private void DrawLogoExitState(int vw, int vh)
     {
-        var bodyMask  = new[] { false, false, true,  true,  true,  false };
-        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",  "backdrop",  clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask,  xMirror: true);
-        DrawMesh("leftside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask);
-        DrawMesh("rightside-doors","leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
         DrawMesh("logo",      "logo",      clip: "logo-exit",         hold: LogoExitTimeFraction, vw, vh);
     }
 
@@ -954,13 +935,9 @@ public sealed class FrontendScene : IDisposable
         var mainmenuMask = new[] { true, true, true, true, true, false };
         var menubarsMask = new bool[17];
         for (int i = 0; i < 16; i++) menubarsMask[i] = true;
-        var bodyMask  = new[] { false, false, true,  true,  true,  false };
-        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,                   vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, bodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, bodyMask,  xMirror: true);
-        DrawMesh("leftside-doors", "leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, doorsMask);
-        DrawMesh("rightside-doors","leftside", clip: "leftside_flyin", hold: MenuFlyInTimeFraction, vw, vh, doorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_flyin", MenuFlyInTimeFraction,
+                               "rightside_flyin", MenuFlyInTimeFraction);
         DrawMesh("mainmenu",  "mainmenu",  clip: "mainmenu_flyin",     hold: MenuFlyInTimeFraction, vw, vh, mainmenuMask);
         DrawMesh("menubars",  "menubars",  clip: "menubars_flyin",     hold: MenuFlyInTimeFraction, vw, vh, menubarsMask);
         // backbutton has its own flyin too — keep it in the assembly
@@ -979,13 +956,8 @@ public sealed class FrontendScene : IDisposable
     /// title sits in place while the backdrop finishes ramping in.</summary>
     private void DrawLogoDropState(int vw, int vh)
     {
-        var bodyMask  = new[] { false, false, true,  true,  true,  false };
-        var doorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",   "backdrop",  clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, bodyMask,  xMirror: true);
-        DrawMesh("leftside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask);
-        DrawMesh("rightside-doors","leftside", clip: "leftside_default", hold: 0f, vw, vh, doorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
         // logo-enter is the only logo clip we render here; logo-exit
         // fires when leaving the splash state on entry to MainMenu —
         // for now we cut from logo-end-pose to no-logo-at-all when
@@ -1358,13 +1330,8 @@ public sealed class FrontendScene : IDisposable
     /// <see cref="GetInterfaceMapping"/> once the state settles.</summary>
     private void DrawLoadGameChrome(int vw, int vh, float hold, bool spToLg)
     {
-        var leftsideBodyMask  = new[] { false, false, true,  true,  true,  false };
-        var leftsideDoorsMask = new[] { true,  true,  false, false, false, false };
         DrawMesh("backdrop",   "backdrop", clip: null,                hold: 0f, vw, vh);
-        DrawMesh("leftside-body",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask);
-        DrawMesh("rightside-body", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideBodyMask,  xMirror: true);
-        DrawMesh("leftside-doors",  "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask);
-        DrawMesh("rightside-doors", "leftside", clip: "leftside_default", hold: 0f, vw, vh, leftsideDoorsMask, xMirror: true);
+        DrawSideChrome(vw, vh, "leftside_default", 0f, "rightside_default", 0f);
 
         // Title scroll plate + drum: the LOAD GAME art rides PanelBASE4
         // through the sp2lg flip; text-02 + shadows masked off as in the
