@@ -178,6 +178,11 @@ public sealed class WorldStateSnapshot
     public List<uint> BrokenProps { get; set; } = new();
     public List<uint> ClearedBlockers { get; set; } = new();
     public List<ElevatorStopSnapshot> Elevators { get; set; } = new();
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — full trigger-runtime state so
+    /// one-shot story choreography doesn't re-arm or replay on load.
+    /// Empty on saves written before the field existed (triggers then
+    /// boot at their authored defaults, the old behavior).</summary>
+    public List<TriggerStateSnapshot> Triggers { get; set; } = new();
 }
 
 public sealed class AccumSnapshot
@@ -238,6 +243,33 @@ public sealed class ActorSnapshot
     public float  CurrentLife   { get; set; }
     public float  CurrentMana   { get; set; }
     public bool   IsDead        { get; set; }
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — scripted presentation state: an
+    /// actor hidden by a trigger/NIS stays hidden across loads.</summary>
+    public bool   Hidden        { get; set; }
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — a long-pinned override animation
+    /// (scripted death poses, NIS end-frame holds; -1 = none). Restored by
+    /// re-pinning the same clip index so one-time story outcomes — the
+    /// intro's dying NPC, any future set-piece — survive save/quit/load
+    /// without per-case code.</summary>
+    public int    PinnedAnim    { get; set; } = -1;
+}
+
+/// <summary>SC-WORLD-SCRIPT-PERSIST — one trigger instance's mutable state:
+/// activation, fired one-shot rows, held condition edges, and any pending
+/// delayed actions (by flattened action index) with their remaining time.</summary>
+public sealed class TriggerStateSnapshot
+{
+    public uint Scid { get; set; }
+    public bool IsActive { get; set; }
+    public List<int> FiredRows { get; set; } = new();
+    public List<int> HeldRows { get; set; } = new();
+    public List<DelayedActionSnapshot> Delayed { get; set; } = new();
+}
+
+public sealed class DelayedActionSnapshot
+{
+    public int    FlatIndex    { get; set; }
+    public double RemainingSec { get; set; }
 }
 
 /// <summary>Player-character extras beyond what <see cref="ActorSnapshot"/>

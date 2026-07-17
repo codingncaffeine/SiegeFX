@@ -33046,6 +33046,11 @@ void main()
             if (el.AtStop != 1 || el.Moving)
                 world.Elevators.Add(new SiegeFX.Core.Save.ElevatorStopSnapshot
                 { Scid = el.Def.Scid, AtStop = el.Moving ? el.TargetStop : el.AtStop });
+        // SC-WORLD-SCRIPT-PERSIST — full trigger-runtime state so one-shot
+        // story choreography (the intro's Norick death chain, fade
+        // cascades, any future NIS) doesn't re-arm or replay on load.
+        if (_triggerRuntime is not null)
+            world.Triggers = _triggerRuntime.SnapshotStates();
         save.World = world;
 
         foreach (var s in _actors)
@@ -33062,6 +33067,9 @@ void main()
                 CurrentLife  = s.Actor.Combat.CurrentLife,
                 CurrentMana  = s.Actor.Combat.CurrentMana,
                 IsDead       = s.IsDead || s.Actor.Combat.IsDead,
+                // SC-WORLD-SCRIPT-PERSIST — scripted presentation state.
+                Hidden       = s.Hidden,
+                PinnedAnim   = s.Actor.Host.PinnedOverrideAnim,
             });
         }
 
@@ -33352,6 +33360,17 @@ void main()
             // this the hero came back with full HP but stayed collapsed and
             // "died again" on every load taken from the defeat screen.
             else if (wasDead) s.Actor.Host.OverrideAnimIndex(-1, 0f);
+            // SC-WORLD-SCRIPT-PERSIST — scripted presentation state: hidden
+            // actors stay hidden, and a saved long-pinned scripted pose (the
+            // intro's dying NPC, any NIS end-frame hold) re-pins so story
+            // outcomes survive the load. Runs AFTER the revive-cancel above
+            // so a pinned pose in the save wins over the generic cancel.
+            s.Hidden = snap.Hidden;
+            if (!snap.IsDead && snap.PinnedAnim >= 0)
+            {
+                s.Brain = null; // a posed story actor doesn't wander off
+                s.Actor.Host.OverrideAnimIndex(snap.PinnedAnim, 1e9f);
+            }
             // Position restore: actors with a brain (on-mesh) teleport via
             // the follower; off-mesh pinned actors get their CurrentTransform
             // updated directly since they have no follower to drive movement.
@@ -33373,6 +33392,14 @@ void main()
             s.CurrentTransform = Matrix4x4.CreateTranslation(pos);
             patched++;
         }
+
+        // SC-WORLD-SCRIPT-PERSIST — restore the trigger runtime's full
+        // state (activation, fired one-shots, held edges, pending delays)
+        // so one-time story choreography doesn't re-arm or replay. Saves
+        // written before the field carry an empty list and the triggers
+        // keep their boot defaults (the old behavior).
+        if (_triggerRuntime is not null && save.World?.Triggers is { Count: > 0 } trigSnaps)
+            _triggerRuntime.RestoreStates(trigSnaps);
 
         _lootPiles.Clear();
         // SC-WORLD-INVENTORY-PLACED — _inventoryGasLoaded gates LoadWorldInventory

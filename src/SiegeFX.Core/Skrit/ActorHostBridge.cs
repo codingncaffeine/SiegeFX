@@ -52,6 +52,14 @@ public sealed class ActorHostBridge : IHostBridge
     /// would otherwise hide chore_magic behind chore_walk).</summary>
     public bool IsOverrideActive => _overrideRemaining > 0f && _overrideAnimIndex >= 0;
 
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — the override anim index when it is
+    /// PINNED (a long-hold scripted pose: death chores and NIS end-frame
+    /// holds use effectively-infinite durations), -1 otherwise. Transient
+    /// combat overrides (a 1-2s swing) don't qualify — persisting those
+    /// would freeze a mid-swing pose forever on load.</summary>
+    public int PinnedOverrideAnim =>
+        _overrideRemaining > 300f && _overrideAnimIndex >= 0 ? _overrideAnimIndex : -1;
+
     /// <summary>Phase 12-SC-2 — pin a chore on top of the skrit-driven blender for
     /// <paramref name="durationSec"/> seconds. Used by combat to play chore_attack
     /// on a swing without waiting for the skrit state machine to route through it.

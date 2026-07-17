@@ -34,6 +34,93 @@ public sealed class TriggerRuntime
     public IReadOnlyList<TriggerInstance> Instances => _instances;
     public double NowSeconds => _now;
 
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — capture every instance's mutable
+    /// state (activation, fired one-shots, held edges, pending delayed
+    /// actions with remaining time) for the save file.</summary>
+    public List<Save.TriggerStateSnapshot> SnapshotStates()
+    {
+        var list = new List<Save.TriggerStateSnapshot>(_instances.Count);
+        var byScid = new Dictionary<uint, Save.TriggerStateSnapshot>(_instances.Count);
+        foreach (var t in _instances)
+        {
+            var s = new Save.TriggerStateSnapshot { Scid = t.Scid, IsActive = t.IsActive };
+            for (int r = 0; r < t.Matrix.Rows.Count; r++)
+            {
+                ref var rs = ref t.RowStateAt(r);
+                if (rs.FiredOnce) s.FiredRows.Add(r);
+                if (rs.ConditionHeld) s.HeldRows.Add(r);
+            }
+            list.Add(s);
+            byScid[t.Scid] = s;
+        }
+        foreach (var d in _delayed)
+        {
+            if (!byScid.TryGetValue(d.Trigger.Scid, out var owner)) continue;
+            int flat = FlatActionIndex(d.Trigger, d.Action);
+            if (flat >= 0)
+                owner.Delayed.Add(new Save.DelayedActionSnapshot
+                { FlatIndex = flat, RemainingSec = Math.Max(0, d.FireAt - _now) });
+        }
+        return list;
+    }
+
+    /// <summary>SC-WORLD-SCRIPT-PERSIST — apply a saved trigger-state set
+    /// onto the (freshly booted) instances: matched by scid; instances the
+    /// save doesn't mention keep their boot defaults. Pending delayed
+    /// actions re-schedule with their remaining time; stale pendings for
+    /// restored instances are dropped first.</summary>
+    public void RestoreStates(IReadOnlyList<Save.TriggerStateSnapshot> snaps)
+    {
+        if (snaps.Count == 0) return;
+        var byScid = new Dictionary<uint, TriggerInstance>(_instances.Count);
+        foreach (var t in _instances) byScid[t.Scid] = t;
+        var covered = new HashSet<uint>();
+        foreach (var s in snaps) covered.Add(s.Scid);
+        _delayed.RemoveAll(d => covered.Contains(d.Trigger.Scid));
+        int applied = 0;
+        foreach (var s in snaps)
+        {
+            if (!byScid.TryGetValue(s.Scid, out var t)) continue;
+            t.IsActive = s.IsActive;
+            foreach (var r in s.FiredRows)
+                if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).FiredOnce = true;
+            foreach (var r in s.HeldRows)
+                if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).ConditionHeld = true;
+            foreach (var d in s.Delayed)
+            {
+                var act = ActionAtFlatIndex(t, d.FlatIndex);
+                if (act is not null)
+                    _delayed.Add(new DelayedAction(t, act, _now + Math.Max(0, d.RemainingSec)));
+            }
+            applied++;
+        }
+        Console.WriteLine($"  [triggers] restored state for {applied}/{snaps.Count} saved instance(s)");
+    }
+
+    static int FlatActionIndex(TriggerInstance t, TriggerCall action)
+    {
+        int i = 0;
+        foreach (var row in t.Matrix.Rows)
+            foreach (var a in row.Actions)
+            {
+                if (ReferenceEquals(a, action)) return i;
+                i++;
+            }
+        return -1;
+    }
+
+    static TriggerCall? ActionAtFlatIndex(TriggerInstance t, int flat)
+    {
+        int i = 0;
+        foreach (var row in t.Matrix.Rows)
+            foreach (var a in row.Actions)
+            {
+                if (i == flat) return a;
+                i++;
+            }
+        return null;
+    }
+
     /// <summary>Phase 10-SC-1b — occupancy of named trigger_groups this tick.
     /// A row that authors <c>occupants_group = NAME</c> with a satisfied volume condition
     /// (party_member_within_sphere / _bounding_box / _node) marks NAME occupied; consumer
