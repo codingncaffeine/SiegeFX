@@ -65,7 +65,7 @@ public sealed class RenderHost : IDisposable
     // regions can register their decals too (they were launch-time-only).
     private readonly List<DecalRenderer.DecalQuad> _decalQuadsAll = new();
     private readonly List<DecalRenderer.DecalTri> _decalTrisAll = new();
-    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno, uint Guid, bool BoundsCamera)> _drapeNodes = new();
+    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno, uint Guid, bool CameraBlocks)> _drapeNodes = new();
     private readonly Dictionary<uint, SnoModel?> _drapeSnoCache = new();
     private SnoMeshIndex? _drapeIndex;
     private TankFile? _drapeTerrainTank;
@@ -107,9 +107,19 @@ public sealed class RenderHost : IDisposable
     /// <summary>SC-DECALS-STREAM — add drape-sampler entries for region
     /// graphs' nodes. <paramref name="onlyRegions"/> null = all loaded graphs
     /// (boot); a set = just the freshly-streamed ones (incremental).
-    /// SC-CAMERA-BOUNDS — the tuples also carry the snode guid + authored
-    /// bounds_camera flag; the chase camera's constraint ray-cast walks the
-    /// same list.</summary>
+    /// SC-CAMERA-BOUNDS / SC-CAM-OCCLUDES — the tuples also carry the snode
+    /// guid + the camera-blocking flag the chase camera's constraint ray
+    /// walks. That flag is the UNION of the two authored per-node booleans,
+    /// because DS1 splits the job by region type (nodes.gas receipts):
+    ///   fh_r1 (surface): bounds_camera=true on 1690/1707, occludes_camera
+    ///                    true on only 16 — terrain CLAMPS the orbit.
+    ///   cr_r1 (crypt):   bounds_camera=false on ALL 1241, occludes_camera
+    ///                    true on ALL 1241 — walls/caps never clamp, but
+    ///                    anything between camera and player demands the
+    ///                    avoid/tilt resolution (pull in, then steepen).
+    /// Keying the ray off bounds_camera alone meant dungeons authored the
+    /// crypt way had NO constraint at all — the camera sat shallow behind
+    /// unfaded walls and the room read as broken until a manual zoom-in.</summary>
     private void ExtendDrapeNodes(IReadOnlyCollection<string>? onlyRegions)
     {
         if (_drapeIndex is null || _regionLayout is null) return;
@@ -117,6 +127,7 @@ public sealed class RenderHost : IDisposable
         {
             if (onlyRegions is not null &&
                 !onlyRegions.Contains(path, StringComparer.OrdinalIgnoreCase)) continue;
+            int camBounds = 0, camOccl = 0, added = 0;
             foreach (var n in g.Nodes)
             {
                 if (!_regionLayout.TryGetTransform(n.Guid, out var xf)) continue;
@@ -132,8 +143,13 @@ public sealed class RenderHost : IDisposable
                     _drapeSnoCache[n.MeshGuid] = sno;
                 }
                 if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
-                _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera));
+                if (n.BoundsCamera) camBounds++;
+                if (n.OccludesCamera) camOccl++;
+                added++;
+                _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera || n.OccludesCamera));
             }
+            if (added > 0)
+                Console.WriteLine($"  [camera] {path}: {added} nodes, bounds_camera={camBounds}, occludes_camera={camOccl}");
         }
     }
     private WorldLayout? _worldLayout;
@@ -5255,7 +5271,10 @@ public sealed class RenderHost : IDisposable
     // unchanged at the default distance.
     private const float ChaseDistanceMin = 3f;
     private const float ChaseDistanceMax = 18f;
-    private const float ChaseZoomStep    = 0.9f;
+    // SC-CAM-OCCLUDES — DS1 zooms by camera.gas zoom_delta_percentage = 0.25:
+    // each request moves a fraction OF THE CURRENT DISTANCE (fast when far,
+    // fine near the player), not a fixed step.
+    private const float ChaseZoomDeltaPct = 0.25f;
     private const float ChasePitchSlope  = 7f / 9f;
     // Head-height offset so the camera looks at the torso/head of the ~5-foot
     // Farmboy model instead of his feet. Rough guess; tune when the real PC
@@ -5356,20 +5375,24 @@ public sealed class RenderHost : IDisposable
         _camBlockedTimer = _camClearTimer = 0f;
     }
 
-    /// <summary>SC-CAMERA-BOUNDS — nearest hit distance of the target→camera
-    /// ray against the SNO geometry of nodes whose <c>bounds_camera</c> flag
-    /// is set (nodes.gas authors it true on ~99% of nodes; the false ones are
-    /// structure pieces the camera must see through, e.g. the farmhouse over
-    /// Edgaar's cellar; trigger flips via set_bounds_camera_node override).
-    /// Returns float.MaxValue when clear. AABB-rejects per node, then
-    /// Möller–Trumbore per triangle.</summary>
+    /// <summary>SC-CAMERA-BOUNDS / SC-CAM-OCCLUDES — nearest hit distance of
+    /// the target→camera ray against the SNO geometry of nodes that block the
+    /// camera: <c>bounds_camera</c> (surface regions clamp the orbit with it —
+    /// fh_r1 authors it true on 1690/1707) OR <c>occludes_camera</c> (dungeon
+    /// regions author bounds false everywhere and rely on the occlusion flag —
+    /// cr_r1: 1241× bounds=false + occludes=true; the avoid/tilt resolution is
+    /// the entire crypt camera behavior). Nodes authored false on BOTH are the
+    /// see-through structure pieces (e.g. the farmhouse over Edgaar's cellar);
+    /// trigger flips via set_bounds_camera_node override. Returns
+    /// float.MaxValue when clear. AABB-rejects per node, then Möller–Trumbore
+    /// per triangle.</summary>
     private float CameraBoundsHitDistance(Vector3 origin, Vector3 dir, float maxDist)
     {
         float best = float.MaxValue;
-        foreach (var (inv, _, sno, guid, boundsFlag) in _drapeNodes)
+        foreach (var (inv, _, sno, guid, blocksFlag) in _drapeNodes)
         {
-            bool bounds = _boundsCameraOverrides.TryGetValue(guid, out var ov) ? ov : boundsFlag;
-            if (!bounds) continue;
+            bool blocks = _boundsCameraOverrides.TryGetValue(guid, out var ov) ? ov : blocksFlag;
+            if (!blocks) continue;
             // SC-CAM-FADED-BOUNDS — a faded-out node is INVISIBLE (the
             // cutaway exists precisely so the camera can look in from
             // outside), so it must not constrain the camera either. Without
@@ -8357,8 +8380,9 @@ void main()
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
                     _pauseMenu.IsOpen || _creator.IsOpen || _optionsMenu.IsOpen) return;
                 if (wheel.Y == 0f) return;
+                float zoomFactor = 1f - wheel.Y * ChaseZoomDeltaPct;
                 _chaseDistance = Math.Clamp(
-                    _chaseDistance - wheel.Y * ChaseZoomStep,
+                    _chaseDistance * MathF.Max(0.25f, zoomFactor),
                     ChaseDistanceMin, ChaseDistanceMax);
             };
         }
