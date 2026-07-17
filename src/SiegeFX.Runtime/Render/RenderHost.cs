@@ -27561,6 +27561,19 @@ void main()
                     var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
                     var mesh = new StaticMesh(_gl, asp);
                     GlTexture? tex = null;
+                    // SC-POTION-BOTTLE — honor the template's authored
+                    // [aspect][textures] 0 override. Shared meshes rely on it
+                    // for identity: m_i_glb_bottle-potion embeds the RED
+                    // health texture, and mana potions author
+                    // b_i_glb_bottle-blue-01 over it — without this read,
+                    // every dropped/placed mana potion rendered as a red
+                    // health bottle.
+                    if (texOverride is null)
+                    {
+                        var authoredTex = (_templateStore.GetAttribute(tpl!, "aspect", "textures", "0") ?? "")
+                            .Trim().Trim('"');
+                        if (authoredTex.Length > 0) texOverride = authoredTex;
+                    }
                     // SC-ARMOR-MESH — the style-exact texture wins when the
                     // armor fallback computed one; a missing style raw falls
                     // back to the mesh's embedded default (m_a_suit_a1 embeds
