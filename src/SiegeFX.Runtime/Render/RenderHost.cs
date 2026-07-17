@@ -21255,7 +21255,12 @@ void main()
 
         // 21d-2a-viii-c — remember the variant + name so quicksave persists
         // them through F5; F9 restores into these fields via ApplySave.
-        _heroName = heroName ?? "";
+        // SC-HERO-NAME — a null heroName means "this caller has no name",
+        // NOT "erase": the relaunched gameplay process reads the typed name
+        // from SIEGEFX_HERO_NAME at boot and then spawns through the
+        // env-var path (heroName: null), which used to clobber it to "" —
+        // the reason no character's name ever reached its first save.
+        if (!string.IsNullOrEmpty(heroName)) _heroName = heroName;
         _heroVariant = pick;
 
         string playerTemplate = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
