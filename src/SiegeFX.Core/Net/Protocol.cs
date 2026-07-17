@@ -19,6 +19,8 @@ public enum MpMsg : byte
                        // client-owned in the friend-trust model): [x f32][y f32][z f32][yaw f32][life u16][flags u8]
     ClientHit   = 6,   // client→host: apply this player's rolled damage to a host-owned
                        // actor (friend-trust: the client owns its own damage roll): [scid u32][damage f32]
+    ClientInfo  = 7,   // client→host (host stores + relays as PlayerInfo): this player's
+                       // character card — appearance axes + name/class/stats. See MpPlayerInfo.
     // host → client
     JoinAccept  = 10,  // [assignedPlayer u8][worldSnapshotLen u32][snapshot bytes]
     JoinReject  = 11,  // [reasonLen u8][reason utf8]
@@ -28,6 +30,8 @@ public enum MpMsg : byte
     ChatRelay   = 15,  // [player u8][textLen u16][text utf8]
     PlayerDelta = 16,  // [tick u32][count u8][ (player u8,x f32,y f32,z f32,yaw f32,life u16,flags u8) * ]  — all player poses
     GameStart   = 17,  // host→client: leave staging and relaunch into the region: [regionLen u8][region utf8][difficulty u8]
+    PlayerInfo  = 18,  // host→client: a player's character card (relayed ClientInfo, host-stamped id):
+                       // [player u8][ClientInfo body]
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
@@ -38,7 +42,7 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 1;
+    public const ushort Version = 2;   // v2: ClientInfo/PlayerInfo character cards
 }
 
 /// <summary>Input command verbs a client sends up (host resolves them
@@ -114,3 +118,28 @@ public readonly record struct MpActorState(uint Scid, float X, float Y, float Z,
 /// pose and the host fans the whole set back out. Yaw is the heading in radians
 /// (atan2(facing.X, facing.Z), matching the engine's player-facing convention).</summary>
 public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags);
+
+/// <summary>A player's character card — the DS1 in-game player panel row
+/// (in_game_player_panel_characters.gas: Player / Character / Class / STR /
+/// DEX / INT / four skill levels) plus the composite appearance axes so every
+/// machine can render the avatar the way its owner built it. Sent as
+/// ClientInfo after joining and whenever it changes; the host stamps the
+/// player id and fans it out as PlayerInfo.</summary>
+public readonly record struct MpPlayerInfo(
+    byte Player, byte Gender, byte Face, byte Style, byte Color, byte Shirt, byte Pants,
+    string HeroName, string ClassName,
+    ushort Str, ushort Dex, ushort Intel,
+    byte Melee, byte Ranged, byte NMagic, byte CMagic)
+{
+    public void WriteBody(MpWriter w)
+    {
+        w.U8(Gender).U8(Face).U8(Style).U8(Color).U8(Shirt).U8(Pants)
+         .Str(HeroName ?? "").Str(ClassName ?? "")
+         .U16(Str).U16(Dex).U16(Intel)
+         .U8(Melee).U8(Ranged).U8(NMagic).U8(CMagic);
+    }
+    public static MpPlayerInfo ReadBody(ref MpReader r, byte player)
+        => new(player, r.U8(), r.U8(), r.U8(), r.U8(), r.U8(), r.U8(),
+               r.Str(), r.Str(), r.U16(), r.U16(), r.U16(),
+               r.U8(), r.U8(), r.U8(), r.U8());
+}

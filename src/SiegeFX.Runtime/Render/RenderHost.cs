@@ -4779,10 +4779,19 @@ public sealed class RenderHost : IDisposable
         _mpNetSession = session;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
-        session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); MpToast($"Player {id} left the game"); };
-        session.OnPlayerJoined = (id, nm) => MpToast($"{nm} joined the game");
+        session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"Player {id} left the game"); };
+        session.OnPlayerJoined = (id, nm) => { _mpPlayerNames[id] = nm; MpToast($"{nm} joined the game"); };
+        // SC-MP-PLAYERS — character cards + in-game chat overlay.
+        session.OnPlayerInfo = MpApplyPlayerInfo;
+        session.OnChatFrom += MpOnChatLine;
+        _mpPlayerNames[asHost ? 0 : -1] = name;
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
-        if (!asHost) session.OnJoinAccepted = _ => MpToast("Joined — playing with the host");
+        if (!asHost) session.OnJoinAccepted = id =>
+        {
+            _mpPlayerNames[id] = name;
+            _mpLastSentInfo = null;   // (re)announce our card to the host
+            MpToast("Joined — playing with the host");
+        };
 
         if (asHost)
         {
@@ -4835,12 +4844,95 @@ public sealed class RenderHost : IDisposable
         MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
         MpInterpolateRemoteActors((float)_frameDtSeconds);
+        // SC-MP-PLAYERS — publish our character card when it changes (join,
+        // level-up, rename). Checked on a 2s cadence; record equality keeps
+        // the wire silent while nothing moved.
+        _mpInfoSendTimer += _frameDtSeconds;
+        if (_mpInfoSendTimer >= 2.0)
+        {
+            _mpInfoSendTimer = 0;
+            if (_mpNetSession is not null && _player is not null)
+            {
+                var info = MpBuildLocalInfo();
+                if (_mpLastSentInfo is null || _mpLastSentInfo.Value != info)
+                {
+                    _mpLastSentInfo = info;
+                    _mpNetSession.SendClientInfo(info);
+                }
+            }
+        }
+        // Expire old chat lines.
+        for (int i = _mpChatLog.Count - 1; i >= 0; i--)
+            if (_mpChatLog[i].Expires < _playSeconds) _mpChatLog.RemoveAt(i);
     }
 
     // Set from any thread (connect callbacks run off the render thread); the
     // next TickMpInRegion promotes it to the toast.
     private volatile string? _mpToastPending;
     private void MpToast(string msg) => _mpToastPending = msg;
+
+    // ── SC-MP-PLAYERS — character cards, roster panel, in-game chat ──────
+    // Every connected player's card (appearance axes + name/class/stats), the
+    // DS1 in_game_player_panel Players tab, and the chat overlay the field-
+    // commands chat button opens. Cards arrive via MpMsg.PlayerInfo and drive
+    // BOTH the roster rows and each remote avatar's composite textures.
+    private readonly Dictionary<int, SiegeFX.Core.Net.MpPlayerInfo> _mpPlayerInfos = new();
+    private readonly Dictionary<int, string> _mpPlayerNames = new();
+    private readonly Hud.MpPlayersPanel _mpPlayersPanel = new();
+    private SiegeFX.Core.Net.MpPlayerInfo? _mpLastSentInfo;
+    private double _mpInfoSendTimer;
+    private readonly Dictionary<SiegeFX.Core.Actors.Actor, HeroVariantPicker> _netPickers = new();
+    private bool _mpChatOpen;
+    private string _mpChatBuffer = "";
+    private readonly List<(string Line, double Expires)> _mpChatLog = new();
+
+    private static HeroVariantPicker MpPickerFromInfo(in SiegeFX.Core.Net.MpPlayerInfo i) => new()
+    {
+        Gender   = i.Gender == 1 ? HeroGender.Girl : HeroGender.Boy,
+        FaceIdx  = i.Face,  StyleIdx = i.Style, ColorIdx = i.Color,
+        ShirtIdx = i.Shirt, PantsIdx = i.Pants,
+    };
+
+    /// <summary>A player's card arrived: remember it and dress (or re-gender)
+    /// their avatar. A gender change needs a different body template, so the
+    /// avatar is despawned and the next pose delta respawns it correctly.</summary>
+    private void MpApplyPlayerInfo(SiegeFX.Core.Net.MpPlayerInfo info)
+    {
+        _mpPlayerInfos[info.Player] = info;
+        if (_mpNetSession is not null && info.Player == _mpNetSession.LocalPlayerId) return;
+        var avatar = FindRemoteAvatar(info.Player);
+        if (avatar is null) return;
+        bool wantGirl = info.Gender == 1;
+        bool isGirl = avatar.Actor.Template.Name.Contains("farmgirl", StringComparison.OrdinalIgnoreCase);
+        if (wantGirl != isGirl) MpRemoveRemoteAvatar(info.Player);
+        else _netPickers[avatar.Actor] = MpPickerFromInfo(info);
+    }
+
+    /// <summary>The local player's card, from the same fields the HUD shows.</summary>
+    private SiegeFX.Core.Net.MpPlayerInfo MpBuildLocalInfo()
+    {
+        var pick = _playerPicker ?? _heroVariant;
+        var st = _player!.Actor.Stats;
+        static byte B(double v) => (byte)Math.Clamp((int)Math.Round(v), 0, 255);
+        static ushort U(double v) => (ushort)Math.Clamp((int)Math.Round(v), 0, ushort.MaxValue);
+        return new SiegeFX.Core.Net.MpPlayerInfo(
+            (byte)(_mpNetSession?.LocalPlayerId ?? 0),
+            (byte)(pick?.Gender == HeroGender.Girl ? 1 : 0),
+            B(pick?.FaceIdx ?? 0), B(pick?.StyleIdx ?? 0), B(pick?.ColorIdx ?? 0),
+            B(pick?.ShirtIdx ?? 0), B(pick?.PantsIdx ?? 0),
+            string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName,
+            _playerStartingClass,
+            U(st.Strength), U(st.Dexterity), U(st.Intelligence),
+            B(st.MeleeSkill), B(st.RangedSkill), B(st.NatureMagicSkill), B(st.CombatMagicSkill));
+    }
+
+    private void MpOnChatLine(int player, string text)
+    {
+        string name = _mpPlayerNames.TryGetValue(player, out var n) && !string.IsNullOrEmpty(n)
+            ? n : $"Player {player}";
+        _mpChatLog.Add(($"{name}: {text}", _playSeconds + 12.0));
+        while (_mpChatLog.Count > 8) _mpChatLog.RemoveAt(0);
+    }
 
     // SC-MP-EOS P6 — opt-in AEAD wrap. When SIEGEFX_MP_PASSPHRASE is set (same
     // string on both peers, shared out-of-band like the host address), every
@@ -4936,6 +5028,7 @@ public sealed class RenderHost : IDisposable
         for (int i = _actors.Count - 1; i >= 0; i--)
             if (_actors[i].IsRemotePlayer && _actors[i].NetPlayerId == playerId)
             {
+                _netPickers.Remove(_actors[i].Actor);
                 _actors.RemoveAt(i);
                 SiegeFX.Core.Net.NetLog.Info($"remote avatar removed: player {playerId} left");
             }
@@ -4949,7 +5042,12 @@ public sealed class RenderHost : IDisposable
     {
         var spawner = _actorSpawner;
         if (spawner is null || _gl is null) { SiegeFX.Core.Net.NetLog.Warn($"remote avatar {playerId}: no spawner/gl yet"); return null; }
-        var pick = new HeroVariantPicker { Gender = (playerId % 2 == 0) ? HeroGender.Boy : HeroGender.Girl };
+        // SC-MP-PLAYERS — dress the avatar the way its owner built it, from
+        // the streamed character card; id-parity gender is only the fallback
+        // for the frames before the card arrives.
+        var pick = _mpPlayerInfos.TryGetValue(playerId, out var pinfo)
+            ? MpPickerFromInfo(pinfo)
+            : new HeroVariantPicker { Gender = (playerId % 2 == 0) ? HeroGender.Boy : HeroGender.Girl };
         string template = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
         // Out-of-band scid, clear of region scids (0x01xxxxxx) and the local
         // player (0xffffff00): 0xffff00NN keyed by player id.
@@ -4987,6 +5085,7 @@ public sealed class RenderHost : IDisposable
             NetHasTarget     = true,
         };
         _actors.Add(state);
+        _netPickers[actor] = pick;   // composite textures per the owner's card
         SiegeFX.Core.Net.NetLog.Info($"remote avatar spawned: player {playerId} ({template}) at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
         return state;
     }
@@ -6681,7 +6780,12 @@ void main()
             // keycodes that don't disambiguate "a" from "A".
             kb.KeyChar += (_, c) =>
             {
-                if (_creator.IsOpen) _creator.OnChar(c);
+                if (_mpChatOpen)
+                {
+                    // SC-MP-PLAYERS — in-game chat entry owns typed chars.
+                    if (c >= ' ' && _mpChatBuffer.Length < 120) _mpChatBuffer += c;
+                }
+                else if (_creator.IsOpen) _creator.OnChar(c);
                 else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
                 else if (_devConsoleOpen && _devItemFocus && c != '`' && c != '~') DevConsoleChar(c);
                 else if (_mpSession.IsActive) _mpSession.OnChar(c);
@@ -6837,6 +6941,48 @@ void main()
                 bool modShift = kb.IsKeyPressed(Key.ShiftLeft)   || kb.IsKeyPressed(Key.ShiftRight);
                 // Registry query for the dispatch chain below.
                 bool Is(string actionId) => _keyBindings.Matches(actionId, key, modCtrl, modAlt, modShift);
+                // SC-MP-PLAYERS — the open chat line owns the keyboard:
+                // Enter sends, Backspace edits, Esc cancels; other keys are
+                // swallowed (their text arrives via KeyChar). Runs before
+                // every binding so hotkeys can't fire mid-sentence.
+                if (_mpChatOpen)
+                {
+                    if (key == Key.Enter || key == Key.KeypadEnter)
+                    {
+                        var msg = _mpChatBuffer.Trim();
+                        if (msg.Length > 0) _mpNetSession?.SendChat(msg);
+                        _mpChatOpen = false; _mpChatBuffer = "";
+                        return;
+                    }
+                    if (key == Key.Backspace)
+                    {
+                        if (_mpChatBuffer.Length > 0) _mpChatBuffer = _mpChatBuffer[..^1];
+                        return;
+                    }
+                    if (key == Key.Escape) { _mpChatOpen = false; _mpChatBuffer = ""; }
+                    return;
+                }
+                // Authored [toggle_gui_edit_box] (return) opens the chat line
+                // in an MP session when no other text surface owns the
+                // keyboard. The shift/ctrl team/all variants open the same
+                // line until channel routing exists.
+                if ((Is("toggle_gui_edit_box") || Is("toggle_gui_edit_box_team")
+                     || Is("toggle_gui_edit_box_everyone"))
+                    && _mpNetSession is not null && !_bootMode
+                    && !_saveDialog.IsOpen && !_creator.IsOpen && !_devConsoleOpen
+                    && !_pauseMenu.IsOpen && !_optionsMenu.IsOpen && !_dialogue.IsOpen)
+                {
+                    _mpChatOpen = true; _mpChatBuffer = "";
+                    return;
+                }
+                // Authored [toggle_player_ranks] (backslash) — the in-game
+                // multiplayer player panel (Players tab: name/class/stats).
+                if (Is("toggle_player_ranks") && _mpNetSession is not null && !_bootMode)
+                {
+                    _mpPlayersPanel.IsOpen = !_mpPlayersPanel.IsOpen;
+                    _audio?.Play(SfxGuiInventory);
+                    return;
+                }
                 // SC-OPTIONS-REBIND — an in-progress Hotkeys capture eats the
                 // keypress (Esc cancels, lone modifiers wait, anything else
                 // becomes the binding).
@@ -6859,6 +7005,18 @@ void main()
                     // and restores the spell to its source slot. Cheap to do
                     // first because canceling a half-finished drag should be
                     // free regardless of what other UI is open.
+                    // SC-MP-PLAYERS — an open chat line / roster panel
+                    // swallows Esc before anything else.
+                    if (_mpChatOpen)
+                    {
+                        _mpChatOpen = false; _mpChatBuffer = "";
+                        return;
+                    }
+                    if (_mpPlayersPanel.IsOpen)
+                    {
+                        _mpPlayersPanel.IsOpen = false;
+                        return;
+                    }
                     if (_cursorScroll is not null)
                     {
                         CancelScrollDrag();
@@ -7611,6 +7769,20 @@ void main()
                     // dial is actually on screen (NIS off).
                     if (_nisPhase == NisPhase.Off &&
                         CompassHitTest(mx, my, _window.Size.X, _window.Size.Y)) return;
+                    // SC-MP-PLAYERS — roster panel clicks: close button, then
+                    // swallow anything on the dialog so the world can't be
+                    // clicked through it.
+                    if (_mpPlayersPanel.IsOpen)
+                    {
+                        if (_mpPlayersPanel.IsPointInClose(mx, my, _window.Size.X, _window.Size.Y))
+                        {
+                            _mpPlayersPanel.IsOpen = false;
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        }
+                        if (_mpPlayersPanel.IsPointInPanel(mx, my, _window.Size.X, _window.Size.Y))
+                            return;
+                    }
                     // Phase 27 — party HUD clicks. The field_commands panel is
                     // always on screen (DS1 shows it from game start, solo or
                     // not), so its clicks are always live; the team-portrait
@@ -11566,6 +11738,14 @@ void main()
             // SC-CD-COMPOSITE — the live creator preview composites its two slots
             // from the panel's current picks (Head/Hair/Face/Shirt/Pants).
             var t = ResolveCreatorTexture(_creator.Picker, textureIndex);
+            if (t is not null) return t;
+        }
+        // SC-MP-PLAYERS — remote avatars composite their owner's streamed
+        // appearance card, so friends see the character its player actually
+        // built rather than a default-look stand-in.
+        if (_netPickers.TryGetValue(actor, out var netPick))
+        {
+            var t = ResolveCreatorTexture(netPick, textureIndex);
             if (t is not null) return t;
         }
         // Player overrides — checked in priority order so equipment beats the
@@ -24708,6 +24888,88 @@ void main()
             ShowChat: _mpNetSession is not null);
         _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                          TryGetGuiTexture, viewportW, viewportH, fcState);
+
+        // SC-MP-PLAYERS — roster panel + chat overlay (MP sessions only).
+        if (_mpNetSession is not null)
+        {
+            if (_mpPlayersPanel.IsOpen)
+                _mpPlayersPanel.Draw(_barRenderer!, _textRenderer!, _iconRenderer,
+                                     GetCommonTexture, TryGetGuiTexture,
+                                     viewportW, viewportH, MpBuildRosterRows());
+            DrawMpChat(viewportW, viewportH);
+        }
+    }
+
+    /// <summary>SC-MP-PLAYERS — roster rows: the local player first (live
+    /// stats), then every known remote card ordered by player id.</summary>
+    private List<Hud.MpPlayersPanel.Row> MpBuildRosterRows()
+    {
+        var rows = new List<Hud.MpPlayersPanel.Row>();
+        Hud.MpPlayersPanel.Row FromInfo(in SiegeFX.Core.Net.MpPlayerInfo i, string netName, bool local) =>
+            new(netName, i.HeroName, i.ClassName, i.Str, i.Dex, i.Intel,
+                i.Melee, i.Ranged, i.NMagic, i.CMagic, local);
+        int localId = _mpNetSession?.LocalPlayerId ?? 0;
+        string LocalName() => _mpPlayerNames.TryGetValue(localId, out var n) && n.Length > 0
+            ? n : (_mpPlayerNames.TryGetValue(-1, out var pre) ? pre : "You");
+        if (_player is not null)
+            rows.Add(FromInfo(MpBuildLocalInfo(), LocalName(), local: true));
+        foreach (var kv in _mpPlayerInfos.OrderBy(k => k.Key))
+        {
+            if (kv.Key == localId) continue;
+            string nm = _mpPlayerNames.TryGetValue(kv.Key, out var n) && n.Length > 0
+                ? n : $"Player {kv.Key}";
+            rows.Add(FromInfo(kv.Value, nm, local: false));
+        }
+        return rows;
+    }
+
+    /// <summary>SC-MP-PLAYERS — chat lines above the bottom-left data bar +
+    /// the entry line while typing (field-commands chat button / authored
+    /// [toggle_gui_edit_box] Return binding).</summary>
+    private void DrawMpChat(int vw, int vh)
+    {
+        if (_textRenderer is null || _barRenderer is null) return;
+        int fs = Math.Max(1, (int)MathF.Round(HudScale.Hud(vh)));
+        int lineH = 14 * fs;
+        int baseY = vh - 96 * fs;
+        var ink = new Vector4(0.92f, 0.90f, 0.80f, 1f);
+        var shadow = new Vector4(0f, 0f, 0f, 0.85f);
+        for (int i = 0; i < _mpChatLog.Count; i++)
+        {
+            int y = baseY - (_mpChatLog.Count - i) * lineH;
+            var line = _mpChatLog[i].Line;
+            _textRenderer.DrawString(vw, vh, line, 13, y + 1, shadow, fs);
+            _textRenderer.DrawString(vw, vh, line, 12, y, ink, fs);
+        }
+        if (_mpChatOpen)
+        {
+            // Same authored dressing as the Save dialog's edit box: cpbox
+            // chrome over a dark backing, parchment ink, blinking caret.
+            var parch = new Vector4(0.88f, 0.82f, 0.70f, 1f);
+            string label = "Say:";
+            int labelW = _textRenderer.MeasureWidth(label, fs);
+            int pad = 6 * fs;
+            int boxH = lineH + 10;
+            int boxW = Math.Max(_textRenderer.MeasureWidth(_mpChatBuffer, fs)
+                                + labelW + pad * 3 + 10, 240 * fs);
+            int bx = 8, by = baseY;
+            _barRenderer.DrawRect(vw, vh, bx, by, boxW, boxH,
+                                  new Vector4(0.07f, 0.07f, 0.08f, 0.85f));
+            if (_iconRenderer is not null)
+                Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh,
+                                        bx, by, boxW, boxH, Vector4.One);
+            int ty = by + (boxH - _textRenderer.LineHeight * fs) / 2;
+            _textRenderer.DrawString(vw, vh, label, bx + pad, ty,
+                                     new Vector4(0.91f, 0.85f, 0.63f, 1f), fs);
+            int tx = bx + pad * 2 + labelW;
+            _textRenderer.DrawString(vw, vh, _mpChatBuffer, tx, ty, parch, fs);
+            if (((int)(_playSeconds * 2)) % 2 == 0)
+            {
+                int caretX = tx + _textRenderer.MeasureWidth(_mpChatBuffer, fs) + 1;
+                _barRenderer.DrawRect(vw, vh, caretX, ty, Math.Max(1, fs),
+                                      _textRenderer.LineHeight * fs, parch);
+            }
+        }
     }
 
     // Phase 27 — team-portrait state: the strip below the leader + the
@@ -25046,8 +25308,9 @@ void main()
             case Hud.FieldCommandsPanel.Action.Disband:          DisbandSelectedFollowers(); break;
             case Hud.FieldCommandsPanel.Action.CollectLoot:      CollectNearbyLoot(); break;
             case Hud.FieldCommandsPanel.Action.Chat:
-                // MP-only button (hidden in SP). Chat overlay ships with the
-                // MP in-game slice; until then the click is consumed silently.
+                // MP-only button (hidden in SP): opens the chat entry line,
+                // exactly what the authored notify(mp_chat) does.
+                if (_mpNetSession is not null) { _mpChatOpen = true; _mpChatBuffer = ""; }
                 break;
 
             // The tall tab folds just the command controls; the small button
@@ -25834,6 +26097,8 @@ void main()
         if (_fieldPanel.HitTest(mx, my, sz.X, sz.Y, _fcMinimized, _fcCommandsCollapsed,
                                 showChat: _mpNetSession is not null)
             != Hud.FieldCommandsPanel.Action.None) return true;
+        // SC-MP-PLAYERS — the roster dialog owns the cursor while open.
+        if (_mpPlayersPanel.IsPointInPanel(mx, my, sz.X, sz.Y)) return true;
         return false;
     }
 

@@ -49,6 +49,15 @@ public sealed class MpSession : IDisposable
     public Action<string, int>? OnGameStart;
 
     public event Action<string>? OnChat;
+    /// <summary>Structured chat (player id, text) — the in-game overlay
+    /// resolves the id to a name; the legacy OnChat string feed stays for
+    /// the staging screen.</summary>
+    public event Action<int, string>? OnChatFrom;
+    /// <summary>Both roles: a player's character card arrived (appearance,
+    /// name/class, stats). Fired for every player including echoes of the
+    /// local one; consumers filter by <see cref="LocalPlayerId"/>.</summary>
+    public Action<MpPlayerInfo>? OnPlayerInfo;
+    readonly Dictionary<int, MpPlayerInfo> _infos = new(); // host: relay store for late joiners
 
     /// <summary>This machine's player id (host = 0; client = the id the host
     /// assigned in JoinAccept). Remote-avatar rendering filters this out.</summary>
@@ -109,6 +118,34 @@ public sealed class MpSession : IDisposable
     {
         var w = new MpWriter().U8((byte)MpMsg.Chat).Str(text, u16Len: true);
         if (IsHost) { RelayChat(0, text); } else _t.Send(0, w.Span);
+    }
+
+    /// <summary>Both roles: publish this machine's character card. The host
+    /// stores + fans it out (stamped id 0); a client sends it up for the host
+    /// to stamp and relay. Call after joining and whenever the card changes
+    /// (level-up, rename) — receivers treat it as a full replace.</summary>
+    public void SendClientInfo(in MpPlayerInfo info)
+    {
+        if (IsHost)
+        {
+            var stamped = info with { Player = (byte)LocalPlayerId };
+            _infos[LocalPlayerId] = stamped;
+            OnPlayerInfo?.Invoke(stamped);
+            Broadcast(BuildPlayerInfoFrame(stamped));
+        }
+        else
+        {
+            var w = new MpWriter().U8((byte)MpMsg.ClientInfo);
+            info.WriteBody(w);
+            _t.Send(0, w.Span);
+        }
+    }
+
+    static byte[] BuildPlayerInfoFrame(in MpPlayerInfo info)
+    {
+        var w = new MpWriter().U8((byte)MpMsg.PlayerInfo).U8(info.Player);
+        info.WriteBody(w);
+        return w.ToArray();
     }
 
     /// <summary>Pump: drain received frames and (host) tick out state deltas.
@@ -240,6 +277,9 @@ public sealed class MpSession : IDisposable
                 _t.Send(peer, w.Span);
                 OnPlayerJoined?.Invoke(peer, name);
                 Broadcast(new MpWriter().U8((byte)MpMsg.PlayerJoined).U8((byte)peer).Str(name).ToArray());
+                // Catch the late joiner up on every known character card.
+                foreach (var info in _infos.Values)
+                    _t.Send(peer, BuildPlayerInfoFrame(info));
                 NetLog.Info($"session: player {peer} '{name}' joined, sent snapshot ({snap.Length}B), now {_playerCount}/{MaxPlayers}");
                 break;
             }
@@ -274,6 +314,23 @@ public sealed class MpSession : IDisposable
             {
                 string text = r.Str(u16Len: true);
                 if (!r.Bad) RelayChat(peer, text);
+                break;
+            }
+            case MpMsg.ClientInfo when IsHost:
+            {
+                var info = MpPlayerInfo.ReadBody(ref r, (byte)peer);
+                if (r.Bad) { NetLog.Warn($"session: malformed ClientInfo from peer {peer} — dropped"); return; }
+                _infos[peer] = info;
+                OnPlayerInfo?.Invoke(info);
+                Broadcast(BuildPlayerInfoFrame(info));
+                break;
+            }
+            case MpMsg.PlayerInfo when !IsHost:
+            {
+                byte pid = r.U8();
+                var info = MpPlayerInfo.ReadBody(ref r, pid);
+                if (r.Bad) { NetLog.Warn("session: malformed PlayerInfo — dropped"); return; }
+                OnPlayerInfo?.Invoke(info);
                 break;
             }
             case MpMsg.JoinAccept when !IsHost:
@@ -346,7 +403,7 @@ public sealed class MpSession : IDisposable
             case MpMsg.ChatRelay:
             {
                 int p = r.U8(); string text = r.Str(u16Len: true);
-                if (!r.Bad) OnChat?.Invoke($"[{p}] {text}");
+                if (!r.Bad) { OnChat?.Invoke($"[{p}] {text}"); OnChatFrom?.Invoke(p, text); }
                 break;
             }
             default:
@@ -358,6 +415,7 @@ public sealed class MpSession : IDisposable
     void RelayChat(int fromPlayer, string text)
     {
         OnChat?.Invoke($"[{fromPlayer}] {text}");
+        OnChatFrom?.Invoke(fromPlayer, text);
         Broadcast(new MpWriter().U8((byte)MpMsg.ChatRelay).U8((byte)fromPlayer).Str(text, u16Len: true).ToArray());
     }
 
