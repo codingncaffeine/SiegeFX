@@ -21620,6 +21620,14 @@ void main()
             $"({spawnPos.X:F1}, {spawnPos.Y:F1}, {spawnPos.Z:F1})  " +
             $"life={player.Stats.MaxLife:F0} " +
             $"walk={player.Stats.WalkSpeed:F1}u/s");
+        // SC-HERO-BIRTH-CERT — the character now EXISTS: write the rolling
+        // autosave immediately so the created name + appearance + starting
+        // state are durable on disk from minute zero. Every later save (and
+        // a crash before the player's first manual save) attaches to this
+        // record instead of depending on in-memory state surviving.
+        TryAutoSave();
+        if (!string.IsNullOrEmpty(_heroName))
+            Console.WriteLine($"  player: hero '{_heroName}' recorded in the autosave slot");
         if (_playerEquipment.Count > 0)
         {
             var slots = new List<string>(_playerEquipment.Count);
