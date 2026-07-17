@@ -65,7 +65,7 @@ public sealed class RenderHost : IDisposable
     // regions can register their decals too (they were launch-time-only).
     private readonly List<DecalRenderer.DecalQuad> _decalQuadsAll = new();
     private readonly List<DecalRenderer.DecalTri> _decalTrisAll = new();
-    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno, uint Guid, bool CameraBlocks)> _drapeNodes = new();
+    private readonly List<(Matrix4x4 Inv, Matrix4x4 Xf, SnoModel Sno, uint Guid, bool CameraBlocks, string RegionPath)> _drapeNodes = new();
     private readonly Dictionary<uint, SnoModel?> _drapeSnoCache = new();
     private SnoMeshIndex? _drapeIndex;
     private TankFile? _drapeTerrainTank;
@@ -146,7 +146,7 @@ public sealed class RenderHost : IDisposable
                 if (n.BoundsCamera) camBounds++;
                 if (n.OccludesCamera) camOccl++;
                 added++;
-                _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera || n.OccludesCamera));
+                _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera || n.OccludesCamera, path));
             }
             if (added > 0)
                 Console.WriteLine($"  [camera] {path}: {added} nodes, bounds_camera={camBounds}, occludes_camera={camOccl}");
@@ -5389,10 +5389,16 @@ public sealed class RenderHost : IDisposable
     private float CameraBoundsHitDistance(Vector3 origin, Vector3 dir, float maxDist)
     {
         float best = float.MaxValue;
-        foreach (var (inv, _, sno, guid, blocksFlag) in _drapeNodes)
+        foreach (var (inv, _, sno, guid, blocksFlag, regionPath) in _drapeNodes)
         {
             bool blocks = _boundsCameraOverrides.TryGetValue(guid, out var ov) ? ov : blocksFlag;
             if (!blocks) continue;
+            // SC-CAM-OCCLUDES-FIX — a region hidden as an upper layer
+            // (player underground beneath it) is invisible, so it must not
+            // block the camera either: the surface terrain stacked above a
+            // crypt authors bounds_camera=true and otherwise pins the
+            // overhead ray at a couple of meters while drawing nothing.
+            if (IsAbovePlayer(regionPath)) continue;
             // SC-CAM-FADED-BOUNDS — a faded-out node is INVISIBLE (the
             // cutaway exists precisely so the camera can look in from
             // outside), so it must not constrain the camera either. Without
@@ -5470,25 +5476,50 @@ public sealed class RenderHost : IDisposable
         Vector3 OffsetFor(float p) =>
             new Vector3(MathF.Sin(_chaseYaw) * MathF.Cos(p), MathF.Sin(p), MathF.Cos(_chaseYaw) * MathF.Cos(p));
 
+        // SC-CAM-OCCLUDES-FIX — the first cut ratcheted: "blocked" meant
+        // "can't have the FULL desired distance", so inside any room the
+        // tilt climbed forever (straight-down was the only clear ray) and
+        // the return demanded a full-distance clear ray that a corridor can
+        // never provide — the camera pinned vertical at minimum distance
+        // and the player "could only see straight down". Reworked:
+        //   * tilt engages only while the ACHIEVABLE distance is under
+        //     TiltEngageFrac of desired, climbs only while climbing actually
+        //     buys distance, and auto-tilt is capped at AutoTiltMaxPitch
+        //     (steep, never vertical — manual MMB pitch can still go there);
+        //   * it unwinds whenever a shallower angle keeps ReturnKeepFrac of
+        //     the currently-achieved distance (leaving a room, opening up),
+        //     rather than requiring a perfectly clear full-length ray.
+        // The two fractions + the cap are our tuning (retail's exact
+        // engine-side thresholds are unknowable); the authored gas timings
+        // still gate WHEN each phase may act.
+        const float TiltEngageFrac  = 0.6f;
+        const float ReturnKeepFrac  = 0.9f;
+        const float AutoTiltMaxPitch = 1.257f; // ~72°
+
         float tilted = Math.Clamp(pitch + _camTiltExtra, ChasePitchMin, ChasePitchMax);
         var dir = OffsetFor(tilted);
         float hit = CameraBoundsHitDistance(target, dir, _chaseDistance);
-        bool blocked = hit < _chaseDistance;
+        float Achieved(float h) => MathF.Min(_chaseDistance, MathF.Max(1.25f, h - 0.35f));
+        bool needTilt = hit < _chaseDistance * TiltEngageFrac;
 
-        if (blocked)
+        if (needTilt)
         {
             _camBlockedTimer += dt;
             _camClearTimer = 0f;
-            // Tilt after the authored buffer: climb toward top-down until the
-            // ray reaches full distance (or the clamp).
-            if (_camBlockedTimer >= _camTiltTime && tilted < ChasePitchMax - 0.01f)
+            if (_camBlockedTimer >= _camTiltTime && tilted < AutoTiltMaxPitch)
             {
                 float step = _camAzimuthRate * dt;
-                float probe = Math.Clamp(tilted + step, ChasePitchMin, ChasePitchMax);
-                _camTiltExtra += probe - tilted;
-                tilted = probe;
-                dir = OffsetFor(tilted);
-                hit = CameraBoundsHitDistance(target, dir, _chaseDistance);
+                float probePitch = MathF.Min(tilted + step, AutoTiltMaxPitch);
+                var probeDir = OffsetFor(probePitch);
+                float probeHit = CameraBoundsHitDistance(target, probeDir, _chaseDistance);
+                // Keep the step only if it buys view distance; a blocked
+                // ceiling straight up must not drag us vertical for nothing.
+                if (probeHit > hit + 0.05f)
+                {
+                    _camTiltExtra += probePitch - tilted;
+                    tilted = probePitch;
+                    hit = probeHit;
+                }
             }
         }
         else
@@ -5499,29 +5530,28 @@ public sealed class RenderHost : IDisposable
                 _camClearTimer += dt;
                 if (_camClearTimer >= _camTiltReturnTime)
                 {
-                    // Ease home, but never tilt back INTO a blocked ray.
                     float step = _camReturnRate * dt;
                     float lower = MathF.Max(0f, _camTiltExtra - step);
                     float probePitch = Math.Clamp(pitch + lower, ChasePitchMin, ChasePitchMax);
                     var probeDir = OffsetFor(probePitch);
-                    if (CameraBoundsHitDistance(target, probeDir, _chaseDistance) >= _chaseDistance)
+                    float probeHit = CameraBoundsHitDistance(target, probeDir, _chaseDistance);
+                    if (Achieved(probeHit) >= Achieved(hit) * ReturnKeepFrac)
                     {
                         _camTiltExtra = lower;
                         tilted = probePitch;
-                        hit = float.MaxValue;
+                        hit = probeHit;
                     }
-                    else
-                    {
-                        _camClearTimer = 0f; // still blocked below — stay tilted
-                    }
+                    // else: keep the timer running — retry next frame; the
+                    // old code zeroed it and re-armed the full 2s wait,
+                    // which also contributed to the stuck feel.
                 }
             }
         }
 
         pitchOut = tilted;
         // Avoid pass — pull in to just inside the hit so the camera never
-        // sits inside bounds geometry.
-        return hit < _chaseDistance ? MathF.Max(1.25f, hit - 0.35f) : _chaseDistance;
+        // sits inside blocking geometry.
+        return hit < _chaseDistance ? Achieved(hit) : _chaseDistance;
     }
 
     private readonly record struct RegionInstance(Matrix4x4 World, SnoMesh Mesh, string TexsetAbbr, uint SnodeGuid, bool CameraFade, Vector3 WorldAabbMin, Vector3 WorldAabbMax, string RegionPath);
@@ -9801,7 +9831,7 @@ void main()
                     {
                         var list = new List<(Vector3 A, Vector3 B, Vector3 C)>();
                         float r2 = radius * radius;
-                        foreach (var (inv, xf, sno, _, _) in _drapeNodes)
+                        foreach (var (inv, xf, sno, _, _, _) in _drapeNodes)
                         {
                             var lc = Vector3.Transform(centerW, inv);
                             if (lc.X < sno.MinBounds.X - radius || lc.X > sno.MaxBounds.X + radius ||
@@ -9846,7 +9876,7 @@ void main()
                         float bestDelta = 2.0f;
                         float bestY = 0f;
                         bool found = false;
-                        foreach (var (inv, xf, sno, _, _) in _drapeNodes)
+                        foreach (var (inv, xf, sno, _, _, _) in _drapeNodes)
                         {
                             var lp = Vector3.Transform(worldPos, inv);
                             if (lp.X < sno.MinBounds.X - 0.25f || lp.X > sno.MaxBounds.X + 0.25f ||
@@ -14913,6 +14943,69 @@ void main()
                 var d = seg / len;
                 if (_navMesh.TryRaycast(eA + d * 0.3f, d, len - 0.6f, out _, out _, includeFadeHidden: true))
                     return true;
+                // SC-LOS-WALLS — the nav mesh is walkable-floor tris only, so
+                // a vertical wall between two same-level rooms never blocked
+                // the line: crypt mobs aggroed and fired through solid walls.
+                // Cast the same segment against the full terrain SNO geometry
+                // (the drape list). Deliberately NO camera-flag filter and NO
+                // fade/layer exclusions: a de-roofed cap or a hidden upper
+                // layer is invisible to the CAMERA but still physically
+                // present to creatures.
+                if (SightTerrainBlocked(eA + d * 0.3f, d, len - 0.6f))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>SC-LOS-WALLS — first-hit-exists ray test of the eye segment
+    /// against every drape-node SNO triangle (walls included). Same slab
+    /// reject + Möller–Trumbore as the camera constraint ray, but no flag or
+    /// fade filtering, and it early-exits on the first hit.</summary>
+    private bool SightTerrainBlocked(Vector3 origin, Vector3 dir, float maxDist)
+    {
+        foreach (var (inv, _, sno, _, _, _) in _drapeNodes)
+        {
+            var lo = Vector3.Transform(origin, inv);
+            var ld = Vector3.TransformNormal(dir, inv);
+            float t0 = 0f, t1 = maxDist;
+            bool reject = false;
+            for (int axis = 0; axis < 3 && !reject; axis++)
+            {
+                float o = axis == 0 ? lo.X : axis == 1 ? lo.Y : lo.Z;
+                float d = axis == 0 ? ld.X : axis == 1 ? ld.Y : ld.Z;
+                float mn = (axis == 0 ? sno.MinBounds.X : axis == 1 ? sno.MinBounds.Y : sno.MinBounds.Z) - 0.25f;
+                float mx = (axis == 0 ? sno.MaxBounds.X : axis == 1 ? sno.MaxBounds.Y : sno.MaxBounds.Z) + 0.25f;
+                if (MathF.Abs(d) < 1e-6f) { if (o < mn || o > mx) reject = true; continue; }
+                float ta = (mn - o) / d, tb = (mx - o) / d;
+                if (ta > tb) (ta, tb) = (tb, ta);
+                t0 = MathF.Max(t0, ta); t1 = MathF.Min(t1, tb);
+                if (t0 > t1) reject = true;
+            }
+            if (reject) continue;
+
+            foreach (var surf in sno.Surfaces)
+            {
+                var tris = surf.TriangleIndices;
+                for (int t = 0; t + 2 < tris.Length; t += 3)
+                {
+                    var a = sno.Corners[surf.StartCorner + tris[t]].Position;
+                    var b = sno.Corners[surf.StartCorner + tris[t + 1]].Position;
+                    var c = sno.Corners[surf.StartCorner + tris[t + 2]].Position;
+                    var e1 = b - a; var e2 = c - a;
+                    var p = Vector3.Cross(ld, e2);
+                    float det = Vector3.Dot(e1, p);
+                    if (MathF.Abs(det) < 1e-8f) continue;
+                    float invDet = 1f / det;
+                    var s = lo - a;
+                    float u = Vector3.Dot(s, p) * invDet;
+                    if (u < 0f || u > 1f) continue;
+                    var q = Vector3.Cross(s, e1);
+                    float v = Vector3.Dot(ld, q) * invDet;
+                    if (v < 0f || u + v > 1f) continue;
+                    float thit = Vector3.Dot(e2, q) * invDet;
+                    if (thit > 0.05f && thit < maxDist) return true;
+                }
             }
         }
         return false;
