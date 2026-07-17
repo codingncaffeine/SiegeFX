@@ -144,7 +144,7 @@ public sealed class RenderHost : IDisposable
                 }
                 if (sno is null || !Matrix4x4.Invert(xf, out var inv)) continue;
                 if (n.BoundsCamera) camBounds++;
-                if (n.OccludesCamera) camOccl++;
+                if (n.OccludesCamera) { camOccl++; _occludesCameraGuids.Add(n.Guid); }
                 added++;
                 _drapeNodes.Add((inv, xf, sno, n.Guid, n.BoundsCamera || n.OccludesCamera, path));
             }
@@ -3075,16 +3075,38 @@ public sealed class RenderHost : IDisposable
     // hiding the top-of-stairs entry piece and everything above ground.
     private const float UpperLayerCutoffY = -4.0f;
     private bool _isUnderground;
+    /// <summary>SC-REGION-LAYER-HIDE (corrected) — GUIDs of every siege node
+    /// authored <c>occludes_camera=true</c>. That flag IS the interior
+    /// classification: crypts author it on all nodes, the farmhouse on
+    /// exactly its basement pieces, and surface terrain never — including
+    /// valleys that legitimately descend far below Y=0.</summary>
+    private readonly HashSet<uint> _occludesCameraGuids = new();
 
     private void UpdateUndergroundMode()
     {
         if (_playerFollower is null) return;
-        float y = _playerFollower.Position.Y;
         bool wasUnderground = _isUnderground;
-        if (!_isUnderground && y < UndergroundEnterY) _isUnderground = true;
-        else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
+        // Underground = STANDING ON an authored interior node, not altitude.
+        // The old absolute-Y latch fired on the Stonebridge road (surface
+        // path descends past Y=-13) and hid the whole surface world after a
+        // load there. The authored occludes_camera flag can't false-positive:
+        // the data says what's interior. Y hysteresis remains only as the
+        // fallback when the player is momentarily off-mesh or a region
+        // shipped no flags.
+        if (_navMesh is not null && _occludesCameraGuids.Count > 0
+            && _navMesh.TryFindTriangle(_playerFollower.Position, out int ptri, includeFadeHidden: true))
+        {
+            _isUnderground = _occludesCameraGuids.Contains(_navMesh.SourceSnodeGuid[ptri]);
+        }
+        else
+        {
+            float y = _playerFollower.Position.Y;
+            if (!_isUnderground && y < UndergroundEnterY) _isUnderground = true;
+            else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
+        }
         if (wasUnderground != _isUnderground)
-            Console.WriteLine($"[underground] flip -> {_isUnderground} at player Y={y:F1}");
+            Console.WriteLine($"[underground] flip -> {_isUnderground} at player " +
+                              $"Y={_playerFollower.Position.Y:F1} (authored node flag)");
         RecomputeUpperHiddenRegions(wasUnderground != _isUnderground);
     }
 
@@ -10833,6 +10855,7 @@ void main()
         _decalQuadsAll.Clear();
         _decalTrisAll.Clear();
         _drapeNodes.Clear();
+        _occludesCameraGuids.Clear();
         _drapeSnoCache.Clear();
         _decalSampleWorldHeight = null;
         _decalCollectWorldTris = null;
