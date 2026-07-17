@@ -126,6 +126,12 @@ public sealed class SpellTemplate
     /// damage math.</summary>
     public SpellElement Element { get; }
 
+    /// <summary>SC-SPELLBOOK-AUTHENTIC — authored <c>[magic] magic_class</c>
+    /// (<c>mc_nature_magic</c> / <c>mc_combat_magic</c>). Drives the
+    /// spellbook's two-class name tinting: retail renders nature-magic names
+    /// green and combat-magic names amber.</summary>
+    public bool IsNatureMagic { get; private set; }
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -258,6 +264,9 @@ public sealed class SpellTemplate
     {
         ActiveIcon = (store.GetAttribute(template, "gui", "active_icon") ?? "")
                      .Trim().Trim('"');
+        // SC-SPELLBOOK-AUTHENTIC — authored magic_class for name tinting.
+        IsNatureMagic = (store.GetAttribute(template, "magic", "magic_class") ?? "")
+            .Contains("nature", StringComparison.OrdinalIgnoreCase);
         // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
         TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
             .Contains("tt_dead_enemy", StringComparison.OrdinalIgnoreCase);

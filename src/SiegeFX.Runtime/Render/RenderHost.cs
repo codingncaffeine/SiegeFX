@@ -3659,6 +3659,26 @@ public sealed class RenderHost : IDisposable
     // template doesn't ship one; in that case the panel falls back to a dim
     // placeholder cell.
     private string _playerPortraitIconName = "";
+
+    /// <summary>SC-HERO-PORTRAIT — retail ships one portrait raw per creator
+    /// skin variant (b_gui_ig_i_ic_c_fb_01..06; fg_a_01..03 / fg_b_01..02 /
+    /// fg_c_01) but heroes.gas only authors the per-gender default — the
+    /// variant→portrait mapping is engine-side. The numbered suffixes align
+    /// with the creator's face/skin axis, so index by FaceIdx (naming-derived
+    /// inference; the blonde/darkhair extras stay unused until their axis is
+    /// pinned down). Falls back to the template default on placeholder picks.</summary>
+    private static string PortraitForVariant(HeroVariantPicker? pick, string templateDefault)
+    {
+        if (pick is null) return templateDefault;
+        string[] set = pick.Gender == HeroGender.Girl
+            ? new[] { "b_gui_ig_i_ic_c_fg_a_01", "b_gui_ig_i_ic_c_fg_a_02", "b_gui_ig_i_ic_c_fg_a_03",
+                      "b_gui_ig_i_ic_c_fg_b_01", "b_gui_ig_i_ic_c_fg_b_02", "b_gui_ig_i_ic_c_fg_c_01" }
+            : new[] { "b_gui_ig_i_ic_c_fb_01", "b_gui_ig_i_ic_c_fb_02", "b_gui_ig_i_ic_c_fb_03",
+                      "b_gui_ig_i_ic_c_fb_04", "b_gui_ig_i_ic_c_fb_05", "b_gui_ig_i_ic_c_fb_06" };
+        int i = pick.FaceIdx % set.Length;
+        if (i < 0) i += set.Length;
+        return set[i];
+    }
     // INFORAIL-CHAR-NAME-CLASS — per-template [actor]screen_class
     // (heroes.gas:376 farmboy = "Farmer"). Set at LoadPlayActors
     // alongside _playerPortraitIconName. Default "Farmer" matches
@@ -21189,6 +21209,11 @@ void main()
             _playerPortraitIconName =
                 (_templateStore.GetAttribute(pcTpl, "actor", "portrait_icon") ?? "")
                 .Trim().Trim('"');
+            // SC-HERO-PORTRAIT — heroes.gas authors only the per-gender
+            // default, but retail ships a numbered portrait per creator
+            // skin variant; pick the one matching the chosen face so the
+            // mini-HUD + character sheet show the character you built.
+            _playerPortraitIconName = PortraitForVariant(pick, _playerPortraitIconName);
             // INFORAIL-CHAR-NAME-CLASS — pull the template's
             // [actor]screen_class (heroes.gas:376 farmboy="Farmer").
             // ClassTitleResolver returns this verbatim until any skill
@@ -32963,7 +32988,14 @@ void main()
                 }
             }
 
-            _heroName = ps.HeroName ?? "";
+            // SC-HERO-NAME — never DOWNGRADE the name: prefer the save's
+            // HeroName; older saves that predate name persistence fall back
+            // to the save's typed DisplayName, then to whatever this session
+            // already knows. Blanking it here is what surfaced as the
+            // character sheet reading "Adventurer" after a load.
+            _heroName = !string.IsNullOrWhiteSpace(ps.HeroName) ? ps.HeroName
+                      : !string.IsNullOrWhiteSpace(save.DisplayName) ? save.DisplayName
+                      : _heroName;
             // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
             // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
             // uses). Sessions started without the creator save a placeholder
@@ -33010,6 +33042,9 @@ void main()
                 // with the saved one (cross-session load), in which case the warn
                 // tells the user the model on screen doesn't match the bytes.
                 string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+                // SC-HERO-PORTRAIT — the portrait follows the restored
+                // variant's face pick, same mapping the spawn path uses.
+                _playerPortraitIconName = PortraitForVariant(restored, _playerPortraitIconName);
                 if (_templateStore is not null
                     && _templateStore.TryGet(playerTpl, out var pickTpl))
                 {

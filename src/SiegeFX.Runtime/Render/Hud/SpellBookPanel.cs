@@ -238,7 +238,7 @@ public sealed class SpellBookPanel
         text.DrawString(vw, vh, label.ToUpperInvariant(),
                         bandX + (nameW - labelW) / 2,
                         bandY + (bandH - 8) / 2,
-                        SpellElementColor(spell.Element));
+                        ClassColor(spell));
 
         // Icon in the authored itemslot (523,47,539,79 → band-rel x=134,
         // 16 wide over the band height); square icon centered vertically.
@@ -253,7 +253,7 @@ public sealed class SpellBookPanel
         }
         else
         {
-            bars.DrawRect(vw, vh, slotX, iconY, iconSz, iconSz, SpellElementColor(spell.Element));
+            bars.DrawRect(vw, vh, slotX, iconY, iconSz, iconSz, ClassColor(spell));
             var glyph = string.IsNullOrEmpty(label) ? "?" : label.Substring(0, 1).ToUpperInvariant();
             int glyphW = text.MeasureWidth(glyph);
             text.DrawString(vw, vh, glyph,
@@ -261,18 +261,12 @@ public sealed class SpellBookPanel
         }
     }
 
-    // Phase 21-SC-SPELL-A — DS1-observed spell label tints. User-confirmed
-    // anchors: zap (Lightning/nature) reads as #253928 dark green, fire shot
-    // reads as warm orange. Other elements lean on the same nature/combat
-    // split: nature spells skew green, combat-magic spells skew warm.
-    static Vector4 SpellElementColor(SpellElement e) => e switch
-    {
-        SpellElement.Fire      => new Vector4(0.769f, 0.408f, 0.220f, 1f), // #C46838 warm orange
-        SpellElement.Ice       => new Vector4(0.251f, 0.471f, 0.769f, 1f), // cool blue
-        SpellElement.Lightning => new Vector4(0.145f, 0.224f, 0.157f, 1f), // #253928 nature green
-        SpellElement.Acid      => new Vector4(0.145f, 0.224f, 0.157f, 1f), // #253928 nature green
-        SpellElement.Death     => new Vector4(0.376f, 0.235f, 0.376f, 1f), // muted purple
-        SpellElement.Holy      => new Vector4(0.769f, 0.667f, 0.314f, 1f), // gold
-        _                      => new Vector4(0.667f, 0.655f, 0.557f, 1f), // #AAA78E fallback
-    };
+    // SC-SPELLBOOK-AUTHENTIC — retail tints spell names by their authored
+    // [magic] magic_class, two classes only. Colors measured off the retail
+    // 1024×768 reference screenshot's text pixels: ZAP (nature magic) =
+    // RGB 67,202,131; FIRESHOT (combat magic) = RGB 234,169,53. (The old
+    // per-element table — including a "dark green" zap — was a misread.)
+    static Vector4 ClassColor(SpellTemplate spell) => spell.IsNatureMagic
+        ? new Vector4(67f / 255f, 202f / 255f, 131f / 255f, 1f)
+        : new Vector4(234f / 255f, 169f / 255f, 53f / 255f, 1f);
 }
