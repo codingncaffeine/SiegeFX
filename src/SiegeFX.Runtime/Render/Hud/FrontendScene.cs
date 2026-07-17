@@ -228,12 +228,49 @@ public sealed class FrontendScene : IDisposable
         State == ScreenState.MainMenu       ? 1f :
         0f;
 
-    // Phase 27-SP-FLYOUT — Main → SP and SP → Main transitions.
-    // mainmenu_mm2sp / menubars_mm2sp run authored at ~1.0s each
-    // (rough heuristic; PRS lengths in DS1's main-menu set cluster
-    // around 1.0–1.5s for the cross-state morphs). Tunable.
-    const float MmToSpDur = 1.0f;
-    const float SpToMmDur = 1.0f;
+    // SC-FE-AUDIT — authored clip lengths (prs info receipts). Every
+    // transition state lasts as long as its PANEL clips (the morphs that
+    // gate input), and every clip evaluates at ITS OWN native speed via
+    // NativeHold — the old shared-window normalization ran the 3.33s
+    // backbutton flips at up to 3.3× speed and halved the rightside
+    // door/gear flourishes. Long clips (backbutton, rightside) keep
+    // playing as TAILS into the settled state, which draws the same
+    // clip at NativeHold so the motion completes without a pop.
+    const float LenShortMorph    = 1.6667f; // mainmenu_*2*, menubars mm2sp/mm2mp/mp2mm/lm2cd/cd2lm/sp-up/sp-down, loadmap_down/up
+    const float LenMenubarsSp2Mm = 1.3333f; // menubars_sp2mm ends 0.33s before the mainmenu morph
+    const float LenLong          = 3.3333f; // backbutton e2b/b2e/b2pn/pn2b, rightside_open/close, heromenu_begin
+
+    /// <summary>Seconds since the most recent TRANSITION state was
+    /// entered; keeps accumulating through the settled state that
+    /// follows so long tail clips finish naturally.</summary>
+    float _sinceTransition;
+    /// <summary>The most recent transition state — settled states use it
+    /// to pick arrival-path tail clips (e.g. SP settled draws the
+    /// backbutton as e2b when arriving from MainMenu but pn2b when
+    /// arriving back from LoadGame / the creator).</summary>
+    ScreenState _lastTransition = ScreenState.IntroMenuFlyIn;
+
+    static bool IsTransitionState(ScreenState s) => s switch
+    {
+        ScreenState.IntroMenuFlyIn or
+        ScreenState.MainMenuToSp or ScreenState.SinglePlayerToMm or
+        ScreenState.SinglePlayerToLg or ScreenState.LgToSinglePlayer or
+        ScreenState.SinglePlayerToCd or ScreenState.CharacterSelectToSp or
+        ScreenState.CharacterSelectToDifficulty or ScreenState.DifficultyToCharacterSelect or
+        ScreenState.MainMenuToMp or ScreenState.MpToMainMenu => true,
+        _ => false,
+    };
+
+    /// <summary>Fraction along a clip of the given authored length,
+    /// measured from the last transition's start — native speed, parked
+    /// at the end pose once the clip completes.</summary>
+    float NativeHold(float clipLenSec) => Math.Clamp(_sinceTransition / clipLenSec, 0f, 1f);
+
+    // Phase 27-SP-FLYOUT — Main → SP and SP → Main transitions. State
+    // duration = the mainmenu/menubars panel morph length; the 3.33s
+    // backbutton flip continues as a tail into the settled state.
+    const float MmToSpDur = LenShortMorph;
+    const float SpToMmDur = LenShortMorph;
     /// <summary>Phase 27-SP-FLYOUT — fraction along mm2sp clips
     /// (clamped 0..1). Held at 1 while in <see cref="ScreenState.SinglePlayer"/>
     /// so the SP pose persists between transitions.</summary>
@@ -252,20 +289,19 @@ public sealed class FrontendScene : IDisposable
     const float MmToMpDur = 1.6667f;
     const float MpToMmDur = 1.6667f;
 
-    // SC-MAINMENU-LOADGAME — SP → Load Game and reverse. mainmenu_sp2lg /
-    // backbutton_b2pn / loadmap_down run together (menubars hold the SP
-    // pose). Same 1.0s cadence as the MM↔SP morphs.
-    const float SpToLgDur = 1.0f;
-    const float LgToSpDur = 1.0f;
+    // SC-MAINMENU-LOADGAME — SP → Load Game and reverse. mainmenu_sp2lg
+    // + loadmap_down both 1.6667s; backbutton_b2pn tails.
+    const float SpToLgDur = LenShortMorph;
+    const float LgToSpDur = LenShortMorph;
 
-    // Phase 28-CD-FLYOUT — SP → Character Creator and reverse.
-    // mainmenu_sng2cd / menubars_lm2cd / backbutton_b2pn / heromenu_begin
-    // run together. Authored clip lengths cluster around 1.0–1.7s in
-    // the main-menu PRS catalog; tunable.
-    const float SpToCdDur = 1.5f;
-    const float CdToSpDur = 1.5f;
-    const float CdToDiffDur = 1.0f;
-    const float DiffToCdDur = 1.0f;
+    // Phase 28-CD-FLYOUT / SC-FE-AUDIT — SP ↔ Creator ↔ Difficulty.
+    // Panel morphs (mainmenu sp2sng/sng2cd family, menubars sp-up/
+    // sp-down/lm2cd/cd2lm) are 1.6667s; backbutton + rightside window
+    // clips (3.3333s) tail through the settled screens.
+    const float SpToCdDur = LenShortMorph;
+    const float CdToSpDur = LenShortMorph;
+    const float CdToDiffDur = LenShortMorph;
+    const float DiffToCdDur = LenShortMorph;
     /// <summary>Phase 28-CD-FLYOUT — fraction along sng2cd / lm2cd /
     /// b2pn / heromenu_begin clips (clamped 0..1). Held at 1 while in
     /// <see cref="ScreenState.CharacterSelect"/> so the cd pose persists
@@ -365,6 +401,7 @@ public sealed class FrontendScene : IDisposable
     public void Tick(float dt)
     {
         _timeSec += dt;
+        _sinceTransition += dt;
         // Phase 24-MAINMENU step 1+2 — drive splash → main menu auto-advance.
         // Each splash auto-fires its `end_*_fade` equivalent at IntroPerSplash;
         // the FadeOut beat (IntroFadeOutHold) is the placeholder for the
@@ -426,7 +463,16 @@ public sealed class FrontendScene : IDisposable
         }
     }
 
-    public void SetState(ScreenState s) { State = s; _stateTime = 0f; }
+    public void SetState(ScreenState s)
+    {
+        // SC-FE-AUDIT — entering a transition restarts the native-speed
+        // clip clock; entering a settled state keeps it running so the
+        // long clips (backbutton flips, rightside door) finish their
+        // authored tails there.
+        if (IsTransitionState(s)) { _sinceTransition = 0f; _lastTransition = s; }
+        State = s;
+        _stateTime = 0f;
+    }
 
     /// <summary>Draws the full frontend scene. Caller must already be inside a HUD
     /// pass (depth off, alpha blend on). Drawn in back-to-front order so the
@@ -744,17 +790,22 @@ public sealed class FrontendScene : IDisposable
         // identical pose, so the handoff is invisible.
         var menubarsMask = new bool[17];
         for (int i = 0; i < 6; i++) menubarsMask[i] = true; // chrome
-        if (hold < 1f)
+        if (State != ScreenState.SinglePlayer)
         {
             menubarsMask[6]  = true; menubarsMask[8]  = true;
             menubarsMask[10] = true; menubarsMask[12] = true;
             menubarsMask[14] = true;
         }
 
+        // SC-FE-AUDIT — native per-clip speeds. menubars_sp2mm is
+        // authored 0.33s SHORTER than the mainmenu morph (rows land
+        // first, panel settles after — deliberate choreography).
         var mainClip = mmToSp ? "mainmenu_mm2sp" : "mainmenu_sp2mm";
         var barsClip = mmToSp ? "menubars_mm2sp" : "menubars_sp2mm";
-        DrawMesh("mainmenu",  "mainmenu",  clip: mainClip,  hold: hold, vw, vh, mainmenuMask);
-        DrawMesh("menubars",  "menubars",  clip: barsClip,  hold: hold, vw, vh, menubarsMask);
+        float mainHold = NativeHold(LenShortMorph);
+        float barsHold = NativeHold(mmToSp ? LenShortMorph : LenMenubarsSp2Mm);
+        DrawMesh("mainmenu",  "mainmenu",  clip: mainClip,  hold: mainHold, vw, vh, mainmenuMask);
+        DrawMesh("menubars",  "menubars",  clip: barsClip,  hold: barsHold, vw, vh, menubarsMask);
         // SC-SP-BACK-FIX — backbutton chrome with state-aware clip so
         // the BACK→EXIT label flip ("block turning" motion) animates
         // during the SP↔MM transition. mm2sp plays backbutton_e2b
@@ -769,13 +820,39 @@ public sealed class FrontendScene : IDisposable
         // backing + BACK + label on top so the backing wins where
         // they overlap (matching DS1's intended depth — arrows sit
         // BEHIND the backing image).
-        var backClip = mmToSp ? "backbutton_e2b" : "backbutton_b2e";
+        // SC-FE-AUDIT — the 3.33s flip runs at native speed and TAILS
+        // through the settled SP screen. Arrival-aware clip: from
+        // MainMenu the block flips EXIT→BACK (e2b); arriving BACK from
+        // LoadGame / the creator the prev+next plates are still
+        // telescoping in (pn2b — the same clip the transition state was
+        // drawing, so the motion continues seamlessly). The reverse
+        // b2e is the one clip still normalized to its transition
+        // window: the settled MainMenu draws the EXIT button as a
+        // rect-mapped per-widget (user-tuned position), so a native
+        // tail has nowhere to keep playing there.
+        string backClip;
+        float backHold;
+        if (State == ScreenState.SinglePlayer && _lastTransition != ScreenState.MainMenuToSp)
+        {
+            backClip = "backbutton_pn2b";
+            backHold = NativeHold(LenLong);
+        }
+        else if (mmToSp)
+        {
+            backClip = "backbutton_e2b";
+            backHold = NativeHold(LenLong);
+        }
+        else
+        {
+            backClip = "backbutton_b2e";
+            backHold = Math.Clamp(_sinceTransition / SpToMmDur, 0f, 1f);
+        }
         var arrowsFoldedMask = new bool[11];
         arrowsFoldedMask[1] = true; arrowsFoldedMask[2] = true;
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, arrowsFoldedMask);
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, arrowsFoldedMask);
         var backFrontMask = new bool[11];
         backFrontMask[0] = true; backFrontMask[4] = true; backFrontMask[8] = true;
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backFrontMask);
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, backFrontMask);
         // Per-widget DrawSpBackButton overlays the hover/press texture
         // swap on top, gated to fire only on hov/pr (the chrome above
         // is the mouseout source of truth).
@@ -796,10 +873,13 @@ public sealed class FrontendScene : IDisposable
         // Title drum: MAIN MENU (text-01, subsets 1+2) rolls away while
         // MULTIPLAYER (text-02, subsets 3+4) rolls in — both atlases ride
         // the drum during the transition (tip-down culling picks the
-        // visible plate); settle on text-02 only.
-        var mainmenuMask = new[] { true, hold < 1f, hold < 1f, true, true, false };
+        // visible plate); settle on text-02 only. SC-FE-AUDIT: native
+        // per-clip holds.
+        float mainHold = NativeHold(LenShortMorph);
+        float barsHold = NativeHold(LenShortMorph);
+        var mainmenuMask = new[] { true, mainHold < 1f, mainHold < 1f, true, true, false };
         var mainClip = toMp ? "mainmenu_mm2mp" : "mainmenu_mp2mm";
-        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: mainHold, vw, vh, mainmenuMask);
 
         // Menubars: chrome + (mid-transition) the even text-menubars1
         // label halves so the MM labels visibly ride the folding planks
@@ -809,24 +889,28 @@ public sealed class FrontendScene : IDisposable
         // on disk).
         var menubarsMask = new bool[17];
         for (int i = 0; i < 6; i++) menubarsMask[i] = true;
-        if (hold < 1f)
+        if (barsHold < 1f)
         {
             menubarsMask[6]  = true; menubarsMask[8]  = true;
             menubarsMask[10] = true; menubarsMask[12] = true;
             menubarsMask[14] = true;
         }
         var barsClip = toMp ? "menubars_mm2mp" : "menubars_mp2mm";
-        DrawMesh("menubars", "menubars", clip: barsClip, hold: hold, vw, vh, menubarsMask);
+        DrawMesh("menubars", "menubars", clip: barsClip, hold: barsHold, vw, vh, menubarsMask);
 
-        // Backbutton: EXIT ↔ BACK morph, same two-pass split as SP
-        // (folded arrows behind the backing).
+        // Backbutton: EXIT ↔ BACK morph, same two-pass split as SP.
+        // e2b runs native and tails through the settled Multiplayer
+        // screen; b2e is windowed to the transition (see DrawSpChrome —
+        // MainMenu's EXIT is a per-widget draw, no tail surface).
         var backClip = toMp ? "backbutton_e2b" : "backbutton_b2e";
+        float backHold = toMp ? NativeHold(LenLong)
+                              : Math.Clamp(_sinceTransition / MpToMmDur, 0f, 1f);
         var arrowsFoldedMask = new bool[11];
         arrowsFoldedMask[1] = true; arrowsFoldedMask[2] = true;
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, arrowsFoldedMask);
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, arrowsFoldedMask);
         var backFrontMask = new bool[11];
         backFrontMask[0] = true; backFrontMask[4] = true; backFrontMask[8] = true;
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backFrontMask);
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, backFrontMask);
     }
 
     /// <summary>SC-MP-MENU — provider button hover/press chrome overlay.
@@ -951,9 +1035,9 @@ public sealed class FrontendScene : IDisposable
         // the fraction of THAT clip's authored length, clamped so the
         // shorter panel clips park on their end pose while the 3.33s
         // pillar gear flourish plays out in full.
-        float sidesHold    = Math.Clamp(_stateTime / FlyInLenSides,    0f, 1f);
-        float mainmenuHold = Math.Clamp(_stateTime / FlyInLenMainmenu, 0f, 1f);
-        float menubarsHold = Math.Clamp(_stateTime / FlyInLenMenubars, 0f, 1f);
+        float sidesHold    = NativeHold(FlyInLenSides);
+        float mainmenuHold = NativeHold(FlyInLenMainmenu);
+        float menubarsHold = NativeHold(FlyInLenMenubars);
         DrawMesh("backdrop",  "backdrop",  clip: null,                 hold: 0f,           vw, vh);
         DrawSideChrome(vw, vh, "leftside_flyin", sidesHold,
                                "rightside_flyin", sidesHold);
@@ -1031,34 +1115,47 @@ public sealed class FrontendScene : IDisposable
         // CharacterSelect holds the open end-pose at hold=1f. The reverse
         // CharacterSelectToSp uses the dedicated rightside_close clip
         // (its own authored easing), NOT 1-hold of open.
-        string rightsideClip;
-        float  rightsideHold;
-        if (State == ScreenState.CharacterSelect)
-        {
-            rightsideClip = "rightside_open";
-            rightsideHold = 1f;
-        }
-        else if (fromSp)
-        {
-            rightsideClip = "rightside_open";
-            rightsideHold = hold;
-        }
-        else
-        {
-            rightsideClip = "rightside_close";
-            rightsideHold = hold;
-        }
+        // SC-FE-AUDIT — the 3.33s door slide runs at native speed and
+        // TAILS through the settled creator (the panel morphs settle at
+        // 1.67s while the door + gears keep going — authored). Arriving
+        // back from Difficulty continues the same rightside_open clip
+        // the DiffToCd transition was drawing.
+        string rightsideClip = (fromSp || State == ScreenState.CharacterSelect)
+            ? "rightside_open" : "rightside_close";
+        float rightsideHold = NativeHold(LenLong);
         DrawMesh("rightside-shadow","rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsideShadowMask);
         DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f,           vw, vh, leftsidePillarMask);
         DrawMesh("rightside",       "rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsidePillarMask);
 
-        // SC-CD-CHOOSEHERO — mainmenu.asp draw at sng2cd@hold for the
-        // title scroll plaque + CHOOSE HERO engraved labels. Subsets
-        // 0+1+2 = chrome plate + text-01L + text-01R; mask drops
-        // text-02L/R (DIFFICULTY) and shadows.
+        // SC-FE-AUDIT (2026-07-17) — DS1's state codes: "sng" IS the
+        // choose-hero screen and "cd" IS the choose-difficulty screen
+        // (receipt: trace-pose sng2cd@1 hangs PanelTIP7 — the DIFFICULTY
+        // plate — tip-down, while CHOOSE HERO's TIP3 flips up/culled;
+        // sp2sng@1 hangs TIP3 down). The creator therefore holds
+        // mainmenu_sp2sng, NOT sng2cd — the old sng2cd@1 hold left the
+        // plaque BLANK (its visible row is text-02, which this mask
+        // rightly drops) and is what the ancient "DIFFICULTY in the cd
+        // title bar" mystery was about. Subsets 0+1+2 = chrome plate +
+        // text-01L/R; text-02L/R + shadows masked.
         var mainmenuMask = new[] { true, true, true, false, false, false };
-        var mainClip = fromSp ? "mainmenu_sng2cd" : "mainmenu_cd2sng";
-        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
+        var mainClip = fromSp ? "mainmenu_sp2sng" : "mainmenu_sng2sp";
+        float mainHold = NativeHold(LenShortMorph);
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: mainHold, vw, vh, mainmenuMask);
+
+        // Menubars: the SP rows RETRACT upward while the creator opens
+        // (menubars_sp-up 0→1 parks everything at mesh Y 2.1-5.5, fully
+        // off-screen — trace receipt) and return via sp-down on the way
+        // back (sp-down@1 == the SP settled row positions). The old code
+        // drew no menubars at all here, so the rows POPPED out at the
+        // transition start instead of folding away. Labels ride the
+        // retracting planks mid-flight (even text subsets 12/14, the
+        // two SP rows), same FOLD-LABELS mechanism as the MM↔SP fold.
+        float barsHold = NativeHold(LenShortMorph);
+        var menubarsMask = new bool[17];
+        for (int i = 0; i < 6; i++) menubarsMask[i] = true;
+        if (barsHold < 1f) { menubarsMask[12] = true; menubarsMask[14] = true; }
+        var barsClip = fromSp ? "menubars_sp-up" : "menubars_sp-down";
+        DrawMesh("menubars", "menubars", clip: barsClip, hold: barsHold, vw, vh, menubarsMask);
         // backbutton uses ac/b/e/pn state codes. Character_select shows
         // the Previous/Next button pair (pn). End of b2pn = pn pose
         // (same destination as ac2pn — which the pre-Phase-28 code used
@@ -1074,7 +1171,7 @@ public sealed class FrontendScene : IDisposable
         // chrome's drop shadow, so we lose nothing visually here.
         var backbuttonMask = new bool[11];
         for (int i = 0; i < 10; i++) backbuttonMask[i] = true;
-        DrawMesh("backbutton", "backbutton",        clip: backClip, hold: hold, vw, vh, backbuttonMask);
+        DrawMesh("backbutton", "backbutton",        clip: backClip, hold: NativeHold(LenLong), vw, vh, backbuttonMask);
 
         // heromenu — fly in during forward transition, settled at
         // begin@1.0 (cd-state pose) when held, fly out during reverse.
@@ -1124,9 +1221,10 @@ public sealed class FrontendScene : IDisposable
         // at hold=fraction so the door re-slides and the 3D char
         // becomes visible again.
         string rightClip = fromCd ? "rightside_close" : "rightside_open";
-        DrawMesh("rightside-shadow","rightside", clip: rightClip,          hold: hold, vw, vh, leftsideShadowMask);
-        DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f,   vw, vh, leftsidePillarMask);
-        DrawMesh("rightside",       "rightside", clip: rightClip,          hold: hold, vw, vh, leftsidePillarMask);
+        float rightHold = NativeHold(LenLong);
+        DrawMesh("rightside-shadow","rightside", clip: rightClip,          hold: rightHold, vw, vh, leftsideShadowMask);
+        DrawMesh("leftside",        "leftside",  clip: "leftside_default", hold: 0f,        vw, vh, leftsidePillarMask);
+        DrawMesh("rightside",       "rightside", clip: rightClip,          hold: rightHold, vw, vh, leftsidePillarMask);
 
         // Title chrome: mainmenu.asp. Forward (cd→diff) plays sng2cd
         // at hold=fraction so the bone-Z bus swap settles into the
@@ -1137,7 +1235,7 @@ public sealed class FrontendScene : IDisposable
         // (text-01 + shadows masked off).
         var mainmenuMask = new[] { true, false, false, true, true, false };
         var mainClip = fromCd ? "mainmenu_sng2cd" : "mainmenu_cd2sng";
-        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: hold, vw, vh, mainmenuMask);
+        DrawMesh("mainmenu", "mainmenu", clip: mainClip, hold: NativeHold(LenShortMorph), vw, vh, mainmenuMask);
 
         // Menubars chrome — buttons animate during the transition.
         // Forward: lm2cd at hold=fraction so they spring down into
@@ -1152,18 +1250,26 @@ public sealed class FrontendScene : IDisposable
         var menubarsMask = new bool[17];
         menubarsMask[3] = true; menubarsMask[4] = true; menubarsMask[5] = true;
         var menubarsClip = fromCd ? "menubars_lm2cd" : "menubars_cd2lm";
-        DrawMesh("menubars", "menubars", clip: menubarsClip, hold: hold, vw, vh, menubarsMask);
+        DrawMesh("menubars", "menubars", clip: menubarsClip, hold: NativeHold(LenShortMorph), vw, vh, menubarsMask);
 
-        // BACK button only. art_mapping.gas[button_diff_back] = subsets
-        // 4 (exitback chrome) + 8 (text-small BACK label). Drawing more
-        // subsets pulls in the prev/next arrow chrome from cd-state
-        // which renders as residue at the wrong position. Use
-        // backbutton_pn2b on the forward path so the cd's prev/next
-        // unwinds to BACK; b2pn on reverse goes back.
+        // BACK button with its full assembly (SC-FE-AUDIT): the folded
+        // prev/next plates ARE the ball-knob handles flanking the BACK
+        // plate at the settled b pose — same two-pass split as the SP
+        // submenu (arrows first, backing + plate + label on top). The
+        // old subsets-4+8-only draw left a bare plate with none of the
+        // surrounding design (the "residue" the old comment feared is
+        // just the knobs mid-morph; at pn2b@1 they land exactly like
+        // the retail shot). art_mapping's 4+8 recipe is the HOVER swap
+        // set, not the mouseout chrome roster. pn2b forward unwinds
+        // prev/next into BACK; b2pn on reverse re-extends them.
         var backClip = fromCd ? "backbutton_pn2b" : "backbutton_b2pn";
-        var backbuttonMask = new bool[11];
-        backbuttonMask[4] = true; backbuttonMask[8] = true;
-        DrawMesh("backbutton", "backbutton", clip: backClip, hold: hold, vw, vh, backbuttonMask);
+        float backHold = NativeHold(LenLong);
+        var backArrowsMask = new bool[11];
+        backArrowsMask[1] = true; backArrowsMask[2] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, backArrowsMask);
+        var backFrontMask = new bool[11];
+        backFrontMask[0] = true; backFrontMask[4] = true; backFrontMask[8] = true;
+        DrawMesh("backbutton", "backbutton", clip: backClip, hold: backHold, vw, vh, backFrontMask);
     }
 
     /// <param name="hold">Time-fraction to evaluate the clip at: 0=start of clip,
@@ -1354,11 +1460,12 @@ public sealed class FrontendScene : IDisposable
 
         // Title scroll plate + drum: the LOAD GAME art rides PanelBASE4
         // through the sp2lg flip; text-02 + shadows masked off as in the
-        // SP state.
+        // SP state. SC-FE-AUDIT: native per-clip holds throughout.
+        float morphHold = NativeHold(LenShortMorph);
         var mainmenuMask = new[] { true, true, true, false, false, false };
         DrawMesh("mainmenu", "mainmenu",
                  clip: spToLg ? "mainmenu_sp2lg" : "mainmenu_lg2sp",
-                 hold: hold, vw, vh, mainmenuMask);
+                 hold: morphHold, vw, vh, mainmenuMask);
 
         // Menubars: SP pose held — the wood rows stay parked behind the
         // window (chrome-only subsets, no text).
@@ -1373,7 +1480,7 @@ public sealed class FrontendScene : IDisposable
         backMask[5] = false; backMask[9] = false;
         DrawMesh("backbutton", "backbutton",
                  clip: spToLg ? "backbutton_b2pn" : "backbutton_pn2b",
-                 hold: hold, vw, vh, backMask);
+                 hold: NativeHold(LenLong), vw, vh, backMask);
 
         // The map window itself. Drawn last: it slides in OVER the shell
         // chrome. Authored subset order ≠ DS1 layer order here, so the
@@ -1392,9 +1499,9 @@ public sealed class FrontendScene : IDisposable
         var loadmapShadowMask = new[] { false, false, true  };
         var loadmapPiecesMask = new[] { false, true,  false };
         var loadmapBodyMask   = new[] { true,  false, false };
-        DrawMesh("loadmap-shadow", "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapShadowMask);
-        DrawMesh("loadmap-pieces", "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapPiecesMask);
-        DrawMesh("loadmap",        "loadmap", clip: loadmapClip, hold: hold, vw, vh, loadmapBodyMask);
+        DrawMesh("loadmap-shadow", "loadmap", clip: loadmapClip, hold: morphHold, vw, vh, loadmapShadowMask);
+        DrawMesh("loadmap-pieces", "loadmap", clip: loadmapClip, hold: morphHold, vw, vh, loadmapPiecesMask);
+        DrawMesh("loadmap",        "loadmap", clip: loadmapClip, hold: morphHold, vw, vh, loadmapBodyMask);
     }
 
     /// <summary>One-shot probe of the frontend reference rect. Use backdrop
@@ -1427,7 +1534,14 @@ public sealed class FrontendScene : IDisposable
         if (_renderers.TryGetValue(meshSuffix, out var r)) return r;
         var basename = $"m_gui_fe_m_mn_3d_{meshSuffix}.asp";
         if (!_resolver.TryLoadByBasename(basename, out var bytes))
+        {
+            // SC-FE-AUDIT — a missing chrome mesh used to vanish with no
+            // trace ("image missing" bugs that logs couldn't see). Warn
+            // once, cache the miss.
+            Console.Error.WriteLine($"[frontend] mesh not found: {basename}");
+            _renderers[meshSuffix] = null!;
             return null;
+        }
         var asp = AspMesh.Load(bytes);
         // UiMeshRenderer demands HasSkin (DS1 frontend meshes are all rigged).
         // logo.asp is version 2.5 with 4 bones — should still pass.
@@ -1444,6 +1558,7 @@ public sealed class FrontendScene : IDisposable
         var basename = $"a_gui_fe_m_mn_3d_{clipSuffix}.prs";
         if (!_resolver.TryLoadByBasename(basename, out var bytes))
         {
+            Console.Error.WriteLine($"[frontend] clip not found: {basename}");
             _clips[clipSuffix] = null;
             return null;
         }
@@ -2206,7 +2321,9 @@ public sealed class FrontendScene : IDisposable
         {
             // Some MAXFILE-stamped names may not have a backing .raw (the
             // mesh authored a slot for a placeholder that ships only on disk).
-            // Tag it null so we don't keep trying.
+            // Tag it null so we don't keep trying — but say so once, so a
+            // missing-image bug is visible in the session log.
+            Console.Error.WriteLine($"[frontend] texture not found: {basename}");
             _textures[key] = null!;
             return null;
         }

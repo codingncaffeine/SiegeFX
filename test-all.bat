@@ -2659,8 +2659,8 @@ echo  and compare against retail screenshots. Chrome layer only: the
 echo  per-widget hover swaps + settled-pose labels RenderHost layers on
 echo  top are not part of the receipt.]
 echo.
-dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" MainMenu
-dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" SinglePlayer
+dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" MainMenu --t=3.4
+dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" SinglePlayer --t=3.4
 echo.
 pause
 goto MENU
