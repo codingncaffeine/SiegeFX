@@ -62,7 +62,7 @@ public sealed record ActorStats(
     public bool  AutoSwitchToRanged { get; init; }
     public bool  IczSwitchToMelee { get; init; }
     public string? ActiveLocation { get; init; }
-    public string? PrimarySpell { get; init; }
+    public string? PrimarySpell { get; set; } // set: SC-COMPANION-SPELLBOOK re-slots a member's active spell
     public string? SecondarySpell { get; init; }
 
     // SC-SKILL-LEVELS — the four DS1 class skill levels + cumulative uberlevel,

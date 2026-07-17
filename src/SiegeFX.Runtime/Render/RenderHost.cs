@@ -7582,6 +7582,67 @@ void main()
                         // doesn't see a click-to-move on the panel chrome.
                         return;
                     }
+                    // SC-COMPANION-SPELLBOOK — same pickup / drop / swap
+                    // semantics on a companion's tiled spell panel, executed
+                    // against THAT member's book. Re-slotting their Active 1
+                    // re-targets what the companion casts.
+                    if (_inventoryOpen && CompanionSpellPanelAt(mx, my) is { } msp
+                        && BookFor(msp.PartyIndex) is { } mbook)
+                    {
+                        _companionSpellPanel.OriginX = msp.OriginX;
+                        _companionSpellPanel.OriginY = msp.OriginY;
+                        var mhit = _companionSpellPanel.HitTestSlot(mx, my);
+                        if (mhit.Kind != Hud.SpellBookPanel.SlotKind.None)
+                        {
+                            var mSlotKind = mhit.Kind switch
+                            {
+                                Hud.SpellBookPanel.SlotKind.Active1 => CursorScrollSource.SpellbookActive1,
+                                Hud.SpellBookPanel.SlotKind.Active2 => CursorScrollSource.SpellbookActive2,
+                                _ => CursorScrollSource.SpellbookPlaced,
+                            };
+                            if (_cursorScroll is null)
+                            {
+                                var src = ReadSpellbookSlot(mbook, mhit.Kind, mhit.Index);
+                                if (src is not null)
+                                {
+                                    BeginScrollDrag(src, mSlotKind, mhit.Index, msp.PartyIndex);
+                                    WriteSpellbookSlot(mbook, mhit.Kind, mhit.Index, null);
+                                    if (mhit.Kind == Hud.SpellBookPanel.SlotKind.Active1)
+                                        SyncMemberCastFromBook(msp.PartyIndex);
+                                    _audio?.Play(SfxGuiPickup);
+                                    Console.WriteLine($"  scroll drag: pickup {src.Name} from member {msp.PartyIndex} {mSlotKind}[{mhit.Index}]");
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                var dropping = _cursorScroll;
+                                if (mSlotKind == _cursorScrollSource
+                                    && mhit.Index == _cursorScrollSourceIndex
+                                    && _cursorScrollOwner == msp.PartyIndex)
+                                {
+                                    RestoreToSource(dropping);
+                                    _audio?.Play(SfxGuiPutDownScroll);
+                                    ClearScrollDrag();
+                                    return;
+                                }
+                                var displaced = ReadSpellbookSlot(mbook, mhit.Kind, mhit.Index);
+                                WriteSpellbookSlot(mbook, mhit.Kind, mhit.Index, dropping);
+                                if (displaced is not null)
+                                    RestoreToSource(displaced);
+                                else
+                                    ClearSpellbookSlot(_cursorScrollSource, _cursorScrollSourceIndex);
+                                if (mhit.Kind == Hud.SpellBookPanel.SlotKind.Active1)
+                                    SyncMemberCastFromBook(msp.PartyIndex);
+                                _audio?.Play(SfxGuiPutDownScroll);
+                                Console.WriteLine($"  scroll drag: drop {dropping.Name} into member {msp.PartyIndex} {mhit.Kind}[{mhit.Index}]" +
+                                                  (displaced is not null ? $" (swap with {displaced.Name})" : ""));
+                                ClearScrollDrag();
+                                return;
+                            }
+                        }
+                        return; // swallow chrome clicks on the member panel
+                    }
                 }
                 // Phase 9-SC-9 — inventory panel owns LMB while open. Latch a
                 // drag if the click lands on an item rect; clicks on empty cells
@@ -22581,12 +22642,16 @@ void main()
     private (int PartyIndex, int OriginX, int OriginY)? CompanionBagAt(int mx, int my)
     {
         var cr = _companionRowRect;
-        if (cr.W <= 0 || _openInventoryMembers.Count == 0) return null;
-        if (mx < cr.X || mx >= cr.X + cr.W || my < cr.Y || my >= cr.Y + cr.H) return null;
+        if (cr.W <= 0 || _companionTileLayout.Count == 0) return null;
+        if (my < cr.Y || my >= cr.Y + cr.H) return null;
+        // SC-COMPANION-SPELLBOOK — members with a spell book occupy a double
+        // slot (bag + their spell panel), so routing walks the published
+        // per-tile layout instead of assuming a uniform stride.
         int stride = Hud.InventoryPanel.PanelWidth(_window.Size.Y);
-        int slot = Math.Clamp((mx - cr.X) / Math.Max(1, stride), 0, _openInventoryMembers.Count - 1);
-        int pidx = _openInventoryMembers.OrderBy(x => x).ElementAt(slot);
-        return (pidx, cr.X + slot * stride, cr.Y);
+        foreach (var (pidx, x, _) in _companionTileLayout)
+            if (mx >= x && mx < x + stride)
+                return (pidx, x, cr.Y);
+        return null;
     }
 
     // Phase 25-fold D — DS1 opens your inventory beside the store so you
@@ -24281,6 +24346,77 @@ void main()
     private readonly Dictionary<int, List<SiegeFX.Core.Actors.LootEntry>> _companionInventories = new();
     private readonly HashSet<int> _openInventoryMembers = new();
     private readonly InventoryPanel _companionInvPanel = new();
+
+    // SC-COMPANION-SPELLBOOK — per-member spell panels. A companion who has
+    // been GIVEN a spell book (any base_book_spell item — book_glb_magic_* —
+    // in their bag or worn slots) gets their own SpellBookPanel tiled right
+    // of their inventory panel. Their book's Active Spell 1 drives what the
+    // member actually casts (brain SetCastSpell + Stats.PrimarySpell for the
+    // team-strip icon). Books persist per companion in CompanionSnapshot.
+    private readonly Dictionary<int, SiegeFX.Core.Actors.PlayerSpellbook> _memberSpellbooks = new();
+    private readonly Hud.SpellBookPanel _companionSpellPanel = new();
+    // Draw-published layout of the open companion row: per member, the tile's
+    // absolute X and whether a spell panel follows the bag. Input routing
+    // walks this instead of assuming a uniform stride.
+    private readonly List<(int Pidx, int X, bool HasBook)> _companionTileLayout = new();
+    // Which book the in-flight scroll drag was picked from (party index;
+    // 0 = the player's book/inventory — the historical behavior).
+    private int _cursorScrollOwner;
+
+    private bool MemberHasSpellbook(int pidx)
+    {
+        // The paperdoll's dedicated book slot must be OCCUPIED — carrying a
+        // spell book loose in the bag doesn't grant the panel, same as the
+        // player. The slot's equip gate already restricts it to book items.
+        return GetEquipmentDict(pidx).TryGetValue("es_spellbook", out var r)
+               && !string.IsNullOrWhiteSpace(r);
+    }
+
+    /// <summary>The spellbook backing a party index — the player's for 0,
+    /// a lazily-created member book otherwise. Null until the member exists.</summary>
+    private SiegeFX.Core.Actors.PlayerSpellbook? BookFor(int pidx)
+    {
+        if (pidx <= 0) return _playerSpellbook;
+        if (_memberSpellbooks.TryGetValue(pidx, out var b)) return b;
+        var m = _party.FirstOrDefault(p => p.PartyIndex == pidx);
+        if (m is null) return null;
+        b = new SiegeFX.Core.Actors.PlayerSpellbook(m.Actor, new Random(unchecked(pidx * 7919 + 17)));
+        _memberSpellbooks[pidx] = b;
+        return b;
+    }
+
+    /// <summary>SC-COMPANION-SPELLBOOK — push a member book's Active Spell 1
+    /// into what the companion actually fights with: the brain's cast spell
+    /// (mode + standoff re-derived) and Stats.PrimarySpell (the team-strip
+    /// slot-3 icon reads it). Null reverts to their weapon behavior.</summary>
+    private void SyncMemberCastFromBook(int pidx)
+    {
+        if (pidx <= 0) return;
+        var m = _party.FirstOrDefault(p => p.PartyIndex == pidx);
+        var b = BookFor(pidx);
+        if (m is null || b is null) return;
+        m.Actor.Stats.PrimarySpell = b.Primary?.Name;
+        m.Brain?.SetCastSpell(b.Primary);
+        Console.WriteLine($"party: {m.Actor.Template.Name} active spell -> {(b.Primary?.Name ?? "<none>")}");
+    }
+
+    /// <summary>Which open companion SPELL panel sits under the cursor, with
+    /// that tile's panel origin. Mirrors <see cref="CompanionBagAt"/>.</summary>
+    private (int PartyIndex, int OriginX, int OriginY)? CompanionSpellPanelAt(int mx, int my)
+    {
+        var cr = _companionRowRect;
+        if (cr.W <= 0 || _companionTileLayout.Count == 0) return null;
+        if (my < cr.Y || my >= cr.Y + cr.H) return null;
+        int stride = Hud.InventoryPanel.PanelWidth(_window.Size.Y);
+        foreach (var (pidx, x, hasBook) in _companionTileLayout)
+        {
+            if (!hasBook) continue;
+            int sx = x + stride;
+            if (mx >= sx && mx < sx + Hud.SpellBookPanel.WidthAt(_window.Size.Y))
+                return (pidx, sx, cr.Y);
+        }
+        return null;
+    }
     private List<SiegeFX.Core.Actors.LootEntry> GetMemberInventory(int partyIndex)
     {
         if (partyIndex <= 0) return _playerInventory;
@@ -31250,6 +31386,7 @@ void main()
                 if (_openInventoryMembers.Count > 0)
                 {
                     int stride = InventoryPanel.PanelWidth(size.Y);
+                    int spellW = Hud.SpellBookPanel.WidthAt(size.Y);
                     // SC-HUD-DRAG — the row of companion tiles moves as ONE
                     // piece: a dragged base replaces "right of the player's
                     // panel"; tiles still stride rightward from the base.
@@ -31259,18 +31396,28 @@ void main()
                     int compBaseY = hudPos.CompanionInvPosY >= 0f
                         ? (int)MathF.Round(hudPos.CompanionInvPosY * size.Y)
                         : panelTopY;
-                    _companionRowRect = (compBaseX, compBaseY,
-                        _openInventoryMembers.Count * stride,
-                        InventoryPanel.PanelHeight(size.Y));
-                    int slot = 0;
+                    // SC-COMPANION-SPELLBOOK — a member who has been given a
+                    // spell book gets their own spell panel tiled directly
+                    // right of their bag, so their slot is bag + book wide.
+                    // Publish the per-tile layout for the input routers.
+                    _companionTileLayout.Clear();
+                    int rowW = 0;
                     foreach (var pidx in _openInventoryMembers.OrderBy(x => x))
+                    {
+                        bool hasBook = MemberHasSpellbook(pidx);
+                        _companionTileLayout.Add((pidx, compBaseX + rowW, hasBook));
+                        rowW += stride + (hasBook ? spellW : 0);
+                    }
+                    _companionRowRect = (compBaseX, compBaseY, rowW,
+                        InventoryPanel.PanelHeight(size.Y));
+                    foreach (var (pidx, tileX, hasBook) in _companionTileLayout)
                     {
                         // That companion's own face in the header, so the player
                         // can tell whose backpack each tiled panel is.
                         var member = _party.FirstOrDefault(mm => mm.PartyIndex == pidx);
                         var memberPortrait = member is not null
                             ? ResolveMemberPortrait(member.Actor.Template) : null;
-                        _companionInvPanel.OriginX     = compBaseX + slot * stride;
+                        _companionInvPanel.OriginX     = tileX;
                         _companionInvPanel.OriginY     = compBaseY;
                         _companionInvPanel.DimBackdrop = false;
                         _companionInvPanel.Gold        = 0;
@@ -31280,8 +31427,25 @@ void main()
                             resolveCommonChrome: GetCommonTexture,
                             arrangeUp: arrangeUp, goldBg: goldBg, gridTile: gridTile,
                             headerPortrait: memberPortrait);
-                        slot++;
+                        if (hasBook)
+                        {
+                            var book = BookFor(pidx);
+                            var spellClose2 = GetCommonTexture("button_x_up")
+                                              ?? TryGetGuiTexture("b_gui_cmn_button_x_up");
+                            _companionSpellPanel.OriginX = tileX + stride;
+                            _companionSpellPanel.OriginY = compBaseY;
+                            _companionSpellPanel.IsOpen  = true;
+                            _companionSpellPanel.Draw(_barRenderer, _textRenderer!,
+                                size.X, size.Y, book?.Primary, book?.Secondary, book?.Placed,
+                                _iconRenderer, spellClose2, ResolveSpellInventoryIcon,
+                                resolveCommonChrome: GetCommonTexture,
+                                rowBox: TryGetGuiTexture("b_gui_ig_mnu_sb_box"));
+                        }
                     }
+                }
+                else
+                {
+                    _companionTileLayout.Clear();
                 }
             }
             if (_spellBookOpen && _barRenderer is not null)
@@ -31803,11 +31967,13 @@ void main()
     /// clearing happens in the source-side handler (so a cancel can
     /// restore it).</summary>
     private void BeginScrollDrag(SiegeFX.Core.Assets.SpellTemplate spell,
-                                 CursorScrollSource source, int sourceIndex)
+                                 CursorScrollSource source, int sourceIndex,
+                                 int ownerPidx = 0)
     {
         _cursorScroll = spell;
         _cursorScrollSource = source;
         _cursorScrollSourceIndex = sourceIndex;
+        _cursorScrollOwner = ownerPidx;
     }
 
     /// <summary>Phase 21-SC-SCROLL-PRE-2 — release the drag without dropping.
@@ -31819,6 +31985,7 @@ void main()
         _cursorScroll = null;
         _cursorScrollSource = CursorScrollSource.None;
         _cursorScrollSourceIndex = 0;
+        _cursorScrollOwner = 0;
     }
 
     /// <summary>Phase 21-SC-SCROLL-B-2 — cancel an in-flight scroll drag
@@ -31841,16 +32008,20 @@ void main()
     /// the drag itself ends.</summary>
     private void RestoreToSource(SiegeFX.Core.Assets.SpellTemplate spell)
     {
+        // SC-COMPANION-SPELLBOOK — the source book is whichever party
+        // member's panel the scroll was picked from (owner 0 = player).
+        var srcBook = BookFor(_cursorScrollOwner);
         switch (_cursorScrollSource)
         {
             case CursorScrollSource.SpellbookActive1:
-                _playerSpellbook?.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
+                srcBook?.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, spell);
+                if (_cursorScrollOwner > 0) SyncMemberCastFromBook(_cursorScrollOwner);
                 break;
             case CursorScrollSource.SpellbookActive2:
-                _playerSpellbook?.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
+                srcBook?.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell);
                 break;
             case CursorScrollSource.SpellbookPlaced:
-                _playerSpellbook?.SetPlaced(_cursorScrollSourceIndex, spell);
+                srcBook?.SetPlaced(_cursorScrollSourceIndex, spell);
                 break;
             case CursorScrollSource.Inventory:
                 // Phase 21-SC-SCROLL-E-2 — cancel of an inventory pickup
@@ -31869,13 +32040,18 @@ void main()
     /// spellbook slot (Active1, Active2, or Placed[index]).</summary>
     private SiegeFX.Core.Assets.SpellTemplate? ReadSpellbookSlot(
         Hud.SpellBookPanel.SlotKind kind, int index)
+        => ReadSpellbookSlot(_playerSpellbook, kind, index);
+
+    private static SiegeFX.Core.Assets.SpellTemplate? ReadSpellbookSlot(
+        SiegeFX.Core.Actors.PlayerSpellbook? book,
+        Hud.SpellBookPanel.SlotKind kind, int index)
     {
-        if (_playerSpellbook is null) return null;
+        if (book is null) return null;
         return kind switch
         {
-            Hud.SpellBookPanel.SlotKind.Active1 => _playerSpellbook.Primary,
-            Hud.SpellBookPanel.SlotKind.Active2 => _playerSpellbook.Secondary,
-            Hud.SpellBookPanel.SlotKind.Placed  => _playerSpellbook.Placed[index],
+            Hud.SpellBookPanel.SlotKind.Active1 => book.Primary,
+            Hud.SpellBookPanel.SlotKind.Active2 => book.Secondary,
+            Hud.SpellBookPanel.SlotKind.Placed  => book.Placed[index],
             _ => null,
         };
     }
@@ -31887,18 +32063,24 @@ void main()
     private void WriteSpellbookSlot(
         Hud.SpellBookPanel.SlotKind kind, int index,
         SiegeFX.Core.Assets.SpellTemplate? spell)
+        => WriteSpellbookSlot(_playerSpellbook, kind, index, spell);
+
+    private static void WriteSpellbookSlot(
+        SiegeFX.Core.Actors.PlayerSpellbook? book,
+        Hud.SpellBookPanel.SlotKind kind, int index,
+        SiegeFX.Core.Assets.SpellTemplate? spell)
     {
-        if (_playerSpellbook is null) return;
+        if (book is null) return;
         switch (kind)
         {
             case Hud.SpellBookPanel.SlotKind.Active1:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   spell, resetCooldown: false);
+                book.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   spell, resetCooldown: false);
                 break;
             case Hud.SpellBookPanel.SlotKind.Active2:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell, resetCooldown: false);
+                book.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, spell, resetCooldown: false);
                 break;
             case Hud.SpellBookPanel.SlotKind.Placed:
-                _playerSpellbook.SetPlaced(index, spell);
+                book.SetPlaced(index, spell);
                 break;
         }
     }
@@ -32094,20 +32276,25 @@ void main()
     }
 
     /// <summary>Overload that takes the cursor-source enum so a
-    /// successful drop-into-empty-slot can clear the original source.</summary>
+    /// successful drop-into-empty-slot can clear the original source.
+    /// SC-COMPANION-SPELLBOOK — owner-aware: clears the slot in whichever
+    /// book the drag was picked from, syncing a member's cast if their
+    /// Active 1 emptied.</summary>
     private void ClearSpellbookSlot(CursorScrollSource source, int index)
     {
-        if (_playerSpellbook is null) return;
+        var srcBook = BookFor(_cursorScrollOwner);
+        if (srcBook is null) return;
         switch (source)
         {
             case CursorScrollSource.SpellbookActive1:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   null, resetCooldown: false);
+                srcBook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   null, resetCooldown: false);
+                if (_cursorScrollOwner > 0) SyncMemberCastFromBook(_cursorScrollOwner);
                 break;
             case CursorScrollSource.SpellbookActive2:
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, null, resetCooldown: false);
+                srcBook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, null, resetCooldown: false);
                 break;
             case CursorScrollSource.SpellbookPlaced:
-                _playerSpellbook.SetPlaced(index, null);
+                srcBook.SetPlaced(index, null);
                 break;
         }
     }
@@ -32653,6 +32840,13 @@ void main()
                 cs.TotalXp = mprog.TotalXp;
                 cs.SkillXp = new List<long>(mprog.SkillXpSnapshot());
             }
+            // SC-COMPANION-SPELLBOOK — persist the member's own spell panel.
+            if (_memberSpellbooks.TryGetValue(m.PartyIndex, out var mbook))
+            {
+                cs.PrimarySpell   = mbook.Primary?.Name ?? "";
+                cs.SecondarySpell = mbook.Secondary?.Name ?? "";
+                foreach (var sp in mbook.Placed) cs.PlacedSpells.Add(sp?.Name ?? "");
+            }
             save.Party.Add(cs);
         }
         return save;
@@ -33131,6 +33325,24 @@ void main()
                 mprog.RestoreFromSave(cs.TotalXp, _formulas.LevelForXp(cs.TotalXp),
                     cs.SkillXp.Count > 0 ? cs.SkillXp : null);
             npc.Actor.Combat.RestoreFromSave(cs.CurrentLife, cs.CurrentMana, dead: false);
+            // SC-COMPANION-SPELLBOOK — rebuild the member's own spell panel
+            // and re-target their casting from its Active 1. Pre-field saves
+            // carry empty strings and leave the authored kit behavior alone.
+            if (!string.IsNullOrEmpty(cs.PrimarySpell) || !string.IsNullOrEmpty(cs.SecondarySpell)
+                || cs.PlacedSpells.Any(sp => !string.IsNullOrEmpty(sp)))
+            {
+                _memberSpellbooks.Remove(npc.PartyIndex);
+                if (BookFor(npc.PartyIndex) is { } rbook)
+                {
+                    SiegeFX.Core.Assets.SpellTemplate? R(string name) =>
+                        string.IsNullOrEmpty(name) ? null : ResolveSlottableSpell(name, debugSpellsEnv: null);
+                    rbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   R(cs.PrimarySpell));
+                    rbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, R(cs.SecondarySpell));
+                    for (int p_i = 0; p_i < rbook.PlacedCount && p_i < cs.PlacedSpells.Count; p_i++)
+                        rbook.SetPlaced(p_i, R(cs.PlacedSpells[p_i]));
+                    SyncMemberCastFromBook(npc.PartyIndex);
+                }
+            }
             var cpos = cs.Position.ToVector3();
             if (npc.Brain is not null) npc.Brain.Teleport(cpos);
             npc.CurrentTransform = Matrix4x4.CreateTranslation(cpos);

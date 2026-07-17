@@ -60,8 +60,8 @@ public sealed class ActorBrain
     /// fall back to melee inside the inner comfort zone when the template
     /// authors on_enemy_entered_icz_switch_to_melee.</summary>
     public enum AttackMode { Melee, Ranged, Magic }
-    public AttackMode Mode { get; }
-    public Assets.SpellTemplate? CastSpell { get; }
+    public AttackMode Mode { get; private set; }
+    public Assets.SpellTemplate? CastSpell { get; private set; }
 
     /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire — one-shot edge that fires
     /// when the brain just resolved a melee swing (swing-cooldown reset +
@@ -174,7 +174,7 @@ public sealed class ActorBrain
 
     /// <summary>Ranged/Magic engagement distance — the brain stops chasing and
     /// starts firing here. Melee brains never read it.</summary>
-    public float StandoffRange { get; }
+    public float StandoffRange { get; private set; }
 
     /// <summary>SC-PATHING-LOS — host-injected sight test (from feet, to feet
     /// → true when a tall occluder crosses the line). DS1 gates ranged/magic
@@ -202,14 +202,13 @@ public sealed class ActorBrain
     /// side in DS1's difficulty model); monsters use the computer multiplier.</summary>
     public bool PartyAligned { get; set; }
 
-    public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed,
-                      Actor? selfActor = null, Assets.SpellTemplate? castSpell = null)
+    /// <summary>SC-COMPANION-SPELLBOOK — (re)assign the spell this brain
+    /// casts and re-derive the attack mode + standoff range, exactly as the
+    /// constructor did. Called at construction and again whenever the player
+    /// re-slots a party member's active spell in their spell panel; passing
+    /// null reverts to the weapon-preference melee/ranged derivation.</summary>
+    public void SetCastSpell(Assets.SpellTemplate? castSpell)
     {
-        Wander = wander;
-        _selfStats = selfStats;
-        _selfActor = selfActor;
-        _swingRng = new Random(rngSeed);
-        MeleeRange = selfStats.AttackRange > 0.1f ? selfStats.AttackRange : 2f;
         CastSpell = castSpell;
         if (castSpell is not null)
         {
@@ -218,16 +217,27 @@ public sealed class ActorBrain
             // target drift doesn't immediately break the range gate.
             StandoffRange = MathF.Max(4f, castSpell.CastRange * 0.9f);
         }
-        else if (string.Equals(selfStats.WeaponPreference, "WP_RANGED", StringComparison.OrdinalIgnoreCase) ||
-                 string.Equals(selfStats.ActiveLocation, "il_active_ranged_weapon", StringComparison.OrdinalIgnoreCase))
+        else if (string.Equals(_selfStats.WeaponPreference, "WP_RANGED", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(_selfStats.ActiveLocation, "il_active_ranged_weapon", StringComparison.OrdinalIgnoreCase))
         {
             Mode = AttackMode.Ranged;
-            StandoffRange = selfStats.RangedEngageRange > 1f ? selfStats.RangedEngageRange * 0.8f : 10f;
+            StandoffRange = _selfStats.RangedEngageRange > 1f ? _selfStats.RangedEngageRange * 0.8f : 10f;
         }
         else
         {
             Mode = AttackMode.Melee;
         }
+    }
+
+    public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed,
+                      Actor? selfActor = null, Assets.SpellTemplate? castSpell = null)
+    {
+        Wander = wander;
+        _selfStats = selfStats;
+        _selfActor = selfActor;
+        _swingRng = new Random(rngSeed);
+        MeleeRange = selfStats.AttackRange > 0.1f ? selfStats.AttackRange : 2f;
+        SetCastSpell(castSpell);
         // SC-MOB-RANGES — authored perception wins over the tuned defaults.
         // base_krug ships sight_range=14 (the old hardcoded 8u bubble made
         // mobs oblivious until the player was almost on top of them).

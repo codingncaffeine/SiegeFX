@@ -158,6 +158,13 @@ public sealed class CompanionSnapshot
     /// then keeps the authored starting levels the recruit re-seed applied.</summary>
     public long TotalXp { get; set; }
     public List<long> SkillXp { get; set; } = new();
+    /// <summary>SC-COMPANION-SPELLBOOK — the member's own spell panel:
+    /// active slot 1/2 spell template names + the 10 placed rows (nulls as
+    /// empty strings). All empty on saves written before the field existed —
+    /// the load path then leaves the authored kit behavior untouched.</summary>
+    public string PrimarySpell   { get; set; } = "";
+    public string SecondarySpell { get; set; } = "";
+    public List<string> PlacedSpells { get; set; } = new();
 }
 
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
