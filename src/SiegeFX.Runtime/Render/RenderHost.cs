@@ -1017,6 +1017,9 @@ public sealed class RenderHost : IDisposable
     // real drag/drop inventory before it has a trigger to fire on.
     const string SfxGuiInventory   = "gui_inventory_sheet";
     const string SfxGuiPickup      = "gui_pick_up";
+    // SC-INV-ARRANGE — standard backend button click (s_e_gui_prompt via
+    // s_e_gui_element_button_SED); fires on the inventory arrange button.
+    const string SfxGuiPrompt      = "gui_prompt";
     // Phase 21-SC-SCROLL-C-2 — DS1 ships per-category drop sounds
     // (s_e_gui_put_down_<category>.wav) for armor_chain/leather/metal/
     // plate, book, boots, gloves, helmet, jewelry, mace, potion, robe,
@@ -3611,6 +3614,21 @@ public sealed class RenderHost : IDisposable
         new(StringComparer.OrdinalIgnoreCase);
     private bool _inventoryOpen; // 'I' toggles; rendered above the HUD bars
     private readonly InventoryPanel _inventoryPanel = new(); // owns drag state
+    // SC-INV-ARRANGE — arrange (sort) button mouse state for the authored
+    // up/hov/dwn texture swaps (inventory.gas loadtexture messages).
+    private bool _invArrangeHovered, _invArrangePressed;
+
+    /// <summary>SC-INV-ARRANGE — inventory.gas <c>notify(arrange_inventory)</c>:
+    /// biggest-first repack of the active backpack + the standard backend
+    /// button click (no per-button sound is authored; the global element
+    /// SED maps to s_e_gui_prompt). Shared by the button and the
+    /// sort_inventory keybind.</summary>
+    private void ArrangeActiveInventory()
+    {
+        if (!_inventoryOpen) return;
+        _inventoryPanel.Arrange(ActiveInventory, TryGetItemGridSize);
+        _audio?.Play(SfxGuiPrompt);
+    }
     // Phase 21-SC-INV-A — DS1's three top-docked panels live alongside the
     // grid inventory: character pane on 'C', spell book on 'B'. Each toggles
     // independently so the player can park any combination open. Origins
@@ -6927,6 +6945,10 @@ void main()
                 }
                 else if (Is("quick_save") || (key == Key.F5 && !modCtrl && !modAlt)) DoQuickSave();
                 else if (Is("quick_load")) DoQuickLoad();
+                // SC-INV-ARRANGE — the registry has always listed
+                // sort_inventory (default K); it now drives the same
+                // arrange the inventory.gas button fires.
+                else if (Is("sort_inventory")) ArrangeActiveInventory();
                 // Adventurer's Handbook — authored [tutorial_tips] (default
                 // F12). Opens in browse mode (Next/Prev page through all
                 // tips); a second press closes it.
@@ -7419,6 +7441,16 @@ void main()
                         _inventoryOpen = false;
                         _openInventoryMembers.Clear();
                         _audio?.Play(SfxGuiInventory);
+                        return;
+                    }
+                    // SC-INV-ARRANGE — inventory.gas button_arrange (rect
+                    // 255,2,279,30) → notify(arrange_inventory). Repacks the
+                    // ACTIVE backpack biggest-first; the press-state texture
+                    // swap renders via _invArrangePressed at the draw site.
+                    if (_inventoryOpen && _inventoryPanel.IsPointInArrange(mx, my))
+                    {
+                        _invArrangePressed = true;
+                        ArrangeActiveInventory();
                         return;
                     }
                     // SC-EQUIP-ROUTING — paperdoll slot clicks dispatch BEFORE
@@ -8128,6 +8160,7 @@ void main()
                 // its own placement state silently; if the release landed
                 // outside the panel, pop the item out and spawn a loot pile at
                 // the player's feet (then fire the put_down SFX).
+                if (btn == MouseButton.Left) _invArrangePressed = false;
                 if (_inventoryOpen && btn == MouseButton.Left)
                 {
                     var drag = _inventoryPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
@@ -8294,6 +8327,10 @@ void main()
                                         ActiveInventory.Count, _window.Size.X, _window.Size.Y);
                 if (_inventoryOpen)
                     _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
+                    // SC-INV-ARRANGE — hover state for the arrange button's
+                    // authored -hov texture swap.
+                    _invArrangeHovered = _inventoryOpen
+                        && _inventoryPanel.IsPointInArrange((int)pos.X, (int)pos.Y);
                 // SC-QUEST-UI-C — journal button / arrow / corner-X hover so
                 // the jbox faces + arrows highlight under the cursor.
                 if (_questLogOpen)
@@ -10170,6 +10207,11 @@ void main()
 
                     // Phase 21d-2a-ix — GUI cue triplet (see Sfx const block above).
                     TryRegisterSfx(soundReader, SfxGuiInventory, "/sound/effects/s_e_gui_inventory_sheet.wav");
+                    // SC-INV-ARRANGE — the generic backend button click.
+                    // inventory.gas authors no per-button sound; DS1's
+                    // s_e_gui_element_button_SED maps the standard GUI
+                    // button element to s_e_gui_prompt.
+                    TryRegisterSfx(soundReader, SfxGuiPrompt, "/sound/effects/s_e_gui_prompt.wav");
                     TryRegisterSfx(soundReader, SfxGuiPickup,    "/sound/effects/s_e_gui_pick_up.wav");
                     TryRegisterSfx(soundReader, SfxGuiPutDownScroll, "/sound/effects/s_e_gui_put_down_scroll.wav");
                     TryRegisterSfx(soundReader, SfxGuiOutOfMana, "/sound/effects/s_e_gui_out_of_mana.wav");
@@ -31090,7 +31132,13 @@ void main()
                 // the cpbox X button is unresolved on first-frame.
                 var invClose   = TryGetGuiTexture("b_gui_ig_mnu_minimize-up");
                 var goldCoin   = TryGetGuiTexture("b_gui_ig_mnu_ip_gold");
-                var arrangeUp  = TryGetGuiTexture("b_gui_ig_mnu_ip_arrange_up");
+                // SC-INV-ARRANGE — authored loadtexture swaps: _dwn while the
+                // button is held, _hov under the cursor, _up otherwise.
+                var arrangeUp  = TryGetGuiTexture(
+                    _invArrangePressed ? "b_gui_ig_mnu_ip_arrange_dwn" :
+                    _invArrangeHovered ? "b_gui_ig_mnu_ip_arrange_hov" :
+                                         "b_gui_ig_mnu_ip_arrange_up")
+                    ?? TryGetGuiTexture("b_gui_ig_mnu_ip_arrange_up");
                 var goldBg     = TryGetGuiTexture("b_gui_ig_mnu_ip_gold_box");
                 var gridTile   = TryGetGuiTexture("b_gui_ig_mnu_ip_grid");
                 // The main panel shows the ACTIVE character's backpack + face

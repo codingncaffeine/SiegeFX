@@ -99,6 +99,15 @@ public sealed class InventoryPanel
         x >= CloseRect.X && y >= CloseRect.Y &&
         x <  CloseRect.X + CloseRect.W && y <  CloseRect.Y + CloseRect.H;
 
+    /// <summary>SC-INV-ARRANGE — screen rect of the last-drawn arrange
+    /// (sort) button, published like <see cref="CloseRect"/> so the host
+    /// can hit-test the click that fires inventory.gas's
+    /// <c>notify(arrange_inventory)</c>.</summary>
+    public (int X, int Y, int W, int H) ArrangeRect { get; private set; }
+    public bool IsPointInArrange(int x, int y) =>
+        x >= ArrangeRect.X && y >= ArrangeRect.Y &&
+        x <  ArrangeRect.X + ArrangeRect.W && y <  ArrangeRect.Y + ArrangeRect.H;
+
     private (int x, int y) Origin(int viewportW, int viewportH)
     {
         if (OriginX >= 0 && OriginY >= 0) return (OriginX, OriginY);
@@ -416,13 +425,15 @@ public sealed class InventoryPanel
         int arrangeY  = py + (int)System.Math.Round(2  * s);
         int arrangeW  = (int)System.Math.Round(RefArrangeW * s);
         int arrangeH  = (int)System.Math.Round(RefArrangeH * s);
+        ArrangeRect = (arrangeX, arrangeY, arrangeW, arrangeH);
         if (arrangeUp is not null && icons is not null)
         {
             // gas uvcoords = 0,0.125,0.75,1 — bottom-up V-flip rule from the
             // data_bar fold applies (DS1 RAWs are stored bottom-up and gas
             // V values are authored in that frame): screenVMin = 1 - gasV1,
             // screenVMax = 1 - gasV0 → (0,0) and (0.75,0.875) in screen
-            // top-down convention.
+            // top-down convention. The host passes the up/hov/dwn variant
+            // matching the current mouse state (gas loadtexture swaps).
             icons.DrawIcon(viewportW, viewportH, arrangeUp,
                 arrangeX, arrangeY, arrangeW, arrangeH, white,
                 0f, 0f, 0.75f, 1f - 0.125f);
@@ -595,6 +606,50 @@ public sealed class InventoryPanel
         {
             _placements.RemoveRange(itemCount, _placements.Count - itemCount);
             if (_dragIndex >= itemCount) _dragIndex = -1;
+        }
+    }
+
+    /// <summary>SC-INV-ARRANGE — the engine response to inventory.gas's
+    /// <c>notify(arrange_inventory)</c>: repack the whole grid from
+    /// scratch, biggest footprints first (area, then height, then original
+    /// order for stability), each first-fit scanned top-left. Matches the
+    /// visible retail outcome — big armor/weapon blocks stack from the top,
+    /// small items fill the gaps — and discards every hand-dragged
+    /// position, exactly like DS1's arrange. Cancels any in-flight drag.</summary>
+    public void Arrange(IReadOnlyList<LootEntry> items, Func<string, (int W, int H)>? resolveGridSize)
+    {
+        if (_placements.Count != items.Count) return; // host resyncs first
+        _dragIndex = -1;
+        var order = new List<int>(items.Count);
+        for (int i = 0; i < items.Count; i++) order.Add(i);
+        order.Sort((x, y) =>
+        {
+            var (wx, hx) = ResolveGrid(items[x].Reference, resolveGridSize);
+            var (wy, hy) = ResolveGrid(items[y].Reference, resolveGridSize);
+            int byArea = (wy * hy).CompareTo(wx * hx);
+            if (byArea != 0) return byArea;
+            int byHeight = hy.CompareTo(hx);
+            if (byHeight != 0) return byHeight;
+            return x.CompareTo(y);
+        });
+        for (int i = 0; i < _placements.Count; i++) _placements[i] = (-1, -1);
+        Span<bool> occupied = stackalloc bool[GridCols * GridRows];
+        foreach (int i in order)
+        {
+            var (w, h) = ResolveGrid(items[i].Reference, resolveGridSize);
+            for (int r = 0; r <= GridRows - h; r++)
+            {
+                bool placed = false;
+                for (int c = 0; c <= GridCols - w; c++)
+                {
+                    if (!FootprintClear(occupied, r, c, w, h)) continue;
+                    MarkOccupied(occupied, r, c, w, h);
+                    _placements[i] = (r, c);
+                    placed = true;
+                    break;
+                }
+                if (placed) break;
+            }
         }
     }
 
