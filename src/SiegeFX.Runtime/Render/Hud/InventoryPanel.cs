@@ -108,6 +108,13 @@ public sealed class InventoryPanel
         x >= ArrangeRect.X && y >= ArrangeRect.Y &&
         x <  ArrangeRect.X + ArrangeRect.W && y <  ArrangeRect.Y + ArrangeRect.H;
 
+    /// <summary>SC-EDU-TIPS — screen rect of the gold readout button
+    /// (authored button_gold 302,8,360,24) for its rollover help.</summary>
+    public (int X, int Y, int W, int H) GoldRect { get; private set; }
+    public bool IsPointInGold(int x, int y) =>
+        x >= GoldRect.X && y >= GoldRect.Y &&
+        x <  GoldRect.X + GoldRect.W && y <  GoldRect.Y + GoldRect.H;
+
     private (int x, int y) Origin(int viewportW, int viewportH)
     {
         if (OriginX >= 0 && OriginY >= 0) return (OriginX, OriginY);
@@ -470,6 +477,7 @@ public sealed class InventoryPanel
         int goldBoxY = py + (int)System.Math.Round(8  * s);
         int goldBoxW = (int)System.Math.Round(RefGoldTextW * s);
         int goldBoxH = (int)System.Math.Round(16 * s);
+        GoldRect = (goldBoxX, goldBoxY, goldBoxW, goldBoxH);
         if (icons is not null && resolveCommonChrome is not null)
         {
             // ButtonChrome asks for full b_gui_cmn_* basenames; the panel's

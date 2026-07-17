@@ -25304,6 +25304,145 @@ void main()
                 lines[li].Color, 1);
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // SC-EDU-TIPS — DS1's authored rollover help layer. Every string below
+    // is verbatim from /ui/user_education_tooltips.gas (with the <binding>
+    // placeholders resolved from the live registry); the plate is the same
+    // b_gui_cmn_textbox_bg the item stat card uses. World hovers show after
+    // a short dwell so the tip layer doesn't flicker during combat.
+    // ────────────────────────────────────────────────────────────────────
+    private float _worldTipDwell;
+    private CursorState _worldTipLastState = CursorState.Pointer;
+
+    /// <summary>SC-UI-CURSOR-PRIORITY — is the cursor over any open UI
+    /// surface that should own it (panels, tiles, dialogs)? Shared by the
+    /// cursor-state prober and the world-tip gate so nothing behind a
+    /// panel can flip the cursor or raise a tip through it.</summary>
+    private bool CursorOverUiPanel(int mx, int my)
+    {
+        var sz = _window.Size;
+        if (_inventoryOpen && _inventoryPanel.IsPointInPanel(mx, my, sz.X, sz.Y)) return true;
+        var cr = _companionRowRect;
+        if (_inventoryOpen && cr.W > 0
+            && mx >= cr.X && mx < cr.X + cr.W && my >= cr.Y && my < cr.Y + cr.H) return true;
+        if (_spellBookOpen && _spellBookPanel.IsPointInPanel(mx, my)) return true;
+        if (_charPanelOpen && _characterPanel.IsPointInPanel(mx, my)) return true;
+        if (_questLogOpen || _vendor.IsOpen || _dialogue.IsOpen || _pauseMenu.IsOpen
+            || _optionsMenu.IsOpen || _saveDialog.IsOpen || _loadDialog.IsOpen
+            || _handbook.IsOpen || _aboutOpen || DefeatDialogActive) return true;
+        // The always-on AWP box (its hover tracker already knows).
+        if (_awpHover != Hud.CharacterAwp.HitTarget.None) return true;
+        return false;
+    }
+
+    /// <summary>Resolve the tip for the current hover, or null. Panel
+    /// chrome first (immediate), then the world classes (after dwell).</summary>
+    private (string Text, int X, int Y)? ComputeEduTip(int vw, int vh)
+    {
+        int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
+        string Key(string action)
+        {
+            var slot0 = _keyBindings.Get(action)[0];
+            return string.IsNullOrEmpty(slot0) ? "unbound" : slot0.ToUpperInvariant();
+        }
+
+        if (_inventoryOpen)
+        {
+            if (_inventoryPanel.IsPointInArrange(mx, my) && !_invArrangePressed)
+                return ($"Auto-arrange Inventory (Hotkey: {Key("sort_inventory")})", mx, my + 22);
+            if (_inventoryPanel.IsPointInClose(mx, my))
+                return ("Close Inventory", mx, my + 22);
+            if (_inventoryPanel.IsPointInGold(mx, my))
+                return ("Click to select an amount of gold from Inventory.", mx, my + 22);
+        }
+        if (_spellBookOpen && _spellBookPanel.IsPointInClose(mx, my))
+            return ("Close Spell Book", mx, my + 22);
+        if (_inventoryOpen && _companionSpellPanel.IsPointInClose(mx, my)
+            && CompanionSpellPanelAt(mx, my) is not null)
+            return ("Close Spell Book", mx, my + 22);
+
+        // AWP widget — the always-on top-left player box.
+        switch (_awpHover)
+        {
+            case Hud.CharacterAwp.HitTarget.Portrait:
+                return ("Click to select character, or drag to change party order.", mx, my + 22);
+            case Hud.CharacterAwp.HitTarget.Slot1:
+                return ("Click to select melee weapon.", mx, my + 22);
+            case Hud.CharacterAwp.HitTarget.Slot2:
+                return ("Click to select ranged weapon.", mx, my + 22);
+            case Hud.CharacterAwp.HitTarget.Slot3:
+                return ("Click to select Active Spell 1.", mx, my + 22);
+            case Hud.CharacterAwp.HitTarget.Slot4:
+                return ("Click to select Active Spell 2.", mx, my + 22);
+        }
+
+        // Paperdoll equipment slots (character panel open).
+        if (_charPanelOpen && _player is not null)
+        {
+            var slot = _paperdoll.TryHitTestSlot(mx, my,
+                _paperdollRect.X, _paperdollRect.Y, vh);
+            if (slot is not null)
+            {
+                bool occupied = ResolvePaperdollSlotIcon(slot) is not null;
+                string? tip = occupied
+                    ? "Drag to Inventory to unequip"
+                    : slot switch
+                    {
+                        "helmet"    => "Drag helmet here to equip",
+                        "armor"     => "Drag armor here to equip",
+                        "gauntlets" => "Drag gauntlets here to equip",
+                        "boots"     => "Drag boots here to equip",
+                        "melee"     => "Drag melee weapon here to equip",
+                        "ranged"    => "Drag ranged weapon here to equip.",
+                        "shield"    => "Drag shield here to equip",
+                        "amulet"    => "Drag amulet here to equip",
+                        "spellbook" => "Drag Spell Book here to equip. Spell Book must be equipped to cast spells.",
+                        _ when slot.StartsWith("ring", StringComparison.OrdinalIgnoreCase)
+                                    => "Drag ring here to equip",
+                        _ => null,
+                    };
+                if (tip is not null) return (tip, mx, my + 22);
+            }
+        }
+
+        // World hovers — the authored click hints, shown after a dwell so
+        // combat doesn't strobe text. Panel-covered ground never gets here
+        // (UpdateCursorState pinned the state to Pointer via the shared
+        // CursorOverUiPanel gate).
+        string? world = _cursorState switch
+        {
+            CursorState.Attack     => "Left-click to attack",
+            CursorState.CastAttack => "Left-click to attack",
+            CursorState.Grab       => "Left-click to pick up item",
+            CursorState.Smash      => "Left-click to break",
+            CursorState.Talk       => "Right-click to talk",
+            _ => null,
+        };
+        if (world is null) { _worldTipDwell = 0f; _worldTipLastState = _cursorState; return null; }
+        if (_cursorState != _worldTipLastState) { _worldTipDwell = 0f; _worldTipLastState = _cursorState; }
+        _worldTipDwell += (float)_frameDtSeconds;
+        if (_worldTipDwell < 0.6f) return null;
+        return (world, mx + 16, my + 26);
+    }
+
+    private void DrawEduTip(int vw, int vh)
+    {
+        if (_textRenderer is null) return;
+        var tip = ComputeEduTip(vw, vh);
+        if (tip is null) return;
+        var (text, tx, ty) = tip.Value;
+        int tw = _textRenderer.MeasureWidth(text, 1);
+        int th = _textRenderer.LineHeight;
+        tx = System.Math.Clamp(tx, 4, System.Math.Max(4, vw - tw - 20));
+        ty = System.Math.Clamp(ty, 4, System.Math.Max(4, vh - th - 16));
+        var tipBg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
+        if (tipBg is not null && _iconRenderer is not null)
+            _iconRenderer.DrawIcon(vw, vh, tipBg,
+                tx - 8, ty - 6, tw + 16, th + 12, new Vector4(1f, 1f, 1f, 0.92f));
+        _textRenderer.DrawString(vw, vh, text, tx, ty,
+            new Vector4(0.95f, 0.93f, 0.85f, 1f), 1);
+    }
+
     /// <summary>ALPHA-PACKAGING — F11: one-file bug report. Zip contains the
     /// session log so far, a state.txt (region, position, level, gold,
     /// equipment, quests), and the newest save. Non-fatal on any error.</summary>
@@ -25436,6 +25575,12 @@ void main()
         if (_mouseLookActive) return;
         var size = _window.FramebufferSize;
         if (size.X <= 0 || size.Y <= 0) return;
+        // SC-UI-CURSOR-PRIORITY — an open panel owns the cursor: whatever
+        // enemy/breakable/pile happens to sit in the world behind the
+        // inventory, spellbook, paperdoll or a dialog must not flip the
+        // cursor (or the hover-pile readout) through the panel.
+        if (CursorOverUiPanel((int)_currentMousePos.X, (int)_currentMousePos.Y))
+            return;
 
         var cursorPx = _currentMousePos;
         float ndcX = (cursorPx.X / size.X) * 2f - 1f;
@@ -31356,28 +31501,10 @@ void main()
                 // red when the wearer fails them — and value).
                 DrawItemTooltip(size.X, size.Y);
 
-                // SC-INV-ARRANGE-TIP — authored rollover_help for the arrange
-                // button: user_education_tooltips.gas inventory_arrange =
-                // "Auto-arrange Inventory (Hotkey: <sort_inventory>)", with
-                // the placeholder resolved from the live binding registry.
-                if (_invArrangeHovered && !_invArrangePressed && _textRenderer is not null)
-                {
-                    var slot0 = _keyBindings.Get("sort_inventory")[0];
-                    string hotkey = string.IsNullOrEmpty(slot0) ? "unbound" : slot0.ToUpperInvariant();
-                    string tip = $"Auto-arrange Inventory (Hotkey: {hotkey})";
-                    int tw = _textRenderer.MeasureWidth(tip, 1);
-                    int th = _textRenderer.LineHeight;
-                    var ar = _inventoryPanel.ArrangeRect;
-                    int tx = System.Math.Clamp(ar.X, 4, System.Math.Max(4, size.X - tw - 20));
-                    int ty = ar.Y + ar.H + 4;
-                    // Same authored plate the item stat card uses.
-                    var tipBg = TryGetGuiTexture("b_gui_cmn_textbox_bg");
-                    if (tipBg is not null && _iconRenderer is not null)
-                        _iconRenderer.DrawIcon(size.X, size.Y, tipBg,
-                            tx - 8, ty - 6, tw + 16, th + 12, new Vector4(1f, 1f, 1f, 0.92f));
-                    _textRenderer.DrawString(size.X, size.Y, tip, tx, ty,
-                        new Vector4(0.95f, 0.93f, 0.85f, 1f), 1);
-                }
+                // SC-EDU-TIPS — the authored rollover/help text layer:
+                // user_education_tooltips.gas strings for the panel buttons,
+                // AWP widget, paperdoll slots and (delayed) world hovers.
+                DrawEduTip(size.X, size.Y);
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
