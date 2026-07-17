@@ -92,30 +92,24 @@ public sealed class SpellBookPanel
     {
         if (!IsPointInPanel(x, y)) return (SlotKind.None, 0);
 
-        // Match the scaled layout from the last Draw call. Falls back
-        // to the unscaled constants when Draw hasn't run yet.
+        // SC-SPELLBOOK-AUTHENTIC — authored row table (spell.gas, panel-rel
+        // to 387,0): bands at x 2..153; active rows at y 46..79 and 94..127
+        // (header text strips between), placed rows contiguous at
+        // 126 + 32·i, each 33 tall (adjacent bands share a 1px frame edge).
         float s = _lastScaledH > 0 ? _lastScaledH / (float)RefPanelH : 1f;
-        int padding   = (int)System.Math.Round(Padding * s);
-        int titleH    = (int)System.Math.Round(TitleH * s);
-        int labelRowH = (int)System.Math.Round(LabelRowH * s);
-        int rowH      = (int)System.Math.Round(RowH * s);
-        int gap       = (int)System.Math.Round(ActiveSplitGap * s);
-        int panelW    = _lastScaledW > 0 ? _lastScaledW : PanelWidth;
-
-        int rowX = OriginX + padding;
-        int rowR = OriginX + panelW - padding;
+        int rowX = OriginX + (int)System.Math.Round(2 * s);
+        int rowR = OriginX + (int)System.Math.Round(153 * s);
         if (x < rowX || x >= rowR) return (SlotKind.None, 0);
-
-        int active1Y = OriginY + titleH + padding + labelRowH;
-        if (y >= active1Y && y < active1Y + rowH) return (SlotKind.Active1, 0);
-        int active2Y = active1Y + rowH + labelRowH;
-        if (y >= active2Y && y < active2Y + rowH) return (SlotKind.Active2, 0);
-        int placedY0 = active2Y + rowH + gap;
-        int relY = y - placedY0;
-        if (relY < 0) return (SlotKind.None, 0);
-        int row = rowH > 0 ? relY / rowH : 0;
-        if (row < 0 || row >= InactiveSlots) return (SlotKind.None, 0);
-        return (SlotKind.Placed, row);
+        int Y(int refY) => OriginY + (int)System.Math.Round(refY * s);
+        int bandH = (int)System.Math.Round(33 * s);
+        if (y >= Y(46) && y < Y(46) + bandH) return (SlotKind.Active1, 0);
+        if (y >= Y(94) && y < Y(94) + bandH) return (SlotKind.Active2, 0);
+        for (int i = 0; i < InactiveSlots; i++)
+        {
+            int by = Y(126 + 32 * i);
+            if (y >= by && y < by + bandH) return (SlotKind.Placed, i);
+        }
+        return (SlotKind.None, 0);
     }
 
     /// <param name="placed">Spells the player has dragged into the 10
@@ -134,146 +128,137 @@ public sealed class SpellBookPanel
                      IReadOnlyList<SpellTemplate?>? placed,
                      IconRenderer? icons = null,
                      GlTexture? closeIcon = null,
-                     System.Func<SpellTemplate, GlTexture?>? resolveSpellIcon = null)
+                     System.Func<SpellTemplate, GlTexture?>? resolveSpellIcon = null,
+                     System.Func<string, GlTexture?>? resolveCommonChrome = null,
+                     GlTexture? rowBox = null)
     {
         int px = OriginX, py = OriginY;
-        var panel  = new Vector4(0.08f, 0.08f, 0.10f, 0.92f);
-        var title  = new Vector4(0.16f, 0.13f, 0.10f, 1f);
-        var border = new Vector4(0.72f, 0.74f, 0.78f, 1f);
+        var white  = new Vector4(1f, 1f, 1f, 1f);
         var ink    = new Vector4(0.667f, 0.655f, 0.557f, 1f);
-        var dimInk = new Vector4(0.667f, 0.655f, 0.557f, 1f);
         var headInk = new Vector4(0.86f, 0.83f, 0.69f, 1f);
-        var slotBg = new Vector4(0.04f, 0.04f, 0.05f, 1f);
-        var slotEm = new Vector4(0.55f, 0.57f, 0.60f, 1f);
-        // INFORAIL-SPELLBOOK-CHROME — scale all layout by the clamped
-        // info-rail scale so the spellbook sizes alongside paperdoll +
-        // inventory. Previously this panel used fixed 166px regardless
-        // of viewport.
         float s = InfoRailLayout.Scale(viewportH);
         int panelW = (int)System.Math.Round(RefPanelW * s);
         int panelH = (int)System.Math.Round(RefPanelH * s);
-        int titleH = (int)System.Math.Round(TitleH * s);
-        int padding = (int)System.Math.Round(Padding * s);
-        int labelRowH = (int)System.Math.Round(LabelRowH * s);
-        int rowH = (int)System.Math.Round(RowH * s);
-        int activeSplitGap = (int)System.Math.Round(ActiveSplitGap * s);
-        int cornerR = (int)System.Math.Max(2, System.Math.Round(2 * s));
-
         _lastScaledW = panelW;
         _lastScaledH = panelH;
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, panelW, panelH, panel, cornerR, cornerR);
-        bars.DrawRoundedRect(viewportW, viewportH, px, py, panelW, titleH, title, cornerR, 0);
-        bars.DrawRoundedBorder(viewportW, viewportH, px, py, panelW, panelH, border, cornerR);
-        bars.DrawRect(viewportW, viewportH, px + 1, py + titleH, panelW - 2, 1, border);
+
+        int X(int refX) => px + (int)System.Math.Round(refX * s);
+        int Y(int refY) => py + (int)System.Math.Round(refY * s);
+        int S(int refN) => (int)System.Math.Round(refN * s);
+
+        // SC-SPELLBOOK-AUTHENTIC — spell.gas authors THREE cpbox dialog
+        // boxes (the same smoked translucent nine-patch the inventory's
+        // backdrop uses): header 387,0,542,32 · active-slots 387,31,542,128
+        // · main shelf 387,126,542,449 (panel-rel below). The old flat
+        // rect-and-border scaffolding painted opaque row boxes that read
+        // as rectangles hanging over the panel — replaced wholesale.
+        if (icons is not null && resolveCommonChrome is not null)
+        {
+            NinePatch.DrawCpbox(icons, resolveCommonChrome, viewportW, viewportH,
+                X(0), Y(0), S(155), S(32), white);
+            NinePatch.DrawCpbox(icons, resolveCommonChrome, viewportW, viewportH,
+                X(0), Y(31), S(155), S(97), white);
+            NinePatch.DrawCpbox(icons, resolveCommonChrome, viewportW, viewportH,
+                X(0), Y(126), S(155), S(323), white);
+        }
+        else
+        {
+            bars.DrawRect(viewportW, viewportH, px, py, panelW, panelH,
+                new Vector4(0.06f, 0.06f, 0.07f, 0.85f));
+        }
 
         const string heading = "SPELL BOOK";
         int headW = text.MeasureWidth(heading);
         text.DrawString(viewportW, viewportH, heading,
                         px + (panelW - headW) / 2,
-                        py + (titleH - 8) / 2, headInk);
+                        Y(0) + (S(32) - 8) / 2, headInk);
 
-        // Close X at gas rect 524,2,540,18 (hud_spell.gas:10) — panel-
-        // relative offset = 524-387,2 = 137,2 with size 16×16. Scaled.
-        int closeSz = (int)System.Math.Round(16 * s);
-        int closeX = px + (int)System.Math.Round((524 - 387) * s);
-        int closeY = py + (int)System.Math.Round(2 * s);
+        // Close X at gas rect 524,2,540,18 — panel-rel 137,2, 16×16.
+        int closeSz = S(16);
+        int closeX = X(137);
+        int closeY = Y(2);
         CloseRect = (closeX, closeY, closeSz, closeSz);
         if (icons is not null && closeIcon is not null)
-        {
-            icons.DrawIcon(viewportW, viewportH, closeIcon, closeX, closeY, closeSz, closeSz, new Vector4(1f, 1f, 1f, 1f));
-        }
+            icons.DrawIcon(viewportW, viewportH, closeIcon, closeX, closeY, closeSz, closeSz, white);
         else
-        {
-            bars.DrawRect  (viewportW, viewportH, closeX, closeY, closeSz, closeSz, slotBg);
-            bars.DrawBorder(viewportW, viewportH, closeX, closeY, closeSz, closeSz, border);
             text.DrawString(viewportW, viewportH, "X", closeX + closeSz / 3, closeY + closeSz / 3, ink);
+
+        // "Active Spell 1/2" — authored text strips (391,33,537,46 and
+        // 391,79,537,93), white centered, straight over the smoke: no
+        // invented band rects.
+        void Header(string label, int refY, int refY1)
+        {
+            int hw = text.MeasureWidth(label);
+            text.DrawString(viewportW, viewportH, label,
+                px + (panelW - hw) / 2,
+                Y(refY) + (S(refY1 - refY) - 8) / 2, white);
         }
+        Header("ACTIVE SPELL 1", 33, 46);
+        Header("ACTIVE SPELL 2", 79, 93);
 
-        int rowX = px + padding;
-        int totalRowW = panelW - padding * 2;
-        int nameColW  = (int)System.Math.Round(NameColW * s);
-        int iconColW  = totalRowW - nameColW;
-        int iconColX  = rowX + nameColW;
-
-        int y = py + titleH + padding;
-
-        DrawActiveHeader(bars, text, viewportW, viewportH, rowX, y, totalRowW, labelRowH,
-                         "ACTIVE SPELL 1", title, dimInk);
-        y += labelRowH;
-        DrawSpellRow(bars, text, icons, viewportW, viewportH,
-                     rowX, y, nameColW, iconColX, iconColW, rowH, s,
-                     active1, true, ink, dimInk, slotBg, slotEm, resolveSpellIcon);
-        y += rowH;
-
-        DrawActiveHeader(bars, text, viewportW, viewportH, rowX, y, totalRowW, labelRowH,
-                         "ACTIVE SPELL 2", title, dimInk);
-        y += labelRowH;
-        DrawSpellRow(bars, text, icons, viewportW, viewportH,
-                     rowX, y, nameColW, iconColX, iconColW, rowH, s,
-                     active2, true, ink, dimInk, slotBg, slotEm, resolveSpellIcon);
-        y += rowH + activeSplitGap;
-
+        // 12 sb_box row bands (151×33 at x=2; actives at y 46/94, shelf
+        // contiguous from 126 at 32 pitch — adjacent bands share their 1px
+        // frame edge by authoring).
+        DrawSpellRow(bars, text, icons, viewportW, viewportH, X(2), Y(46), s,
+                     active1, rowBox, resolveSpellIcon, ink);
+        DrawSpellRow(bars, text, icons, viewportW, viewportH, X(2), Y(94), s,
+                     active2, rowBox, resolveSpellIcon, ink);
         for (int i = 0; i < InactiveSlots; i++)
         {
             SpellTemplate? sp = (placed is not null && i < placed.Count) ? placed[i] : null;
-            DrawSpellRow(bars, text, icons, viewportW, viewportH,
-                         rowX, y, nameColW, iconColX, iconColW, rowH, s,
-                         sp, false, ink, dimInk, slotBg, slotEm, resolveSpellIcon);
-            y += rowH;
+            DrawSpellRow(bars, text, icons, viewportW, viewportH, X(2), Y(126 + 32 * i), s,
+                         sp, rowBox, resolveSpellIcon, ink);
         }
-    }
-
-    static void DrawActiveHeader(BarRenderer bars, TextRenderer text, int vw, int vh,
-                                 int x, int y, int w, int labelRowH, string label,
-                                 Vector4 bg, Vector4 ink)
-    {
-        bars.DrawRect(vw, vh, x, y, w, labelRowH, bg);
-        text.DrawString(vw, vh, label, x + 4, y + (labelRowH - 8) / 2, ink);
     }
 
     static void DrawSpellRow(BarRenderer bars, TextRenderer text, IconRenderer? icons,
-                             int vw, int vh,
-                             int rowX, int rowY,
-                             int nameColW, int iconColX, int iconColW, int rowH, float s,
-                             SpellTemplate? spell, bool isActive,
-                             Vector4 ink, Vector4 dimInk,
-                             Vector4 slotBg, Vector4 slotEm,
-                             System.Func<SpellTemplate, GlTexture?>? resolveSpellIcon)
+                             int vw, int vh, int bandX, int bandY, float s,
+                             SpellTemplate? spell, GlTexture? rowBox,
+                             System.Func<SpellTemplate, GlTexture?>? resolveSpellIcon,
+                             Vector4 ink)
     {
-        int iconSz = (int)System.Math.Round(IconSz * s);
-        bars.DrawRect  (vw, vh, rowX, rowY, nameColW, rowH, slotBg);
-        bars.DrawBorder(vw, vh, rowX, rowY, nameColW, rowH, slotEm);
-        bars.DrawRect  (vw, vh, iconColX, rowY, iconColW, rowH, slotBg);
-        bars.DrawBorder(vw, vh, iconColX, rowY, iconColW, rowH, slotEm);
+        int bandW = (int)System.Math.Round(151 * s);
+        int bandH = (int)System.Math.Round(33 * s);
+        // Authored band: b_gui_ig_mnu_sb_box, gas uvcoords
+        // 0,0.484375,0.589844,1 → visual top-down V 0..0.515625 (the
+        // bottom-up flip rule), U 0..0.589844.
+        if (rowBox is not null && icons is not null)
+            icons.DrawIcon(vw, vh, rowBox, bandX, bandY, bandW, bandH,
+                new Vector4(1f, 1f, 1f, 1f), 0f, 0f, 0.589844f, 0.515625f);
 
-        var label = spell is null
-            ? "(empty)"
-            : (string.IsNullOrEmpty(spell.ScreenName) ? spell.Name : spell.ScreenName);
-        if (label.Length > 22) label = label[..22];
-        var nameInk = spell is null ? dimInk : SpellElementColor(spell.Element);
-        int labelW = text.MeasureWidth(label);
-        int textY = rowY + (rowH - 8) / 2;
-        text.DrawString(vw, vh, label.ToUpperInvariant(),
-                        rowX + (nameColW - labelW) / 2, textY, nameInk);
-
-        int iconX = iconColX + (iconColW - iconSz) / 2;
-        int iconY = rowY + (rowH - iconSz) / 2;
+        // Empty rows are just the band — DS1 shows no placeholder text.
         if (spell is null) return;
-        GlTexture? iconTex = resolveSpellIcon?.Invoke(spell);
+
+        var label = string.IsNullOrEmpty(spell.ScreenName) ? spell.Name : spell.ScreenName;
+        if (label.Length > 22) label = label[..22];
+        // Name centered in the authored text_box (389..520 → band-rel
+        // 0..131 of the 151-wide band).
+        int nameW = (int)System.Math.Round(131 * s);
+        int labelW = text.MeasureWidth(label);
+        text.DrawString(vw, vh, label.ToUpperInvariant(),
+                        bandX + (nameW - labelW) / 2,
+                        bandY + (bandH - 8) / 2,
+                        SpellElementColor(spell.Element));
+
+        // Icon in the authored itemslot (523,47,539,79 → band-rel x=134,
+        // 16 wide over the band height); square icon centered vertically.
+        int slotX = bandX + (int)System.Math.Round(134 * s);
+        int iconSz = (int)System.Math.Round(16 * s);
+        int iconY = bandY + (bandH - iconSz) / 2;
+        GlTexture? iconTex = spell is null ? null : resolveSpellIcon?.Invoke(spell);
         if (iconTex is not null && icons is not null)
         {
-            icons.DrawIcon(vw, vh, iconTex, iconX, iconY, iconSz, iconSz,
+            icons.DrawIcon(vw, vh, iconTex, slotX, iconY, iconSz, iconSz,
                            new Vector4(1f, 1f, 1f, 1f));
-            bars.DrawBorder(vw, vh, iconX, iconY, iconSz, iconSz, slotEm);
-            return;
         }
-        var elemColor = SpellElementColor(spell.Element);
-        bars.DrawRect  (vw, vh, iconX, iconY, iconSz, iconSz, elemColor);
-        bars.DrawBorder(vw, vh, iconX, iconY, iconSz, iconSz, slotEm);
-        var glyph = string.IsNullOrEmpty(label) ? "?" : label.Substring(0, 1).ToUpperInvariant();
-        int glyphW = text.MeasureWidth(glyph);
-        text.DrawString(vw, vh, glyph,
-                        iconX + (iconSz - glyphW) / 2, iconY + (iconSz - 8) / 2, ink);
+        else
+        {
+            bars.DrawRect(vw, vh, slotX, iconY, iconSz, iconSz, SpellElementColor(spell.Element));
+            var glyph = string.IsNullOrEmpty(label) ? "?" : label.Substring(0, 1).ToUpperInvariant();
+            int glyphW = text.MeasureWidth(glyph);
+            text.DrawString(vw, vh, glyph,
+                            slotX + (iconSz - glyphW) / 2, iconY + (iconSz - 8) / 2, ink);
+        }
     }
 
     // Phase 21-SC-SPELL-A — DS1-observed spell label tints. User-confirmed

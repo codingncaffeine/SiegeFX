@@ -31255,9 +31255,13 @@ void main()
                 // common_template=x). Matches the inventory's close X.
                 var spellClose = GetCommonTexture("button_x_up")
                                  ?? TryGetGuiTexture("b_gui_cmn_button_x_up");
+                // SC-SPELLBOOK-AUTHENTIC — cpbox smoke + sb_box row bands
+                // per spell.gas; see the panel for the authored rect table.
                 _spellBookPanel.Draw(_barRenderer, _textRenderer!,
                     size.X, size.Y, _playerSpellbook?.Primary, _playerSpellbook?.Secondary, placed,
-                    _iconRenderer, spellClose, ResolveSpellInventoryIcon);
+                    _iconRenderer, spellClose, ResolveSpellInventoryIcon,
+                    resolveCommonChrome: GetCommonTexture,
+                    rowBox: TryGetGuiTexture("b_gui_ig_mnu_sb_box"));
             }
 
             // SC-MSG-STRIP — DS1's top-center message strip (ref text.bmp /
