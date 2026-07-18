@@ -86,6 +86,19 @@ public sealed class TriggerRuntime
         {
             if (!byScid.TryGetValue(s.Scid, out var t)) { leftovers.Add(s); continue; }
             t.IsActive = s.IsActive;
+            // The save is authoritative BOTH directions: rows fired/held
+            // AFTER the save must unlatch on an in-session load, or a
+            // one-shot that fired post-save (pressure plate, gate opener)
+            // stays FiredOnce in the restored world and can never fire
+            // again — a progression softlock. Reset every row to defaults
+            // first, then re-apply the snapshot's latches.
+            for (int r = 0; r < t.Matrix.Rows.Count; r++)
+            {
+                ref var rs = ref t.RowStateAt(r);
+                rs.FiredOnce = false;
+                rs.ConditionHeld = false;
+                rs.NextEligibleAt = 0;
+            }
             foreach (var r in s.FiredRows)
                 if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).FiredOnce = true;
             foreach (var r in s.HeldRows)

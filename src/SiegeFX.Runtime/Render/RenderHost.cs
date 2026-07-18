@@ -112,34 +112,65 @@ public sealed class RenderHost : IDisposable
     /// registered. Idempotent; returns true when a structural change (broken
     /// prop, cleared blocker) needs an obstacle/nav refresh. Shared by the
     /// load path and the streamed-region re-apply.</summary>
-    private bool ApplyWorldPropState(SiegeFX.Core.Save.WorldStateSnapshot ws)
+    /// <summary>Apply the save's world prop state. <paramref name="authoritative"/>
+    /// distinguishes the two callers:
+    ///   TRUE  (ApplySave) — the save is the whole truth BOTH directions:
+    ///          state changed AFTER the save rolls back (a chest opened
+    ///          post-save restores closed) instead of leaking into the
+    ///          restored world. The one-directional original let every
+    ///          prop family keep post-save live state on in-session loads.
+    ///   FALSE (region stream-in) — additive only: the freshly streamed
+    ///          props boot at authored defaults, so list membership sets
+    ///          them; the reverse direction must NOT run here or it would
+    ///          roll back progress the player made AFTER the load on
+    ///          already-streamed regions' props.</summary>
+    private bool ApplyWorldPropState(SiegeFX.Core.Save.WorldStateSnapshot ws, bool authoritative = false)
     {
-        foreach (var scid in ws.OpenedChests)
-            foreach (var c in _chestProps)
-                if (c.Scid == scid) { c.ChestOpened = true; break; }
-        foreach (var scid in ws.UnlockedUsables)
-            foreach (var lu in _lockedUsables)
-                if (lu.Prop.Scid == scid) { lu.Unlocked = true; break; }
-        foreach (var scid in ws.LeversOn)
-            foreach (var lv in _leverProps)
-                if (lv.Scid == scid) { lv.LeverOn = true; break; }
         bool structural = false;
-        foreach (var scid in ws.BrokenProps)
-            if (_breakingByScid.TryGetValue(scid, out var bp) && !bp.IsDestroyed)
-            { bp.IsDestroyed = true; structural = true; }
-        foreach (var scid in ws.ClearedBlockers)
+        if (authoritative)
+        {
+            foreach (var c in _chestProps) c.ChestOpened = ws.OpenedChests.Contains(c.Scid);
+            foreach (var lu in _lockedUsables) lu.Unlocked = ws.UnlockedUsables.Contains(lu.Prop.Scid);
+            foreach (var lv in _leverProps) lv.LeverOn = ws.LeversOn.Contains(lv.Scid);
+            foreach (var kv in _breakingByScid)
+            {
+                bool destroyed = ws.BrokenProps.Contains(kv.Key);
+                if (kv.Value.IsDestroyed != destroyed)
+                { kv.Value.IsDestroyed = destroyed; structural = true; }
+            }
             foreach (var b in _blockingGizmos)
-                if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
-        // SC-DOOR-PERSIST — door leaves follow the SAVE, both directions:
-        // doors were never persisted, so an in-session load kept the live
-        // session's door states (a door opened after the save stayed open
-        // in the restored world). Swing fraction snaps so the load doesn't
-        // animate; the obstacle map re-stamps when anything changed
-        // (doorway triangles block/free with the leaf).
+            {
+                bool active = !ws.ClearedBlockers.Contains(b.Scid);
+                if (b.Active != active) { b.Active = active; structural = true; }
+            }
+        }
+        else
+        {
+            foreach (var scid in ws.OpenedChests)
+                foreach (var c in _chestProps)
+                    if (c.Scid == scid) { c.ChestOpened = true; break; }
+            foreach (var scid in ws.UnlockedUsables)
+                foreach (var lu in _lockedUsables)
+                    if (lu.Prop.Scid == scid) { lu.Unlocked = true; break; }
+            foreach (var scid in ws.LeversOn)
+                foreach (var lv in _leverProps)
+                    if (lv.Scid == scid) { lv.LeverOn = true; break; }
+            foreach (var scid in ws.BrokenProps)
+                if (_breakingByScid.TryGetValue(scid, out var bp) && !bp.IsDestroyed)
+                { bp.IsDestroyed = true; structural = true; }
+            foreach (var scid in ws.ClearedBlockers)
+                foreach (var b in _blockingGizmos)
+                    if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
+        }
+        // SC-DOOR-PERSIST — door leaves follow the SAVE both directions on
+        // an authoritative apply; at stream-in only the freshly streamed
+        // region's doors are unknown, and they boot closed, so the additive
+        // open-listed pass is correct AND can't roll back post-load opens.
         bool doorsChanged = false;
         foreach (var d in _doorProps)
         {
             bool shouldOpen = ws.OpenDoors.Contains(d.Scid);
+            if (!authoritative && !shouldOpen) continue;
             if (d.DoorTargetOpen == shouldOpen) continue;
             d.DoorTargetOpen = shouldOpen;
             d.DoorOpenFrac = shouldOpen ? 1f : 0f;
@@ -26240,6 +26271,29 @@ void main()
     }
 
     // Screen name for a party member (companion sheet header / stats title).
+    /// <summary>SC-LOAD-REVIVE-BRAIN — rebuild a world NPC's brain after a
+    /// load revives it (alive in the save, dead in the live session). Same
+    /// construction as the spawn path in LoadPlayActors.</summary>
+    private void RebuildNpcBrain(ActorRenderState s, Vector3 pos)
+    {
+        if (_navMesh is null || s.IsPlayer || s.IsPartyMember) return;
+        if (!_navMesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) return;
+        var actor = s.Actor;
+        var snapped = pos with { Y = _navMesh.SampleYOnTriangle(tri, pos) };
+        var facing = Vector3.TransformNormal(Vector3.UnitZ, s.CurrentTransform);
+        var gait = actor.Stats.WalkSpeed > 0.5f ? actor.Stats.WalkSpeed : 4f;
+        var follower = new SiegeFX.Core.Actors.ActorFollower(
+            _navMesh, snapped, speed: gait, rngSeed: (int)actor.Instance.Scid,
+            initialFacing: facing);
+        var brain = new SiegeFX.Core.Actors.ActorBrain(
+            follower, actor.Stats,
+            rngSeed: (int)actor.Instance.Scid ^ unchecked((int)0xA17ACC1Eu),
+            selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
+        brain.SightBlocked = IsSightBlocked;
+        ConfigureBrainFlee(brain, actor.Template);
+        s.Brain = brain;
+    }
+
     private string ResolveMemberName(ActorRenderState member)
     {
         // SC-HERO-NAME — the hero goes by their chosen name everywhere the
@@ -35794,7 +35848,16 @@ void main()
             // resumes — same revive semantics as MpSetNetActorDead. Without
             // this the hero came back with full HP but stayed collapsed and
             // "died again" on every load taken from the defeat screen.
-            else if (wasDead) s.Actor.Host.OverrideAnimIndex(-1, 0f);
+            // SC-LOAD-REVIVE-BRAIN — the death path also NULLED the brain,
+            // and nothing rebuilt it: a room killed after the save came
+            // back as inert statues (never aggro, wander, or patrol) —
+            // the field report's "mobs frozen after loading".
+            else if (wasDead)
+            {
+                s.Actor.Host.OverrideAnimIndex(-1, 0f);
+                if (s.Brain is null && !s.IsPlayer && !s.IsPartyMember)
+                    RebuildNpcBrain(s, snap.Position.ToVector3());
+            }
             // SC-WORLD-SCRIPT-PERSIST — scripted presentation state: hidden
             // actors stay hidden, and a saved long-pinned scripted pose (the
             // intro's dying NPC, any NIS end-frame hold) re-pins so story
@@ -35936,14 +35999,30 @@ void main()
             // go to the pending ledgers: re-applied at stream-in, merged into
             // the next capture so far-away state survives save→load→save.
             _pendingAccumSnaps.Clear();
+            // The save is authoritative both directions here too: an
+            // accumulate chain advanced AFTER the save must reset, or an
+            // in-session load fires it early (capture skips zero rows, so
+            // "not listed" means "zero").
+            foreach (var lg in _logicGizmos.Values) { lg.Count = 0; lg.Fired = false; }
             foreach (var a in ws.Accumulators)
             {
                 if (_logicGizmos.TryGetValue(a.Scid, out var lg))
                 { lg.Count = a.Count; lg.Fired = a.Fired; }
                 else _pendingAccumSnaps.Add(a);
             }
-            bool structural = ApplyWorldPropState(ws);
+            bool structural = ApplyWorldPropState(ws, authoritative: true);
             _pendingElevatorSnaps.Clear();
+            // Same rule for lifts: capture only writes rows for lifts away
+            // from stop 1, so an unlisted LIVE lift must return there or a
+            // post-save ride survives the load (player restores at the top,
+            // car stays at the bottom).
+            foreach (var el in _elevators)
+            {
+                if (ws.Elevators.Any(r => r.Scid == el.Def.Scid)) continue;
+                if (el.AtStop != 1 || el.Moving)
+                { structural |= ApplyElevatorSnapshot(new SiegeFX.Core.Save.ElevatorStopSnapshot { Scid = el.Def.Scid, AtStop = 1 }); }
+            }
+            _elevatorDelayedFades.Clear();
             foreach (var es in ws.Elevators)
             {
                 if (!_elevatorsByScid.ContainsKey(es.Scid)) { _pendingElevatorSnaps.Add(es); continue; }
@@ -35965,7 +36044,12 @@ void main()
         // after the save respawned its dead enemies and re-armed its
         // looted/broken containers.
         _persistedDeadScids.Clear();
-        foreach (var snap in save.Actors) if (snap.IsDead) _persistedDeadScids.Add(snap.Scid);
+        // Synthetic generator children (0xFE......) never re-match across
+        // sessions (fresh scid sequence per load) — letting their dead rows
+        // into the ledger just re-emitted phantom rows on every capture,
+        // growing junk each save→load→save cycle.
+        foreach (var snap in save.Actors)
+            if (snap.IsDead && snap.Scid < 0xFE000000) _persistedDeadScids.Add(snap.Scid);
         _persistedWorldState = save.World;
 
         /// <summary>SC-SAVE-AUDIT — one elevator row applied to a live lift.</summary>
@@ -36344,6 +36428,18 @@ void main()
             if (npc.Brain is not null) npc.Brain.Teleport(cpos);
             npc.CurrentTransform = Matrix4x4.CreateTranslation(cpos);
             npc.PartyRenderInit = false;
+            // SC-COMPANION-DEAD-RESTORE — a member saved at 0 HP restores
+            // as a DEAD, resurrectable corpse (retail semantics). The
+            // unconditional dead:false restore left combat reading dead
+            // (CurrentLife<=0) while the render state said alive — a
+            // walking husk that re-collapsed on the first hit.
+            if (cs.CurrentLife <= 0f)
+            {
+                npc.Actor.Combat.RestoreFromSave(0f, cs.CurrentMana, dead: true);
+                npc.IsDead = true;
+                npc.Brain = null;
+                BeginDeathChore(npc, settled: true);
+            }
             partyRestored++;
         }
         if (save.Party.Count > 0)
