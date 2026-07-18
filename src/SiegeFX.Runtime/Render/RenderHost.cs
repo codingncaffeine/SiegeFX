@@ -8962,6 +8962,29 @@ void main()
                     // renders with its DS1 b_gui_ig_i_ic_sp_*_inv art.
                     // The source slot was cleared on pickup so the move
                     // is just an Add here; ClearScrollDrag ends the drag.
+                    // SC-PARTY-MULTI-INV-ITEMS — a held SPELL drops into a
+                    // tiled companion bag exactly like the player's pack.
+                    // The player-panel branch below never saw the tiles
+                    // (IsPointInPanel is player-panel-only) and the item
+                    // branch is _cursorScroll-gated, so a dragged spell
+                    // over a companion bag silently did nothing. Tested
+                    // FIRST — the row draws on top when the two overlap.
+                    if (_cursorScroll is not null && CompanionBagAt(imx, imy) is { } sBagHit)
+                    {
+                        var sBag = GetMemberInventory(sBagHit.PartyIndex);
+                        sBag.Add(new SiegeFX.Core.Actors.LootEntry(
+                            Slot: "", Reference: _cursorScroll.Name));
+                        if (!Hud.InventoryPanel.CanFitAll(sBag, TryGetItemGridSize))
+                        {
+                            sBag.RemoveAt(sBag.Count - 1);
+                            Console.WriteLine($"  scroll drag: member[{sBagHit.PartyIndex}] bag full — {_cursorScroll.Name} stays on cursor");
+                            return;
+                        }
+                        _audio?.Play(SfxGuiPutDownScroll);
+                        Console.WriteLine($"  scroll drag: drop {_cursorScroll.Name} into member[{sBagHit.PartyIndex}] bag");
+                        ClearScrollDrag();
+                        return;
+                    }
                     if (_cursorScroll is not null
                         && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
                     {
@@ -31440,6 +31463,15 @@ void main()
             {
                 Console.WriteLine($"  pcontent: {refIn} -> {rolled} (power={power}) [drop-time]");
                 items[i] = items[i] with { Reference = rolled };
+            }
+            else
+            {
+                // SC-PCONTENT-NO-LEAK — a spec that resolves to nothing is
+                // DROPPED, never handed to the player as a raw "#..."
+                // string (no icon, no tooltip, no template behind it).
+                Console.WriteLine($"  pcontent: {refIn} UNRESOLVED — entry dropped from loot");
+                items.RemoveAt(i);
+                i--;
             }
         }
     }

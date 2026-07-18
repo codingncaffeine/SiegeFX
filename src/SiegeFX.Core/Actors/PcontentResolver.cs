@@ -326,6 +326,24 @@ public sealed class PcontentResolver
                 if (key is not null) Bucket(key).Add(entry);
             }
         }
+        // SC-PCONTENT-JEWELRY — DS1 GENERATES jewelry: #ring/#amulet specs
+        // roll a variant + enchant modifiers from the ring_common/
+        // amulet_common [pcontent] tables. That modifier roller isn't
+        // modeled, and no plain-item path indexes the class (the roots
+        // specialize inventory, not armor), so #ring/... used to resolve
+        // to NOTHING and the raw spec string leaked into loot piles as a
+        // no-icon "#RING/" item. Until the roller lands, the specs
+        // resolve to the generic root items — real, equippable rings and
+        // amulets with authored icon/slot/value. Group.None keeps them
+        // out of #weapon/#armor wildcards; power 1 + the whole-bucket
+        // fallback accepts any authored band.
+        foreach (var rootName in new[] { "ring", "amulet" })
+        {
+            if (!_store.TryGet(rootName, out var rootTpl) || rootTpl is null) continue;
+            var entry = new Entry(rootName, 1, Rarity.Normal, Group.None, true);
+            Bucket(rootName).Add(entry);
+            _all.Add(entry);
+        }
         foreach (var list in _byClass.Values)
             list.Sort((a, b) => a.Power.CompareTo(b.Power));
         _all.Sort((a, b) => a.Power.CompareTo(b.Power));
