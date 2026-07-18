@@ -27154,17 +27154,24 @@ void main()
         {
             var entry = inv[i];
             var name = entry.Reference;
-            if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            // SC-POTION-REJUV — rejuvenation bottles restore BOTH pools and
+            // qualify for either drink key, ranked after every dedicated
+            // potion so they're saved for when nothing else is left.
+            bool rejuv = name.StartsWith("potion_rejuvenation", StringComparison.OrdinalIgnoreCase);
+            if (!rejuv && !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
             int tier = tierOrder.Length;   // untiered ranks after supers
             for (int t = 0; t < tierOrder.Length; t++)
                 if (name.EndsWith(tierOrder[t], StringComparison.OrdinalIgnoreCase))
                 { tier = t; break; }
+            if (rejuv) tier += 10;         // last resort behind dedicated potions
             // Lowest tier first; within a tier, finish partial bottles first.
             if (tier < bestTier || (tier == bestTier && entry.Fill < bestFill))
             { bestTier = tier; bestIdx = i; bestFill = entry.Fill; }
         }
         if (bestIdx < 0) return false;
         var picked = inv[bestIdx];
+        bool pickedRejuv = picked.Reference.StartsWith("potion_rejuvenation", StringComparison.OrdinalIgnoreCase);
+        if (bestTier >= 10) bestTier -= 10;   // real tier for the fallback table
         // Full-bottle restore value from the authored [magic][enchantments]
         // alter_life/alter_mana (ptn_potion.gas: health 200/400/1000/2000,
         // mana 200/500/1400/2500); fallback table is defensive only.
@@ -27181,6 +27188,12 @@ void main()
         if (sip <= 0f) return false;
         if (isHealth) c.Heal(sip);
         else          c.RestoreMana(sip);
+        // SC-POTION-REJUV — a rejuvenation sip restores the OTHER pool too.
+        if (pickedRejuv)
+        {
+            if (isHealth) c.RestoreMana(sip);
+            else          c.Heal(sip);
+        }
         float newFill = (available - sip) / total;
         if (newFill <= 0.004f) inv.RemoveAt(bestIdx);
         else inv[bestIdx] = picked with { Fill = newFill };
