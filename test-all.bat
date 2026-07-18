@@ -2679,9 +2679,14 @@ echo  VICTORY card appears (click it after it settles to keep playing).]
 echo.
 set SIEGEFX_DEV=1
 set SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning
+rem gom2's authored start node isn't in the play-region layout (centroid
+rem fallback lands on an unreachable ledge at y=1.8); spawn on the ARENA
+rem floor ~15u from Gom himself (he stands at 167.7,-159.1,-66.0).
+set SIEGEFX_DEBUG_SPAWN=155,-158,-70
 dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/gom2
 set SIEGEFX_DEV=
 set SIEGEFX_DEBUG_SPELLS=
+set SIEGEFX_DEBUG_SPAWN=
 echo.
 pause
 goto MENU
