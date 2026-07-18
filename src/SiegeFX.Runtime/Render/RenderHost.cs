@@ -35492,6 +35492,7 @@ void main()
                 CameraPos     = SiegeFX.Core.Save.Vec3.From(_camera.Position),
                 CameraYaw     = _camera.Yaw,
                 CameraPitch   = _camera.Pitch,
+                ActiveSlot    = _activeAbilityIdx,
             };
             // Inventory + equipment fold into the same flat list the loot
             // path uses. On load, equipped items get re-wired by walking
@@ -35505,6 +35506,15 @@ void main()
                     Slot      = item.Slot,
                     Reference = item.Reference,
                 });
+            // An item mid-drag lives NOWHERE (pickup removed it from its
+            // container) — fold it into the pack row so an F5 while
+            // dragging can't silently delete it from the save.
+            if (_cursorItem is { } heldItem)
+                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                { Slot = "", Reference = heldItem.Reference });
+            if (_cursorScroll is not null)
+                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+                { Slot = "", Reference = _cursorScroll.Name });
             foreach (var kv in _playerEquipment)
             {
                 var slot = kv.Key.StartsWith("es_", StringComparison.OrdinalIgnoreCase)
@@ -35646,6 +35656,7 @@ void main()
                 PlacedSpells = new List<string>(b.PlacedSpells),
                 MoveOrder = b.MoveOrder, AtkOrder = b.AtkOrder,
                 TgtOrder = b.TgtOrder, FollowOn = b.FollowOn,
+                ActiveSlot = b.ActiveSlot ?? -1,
             };
             foreach (var it in b.Inventory)
                 ds.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
@@ -35918,6 +35929,23 @@ void main()
         if (_triggerRuntime is not null && save.World?.Triggers is { Count: > 0 } trigSnaps)
             _pendingTriggerSnaps = _triggerRuntime.RestoreStates(trigSnaps);
 
+        // In-session load hygiene: an item mid-drag would survive onto the
+        // restored state (and re-place as a DUPLICATE if the save also
+        // carries it in the pack — capture folds the held item in); in-
+        // flight combat transients (deathrain storms, arrows/carriers,
+        // queued attack/cast orders) would keep acting on the restored
+        // scene from the pre-load timeline.
+        _cursorItem = null;
+        _cursorItemIcon = null;
+        _cursorItemFromInventoryIdx = -1;
+        if (_cursorScroll is not null) ClearScrollDrag();
+        _deathrains.Clear();
+        foreach (var rsFlight in _rangedShots)
+            if (rsFlight.FlightMotionId != 0)
+                _sfxRuntime?.EndExternalMotion(rsFlight.FlightMotionId);
+        _rangedShots.Clear();
+        _pendingAttackTarget = null;
+        _pendingCastTarget = null;
         _lootPiles.Clear();
         // SC-WORLD-INVENTORY-PLACED — _inventoryGasLoaded gates LoadWorldInventory
         // from re-spawning piles in an already-streamed region. Save serializer
@@ -36044,12 +36072,13 @@ void main()
         // after the save respawned its dead enemies and re-armed its
         // looted/broken containers.
         _persistedDeadScids.Clear();
-        // Synthetic generator children (0xFE......) never re-match across
-        // sessions (fresh scid sequence per load) — letting their dead rows
-        // into the ledger just re-emitted phantom rows on every capture,
-        // growing junk each save→load→save cycle.
+        // Synthetic scids never re-match across sessions (generator
+        // children 0xFE...... and summons 0xFD...... both mint fresh
+        // sequences per load) — letting their dead rows into the ledger
+        // just re-emitted phantom rows on every capture, growing junk
+        // each save→load→save cycle.
         foreach (var snap in save.Actors)
-            if (snap.IsDead && snap.Scid < 0xFE000000) _persistedDeadScids.Add(snap.Scid);
+            if (snap.IsDead && snap.Scid < 0xFD000000) _persistedDeadScids.Add(snap.Scid);
         _persistedWorldState = save.World;
 
         /// <summary>SC-SAVE-AUDIT — one elevator row applied to a live lift.</summary>
@@ -36156,6 +36185,13 @@ void main()
             // save's worn armor was stats-only.
             TryLoadPlayerEquipment(_player.Actor.Template);
 
+            // The selected AWP ability slot is state like any other: a save
+            // taken with the bow (or a spell) up used to come back on the
+            // melee default cold and keep the pre-load slot on F9. Restored
+            // AFTER the equipment rebuild so the wielded-weapon visual
+            // follows the slot. -1 = pre-field save, keep the default.
+            if (ps.ActiveSlot >= 0) SetActiveAbilitySlot(ps.ActiveSlot);
+
             // SC-VITALS-ORDER — re-apply the saved vitals now that EVERY
             // max-affecting restore has run (level resync, gear enchants).
             // The actor loop's first application clamped current life/mana
@@ -36173,10 +36209,15 @@ void main()
 
             if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
             {
-                if (ps.Spellbook.PrimarySpell is { } pn && _spellCatalog.TryGet(pn, out var ps1))
-                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, ps1);
-                if (ps.Spellbook.SecondarySpell is { } sn && _spellCatalog.TryGet(sn, out var ps2))
-                    _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, ps2);
+                // Actives resolve through the SAME resolver Placed rows and
+                // member books use — the catalog-only lookup dropped
+                // synthesized scroll/summon/charm templates (Active 1 came
+                // back empty on cold load, kept the pre-load spell on F9).
+                // A saved-empty or unresolvable slot explicitly clears.
+                SiegeFX.Core.Assets.SpellTemplate? RA(string? name) =>
+                    string.IsNullOrEmpty(name) ? null : ResolveSlottableSpell(name!, debugSpellsEnv: null);
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, RA(ps.Spellbook.PrimarySpell));
+                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, RA(ps.Spellbook.SecondarySpell));
                 _playerSpellbook.RestoreCooldowns(
                     ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
                 // Phase 21-SC-SCROLL-G — restore Placed[]. v5 saves have no
@@ -36302,19 +36343,39 @@ void main()
         foreach (var m in _party)
             if (!m.IsPlayer) { m.IsPartyMember = false; m.PartyIndex = 0; }
         _party.RemoveAll(m => !m.IsPlayer);
+        // ALL seven per-member dicts tear down, not just bags/equipment:
+        // surviving progression/spellbook/baseline/slot entries keyed by
+        // PartyIndex were ADOPTED by whoever landed on that index after
+        // the load (stale XP wrapping a detached Actor = companion never
+        // levels; another member's spells/combat slot). UI member state
+        // resets with them.
         foreach (var k in _companionInventories.Keys.Where(k => k > 0).ToList())
             _companionInventories.Remove(k);
         foreach (var k in _memberEquipment.Keys.Where(k => k > 0).ToList())
             _memberEquipment.Remove(k);
+        foreach (var k in _memberProgression.Keys.Where(k => k > 0).ToList())
+            _memberProgression.Remove(k);
+        foreach (var k in _memberSpellbooks.Keys.Where(k => k > 0).ToList())
+            _memberSpellbooks.Remove(k);
+        foreach (var k in _memberArmorBaseline.Keys.Where(k => k > 0).ToList())
+            _memberArmorBaseline.Remove(k);
+        foreach (var k in _memberActiveSlot.Keys.Where(k => k > 0).ToList())
+            _memberActiveSlot.Remove(k);
+        _openInventoryMembers.Clear();
+        SetPartySelection(0);
+        _paperdollTargetIndex = 0;
         // SC-FC-ORDERS / SC-PARTY-LIFECYCLE — party-wide formation, the
         // paid-hire ledger, and dismissed-companion bundles come off the
         // save wholesale (runtime state fully replaced, per the ApplySave
         // runtime-state rule).
         _hiredScids.Clear();
-        // SC-SUMMON-UI — a pre-load summon doesn't survive into the loaded
-        // state (its replacement, if any, rebinds below from the save).
-        if (_player is not null && PlayerSummon is { } staleSummon)
-            DespawnSummon(_player, staleSummon);
+        // SC-SUMMON-UI — no pre-load summon survives into the loaded state
+        // (the player's replacement, if any, rebinds below from the save).
+        // EVERY owner despawns, not just the player: a bare Clear()
+        // orphaned member/NPC summons as driverless statues that never
+        // despawned on owner death.
+        foreach (var kv in _summonByOwner.ToList())
+            DespawnSummon(kv.Key, kv.Value);
         _summonByOwner.Clear();
         _dismissedCompanions.Clear();
         if (save.World is { } wsFc)
@@ -36339,6 +36400,7 @@ void main()
                     PlacedSpells = new List<string>(cs.PlacedSpells),
                     MoveOrder = cs.MoveOrder, AtkOrder = cs.AtkOrder,
                     TgtOrder = cs.TgtOrder, FollowOn = cs.FollowOn,
+                    ActiveSlot = cs.ActiveSlot >= 0 ? cs.ActiveSlot : null,
                 };
                 foreach (var e in cs.Inventory)
                     db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
@@ -36396,10 +36458,11 @@ void main()
                     cs.SkillXp.Count > 0 ? cs.SkillXp : null);
             npc.Actor.Combat.RestoreFromSave(cs.CurrentLife, cs.CurrentMana, dead: false);
             // SC-COMPANION-SPELLBOOK — rebuild the member's own spell panel
-            // and re-target their casting from its Active 1. Pre-field saves
-            // carry empty strings and leave the authored kit behavior alone.
-            if (!string.IsNullOrEmpty(cs.PrimarySpell) || !string.IsNullOrEmpty(cs.SecondarySpell)
-                || cs.PlacedSpells.Any(sp => !string.IsNullOrEmpty(sp)))
+            // and re-target their casting from its Active 1. Runs even when
+            // the row is EMPTY (v13+ rows are authoritative): a member
+            // taught a spell after the save kept it across an in-session
+            // load behind the old any-spell gate. Pre-field saves have no
+            // Party rows at all, so the legacy behavior is unaffected.
             {
                 _memberSpellbooks.Remove(npc.PartyIndex);
                 if (BookFor(npc.PartyIndex) is { } rbook)

@@ -325,6 +325,11 @@ public sealed class PlayerSnapshot
     public uint   SummonScid      { get; set; }
     public string SummonEndScript { get; set; } = "";
 
+    /// <summary>The player's selected AWP ability slot (0 melee / 1 ranged /
+    /// 2-3 active spells). -1 = save predates the field (restore keeps the
+    /// melee default).</summary>
+    public int ActiveSlot { get; set; } = -1;
+
     /// <summary>Auto-grown attributes from level-ups. Re-applied to the
     /// player's stats block on load so MaxLife/MaxMana stay consistent.</summary>
     public float Strength     { get; set; }
