@@ -87,6 +87,12 @@ public sealed class SaveFile
     /// fh_r1 actor scids into a different region would hit-or-miss.</summary>
     public string RegionPath { get; set; } = "";
 
+    /// <summary>SC-SAVE-REGION — the region the PLAYER was actually in at
+    /// save time (RegionPath above is the session's coordinate-frame root;
+    /// the two differ once the player travels). Informational + anchor hint;
+    /// empty on saves from before the field.</summary>
+    public string PlayerRegion { get; set; } = "";
+
     /// <summary>SC-SAVE-AUDIT — the campaign difficulty (GameDifficulty enum
     /// name) at save time. Empty = pre-field save; the loader then keeps the
     /// session's current difficulty (the old behavior, which silently reset

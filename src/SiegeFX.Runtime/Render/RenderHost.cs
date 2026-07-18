@@ -34576,7 +34576,17 @@ void main()
         _sceneThumbnail = SiegeFX.Core.Save.ThumbnailCodec.Encode(ThumbW, ThumbH, dst);
     }
 
-    /// <summary>SC-SAVE-REGION — the truthful region for a save record.</summary>
+    /// <summary>SC-SAVE-REGION (corrected) — RegionPath is the COORDINATE
+    /// FRAME, not the player's location. Every world position in the save is
+    /// expressed in a layout rooted at the session's root region; booting a
+    /// different region re-roots the world and shifts every stored position
+    /// by the inter-region offset (the 357u-constant frontier stall). The
+    /// player's actual region is stored separately as PlayerRegion (display /
+    /// anchor hint); the load-time frontier search streams the world toward
+    /// the position within the consistent frame.</summary>
+    private string SaveFrameRegion() =>
+        !string.IsNullOrEmpty(_worldRootRegion) ? _worldRootRegion! : (_regionPath ?? "");
+
     private string PlayerRegionForSave()
     {
         if (_player is not null
@@ -34592,14 +34602,11 @@ void main()
         {
             SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
             SavedAt       = DateTime.UtcNow,
-            // SC-SAVE-REGION — the region the player IS IN, never the region
-            // the process happened to boot into. Every save used to stamp the
-            // boot region (fh_r1 for a normal campaign), so loading one made
-            // hours away anchored the world at the farmhouse and dropped the
-            // player into wrongly-anchored geometry (grey world, wrong
-            // underground state). Position-derived region wins; the streaming
-            // tracker seconds it; the boot region is the pre-spawn last resort.
-            RegionPath    = PlayerRegionForSave(),
+            // SC-SAVE-REGION — the session's coordinate-frame root (see
+            // SaveFrameRegion). The player's actual region rides separately
+            // in PlayerRegion below.
+            RegionPath    = SaveFrameRegion(),
+            PlayerRegion  = PlayerRegionForSave(),
             // SC-SAVE-AUDIT (bug 6) — difficulty is campaign state.
             Difficulty    = _difficulty.ToString(),
             NextTipIndex  = _nextTipIndex,
@@ -34980,10 +34987,23 @@ void main()
                 var ppos = playerRow.Position.ToVector3();
                 var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 const float InsideDist = 20f;
+                float firstDist = -1f;
                 for (int hop = 0; hop < 12; hop++)
                 {
                     var (tr, dist) = RegionAtWorldPosWithDistance(ppos);
                     if (tr is null) break;
+                    if (firstDist < 0f) firstDist = dist;
+                    // A distance that expansion cannot shrink is the
+                    // coordinate-frame-mismatch signature (save positions
+                    // rooted at a different region than this boot) — bail
+                    // loudly instead of streaming half the world for nothing.
+                    if (hop >= 3 && MathF.Abs(dist - firstDist) < 1f)
+                    {
+                        Console.WriteLine($"[load-diag] WARNING: nearest-node distance stuck at {dist:F0}u " +
+                                          $"after {hop} expansions — coordinate-frame mismatch " +
+                                          $"(save frame '{save.RegionPath}' vs this session's root)");
+                        break;
+                    }
                     if (dist < InsideDist)
                     {
                         if (!string.Equals(tr, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
