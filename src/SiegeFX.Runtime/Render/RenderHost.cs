@@ -82,6 +82,8 @@ public sealed class RenderHost : IDisposable
     // stream-in; still-pending rows merge into the next capture so
     // save→load→save can't forget them.
     private readonly List<SiegeFX.Core.Save.ActorSnapshot> _pendingActorSnaps = new();
+    // SC-GEN-PERSIST — generator rows awaiting their region's stream-in.
+    private readonly List<SiegeFX.Core.Save.GeneratorSnapshot> _pendingGeneratorSnaps = new();
     // SC-SAVE-AUDIT — save rows whose owning region wasn't streamed at load
     // time. Re-applied as regions stream in and merged into the next capture,
     // so history in un-visited regions survives save→load→save chains
@@ -12439,6 +12441,25 @@ void main()
         LoadStaticProps(newlyLoaded);
         LoadWorldInventory(newlyLoaded);
         LoadGenerators(newlyLoaded);
+        // SC-GEN-PERSIST — the freshly streamed regions' generators pick up
+        // their saved state (cleared ambushes stay consumed after a load
+        // even when their region streams in later).
+        if (_pendingGeneratorSnaps.Count > 0)
+        {
+            int gensApplied = 0;
+            _pendingGeneratorSnaps.RemoveAll(gs =>
+            {
+                var live = _generators.FirstOrDefault(g => g.Scid == gs.Scid);
+                if (live is null) return false;
+                live.Activated = gs.Activated;
+                live.PendingChildren = gs.PendingChildren;
+                live.NextSpawnIn = 0f;
+                gensApplied++;
+                return true;
+            });
+            if (gensApplied > 0)
+                Console.WriteLine($"  rolling spawn: {gensApplied} generator state row(s) applied from save");
+        }
         LoadCommands(newlyLoaded);
         LoadLogicGizmos(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
@@ -35607,6 +35628,11 @@ void main()
         // SC-DOOR-PERSIST — open door leaves, so loads restore the save's
         // doors instead of leaking the live session's.
         foreach (var d in _doorProps) if (d.DoorTargetOpen) world.OpenDoors.Add(d.Scid);
+        // SC-GEN-PERSIST — every streamed generator's activation + remaining
+        // wave; un-streamed rows merge from the loaded save below.
+        foreach (var g in _generators)
+            world.Generators.Add(new SiegeFX.Core.Save.GeneratorSnapshot
+            { Scid = g.Scid, Activated = g.Activated, PendingChildren = g.PendingChildren });
         foreach (var el in _elevators)
             if (el.AtStop != 1 || el.Moving)
                 world.Elevators.Add(new SiegeFX.Core.Save.ElevatorStopSnapshot
@@ -35642,6 +35668,12 @@ void main()
             MergeProps(world.UnlockedUsables, kept.UnlockedUsables, sc => _lockedUsables.Any(lu => lu.Prop.Scid == sc));
             MergeProps(world.LeversOn, kept.LeversOn, sc => _leverProps.Any(lv => lv.Scid == sc));
             MergeProps(world.OpenDoors, kept.OpenDoors, sc => _doorProps.Any(d => d.Scid == sc));
+            // SC-GEN-PERSIST — generator rows for regions never streamed
+            // this session carry forward from the loaded save.
+            foreach (var gk in kept.Generators)
+                if (!_generators.Any(g => g.Scid == gk.Scid)
+                    && !world.Generators.Any(w => w.Scid == gk.Scid))
+                    world.Generators.Add(gk);
             MergeProps(world.BrokenProps, kept.BrokenProps, sc => _breakingByScid.ContainsKey(sc));
             MergeProps(world.ClearedBlockers, kept.ClearedBlockers, sc => _blockingGizmos.Any(b => b.Scid == sc));
         }
@@ -36321,6 +36353,25 @@ void main()
                 if (!_elevatorsByScid.ContainsKey(es.Scid)) { _pendingElevatorSnaps.Add(es); continue; }
                 structural |= ApplyElevatorSnapshot(es);
             }
+            // SC-GEN-PERSIST — generators re-armed from region data above
+            // (LoadGenerators); the save now overrides their state so a
+            // cleared ambush stays consumed (Activated + 0 pending) and a
+            // mid-wave save resumes at the right remaining count instead of
+            // re-arming full ("kill room, load, farm the respawn").
+            _pendingGeneratorSnaps.Clear();
+            int gensApplied = 0;
+            foreach (var gs in ws.Generators)
+            {
+                var live = _generators.FirstOrDefault(g => g.Scid == gs.Scid);
+                if (live is null) { _pendingGeneratorSnaps.Add(gs); continue; }
+                live.Activated = gs.Activated;
+                live.PendingChildren = gs.PendingChildren;
+                live.NextSpawnIn = 0f;
+                gensApplied++;
+            }
+            if (gensApplied > 0 || _pendingGeneratorSnaps.Count > 0)
+                Console.WriteLine($"  load: generators — {gensApplied} state row(s) applied" +
+                    (_pendingGeneratorSnaps.Count > 0 ? $", {_pendingGeneratorSnaps.Count} pending un-streamed" : ""));
             if (structural)
             {
                 var nav = RebuildNavMesh();

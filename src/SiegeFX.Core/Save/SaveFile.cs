@@ -192,6 +192,14 @@ public sealed class CompanionSnapshot
     public int ActiveSlot { get; set; } = -1;
 }
 
+/// <summary>SC-GEN-PERSIST — one spawner's mutable state.</summary>
+public sealed class GeneratorSnapshot
+{
+    public uint Scid { get; set; }
+    public bool Activated { get; set; }
+    public int PendingChildren { get; set; }
+}
+
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
 public sealed class WorldStateSnapshot
 {
@@ -205,6 +213,10 @@ public sealed class WorldStateSnapshot
     /// load kept the current session's door positions instead of the
     /// save's. Absent on older saves = every door restores closed.</summary>
     public List<uint> OpenDoors { get; set; } = new();
+    /// <summary>SC-GEN-PERSIST — per-generator activation + remaining-wave
+    /// state. Absent on older saves = generators re-arm from region data
+    /// (the old behavior: cleared ambushes respawned on every load).</summary>
+    public List<GeneratorSnapshot> Generators { get; set; } = new();
     public List<uint> BrokenProps { get; set; } = new();
     public List<uint> ClearedBlockers { get; set; } = new();
     public List<ElevatorStopSnapshot> Elevators { get; set; } = new();
