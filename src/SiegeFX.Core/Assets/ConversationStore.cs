@@ -24,6 +24,13 @@ public sealed class DialogueNode
     public string? DeactivateQuest { get; init; }
     public bool IsQuestDialog { get; init; }    // "Accept" / "Decline" buttons
     public bool IsNonInteractive { get; init; } // narrator banners; auto-close on click
+    /// <summary>Authored <c>button_1_text</c> — overrides the advance
+    /// button's label on this node (5 shipped nodes: ella, ordus, tarish,
+    /// torg, overseer).</summary>
+    public string ButtonText { get; init; } = "";
+    /// <summary>Authored <c>scroll_rate</c> (text-box autoscroll px/s;
+    /// 0 = none) — drives narration pacing.</summary>
+    public float ScrollRate { get; init; }
 
     /// <summary>Phase 26 — DS1 recruitment: a text node with
     /// <c>choice = potential_member</c> ("...can I come along?") is the
@@ -112,10 +119,11 @@ public static class ConversationStore
                 if (!child.Header.StartsWith("text", StringComparison.OrdinalIgnoreCase)) continue;
 
                 int order = -1;
-                string text = "", choice = "";
+                string text = "", choice = "", buttonText = "";
                 string? sample = null, activateQuest = null;
                 string? completeQuest = null, deactivateQuest = null;
                 bool questDialog = false, nis = false;
+                float scrollRate = 0f;
 
                 foreach (var attr in child.Attributes)
                 {
@@ -146,6 +154,10 @@ public static class ConversationStore
                         deactivateQuest = deactivateQuest is null ? raw.Trim() : deactivateQuest + ";" + raw.Trim();
                     else if (NameEq(name, "quest_dialog"))   questDialog = ParseBool(raw);
                     else if (NameEq(name, "nis"))            nis = ParseBool(raw);
+                    else if (NameEq(name, "button_1_text"))  buttonText = StripQuotes(raw);
+                    else if (NameEq(name, "scroll_rate"))
+                        float.TryParse(raw.Trim().TrimEnd('f', 'F'), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out scrollRate);
                 }
 
                 if (text.Length == 0) continue; // empty placeholders skipped
@@ -160,6 +172,8 @@ public static class ConversationStore
                     DeactivateQuest  = deactivateQuest,
                     IsQuestDialog    = questDialog,
                     IsNonInteractive = nis,
+                    ButtonText       = buttonText,
+                    ScrollRate       = scrollRate,
                 });
             }
 

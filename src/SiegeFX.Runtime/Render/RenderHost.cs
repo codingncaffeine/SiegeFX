@@ -14452,7 +14452,11 @@ void main()
         _subtitlePage = 0;
         // Length-paced read time; the intro's 13-line monologue lands near
         // its ~80s narration without needing the MP3's true duration.
-        float total = Math.Clamp(node.Text.Length * 0.085f + 3f, 5f, 120f);
+        // Authored scroll_rate (text-box autoscroll px/s, 30 nodes) wins
+        // when present: line count × authored 14px row height ÷ rate.
+        float total = node.ScrollRate > 0.01f
+            ? Math.Clamp(_subtitleLines.Length * 14f / node.ScrollRate + 3f, 5f, 120f)
+            : Math.Clamp(node.Text.Length * 0.085f + 3f, 5f, 120f);
         _subtitlePageDuration = total / _subtitlePageCount;
         _subtitleRemaining = _subtitlePageDuration;
         if (!string.IsNullOrEmpty(node.VoiceSample) && _audio is not null)

@@ -169,10 +169,18 @@ public sealed class DialoguePanel
         Place(_closeX,   Px(RCloseX, s, originX));
 
         // Retail wording: mid-thread advance reads "More...", the final line
-        // reads "Close" (reference screenshot, conversation.bmp).
+        // reads "Close" (reference screenshot, conversation.bmp). Authored
+        // button_1_text overrides the advance label on its node (ella,
+        // ordus, tarish, torg, overseer author bespoke labels).
         bool last = _conv is null || _index >= _conv.Nodes.Count - 1;
-        _continue.Label = last ? "Close" : "More...";
-        _more.Label = "More...";
+        var curNode = (_conv is not null && _index >= 0 && _index < _conv.Nodes.Count)
+            ? _conv.Nodes[_index] : null;
+        string advanceLabel = curNode is { ButtonText.Length: > 0 } bn
+            ? bn.ButtonText : "More...";
+        _continue.Label = last
+            ? (curNode is { ButtonText.Length: > 0 } cn ? cn.ButtonText : "Close")
+            : advanceLabel;
+        _more.Label = advanceLabel;
 
         // ALPHA-2H — scrollbar arrows hug the text panel's right column.
         var bg = Px(RTextBg, s, originX);
