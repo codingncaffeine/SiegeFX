@@ -557,8 +557,32 @@ public sealed class ActorBrain
     /// the player's magic level. Instant-hit like the player path — the
     /// projectile the render layer spawns is cosmetic. A dry mana pool
     /// retries shortly instead of consuming the whole cast cooldown.</summary>
+    // SC-SPELL-ROTATION — authored jat_cast rand_spell casters (Gom, Super
+    // Gom, shamans with arsenals) roll a fresh spell from the authored
+    // weight table at each cast initiation instead of locking the single
+    // active spell — Super Gom's 25%-weighted summon never fired without it.
+    IReadOnlyList<(Assets.SpellTemplate Spell, float Weight)>? _spellRotation;
+
+    public void SetSpellRotation(IReadOnlyList<(Assets.SpellTemplate Spell, float Weight)>? rotation)
+        => _spellRotation = rotation is { Count: > 1 } ? rotation : null;
+
+    void RollRotationSpell()
+    {
+        if (_spellRotation is null) return;
+        float total = 0f;
+        foreach (var (_, w) in _spellRotation) total += MathF.Max(0.0001f, w);
+        float roll = (float)_swingRng.NextDouble() * total;
+        foreach (var (sp, w) in _spellRotation)
+        {
+            roll -= MathF.Max(0.0001f, w);
+            if (roll <= 0f) { SetCastSpell(sp); return; }
+        }
+        SetCastSpell(_spellRotation[^1].Spell);
+    }
+
     void CastAtTarget(Vector3 targetPos, ActorCombatState targetCombat, ActorStats? targetStats)
     {
+        RollRotationSpell();
         var spell = CastSpell!;
         var self = _selfActor;
         if (self is null || targetStats is null) { _swingCooldown = 1f; return; }

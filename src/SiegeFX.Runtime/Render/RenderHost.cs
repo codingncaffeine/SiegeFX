@@ -12481,6 +12481,7 @@ void main()
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
+                ApplyBrainSpellRotation(brain, actor.Template);
                 actorsOnMesh++;
             }
             else
@@ -19717,6 +19718,7 @@ void main()
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
+                ApplyBrainSpellRotation(brain, actor.Template);
                 onMesh++;
             }
             else
@@ -19748,6 +19750,45 @@ void main()
     /// primary spell, plus a catalog-resolvable il_active_primary_spell
     /// (krug_apprentice = spell_apprentice_zap, krug_shaman = spell_fireshot).
     /// Non-casters and unresolvable spells return null → melee/ranged brain.</summary>
+    /// <summary>SC-SPELL-ROTATION — parse the authored jat_cast rand_spell
+    /// arsenal (&spells + &spell_chances) from the template chain onto a
+    /// fresh brain; no-op for single-spell casters.</summary>
+    private void ApplyBrainSpellRotation(SiegeFX.Core.Actors.ActorBrain brain, SiegeFX.Core.Assets.Template template)
+    {
+        if (_templateStore is null || _spellCatalog is null) return;
+        var raw = _templateStore.GetAttribute(template, "mind", "jat_cast");
+        if (raw is null || !raw.Contains("rand_spell", StringComparison.OrdinalIgnoreCase)) return;
+        static string? Grab(string src, string key)
+        {
+            int i = src.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+            if (i < 0) return null;
+            int q0 = src.IndexOf('"', i);
+            if (q0 < 0) return null;
+            int q1 = src.IndexOf('"', q0 + 1);
+            return q1 < 0 ? null : src[(q0 + 1)..q1];
+        }
+        var spellsCsv = Grab(raw, "&spells");
+        if (spellsCsv is null) return;
+        var chancesCsv = Grab(raw, "&spell_chances") ?? "";
+        var names = spellsCsv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var chances = chancesCsv.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var rot = new List<(SiegeFX.Core.Assets.SpellTemplate Spell, float Weight)>();
+        for (int i = 0; i < names.Length; i++)
+        {
+            if (!_spellCatalog.TryGet(names[i], out var sp) || sp is null) continue;
+            float w = 1f;
+            if (i < chances.Length)
+                float.TryParse(chances[i], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out w);
+            rot.Add((sp, w));
+        }
+        if (rot.Count > 1)
+        {
+            brain.SetSpellRotation(rot);
+            Console.WriteLine($"[spell-rotation] {template.Name}: {rot.Count} spell(s) in the arsenal");
+        }
+    }
+
     private readonly HashSet<string> _casterDiagSeen = new(StringComparer.OrdinalIgnoreCase);
     private SiegeFX.Core.Assets.SpellTemplate? ResolveBrainSpell(SiegeFX.Core.Actors.ActorStats stats)
     {
@@ -27118,6 +27159,7 @@ void main()
             selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
         brain.SightBlocked = IsSightBlocked;
         ConfigureBrainFlee(brain, actor.Template);
+        ApplyBrainSpellRotation(brain, actor.Template);
         s.Brain = brain;
     }
 
