@@ -1987,12 +1987,13 @@ public sealed class SfxRuntime
         if (trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase))
             resolved = rs.Ctx.ResolveBone(boneTok);
         else if (trailing.StartsWith("target", StringComparison.OrdinalIgnoreCase))
-            // SC-SPELL-AUDIT (anchor-ignored) — bone-on-target IS a thing:
-            // buff scripts pin emitters to the target's head/hands/spine.
-            // Until live skeletal lookup lands, approximate with per-bone
-            // heights so a 4-emitter buff distributes over the body instead
-            // of collapsing into one chest-center point.
-            resolved = rs.Ctx.TargetPos + new Vector3(0f, BoneHeightOffset(boneTok), 0f);
+            // SC-TARGET-BONES — bone-on-target resolves against the LIVE
+            // target skeleton when the renderer wired a resolver (a
+            // gargoyle's head is where the gargoyle's head IS), falling
+            // back to the per-bone height approximations otherwise.
+            resolved = rs.Ctx.TargetResolver is not null
+                ? rs.Ctx.ResolveTargetBone(boneTok)
+                : rs.Ctx.TargetPos + new Vector3(0f, BoneHeightOffset(boneTok), 0f);
         else
             resolved = h.OtherEnd;
         h.OtherEnd = resolved;

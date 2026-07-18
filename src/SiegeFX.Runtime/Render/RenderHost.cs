@@ -906,6 +906,47 @@ public sealed class RenderHost : IDisposable
     // _boneWorldsScratch is repopulated each render frame; at cast time
     // it's at most one frame stale (~16ms), well within shipped DS1 sfx
     // timing tolerances. No need to recompute on the cast thread.
+    /// <summary>SC-TARGET-BONES — a bone resolver over an arbitrary actor's
+    /// LIVE posed skeleton (the caster-side <see cref="ResolvePlayerBone"/>
+    /// counterpart for spell TARGETS). Bone worlds compute at cast time
+    /// from the actor's current clip/pose — per-cast cost only.</summary>
+    private SiegeFX.Core.Sfx.BoneResolver? MakeActorBoneResolver(ActorRenderState? s)
+    {
+        if (s is null || s.Actor.Mesh is null) return null;
+        var mesh = s.Actor.Mesh;
+        var clips = s.Actor.Clips;
+        SiegeFX.Core.Assets.PrsAnimation? clip = null;
+        float t = 0f;
+        if (clips.Length > 0)
+        {
+            int ci = Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
+            clip = clips[ci];
+            t = clip.AnimLength > 0f ? (float)(s.AnimTime % clip.AnimLength) : 0f;
+        }
+        var worlds = new Matrix4x4[Math.Max(1, mesh.BoneCount)];
+        AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, worlds);
+        var xform = s.CurrentTransform;
+        return logicalName =>
+        {
+            string skeletal = logicalName.ToLowerInvariant() switch
+            {
+                "weapon_bone"     => "weapon_grip",
+                "shield_bone"     => "shield_grip",
+                "kill_bone"       => "bip01_spine2",
+                "kill"            => "bip01_spine2",
+                "body_anterior"   => "bip01_head",
+                "head"            => "bip01_head",
+                "body_mid"        => "bip01_spine2",
+                "body_posterior"  => "bip01_pelvis",
+                _                 => logicalName,
+            };
+            for (int bi = 0; bi < mesh.BoneNames.Count && bi < worlds.Length; bi++)
+                if (string.Equals(mesh.BoneNames[bi], skeletal, StringComparison.OrdinalIgnoreCase))
+                    return (Vector3?)(worlds[bi] * xform).Translation;
+            return null;
+        };
+    }
+
     private Vector3? ResolvePlayerBone(string logicalName)
     {
         if (_player is null) return null;
@@ -31726,7 +31767,12 @@ void main()
                                 TargetPos:     dst,
                                 WeaponBonePos: src,
                                 Resolver:      ResolvePlayerBone)
-                            { DefaultEmitterDuration = SpellEffectDurationSec(spell, _player) };
+                            {
+                                DefaultEmitterDuration = SpellEffectDurationSec(spell, _player),
+                                // SC-TARGET-BONES — bone-on-target anchors
+                                // resolve on the victim's LIVE skeleton.
+                                TargetResolver = MakeActorBoneResolver(best),
+                            };
                             int boltsBefore       = _particles?.LiveBoltCount ?? 0;
                             int particlesBefore   = _particles?.LiveParticleCount ?? 0;
                             int persistentBefore  = _sfxRuntime.LivePersistentCount;

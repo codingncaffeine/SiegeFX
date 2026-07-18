@@ -36,6 +36,35 @@ public readonly record struct SfxContext(
     /// so sustained clouds (acid gas) live as long as their gameplay effect.</summary>
     public float DefaultEmitterDuration { get; init; }
 
+    /// <summary>SC-TARGET-BONES — bone resolver for the spell's TARGET
+    /// skeleton (the caster-side <see cref="Resolver"/> counterpart), wired
+    /// at cast time from the live target actor. Null = the per-bone height
+    /// approximation table stays in effect.</summary>
+    public BoneResolver? TargetResolver { get; init; }
+
+    /// <summary>Resolve a bone on the TARGET: live skeleton when the
+    /// resolver is wired, else <see cref="TargetPos"/> + the same
+    /// approximation offsets <see cref="ResolveBone"/> uses.</summary>
+    public Vector3 ResolveTargetBone(string boneToken)
+    {
+        var name = boneToken;
+        if (name.Length > 0 && name[0] == '@') name = name.Substring(1);
+        if (TargetResolver is not null)
+        {
+            var p = TargetResolver(name);
+            if (p.HasValue) return p.Value;
+        }
+        float dy = name.ToLowerInvariant() switch
+        {
+            "body_anterior" or "head" => 1.6f,
+            "body_mid" or "kill_bone" or "kill" => 1.0f,
+            "body_posterior" => 0.6f,
+            "weapon_bone" or "shield_bone" => 0.95f,
+            _ => 0.9f,
+        };
+        return TargetPos + new Vector3(0f, dy, 0f);
+    }
+
     /// <summary>Convenience for legacy (region emitter) callers that only
     /// have a single anchor — both source and target collapse to it.</summary>
     public static SfxContext At(Vector3 origin) => new(origin, origin, origin);
