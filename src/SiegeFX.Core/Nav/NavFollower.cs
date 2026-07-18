@@ -221,6 +221,48 @@ public sealed class NavFollower
         CurrentTriangle = -1;
     }
 
+    // SC-NAV-PARTIAL-PATH — DS1 walks you AS FAR AS IT CAN toward an
+    // unreachable click (across a chasm, onto a roof) instead of refusing
+    // the order. When the goal can't be resolved or pathed, retarget to the
+    // enterable point in the walker's own component nearest the goal.
+    // One retry per plan (the guard) so a still-unreachable fallback can't
+    // recurse; a fallback that lands basically where we stand is treated as
+    // a genuine block so the "can't move there" feedback still fires.
+    private bool _partialRetry;
+
+    private bool TryPartialGoal(int startTri)
+    {
+        if (_partialRetry) return false;
+        int comp = Mesh.ComponentOf(startTri);
+        if (comp < 0) return false;
+        int bestTri = -1;
+        float bestD2 = float.MaxValue;
+        var bestPt = Target;
+        int triCount = Mesh.TriangleCount;
+        for (int t = 0; t < triCount; t++)
+        {
+            if (Mesh.ComponentOf(t) != comp) continue;
+            if (Mesh.IsBlocked(t)) continue;
+            if (!Traversal.CanEnter(Mesh.Kinds[t])) continue;
+            var pt = Mesh.NearestPointInTriangleXZ(t, Target);
+            float dx = pt.X - Target.X, dz = pt.Z - Target.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; bestTri = t; bestPt = pt; }
+        }
+        if (bestTri < 0) return false;
+        float px = bestPt.X - Position.X, pz = bestPt.Z - Position.Z;
+        if (px * px + pz * pz <= GoalRadius * GoalRadius * 4f) return false;
+        if (DiagnosticLogging)
+            System.Console.WriteLine(
+                $"[nav-partial] unreachable ({Target.X:F1},{Target.Z:F1}) — walking to " +
+                $"nearest reachable ({bestPt.X:F1},{bestPt.Z:F1}) tri={bestTri}");
+        _partialRetry = true;
+        Target = bestPt;
+        Replan();
+        _partialRetry = false;
+        return !PathBlocked;
+    }
+
     /// <summary>SC-BODY-SEPARATION — displace the walker by a small XZ delta
     /// (crowd push-out) without disturbing the active path. The landing point
     /// must pass the same Y-gated stand probe as normal movement; an off-mesh
@@ -309,11 +351,13 @@ public sealed class NavFollower
         // solid while the player stood on perfectly good floor.
         if (!Mesh.TryFindTriangleForGoal(Target, startTri, out var goalTri))
         {
+            if (TryPartialGoal(startTri)) return;
             PathBlocked = true;
             return;
         }
         if (!NavPathfinder.TryFindPath(Mesh, startTri, goalTri, _path, _workspace, Traversal))
         {
+            if (TryPartialGoal(startTri)) return;
             PathBlocked = true;
             return;
         }

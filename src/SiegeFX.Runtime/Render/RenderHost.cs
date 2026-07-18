@@ -9366,7 +9366,12 @@ void main()
                         if (th.Kind != Hud.TeamPortraits.HitKind.None && th.Member >= followerCells)
                         {
                             if (th.Kind == Hud.TeamPortraits.HitKind.Portrait && _cursorItem is null)
-                                SetPartySelection(SummonSelIdx);
+                            {
+                                // SC-CTRL-SELECT — ctrl-click adds/removes
+                                // from the multi-selection (manual).
+                                if (CtrlHeld()) TogglePartySelection(SummonSelIdx);
+                                else SetPartySelection(SummonSelIdx);
+                            }
                             _audio?.Play(SfxGuiInventory);
                             return;
                         }
@@ -9380,7 +9385,14 @@ void main()
                                     // paperdoll + their own inventory + stats, all
                                     // retargeted to them. Skipped mid-drag so a
                                     // cursor-held item stays bound to its source list.
-                                    if (_cursorItem is null)
+                                    // SC-CTRL-SELECT — ctrl-click only toggles the
+                                    // selection (no panels), per the manual's
+                                    // multi-select flow.
+                                    if (_cursorItem is null && CtrlHeld())
+                                    {
+                                        TogglePartySelection(pidx);
+                                    }
+                                    else if (_cursorItem is null)
                                     {
                                         SetPartySelection(pidx);
                                         _paperdollTargetIndex = pidx;
@@ -9422,7 +9434,13 @@ void main()
                             // notify(character)). If a companion sheet was up, this
                             // switches back to the player; otherwise it toggles.
                             // Does NOT touch inventory/spellbook — only I drives the rail.
-                            if (_cursorItem is null)
+                            // SC-CTRL-SELECT — ctrl-click toggles the leader in
+                            // the multi-selection instead (manual).
+                            if (_cursorItem is null && CtrlHeld())
+                            {
+                                TogglePartySelection(0);
+                            }
+                            else if (_cursorItem is null)
                             {
                                 if (_paperdollTargetIndex != 0)
                                 { _paperdollTargetIndex = 0; _charPanelOpen = true; }
@@ -9652,6 +9670,17 @@ void main()
                                     return;
                                 }
                                 var displaced = ReadSpellbookSlot(hit.Kind, hit.Index);
+                                // SC-BOOK-NO-DUPES — refuse a drop that would
+                                // put the same spell in the book twice (the
+                                // drag stays live so nothing is lost).
+                                if (_playerSpellbook is not null
+                                    && (displaced is null || !displaced.Name.Equals(dropping.Name, StringComparison.OrdinalIgnoreCase))
+                                    && BookContainsSpell(_playerSpellbook, dropping.Name))
+                                {
+                                    AddGameMessage("That spell is already in this book.");
+                                    _audio?.Play(SfxGuiInventory);
+                                    return;
+                                }
                                 WriteSpellbookSlot(hit.Kind, hit.Index, dropping);
                                 if (displaced is not null)
                                     RestoreToSource(displaced);
@@ -9713,6 +9742,15 @@ void main()
                                     return;
                                 }
                                 var displaced = ReadSpellbookSlot(mbook, mhit.Kind, mhit.Index);
+                                // SC-BOOK-NO-DUPES — same one-copy-per-book
+                                // rule on companion books.
+                                if ((displaced is null || !displaced.Name.Equals(dropping.Name, StringComparison.OrdinalIgnoreCase))
+                                    && BookContainsSpell(mbook, dropping.Name))
+                                {
+                                    AddGameMessage("That spell is already in this book.");
+                                    _audio?.Play(SfxGuiInventory);
+                                    return;
+                                }
                                 WriteSpellbookSlot(mbook, mhit.Kind, mhit.Index, dropping);
                                 if (displaced is not null)
                                     RestoreToSource(displaced);
@@ -15170,6 +15208,23 @@ void main()
         var kbs = _input?.Keyboards;
         if (kbs is null || kbs.Count == 0) return false;
         return kbs[0].IsKeyPressed(Key.ShiftLeft) || kbs[0].IsKeyPressed(Key.ShiftRight);
+    }
+
+    private bool CtrlHeld()
+    {
+        var kbs = _input?.Keyboards;
+        if (kbs is null || kbs.Count == 0) return false;
+        return kbs[0].IsKeyPressed(Key.ControlLeft) || kbs[0].IsKeyPressed(Key.ControlRight);
+    }
+
+    /// <summary>SC-CTRL-SELECT — manual: "CTRL-click portraits" builds a
+    /// multi-selection. Toggles the index in the selection set; the set is
+    /// never left empty (falls back to the leader).</summary>
+    private void TogglePartySelection(int idx)
+    {
+        if (!_selectedPartyIdx.Add(idx)) _selectedPartyIdx.Remove(idx);
+        if (_selectedPartyIdx.Count == 0) _selectedPartyIdx.Add(0);
+        Console.WriteLine($"[select] ctrl-toggle {idx} → {string.Join(",", _selectedPartyIdx)}");
     }
 
     /// <summary>Compass dial's top-left + size — honors the user's dragged
@@ -32687,6 +32742,16 @@ void main()
             case SiegeFX.Core.Actors.CastOutcome.NoMana:
                 AddFloatingText("no mana", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.45f, 0.65f, 1.00f, 1f));
                 _audio?.Play(SfxGuiOutOfMana);
+                // SC-MANA-SWAP — manual: mana exhaustion mid-fight
+                // auto-switches to the equipped melee weapon and keeps
+                // fighting. Only from a spell slot, and the pending attack
+                // continues on the same target when one is engaged.
+                if (_activeAbilityIdx is 2 or 3 && _player is not null && !_player.IsDead)
+                {
+                    SetActiveAbilitySlot(0);
+                    AddGameMessage("Out of mana — switching to melee!");
+                    Console.WriteLine("[cast] out of mana → auto-switch to melee slot");
+                }
                 break;
             case SiegeFX.Core.Actors.CastOutcome.OnCooldown:
                 // Cooldown is short (zap = 0.15s) — silent miss feels right rather
@@ -36206,6 +36271,18 @@ void main()
         SiegeFX.Core.Assets.SpellTemplate? spell)
         => WriteSpellbookSlot(_playerSpellbook, kind, index, spell);
 
+    /// <summary>SC-BOOK-NO-DUPES — manual: "No duplicates of the same spell
+    /// within one book." True when the book already holds the named spell in
+    /// either active slot or any placed page.</summary>
+    private static bool BookContainsSpell(SiegeFX.Core.Actors.PlayerSpellbook book, string name)
+    {
+        if (book.Primary is { } p1 && p1.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return true;
+        if (book.Secondary is { } p2 && p2.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (var pl in book.Placed)
+            if (pl is not null && pl.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     private static void WriteSpellbookSlot(
         SiegeFX.Core.Actors.PlayerSpellbook? book,
         Hud.SpellBookPanel.SlotKind kind, int index,
@@ -36453,10 +36530,13 @@ void main()
                 entry = entry with { Reference = resolvedRef };
             var spell = ResolveSlottableSpell(entry.Reference, debugSpellsEnv: null);
             if (spell is null) continue;                          // not a spell template
-            // First empty Placed slot wins.
+            // First empty Placed slot wins. SC-BOOK-NO-DUPES — a spell the
+            // book already holds routes to inventory instead (one copy per
+            // book, per the manual).
             int dest = -1;
-            for (int p = 0; p < _playerSpellbook.PlacedCount; p++)
-                if (_playerSpellbook.Placed[p] is null) { dest = p; break; }
+            if (!BookContainsSpell(_playerSpellbook, spell.Name))
+                for (int p = 0; p < _playerSpellbook.PlacedCount; p++)
+                    if (_playerSpellbook.Placed[p] is null) { dest = p; break; }
             if (dest >= 0)
             {
                 _playerSpellbook.SetPlaced(dest, spell);
