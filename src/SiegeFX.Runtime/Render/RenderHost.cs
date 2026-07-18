@@ -2241,9 +2241,11 @@ public sealed class RenderHost : IDisposable
             // SC-COMPANION-PROGRESSION — this member's damage feeds its OWN
             // XP pool (skill-by-use, like the PC): the brain fires the award
             // at each FIRE note with the rolled damage + victim profile.
-            int memberIdx = npc.PartyIndex;
+            // PartyIndex is read at FIRE time, not captured — dismissals
+            // reindex the party without rebuilding surviving brains, and a
+            // captured index would credit the wrong (or a vacated) pool.
             npc.Brain.OnDamageDealt = (removed, victim, skill) =>
-                AwardMemberXp(memberIdx, removed, victim, skill);
+                AwardMemberXp(npc.PartyIndex, removed, victim, skill);
             npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
             // SC-MEMBER-ACTIVE-SLOT — a rebuild derives its mode from authored
             // monster-caster fields, which know nothing about this member's
@@ -2270,12 +2272,26 @@ public sealed class RenderHost : IDisposable
         int oldLevel = prog.Level;
         int oldSkill = prog.SkillLevel(skill);
         prog.AwardDamageXp(lifeRemoved, victim.ExperienceValue, victim.MaxLife, skill);
-        if (prog.Level > oldLevel || prog.SkillLevel(skill) > oldSkill)
-        {
-            var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
-            string who = member is not null ? ResolveMemberName(member) : $"member {partyIndex}";
+        int newSkill = prog.SkillLevel(skill);
+        var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+        string who = member is not null ? ResolveMemberName(member) : $"member {partyIndex}";
+        // SC-EQUIP-ENCHANT — same rebase the player's crossing does: the
+        // recompute derives caps from the attribute trio, so re-apply the
+        // worn-gear layer or the member's +life/+mana gear stops counting.
+        if (newSkill > oldSkill || prog.Level > oldLevel || prog.AttributesChangedLastAward)
+            SyncMemberArmorDefense(partyIndex);
+        if (prog.Level > oldLevel || newSkill > oldSkill)
             Console.WriteLine($"party: {who} leveled — level {prog.Level}, " +
-                              $"{SkillDisplayName(skill)} {prog.SkillLevel(skill)}");
+                              $"{SkillDisplayName(skill)} {newSkill}");
+        // SC-MSG-STRIP — companions announce on the strip with THEIR name,
+        // same authored sentence as the hero's.
+        if (newSkill > oldSkill)
+            AddGameMessage($"{who} has advanced to level {newSkill} in " +
+                           $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
+        foreach (var (attr, lvl) in prog.LastAttrLevelUps)
+        {
+            string attrName = attr == 0 ? "Strength" : attr == 1 ? "Dexterity" : "Intelligence";
+            AddGameMessage($"{who} has advanced to level {lvl} in {attrName}!");
         }
     }
 
@@ -26104,6 +26120,10 @@ void main()
     // Screen name for a party member (companion sheet header / stats title).
     private string ResolveMemberName(ActorRenderState member)
     {
+        // SC-HERO-NAME — the hero goes by their chosen name everywhere the
+        // party is addressed (level-up strip, hover readout, tooltips); the
+        // template screen_name would read "Farm Boy".
+        if (member.IsPlayer && !string.IsNullOrEmpty(_heroName)) return _heroName;
         if (_templateStore is null) return member.Actor.Template.Name;
         return _templateStore.GetAttribute(member.Actor.Template, "common", "screen_name")?.Trim().Trim('"')
                ?? member.Actor.Template.Name;
@@ -31045,6 +31065,17 @@ void main()
         AnnounceLevelUp(oldLevel, oldSkillLevel, skill);
     }
 
+    // SC-MSG-STRIP — the authored "by ..." clause of DS1's level-up line,
+    // shared by the hero and companion announcements.
+    private static string SkillLevelUpVerb(SiegeFX.Core.Assets.SkillKind skill) => skill switch
+    {
+        SiegeFX.Core.Assets.SkillKind.Melee       => "fighting with melee weapons",
+        SiegeFX.Core.Assets.SkillKind.Ranged      => "fighting with ranged weapons",
+        SiegeFX.Core.Assets.SkillKind.NatureMagic => "casting Nature Magic spells",
+        SiegeFX.Core.Assets.SkillKind.CombatMagic => "casting Combat Magic spells",
+        _ => "adventuring",
+    };
+
     private static string SkillDisplayName(SiegeFX.Core.Assets.SkillKind k) => k switch
     {
         SiegeFX.Core.Assets.SkillKind.Melee       => "Melee",
@@ -31086,17 +31117,9 @@ void main()
             // "Woot has advanced to level 1 in Nature Magic skill by casting
             // Nature Magic spells!") on the top message strip; replaces the
             // invented yellow banner.
-            string verb = skill switch
-            {
-                SiegeFX.Core.Assets.SkillKind.Melee       => "fighting with melee weapons",
-                SiegeFX.Core.Assets.SkillKind.Ranged      => "fighting with ranged weapons",
-                SiegeFX.Core.Assets.SkillKind.NatureMagic => "casting Nature Magic spells",
-                SiegeFX.Core.Assets.SkillKind.CombatMagic => "casting Combat Magic spells",
-                _ => "adventuring",
-            };
             string heroName = _player is not null ? ResolveMemberName(_player) : "You";
             AddGameMessage($"{heroName} has advanced to level {newSkillLevel} in " +
-                           $"{SkillDisplayName(skill)} skill by {verb}!");
+                           $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
             // SC-LEVELUP-BOOK — the skill's own spinning tome above the hero
             // + the skill's own authored jingle (falls back to the shared
             // melee cue when the sound tank misses).
