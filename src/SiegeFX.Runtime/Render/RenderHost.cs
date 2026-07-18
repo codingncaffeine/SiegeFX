@@ -706,6 +706,12 @@ public sealed class RenderHost : IDisposable
     private Vector2? _lmbWorldDownPos;
     private bool _marqueeActive;
     private Vector2 _marqueeEnd;
+    // SC-HOLD-MOVE — retail's documented core movement: hold LMB and the
+    // hero keeps steering toward the cursor. Armed by a world move-click,
+    // cleared on release; re-targets on a short throttle.
+    private bool _lmbWorldMoveHeld;
+    private float _lmbMoveRepeatIn;
+    private long _lmbDownAtMs;
     private readonly HashSet<int> _selectedPartyIdx = new() { 0 };
     private ActorRenderState? _hoverActor;
 
@@ -9689,9 +9695,15 @@ void main()
                 else if (btn == MouseButton.Left)
                 {
                     _lmbWorldDownPos = m.Position;
+                    _lmbDownAtMs = Environment.TickCount64;
                     _marqueeActive = false;
                     if (!TryClickToTalk(m.Position) && !DispatchAbilityClick(m.Position))
+                    {
                         TryClickToMove(m.Position);
+                        // SC-HOLD-MOVE — keep steering while held.
+                        _lmbWorldMoveHeld = true;
+                        _lmbMoveRepeatIn = 0.15f;
+                    }
                 }
             };
             mouse.MouseUp += (m, btn) =>
@@ -9778,11 +9790,17 @@ void main()
                     }
                     return;
                 }
+                if (btn == MouseButton.Left) _lmbWorldMoveHeld = false;
                 // SC-MOUSE-FX — a completed drag marquee selects the party
                 // members inside the rectangle; consumes the release.
+                // SC-HOLD-MOVE — a LONG hold is steering, not selecting: the
+                // box only applies on a quick deliberate swipe (<600ms), so
+                // dragging the hero across a room can't reshuffle the party
+                // selection on release.
                 if (btn == MouseButton.Left && _marqueeActive)
                 {
-                    ApplyMarqueeSelection(m.Position);
+                    if (Environment.TickCount64 - _lmbDownAtMs < 600)
+                        ApplyMarqueeSelection(m.Position);
                     _marqueeActive = false;
                     _lmbWorldDownPos = null;
                     return;
@@ -20199,6 +20217,21 @@ void main()
                 // targets its NEAREST LIVE PARTY MEMBER (DS1 semantics), not the
                 // hero unconditionally: a krug beating on Ulora stays on Ulora
                 // instead of tunneling through her at the player.
+                // SC-HOLD-MOVE — retail steering: while the LMB stays down
+                // after a world move-click, keep re-targeting the walk at
+                // the cursor (throttled; suspended over UI, drags, and
+                // camera-look).
+                if (_lmbWorldMoveHeld)
+                {
+                    _lmbMoveRepeatIn -= (float)stepSec;
+                    if (_lmbMoveRepeatIn <= 0f)
+                    {
+                        _lmbMoveRepeatIn = 0.15f;
+                        if (!_dialogue.IsOpen && !_vendor.IsOpen && !_mouseLookActive
+                            && _cursorItem is null && _cursorScroll is null)
+                            TryClickToMove(_currentMousePos);
+                    }
+                }
                 // SC-ALIGN-SWITCH — the speech ending is the fight gong:
                 // fire the switch on the dialogue's close edge for the actor
                 // the player just talked to.
@@ -21770,6 +21803,56 @@ void main()
         return !IsPosInFadedSnode(p);
     }
 
+    /// <summary>SC-SCREEN-PICK — pick the actor whose SCREEN body the
+    /// cursor is on: project the feet→head segment of every candidate to
+    /// screen and take the one nearest the cursor (camera depth breaks
+    /// ties). The old plane-at-player-Y + XZ-radius picks missed anything
+    /// on a slope, a stair, or behind a prop — "the environment gets in
+    /// the way of clicking things". You click what you SEE.</summary>
+    private ActorRenderState? PickActorAtCursor(
+        Vector2 cursorPx, Func<ActorRenderState, bool> filter, float pxRadius = 26f)
+    {
+        if (_window is null || _actors.Count == 0) return null;
+        var size = _window.FramebufferSize;
+        if (size.X <= 0 || size.Y <= 0) return null;
+        var vp = _camera.GetViewProjection((float)size.X / size.Y);
+        ActorRenderState? best = null;
+        float bestScore = float.MaxValue;
+        bool Project(Vector3 world, out Vector2 px, out float depth)
+        {
+            var h = Vector4.Transform(new Vector4(world, 1f), vp);
+            px = default; depth = h.W;
+            if (h.W <= 1e-4f) return false;
+            px = new Vector2((h.X / h.W * 0.5f + 0.5f) * size.X,
+                             (1f - (h.Y / h.W * 0.5f + 0.5f)) * size.Y);
+            return true;
+        }
+        foreach (var s in _actors)
+        {
+            if (s.Hidden) continue;
+            if (!filter(s)) continue;
+            if (!PickableFromPlayerFloor(s)) continue;
+            var feet = s.CurrentTransform.Translation;
+            var head = feet + new Vector3(0f, 1.8f, 0f);
+            if (!Project(feet, out var fpx, out var depth) || !Project(head, out var hpx, out _))
+                continue;
+            // Cursor distance to the projected feet→head segment; the pick
+            // radius grows with the actor's on-screen size so big monsters
+            // are as easy to hit up close as far away.
+            var seg = hpx - fpx;
+            float segLen2 = seg.LengthSquared();
+            float tSeg = segLen2 < 1e-4f ? 0f
+                : Math.Clamp(Vector2.Dot(cursorPx - fpx, seg) / segLen2, 0f, 1f);
+            float d = Vector2.Distance(cursorPx, fpx + seg * tSeg);
+            float radius = MathF.Max(pxRadius, Vector2.Distance(fpx, hpx) * 0.30f);
+            if (d > radius) continue;
+            // Nearest-to-cursor wins; near-ties go to the closer actor.
+            float score = d + depth * 0.05f;
+            if (score < bestScore) { bestScore = score; best = s; }
+        }
+        return best;
+    }
+
     private ActorRenderState? PickHoverActor()
     {
         if (_player is null || _window is null || _actors.Count == 0 || _cameraMode != CameraMode.Chase)
@@ -21791,31 +21874,36 @@ void main()
         if (t < 0f) return null;
         var hit = near + dir * t;
 
-        // Phase 22 — live actors win the pick; a corpse under the cursor is
-        // still hovered (its status line reads "Dead ...: Health 0/x" in
-        // red, matching the original).
-        ActorRenderState? best = null, bestDead = null;
+        // SC-SCREEN-PICK — the hover (and therefore the attack cursor)
+        // follows the projected body under the cursor; live actors win,
+        // a corpse still hovers (red "Dead ...: Health 0/x" readout).
+        ActorRenderState? best = PickActorAtCursor(_currentMousePos,
+            s => !s.IsPlayer && !s.IsDead);
+        ActorRenderState? bestDead = best is not null ? null
+            : PickActorAtCursor(_currentMousePos, s => !s.IsPlayer && s.IsDead);
+        // Planar fallback for degenerate projections only.
         float bestD = 1.3f, bestDeadD = 1.3f;
-        foreach (var s in _actors)
+        if (best is null && bestDead is null)
         {
-            if (s.Hidden || s.IsPlayer) continue;
-            // SC-PICK-FADED + SC-PICK-YBAND — invisible (faded-layer) actors
-            // and actors a FLOOR above/below never own the cursor. Repro:
-            // halfway down the basement stairs, the ground-floor NPC above
-            // hijacked the cursor into a talk icon on every descend click.
-            if (!PickableFromPlayerFloor(s)) continue;
-            var p = s.CurrentTransform.Translation;
-            float dx = p.X - hit.X, dz = p.Z - hit.Z;
-            float d = MathF.Sqrt(dx * dx + dz * dz);
-            if (s.IsDead) { if (d < bestDeadD) { bestDeadD = d; bestDead = s; } }
-            else if (d < bestD) { bestD = d; best = s; }
+            foreach (var s in _actors)
+            {
+                if (s.Hidden || s.IsPlayer) continue;
+                // SC-PICK-FADED + SC-PICK-YBAND — invisible (faded-layer)
+                // actors and actors a FLOOR above/below never own the cursor.
+                if (!PickableFromPlayerFloor(s)) continue;
+                var p = s.CurrentTransform.Translation;
+                float dx = p.X - hit.X, dz = p.Z - hit.Z;
+                float d = MathF.Sqrt(dx * dx + dz * dz);
+                if (s.IsDead) { if (d < bestDeadD) { bestDeadD = d; bestDead = s; } }
+                else if (d < bestD) { bestD = d; best = s; }
+            }
         }
         // The hero counts too (their status line shows on self-hover).
         {
             var p = _player.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
             float d = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestD && !_player.IsDead) best = _player;
+            if (best is null && d < bestD && !_player.IsDead) best = _player;
         }
         return best ?? bestDead;
     }
@@ -24726,9 +24814,25 @@ void main()
         ActorRenderState? best = null;
         SiegeFX.Core.Assets.ConversationDef? bestConv = null;
         SiegeFX.Core.Actors.VendorDefinition? bestVendor = null;
+        // SC-SCREEN-PICK — the talkable body under the cursor wins before
+        // the planar radius scan (an NPC on a porch or slope was nearly
+        // unclickable through the plane-at-player-Y projection).
+        var screenPick = PickActorAtCursor(cursorPx, s =>
+            !s.IsDead && !s.IsPlayer && !s.IsPartyMember && !s.IsEvilAligned && s.IsSelectable
+            && !s.Actor.Template.Name.Equals("norick", StringComparison.OrdinalIgnoreCase));
+        if (screenPick is not null)
+        {
+            var keysSp = SiegeFX.Core.Assets.ConversationStore.KeysFromInstance(screenPick.Actor.Instance.Node);
+            var vdefSp = ResolveVendor(screenPick.Actor.Template);
+            bool hireSp = vdefSp is null && ResolveHireable(screenPick.Actor.Template) is not null;
+            var convSp = PickConversation(keysSp, preferJoinOffer: hireSp);
+            if (convSp is not null || vdefSp is not null)
+            { best = screenPick; bestConv = convSp; bestVendor = vdefSp; }
+        }
         float bestDist = ClickTalkRadius;
         foreach (var s in _actors)
         {
+            if (best is not null) break;
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
             if (s.IsPartyMember) continue;   // Phase 26b — already recruited
@@ -25418,25 +25522,30 @@ void main()
         if (t < 0f) return false;
         var groundHit = near + dir * t;
 
-        // Closest-combatant-to-click in XZ. DS1's selection is more of a screen-
-        // picking test, but on DS1's shallow terrain a planar radius at the click
-        // point is indistinguishable from "the actor you clicked on" for 99% of
-        // cases. Revisit if we start getting mis-picks behind tall props.
-        ActorRenderState? best = null;
-        float bestDist = ClickAttackRadius;
-        foreach (var s in _actors)
+        // SC-SCREEN-PICK — you attack what you SEE: the projected-body
+        // pick replaces the old plane-at-player-Y XZ radius (which missed
+        // anything on a slope, a stair, or behind a prop). The planar
+        // radius survives as the fallback for degenerate projections.
+        ActorRenderState? best = PickActorAtCursor(cursorPx, s =>
+            !s.IsDead && !s.IsPlayer && !s.IsPartyMember
+            && s.Actor.Stats.IsCombatant && s.IsEvilAligned && s.IsSelectable);
+        if (best is null)
         {
-            if (s.IsDead) continue;
-            if (s.IsPlayer) continue;
-            if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
-            if (!s.Actor.Stats.IsCombatant) continue;
-            if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
-            if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
-            var pos = s.CurrentTransform.Translation;
-            float dx = pos.X - groundHit.X;
-            float dz = pos.Z - groundHit.Z;
-            float d  = MathF.Sqrt(dx * dx + dz * dz);
-            if (d < bestDist) { bestDist = d; best = s; }
+            float bestDist = ClickAttackRadius;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead) continue;
+                if (s.IsPlayer) continue;
+                if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
+                if (!s.Actor.Stats.IsCombatant) continue;
+                if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+                if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
+                var pos = s.CurrentTransform.Translation;
+                float dx = pos.X - groundHit.X;
+                float dz = pos.Z - groundHit.Z;
+                float d  = MathF.Sqrt(dx * dx + dz * dz);
+                if (d < bestDist) { bestDist = d; best = s; }
+            }
         }
         if (best is null)
         {
