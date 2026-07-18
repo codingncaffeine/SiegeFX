@@ -17,6 +17,19 @@ public struct Particle
     public Vector3 Accel;
     public Vector4 Color0;          // start tint (alpha = 1 at birth)
     public Vector4 Color1;          // end tint   (alpha = 0 at death by default)
+
+    /// <summary>SC-SPELL-AUDIT — fade toward a cooled version of the color:
+    /// warm (red-dominant) colors take the authored fire bias (embers cool
+    /// red-orange), everything else fades proportionally in its own hue so
+    /// blue sparks and green acid never drift fire-orange. The warm test
+    /// mirrors the VM's MapMode rule (R dominant within ~10%).</summary>
+    public static Vector4 WarmAwareFade(Vector4 c, float rK, float gK, float bK)
+    {
+        bool warm = c.X >= c.Y * 1.1f && c.X >= c.Z * 1.1f;
+        if (warm) return new Vector4(c.X * rK, c.Y * gK, c.Z * bK, 0f);
+        float k = (rK + gK + bK) / 3f;
+        return new Vector4(c.X * k, c.Y * k, c.Z * k, 0f);
+    }
     public float   Scale0;          // world-space half-size at birth
     public float   Scale1;          // world-space half-size at death
     public float   Life;            // remaining seconds
@@ -537,7 +550,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 Velocity  = new Vector3(Rand(-0.05f, 0.05f), Rand(0.6f, 1.1f), Rand(-0.05f, 0.05f)) * scale,
                 Accel     = new Vector3(0f, 0.4f * scale, 0f),
                 Color0    = color,
-                Color1    = new Vector4(color.X * 0.4f, color.Y * 0.2f, color.Z * 0.05f, 0f),
+                Color1    = Particle.WarmAwareFade(color, 0.4f, 0.2f, 0.05f),
                 Scale0    = scale * 0.45f,
                 Scale1    = scale * 0.95f,
                 Life      = duration,
@@ -748,9 +761,10 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 Velocity  = pVel,
                 Accel     = accel,
                 Color0    = color,
-                // Color1: warm-biased fade by default (matches fire texture).
-                // Slice H will eventually honor color1(...) from the script.
-                Color1    = new Vector4(color.X * 0.6f, color.Y * 0.3f, color.Z * 0.10f, 0f),
+                // Color1: warm fire bias only for genuinely warm colors —
+                // SC-SPELL-AUDIT: the unconditional bias made every blue and
+                // green spell trail drift fire-orange (spark read as fire).
+                Color1    = Particle.WarmAwareFade(color, 0.6f, 0.3f, 0.10f),
                 Scale0    = scale * 0.6f,
                 Scale1    = scale * 1.2f,
                 Life      = lifetime,
@@ -887,7 +901,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 Velocity  = v,
                 Accel     = new Vector3(0f, -2.5f * scale, 0f),
                 Color0    = color,
-                Color1    = new Vector4(color.X, color.Y * 0.5f, color.Z * 0.2f, 0f),
+                Color1    = Particle.WarmAwareFade(color, 1f, 0.5f, 0.2f),
                 Scale0    = scale * 0.15f,
                 Scale1    = scale * 0.05f,
                 Life      = duration,
@@ -1329,9 +1343,11 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
                 s0 = fs * (s.Kind == 2 ? 0.5f : 0.6f);
                 s1 = fs * (s.Kind == 2 ? 1.5f : 1.1f);
             }
-            // Fire fades warm; smoke/steam preserve their authored color.
+            // Fire fades warm ONLY when its authored color is warm; cool
+            // plumes keep their hue (SC-SPELL-AUDIT — the unconditional warm
+            // fade dragged blue/green spell plumes to fire-orange).
             var c1 = s.Kind == 0
-                ? new Vector4(s.Color.X * 0.5f, s.Color.Y * 0.25f, s.Color.Z * 0.08f, 0f)
+                ? Particle.WarmAwareFade(s.Color, 0.5f, 0.25f, 0.08f)
                 : new Vector4(s.Color.X, s.Color.Y, s.Color.Z, 0f);
             float life = lifeBase * Rand(0.8f, 1.2f);
             _particles.Add(new Particle

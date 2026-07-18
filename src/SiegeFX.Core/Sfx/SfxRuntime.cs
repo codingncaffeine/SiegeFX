@@ -374,7 +374,10 @@ public sealed class SfxRuntime
             // the motion handle each tick; if the motion is gone or done,
             // drop the emitter so e.g. a fire emitter targeting a
             // departed trackball doesn't render at a stale point forever.
-            if (e.TargetMotionId > 0)
+            // SC-SPELL-AUDIT — sustained bolts are exempt: their Position is
+            // the SOURCE end (the motion, if any, drives the FAR end inside
+            // their pump case) and they outlive a finished motion by design.
+            if (e.TargetMotionId > 0 && e.Mode != EmitterMode.OneShotLightning)
             {
                 // `|| motion.Done` is defensive: AdvanceMotionHandles prunes
                 // Done entries before we get here, so the dict miss is the
@@ -421,6 +424,23 @@ public sealed class SfxRuntime
             e.HasPrevPos = true;
             switch (e.Mode)
             {
+                case EmitterMode.OneShotLightning:
+                    // SC-SPELL-AUDIT (bolt sustain) — re-strike with fresh
+                    // jitter every ~0.11s for the authored duration; the far
+                    // end tracks a live motion when one is bound (a moving
+                    // target keeps the arc connected).
+                    e.Carry += dt;
+                    if (e.Carry >= 0.11f)
+                    {
+                        e.Carry = 0f;
+                        var to = e.BoltTo;
+                        if (e.TargetMotionId > 0
+                            && _motionHandles.TryGetValue(e.TargetMotionId, out var bm) && !bm.Done)
+                            to = bm.Position;
+                        _particles.SpawnLightning(e.Position, to, e.Color, 0.13f,
+                            e.BoltMinD, e.BoltMaxD, e.BoltSubd, e.BoltMinSubd);
+                    }
+                    break;
                 case EmitterMode.Fire:
                     e.Carry = e.HasSpec
                         ? _particles.MaintainPlume(in e.Spec, e.Position, e.AgeSec, dt, e.Carry)
@@ -1110,6 +1130,15 @@ public sealed class SfxRuntime
         if (!TryResolveHandleOperand(rs, stmt.Tokens[0], pop: true, out var h))
             return;
         string? selfName = stmt.Tokens[0].StartsWith("$") ? stmt.Tokens[0] : null;
+        // SC-SPELL-AUDIT (attach-without-start) — idempotence guard so the
+        // parent-start cascade below and an explicit later `sfx start` of
+        // the same child can't double-dispatch.
+        if (selfName is not null && rs.NamedHandles.TryGetValue(selfName, out var selfH))
+        {
+            if (selfH.Started) return;
+            selfH.Started = true;
+            rs.NamedHandles[selfName] = selfH;
+        }
 
         // Phase 23d-2a — offset(x,y,z): positional offset relative to the
         // model (SU 212 global params). Applied in the caster's facing
@@ -1144,9 +1173,40 @@ public sealed class SfxRuntime
                 _motionHandles[h.MotionId] = held;
             }
             _delayed.Add(new DelayedStart { Remaining = h.DelaySec, H = h, SelfName = selfName });
+            StartAttachedChildren(rs, h.MotionId, 0);
             return;
         }
         DispatchStart(h, selfName);
+        StartAttachedChildren(rs, h.MotionId, 0);
+    }
+
+    /// <summary>SC-SPELL-AUDIT (attach-without-start) — DS1 semantics:
+    /// starting a motion handle starts everything attached to it. Scripts
+    /// like acid_cloud create three mist emitters, attach them to the
+    /// trackball, and `sfx start` only the trackball — the children were
+    /// never dispatched and the whole effect fell through to the generic
+    /// placeholder bolt. Cascades recursively through named handles whose
+    /// TargetMotionId rides the started motion.</summary>
+    void StartAttachedChildren(RunningScript rs, int motionId, int depth)
+    {
+        if (motionId <= 0 || depth > 4) return;
+        List<string>? pending = null;
+        foreach (var kv in rs.NamedHandles)
+            if (kv.Value.TargetMotionId == motionId && !kv.Value.Started)
+                (pending ??= new List<string>()).Add(kv.Key);
+        if (pending is null) return;
+        foreach (var key in pending)
+        {
+            var child = rs.NamedHandles[key];
+            if (child.Started) continue;
+            child.Started = true;
+            rs.NamedHandles[key] = child;
+            if (child.DelaySec > 0.0001f)
+                _delayed.Add(new DelayedStart { Remaining = child.DelaySec, H = child, SelfName = key });
+            else
+                DispatchStart(child, key);
+            StartAttachedChildren(rs, child.MotionId, depth + 1);
+        }
     }
 
     struct DelayedStart
@@ -1193,13 +1253,34 @@ public sealed class SfxRuntime
                 // read as fake, so cap the on-screen life to a quick snap. Bolts
                 // are inherently one-frame-ish flashes, so this never truncates
                 // a "real" effect — a channeled beam would be a persistent mode.
-                float boltLife = MathF.Min(h.Duration > 0f ? h.Duration : OneShotBoltMaxSeconds,
-                                           OneShotBoltMaxSeconds);
-                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color, boltLife,
-                    h.HasMinDisplace ? h.MinDisplaceY : -h.Displace,
-                    h.Displace,
-                    h.HasSubd    ? h.SubdLevel : 0f,
-                    h.HasMinSubd ? h.MinSubd   : 0f);
+                // SC-SPELL-AUDIT (bolt-duration-cap) — authored bolt_life/dur
+                // beyond a flash means a SUSTAINED arc (zap's bolt_life(1),
+                // tesla's dur(.5)); the old 0.15s hard cap turned them all
+                // into blink-and-miss snaps. Short bolts stay one-shot;
+                // longer ones become a re-striking emitter that re-jitters
+                // every ~0.11s for the authored duration (capped 3s).
+                float authoredLife = h.Duration > 0f ? h.Duration : OneShotBoltMaxSeconds;
+                float minD = h.HasMinDisplace ? h.MinDisplaceY : -h.Displace;
+                float subd = h.HasSubd ? h.SubdLevel : 0f;
+                float msub = h.HasMinSubd ? h.MinSubd : 0f;
+                _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color,
+                    MathF.Min(authoredLife, OneShotBoltMaxSeconds),
+                    minD, h.Displace, subd, msub);
+                if (authoredLife > 0.2f)
+                    _emitters.Add(new PersistentEmitter
+                    {
+                        Mode      = EmitterMode.OneShotLightning,
+                        Position  = h.OtherEnd,
+                        BoltTo    = h.Anchor,
+                        Color     = h.Color,
+                        Duration  = MathF.Min(authoredLife, 3f),
+                        BoltMinD  = minD,
+                        BoltMaxD  = h.Displace,
+                        BoltSubd  = subd,
+                        BoltMinSubd = msub,
+                        TargetMotionId = h.TargetMotionId,
+                        SelfName  = selfName,
+                    });
                 break;
             }
             case EmitterMode.OneShotLineTracer:
@@ -1563,20 +1644,24 @@ public sealed class SfxRuntime
                         RotInc   = h.RotIncVec,
                         RotBase  = h.HasRotate ? h.RotateVec : Vector3.Zero,
                     };
-                    if (!h.Invisible)
-                        _emitters.Add(new PersistentEmitter
-                        {
-                            Mode     = EmitterMode.Glow,
-                            Position = h.Anchor,
-                            Color    = h.Color,
-                            Scale    = MathF.Max(0.25f, h.Scale * 0.5f),
-                            Rate     = 50f,
-                            TargetMotionId = h.MotionId,
-                            SelfMotionId   = h.MotionId,
-                            Duration = h.Duration > 0.10f ? h.Duration : 0f,
-                            SelfName = selfName,
-                        });
                 }
+                // SC-SPELL-AUDIT (orbiter-invisible) — the glow marker was
+                // gated on model(); modelless orbiters (accuracy's swirling
+                // motes, most buff auras) rendered NOTHING. Every visible
+                // orbiter now marks its orbit with the authored-color glow.
+                if (h.MotionId > 0 && !h.Invisible)
+                    _emitters.Add(new PersistentEmitter
+                    {
+                        Mode     = EmitterMode.Glow,
+                        Position = h.Anchor,
+                        Color    = h.Color,
+                        Scale    = MathF.Max(0.25f, h.Scale * 0.5f),
+                        Rate     = 50f,
+                        TargetMotionId = h.MotionId,
+                        SelfMotionId   = h.MotionId,
+                        Duration = h.Duration > 0.10f ? h.Duration : 0f,
+                        SelfName = selfName,
+                    });
                 break;
             case EmitterMode.MotionCurve:
             {
@@ -1625,10 +1710,18 @@ public sealed class SfxRuntime
                 // scale that read as "a crawl of dim dots" (user report).
                 // Lift the streak tint toward hot and add a warm Glow halo
                 // so the ball reads as a fireball even before its plumes.
+                // SC-SPELL-AUDIT (trackball-warm-core) — the old lift added a
+                // flat +0.25 to every channel, washing authored hues toward
+                // warm white: spark's BLUE globes read as fire. Lift by
+                // normalizing the brightest channel instead — hue-preserving,
+                // so the dim ember fireball still brightens to hot orange and
+                // a blue spark stays electric blue.
+                float coreMax = MathF.Max(h.Color.X, MathF.Max(h.Color.Y, h.Color.Z));
+                float coreLift = coreMax > 0.01f ? MathF.Min(1f / coreMax, 2.6f) : 1f;
                 var coreColor = isLight ? h.Color : new Vector4(
-                    MathF.Min(1f, h.Color.X * 2.2f + 0.25f),
-                    MathF.Min(1f, h.Color.Y * 2.2f + 0.25f),
-                    MathF.Min(1f, h.Color.Z * 2.2f + 0.25f),
+                    MathF.Min(1f, h.Color.X * coreLift),
+                    MathF.Min(1f, h.Color.Y * coreLift),
+                    MathF.Min(1f, h.Color.Z * coreLift),
                     h.Color.W <= 0f ? 1f : h.Color.W);
                 _emitters.Add(new PersistentEmitter
                 {
@@ -1801,6 +1894,24 @@ public sealed class SfxRuntime
         StoreMutatedHandle(rs, stmt.Tokens[0], h);
     }
 
+    /// <summary>SC-SPELL-AUDIT — approximate vertical offset of a named bone
+    /// on a humanoid target (world units above its ground anchor). Stands in
+    /// for live skeletal lookup on TARGET actors.</summary>
+    static float BoneHeightOffset(string bone)
+    {
+        var b = bone.TrimStart('@');
+        if (b.Contains("head",   StringComparison.OrdinalIgnoreCase)) return 1.55f;
+        if (b.Contains("hand",   StringComparison.OrdinalIgnoreCase)) return 0.95f;
+        if (b.Contains("weapon", StringComparison.OrdinalIgnoreCase)) return 0.95f;
+        if (b.Contains("shield", StringComparison.OrdinalIgnoreCase)) return 0.95f;
+        if (b.Contains("spine",  StringComparison.OrdinalIgnoreCase)) return 1.15f;
+        if (b.Contains("kill",   StringComparison.OrdinalIgnoreCase)) return 1.15f;
+        if (b.Contains("pelvis", StringComparison.OrdinalIgnoreCase)) return 0.85f;
+        if (b.Contains("foot",   StringComparison.OrdinalIgnoreCase)) return 0.10f;
+        if (b.Contains("toe",    StringComparison.OrdinalIgnoreCase)) return 0.10f;
+        return 0.90f;
+    }
+
     void ExecAttachPoint(RunningScript rs, SfxStatement stmt)
     {
         // `sfx attach_point <handle-tok> <@bone> <source|target>`
@@ -1827,10 +1938,23 @@ public sealed class SfxRuntime
         if (trailing.StartsWith("source", StringComparison.OrdinalIgnoreCase))
             resolved = rs.Ctx.ResolveBone(boneTok);
         else if (trailing.StartsWith("target", StringComparison.OrdinalIgnoreCase))
-            resolved = rs.Ctx.TargetPos;
+            // SC-SPELL-AUDIT (anchor-ignored) — bone-on-target IS a thing:
+            // buff scripts pin emitters to the target's head/hands/spine.
+            // Until live skeletal lookup lands, approximate with per-bone
+            // heights so a 4-emitter buff distributes over the body instead
+            // of collapsing into one chest-center point.
+            resolved = rs.Ctx.TargetPos + new Vector3(0f, BoneHeightOffset(boneTok), 0f);
         else
             resolved = h.OtherEnd;
         h.OtherEnd = resolved;
+        // Single-ended effects (plumes, cylinders, glows) render at Anchor —
+        // an attach_point that only moved OtherEnd collapsed them onto the
+        // create-time anchor. Two-ended bolts keep Anchor/OtherEnd semantics.
+        if (h.Mode is not (EmitterMode.OneShotLightning or EmitterMode.OneShotLineTracer))
+        {
+            h.Anchor   = resolved;
+            h.Position = resolved;
+        }
 
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — when this handle backs a
         // live motion (trackball / orbiter / lightsource / curve), the
@@ -3393,6 +3517,10 @@ public sealed class SfxRuntime
     struct Handle
     {
         public string      Kind;
+        /// <summary>SC-SPELL-AUDIT — set once the handle has dispatched
+        /// (explicit `sfx start` or the parent-start cascade); guards
+        /// against double-dispatch.</summary>
+        public bool        Started;
         /// <summary>Where `sfx create` anchored the effect (typically
         /// resolved from the second token, e.g. #TARGET_KB).</summary>
         public Vector3     Anchor;
@@ -3682,6 +3810,11 @@ public sealed class SfxRuntime
         // $child` re-target an already-started child by matching this string.
         // null when the operand was anonymous (#POP without a `set $name`).
         public string? SelfName;
+        // SC-SPELL-AUDIT (bolt sustain) — far endpoint + strike shape for a
+        // re-striking lightning emitter (Mode == OneShotLightning entries in
+        // this list re-jitter a fresh bolt every ~0.11s until Duration).
+        public Vector3 BoltTo;
+        public float   BoltMinD, BoltMaxD, BoltSubd, BoltMinSubd;
         // Phase 23d-2c — authored plume parameters (fire/smoke/steam). When
         // HasSpec the Tick pump routes through MaintainPlume instead of the
         // legacy Maintain* trio.
