@@ -200,6 +200,11 @@ public sealed class WorldStateSnapshot
     public List<uint> OpenedChests { get; set; } = new();
     public List<uint> UnlockedUsables { get; set; } = new();
     public List<uint> LeversOn { get; set; } = new();
+    /// <summary>SC-DOOR-PERSIST — scids of door props standing OPEN at save
+    /// time. Doors were pure live state before this field: an in-session
+    /// load kept the current session's door positions instead of the
+    /// save's. Absent on older saves = every door restores closed.</summary>
+    public List<uint> OpenDoors { get; set; } = new();
     public List<uint> BrokenProps { get; set; } = new();
     public List<uint> ClearedBlockers { get; set; } = new();
     public List<ElevatorStopSnapshot> Elevators { get; set; } = new();

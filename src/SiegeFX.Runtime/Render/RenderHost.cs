@@ -130,6 +130,22 @@ public sealed class RenderHost : IDisposable
         foreach (var scid in ws.ClearedBlockers)
             foreach (var b in _blockingGizmos)
                 if (b.Scid == scid && b.Active) { b.Active = false; structural = true; }
+        // SC-DOOR-PERSIST — door leaves follow the SAVE, both directions:
+        // doors were never persisted, so an in-session load kept the live
+        // session's door states (a door opened after the save stayed open
+        // in the restored world). Swing fraction snaps so the load doesn't
+        // animate; the obstacle map re-stamps when anything changed
+        // (doorway triangles block/free with the leaf).
+        bool doorsChanged = false;
+        foreach (var d in _doorProps)
+        {
+            bool shouldOpen = ws.OpenDoors.Contains(d.Scid);
+            if (d.DoorTargetOpen == shouldOpen) continue;
+            d.DoorTargetOpen = shouldOpen;
+            d.DoorOpenFrac = shouldOpen ? 1f : 0f;
+            doorsChanged = true;
+        }
+        if (doorsChanged) MarkAllObstacles();
         return structural;
     }
 
@@ -17033,7 +17049,15 @@ void main()
         if (_roamAuditAccumulator < RoamAuditIntervalSec) return;
         _roamAuditAccumulator = 0f;
         int brains = 0, wander = 0, chase = 0, attack = 0, blockedNow = 0, stalled = 0;
-        var stalledLines = new List<string>();
+        // SC-LOAD-FREEZE-DIAG — stalled samples are ranked by distance to
+        // the PLAYER (the old first-3-by-index sample always showed the
+        // same far-away farm animals while the room the user was staring
+        // at never made the log), and CHASE stalls are sampled too: chase
+        // re-targets every tick, so a chaser that hasn't moved across a
+        // whole beat is frozen — the wander-only filter made the field
+        // report's "frozen room" (chase=24 attack=0 forever) invisible.
+        var stalledCands = new List<(float D2, string Line)>();
+        var auditPlayerPos = _player?.CurrentTransform.Translation ?? default;
         for (int i = 0; i < _actors.Count; i++)
         {
             var s = _actors[i];
@@ -17049,37 +17073,45 @@ void main()
             bool blocked = follower.PathBlocked;
             if (blocked) blockedNow++;
             var pos = s.CurrentTransform.Translation;
-            if (blocked && s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Wander &&
-                _roamAuditLastPos.TryGetValue(i, out var prev) &&
-                Vector3.DistanceSquared(pos, prev) < 0.25f * 0.25f)
+            bool moved = !_roamAuditLastPos.TryGetValue(i, out var prev)
+                         || Vector3.DistanceSquared(pos, prev) >= 0.25f * 0.25f;
+            bool isStalled = !moved &&
+                (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                 || (blocked && s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Wander));
+            if (isStalled)
             {
                 stalled++;
-                if (stalledLines.Count < 3)
+                // SC-NAV-BLAME — probe the stalled actor's path to its
+                // target and capture the pathfinder's verdict (incl.
+                // "sealed by: <prop>"). The probe runs on the LIVE mesh;
+                // the follower's own mesh fingerprint prints beside it so
+                // a brain still driving on a stale pre-rebuild mesh is
+                // directly visible (fingerprints differ).
+                string why = "";
+                if (_navMesh is not null
+                    && _navMesh.TryFindTriangle(pos, out var sTri, includeFadeHidden: true)
+                    && _navMesh.TryFindTriangle(follower.Target, out var gTri, includeFadeHidden: true))
                 {
-                    // SC-NAV-BLAME — probe the stalled actor's path to its
-                    // wander target and capture the pathfinder's verdict
-                    // (incl. "sealed by: <prop>"), so a "krug frozen in
-                    // place" report names its own culprit. Was printing the
-                    // Template OBJECT (type name) instead of the name.
-                    string why = "";
-                    if (_navMesh is not null
-                        && _navMesh.TryFindTriangle(pos, out var sTri, includeFadeHidden: true)
-                        && _navMesh.TryFindTriangle(follower.Target, out var gTri, includeFadeHidden: true))
-                    {
-                        var probeBuf = new List<int>(64);
-                        if (!SiegeFX.Core.Nav.NavPathfinder.TryFindPath(
-                                _navMesh, sTri, gTri, probeBuf, _roamAuditWorkspace, follower.Traversal))
-                            why = $" — {SiegeFX.Core.Nav.NavPathfinder.LastFailure}";
-                    }
-                    stalledLines.Add($"  [roam-audit]   stalled {s.Actor.Template.Name} " +
-                        $"at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) " +
-                        $"target ({follower.Target.X:F1},{follower.Target.Z:F1}){why}");
+                    var probeBuf = new List<int>(64);
+                    if (!SiegeFX.Core.Nav.NavPathfinder.TryFindPath(
+                            _navMesh, sTri, gTri, probeBuf, _roamAuditWorkspace, follower.Traversal))
+                        why = $" — {SiegeFX.Core.Nav.NavPathfinder.LastFailure}";
                 }
+                else why = " — pos/target resolves to NO triangle on the live mesh";
+                float adx = pos.X - auditPlayerPos.X, adz = pos.Z - auditPlayerPos.Z;
+                stalledCands.Add((adx * adx + adz * adz,
+                    $"  [roam-audit]   stalled[{s.Brain.State}] {s.Actor.Template.Name} " +
+                    $"at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) " +
+                    $"target ({follower.Target.X:F1},{follower.Target.Z:F1}) " +
+                    $"blocked={blocked} curTri={follower.CurrentTriangle} " +
+                    $"followerMesh={follower.Mesh.TriangleCount}tri " +
+                    $"liveMesh={_navMesh?.TriangleCount ?? 0}tri{why}"));
             }
             _roamAuditLastPos[i] = pos;
         }
         Console.WriteLine($"[roam-audit] brains={brains} wander={wander} chase={chase} attack={attack} blockedNow={blockedNow} stalled15s={stalled}");
-        foreach (var line in stalledLines) Console.WriteLine(line);
+        foreach (var (_, line) in stalledCands.OrderBy(c => c.D2).Take(6))
+            Console.WriteLine(line);
     }
 
     /// <summary>SC-AI-FLEE — read the authored [mind] flee params onto a fresh
@@ -35197,6 +35229,9 @@ void main()
         foreach (var lv in _leverProps) if (lv.LeverOn) world.LeversOn.Add(lv.Scid);
         foreach (var kv in _breakingByScid) if (kv.Value.IsDestroyed) world.BrokenProps.Add(kv.Key);
         foreach (var b in _blockingGizmos) if (!b.Active) world.ClearedBlockers.Add(b.Scid);
+        // SC-DOOR-PERSIST — open door leaves, so loads restore the save's
+        // doors instead of leaking the live session's.
+        foreach (var d in _doorProps) if (d.DoorTargetOpen) world.OpenDoors.Add(d.Scid);
         foreach (var el in _elevators)
             if (el.AtStop != 1 || el.Moving)
                 world.Elevators.Add(new SiegeFX.Core.Save.ElevatorStopSnapshot
@@ -35231,6 +35266,7 @@ void main()
             MergeProps(world.OpenedChests, kept.OpenedChests, sc => _chestProps.Any(c => c.Scid == sc));
             MergeProps(world.UnlockedUsables, kept.UnlockedUsables, sc => _lockedUsables.Any(lu => lu.Prop.Scid == sc));
             MergeProps(world.LeversOn, kept.LeversOn, sc => _leverProps.Any(lv => lv.Scid == sc));
+            MergeProps(world.OpenDoors, kept.OpenDoors, sc => _doorProps.Any(d => d.Scid == sc));
             MergeProps(world.BrokenProps, kept.BrokenProps, sc => _breakingByScid.ContainsKey(sc));
             MergeProps(world.ClearedBlockers, kept.ClearedBlockers, sc => _blockingGizmos.Any(b => b.Scid == sc));
         }
