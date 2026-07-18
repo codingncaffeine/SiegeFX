@@ -109,6 +109,10 @@ public sealed class TriggerRow
     public bool FlipFlop { get; }
     public bool SingleShot { get; }
     public bool StartActive { get; }
+    /// <summary>Authored `single_player` flag — FALSE marks an MP-only row
+    /// (29 shipped rows across 15 regions author it). A single-player
+    /// session must skip those or MP mood/fade/quest dupes fire in SP.</summary>
+    public bool SinglePlayer { get; }
     public float ResetDuration { get; }
     public float Delay { get; }
     /// <summary>Region-group filter for entered/left conditions; the empty string means
@@ -120,7 +124,7 @@ public sealed class TriggerRow
         IReadOnlyList<TriggerCall> actions,
         bool flipFlop, bool singleShot, bool startActive,
         float resetDuration, float delay,
-        string occupantsGroup)
+        string occupantsGroup, bool singlePlayer = true)
     {
         Conditions = conditions;
         Actions = actions;
@@ -130,13 +134,14 @@ public sealed class TriggerRow
         ResetDuration = resetDuration;
         Delay = delay;
         OccupantsGroup = occupantsGroup;
+        SinglePlayer = singlePlayer;
     }
 
     public static TriggerRow Parse(GasNode rowNode, string sourceLabel, List<string>? diagnostics)
     {
         var conditions = new List<TriggerCall>();
         var actions = new List<TriggerCall>();
-        bool flipFlop = false, singleShot = false, startActive = true;
+        bool flipFlop = false, singleShot = false, startActive = true, singlePlayer = true;
         float resetDuration = 0f, delay = 0f;
         string occupantsGroup = "";
 
@@ -167,13 +172,16 @@ public sealed class TriggerRow
                 case "reset_duration":  resetDuration = ParseFloat(attr.Value, resetDuration); break;
                 case "delay":           delay = ParseFloat(attr.Value, delay); break;
                 case "occupants_group": occupantsGroup = attr.Value; break;
-                // Other authored fields (multi_player, single_player, can_self_destruct,
-                // dev_instance_text) are ignored at runtime — they're authoring hints
-                // for the editor, not gameplay state.
+                // single_player=false marks MP-only rows — REAL gameplay
+                // state, not an editor hint (the old comment was wrong):
+                // shipped rows duplicate moods/fades/quest flips for MP and
+                // must not fire in SP. multi_player / can_self_destruct /
+                // dev_instance_text stay runtime-ignored.
+                case "single_player": singlePlayer = ParseBool(attr.Value, singlePlayer); break;
             }
         }
         return new TriggerRow(conditions, actions, flipFlop, singleShot, startActive,
-            resetDuration, delay, occupantsGroup);
+            resetDuration, delay, occupantsGroup, singlePlayer);
     }
 
     static bool ParseBool(string raw, bool fallback)

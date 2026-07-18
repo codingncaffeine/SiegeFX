@@ -16,6 +16,10 @@ namespace SiegeFX.Core.Actors;
 /// renderer from needing to know about trigger semantics.</summary>
 public sealed class TriggerRuntime
 {
+    /// <summary>TRUE while an MP session is live — gates authored
+    /// single_player=false rows (MP-only duplicates skip in SP).</summary>
+    public bool IsMultiplayerSession { get; set; }
+
     readonly List<TriggerInstance> _instances = new();
     /// <summary>Replay queue for delayed actions. The 20 Hz tick is fast enough that
     /// "delay(1)" actions don't need a high-precision scheduler — we just stamp the
@@ -272,6 +276,10 @@ public sealed class TriggerRuntime
             var row = matrix.Rows[r];
             ref var state = ref trig.RowStateAt(r);
 
+            // Authored single_player=false rows are MP-only (mood/fade/
+            // quest duplicates for the MP flow); a single-player session
+            // never evaluates them.
+            if (!row.SinglePlayer && !IsMultiplayerSession) continue;
             // single_shot rows latch: once they've fired, they never evaluate again.
             if (state.FiredOnce && row.SingleShot) continue;
             // reset_duration cooldown gate: row stays cold until the cooldown expires.

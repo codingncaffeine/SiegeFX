@@ -2808,6 +2808,11 @@ public sealed class RenderHost : IDisposable
         {
             if (_commands.TryGetValue(toScid, out var aiCmd))
                 ActivateAiCommand(toScid, aiCmd);
+            // SC-CHAPTER — activate_chapter gizmos stamp the authored
+            // chapter card (b_gui_nis_ch0N pre-rendered art) when their
+            // scid is activated; 18 placements gate chapter progression.
+            if (_chapterGizmos.TryGetValue(toScid, out var chapterName))
+                FireChapterCard(chapterName);
             // Message-activated generators (parked with trigger_range<=0);
             // generator_dumb_guy is an event component, never a spawner.
             foreach (var g in _generators)
@@ -2956,6 +2961,53 @@ public sealed class RenderHost : IDisposable
     /// <summary>ALPHA-2A — parse + register the logic gizmos of the given
     /// regions. Idempotent per scid (streaming re-entry safe); world bools
     /// intentionally NOT touched here — they're session state.</summary>
+    // SC-CHAPTER — activate_chapter placements (scid → authored chapter
+    // key like "chapter_7"). Activated via we_req_activate from story
+    // triggers; the pre-rendered card art carries the display text.
+    private readonly Dictionary<uint, string> _chapterGizmos = new();
+    private readonly HashSet<string> _chaptersShown = new(StringComparer.OrdinalIgnoreCase);
+
+    private void LoadChapterGizmos(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        int added = 0;
+        foreach (var rp in regionPaths)
+        {
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "special.gas");
+            foreach (var p in placements)
+            {
+                if (!p.TemplateName.Equals("activate_chapter", StringComparison.OrdinalIgnoreCase)) continue;
+                if (_chapterGizmos.ContainsKey(p.Scid)) continue;
+                var section = SiegeFX.Core.Assets.TemplateStore.FindChild(p.Node, "activate_chapter");
+                var chapter = section is null ? null
+                    : SiegeFX.Core.Assets.TemplateStore.FindAttr(section, "chapter")?.Trim().Trim('"');
+                if (string.IsNullOrEmpty(chapter)) continue;
+                _chapterGizmos[p.Scid] = chapter!;
+                added++;
+            }
+        }
+        if (added > 0)
+            Console.WriteLine($"  chapters: {added} activate_chapter gizmo(s) registered ({_chapterGizmos.Count} total)");
+    }
+
+    private void FireChapterCard(string chapterKey)
+    {
+        if (!_chaptersShown.Add(chapterKey)) return;
+        // "chapter_7" → the authored two-digit card art b_gui_nis_ch07.
+        int us = chapterKey.LastIndexOf('_');
+        if (us < 0 || !int.TryParse(chapterKey[(us + 1)..], out var num)) return;
+        var tex = TryGetGuiTexture($"b_gui_nis_ch{num:00}");
+        if (tex is null)
+        {
+            Console.WriteLine($"[chapter] '{chapterKey}' card art b_gui_nis_ch{num:00} missing");
+            return;
+        }
+        _chapterCardTex = tex;
+        _chapterTitleRemaining = ChapterTitleSeconds;
+        Console.WriteLine($"[chapter] {chapterKey} card stamped");
+    }
+
     private void LoadLogicGizmos(IEnumerable<string> regionPaths)
     {
         if (_playMapTank is null) return;
@@ -5097,6 +5149,7 @@ public sealed class RenderHost : IDisposable
     private void MpTearDownSession()
     {
         _mpNetSession?.Dispose(); _mpNetSession = null;
+        if (_triggerRuntime is not null) _triggerRuntime.IsMultiplayerSession = false;
         _mpLobby?.Dispose(); _mpLobby = null;
         _mpTransport?.Dispose(); _mpTransport = null;
         _mpBrowseLobby?.Dispose(); _mpBrowseLobby = null;
@@ -5151,6 +5204,8 @@ public sealed class RenderHost : IDisposable
             SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         var session = new SiegeFX.Core.Net.MpSession(transport, asHost, name);
         _mpNetSession = session;
+        // SC-SP-MP-ROWS — authored MP-only trigger rows go live with the session.
+        if (_triggerRuntime is not null) _triggerRuntime.IsMultiplayerSession = true;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
         session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"Player {id} left the game"); };
@@ -12155,6 +12210,7 @@ void main()
         LoadGenerators(allLoaded);
         LoadCommands(allLoaded);
         LoadLogicGizmos(allLoaded);
+        LoadChapterGizmos(allLoaded);
         LoadAutoTraps(allLoaded);
         LoadShrines(allLoaded);
         LoadBlockingGizmos(allLoaded);
@@ -12462,6 +12518,7 @@ void main()
         }
         LoadCommands(newlyLoaded);
         LoadLogicGizmos(newlyLoaded);
+        LoadChapterGizmos(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
         LoadShrines(newlyLoaded);
         LoadBlockingGizmos(newlyLoaded);
