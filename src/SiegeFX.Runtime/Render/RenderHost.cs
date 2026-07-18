@@ -2224,6 +2224,11 @@ public sealed class RenderHost : IDisposable
             npc.Brain.OnDamageDealt = (removed, victim, skill) =>
                 AwardMemberXp(memberIdx, removed, victim, skill);
             npc.CanFight = combatStats.DamageMax > 0f || spell is not null;
+            // SC-MEMBER-ACTIVE-SLOT — a rebuild derives its mode from authored
+            // monster-caster fields, which know nothing about this member's
+            // spellbook or the strip selection. Re-apply the player's intent
+            // over the fresh brain (equip changes used to drop the cast here).
+            if (npc.PartyIndex > 0) ApplyMemberCombatMode(npc.PartyIndex);
         }
         else
         {
@@ -8346,6 +8351,9 @@ void main()
                                     // Switch this companion's active combat mode.
                                     SetPartySelection(pidx);
                                     _memberActiveSlot[pidx] = th.Slot;
+                                    // SC-MEMBER-ACTIVE-SLOT — the selection IS
+                                    // the fight mode; drive the brain now.
+                                    ApplyMemberCombatMode(pidx);
                                     break;
                             }
                             _audio?.Play(SfxGuiInventory);
@@ -25695,8 +25703,47 @@ void main()
         var b = BookFor(pidx);
         if (m is null || b is null) return;
         m.Actor.Stats.PrimarySpell = b.Primary?.Name;
-        m.Brain?.SetCastSpell(b.Primary);
         Console.WriteLine($"party: {m.Actor.Template.Name} active spell -> {(b.Primary?.Name ?? "<none>")}");
+        ApplyMemberCombatMode(pidx);
+    }
+
+    /// <summary>SC-MEMBER-ACTIVE-SLOT — ONE resolver for what a member
+    /// fights with, honoring the team-strip selection first:
+    ///   slot 0/1 → melee/ranged weapon;  slot 2/3 → Active Spell 1/2;
+    ///   no selection → weapon when one deals damage, else Active Spell 1.
+    /// Called after every brain rebuild (equip changes rebuild the brain and
+    /// used to silently drop the cast — "she only casts when unarmed"),
+    /// after book edits, on strip clicks, and on load restore.</summary>
+    private void ApplyMemberCombatMode(int pidx)
+    {
+        if (pidx <= 0) return;
+        var m = _party.FirstOrDefault(p => p.PartyIndex == pidx);
+        if (m?.Brain is null) return;
+        var book = _memberSpellbooks.TryGetValue(pidx, out var bk) ? bk : BookFor(pidx);
+        int slot = _memberActiveSlot.TryGetValue(pidx, out var s) ? s : -1;
+        SiegeFX.Core.Assets.SpellTemplate? spell = slot switch
+        {
+            2 => book?.Primary,
+            3 => book?.Secondary,
+            0 or 1 => null,
+            _ => m.Actor.Stats.DamageMax > 0f ? null : book?.Primary,
+        };
+        if (spell is not null)
+        {
+            m.Brain.SetCastSpell(spell);
+            m.CanFight = true;
+        }
+        else if (slot is 0 or 1)
+        {
+            m.Brain.SetWeaponMode(ranged: slot == 1);
+        }
+        else
+        {
+            m.Brain.SetCastSpell(null);   // auto weapon derivation
+        }
+        Console.WriteLine($"party: {m.Actor.Template.Name} combat mode -> " +
+                          $"{(spell is not null ? $"cast {spell.Name}" : slot == 1 ? "ranged" : slot == 0 ? "melee" : "auto-weapon")}" +
+                          $"{(slot >= 0 ? $" (slot {slot})" : "")}");
     }
 
     /// <summary>Which open companion SPELL panel sits under the cursor, with
@@ -34830,6 +34877,7 @@ void main()
             cs.AtkOrder  = FcOrderToInt(m.FcAttack);
             cs.TgtOrder  = FcOrderToInt(m.FcTargeting);
             cs.FollowOn  = m.FcFollow;
+            cs.ActiveSlot = _memberActiveSlot.TryGetValue(m.PartyIndex, out var aslot) ? aslot : -1;
             save.Party.Add(cs);
         }
         // SC-PARTY-LIFECYCLE — dismissed companions' kept state rides along as
@@ -35546,6 +35594,11 @@ void main()
             if (cs.AtkOrder  >= 0) npc.FcAttack    = FcAtkFromInt(cs.AtkOrder);
             if (cs.TgtOrder  >= 0) npc.FcTargeting = FcTgtFromInt(cs.TgtOrder);
             npc.FcFollow = cs.FollowOn;
+            // SC-MEMBER-ACTIVE-SLOT — restore the selected combat slot and
+            // drive the brain from it (weapon-vs-spell preference survives
+            // save/load like everything else about the member).
+            if (cs.ActiveSlot >= 0) _memberActiveSlot[npc.PartyIndex] = cs.ActiveSlot;
+            ApplyMemberCombatMode(npc.PartyIndex);
             var cpos = cs.Position.ToVector3();
             if (npc.Brain is not null) npc.Brain.Teleport(cpos);
             npc.CurrentTransform = Matrix4x4.CreateTranslation(cpos);

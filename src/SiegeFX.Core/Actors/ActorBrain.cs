@@ -229,6 +229,24 @@ public sealed class ActorBrain
         }
     }
 
+    /// <summary>SC-MEMBER-ACTIVE-SLOT — explicit weapon-mode pick from the
+    /// team strip's melee/ranged boxes: clears any cast spell and forces the
+    /// chosen mode (the null-spell derivation only guesses from authored
+    /// preferences, which say nothing about the player's selection).</summary>
+    public void SetWeaponMode(bool ranged)
+    {
+        CastSpell = null;
+        if (ranged)
+        {
+            Mode = AttackMode.Ranged;
+            StandoffRange = _selfStats.RangedEngageRange > 1f ? _selfStats.RangedEngageRange * 0.8f : 10f;
+        }
+        else
+        {
+            Mode = AttackMode.Melee;
+        }
+    }
+
     public ActorBrain(ActorFollower wander, ActorStats selfStats, int rngSeed,
                       Actor? selfActor = null, Assets.SpellTemplate? castSpell = null)
     {

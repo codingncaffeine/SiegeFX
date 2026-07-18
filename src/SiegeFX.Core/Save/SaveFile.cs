@@ -180,6 +180,10 @@ public sealed class CompanionSnapshot
     public int  AtkOrder  { get; set; } = -1;
     public int  TgtOrder  { get; set; } = -1;
     public bool FollowOn  { get; set; } = true;
+    /// <summary>SC-MEMBER-ACTIVE-SLOT — the member's selected combat slot
+    /// (0 melee / 1 ranged / 2 Active Spell 1 / 3 Active Spell 2; -1 = auto
+    /// or pre-field save).</summary>
+    public int ActiveSlot { get; set; } = -1;
 }
 
 /// <summary>ALPHA-2G — see <see cref="SaveFile.World"/>.</summary>
