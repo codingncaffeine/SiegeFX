@@ -37,6 +37,10 @@ public sealed class CharacterAwp
     /// so visuals and clicks can never desync.</summary>
     public int OffsetX, OffsetY;
 
+    /// <summary>SC-DOWNED — the leader portrait's state tint (set by the
+    /// host each frame from hero HP/downed state; One = normal).</summary>
+    public Vector4 PortraitTintColor = Vector4.One;
+
     /// <summary>Action IDs returned from a click on the AWP. RenderHost
     /// dispatches each to the corresponding host-side toggle (per gas's
     /// [messages] notify keys).</summary>
@@ -205,10 +209,12 @@ public sealed class CharacterAwp
                 // Crop to opaque bounds so the face fills the frame regardless
                 // of how the character-creator padded the portrait raw, then
                 // inset ~5% so it doesn't touch the frame/screen border.
+                // SC-DOWNED — PortraitTintColor carries the manual's state
+                // tint (yellow ≤1/3 HP, red while unconscious).
                 var uv = portrait.ContentUv;
                 int inx = (int)Math.Round(pw * 0.05f), iny = (int)Math.Round(ph * 0.05f);
                 iconRenderer.DrawIcon(viewportW, viewportH, portrait,
-                    px + inx, py + iny, pw - 2 * inx, ph - 2 * iny, Vector4.One,
+                    px + inx, py + iny, pw - 2 * inx, ph - 2 * iny, PortraitTintColor,
                     uv.X, uv.Y, uv.Z, uv.W);
             }
         }

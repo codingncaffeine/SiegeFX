@@ -2413,8 +2413,13 @@ public sealed class RenderHost : IDisposable
         // SC-MSG-STRIP — companions announce on the strip with THEIR name,
         // same authored sentence as the hero's.
         if (newSkill > oldSkill)
+        {
             AddGameMessage($"{who} has advanced to level {newSkill} in " +
                            $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
+            // SC-SKILLUP-HEAL — manual: skill-up instantly restores HP.
+            if (member is { IsDead: false })
+                member.Actor.Combat.Heal(member.Actor.Stats.MaxLife);
+        }
         foreach (var (attr, lvl) in prog.LastAttrLevelUps)
         {
             string attrName = attr == 0 ? "Strength" : attr == 1 ? "Dexterity" : "Intelligence";
@@ -2580,6 +2585,9 @@ public sealed class RenderHost : IDisposable
         {
             var m = _party[i];
             if (m.PartyIndex == 0 || m.IsDead || m.Brain is null) continue;
+            // SC-DOWNED — an unconscious member lies where they fell: no
+            // movement, no combat, no facing updates until revived.
+            if (m.Actor.Combat.Downed) continue;
             // SC-MP-RECRUIT — a CLIENT's companion is host-simulated: its
             // pose arrives via the world delta; driving the local brain too
             // would fight the stream. It still holds its rail/inventory slot.
@@ -2860,10 +2868,31 @@ public sealed class RenderHost : IDisposable
             var s = _actors[i];
             if (s.IsPlayer || s.IsDead) continue;
             if (!s.Actor.Combat.ConsumeJustDied()) continue;
+            // SC-DOWNED — a party member's first fall is UNCONSCIOUS, not
+            // dead (manual: healable back up; death only past the authored
+            // trauma threshold — TickDowned owns that confirm, which
+            // re-fires this edge with Downed still set).
+            if (s.IsPartyMember && !s.Actor.Combat.Downed)
+            {
+                s.Actor.Combat.EnterDowned();
+                s.CanFight = false;
+                s.MoveOrder = null;
+                s.OrderedFoe = null;
+                BeginDeathChore(s);
+                PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
+                Console.WriteLine($"[downed] {s.Actor.Template.Name} falls unconscious");
+                continue;
+            }
+            // Trauma death of an already-downed body: they're lying in the
+            // die pose — settle on its last frame instead of dying twice,
+            // and the collapse already played the scream.
+            bool wasDowned = s.Actor.Combat.Downed;
+            s.Actor.Combat.ClearDowned();
             s.IsDead = true;
             s.Brain = null;
-            BeginDeathChore(s);
-            PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            BeginDeathChore(s, settled: wasDowned);
+            if (!wasDowned)
+                PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
             // SC-CARRIED-INVENTORY — a dying companion is never a loot
             // piñata for the authored [inventory][other] TABLE (that guard
             // stays: no rolled drops). But the manual is explicit about the
@@ -6329,7 +6358,9 @@ public sealed class RenderHost : IDisposable
     {
         if (s is null || s.IsDead || _formulas is null) return;
         var combat = s.Actor.Combat;
-        if (combat.IsDead) return;
+        // SC-DOWNED — natural regen keeps working on an unconscious body;
+        // it's one of the manual's two revive paths. Only corpses stop.
+        if (combat.IsDead && !combat.Downed) return;
         combat.Heal       (_formulas.LifeRecoveryRate(s.Actor.Stats.Strength)     * dt);
         combat.RestoreMana(_formulas.ManaRecoveryRate(s.Actor.Stats.Intelligence) * dt);
     }
@@ -18115,18 +18146,78 @@ void main()
     /// distance — same plane the aggro checks use.</summary>
     private ActorRenderState? NearestLivePartyMember(Vector3 from)
     {
-        ActorRenderState? best = null;
-        float bestD2 = float.MaxValue;
+        // SC-DOWNED — unconscious bodies are LAST-RESORT targets: hostiles
+        // switch to whoever is still fighting, and only finish a downed
+        // character when nobody conscious remains.
+        ActorRenderState? best = null, bestDowned = null;
+        float bestD2 = float.MaxValue, bestDownedD2 = float.MaxValue;
         foreach (var m in _party)
         {
             if (m is null || m.IsDead) continue;
             var p = m.CurrentTransform.Translation;
             float dx = p.X - from.X, dz = p.Z - from.Z;
             float d2 = dx * dx + dz * dz;
-            if (d2 < bestD2) { bestD2 = d2; best = m; }
+            if (m.Actor.Combat.Downed)
+            {
+                if (d2 < bestDownedD2) { bestDownedD2 = d2; bestDowned = m; }
+            }
+            else if (d2 < bestD2) { bestD2 = d2; best = m; }
         }
+        if (best is null && _player is not null && !_player.IsDead
+            && !_player.Actor.Combat.Downed)
+            best = _player;
+        if (best is null) best = bestDowned;
         if (best is null && _player is not null && !_player.IsDead) best = _player;
         return best;
+    }
+
+    /// <summary>SC-DOWNED — any party character still on their feet?</summary>
+    private bool AnyConsciousMember()
+    {
+        foreach (var m in _party)
+            if (m is not null && m.PartyIndex > 0 && m.IsPartyMember
+                && !m.IsDead && !m.Actor.Combat.Downed)
+                return true;
+        return false;
+    }
+
+    /// <summary>SC-DOWNED — per-tick downed bookkeeping: trauma past the
+    /// authored death_threshold turns a downed companion's state into a real
+    /// death (the sweep picks up the re-fired edge); healed past 1 HP stands
+    /// them back up. The hero recovers the same way but never trauma-dies
+    /// while a conscious companion could still save them — the downed-aware
+    /// PartyWiped() owns the defeat call when nobody is left standing.</summary>
+    private void TickDownedRecovery()
+    {
+        float thr = _formulas?.DeathThreshold ?? 0.66f;
+        foreach (var m in _party)
+        {
+            if (m is null || m.PartyIndex <= 0 || m.IsDead) continue;
+            var c = m.Actor.Combat;
+            if (!c.Downed) continue;
+            if (c.PostZeroTrauma >= thr * m.Actor.Stats.MaxLife)
+            {
+                c.ConfirmDeath();
+                Console.WriteLine($"[downed] {m.Actor.Template.Name}'s trauma is fatal");
+            }
+            else if (c.CurrentLife >= 1f)
+            {
+                c.ClearDowned();
+                m.CanFight = true;
+                m.Actor.Host.OverrideAnimIndex(-1, 0f);
+                Console.WriteLine($"[downed] {m.Actor.Template.Name} is back on their feet");
+            }
+        }
+        if (_player is not null && !_player.IsDead)
+        {
+            var c = _player.Actor.Combat;
+            if (c.Downed && c.CurrentLife >= 1f)
+            {
+                c.ClearDowned();
+                _player.Actor.Host.OverrideAnimIndex(-1, 0f);
+                Console.WriteLine("[downed] the hero is back on their feet");
+            }
+        }
     }
 
     private void TickElevators(float dt)
@@ -21926,9 +22017,13 @@ void main()
 
     private bool PartyWiped()
     {
-        if (_player is null || !_player.IsDead) return false;
+        // SC-DOWNED — a downed character is incapacitated: defeat fires when
+        // nobody in the party is conscious (all dead OR down), retail-style.
+        if (_player is null) return false;
+        if (!_player.IsDead && !_player.Actor.Combat.Downed) return false;
         foreach (var m in _party)
-            if (m is not null && !ReferenceEquals(m, _player) && m.IsPartyMember && !m.IsDead)
+            if (m is not null && !ReferenceEquals(m, _player) && m.IsPartyMember
+                && !m.IsDead && !m.Actor.Combat.Downed)
                 return false;
         return true;
     }
@@ -21940,15 +22035,38 @@ void main()
     private void TickDefeat(float dt)
     {
         // Hero death edge — the party-member drain skips IsPlayer, so the
-        // hero's chore_die/scream fire here.
+        // hero's chore_die/scream fire here. SC-DOWNED — with a conscious
+        // companion still standing, the hero goes UNCONSCIOUS (manual: solo
+        // at 0 HP = game over; in a party you fall and can be healed up).
         if (_player is not null && !_player.IsDead && _player.Actor.Combat.ConsumeJustDied())
         {
-            _player.IsDead = true;
-            BeginDeathChore(_player);
-            PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
-            if (_cursorScroll is not null) ClearScrollDrag();
-            Console.WriteLine("[defeat] the hero has fallen");
+            if (!_player.Actor.Combat.Downed && AnyConsciousMember())
+            {
+                _player.Actor.Combat.EnterDowned();
+                BeginDeathChore(_player);
+                PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
+                _playerFollower?.SetTarget(_playerFollower.Position);
+                _pendingAttackTarget = null;
+                _pendingCastTarget = null;
+                _pendingCastProp = null;
+                _pendingBreakProp = null;
+                _pendingPickupPile = null;
+                if (_cursorScroll is not null) ClearScrollDrag();
+                Console.WriteLine("[downed] the hero falls unconscious");
+            }
+            else
+            {
+                bool heroWasDowned = _player.Actor.Combat.Downed;
+                _player.Actor.Combat.ClearDowned();
+                _player.IsDead = true;
+                BeginDeathChore(_player, settled: heroWasDowned);
+                if (!heroWasDowned)
+                    PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
+                if (_cursorScroll is not null) ClearScrollDrag();
+                Console.WriteLine("[defeat] the hero has fallen");
+            }
         }
+        TickDownedRecovery();
 
         switch (_defeatPhase)
         {
@@ -25119,7 +25237,9 @@ void main()
         // member gets an explicit move order to their formation slot at the
         // destination. World interactions (doors/levers/chests) stay
         // hero-driven, so they only queue when the hero is in the order.
-        bool heroSelected = _selectedPartyIdx.Contains(0);
+        // SC-DOWNED — an unconscious hero can't walk; orders still reach
+        // the conscious selected members.
+        bool heroSelected = _selectedPartyIdx.Contains(0) && !_player.Actor.Combat.Downed;
         if (heroSelected)
         {
             // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
@@ -25176,6 +25296,7 @@ void main()
         foreach (var m in _party)
         {
             if (m.PartyIndex <= 0 || m.IsDead || m.Brain is null || m.IsNetworkOwned) continue;
+            if (m.Actor.Combat.Downed) continue;   // SC-DOWNED — can't move
             if (!_selectedPartyIdx.Contains(m.PartyIndex)) continue;
             var slot = SnapToNavmesh(
                 PartyFormationSlot(_partyFormation, m.PartyIndex, dest, face), dest);
@@ -25203,6 +25324,7 @@ void main()
         foreach (var m in _party)
         {
             if (m.PartyIndex <= 0 || m.IsDead || m.Brain is null || m.IsNetworkOwned) continue;
+            if (m.Actor.Combat.Downed) continue;   // SC-DOWNED — can't fight
             if (!_selectedPartyIdx.Contains(m.PartyIndex)) continue;
             m.OrderedFoe = target;
             m.MoveOrder = null;
@@ -26011,10 +26133,10 @@ void main()
         // hero only engages when selected. Ordering members onto a foe
         // clears any pending move order for them.
         OrderSelectedMembersAttack(best);
-        if (!_selectedPartyIdx.Contains(0))
+        if (!_selectedPartyIdx.Contains(0) || _player.Actor.Combat.Downed)
         {
             _audio?.Play(SfxOrderAttack);
-            Console.WriteLine($"click-attack: ordered selection onto {best.Actor.Template.Name} (hero not selected)");
+            Console.WriteLine($"click-attack: ordered selection onto {best.Actor.Template.Name} (hero not engaging)");
             return true;
         }
         // Phase 12-SC-1 — gate by player→target reach, not just click-pick
@@ -27098,6 +27220,12 @@ void main()
             spDisp[i] = _awpSlotLevelHold[i] > 0f ? 1f : now;
         }
         _awpProgSeeded = true;
+        // SC-DOWNED — leader portrait state tint (yellow ≤1/3 HP, red down).
+        _characterAwp.PortraitTintColor = _player is null ? Vector4.One
+            : Hud.TeamPortraits.PortraitTint(
+                _player.Actor.Combat.Downed,
+                _player.Actor.Stats.MaxLife > 0f
+                    ? _player.Actor.Combat.CurrentLife / _player.Actor.Stats.MaxLife : 1f);
         _characterAwp.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                            _awpAtlas, _playerPortraitLive ?? _awpPortraitTex, hpFrac, mpFrac, _activeAbilityIdx,
                            slot1, slot2, slot3, slot4, _awpInvBtnTex,
@@ -27153,13 +27281,16 @@ void main()
                     ? mbk : BookFor(m.PartyIndex);
                 if (mBook?.Secondary is { } mSec && !string.IsNullOrWhiteSpace(mSec.ActiveIcon))
                     mSpell2Icon = ResolveAwpSlotIcon(mSec.ActiveIcon);
+                // SC-DOWNED — an unconscious member shows the red tint, not
+                // the death mask (they're revivable, not a corpse).
                 cells.Add(new Hud.TeamPortraits.Member(
                     ResolveMemberPortrait(m.Actor.Template),
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
                     st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
-                    m.IsDead || c.IsDead,
+                    m.IsDead || (c.IsDead && !c.Downed),
                     _selectedPartyIdx.Contains(m.PartyIndex),
-                    mSlot1, mSlot2, mSpellIcon, mSpell2Icon, mActive));
+                    mSlot1, mSlot2, mSpellIcon, mSpell2Icon, mActive,
+                    Downed: c.Downed));
             }
             // SC-SUMMON-UI — the summon's cell: portrait + vitals, no
             // weapon/spell slots (it has no inventory), selectable so the
@@ -32612,6 +32743,10 @@ void main()
             if (_player is null
                 || !RegisterAndPlayVoiceCue(fxCue, _player.CurrentTransform.Translation))
                 _audio?.Play(SfxLevelUp);
+            // SC-SKILLUP-HEAL — manual: HP is "instantly restored when your
+            // skill increases". Full life on the skill-level edge.
+            if (_player is not null && !_player.IsDead)
+                _player.Actor.Combat.Heal(_player.Actor.Stats.MaxLife);
         }
         else if (charLeveled)
         {
@@ -36809,6 +36944,7 @@ void main()
                 Scid          = _player.Actor.Instance.Scid,
                 TotalXp       = _progression?.TotalXp ?? 0,
                 Level         = _progression?.Level ?? 1,
+                Downed        = _player.Actor.Combat.Downed,   // SC-DOWNED
                 // SC-EQUIP-ENCHANT — snapshot NATURAL attributes (worn-gear
                 // alterations subtracted); the load path recomputes caps from
                 // the trio and the post-load equipment sync re-applies gear.
@@ -36950,6 +37086,7 @@ void main()
                 Position     = SiegeFX.Core.Save.Vec3.From(m.CurrentTransform.Translation),
                 CurrentLife  = m.Actor.Combat.CurrentLife,
                 CurrentMana  = m.Actor.Combat.CurrentMana,
+                Downed       = m.Actor.Combat.Downed,   // SC-DOWNED
             };
             foreach (var it in GetMemberInventory(m.PartyIndex))
                 cs.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
@@ -37618,6 +37755,19 @@ void main()
             if (playerVitals is { } pv)
             {
                 _player.Actor.Combat.RestoreFromSave(pv.Life, pv.Mana, pv.Dead);
+                // SC-DOWNED — hero saved unconscious comes back unconscious:
+                // settled in the die pose, recovery ticking.
+                if (ps.Downed && !pv.Dead && pv.Life <= 0f)
+                {
+                    _player.Actor.Combat.EnterDowned();
+                    BeginDeathChore(_player, settled: true);
+                }
+                else if (!pv.Dead)
+                {
+                    // Healthy restore — drop a pinned die-pose from an
+                    // in-session downed episode before this load.
+                    _player.Actor.Host.OverrideAnimIndex(-1, 0f);
+                }
                 Console.WriteLine($"[load-diag] player vitals re-applied post-resync: " +
                                   $"{pv.Life:F0}/{_player.Actor.Stats.MaxLife:F0} HP, " +
                                   $"{pv.Mana:F0}/{_player.Actor.Stats.MaxMana:F0} MP");
@@ -37916,12 +38066,28 @@ void main()
             // unconditional dead:false restore left combat reading dead
             // (CurrentLife<=0) while the render state said alive — a
             // walking husk that re-collapsed on the first hit.
-            if (cs.CurrentLife <= 0f)
+            // SC-DOWNED — unless the save says they were merely UNCONSCIOUS:
+            // then they come back downed (revivable), settled in the die
+            // pose, with trauma/recovery ticking as before.
+            if (cs.CurrentLife <= 0f && cs.Downed)
+            {
+                npc.Actor.Combat.RestoreFromSave(0f, cs.CurrentMana, dead: false);
+                npc.Actor.Combat.EnterDowned();
+                npc.CanFight = false;
+                BeginDeathChore(npc, settled: true);
+            }
+            else if (cs.CurrentLife <= 0f)
             {
                 npc.Actor.Combat.RestoreFromSave(0f, cs.CurrentMana, dead: true);
                 npc.IsDead = true;
                 npc.Brain = null;
                 BeginDeathChore(npc, settled: true);
+            }
+            else
+            {
+                // Healthy restore — drop any pinned die-pose from an
+                // in-session downed episode before this load.
+                npc.Actor.Host.OverrideAnimIndex(-1, 0f);
             }
             partyRestored++;
         }

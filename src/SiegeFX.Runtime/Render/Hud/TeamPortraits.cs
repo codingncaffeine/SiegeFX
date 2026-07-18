@@ -37,7 +37,14 @@ public sealed class TeamPortraits
     public readonly record struct Member(
         GlTexture? Portrait, float HpFrac, float MpFrac, bool Dead, bool Selected,
         GlTexture? Slot1 = null, GlTexture? Slot2 = null, GlTexture? Slot3 = null,
-        GlTexture? Slot4 = null, int ActiveSlot = -1);
+        GlTexture? Slot4 = null, int ActiveSlot = -1, bool Downed = false);
+
+    /// <summary>SC-DOWNED — the manual's portrait state tints: normal,
+    /// YELLOW warning at ≤1/3 HP, RED while unconscious (0 HP, revivable).</summary>
+    public static Vector4 PortraitTint(bool downed, float hpFrac) =>
+        downed          ? new Vector4(1.0f, 0.28f, 0.22f, 1f)
+        : hpFrac <= 1f / 3f ? new Vector4(1.0f, 0.9f, 0.35f, 1f)
+        : Vector4.One;
 
     /// <summary>Which widget in a follower cell was clicked.</summary>
     public enum HitKind { None, Portrait, Chevron, Slot }
@@ -126,7 +133,8 @@ public sealed class TeamPortraits
                 var uv = m.Portrait.ContentUv;
                 int inx = (int)MathF.Round(pw * 0.05f), iny = (int)MathF.Round(ph * 0.05f);
                 icons.DrawIcon(viewportW, viewportH, m.Portrait,
-                    px + inx, py + iny, pw - 2 * inx, ph - 2 * iny, Vector4.One,
+                    px + inx, py + iny, pw - 2 * inx, ph - 2 * iny,
+                    PortraitTint(m.Downed, m.HpFrac),
                     uv.X, uv.Y, uv.Z, uv.W);
             }
             if (m.Dead && deathTex is not null)

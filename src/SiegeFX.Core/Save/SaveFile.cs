@@ -160,6 +160,10 @@ public sealed class CompanionSnapshot
     public Vec3   Position      { get; set; }
     public float  CurrentLife   { get; set; }
     public float  CurrentMana   { get; set; }
+    /// <summary>SC-DOWNED — true when the member was UNCONSCIOUS (0 HP but
+    /// revivable) at save time; distinguishes a downed body from a real
+    /// corpse in the 0-HP restore path.</summary>
+    public bool   Downed        { get; set; }
     /// <summary>The companion's backpack (GetMemberInventory list).</summary>
     public List<LootEntrySnapshot> Inventory { get; set; } = new();
     /// <summary>Worn-slot deltas (es_* → template ref), mirroring
@@ -350,6 +354,9 @@ public sealed class PlayerSnapshot
     public uint  Scid         { get; set; }
     public long  TotalXp      { get; set; }
     public int   Level        { get; set; }
+
+    /// <summary>SC-DOWNED — hero saved while unconscious (0 HP, revivable).</summary>
+    public bool  Downed       { get; set; }
 
     /// <summary>SC-SUMMON-UI — the player's live summon (0 = none). Its
     /// actor row lives in Actors[]; the end script is the authored

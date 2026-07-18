@@ -26,6 +26,44 @@ public sealed class ActorCombatState
     /// render/AI layer consumes it to fire the die-chore and drop loot exactly once.</summary>
     public bool JustDied { get; private set; }
 
+    /// <summary>SC-DOWNED — retail's unconscious state. A player-class actor
+    /// whose life hits zero goes DOWN rather than dying outright: they lie
+    /// helpless, can be healed back to their feet (Heal works while downed),
+    /// and only truly die when post-zero trauma crosses the authored
+    /// formulas.gas death_threshold fraction of MaxLife. The render layer
+    /// owns the transitions via <see cref="EnterDowned"/> /
+    /// <see cref="ClearDowned"/> / <see cref="ConfirmDeath"/>.</summary>
+    public bool Downed { get; private set; }
+
+    /// <summary>Damage absorbed while downed. Compared by the render layer
+    /// against death_threshold × MaxLife to turn unconsciousness into death.</summary>
+    public float PostZeroTrauma { get; private set; }
+
+    public void EnterDowned()
+    {
+        Downed = true;
+        PostZeroTrauma = 0f;
+    }
+
+    /// <summary>Leave the downed state (revived, or cleaned up after the
+    /// trauma death fired). Clears the death edge so a revived actor gets a
+    /// fresh JustDied on their next fall.</summary>
+    public void ClearDowned()
+    {
+        Downed = false;
+        PostZeroTrauma = 0f;
+        JustDied = false;
+    }
+
+    /// <summary>Trauma exceeded the authored threshold — turn the downed
+    /// state into a real death edge. Downed stays set so the death sweep can
+    /// tell "second edge: die for real" from "first edge: fall down".</summary>
+    public void ConfirmDeath()
+    {
+        CurrentLife = 0f;
+        JustDied = true;
+    }
+
     /// <summary>SC-ENEMY-AUDIO-AUDIT runtime wire — one-shot edge for "actor
     /// just took a nonzero hit." Set by <see cref="ApplyDamage"/>, consumed
     /// by <see cref="ConsumeJustHit"/>. The render layer uses this to fire
@@ -50,6 +88,16 @@ public sealed class ActorCombatState
     /// in callers (xp attribution, overkill stats) stays honest.</summary>
     public float ApplyDamage(float damage)
     {
+        // SC-DOWNED — hits on an unconscious body accumulate trauma instead
+        // of draining (already-zero) life. No life removed → no XP credit.
+        if (Downed && CurrentLife <= 0f)
+        {
+            if (!_stats.CanTakeDamage || damage <= 0f) return 0f;
+            PostZeroTrauma += damage;
+            JustHit = true;
+            LastDamageTaken = damage;
+            return 0f;
+        }
         if (IsDead) return 0f;
         // Use CanTakeDamage (MaxLife>0), not IsCombatant (also requires DamageMax>0).
         // Player characters have no template [attack] block — DS1 derives PC damage
@@ -105,7 +153,9 @@ public sealed class ActorCombatState
 
     public void Heal(float amount)
     {
-        if (IsDead || amount <= 0f) return;
+        // SC-DOWNED — healing works on an unconscious body (that's how the
+        // manual says you get them back up); only true corpses refuse it.
+        if ((IsDead && !Downed) || amount <= 0f) return;
         CurrentLife = MathF.Min(_stats.MaxLife, CurrentLife + amount);
     }
 
@@ -145,6 +195,10 @@ public sealed class ActorCombatState
         CurrentMana = MathF.Max(0f, MathF.Min(_stats.MaxMana, currentMana));
         if (dead) CurrentLife = 0f;
         JustDied = false;
+        // SC-DOWNED — the load path re-establishes downed state explicitly
+        // (EnterDowned after restore) — start clean here.
+        Downed = false;
+        PostZeroTrauma = 0f;
         // SC-ENEMY-AUDIO-AUDIT — clear the hit edge alongside the death
         // edge so a load doesn't fire a stale hit-voice cue on the first
         // post-load tick. Mirrors JustDied handling above.
