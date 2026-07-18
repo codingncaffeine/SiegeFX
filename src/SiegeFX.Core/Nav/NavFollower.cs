@@ -221,6 +221,22 @@ public sealed class NavFollower
         CurrentTriangle = -1;
     }
 
+    /// <summary>SC-BODY-SEPARATION — displace the walker by a small XZ delta
+    /// (crowd push-out) without disturbing the active path. The landing point
+    /// must pass the same Y-gated stand probe as normal movement; an off-mesh
+    /// or cross-layer push is dropped, so separation can never shove a body
+    /// through a wall or off the floor. Path state is left alone — the next
+    /// tick's standing resolution / drift handling re-glues the walker.</summary>
+    public void Nudge(float dx, float dz)
+    {
+        var cand = new Vector3(Position.X + dx, Position.Y, Position.Z + dz);
+        if (!TryFindStandTriangle(cand, out var tri)) return;
+        float y = Mesh.SampleYOnTriangle(tri, cand);
+        if (y < Position.Y - MaxStepDownDy) return;
+        Position = new Vector3(cand.X, y, cand.Z);
+        CurrentTriangle = tri;
+    }
+
     private void Replan()
     {
         _path.Clear();

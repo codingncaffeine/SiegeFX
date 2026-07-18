@@ -5849,6 +5849,11 @@ public sealed class RenderHost : IDisposable
         public float NextIn;
     }
     private readonly List<ActiveMultiSummon> _multiSummons = new();
+    // SC-SUMMON-TTL — multi-summon creatures live for the spell's authored
+    // effect_duration (gom_summon: 20s) then unsummon; without the expiry
+    // repeated casts buried the player under a permanent pile of imps.
+    private readonly List<(ActorRenderState Actor, float DieAt)> _multiSummonLive = new();
+    private float _multiSummonClock;
 
     private void StartMultiSummon(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center)
     {
@@ -5888,10 +5893,117 @@ public sealed class RenderHost : IDisposable
             var pos = ms.Center + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
             if (_navMesh is not null && _navMesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true))
                 pos = pos with { Y = _navMesh.SampleYOnTriangle(tri, pos) };
+            int actorsBefore = _actors.Count;
             SpawnObjectChild(picked, pos);
+            // SC-SUMMON-TTL — the freshly spawned creature expires at the
+            // spell's authored effect_duration (skill-scaled), like retail.
+            if (_actors.Count > actorsBefore)
+            {
+                float ttl = MathF.Max(5f, SpellEffectDurationSec(ms.Spell, null));
+                _multiSummonLive.Add((_actors[^1], _multiSummonClock + ttl));
+            }
             if (sm.EffectScript.Length > 0)
                 OnTriggerCallSfxScript(sm.EffectScript, null, pos);
             if (ms.Remaining <= 0) _multiSummons.RemoveAt(i);
+        }
+    }
+
+    private void TickMultiSummonExpiry(float dt)
+    {
+        _multiSummonClock += dt;
+        if (_multiSummonLive.Count == 0) return;
+        for (int i = _multiSummonLive.Count - 1; i >= 0; i--)
+        {
+            var (a, dieAt) = _multiSummonLive[i];
+            if (a.IsDead) { _multiSummonLive.RemoveAt(i); continue; }
+            if (_multiSummonClock < dieAt) continue;
+            _multiSummonLive.RemoveAt(i);
+            // Unsummon: farewell puff at the spot, no corpse, no loot —
+            // same removal shape as DespawnSummon (player summons).
+            var pos = a.CurrentTransform.Translation;
+            if (_sfxRuntime is not null && _sfxStore is not null
+                && _sfxStore.TryGet("un_summon", out _))
+                _sfxRuntime.Spawn("un_summon", SiegeFX.Core.Sfx.SfxContext.At(pos));
+            _actors.Remove(a);
+            Console.WriteLine($"[multi-summon] {a.Actor.Template.Name} unsummoned (duration up)");
+        }
+    }
+
+    // ── SC-BODY-SEPARATION ─────────────────────────────────────────────────
+    // Soft crowd push-out so bodies never stack inside each other (the Super
+    // Gom fight buried the player under a pile of summoned imps — invisible
+    // and unable to move). Every alive body near the player carries an XZ
+    // disc scaled by its render size; overlapping pairs push apart a little
+    // each tick through NavFollower.Nudge, whose Y-gated stand probe keeps
+    // the push on-mesh (never through a wall / off a ledge). Followerless
+    // actors (seated/parked NPCs) are immovable and shove the other side
+    // the full amount. Soft on purpose: the per-tick cap is well under walk
+    // speed, so a moving character still slips through a crowd — bodies
+    // yield instead of hard-blocking.
+    private readonly List<(ActorRenderState A, SiegeFX.Core.Nav.NavFollower? F, Vector3 P, float R)> _sepBodies = new();
+    private readonly HashSet<ActorRenderState> _sepSeen = new();
+    private const float SepMaxPushPerSec = 2.5f;
+    private const float SepGatherRadius = 60f;
+
+    private static float BodyRadius(ActorRenderState s)
+        => Math.Clamp(0.40f * s.Actor.Stats.RenderScale, 0.20f, 1.50f);
+
+    private void TickBodySeparation(float dt)
+    {
+        if (_player is null || _playerFollower is null || _player.IsDead) return;
+        var center = _playerFollower.Position;
+        _sepBodies.Clear();
+        _sepSeen.Clear();
+
+        void Add(ActorRenderState s, SiegeFX.Core.Nav.NavFollower? f)
+        {
+            if (s.IsDead || s.Hidden || !_sepSeen.Add(s)) return;
+            var p = f?.Position ?? s.CurrentTransform.Translation;
+            float dx = p.X - center.X, dz = p.Z - center.Z;
+            if (dx * dx + dz * dz > SepGatherRadius * SepGatherRadius) return;
+            _sepBodies.Add((s, f, p, BodyRadius(s)));
+        }
+
+        Add(_player, _playerFollower);
+        foreach (var m in _party)
+            if (m.PartyIndex > 0) Add(m, m.Brain?.Wander?.Follower);
+        foreach (var s in _actors)
+            Add(s, s.Brain?.Wander?.Follower);
+        if (_sepBodies.Count < 2) return;
+
+        float maxPush = SepMaxPushPerSec * dt;
+        for (int i = 0; i < _sepBodies.Count; i++)
+        {
+            for (int j = i + 1; j < _sepBodies.Count; j++)
+            {
+                var (a, fa, pa, ra) = _sepBodies[i];
+                var (b, fb, pb, rb) = _sepBodies[j];
+                if (fa is null && fb is null) continue;
+                // Different floor layers never collide (stacked crypt levels).
+                if (MathF.Abs(pa.Y - pb.Y) > 2.0f) continue;
+                float want = ra + rb;
+                float dx = pb.X - pa.X, dz = pb.Z - pa.Z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 >= want * want) continue;
+                float d = MathF.Sqrt(d2);
+                float nx, nz;
+                if (d < 1e-3f)
+                {
+                    // Perfectly stacked (summon rings can drop two on one
+                    // spot): split along a deterministic per-pair heading.
+                    float ang = ((i * 73 + j * 31) % 360) * (MathF.PI / 180f);
+                    nx = MathF.Cos(ang); nz = MathF.Sin(ang);
+                }
+                else { nx = dx / d; nz = dz / d; }
+                float push = MathF.Min((want - d) * 0.5f, maxPush);
+                if (fa is not null && fb is not null)
+                {
+                    fa.Nudge(-nx * push, -nz * push);
+                    fb.Nudge(nx * push, nz * push);
+                }
+                else if (fa is not null) fa.Nudge(-nx * push * 2f, -nz * push * 2f);
+                else fb!.Nudge(nx * push * 2f, nz * push * 2f);
+            }
         }
     }
 
@@ -20627,7 +20739,9 @@ void main()
                 TickRemoteCompanions((float)stepSec);   // SC-MP-RECRUIT (host only)
                 TickDeathrains((float)stepSec);         // SC-SPELL-ENGINE
                 TickMultiSummons((float)stepSec);       // SC-SUMMON-MULTIPLE
+                TickMultiSummonExpiry((float)stepSec);  // SC-SUMMON-TTL
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
+                TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
                 // kill paths self-report; this catches ally kills).
                 SweepCombatDeaths();
