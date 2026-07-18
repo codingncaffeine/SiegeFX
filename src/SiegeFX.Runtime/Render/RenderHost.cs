@@ -2961,6 +2961,130 @@ public sealed class RenderHost : IDisposable
     /// <summary>ALPHA-2A — parse + register the logic gizmos of the given
     /// regions. Idempotent per scid (streaming re-entry safe); world bools
     /// intentionally NOT touched here — they're session state.</summary>
+    // SC-INV-CHANGER — cmd_inventory_changer placements (4 shipped SP
+    // uses): job1="equip" grants+equips template_name (the intro dagger
+    // rack), job1="drop" moves a carried item to a ground pile (the
+    // horseshoe room), and no job deletes it from the party (star key,
+    // azunite artifact — msg_scid notified after). All fire once when a
+    // party member enters the authored 2.5u sphere; consumption persists
+    // through the world-bool ledger.
+    private sealed class InvChangerState
+    {
+        public uint Scid;
+        public Vector3 Pos;
+        public string Template = "";
+        public string Job = "";
+        public uint MsgScid;
+        public bool Consumed;
+    }
+    private readonly List<InvChangerState> _invChangers = new();
+
+    private void LoadInvChangers(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        foreach (var rp in regionPaths)
+        {
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "command.gas");
+            foreach (var p in placements)
+            {
+                if (!p.TemplateName.Equals("cmd_inventory_changer", StringComparison.OrdinalIgnoreCase)) continue;
+                if (_invChangers.Any(c => c.Scid == p.Scid)) continue;
+                var sec = SiegeFX.Core.Assets.TemplateStore.FindChild(p.Node, "cmd_inv_changer");
+                if (sec is null) continue;
+                var localPos = p.Placement.LocalPosition;
+                var worldPos = localPos;
+                if (_regionLayout is not null &&
+                    _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nodeWorld))
+                    worldPos = Vector3.Transform(localPos, nodeWorld);
+                var st = new InvChangerState
+                {
+                    Scid = p.Scid,
+                    Pos = worldPos,
+                    Template = SiegeFX.Core.Assets.TemplateStore.FindAttr(sec, "template_name")?.Trim().Trim('"') ?? "",
+                    Job = SiegeFX.Core.Assets.TemplateStore.FindAttr(sec, "job1")?.Trim().Trim('"') ?? "",
+                    Consumed = _worldBools.TryGetValue($"invchanger:{p.Scid:x8}", out var done) && done,
+                };
+                var msg = SiegeFX.Core.Assets.TemplateStore.FindAttr(sec, "msg_scid")?.Trim();
+                if (msg is not null && msg.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    && uint.TryParse(msg[2..], System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out var ms))
+                    st.MsgScid = ms;
+                if (st.Template.Length > 0) _invChangers.Add(st);
+            }
+        }
+    }
+
+    private void TickInvChangers()
+    {
+        if (_invChangers.Count == 0 || _templateStore is null) return;
+        foreach (var c in _invChangers)
+        {
+            if (c.Consumed) continue;
+            bool near = false;
+            foreach (var m in _party)
+            {
+                var mp = m.CurrentTransform.Translation;
+                float dx = mp.X - c.Pos.X, dz = mp.Z - c.Pos.Z;
+                if (dx * dx + dz * dz <= 2.5f * 2.5f && MathF.Abs(mp.Y - c.Pos.Y) < 3f) { near = true; break; }
+            }
+            if (!near) continue;
+            c.Consumed = true;
+            _worldBools[$"invchanger:{c.Scid:x8}"] = true;
+            switch (c.Job.ToLowerInvariant())
+            {
+                case "equip":
+                {
+                    var slot = (_templateStore.TryGet(c.Template, out var tpl) && tpl is not null
+                        ? _templateStore.GetAttribute(tpl, "gui", "equip_slot") : null)?.Trim() ?? "es_weapon_hand";
+                    if (!_playerEquipment.TryGetValue(slot, out var cur) || string.IsNullOrWhiteSpace(cur))
+                    {
+                        _playerEquipment[slot] = c.Template;
+                        ApplyEquipmentChange(slot);
+                        Console.WriteLine($"[inv-changer] 0x{c.Scid:X8} equipped '{c.Template}' ({slot})");
+                    }
+                    break;
+                }
+                case "drop":
+                {
+                    bool removed = RemoveFromParty(c.Template);
+                    AddLootPile(new LootPile(c.Pos,
+                        new List<SiegeFX.Core.Actors.LootEntry> { new("", c.Template) }));
+                    Console.WriteLine($"[inv-changer] 0x{c.Scid:X8} dropped '{c.Template}' at the gizmo" +
+                                      (removed ? " (taken from the party)" : ""));
+                    break;
+                }
+                default:
+                {
+                    bool removed = RemoveFromParty(c.Template);
+                    if (removed)
+                        Console.WriteLine($"[inv-changer] 0x{c.Scid:X8} removed '{c.Template}' from the party");
+                    if (c.MsgScid != 0)
+                        PostTriggerWorldMessage("we_req_activate", c.Scid, c.MsgScid);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>Remove the first instance of <paramref name="templateName"/>
+    /// from any party bag or worn slot. Returns true when found.</summary>
+    private bool RemoveFromParty(string templateName)
+    {
+        foreach (var m in _party)
+        {
+            var bag = GetMemberInventory(m.PartyIndex);
+            for (int i = 0; i < bag.Count; i++)
+                if (bag[i].Reference.Equals(templateName, StringComparison.OrdinalIgnoreCase))
+                { bag.RemoveAt(i); return true; }
+            var eq = GetEquipmentDict(m.PartyIndex);
+            foreach (var kv in eq)
+                if (kv.Value.Equals(templateName, StringComparison.OrdinalIgnoreCase))
+                { eq.Remove(kv.Key); ApplyEquipmentChange(kv.Key, m.PartyIndex); return true; }
+        }
+        return false;
+    }
+
     // SC-CHAPTER — activate_chapter placements (scid → authored chapter
     // key like "chapter_7"). Activated via we_req_activate from story
     // triggers; the pre-rendered card art carries the display text.
@@ -12211,6 +12335,7 @@ void main()
         LoadCommands(allLoaded);
         LoadLogicGizmos(allLoaded);
         LoadChapterGizmos(allLoaded);
+        LoadInvChangers(allLoaded);
         LoadAutoTraps(allLoaded);
         LoadShrines(allLoaded);
         LoadBlockingGizmos(allLoaded);
@@ -12519,6 +12644,7 @@ void main()
         LoadCommands(newlyLoaded);
         LoadLogicGizmos(newlyLoaded);
         LoadChapterGizmos(newlyLoaded);
+        LoadInvChangers(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
         LoadShrines(newlyLoaded);
         LoadBlockingGizmos(newlyLoaded);
@@ -19824,6 +19950,7 @@ void main()
                 // child spawning ride the same fixed 20 Hz cadence as
                 // triggers and brains.
                 UpdateGenerators((float)stepSec);
+                TickInvChangers();
                 TickPendingObjectSpawns((float)stepSec);
                 TickScriptedMoves((float)stepSec);
                 TickScriptedSmashes((float)stepSec);
