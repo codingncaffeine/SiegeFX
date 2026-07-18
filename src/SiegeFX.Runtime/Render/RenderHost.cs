@@ -5412,6 +5412,14 @@ public sealed class RenderHost : IDisposable
     private uint _summonSeq;
     private readonly Dictionary<ActorRenderState, ActorRenderState> _summonByOwner = new();
 
+    /// <summary>SC-SUMMON-UI — the summon's reserved selection index in
+    /// <see cref="_selectedPartyIdx"/> (real members use PartyIndex 1..7).</summary>
+    private const int SummonSelIdx = 99;
+
+    /// <summary>The player's live summon, or null.</summary>
+    private ActorRenderState? PlayerSummon =>
+        _player is not null && _summonByOwner.TryGetValue(_player, out var s) ? s : null;
+
     /// <summary>[spell_deathrain] — schedule the storm: MaxDrops drops at
     /// FreqMin..FreqMax intervals, each running drop_script on a random
     /// point within SpawnRadius of the cast target, falling from
@@ -5517,14 +5525,24 @@ public sealed class RenderHost : IDisposable
                 continue;
             }
             // Evil summons run their natural brain (it already hunts the
-            // party). Good-aligned summons are DRIVEN like companions:
-            // heel to the owner, engage the owner's enemies.
+            // party). Good-aligned summons are DRIVEN like companions —
+            // SC-SUMMON-UI: honoring THEIR standing orders (set via the
+            // field commands with the summon's strip cell selected).
             if (s.IsEvilAligned || s.Brain is null) continue;
             var lp = owner.CurrentTransform.Translation;
             var follower = s.Brain.Wander.Follower;
             var before = follower.Position;
-            var foe = SelectEnemyFor(before, s.Brain.AggroRadius,
-                Hud.FieldCommandsPanel.Action.AtkFree, Hud.FieldCommandsPanel.Action.TgtClosest);
+            ActorRenderState? foe = null;
+            if (s.CanFight && s.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
+            {
+                float radius = s.FcMovement switch
+                {
+                    Hud.FieldCommandsPanel.Action.MoveHoldGround => 3.5f,
+                    Hud.FieldCommandsPanel.Action.MoveFree => s.Brain.AggroRadius * 1.5f,
+                    _ => s.Brain.AggroRadius,
+                };
+                foe = SelectEnemyFor(before, radius, s.FcAttack, s.FcTargeting);
+            }
             if (foe is not null)
             {
                 s.Brain.Tick(dt, foe.CurrentTransform.Translation, foe.Actor.Combat, foe.Actor.Stats);
@@ -5534,7 +5552,8 @@ public sealed class RenderHost : IDisposable
                 s.Brain.ForceIdle();
                 float gx = lp.X - before.X, gz = lp.Z - before.Z;
                 float gap2 = gx * gx + gz * gz;
-                if (gap2 > 40f * 40f) s.Brain.Teleport(lp);
+                if (!s.FcFollow) { /* parked by orders */ }
+                else if (gap2 > 40f * 40f) s.Brain.Teleport(lp);
                 else if (gap2 > 4f * 4f)
                 {
                     follower.Speed = 4.5f;
@@ -8500,9 +8519,21 @@ void main()
                                                  showChat: _mpNetSession is not null);
                     if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
 
-                    if (_party.Count > 1)
+                    if (_party.Count > 1 || PlayerSummon is not null)
                     {
-                        var th = _teamPortraits.HitTest(mx, my, _window.Size.Y, _party.Count - 1);
+                        int followerCells = _party.Count - 1;
+                        int cellCount = followerCells + (PlayerSummon is not null ? 1 : 0);
+                        var th = _teamPortraits.HitTest(mx, my, _window.Size.Y, cellCount);
+                        // SC-SUMMON-UI — the trailing cell is the summon:
+                        // click selects it (orders/disband then act on it);
+                        // it has no inventory or slots, so those are inert.
+                        if (th.Kind != Hud.TeamPortraits.HitKind.None && th.Member >= followerCells)
+                        {
+                            if (th.Kind == Hud.TeamPortraits.HitKind.Portrait && _cursorItem is null)
+                                SetPartySelection(SummonSelIdx);
+                            _audio?.Play(SfxGuiInventory);
+                            return;
+                        }
                         if (th.Kind != Hud.TeamPortraits.HitKind.None)
                         {
                             int pidx = th.Member + 1;   // follower 0 = PartyIndex 1
@@ -25681,10 +25712,13 @@ void main()
 
         // Phase 27 — team_portraits strip: the follower cells stacked below
         // the leader's slot-1 portrait. One cell per recruited member.
-        if (_party.Count > 1)
+        // SC-SUMMON-UI — the player's summon rides the strip too (retail's
+        // "Summoned Creature" pseudo-member), so the gate must also open
+        // when a summon is out with no companions recruited.
+        if (_party.Count > 1 || PlayerSummon is not null)
         {
             _awpDeathTex ??= TryGetGuiTexture("b_gui_ig_i_ic_c_death");
-            var cells = new List<Hud.TeamPortraits.Member>(_party.Count - 1);
+            var cells = new List<Hud.TeamPortraits.Member>(_party.Count);
             for (int i = 0; i < _party.Count; i++)
             {
                 var m = _party[i];
@@ -25717,6 +25751,21 @@ void main()
                     m.IsDead || c.IsDead,
                     _selectedPartyIdx.Contains(m.PartyIndex),
                     mSlot1, mSlot2, mSpellIcon, null, mActive));
+            }
+            // SC-SUMMON-UI — the summon's cell: portrait + vitals, no
+            // weapon/spell slots (it has no inventory), selectable so the
+            // field commands and disband act on it.
+            if (PlayerSummon is { } smn)
+            {
+                var sc = smn.Actor.Combat;
+                var sst = smn.Actor.Stats;
+                cells.Add(new Hud.TeamPortraits.Member(
+                    ResolveMemberPortrait(smn.Actor.Template),
+                    sst.MaxLife > 0f ? sc.CurrentLife / sst.MaxLife : 0f,
+                    sst.MaxMana > 0f ? sc.CurrentMana / sst.MaxMana : 0f,
+                    smn.IsDead || sc.IsDead,
+                    _selectedPartyIdx.Contains(SummonSelIdx),
+                    null, null, null, null, -1));
             }
             _teamPortraits.Draw(_iconRenderer, _barRenderer, viewportW, viewportH,
                                 _awpAtlas, cells, _awpDeathTex, _awpInvBtnTex);
@@ -26092,6 +26141,8 @@ void main()
             foreach (var mem in _party)
                 if (mem is not null && mem.PartyIndex > 0 && mem.IsPartyMember && !mem.IsDead)
                     _selectedPartyIdx.Add(mem.PartyIndex);
+            // SC-SUMMON-UI — select-all includes the summon.
+            if (PlayerSummon is { IsDead: false }) _selectedPartyIdx.Add(SummonSelIdx);
         }
         else _selectedPartyIdx.Add(idx);
     }
@@ -26104,8 +26155,14 @@ void main()
         bool anySelected = false;
         foreach (var i in _selectedPartyIdx) if (i > 0) { anySelected = true; break; }
         foreach (var m in _party)
-            if (m.PartyIndex > 0 && (!anySelected || _selectedPartyIdx.Contains(m.PartyIndex)))
+            if (m.PartyIndex > 0 && m.PartyIndex != SummonSelIdx
+                && (!anySelected || _selectedPartyIdx.Contains(m.PartyIndex)))
                 yield return m;
+        // SC-SUMMON-UI — the summon obeys standing orders like a member:
+        // included when selected, or when the whole party is addressed.
+        if (PlayerSummon is { IsDead: false } smn
+            && (!anySelected || _selectedPartyIdx.Contains(SummonSelIdx)))
+            yield return smn;
     }
 
     /// <summary>The member whose orders the panel displays: the lowest-index
@@ -26221,6 +26278,16 @@ void main()
     /// (their recruit conversation re-arms in EndConversation's party gate).</summary>
     private void DisbandSelectedFollowers()
     {
+        // SC-SUMMON-UI — a selected summon dismisses via the same button
+        // (its authored un_summon farewell plays at its spot).
+        if (_selectedPartyIdx.Contains(SummonSelIdx)
+            && _player is not null && PlayerSummon is { } smn)
+        {
+            Console.WriteLine($"party: dismissing summon {smn.Actor.Template.Name}");
+            DespawnSummon(_player, smn);
+            SetPartySelection(0);
+            return;
+        }
         var targets = new List<ActorRenderState>();
         foreach (var m in _party)
             if (m.PartyIndex > 0 && _selectedPartyIdx.Contains(m.PartyIndex))
@@ -27101,17 +27168,23 @@ void main()
 
         // Team-portrait strip — each companion cell mirrors the portrait
         // treatment with THEIR vitals + the authored guard line.
-        if (_party.Count > 1)
+        if (_party.Count > 1 || PlayerSummon is not null)
         {
             var followers = _party.Where(p => p.PartyIndex > 0)
                                   .OrderBy(p => p.PartyIndex).ToList();
-            var hit = _teamPortraits.HitTest(mx, my, vh, followers.Count);
+            int cellCount = followers.Count + (PlayerSummon is not null ? 1 : 0);
+            var hit = _teamPortraits.HitTest(mx, my, vh, cellCount);
             if (hit.Member >= 0 && hit.Member < followers.Count)
             {
                 var m = followers[hit.Member];
                 return (Vitals(m, ResolveMemberName(m)), gold,
                         "Click to guard this character. Issuing other orders will cancel this command.");
             }
+            // SC-SUMMON-UI — the trailing cell: the authored [spell_summon]
+            // description string is the subject line.
+            if (hit.Member == followers.Count && PlayerSummon is { } smnTip)
+                return (Vitals(smnTip, "Summoned Creature"), gold,
+                        "Fights for you until dismissed. Select and press Disband to release.");
         }
 
         // Field-commands cluster — the authored rollover strings from
@@ -35177,6 +35250,13 @@ void main()
                     PantsIdx    = snapPick.PantsIdx,
                 };
             }
+            // SC-SUMMON-UI — the live summon rides the save (its actor row
+            // is captured with every other actor; this rebinds control).
+            if (PlayerSummon is { } psmn)
+            {
+                p.SummonScid      = psmn.Actor.Instance.Scid;
+                p.SummonEndScript = psmn.SummonEndScript;
+            }
             save.Player = p;
         }
 
@@ -35872,6 +35952,11 @@ void main()
         // save wholesale (runtime state fully replaced, per the ApplySave
         // runtime-state rule).
         _hiredScids.Clear();
+        // SC-SUMMON-UI — a pre-load summon doesn't survive into the loaded
+        // state (its replacement, if any, rebinds below from the save).
+        if (_player is not null && PlayerSummon is { } staleSummon)
+            DespawnSummon(_player, staleSummon);
+        _summonByOwner.Clear();
         _dismissedCompanions.Clear();
         if (save.World is { } wsFc)
         {
@@ -35982,6 +36067,33 @@ void main()
         }
         if (save.Party.Count > 0)
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
+
+        // SC-SUMMON-UI — rebind the player's summon so it loads as a
+        // CONTROLLED summon (strip cell, orders, dismiss) rather than
+        // decaying into a stray world NPC. Respawns from its saved actor
+        // row when the load didn't materialize it.
+        if (save.Player is { SummonScid: not 0 } pss && _player is not null)
+        {
+            ActorRenderState? smn = null;
+            foreach (var a in _actors)
+                if (a.Actor.Instance.Scid == pss.SummonScid) { smn = a; break; }
+            if (smn is null)
+            {
+                SiegeFX.Core.Save.ActorSnapshot? srow = null;
+                foreach (var r in save.Actors)
+                    if (r.Scid == pss.SummonScid) { srow = r; break; }
+                if (srow is not null && !srow.IsDead && srow.TemplateName.Length > 0)
+                    smn = TrySpawnCompanionActor(srow.TemplateName, srow.Scid, srow.Position.ToVector3());
+            }
+            if (smn is not null && !smn.IsDead)
+            {
+                smn.SummonOwner = _player;
+                smn.SummonEndScript = pss.SummonEndScript;
+                smn.CanFight = true;
+                _summonByOwner[_player] = smn;
+                Console.WriteLine($"  load: summon rebound ({smn.Actor.Template.Name})");
+            }
+        }
 
         _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — restored appearance → fresh head-shot
         Console.WriteLine($"[load-diag] done: current='{_currentPlayerRegion}' underground={_isUnderground} " +

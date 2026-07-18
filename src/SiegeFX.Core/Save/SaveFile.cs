@@ -314,6 +314,12 @@ public sealed class PlayerSnapshot
     public long  TotalXp      { get; set; }
     public int   Level        { get; set; }
 
+    /// <summary>SC-SUMMON-UI — the player's live summon (0 = none). Its
+    /// actor row lives in Actors[]; the end script is the authored
+    /// un_summon farewell replayed on dismiss after load.</summary>
+    public uint   SummonScid      { get; set; }
+    public string SummonEndScript { get; set; } = "";
+
     /// <summary>Auto-grown attributes from level-ups. Re-applied to the
     /// player's stats block on load so MaxLife/MaxMana stay consistent.</summary>
     public float Strength     { get; set; }
