@@ -1700,6 +1700,13 @@ public sealed class RenderHost : IDisposable
         // player attack target. DS1 never lets you attack good/neutral
         // NPCs (Norick, guards, kings) — no attack cursor, no swing.
         public bool IsEvilAligned;
+        // SC-ALIGN-SWITCH — [alignment_switcher] (Gom): the actor spawns
+        // friendly/talkable and flips hostile when the authored trigger
+        // fires (speech ending / taking damage).
+        public bool AlignSwitchArmed;
+        public bool AlignSwitchOnTalkEnd;
+        public bool AlignSwitchOnDamaged;
+        public float AlignSwitchLife;
         // SC-SELECTABLE — authored [common] is_selectable=false (the intro
         // narrator): NO interaction at all, not even a cursor change.
         public bool IsSelectable = true;
@@ -6439,6 +6446,9 @@ public sealed class RenderHost : IDisposable
     // the party (recruitment is a `choice = potential_member` node, not a
     // separate prompt).
     private ActorRenderState? _lastTalkedActor;
+    // SC-ALIGN-SWITCH — dialogue open/close edge detector for the
+    // talk-end alignment switch (Gom's speech ending starts the fight).
+    private bool _dialogueWasOpen;
 
     // Phase 20a (follow-up) — authored player spawn. info/start_positions.gas
     // names a default start group ("farmhouse" in the shipped main map); we
@@ -19743,9 +19753,22 @@ void main()
                 // targets its NEAREST LIVE PARTY MEMBER (DS1 semantics), not the
                 // hero unconditionally: a krug beating on Ulora stays on Ulora
                 // instead of tunneling through her at the player.
+                // SC-ALIGN-SWITCH — the speech ending is the fight gong:
+                // fire the switch on the dialogue's close edge for the actor
+                // the player just talked to.
+                bool dlgOpenNow = _dialogue.IsOpen;
+                if (_dialogueWasOpen && !dlgOpenNow
+                    && _lastTalkedActor is { AlignSwitchArmed: true, AlignSwitchOnTalkEnd: true } talked)
+                    TriggerAlignmentSwitch(talked, "speech ended");
+                _dialogueWasOpen = dlgOpenNow;
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
+                    // SC-ALIGN-SWITCH — WE_DAMAGED form: any lost life fires
+                    // the switch (covers attacks from every source).
+                    if (s.AlignSwitchArmed && s.AlignSwitchOnDamaged
+                        && s.Actor.Combat.CurrentLife < s.AlignSwitchLife - 0.01f)
+                        TriggerAlignmentSwitch(s, "damaged");
                     // Phase 12-SC-2 — drain any chore_attack override pinned by
                     // the brain on the previous swing. Outside the brain branch
                     // so non-combatants and brain-less actors still tick.
@@ -23932,6 +23955,35 @@ void main()
         if (!string.IsNullOrEmpty(sel)
             && sel.Trim().Trim('"').Equals("false", StringComparison.OrdinalIgnoreCase))
             s.IsSelectable = false;
+        // SC-ALIGN-SWITCH — [alignment_switcher]: the actor stays friendly
+        // (talkable, never hunted or hunting) until the authored trigger
+        // message fires. Gom authors WE_REQ_TALK_END + WE_DAMAGED — the
+        // speech ending IS the fight gong; without this he sat in his
+        // chair forever ("no battle at all").
+        var asw1 = _templateStore.GetAttribute(s.Actor.Template, "alignment_switcher", "trigger_msg")?.Trim() ?? "";
+        var asw2 = _templateStore.GetAttribute(s.Actor.Template, "alignment_switcher", "trigger_msg2")?.Trim() ?? "";
+        if (asw1.Length > 0 || asw2.Length > 0)
+        {
+            var joined = asw1 + ";" + asw2;
+            s.AlignSwitchArmed = true;
+            s.AlignSwitchOnTalkEnd = joined.Contains("talk_end", StringComparison.OrdinalIgnoreCase);
+            s.AlignSwitchOnDamaged = joined.Contains("damaged", StringComparison.OrdinalIgnoreCase);
+            s.AlignSwitchLife = s.Actor.Combat.CurrentLife;
+            s.IsEvilAligned = false;
+        }
+    }
+
+    /// <summary>SC-ALIGN-SWITCH — flip a switcher actor hostile: evil
+    /// alignment (attack cursor + targeting), combat brain if none, and
+    /// the talk path stops offering the speech.</summary>
+    private void TriggerAlignmentSwitch(ActorRenderState s, string reason)
+    {
+        if (!s.AlignSwitchArmed) return;
+        s.AlignSwitchArmed = false;
+        s.IsEvilAligned = true;
+        s.CanFight = true;
+        if (s.Brain is null) RebuildNpcBrain(s, s.CurrentTransform.Translation);
+        Console.WriteLine($"[align-switch] {s.Actor.Template.Name} turns HOSTILE ({reason})");
     }
 
     /// <summary>SC-COMPANION-GEAR-VISUAL — rebuild a companion's rendered
@@ -24182,6 +24234,11 @@ void main()
             if (s.IsDead) continue;
             if (s.IsPlayer) continue;
             if (s.IsPartyMember) continue;   // Phase 26b — already recruited
+            // SC-ALIGN-SWITCH — a switched (or plain hostile) actor is an
+            // attack target, never a talk target; the header comment always
+            // promised this but no gate existed, so post-speech Gom kept
+            // re-offering his monologue instead of fighting.
+            if (s.IsEvilAligned) continue;
             // SC-NIS — Norick is the intro's dying storyteller: his monologue
             // plays as narration during the bridge NIS (OnTalkBeginMessage),
             // never a click-to-talk panel. DS1 never let the player interact
@@ -36080,6 +36137,9 @@ void main()
         if (_cursorScroll is not null) ClearScrollDrag();
         // A dialogue/vendor held open across F9 would resolve its recruit/
         // trade/quest edges against the post-load world — cross-timeline.
+        // _lastTalkedActor nulls FIRST so the close edge can't fire an
+        // alignment switch from a loading screen.
+        _lastTalkedActor = null;
         if (_dialogue.IsOpen) _dialogue.Close();
         if (_vendor.IsOpen) _vendor.Close();
         _deathrains.Clear();
