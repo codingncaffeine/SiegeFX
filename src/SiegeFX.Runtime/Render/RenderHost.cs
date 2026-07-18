@@ -1582,6 +1582,11 @@ public sealed class RenderHost : IDisposable
         // heels to (-1 = none). Driven by TickRemoteCompanions; poses reach
         // clients through the normal world delta.
         public int NetFollowPlayerId = -1;
+        // SC-SPELL-ENGINE — summoned-creature lifecycle: the caster this
+        // summon fights for, and the authored farewell script played when
+        // it despawns (replaced / owner died).
+        public ActorRenderState? SummonOwner;
+        public string SummonEndScript = "";
 
         // SC-MP-INGAME P2 — a stand-in avatar for another human player, driven
         // entirely by the player-pose stream (never by a Brain, and excluded
@@ -5392,6 +5397,163 @@ public sealed class RenderHost : IDisposable
             npc.IsPartyMember = true;
             npc.NetFollowPlayerId = player;
         }
+    }
+
+    // ── SC-SPELL-ENGINE — deathrain storms + summoned creatures ─────────
+    private sealed class ActiveDeathrain
+    {
+        public SiegeFX.Core.Assets.SpellTemplate Spell = null!;
+        public Vector3 Center;
+        public int DropsLeft;
+        public float NextDropIn;
+        public Random Rng = null!;
+    }
+    private readonly List<ActiveDeathrain> _deathrains = new();
+    private uint _summonSeq;
+    private readonly Dictionary<ActorRenderState, ActorRenderState> _summonByOwner = new();
+
+    /// <summary>[spell_deathrain] — schedule the storm: MaxDrops drops at
+    /// FreqMin..FreqMax intervals, each running drop_script on a random
+    /// point within SpawnRadius of the cast target, falling from
+    /// SpawnHeight. (Ice Storm = 25 shards over ~4s, not one.)</summary>
+    private void StartDeathrain(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center)
+    {
+        if (spell.Deathrain is null) return;
+        _deathrains.Add(new ActiveDeathrain
+        {
+            Spell = spell,
+            Center = center,
+            DropsLeft = Math.Clamp(spell.Deathrain.MaxDrops, 1, 64),
+            NextDropIn = 0f,
+            Rng = new Random(unchecked((int)(center.X * 73856093f) ^ (int)(center.Z * 19349663f))),
+        });
+        Console.WriteLine($"[deathrain] {spell.Name}: {spell.Deathrain.MaxDrops} drops of " +
+                          $"'{spell.Deathrain.DropScript}' over ~{spell.Deathrain.MaxDrops * spell.Deathrain.FreqMax:F1}s");
+    }
+
+    private void TickDeathrains(float dt)
+    {
+        if (_deathrains.Count == 0) return;
+        for (int i = _deathrains.Count - 1; i >= 0; i--)
+        {
+            var d = _deathrains[i];
+            var spec = d.Spell.Deathrain!;
+            d.NextDropIn -= dt;
+            int guard = 8;   // cap drops per tick (large dt after a hitch)
+            while (d.NextDropIn <= 0f && d.DropsLeft > 0 && guard-- > 0)
+            {
+                d.DropsLeft--;
+                d.NextDropIn += spec.FreqMin + (float)d.Rng.NextDouble() * MathF.Max(0.01f, spec.FreqMax - spec.FreqMin);
+                float ang = (float)(d.Rng.NextDouble() * Math.PI * 2.0);
+                float rad = MathF.Sqrt((float)d.Rng.NextDouble()) * spec.SpawnRadius;
+                var ground = d.Center + new Vector3(MathF.Cos(ang) * rad, 0f, MathF.Sin(ang) * rad);
+                if (_navMesh is not null && _navMesh.TryFindTriangle(ground, out var gtri))
+                    ground.Y = _navMesh.SampleYOnTriangle(gtri, ground);
+                var sky = ground + new Vector3(0f, spec.SpawnHeight, 0f);
+                if (_sfxRuntime is not null && _sfxStore is not null
+                    && _sfxStore.TryGet(spec.DropScript, out _))
+                    _sfxRuntime.Spawn(spec.DropScript,
+                        new SiegeFX.Core.Sfx.SfxContext(sky, ground, sky));
+            }
+            if (d.DropsLeft <= 0) _deathrains.RemoveAt(i);
+        }
+    }
+
+    /// <summary>[spell_summon] — spawn the authored creature fighting for
+    /// the caster. DS1 semantics: one summon per caster (a new cast
+    /// replaces the old, playing its end_script), it follows its owner and
+    /// engages the owner's enemies, and it despawns when killed or when
+    /// the owner dies.</summary>
+    private void CastSummon(SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState owner, Vector3 at)
+    {
+        if (string.IsNullOrEmpty(spell.SummonTemplate)) return;
+        if (_summonByOwner.TryGetValue(owner, out var old) && old is not null)
+            DespawnSummon(owner, old);
+        uint scid = 0xFD000000u | (_summonSeq++ & 0xFFFFu);
+        var st = TrySpawnCompanionActor(spell.SummonTemplate, scid, at);
+        if (st is null)
+        {
+            Console.WriteLine($"[summon] '{spell.SummonTemplate}' failed to spawn");
+            return;
+        }
+        st.SummonOwner = owner;
+        st.SummonEndScript = spell.SummonEndScript;
+        st.CanFight = true;
+        st.IsEvilAligned = owner.IsEvilAligned;
+        _summonByOwner[owner] = st;
+        Console.WriteLine($"[summon] {spell.Name}: '{spell.SummonTemplate}' spawned for " +
+                          $"{(owner.IsPlayer ? "player" : owner.Actor.Template.Name)}");
+    }
+
+    private void DespawnSummon(ActorRenderState owner, ActorRenderState summon)
+    {
+        // The authored un_summon farewell plays at the creature's spot.
+        if (!string.IsNullOrEmpty(summon.SummonEndScript)
+            && _sfxRuntime is not null && _sfxStore is not null
+            && _sfxStore.TryGet(summon.SummonEndScript, out _))
+            _sfxRuntime.Spawn(summon.SummonEndScript,
+                SiegeFX.Core.Sfx.SfxContext.At(summon.CurrentTransform.Translation));
+        _actors.Remove(summon);
+        _summonByOwner.Remove(owner);
+    }
+
+    private void TickSummons(float dt)
+    {
+        if (_summonByOwner.Count == 0) return;
+        List<ActorRenderState>? dead = null;
+        foreach (var kv in _summonByOwner)
+        {
+            var owner = kv.Key;
+            var s = kv.Value;
+            if (s.IsDead || s.Actor.Combat.IsDead)
+            {
+                (dead ??= new()).Add(owner);   // corpse stays; entry clears
+                continue;
+            }
+            if (owner.IsDead)
+            {
+                DespawnSummon(owner, s);
+                (dead ??= new()).Add(owner);
+                continue;
+            }
+            // Evil summons run their natural brain (it already hunts the
+            // party). Good-aligned summons are DRIVEN like companions:
+            // heel to the owner, engage the owner's enemies.
+            if (s.IsEvilAligned || s.Brain is null) continue;
+            var lp = owner.CurrentTransform.Translation;
+            var follower = s.Brain.Wander.Follower;
+            var before = follower.Position;
+            var foe = SelectEnemyFor(before, s.Brain.AggroRadius,
+                Hud.FieldCommandsPanel.Action.AtkFree, Hud.FieldCommandsPanel.Action.TgtClosest);
+            if (foe is not null)
+            {
+                s.Brain.Tick(dt, foe.CurrentTransform.Translation, foe.Actor.Combat, foe.Actor.Stats);
+            }
+            else
+            {
+                s.Brain.ForceIdle();
+                float gx = lp.X - before.X, gz = lp.Z - before.Z;
+                float gap2 = gx * gx + gz * gz;
+                if (gap2 > 40f * 40f) s.Brain.Teleport(lp);
+                else if (gap2 > 4f * 4f)
+                {
+                    follower.Speed = 4.5f;
+                    float tdx = follower.Target.X - lp.X, tdz = follower.Target.Z - lp.Z;
+                    if (follower.ReachedGoal || follower.PathBlocked
+                        || (tdx * tdx + tdz * tdz) > 1.0f)
+                        follower.SetTarget(lp);
+                    follower.Tick(dt);
+                }
+            }
+            var after = follower.Position;
+            var mv = after - before;
+            s.IsMoving = (mv.X * mv.X + mv.Z * mv.Z) > 0.0025f;
+            var facev = s.IsMoving
+                ? Vector3.Normalize(new Vector3(mv.X, 0f, mv.Z)) : s.Brain.Facing;
+            s.CurrentTransform = Matrix4x4.CreateRotationY(MathF.Atan2(facev.X, facev.Z))
+                                 * Matrix4x4.CreateTranslation(after);
+        }
+        if (dead is not null) foreach (var o in dead) _summonByOwner.Remove(o);
     }
 
     /// <summary>SC-SPELL-AUDIT-2 — evaluate a spell's authored
@@ -19603,6 +19765,8 @@ void main()
                 // fixed cadence (after the leader has moved this tick).
                 TickPartyFollowers((float)stepSec);
                 TickRemoteCompanions((float)stepSec);   // SC-MP-RECRUIT (host only)
+                TickDeathrains((float)stepSec);         // SC-SPELL-ENGINE
+                TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 // Phase 26 — resolve enemies a follower just killed (the player
                 // kill paths self-report; this catches ally kills).
                 SweepCombatDeaths();
@@ -27662,6 +27826,11 @@ void main()
         // arrows visibly stick in bodies): chest-relative offset, victim ref.
         public ActorRenderState? StuckInActor;
         public Vector3 StuckOffset;
+        // SC-SPELL-ENGINE — flight-attached sfx script (maljin spike dust):
+        // run at launch bound to an external VM motion the tick keeps in
+        // sync with the shot; ended at stick/impact so the trail fades there.
+        public string FlightSfxScript = "";
+        public int FlightMotionId;
         // Player-fired: hostile target + attacker stats for impact bookkeeping.
         public ActorRenderState? TargetActor;
         public StaticPropInstance? TargetProp;
@@ -27722,6 +27891,59 @@ void main()
         shot.Pos = src;
         shot.Vel = SolveBallistic(src, aimPoint, MathF.Max(1f, speed), shot.Gravity);
         _rangedShots.Add(shot);
+        // SC-SPELL-ENGINE — the ammo's WE_ENTERED_WORLD flight script (maljin
+        // spike dust): run once, its emitters bound to an engine-driven
+        // motion the tick keeps synced with the shot.
+        if (shot.FlightSfxScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
+            && _sfxStore.TryGet(shot.FlightSfxScript, out _))
+        {
+            shot.FlightMotionId = _sfxRuntime.CreateExternalMotion(src);
+            _sfxRuntime.SpawnFollowing(shot.FlightSfxScript,
+                SiegeFX.Core.Sfx.SfxContext.At(src), shot.FlightMotionId);
+        }
+    }
+
+    /// <summary>SC-SPELL-ENGINE — the ammo template's WE_ENTERED_WORLD
+    /// trigger script (its flight trail), cached per spell.</summary>
+    private readonly Dictionary<string, string> _ammoFlightCache = new(StringComparer.OrdinalIgnoreCase);
+    private string ResolveAmmoFlightEffect(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        if (_ammoFlightCache.TryGetValue(spell.Name, out var cachedFx)) return cachedFx;
+        string fx = "";
+        if (spell.LaunchAmmoTemplate.Length > 0 && _templateStore is not null
+            && _templateStore.TryGet(spell.LaunchAmmoTemplate, out var atpl) && atpl is not null)
+        {
+            for (var t = atpl; t is not null && fx.Length == 0; t = t.Specializes)
+            {
+                foreach (var common in t.Node.Children)
+                {
+                    if (!common.Header.Equals("common", StringComparison.OrdinalIgnoreCase)) continue;
+                    var triggers = SiegeFX.Core.Assets.TemplateStore.FindChild(common, "template_triggers");
+                    if (triggers is null) continue;
+                    foreach (var row in triggers.Children)
+                    {
+                        if (!row.Header.Equals("*", StringComparison.Ordinal)) continue;
+                        bool entered = false;
+                        string? script = null;
+                        foreach (var attr in row.Attributes)
+                        {
+                            if (attr.Name.Equals("condition*", StringComparison.Ordinal)
+                                && attr.Value.Contains("WE_ENTERED_WORLD", StringComparison.OrdinalIgnoreCase))
+                                entered = true;
+                            else if (attr.Name.Equals("action*", StringComparison.Ordinal))
+                            {
+                                var n = SiegeFX.Core.Assets.SpellTemplate.ExtractCallSfxScriptArg(attr.Value);
+                                if (n.Length > 0) script = n;
+                            }
+                        }
+                        if (entered && script is not null) { fx = script; break; }
+                    }
+                    if (fx.Length > 0) break;
+                }
+            }
+        }
+        _ammoFlightCache[spell.Name] = fx;
+        return fx;
     }
 
     // SC-SPELL-LAUNCH — per-spell ammo profile cache: ammo GO mesh/texture
@@ -27762,6 +27984,19 @@ void main()
         return result;
     }
 
+    /// <summary>SC-SPELL-ENGINE — removal chokepoint: end the flight-trail
+    /// motion so its emitters fade at the shot's last point.</summary>
+    private void RemoveRangedShotAt(int i)
+    {
+        var s = _rangedShots[i];
+        if (s.FlightMotionId != 0)
+        {
+            _sfxRuntime?.EndExternalMotion(s.FlightMotionId);
+            s.FlightMotionId = 0;
+        }
+        _rangedShots.RemoveAt(i);
+    }
+
     private void TickRangedShots(float dt)
     {
         if (_rangedShots.Count == 0 || dt <= 0f) return;
@@ -27777,12 +28012,14 @@ void main()
                 if (shot.StuckInActor is { } stuckHost)
                     shot.Pos = stuckHost.CurrentTransform.Translation + shot.StuckOffset;
                 if (shot.StuckAge > (shot.StuckInActor is null ? 4f : 3f))
-                    _rangedShots.RemoveAt(i);
+                    RemoveRangedShotAt(i);
                 continue;
             }
-            if (shot.Age > RangedSimDuration) { _rangedShots.RemoveAt(i); continue; }
+            if (shot.Age > RangedSimDuration) { RemoveRangedShotAt(i); continue; }
             shot.Vel = shot.Vel with { Y = shot.Vel.Y - shot.Gravity * dt };
             shot.Pos += shot.Vel * dt;
+            if (shot.FlightMotionId != 0)
+                _sfxRuntime?.UpdateExternalMotion(shot.FlightMotionId, shot.Pos);
 
             // Impact vs the intended target's CURRENT position — a target
             // that stepped away since the FIRE note is a miss (DS1's
@@ -27797,10 +28034,15 @@ void main()
                     {
                         // SC-SPELLFX-IMPACT — spell payload lands.
                         ApplyPlayerSpellImpact(shot, ta);
-                        _rangedShots.RemoveAt(i);
+                        RemoveRangedShotAt(i);
                         continue;
                     }
                     ApplyPlayerRangedImpact(shot, ta);
+                    if (shot.FlightMotionId != 0)
+                    {
+                        _sfxRuntime?.EndExternalMotion(shot.FlightMotionId);
+                        shot.FlightMotionId = 0;
+                    }
                     // SC-RANGED-STICK — leave the shaft in the body a beat.
                     shot.Stuck = true;
                     shot.StuckInActor = ta;
@@ -27814,7 +28056,7 @@ void main()
                 && Vector3.Dot(shot.SnapshotAim - shot.Pos, shot.Vel) < 0f)
             {
                 Console.WriteLine($"  cast {shot.Spell.ScreenName}: missed (target moved)");
-                _rangedShots.RemoveAt(i);
+                RemoveRangedShotAt(i);
                 continue;
             }
             else if (shot.TargetProp is { IsDestroyed: false } prop)
@@ -27823,7 +28065,7 @@ void main()
                 if (Vector3.DistanceSquared(shot.Pos, center) <= 1.2f * 1.2f)
                 {
                     if (shot.Attacker is { } atk) PerformPropBreak(prop, atk);
-                    _rangedShots.RemoveAt(i);
+                    RemoveRangedShotAt(i);
                     continue;
                 }
             }
@@ -27845,7 +28087,7 @@ void main()
                         RegisterAndPlayVoiceCue("s_e_hit_arrow_flesh", shot.Pos);
                         SpawnBloodHit(m);
                         RunImpactSplat(shot);
-                        _rangedShots.RemoveAt(i);
+                        RemoveRangedShotAt(i);
                         shot.NpcTargetCombat = null;
                     }
                     break;
@@ -27865,7 +28107,7 @@ void main()
                 if (shot.ImpactSfxScript.Length > 0)
                 {
                     RunImpactSplat(shot);
-                    _rangedShots.RemoveAt(i);
+                    RemoveRangedShotAt(i);
                     continue;
                 }
                 shot.Stuck = true;
@@ -29853,6 +30095,11 @@ void main()
             {
                 var castSrc = s.CurrentTransform.Translation + new Vector3(0f, 1.6f, 0f);
                 var castTo  = castDst + new Vector3(0f, 1.0f, 0f);
+                // SC-SPELL-ENGINE — gameplay payloads beyond the visual:
+                // deathrain storms and summoned creatures for NPC casters
+                // (gom's summoning, dark casters' ice storms).
+                if (brain.CastSpell.Deathrain is not null) StartDeathrain(brain.CastSpell, castDst);
+                if (brain.CastSpell.SummonTemplate.Length > 0) CastSummon(brain.CastSpell, s, castDst);
                 // SC-SPELL-LAUNCH — [spell_launch] ammo spells (phrak dart,
                 // skrubb spit, blaster bomb) fire a REAL ballistic ammo GO —
                 // the authored dart/goo mesh on a gravity arc, damage payload
@@ -29873,6 +30120,7 @@ void main()
                         NpcDamage = launchDmg,
                         NpcTargetCombat = launchTarget,
                         ImpactSfxScript = ammo.BreakEffect,
+                        FlightSfxScript = ResolveAmmoFlightEffect(brain.CastSpell),
                     };
                     SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity);
                     // Mesh-less ammo still flies (hit lands); a tinted streak
@@ -30548,6 +30796,10 @@ void main()
                     // Falls back to SfxZapCast when the wav is missing or
                     // the script has no sound (so we don't go silent).
                     _audio?.Play(ResolveSpellCastSound(spell));
+                    // SC-SPELL-ENGINE — gameplay payloads beyond the visual.
+                    if (spell.Deathrain is not null) StartDeathrain(spell, dst);
+                    if (spell.SummonTemplate.Length > 0 && _player is not null)
+                        CastSummon(spell, _player, dst);
                     if (projectileSpell)
                     {
                         // SC-SPELLFX-IMPACT — the damage payload rides an
@@ -30576,6 +30828,7 @@ void main()
                             carrier.Mesh    = pammo.Mesh;
                             carrier.Tex     = pammo.Tex;
                             carrier.ImpactSfxScript = pammo.BreakEffect;
+                            carrier.FlightSfxScript = ResolveAmmoFlightEffect(spell);
                             if (spell.LaunchVelocity > 1f) carrierSpeed = spell.LaunchVelocity;
                         }
                         SpawnRangedShot(carrier, src, dst, carrierSpeed);
@@ -30599,6 +30852,18 @@ void main()
                 }
                 break;
             case SiegeFX.Core.Actors.CastOutcome.NoTarget:
+                // SC-SPELL-ENGINE — a summon needs no enemy: cast into open
+                // ground ahead of the caster (DS1 summons are ground-target).
+                if (spell.SummonTemplate.Length > 0 && _player is not null)
+                {
+                    var fwd = _playerFacing.LengthSquared() > 0.01f
+                        ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
+                        : Vector3.UnitZ;
+                    var spot = SnapToNavmesh(playerPos + fwd * 3f, playerPos);
+                    CastSummon(spell, _player, spot);
+                    _audio?.Play(ResolveSpellCastSound(spell));
+                    break;
+                }
                 AddFloatingText("no target", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.85f, 0.85f, 0.85f, 1f));
                 break;
             case SiegeFX.Core.Actors.CastOutcome.OutOfRange:

@@ -2648,6 +2648,50 @@ public sealed class SfxRuntime
         }
     }
 
+    // ── SC-SPELL-ENGINE — externally-driven motion handles ───────────────
+    // A game object (ballistic ammo GO) registers a motion the ENGINE
+    // updates each tick; a flight script's emitters bound to it ride the
+    // projectile exactly like a VM trackball's children. Ending the motion
+    // lets the pump fade/drop the trail at the impact point.
+
+    /// <summary>Register an engine-driven motion at <paramref name="pos"/>.</summary>
+    public int CreateExternalMotion(Vector3 pos)
+    {
+        int id = _nextMotionId++;
+        _motionHandles[id] = new MotionState
+        { Id = id, Kind = "external", Anchor = pos, Position = pos, Target = pos };
+        return id;
+    }
+
+    public void UpdateExternalMotion(int id, Vector3 pos)
+    {
+        if (_motionHandles.TryGetValue(id, out var m))
+        { m.Position = pos; m.Anchor = pos; _motionHandles[id] = m; }
+    }
+
+    public void EndExternalMotion(int id)
+    {
+        if (_motionHandles.TryGetValue(id, out var m))
+        { m.Done = true; _motionHandles[id] = m; }
+    }
+
+    /// <summary>Run a script and bind every persistent emitter it creates
+    /// (that has no motion binding of its own) to <paramref name="motionId"/>
+    /// — the flight-trail pattern (maljin spike dust riding the arrow).</summary>
+    public bool SpawnFollowing(string script, in SfxContext ctx, int motionId)
+    {
+        int before = _emitters.Count;
+        bool ran = Spawn(script, ctx);
+        for (int i = before; i < _emitters.Count; i++)
+            if (_emitters[i].TargetMotionId == 0)
+            {
+                var e = _emitters[i];
+                e.TargetMotionId = motionId;
+                _emitters[i] = e;
+            }
+        return ran;
+    }
+
     void ExecCall(RunningScript rs, SfxStatement stmt)
     {
         // call <script> [<arg-list>] — recurse with the named script. Args

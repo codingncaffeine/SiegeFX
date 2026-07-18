@@ -146,6 +146,18 @@ public sealed class SpellTemplate
     /// script (wind-up flourish). "" when unauthored.</summary>
     public string ChargeSfxScript { get; private set; } = "";
 
+    /// <summary>SC-SPELL-ENGINE — [spell_summon] creature template to spawn
+    /// ("" = not a summon spell) and its end_script visual (un_summon).</summary>
+    public string SummonTemplate  { get; private set; } = "";
+    public string SummonEndScript { get; private set; } = "";
+
+    /// <summary>SC-SPELL-ENGINE — [spell_deathrain] storm parameters
+    /// (ice_storm's 25 falling shards); null = not a deathrain spell.</summary>
+    public DeathrainSpec? Deathrain { get; private set; }
+    public sealed record DeathrainSpec(
+        string DropScript, float FreqMin, float FreqMax,
+        int MaxDrops, float SpawnHeight, float SpawnRadius);
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -292,6 +304,36 @@ public sealed class SpellTemplate
         // SC-SPELL-AUDIT-3 — the wind-up chargeup script (never consumed
         // before; the cast paths now run it just ahead of the release).
         ChargeSfxScript = ResolveChargeSfxScript(template);
+        // SC-SPELL-ENGINE — summon + deathrain component parses (chain-walk
+        // like the script resolvers; components ride specialization).
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            foreach (var child in t.Node.Children)
+            {
+                if (SummonTemplate.Length == 0
+                    && child.Header.Equals("spell_summon", StringComparison.OrdinalIgnoreCase))
+                {
+                    SummonTemplate  = (TemplateStore.FindAttr(child, "template_name") ?? "").Trim().Trim('"');
+                    SummonEndScript = (TemplateStore.FindAttr(child, "end_script") ?? "").Trim().Trim('"');
+                }
+                else if (Deathrain is null
+                    && child.Header.Equals("spell_deathrain", StringComparison.OrdinalIgnoreCase))
+                {
+                    static float F(string? s, float d) =>
+                        float.TryParse((s ?? "").Trim().Trim('"'), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out var v) ? v : d;
+                    var drop = (TemplateStore.FindAttr(child, "drop_script") ?? "").Trim().Trim('"');
+                    if (drop.Length > 0)
+                        Deathrain = new DeathrainSpec(
+                            drop,
+                            F(TemplateStore.FindAttr(child, "drop_freq_min"), 0.15f),
+                            F(TemplateStore.FindAttr(child, "drop_freq_max"), 0.2f),
+                            (int)F(TemplateStore.FindAttr(child, "max_drops"), 12f),
+                            F(TemplateStore.FindAttr(child, "spawn_height"), 8f),
+                            F(TemplateStore.FindAttr(child, "spawn_radius"), 4f));
+                }
+            }
+        }
         // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
         TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
             .Contains("tt_dead_enemy", StringComparison.OrdinalIgnoreCase);
@@ -664,7 +706,7 @@ public sealed class SpellTemplate
         return string.Empty;
     }
 
-    static string ExtractCallSfxScriptArg(string raw)
+    public static string ExtractCallSfxScriptArg(string raw)
     {
         var s = raw.Trim();
         if (!s.StartsWith("call_sfx_script", StringComparison.OrdinalIgnoreCase)) return string.Empty;
