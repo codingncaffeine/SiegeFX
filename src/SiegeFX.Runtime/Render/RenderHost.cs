@@ -77,6 +77,11 @@ public sealed class RenderHost : IDisposable
     // Session kills append so the set stays authoritative for the whole run.
     private readonly HashSet<uint> _persistedDeadScids = new();
     private SiegeFX.Core.Save.WorldStateSnapshot? _persistedWorldState;
+    // SC-PENDING-ACTORS — ALIVE save rows whose region wasn't streamed at
+    // load time (wounded/hidden/posed actors far away). Patched at
+    // stream-in; still-pending rows merge into the next capture so
+    // save→load→save can't forget them.
+    private readonly List<SiegeFX.Core.Save.ActorSnapshot> _pendingActorSnaps = new();
     // SC-SAVE-AUDIT — save rows whose owning region wasn't streamed at load
     // time. Re-applied as regions stream in and merged into the next capture,
     // so history in un-visited regions survives save→load→save chains
@@ -12350,6 +12355,36 @@ void main()
         // trigger matrices too (matrix-less placements skip inside).
         _actorSpawner.SpawnTriggers(newInstances);
         var (onMesh, offMesh) = AttachActorsToScene(newActors, newNav);
+        // SC-PENDING-ACTORS — apply saved ALIVE state (life/position/
+        // hidden/pinned pose) to actors whose region streamed after the
+        // load; without this a wounded enemy two regions from the save
+        // spot came back full-HP at its authored spawn.
+        if (_pendingActorSnaps.Count > 0)
+        {
+            int appliedPend = 0;
+            _pendingActorSnaps.RemoveAll(rowPend =>
+            {
+                foreach (var s in _actors)
+                {
+                    if (s.Actor.Instance.Scid != rowPend.Scid) continue;
+                    s.Actor.Combat.RestoreFromSave(rowPend.CurrentLife, rowPend.CurrentMana, rowPend.IsDead);
+                    s.Hidden = rowPend.Hidden;
+                    if (!rowPend.IsDead && rowPend.PinnedAnim >= 0)
+                    {
+                        s.Brain = null;
+                        s.Actor.Host.OverrideAnimIndex(rowPend.PinnedAnim, 1e9f);
+                    }
+                    var pp = rowPend.Position.ToVector3();
+                    if (s.Brain is not null) s.Brain.Teleport(pp);
+                    s.CurrentTransform = Matrix4x4.CreateTranslation(pp);
+                    appliedPend++;
+                    return true;
+                }
+                return false;
+            });
+            if (appliedPend > 0)
+                Console.WriteLine($"  rolling spawn: {appliedPend} alive actor(s) patched from save");
+        }
 
         // Re-create the player's NavFollower against the new unified mesh so
         // the next click can route across into the new terrain. Position +
@@ -35525,6 +35560,13 @@ void main()
             foreach (var sc in _persistedDeadScids)
                 if (!liveScids.Contains(sc))
                     save.Actors.Add(new SiegeFX.Core.Save.ActorSnapshot { Scid = sc, IsDead = true });
+            // SC-PENDING-ACTORS — alive rows still awaiting their region
+            // ride into the next capture unchanged (same rule as the dead
+            // ledger: forgetting them would reset far-away wounded/hidden
+            // actors on the next load).
+            foreach (var rowPend in _pendingActorSnaps)
+                if (!liveScids.Contains(rowPend.Scid))
+                    save.Actors.Add(rowPend);
         }
 
         foreach (var pile in _lootPiles)
@@ -35929,9 +35971,20 @@ void main()
         foreach (var s in _actors) byScid[s.Actor.Instance.Scid] = s;
 
         int patched = 0, missing = 0;
+        // SC-PENDING-ACTORS — ALIVE rows whose region isn't streamed yet
+        // (wounded enemies two regions away, trigger-hidden or posed story
+        // actors) go to a ledger the stream-in path patches; only DEAD rows
+        // had deferral before, so their saved life/position/Hidden state
+        // silently dropped.
+        _pendingActorSnaps.Clear();
         foreach (var snap in save.Actors)
         {
-            if (!byScid.TryGetValue(snap.Scid, out var s)) { missing++; continue; }
+            if (!byScid.TryGetValue(snap.Scid, out var s))
+            {
+                missing++;
+                if (!snap.IsDead && snap.Scid < 0xFD000000) _pendingActorSnaps.Add(snap);
+                continue;
+            }
             bool wasDead = s.IsDead;
             s.Actor.Combat.RestoreFromSave(snap.CurrentLife, snap.CurrentMana, snap.IsDead);
             s.IsDead = snap.IsDead;
@@ -36025,6 +36078,10 @@ void main()
         _cursorItemIcon = null;
         _cursorItemFromInventoryIdx = -1;
         if (_cursorScroll is not null) ClearScrollDrag();
+        // A dialogue/vendor held open across F9 would resolve its recruit/
+        // trade/quest edges against the post-load world — cross-timeline.
+        if (_dialogue.IsOpen) _dialogue.Close();
+        if (_vendor.IsOpen) _vendor.Close();
         _deathrains.Clear();
         foreach (var rsFlight in _rangedShots)
             if (rsFlight.FlightMotionId != 0)
@@ -36051,7 +36108,10 @@ void main()
         // The _player field kept referencing the detached object (follower,
         // camera, equipment layers all kept working) but the body draw
         // iterates _actors — THE "only my boots render" root cause.
-        _actors.RemoveAll(a => !a.IsPlayer && a.Actor.Instance.Scid >= 0xFE000000);
+        // Remote co-op avatars mint scids inside the synthetic range too —
+        // a host F9 must not evict every other player's body.
+        _actors.RemoveAll(a => !a.IsPlayer && !a.IsRemotePlayer
+                               && a.Actor.Instance.Scid >= 0xFE000000);
         _generators.Clear();
         _generatorGasLoaded?.Clear();
         _pendingRegionFades.Clear();

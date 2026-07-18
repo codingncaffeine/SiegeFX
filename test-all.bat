@@ -185,6 +185,7 @@ echo  112. NAV VERTICAL-REBIND REPRO    - sd_r1 mine ledge (headless): horseshoe
 echo  113. ENEMY ROAM-SIM               - headless 90s wander soak over the path2sd..sd_r2 set; expect 0 FROZEN and no field-report piles
 echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapshot+state-delta+input-authority+chat+malformed-frame safety (loopback)
 echo  115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens\frontend-shots; compare vs retail)
+echo  116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -306,6 +307,7 @@ if /i "%CHOICE%"=="112" goto T112
 if /i "%CHOICE%"=="113" goto T113
 if /i "%CHOICE%"=="114" goto T114
 if /i "%CHOICE%"=="115" goto T115
+if /i "%CHOICE%"=="116" goto T116
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2661,6 +2663,25 @@ echo  top are not part of the receipt.]
 echo.
 dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" MainMenu --t=3.4
 dotnet "%RUN%" --frontend-shot "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" SinglePlayer --t=3.4
+echo.
+pause
+goto MENU
+
+:T116
+echo.
+echo --- ENDGAME: GOM ARENA (gom2) ---
+echo [Spawns in the final arena. Dev tools are live: press tilde for the
+echo  console, click GOD for invulnerability and KILL to slay nearby foes.
+echo  Fight (or KILL) Gom - his death spawns Super Gom after the authored
+echo  delay - then bring down Super Gom. Expected: "Vanquish the Seck"
+echo  completes in the journal, the arena-exit chain fires, and the
+echo  VICTORY card appears (click it after it settles to keep playing).]
+echo.
+set SIEGEFX_DEV=1
+set SIEGEFX_DEBUG_SPELLS=fireball,iceshard,lightning
+dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" "%DS1%\Resources\Logic.dsres" "%DS1%\Resources\Objects.dsres" /world/maps/map_world/regions/gom2
+set SIEGEFX_DEV=
+set SIEGEFX_DEBUG_SPELLS=
 echo.
 pause
 goto MENU

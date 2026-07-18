@@ -364,6 +364,15 @@ public sealed class PlayerProgression
         // level earned between save and load ("int bar moving but the value
         // isn't changing" — INT hit 11 in-session, the next load restored 10
         // and marked level 2 already-granted). Never reconciles DOWN.
+        // A v13+ save carries the real per-skill split, making the pools the
+        // FULL truth — reconcile EXACTLY (down as well as up), or an
+        // in-session load rolls a member's XP back while their attributes
+        // keep the post-save gains, and the re-derived applied-level markers
+        // then re-grant the same levels on the next crossing (repeatable
+        // stat inflation). Legacy saves without the split keep the old
+        // upward-only rule (their grown attributes are ahead of the seeded
+        // pools by design).
+        bool exactPools = skillXp is { Count: > 0 };
         var st = _player.Stats;
         float rs = st.Strength, rd = st.Dexterity, ri = st.Intelligence;
         bool reconciled = false;
@@ -372,7 +381,8 @@ public sealed class PlayerProgression
             _attrLevelApplied[a] = _formulas.LevelForXp(AttrXpPool(a));
             float expected = _attrBase[a] + (_attrLevelApplied[a] - 1);
             ref float cur = ref (a == 0 ? ref rs : ref (a == 1 ? ref rd : ref ri));
-            if (cur < expected) { cur = expected; reconciled = true; }
+            bool drift = exactPools ? MathF.Abs(cur - expected) > 0.0001f : cur < expected;
+            if (drift) { cur = expected; reconciled = true; }
         }
         if (reconciled)
         {
