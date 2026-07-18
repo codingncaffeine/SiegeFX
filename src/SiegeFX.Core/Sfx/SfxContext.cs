@@ -30,6 +30,12 @@ public readonly record struct SfxContext(
     Vector3 WeaponBonePos,
     BoneResolver? Resolver = null)
 {
+    /// <summary>SC-SPELL-AUDIT-2 — the spell's evaluated effect_duration in
+    /// seconds (0 = none). Persistent plume emitters created WITHOUT an
+    /// authored dur() default to this instead of the 0.35s one-shot default,
+    /// so sustained clouds (acid gas) live as long as their gameplay effect.</summary>
+    public float DefaultEmitterDuration { get; init; }
+
     /// <summary>Convenience for legacy (region emitter) callers that only
     /// have a single anchor — both source and target collapse to it.</summary>
     public static SfxContext At(Vector3 origin) => new(origin, origin, origin);

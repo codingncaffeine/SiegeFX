@@ -1048,6 +1048,12 @@ public sealed class SfxRuntime
             BurstCount = 0,
         };
         ApplyParamString(ref handle, raw);
+        // SC-SPELL-AUDIT-2 (default-duration) — an un-dur()'d persistent
+        // plume on a spell with an authored effect_duration lives that long
+        // (acid gas's sustained cloud), not the 0.35s one-shot default.
+        if (handle.Duration == 0.35f && rs.Ctx.DefaultEmitterDuration > 0.35f
+            && handle.Mode is EmitterMode.Fire or EmitterMode.Smoke or EmitterMode.Steam)
+            handle.Duration = rs.Ctx.DefaultEmitterDuration;
 
         // Phase 21-SC-SPELL-VFX-MOTION-HANDLE — for motion kinds, allocate
         // a slot in _motionHandles so child emitters that target this
@@ -1194,18 +1200,32 @@ public sealed class SfxRuntime
         foreach (var kv in rs.NamedHandles)
             if (kv.Value.TargetMotionId == motionId && !kv.Value.Started)
                 (pending ??= new List<string>()).Add(kv.Key);
-        if (pending is null) return;
-        foreach (var key in pending)
+        if (pending is not null)
+            foreach (var key in pending)
+            {
+                var child = rs.NamedHandles[key];
+                if (child.Started) continue;
+                child.Started = true;
+                rs.NamedHandles[key] = child;
+                if (child.DelaySec > 0.0001f)
+                    _delayed.Add(new DelayedStart { Remaining = child.DelaySec, H = child, SelfName = key });
+                else
+                    DispatchStart(child, key);
+                StartAttachedChildren(rs, child.MotionId, depth + 1);
+            }
+        // SC-SPELL-AUDIT-2 — anonymous #POP-attached children ride the same
+        // cascade. List-indexed writeback keeps the Started flag sticky.
+        for (int i = 0; i < rs.AnonAttached.Count; i++)
         {
-            var child = rs.NamedHandles[key];
-            if (child.Started) continue;
-            child.Started = true;
-            rs.NamedHandles[key] = child;
-            if (child.DelaySec > 0.0001f)
-                _delayed.Add(new DelayedStart { Remaining = child.DelaySec, H = child, SelfName = key });
+            var anon = rs.AnonAttached[i];
+            if (anon.Started || anon.TargetMotionId != motionId) continue;
+            anon.Started = true;
+            rs.AnonAttached[i] = anon;
+            if (anon.DelaySec > 0.0001f)
+                _delayed.Add(new DelayedStart { Remaining = anon.DelaySec, H = anon, SelfName = null });
             else
-                DispatchStart(child, key);
-            StartAttachedChildren(rs, child.MotionId, depth + 1);
+                DispatchStart(anon, null);
+            StartAttachedChildren(rs, anon.MotionId, depth + 1);
         }
     }
 
@@ -2020,14 +2040,35 @@ public sealed class SfxRuntime
         {
             popped = string.Equals(childTok, "#POP", StringComparison.OrdinalIgnoreCase);
             if (rs.Stack.Count == 0) return;
-            // Consume so the stack stays balanced. We don't have a back-
-            // reference to the named alias of an anonymous stack handle,
-            // so the rest of the function is a no-op for #POP/#PEEK
-            // children — the practical effect is "verb consumed, stack
-            // discipline preserved." For un_summon's cylinders this is
-            // correct: a flat ring at #TARGET reads identically with or
-            // without the parent grouping.
-            if (popped) rs.Stack.Pop(); else rs.Stack.Peek();
+            if (parent.MotionId <= 0) { if (popped) rs.Stack.Pop(); return; }
+            // SC-SPELL-AUDIT-2 — anonymous children are REAL: wire them to
+            // the parent's motion and shelve them where the parent-start
+            // cascade (StartAttachedChildren) can dispatch them. The old
+            // "consume and discard" here silently erased the visible body
+            // of 35 shipped spells.
+            if (popped)
+            {
+                var anon = rs.Stack.Pop();
+                anon.TargetMotionId = parent.MotionId;
+                // Attach-after-start ordering (fireball_base's pattern):
+                // the parent already dispatched, so the cascade won't run
+                // again — dispatch the child right now.
+                if (parent.Started)
+                {
+                    anon.Started = true;
+                    if (anon.DelaySec > 0.0001f)
+                        _delayed.Add(new DelayedStart { Remaining = anon.DelaySec, H = anon, SelfName = null });
+                    else
+                        DispatchStart(anon, null);
+                }
+                rs.AnonAttached.Add(anon);
+            }
+            else
+            {
+                var peeked = rs.Stack.Pop();
+                peeked.TargetMotionId = parent.MotionId;
+                rs.Stack.Push(peeked);
+            }
             return;
         }
 
@@ -3905,6 +3946,12 @@ public sealed class SfxRuntime
         public Stack<Handle>           Stack         = new();
         public Dictionary<string, Handle> NamedHandles = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, string> Vars         = new(StringComparer.OrdinalIgnoreCase);
+        // SC-SPELL-AUDIT-2 (#POP attach) — anonymous handles consumed by
+        // `sfx attach <parent> #POP` land here with their TargetMotionId
+        // wired, so the parent-start cascade can dispatch them. 35 shipped
+        // spells build their whole visible body this way (un_summon's
+        // cylinder groups, the fury/shard zap swarms).
+        public List<Handle> AnonAttached = new();
 
         // Phase 21-SC-SPELL-VISUAL-G — coroutine wait state. When > 0,
         // StepUntilYield won't advance the IP; Tick decrements WaitTimeout

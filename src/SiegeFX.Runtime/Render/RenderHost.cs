@@ -5394,6 +5394,28 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    /// <summary>SC-SPELL-AUDIT-2 — evaluate a spell's authored
+    /// effect_duration for the given caster (null caster = skill 1), clamped
+    /// to a sane VFX window. 0 when the spell authors none.</summary>
+    private float SpellEffectDurationSec(SiegeFX.Core.Assets.SpellTemplate? spell,
+                                         ActorRenderState? caster)
+    {
+        if (spell is null || string.IsNullOrEmpty(spell.EffectDurationExpr)) return 0f;
+        float magic = 1f;
+        if (caster is not null)
+        {
+            var st = caster.Actor.Stats;
+            magic = MathF.Max(1f, MathF.Max(st.NatureMagicSkill, st.CombatMagicSkill));
+        }
+        var ectx = new SiegeFX.Core.Assets.SpellEvalContext(magic,
+            maxLife: caster?.Actor.Stats.MaxLife ?? 100f,
+            life:    caster?.Actor.Combat.CurrentLife ?? 100f,
+            srcMana: caster?.Actor.Combat.CurrentMana ?? 100f,
+            srcLife: caster?.Actor.Combat.CurrentLife ?? 100f);
+        float sec = SiegeFX.Core.Assets.SpellExpr.Eval(spell.EffectDurationExpr, ectx);
+        return float.IsFinite(sec) ? Math.Clamp(sec, 0f, 30f) : 0f;
+    }
+
     /// <summary>SC-PARTY-REGEN — one character's passive recovery tick, the
     /// same formulas.gas rates the player uses, scaled by that character's
     /// own Strength/Intelligence. Shared by the player, local companions,
@@ -29881,7 +29903,8 @@ void main()
                         SourcePos:     castSrc,
                         TargetPos:     castTo,
                         WeaponBonePos: castSrc,
-                        Resolver:      null);
+                        Resolver:      null)
+                    { DefaultEmitterDuration = SpellEffectDurationSec(brain.CastSpell, null) };
                     int partsBefore = _particles?.LiveParticleCount ?? 0;
                     int boltsBefore = _particles?.LiveBoltCount ?? 0;
                     bool ran = _sfxRuntime.Spawn(brain.CastSpell.CastSfxScript, npcCtx);
@@ -30456,7 +30479,8 @@ void main()
                                 SourcePos:     playerPos + new Vector3(0f, 1.0f, 0f),
                                 TargetPos:     dst,
                                 WeaponBonePos: src,
-                                Resolver:      ResolvePlayerBone);
+                                Resolver:      ResolvePlayerBone)
+                            { DefaultEmitterDuration = SpellEffectDurationSec(spell, _player) };
                             int boltsBefore       = _particles?.LiveBoltCount ?? 0;
                             int particlesBefore   = _particles?.LiveParticleCount ?? 0;
                             int persistentBefore  = _sfxRuntime.LivePersistentCount;

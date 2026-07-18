@@ -137,6 +137,11 @@ public sealed class SpellTemplate
     /// Empty when the template ships none.</summary>
     public string Description { get; private set; } = "";
 
+    /// <summary>SC-SPELL-AUDIT-2 — raw <c>[magic] effect_duration</c>
+    /// expression ("" when unauthored); evaluate with SpellExpr at cast
+    /// time. Drives sustained-VFX default lifetimes.</summary>
+    public string EffectDurationExpr { get; private set; } = "";
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -274,6 +279,11 @@ public sealed class SpellTemplate
             .Contains("nature", StringComparison.OrdinalIgnoreCase);
         // SC-TOOLTIP-AUTH — the card's description sentence.
         Description = (store.GetAttribute(template, "common", "description") ?? "")
+            .Trim().Trim('"');
+        // SC-SPELL-AUDIT-2 — authored effect_duration expression (skill-
+        // scaled, e.g. ((#magic+9)*0.2)); default lifetime for un-dur()'d
+        // sustained VFX emitters.
+        EffectDurationExpr = (store.GetAttribute(template, "magic", "effect_duration") ?? "")
             .Trim().Trim('"');
         // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
         TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
