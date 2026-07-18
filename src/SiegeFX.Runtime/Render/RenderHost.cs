@@ -270,6 +270,11 @@ public sealed class RenderHost : IDisposable
     private IReadOnlyDictionary<string, SiegeFX.Core.Assets.SedDescriptor>? _sedStore;
     private (Vector3 Origin, string RegionPath)[] _snodeRegionLookup =
         Array.Empty<(Vector3, string)>();
+    // SC-SAVE-REGION — world-wide variant covering ALL placed regions (built
+    // once from WorldLayout); RegionAtWorldPos prefers it so positions outside
+    // the streamed ring resolve to their true region.
+    private (Vector3 Origin, string RegionPath)[] _worldSnodeLookup =
+        Array.Empty<(Vector3, string)>();
     private float _regionCheckAccumulator;
     private const float RegionCheckIntervalSec = 0.5f;
     // Region-membership hysteresis: a candidate region must win the nearest-
@@ -10512,6 +10517,23 @@ void main()
             ? _worldRootRegion : center;
         var world = WorldLayout.Build(entries, ResolveModel, rootHint);
         _worldLayout = world;
+        // SC-SAVE-REGION (resolver) — a WORLD-WIDE position→region lookup
+        // from the layout every streaming decision already trusts. The
+        // streamed-only _snodeRegionLookup returns the nearest LOADED
+        // region for any far-away point, which anchored a loaded save's
+        // player to whatever ring region sat closest (on the Stonebridge
+        // road that chain settled in the crypts: underground=true, world
+        // hidden). This array covers all placed regions from boot.
+        if (world.Transforms.Count > 0 && _worldSnodeLookup.Length == 0)
+        {
+            var wl = new List<(Vector3, string)>(world.Transforms.Count);
+            foreach (var kv in world.Transforms)
+                if (world.GuidToRegion.TryGetValue(kv.Key, out var wrp))
+                    wl.Add((new Vector3(kv.Value.M41, kv.Value.M42, kv.Value.M43), wrp));
+            _worldSnodeLookup = wl.ToArray();
+            Console.WriteLine($"  [region-lookup] world-wide resolver: {_worldSnodeLookup.Length} node origins " +
+                              $"across {world.PlacedRegionCount} regions");
+        }
 
         // Refresh the legacy _worldRegionGraphs view (root region first to
         // preserve LoadPlayActors's "graphs[0] is the player region" idiom)
@@ -18736,12 +18758,17 @@ void main()
     /// fixture without a stitch helper).</summary>
     private string? RegionAtWorldPos(Vector3 worldPos)
     {
-        if (_snodeRegionLookup.Length == 0) return null;
+        // SC-SAVE-REGION — prefer the world-wide resolver (all placed
+        // regions, built with the layout at boot): the streamed-only list
+        // answers "nearest LOADED region", which is wrong for any position
+        // outside the current ring (a loaded save far from the boot region).
+        var table = _worldSnodeLookup.Length > 0 ? _worldSnodeLookup : _snodeRegionLookup;
+        if (table.Length == 0) return null;
         float bestSq = float.PositiveInfinity;
         string? best = null;
-        for (int i = 0; i < _snodeRegionLookup.Length; i++)
+        for (int i = 0; i < table.Length; i++)
         {
-            var entry = _snodeRegionLookup[i];
+            var entry = table[i];
             float dx = entry.Origin.X - worldPos.X;
             float dy = entry.Origin.Y - worldPos.Y;
             float dz = entry.Origin.Z - worldPos.Z;
