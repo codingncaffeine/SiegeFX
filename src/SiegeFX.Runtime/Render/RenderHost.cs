@@ -26982,25 +26982,94 @@ void main()
     /// [defend] defense, [magic][enchantments] description lines,
     /// [gui] equip_requirements (red when the wearer fails them),
     /// [aspect] gold_value.</summary>
-    private void DrawItemTooltip(int vw, int vh)
+    /// <summary>SC-TOOLTIP-LAYER — every hover stat card, drawn from ONE
+    /// dispatcher at the very end of the HUD pass so no panel can paint
+    /// over a card (companion tiles used to cover the player-bag card).
+    /// Coverage: spellbook rows (player + companion tiles), backpack items
+    /// (player + companion bags), and equipped paperdoll slots on whichever
+    /// sheet is open — with spell pages showing the full spell card in every
+    /// location.</summary>
+    private void DrawHoverTooltips(int vw, int vh)
     {
-        if (!_inventoryOpen || _templateStore is null) return;
+        if (_textRenderer is null || _templateStore is null) return;
         if (_cursorItem is not null || _cursorScroll is not null) return;
         int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
-        var inv = ActiveInventory;
-        int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
-        // SC-TOOLTIP-EVERYWHERE — the tiled companion bags get the same item
-        // card as the player's pack (same origin trick the click path uses).
-        if ((idx < 0 || idx >= inv.Count) && CompanionBagAt(mx, my) is { } bagHit)
+
+        // Spellbook rows — the retail spell stat card at the OWNER's skill.
+        var hover = HoveredSpellbookRow(mx, my);
+        if (hover is { } h && h.Spell is not null)
         {
-            inv = GetMemberInventory(bagHit.PartyIndex);
-            _companionInvPanel.OriginX = bagHit.OriginX;
-            _companionInvPanel.OriginY = bagHit.OriginY;
-            idx = _companionInvPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            var caster = h.OwnerPidx <= 0 ? _player
+                : _party.FirstOrDefault(p => p.PartyIndex == h.OwnerPidx);
+            if (caster is not null)
+            {
+                DrawHoverCard(vw, vh, BuildSpellCardLines(h.Spell, caster));
+                return;
+            }
         }
-        if (idx < 0 || idx >= inv.Count) return;
-        var itemRef = ResolveItemRef(inv[idx].Reference);
-        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return;
+
+        if (_inventoryOpen)
+        {
+            // Backpack items — main panel (active character), then the
+            // tiled companion bags (same origin trick the click path uses).
+            var inv = ActiveInventory;
+            int ownerPidx = _paperdollTargetIndex;
+            int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            if ((idx < 0 || idx >= inv.Count) && CompanionBagAt(mx, my) is { } bagHit)
+            {
+                inv = GetMemberInventory(bagHit.PartyIndex);
+                ownerPidx = bagHit.PartyIndex;
+                _companionInvPanel.OriginX = bagHit.OriginX;
+                _companionInvPanel.OriginY = bagHit.OriginY;
+                idx = _companionInvPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            }
+            if (idx >= 0 && idx < inv.Count)
+            {
+                DrawCardForItemRef(inv[idx].Reference, ownerPidx, vw, vh);
+                return;
+            }
+        }
+
+        // Equipped gear — the open sheet's paperdoll slots (player or
+        // companion; ActiveEquipment already follows _paperdollTargetIndex).
+        if (_charPanelOpen)
+        {
+            var slot = _paperdoll.TryHitTestSlot(mx, my, _paperdollRect.X, _paperdollRect.Y, vh);
+            var esTag = slot is null ? null : PaperdollSlotToEsTag(slot);
+            if (esTag is not null && ActiveEquipment.TryGetValue(esTag, out var eref)
+                && !string.IsNullOrWhiteSpace(eref))
+                DrawCardForItemRef(eref, _paperdollTargetIndex, vw, vh);
+        }
+    }
+
+    /// <summary>Route one hovered item reference to the right card: spell
+    /// pages get the full spell stat card (evaluated at the OWNING
+    /// character's skill) wherever they sit; everything else gets the item
+    /// card with requirements judged against the owner, not always the
+    /// player.</summary>
+    private void DrawCardForItemRef(string reference, int ownerPidx, int vw, int vh)
+    {
+        var owner = ownerPidx <= 0 ? _player
+            : _party.FirstOrDefault(p => p.PartyIndex == ownerPidx);
+        if (reference.StartsWith("spell_", StringComparison.OrdinalIgnoreCase)
+            && _spellCatalog is not null && owner is not null
+            && _spellCatalog.TryGet(ResolveItemRef(reference), out var sp) && sp is not null)
+        {
+            DrawHoverCard(vw, vh, BuildSpellCardLines(sp, owner));
+            return;
+        }
+        var lines = BuildItemCardLines(ResolveItemRef(reference), owner);
+        if (lines is not null) DrawHoverCard(vw, vh, lines);
+    }
+
+    /// <summary>The item stat card's lines (retail screen 0026/0028):
+    /// name, weapon/armor stats, enchant descriptions, requirements (red
+    /// when <paramref name="wearer"/> fails them), and value.</summary>
+    private List<(string Text, Vector4 Color)>? BuildItemCardLines(
+        string itemRef, ActorRenderState? wearer)
+    {
+        if (_templateStore is null) return null;
+        if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return null;
 
         var lines = new List<(string Text, Vector4 Color)>();
         var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
@@ -27063,29 +27132,37 @@ void main()
         var req = _templateStore.GetAttribute(tpl, "gui", "equip_requirements")?.Trim();
         if (!string.IsNullOrWhiteSpace(req))
         {
-            bool meets = _player is null
-                || MeetsEquipRequirements(itemRef, _player.Actor.Stats, out _);
+            bool meets = wearer is null
+                || MeetsEquipRequirements(itemRef, wearer.Actor.Stats, out _);
             lines.Add(($"Requires {req!.Replace(":", " ").Replace(",", ", ")}",
                 meets ? dim : new Vector4(1f, 0.35f, 0.25f, 1f)));
         }
         var gv = _templateStore.GetAttribute(tpl, "aspect", "gold_value");
         if (long.TryParse(gv?.Trim(), out var gvv) && gvv > 0)
             lines.Add(($"Value: {gvv} gold", gold));
+        return lines;
+    }
 
-        // SC-TOOLTIP-AUTH — retail card layout (screen 0026/0028): centered
-        // lines on the near-black plate, same language as the spell card.
-        if (_textRenderer is null) return;
+    /// <summary>SC-TOOLTIP-AUTH/SC-TOOLTIP-LAYER — the shared card plate:
+    /// centered lines on the near-black backdrop, anchored beside the
+    /// cursor and clamped on-screen. Callers run at the END of the HUD
+    /// pass so the plate stacks above every panel.</summary>
+    private void DrawHoverCard(int vw, int vh, List<(string Text, Vector4 Color)> lines)
+    {
+        if (_textRenderer is null || lines.Count == 0) return;
+        int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
         const int lineH = 13, pad = 10;
         int wpx = 0;
         foreach (var (t, _) in lines) wpx = Math.Max(wpx, _textRenderer.MeasureWidth(t, 1));
         wpx += pad * 2;
         int hpx = lines.Count * lineH + pad * 2;
-        int x = Math.Min(mx + 18, vw - wpx - 4);
-        int y = Math.Min(my + 18, vh - hpx - 4);
+        int x = Math.Clamp(mx + 20, 4, Math.Max(4, vw - wpx - 4));
+        int y = Math.Clamp(my - hpx / 2, 4, Math.Max(4, vh - hpx - 4));
         _barRenderer?.DrawRect(vw, vh, x, y, wpx, hpx, new Vector4(0.02f, 0.02f, 0.02f, 0.94f));
         for (int li = 0; li < lines.Count; li++)
         {
             var (t, c) = lines[li];
+            if (t.Length == 0) continue;
             int tw = _textRenderer.MeasureWidth(t, 1);
             _textRenderer.DrawString(vw, vh, t, x + (wpx - tw) / 2, y + pad + li * lineH, c, 1);
         }
@@ -27391,22 +27468,15 @@ void main()
         return null;
     }
 
-    /// <summary>SC-TOOLTIP-AUTH — the retail spell stat card (screen 0027):
-    /// name + class in the class tint, the authored description, current
-    /// Damage/Heals + Range + Mana Cost at the OWNER's magic skill, and a
-    /// green "At Skill Level N:" block previewing the next level. Centered
-    /// text on the near-black plate, anchored beside the hovered row.</summary>
-    private void DrawSpellRowTooltip(int vw, int vh)
+    /// <summary>SC-TOOLTIP-AUTH — the retail spell stat card's lines
+    /// (screen 0027): name + class in the class tint, the authored
+    /// description, current Damage/Heals + Range + Mana Cost at the
+    /// OWNER's magic skill, and a green "At Skill Level N:" block
+    /// previewing the next level. Shown for spellbook rows AND spell
+    /// pages sitting in any backpack.</summary>
+    private List<(string T, Vector4 C)> BuildSpellCardLines(
+        SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState caster)
     {
-        if (_textRenderer is null || _cursorScroll is not null) return;
-        int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
-        var hover = HoveredSpellbookRow(mx, my);
-        if (hover is not { } h || h.Spell is null) return;
-        var spell = h.Spell;
-
-        var caster = h.OwnerPidx <= 0 ? _player
-            : _party.FirstOrDefault(p => p.PartyIndex == h.OwnerPidx);
-        if (caster is null) return;
         float skill = MathF.Max(1f, MathF.Floor(spell.IsNatureMagic
             ? caster.Actor.Stats.NatureMagicSkill
             : caster.Actor.Stats.CombatMagicSkill));
@@ -27460,24 +27530,7 @@ void main()
         StatBlock(skill, nextHeader: false);
         if (spell.MaxLevel <= 0 || skill + 1 <= spell.MaxLevel)
             StatBlock(skill + 1, nextHeader: true);
-
-        // Layout — centered lines on the near-black plate, clamped on-screen.
-        const int lineH = 13, pad = 10;
-        int wpx = 0;
-        foreach (var (t, _) in lines)
-            wpx = Math.Max(wpx, _textRenderer.MeasureWidth(t, 1));
-        wpx += pad * 2;
-        int hpx = lines.Count * lineH + pad * 2;
-        int x = Math.Clamp(mx + 20, 4, Math.Max(4, vw - wpx - 4));
-        int y = Math.Clamp(my - hpx / 2, 4, Math.Max(4, vh - hpx - 4));
-        _barRenderer?.DrawRect(vw, vh, x, y, wpx, hpx, new Vector4(0.02f, 0.02f, 0.02f, 0.94f));
-        for (int li = 0; li < lines.Count; li++)
-        {
-            var (t, c) = lines[li];
-            if (t.Length == 0) continue;
-            int tw = _textRenderer.MeasureWidth(t, 1);
-            _textRenderer.DrawString(vw, vh, t, x + (wpx - tw) / 2, y + pad + li * lineH, c, 1);
-        }
+        return lines;
     }
 
     private static IEnumerable<string> WrapText(string text, int maxChars)
@@ -33776,11 +33829,9 @@ void main()
                     gridTile: gridTile,
                     headerPortrait: activePortrait);
 
-                // SC-TOOLTIPS — hovering a backpack item shows its stat card
-                // (name, damage/armor, enchant descriptions, requirements —
-                // red when the wearer fails them — and value).
-                DrawItemTooltip(size.X, size.Y);
-
+                // SC-TOOLTIP-LAYER — the backpack item card moved to
+                // DrawHoverTooltips at the END of the HUD pass; drawn here
+                // it sat UNDER the companion tiles and later panels.
 
                 // Multi-inventory — tile each open companion's panel to the right
                 // of the player's, one panel-width apart (DS1 multi_inventory.gas
@@ -34289,13 +34340,14 @@ void main()
                     _iconRenderer.DrawIcon(size.X, size.Y, cTex, cx, cy, sz, sz, Vector4.One);
                 }
             }
-            // SC-TOOLTIP-AUTH — the retail help layer: the spell stat card
-            // beside a hovered spellbook row, then the bottom-center strip
+            // SC-TOOLTIP-AUTH/SC-TOOLTIP-LAYER — the retail help layer:
+            // EVERY hover stat card (spellbook rows, backpack items,
+            // equipped paperdoll slots), then the bottom-center strip
             // (subject + authored education line) for whatever the cursor
             // is over. Drawn last so nothing paints across them.
             if (_player is not null)
             {
-                DrawSpellRowTooltip(size.X, size.Y);
+                DrawHoverTooltips(size.X, size.Y);
                 DrawBottomHelpStrip(size.X, size.Y);
             }
             _textRenderer!.EndPass();
