@@ -142,6 +142,10 @@ public sealed class SpellTemplate
     /// time. Drives sustained-VFX default lifetimes.</summary>
     public string EffectDurationExpr { get; private set; } = "";
 
+    /// <summary>SC-SPELL-AUDIT-3 — the we_req_cast_charge trigger's sfx
+    /// script (wind-up flourish). "" when unauthored.</summary>
+    public string ChargeSfxScript { get; private set; } = "";
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -285,6 +289,9 @@ public sealed class SpellTemplate
         // sustained VFX emitters.
         EffectDurationExpr = (store.GetAttribute(template, "magic", "effect_duration") ?? "")
             .Trim().Trim('"');
+        // SC-SPELL-AUDIT-3 — the wind-up chargeup script (never consumed
+        // before; the cast paths now run it just ahead of the release).
+        ChargeSfxScript = ResolveChargeSfxScript(template);
         // SC-CORPSE-SPELLS — corpse-targeting flag (Burn Body / Explode Body).
         TargetsDeadEnemy = (store.GetAttribute(template, "magic", "target_type_flags") ?? "")
             .Contains("tt_dead_enemy", StringComparison.OrdinalIgnoreCase);
@@ -586,6 +593,13 @@ public sealed class SpellTemplate
         // Path 2: any [spell_*] root block with effect_script. Bare attribute
         // value (unquoted, no parens) — TemplateStore.FindAttr returns the
         // literal string verbatim.
+        // SC-SPELL-AUDIT-3 — three sibling attribute spellings carry the
+        // visual script depending on component type: effect_script (most),
+        // enchant_script ([spell_status_effect]/[spell_mass_enchant] buffs —
+        // battle_rally, blood_and_iron, meriks_windfall, mind_spring,
+        // mystic_aid), and drop_script ([spell_deathrain] rains — ice_storm).
+        // Reading only effect_script left those seven casting soundlessly
+        // into the placeholder bolt.
         for (var t = template; t is not null; t = t.Specializes)
         {
             foreach (var child in t.Node.Children)
@@ -593,6 +607,10 @@ public sealed class SpellTemplate
                 if (!child.Header.StartsWith("spell_", StringComparison.OrdinalIgnoreCase))
                     continue;
                 var name = TemplateStore.FindAttr(child, "effect_script");
+                if (string.IsNullOrWhiteSpace(name))
+                    name = TemplateStore.FindAttr(child, "enchant_script");
+                if (string.IsNullOrWhiteSpace(name))
+                    name = TemplateStore.FindAttr(child, "drop_script");
                 if (string.IsNullOrWhiteSpace(name)) continue;
                 return name.Trim().Trim('"');
             }
@@ -609,6 +627,41 @@ public sealed class SpellTemplate
         if (open < 0 || close <= open) return false;
         var arg = s.Substring(open + 1, close - open - 1).Trim().Trim('"');
         return arg.Equals("we_req_cast", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>SC-SPELL-AUDIT-3 — the we_req_cast_charge trigger's script
+    /// (the wind-up flourish DS1 plays during the cast clip). Same matrix
+    /// walk as the release script; "" when the spell authors none.</summary>
+    static string ResolveChargeSfxScript(Template template)
+    {
+        for (var t = template; t is not null; t = t.Specializes)
+        {
+            foreach (var common in t.Node.Children)
+            {
+                if (!common.Header.Equals("common", StringComparison.OrdinalIgnoreCase)) continue;
+                var triggers = TemplateStore.FindChild(common, "template_triggers");
+                if (triggers is null) continue;
+                foreach (var row in triggers.Children)
+                {
+                    if (!row.Header.Equals("*", StringComparison.Ordinal)) continue;
+                    bool isChargeRow = false;
+                    string? scriptName = null;
+                    foreach (var attr in row.Attributes)
+                    {
+                        if (attr.Name.Equals("condition*", StringComparison.Ordinal)
+                            && attr.Value.Contains("we_req_cast_charge", StringComparison.OrdinalIgnoreCase))
+                            isChargeRow = true;
+                        else if (attr.Name.Equals("action*", StringComparison.Ordinal))
+                        {
+                            var name = ExtractCallSfxScriptArg(attr.Value);
+                            if (!string.IsNullOrEmpty(name)) scriptName = name;
+                        }
+                    }
+                    if (isChargeRow && !string.IsNullOrEmpty(scriptName)) return scriptName!;
+                }
+            }
+        }
+        return string.Empty;
     }
 
     static string ExtractCallSfxScriptArg(string raw)

@@ -4,57 +4,97 @@
   0.000  cylinder    pos=(4,0,0) color=(1,1,0.7,1) rp0=(0,2.7,0.17) rp1=(0,0,0) hp0=(18,-3,-35) hp1=(20,8,-1) alpha=0.4 spin=-1 tin=0.5 tout=0.5 dur=4.5 rot=(0,0,0) irot=(0,0,0) tex=5 seg=16
   0.000  spe         pos=(4,0,0) color=(0.3,0.3,0.2,1) r=0.6 n=40 scale=0.2 i0=(0,-1.57,1.57) i1=(0,-1.57,1.57) v0=(5,1,5) v1=(5,1,5) s0=(0.063,0.013,0.063) s1=(0.063,0.013,0.063) tin=1 tout=1 dur=5
   0.050  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.050  glow~       pos=(4,19.206,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.100  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.100  glow~       pos=(4,19.163,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.150  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.150  glow~       pos=(4,19.119,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.200  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.200  glow~       pos=(4,19.075,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.250  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.250  glow~       pos=(4,19.031,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.300  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.300  glow~       pos=(4,18.988,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.350  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.350  glow~       pos=(4,18.944,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.400  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.400  glow~       pos=(4,18.9,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.450  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.450  glow~       pos=(4,18.856,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.500  explosion   pos=(4,0,0) color=(0.75,0.6,0.3,1) r=0.5 n=16 scale=0.2..0.7 v=3..6.5 ivel=(0,0,0) rvel=(2,0.66,2) omni=0 fade=0.5..1 dur=3 srate=0.03 tex=2
   0.500  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.500  glow~       pos=(4,18.813,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.550  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  0.600  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.550  glow~       pos=(4,18.769,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  0.600  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   0.600  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.600  glow~       pos=(4,18.725,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.650  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  0.700  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.650  glow~       pos=(4,18.681,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  0.700  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   0.700  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.700  glow~       pos=(4,18.638,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.750  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  0.800  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.750  glow~       pos=(4,18.594,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  0.800  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   0.800  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.800  glow~       pos=(4,18.55,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   0.850  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.850  glow~       pos=(4,18.506,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   0.900  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  0.950  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  0.900  glow~       pos=(4,18.463,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  0.950  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   0.950  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  0.950  glow~       pos=(4,18.419,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.000  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.050  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.000  glow~       pos=(4,18.375,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  1.050  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.050  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.050  glow~       pos=(4,18.331,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.100  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.150  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.100  glow~       pos=(4,18.288,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  1.150  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.150  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.150  glow~       pos=(4,18.244,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.200  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.200  glow~       pos=(4,18.2,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   1.250  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.300  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.250  glow~       pos=(4,18.156,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  1.300  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.300  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.300  glow~       pos=(4,18.113,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   1.350  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.400  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.350  glow~       pos=(4,18.069,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  1.400  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.400  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.400  glow~       pos=(4,18.025,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   1.450  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.500  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.450  glow~       pos=(4,17.981,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  1.500  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.500  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.500  glow~       pos=(4,17.938,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   1.550  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.550  glow~       pos=(4,17.894,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.600  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.650  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.600  glow~       pos=(4,17.85,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  1.650  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.650  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.650  glow~       pos=(4,17.806,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.700  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.750  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.700  glow~       pos=(4,17.763,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  1.750  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.750  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.750  glow~       pos=(4,17.719,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.800  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  1.850  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.800  glow~       pos=(4,17.675,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+  1.850  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   1.850  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.850  glow~       pos=(4,17.631,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
   1.900  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
+  1.900  glow~       pos=(4,17.588,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
   1.950  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-  2.000  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=0.438 ring=0..1 ydisp=0..0 line=0 n=1
+  1.950  glow~       pos=(4,17.544,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=2
+  2.000  fire~       pos=(4,0,0) color=(1,1,0.8,1) vel=(0,15,0) accel=(0,-8,0) flame=2 ring=0..1 ydisp=0..0 line=0 n=1
   2.000  glow~       pos=(4,0,0) color=(1,1,1,1) scale=8 rate=80 n=4
-# end: emitters=2 coroutines=1 unhandled=[]
+  2.000  glow~       pos=(4,17.5,0) color=(0.7,0.7,1,1) scale=1.5 rate=50 n=3
+# end: emitters=3 coroutines=1 unhandled=[]

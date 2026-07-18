@@ -1,6 +1,6 @@
 # sfx timeline  script=gom_flamethrower  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.250  fireb       pos=(0,0,0) color=(0.34,0.34,0.34,0.55) vel=(0,60,2) accel=(0,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=4
-  0.250  fireb       pos=(0,0,0) color=(1,1,0,1) vel=(0,60,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=0.3
-  0.250  fireb       pos=(0,0,0) color=(0.6,0.8,0,1) vel=(0,60,-2) accel=(0,0,0) life=0.5 disp=0.5 r=4..40 n=96 flame=1
+  0.250  fireb       pos=(4,0.95,0) color=(0.34,0.34,0.34,0.55) vel=(2,60,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=4
+  0.250  fireb       pos=(4,0.95,0) color=(1,1,0,1) vel=(0,60,0) accel=(0,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=0.3
+  0.250  fireb       pos=(4,0.95,0) color=(0.6,0.8,0,1) vel=(-2,60,0) accel=(0,0,0) life=0.5 disp=0.5 r=4..40 n=96 flame=1
 # end: emitters=0 coroutines=0 unhandled=[]

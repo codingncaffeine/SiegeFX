@@ -1,6 +1,6 @@
 # sfx timeline  script=ghost_sap  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  flurry      pos=(4,0,0) color=(0.1,0.6,0.05,1) r=0.5 n=14 iphi=1 itheta=1 iamp=1 amp=1 grow=0/2/2.4 tin=0.1 tout=0.1 dur=0.5 tex=2
+  0.000  flurry      pos=(4,0.9,0) color=(0.1,0.6,0.05,1) r=0.5 n=14 iphi=1 itheta=1 iamp=1 amp=1 grow=0/2/2.4 tin=0.1 tout=0.1 dur=0.5 tex=2
   0.100  glow~       pos=(4,0,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.100  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.150  glow~       pos=(4,0,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
@@ -8,11 +8,11 @@
   0.200  glow~       pos=(4,0,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.200  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.200  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
-  0.250  flurry      pos=(0,0,0) color=(0.1,0.6,0.05,1) r=0.5 n=10 iphi=1 itheta=1 iamp=1 amp=1 grow=0.75/0.66/0 tin=0.1 tout=0.1 dur=0.25 tex=2
+  0.250  flurry      pos=(4,0.95,0) color=(0.1,0.6,0.05,1) r=0.5 n=10 iphi=1 itheta=1 iamp=1 amp=1 grow=0.75/0.66/0 tin=0.1 tout=0.1 dur=0.25 tex=2
   0.250  glow~       pos=(4,0,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.250  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.250  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
-  0.300  flurry      pos=(0,0,0) color=(0.1,0.6,0.05,1) r=0.5 n=10 iphi=1 itheta=1 iamp=1 amp=1 grow=0.75/0.66/0 tin=0.1 tout=0.1 dur=0.25 tex=2
+  0.300  flurry      pos=(4,0.95,0) color=(0.1,0.6,0.05,1) r=0.5 n=10 iphi=1 itheta=1 iamp=1 amp=1 grow=0.75/0.66/0 tin=0.1 tout=0.1 dur=0.25 tex=2
   0.300  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.300  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1
   0.300  glow~       pos=(4,0.165,0) color=(0.1,0.6,0.05,1) scale=0.313 rate=10 n=1

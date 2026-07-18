@@ -1,7 +1,13 @@
 # sfx timeline  script=gom_turret_lightning  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  lightning   src=(4,1,0) tgt=(0,0,0) color=(1,1,0.1,1) dur=0.35 displace=-0.1..0.1 subd=0 minsubd=0
-  0.000  lightning   src=(4,1,0) tgt=(0,0,0) color=(0.1,0.3,0.1,1) dur=0.35 displace=0..0 subd=0 minsubd=0
+  0.000  lightning   src=(4,1,0) tgt=(0,0,0) color=(1,1,0.1,1) dur=0.15 displace=-0.1..0.1 subd=0 minsubd=0
+  0.000  lightning   src=(4,1,0) tgt=(0,0,0) color=(0.1,0.3,0.1,1) dur=0.15 displace=0..0 subd=0 minsubd=0
   0.000  explosion   pos=(4,0,0) color=(1,1,0.1,1) r=0.3 n=8 scale=0.2..0.7 v=4..5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0.001 tex=2
   0.000  explosion   pos=(4,0,0) color=(0.5,1,0.1,1) r=0.3 n=8 scale=0.2..0.7 v=4..5 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
+  0.050  glow~       pos=(4,0,0) color=(0.5,1,0.1,1) scale=2 rate=50 n=2
+  0.100  glow~       pos=(4,0,0) color=(0.5,1,0.1,1) scale=2 rate=50 n=3
+  0.150  lightning   src=(4,1,0) tgt=(0,0,0) color=(0.1,0.3,0.1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  0.150  lightning   src=(4,1,0) tgt=(0,0,0) color=(1,1,0.1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.300  lightning   src=(4,1,0) tgt=(0,0,0) color=(0.1,0.3,0.1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  0.300  lightning   src=(4,1,0) tgt=(0,0,0) color=(1,1,0.1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
 # end: emitters=0 coroutines=0 unhandled=[]

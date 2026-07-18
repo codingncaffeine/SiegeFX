@@ -1,18 +1,33 @@
 # sfx timeline  script=tesla_bolt  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
   0.000  explosion   pos=(4,0,0) color=(0.5,0.5,1,1) r=1 n=25 scale=0.2..0.7 v=2..3 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.3 srate=0 tex=2
-  0.000  plume!      pos=(0,0,0) kind=1 n=30 (instant fill)
-  0.000  plume!      pos=(0,0,0) kind=1 n=45 (instant fill)
-  0.000  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.7,0.7,1,1) dur=0.5 displace=-0.1..0.1 subd=0 minsubd=0
-  0.000  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.3,0.3,1,1) dur=0.5 displace=-0.1..0.1 subd=0 minsubd=0
-  0.050  smoke~      pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=1
-  0.050  smoke~      pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
-  0.100  smoke~      pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
-  0.100  smoke~      pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
-  0.150  smoke~      pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
-  0.150  smoke~      pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
-  0.200  smoke~      pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
-  0.200  smoke~      pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=2
-  0.250  smoke~      pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
-  0.250  smoke~      pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.000  plume!      pos=(4,0.9,0) kind=1 n=30 (instant fill)
+  0.000  plume!      pos=(4,0.9,0) kind=1 n=45 (instant fill)
+  0.000  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.7,0.7,1,1) dur=0.15 displace=-0.1..0.1 subd=0 minsubd=0
+  0.000  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.3,0.3,1,1) dur=0.15 displace=-0.1..0.1 subd=0 minsubd=0
+  0.050  smoke~      pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.050  smoke~      pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.050  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=2
+  0.100  smoke~      pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
+  0.100  smoke~      pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.100  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=3
+  0.150  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.3,0.3,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.150  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.7,0.7,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.150  smoke~      pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
+  0.150  smoke~      pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.150  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=2
+  0.200  smoke~      pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
+  0.200  smoke~      pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=2
+  0.200  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=3
+  0.250  smoke~      pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(0,10,0) accel=(0,10,0) flame=1 ring=0..0.25 ydisp=0..0 line=1 n=2
+  0.250  smoke~      pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(0,10,0) accel=(0,10,0) flame=4 ring=0..0.25 ydisp=0..0 line=1 n=1
+  0.250  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=2
+  0.300  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.3,0.3,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.300  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.7,0.7,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.300  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=3
+  0.350  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=2
+  0.400  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=3
+  0.450  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.3,0.3,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.450  lightning   src=(4,1.6,0) tgt=(0,0,0) color=(0.7,0.7,1,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.450  glow~       pos=(4,0.9,0) color=(0.7,0.7,1,1) scale=0.83 rate=50 n=2
 # end: emitters=0 coroutines=0 unhandled=[]

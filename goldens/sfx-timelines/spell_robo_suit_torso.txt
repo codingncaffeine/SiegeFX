@@ -1,6 +1,6 @@
 # sfx timeline  script=robo_suit_torso  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  explosion   pos=(0,0,0) color=(1,0.66,0.33,1) r=0.01 n=96 scale=0.35..0.35 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
-  0.000  explosion   pos=(0,0,0) color=(0.3,0.3,0.3,0.55) r=0.1 n=96 scale=0.55..0.55 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
-  0.000  explosion   pos=(0,0,0) color=(1,0.75,0.5,1) r=0.01 n=96 scale=0.35..0.35 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
+  0.000  explosion   pos=(4,0.9,0) color=(1,0.66,0.33,1) r=0.01 n=96 scale=0.35..0.35 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
+  0.000  explosion   pos=(4,0.9,0) color=(0.3,0.3,0.3,0.55) r=0.1 n=96 scale=0.55..0.55 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
+  0.000  explosion   pos=(4,0.9,0) color=(1,0.75,0.5,1) r=0.01 n=96 scale=0.35..0.35 v=2..7 ivel=(0,-10,-6) rvel=(0,8,0) omni=1 fade=0.5..1 dur=1 srate=0 tex=2
 # end: emitters=0 coroutines=0 unhandled=[]

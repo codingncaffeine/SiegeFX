@@ -29907,6 +29907,9 @@ void main()
                     { DefaultEmitterDuration = SpellEffectDurationSec(brain.CastSpell, null) };
                     int partsBefore = _particles?.LiveParticleCount ?? 0;
                     int boltsBefore = _particles?.LiveBoltCount ?? 0;
+                    if (!string.IsNullOrEmpty(brain.CastSpell.ChargeSfxScript)
+                        && _sfxStore.TryGet(brain.CastSpell.ChargeSfxScript, out _))
+                        _sfxRuntime.Spawn(brain.CastSpell.ChargeSfxScript, npcCtx);
                     bool ran = _sfxRuntime.Spawn(brain.CastSpell.CastSfxScript, npcCtx);
                     npcNativeVisual = ran
                         && ((_particles?.LiveParticleCount ?? 0) > partsBefore
@@ -30289,7 +30292,12 @@ void main()
         // invisible carrier applies the payload at arrival.
         float projSpeed = 0f;
         bool projectileSpell = spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal
-            && best is not null && IsProjectileSpell(spell, out projSpeed);
+            && best is not null
+            // SC-SPELL-AUDIT-3 — [spell_launch] ammo spells are projectiles
+            // by definition (the authored ammo GO flies); the script-derived
+            // test missed them because their sfx scripts are sound-only
+            // stubs (iceblast's "-ET" TODO).
+            && (IsProjectileSpell(spell, out projSpeed) || spell.IsLaunch);
         SiegeFX.Core.Actors.CastResult result;
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
         {
@@ -30484,6 +30492,12 @@ void main()
                             int boltsBefore       = _particles?.LiveBoltCount ?? 0;
                             int particlesBefore   = _particles?.LiveParticleCount ?? 0;
                             int persistentBefore  = _sfxRuntime.LivePersistentCount;
+                            // SC-SPELL-AUDIT-3 — the authored wind-up flourish
+                            // (we_req_cast_charge) runs just ahead of the
+                            // release; previously never dispatched at all.
+                            if (!string.IsNullOrEmpty(spell.ChargeSfxScript)
+                                && _sfxStore.TryGet(spell.ChargeSfxScript, out _))
+                                _sfxRuntime.Spawn(spell.ChargeSfxScript, ctx);
                             ranNativeScript = _sfxRuntime.Spawn(spell.CastSfxScript, ctx);
                             int boltsAfter        = _particles?.LiveBoltCount ?? 0;
                             int particlesAfter    = _particles?.LiveParticleCount ?? 0;
@@ -30549,7 +30563,22 @@ void main()
                             SpellDamage = result.Damage,
                             SnapshotAim = dst,
                         };
-                        SpawnRangedShot(carrier, src, dst, MathF.Max(3f, projSpeed));
+                        float carrierSpeed = MathF.Max(3f, projSpeed);
+                        // SC-SPELL-AUDIT-3 — [spell_launch] spells fire the
+                        // REAL authored ammo GO for the player too (ice
+                        // shards, spit): mesh + gravity arc + impact splat,
+                        // same ResolveSpellAmmo path NPC casters ride,
+                        // instead of an invisible carrier + generic bolt.
+                        if (spell.IsLaunch)
+                        {
+                            var pammo = ResolveSpellAmmo(spell);
+                            carrier.Gravity = pammo.Gravity;
+                            carrier.Mesh    = pammo.Mesh;
+                            carrier.Tex     = pammo.Tex;
+                            carrier.ImpactSfxScript = pammo.BreakEffect;
+                            if (spell.LaunchVelocity > 1f) carrierSpeed = spell.LaunchVelocity;
+                        }
+                        SpawnRangedShot(carrier, src, dst, carrierSpeed);
                     }
                     else
                     {

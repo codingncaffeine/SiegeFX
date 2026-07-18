@@ -1,0 +1,51 @@
+# sfx timeline  script=heal  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.000  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(0.5,1.5,1.25) rp1=(0.25,0.25,0) hp0=(0,2,1) hp1=(0,2,1) alpha=0.5 spin=-3 tin=0.5 tout=0.5 dur=1.85 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.000  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(0.5,1.5,1.25) rp1=(0.25,0.25,0) hp0=(2,0,-1) hp1=(2,0,-1) alpha=0.5 spin=3 tin=0.5 tout=0.5 dur=1.85 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.000  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(0.5,1.5,1.25) rp1=(0.25,0.25,0) hp0=(0,2,1) hp1=(0,2,1) alpha=0.5 spin=-3 tin=0.5 tout=0.5 dur=1.85 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.000  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(0.5,1.5,1.25) rp1=(0.25,0.25,0) hp0=(2,0,-1) hp1=(2,0,-1) alpha=0.5 spin=3 tin=0.5 tout=0.5 dur=1.85 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.050  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.050  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.100  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.100  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.150  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.150  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.200  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.200  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.250  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.250  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.300  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.300  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.350  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.350  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.350  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.350  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.400  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=2
+  0.400  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=2
+  0.450  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.450  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.500  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.500  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.500  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.500  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.550  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.550  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.600  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.600  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.650  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.650  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.650  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.650  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.700  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.700  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.750  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.750  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=1
+  0.800  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.800  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.800  fire~       pos=(4,-1,0) color=(1,0.7,1,1) vel=(0,16,0) accel=(0,-10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=2
+  0.800  smoke~      pos=(4,1,0) color=(0.7,0.7,1,1) vel=(0,-16,0) accel=(0,10,0) flame=0.2 ring=0..0.1 ydisp=0..0 line=0 n=2
+  0.950  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.950  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  1.100  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  1.100  cylinder    pos=(4,-0.65,0) color=(1,0.55,0.2,1) rp0=(1.85,0.5,-3) rp1=(1.85,0.5,-3) hp0=(0,2,6) hp1=(0,0,0) alpha=0.5 spin=-3 tin=0.5 tout=0.3 dur=0.8 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+# end: emitters=0 coroutines=0 unhandled=[]

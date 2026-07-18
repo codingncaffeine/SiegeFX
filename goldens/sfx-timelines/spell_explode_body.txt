@@ -20,26 +20,34 @@
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
   1.000  explosion   pos=(4,0,0) color=(1,0.3,0.05,1) r=0.5 n=32 scale=0.2..0.7 v=12..14 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=0.5..1 dur=0.35 srate=0 tex=2
   1.000  sray        pos=(4,0.1,0) c0=(1,0.5,0.2,1) c1=(0,0,0,1) r=0.5 n=12 len=4..5 ws=0.125..0.125 we=0.125..0.125 theta=(0,0,0) phi=(0,0,0) alpha=(1,0.4,0.4) srate=0.015 dur=0.1
+  1.000  glow~       pos=(4,0,0) color=(1,0.3,0.05,1) scale=6 rate=50 n=2
   1.000  fire~       pos=(4,0,0) color=(0.5,0.4,0.3,1) vel=(0,0.3,0) accel=(0,0.04,0) flame=1 ring=3..6 ydisp=-0.8..0.8 line=0 n=1
   1.000  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.707) scale=15 rate=80 n=4
   1.000  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   1.050  flurry      pos=(4,0,0) color=(1,0.3,0.05,1) r=1 n=30 iphi=1 itheta=1 iamp=1 amp=1 grow=0.3/1.1/1.3 tin=0 tout=0.5 dur=0.27 tex=2
+  1.050  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=2
+  1.050  glow~       pos=(4,0,0) color=(1,0.3,0.05,1) scale=6 rate=50 n=3
   1.050  fire~       pos=(4,0,0) color=(0.5,0.4,0.3,1) vel=(0,0.3,0) accel=(0,0.04,0) flame=1 ring=3..6 ydisp=-0.8..0.8 line=0 n=2
   1.050  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.715) scale=15 rate=80 n=4
+  1.100  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=3
   1.100  fire~       pos=(4,0,0) color=(0.5,0.4,0.3,1) vel=(0,0.3,0) accel=(0,0.04,0) flame=1 ring=3..6 ydisp=-0.8..0.8 line=0 n=1
   1.100  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.722) scale=15 rate=80 n=4
   1.100  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
+  1.150  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=2
   1.150  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.73) scale=15 rate=80 n=4
   1.150  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   1.200  explosion   pos=(4,0,0) color=(0.5,0.4,0.3,1) r=0.5 n=80 scale=0.2..0.3 v=4..10 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=4..8 dur=0.35 srate=0 tex=1
   1.200  plume!      pos=(4,0,0) kind=1 n=30 (instant fill)
+  1.200  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=3
   1.200  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.737) scale=15 rate=80 n=4
   1.200  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   1.250  plume!      pos=(4,0,0) kind=1 n=30 (instant fill)
+  1.250  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=2
   1.250  glow~       pos=(4,1,0) color=(1,0.3,0.05,0.745) scale=15 rate=80 n=4
   1.250  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   1.300  plume!      pos=(4,0,0) kind=1 n=30 (instant fill)
   1.300  smoke~      pos=(4,0,0) color=(0.5,0.35,0.2,1) vel=(0,0.3,0) accel=(0,-0.04,0) flame=1 ring=3..6 ydisp=-1..1 line=0 n=1
+  1.300  glow~       pos=(4,0,0) color=(1,0.8,0.6,1) scale=1.7 rate=50 n=3
   1.350  smoke~      pos=(4,0,0) color=(0.5,0.4,0.3,1) vel=(0,0.3,0) accel=(0,-0.04,0) flame=1 ring=2..5 ydisp=-1..1 line=0 n=1
   1.350  fire~       pos=(4,0,0) color=(0.3,0.3,0.3,1) vel=(0,10,0) accel=(0,10,0) flame=2 ring=0..2 ydisp=0..0 line=0 n=1
   1.400  smoke~      pos=(4,0,0) color=(0.5,0.5,0.5,1) vel=(0,0.3,0) accel=(0,0.04,0) flame=1 ring=1..4 ydisp=-1..1.2 line=0 n=1

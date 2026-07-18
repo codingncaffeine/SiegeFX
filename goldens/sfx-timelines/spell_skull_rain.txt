@@ -1,0 +1,17 @@
+# sfx timeline  script=gom_skull_rain  ticks=40  dt=0.050  seed=1
+# ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
+  0.500  glow~       pos=(2.25,0.568,0) color=(1,1,1,1) scale=0.5 rate=50 n=2
+  0.550  glow~       pos=(4,0,0) color=(1,1,1,1) scale=0.5 rate=50 n=3
+  0.650  plume!      pos=(4,0.1,0) kind=0 n=50 (instant fill)
+  0.650  explosion   pos=(4,0.1,0) color=(1,0.3,0.1,1) r=0.8 n=30 scale=0.5..0.9 v=2..4 ivel=(0,0,0) rvel=(4,4,4) omni=0 fade=8..8 dur=1 srate=0 tex=2
+  0.650  cylinder    pos=(4,0.1,0) color=(0.9,0.3,0.1,1) rp0=(0,3,8) rp1=(0.75,3.75,12) hp0=(0,0,0) hp1=(0,0,0) alpha=0.5 spin=15 tin=0.1 tout=1 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=11 seg=16
+  0.650  glow~       pos=(4,0.1,0) color=(1,0.4,0.2,1) scale=3.5 rate=50 n=2
+  0.650  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=1
+  0.700  glow~       pos=(4,0.1,0) color=(1,0.4,0.2,1) scale=3.5 rate=50 n=3
+  0.700  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=2
+  0.750  glow~       pos=(4,0.1,0) color=(1,0.4,0.2,1) scale=3.5 rate=50 n=2
+  0.750  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=1
+  0.800  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=2
+  0.850  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=2
+  0.900  fire~       pos=(4,0.1,0) color=(1,0.3,0.1,1) vel=(0,20,0) accel=(0,16,0) flame=2 ring=0..5 ydisp=0..0 line=0 n=1
+# end: emitters=0 coroutines=0 unhandled=[]

@@ -1,6 +1,6 @@
 # sfx timeline  script=drake_frost  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  fireb       pos=(0,0,0) color=(0.3,0.3,1,1) vel=(0,-40,-50) accel=(0,0,15) life=0.5 disp=0.5 r=0..30 n=96 flame=1
-  0.000  fireb       pos=(0,0,0) color=(0.7,0.7,1,1) vel=(0,-40,-50) accel=(0,0,15) life=0.5 disp=0.5 r=0..30 n=96 flame=1
-  0.000  fireb       pos=(0,0,0) color=(0.3,0.5,1,1) vel=(0,-40,-50) accel=(0,0,15) life=0.5 disp=0.5 r=0..30 n=96 flame=2
+  0.000  fireb       pos=(4,0.9,0) color=(0.3,0.3,1,1) vel=(-50,-40,-0) accel=(15,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=1
+  0.000  fireb       pos=(4,0.9,0) color=(0.7,0.7,1,1) vel=(-50,-40,-0) accel=(15,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=1
+  0.000  fireb       pos=(4,0.9,0) color=(0.3,0.5,1,1) vel=(-50,-40,-0) accel=(15,0,0) life=0.5 disp=0.5 r=0..30 n=96 flame=2
 # end: emitters=0 coroutines=0 unhandled=[]

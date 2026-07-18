@@ -1,7 +1,9 @@
 # sfx timeline  script=dark_lunger_zap  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  explosion   pos=(0,0,0) color=(0.1,0.1,0.5,1) r=0.4 n=25 scale=0.3..0.6 v=1..2 ivel=(0,1,0) rvel=(1,1,1) omni=1 fade=0..1 dur=0.2 srate=0 tex=2
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0.2,0.2,0.5,1) dur=0.25 displace=-0.1..0.1 subd=0 minsubd=0
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0,0,0.5,1) dur=0.25 displace=-0.1..0.1 subd=0 minsubd=0
+  0.000  explosion   pos=(4,0.95,0) color=(0.1,0.1,0.5,1) r=0.4 n=25 scale=0.3..0.6 v=1..2 ivel=(0,1,0) rvel=(1,1,1) omni=1 fade=0..1 dur=0.2 srate=0 tex=2
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0.2,0.2,0.5,1) dur=0.15 displace=-0.1..0.1 subd=0 minsubd=0
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(0,0,0.5,1) dur=0.15 displace=-0.1..0.1 subd=0 minsubd=0
   0.000  explosion   pos=(4,0,0) color=(0.1,0.1,0.5,1) r=0.4 n=25 scale=0.3..0.6 v=2..3 ivel=(0,1,0) rvel=(2,1,2) omni=1 fade=0..1 dur=2 srate=0 tex=2
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(0,0,0.5,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(0.2,0.2,0.5,1) dur=0.13 displace=-0.1..0.1 subd=0 minsubd=0
 # end: emitters=0 coroutines=0 unhandled=[]

@@ -1,25 +1,37 @@
 # sfx timeline  script=kell_bolt  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  plume!      pos=(0,0,0) kind=0 n=30 (instant fill)
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.5,0.4,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.35 displace=-0.2..0.2 subd=0 minsubd=0
-  0.000  plume!      pos=(0,0,0) kind=0 n=30 (instant fill)
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  plume!      pos=(0,1,0) kind=0 n=30 (instant fill)
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.5,0.4,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.15 displace=-0.2..0.2 subd=0 minsubd=0
+  0.000  plume!      pos=(0,1,0) kind=0 n=30 (instant fill)
   0.000  explosion   pos=(4,0,0) color=(1,0.6,0.6,1) r=0.1 n=30 scale=0.33..0.66 v=20..40 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=16..16 dur=0.35 srate=0 tex=2
   0.000  explosion   pos=(4,0,0) color=(1,0.6,0.6,1) r=0.1 n=30 scale=0.33..0.66 v=22..32 ivel=(0,0,0) rvel=(0.25,0.25,0.25) omni=1 fade=12..12 dur=0.55 srate=0 tex=2
-  0.050  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.050  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.100  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.100  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.150  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.150  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.200  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=2
-  0.200  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=2
-  0.250  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.250  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.300  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
-  0.300  fire~       pos=(0,0,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.050  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.050  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.100  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.100  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.150  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.5,0.4,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.150  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.150  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.200  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=2
+  0.200  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=2
+  0.250  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.250  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.300  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.5,0.4,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.300  fire~       pos=(0,1,0) color=(1,0.35,0.3,1) vel=(0,10,0) accel=(0,0,0) flame=0.438 ring=0..0.3 ydisp=0..0 line=1 n=1
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.2,0.2,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
+  0.300  lightning   src=(0,1,0) tgt=(0,0,0) color=(1,0.35,0.3,1) dur=0.13 displace=-0.2..0.2 subd=0 minsubd=0
 # end: emitters=0 coroutines=0 unhandled=[]

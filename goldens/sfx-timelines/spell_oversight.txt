@@ -1,5 +1,35 @@
 # sfx timeline  script=oversight  ticks=40  dt=0.050  seed=1
 # ctx: src=(0,0,0) tgt=(4,0,0) weapon=(0.3,1.2,0)
-  0.000  sray        pos=(4,0,0) c0=(0.4,0.7,0,1) c1=(0,0,0,1) r=0.001 n=16 len=0.8..0.8 ws=0.15..0.15 we=0.15..0.15 theta=(0,1,3) phi=(0,1,-3) alpha=(1,0.5,0.5) srate=0.015 dur=1
-  0.000  flurry      pos=(4,0,0) color=(0.4,0.7,0,1) r=1 n=20 iphi=1 itheta=1 iamp=1 amp=1 grow=0/0.8/1 tin=0.2 tout=1 dur=1.5 tex=2
+  0.000  sray        pos=(4,0.9,0) c0=(0.4,0.7,0,1) c1=(0,0,0,1) r=0.001 n=16 len=0.8..0.8 ws=0.15..0.15 we=0.15..0.15 theta=(0,1,3) phi=(0,1,-3) alpha=(1,0.5,0.5) srate=0.015 dur=1
+  0.000  flurry      pos=(4,0.9,0) color=(0.4,0.7,0,1) r=1 n=20 iphi=1 itheta=1 iamp=1 amp=1 grow=0/0.8/1 tin=0.2 tout=1 dur=1.5 tex=2
+  0.050  glow~       pos=(2.503,0.956,-0.075) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.050  glow~       pos=(3.144,-0.331,-0.043) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.050  glow~       pos=(4.572,-0.486,0.029) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.050  glow~       pos=(5.474,0.633,0.074) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.050  glow~       pos=(5.021,1.998,0.051) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.100  glow~       pos=(2.947,1.963,-0.106) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.100  glow~       pos=(2.541,0.584,-0.146) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.100  glow~       pos=(3.476,-0.505,-0.053) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.100  glow~       pos=(4.893,-0.302,0.09) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.100  glow~       pos=(5.489,1.006,0.149) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.150  glow~       pos=(3.951,2.399,-0.007) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.150  glow~       pos=(2.726,1.668,-0.193) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.150  glow~       pos=(2.673,0.231,-0.201) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.150  glow~       pos=(3.84,-0.591,-0.024) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.150  glow~       pos=(5.154,-0.042,0.174) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.200  glow~       pos=(4.966,2.031,0.196) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.200  glow~       pos=(3.589,2.34,-0.083) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.200  glow~       pos=(2.59,1.325,-0.286) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.200  glow~       pos=(2.887,-0.08,-0.226) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.200  glow~       pos=(4.207,-0.585,0.042) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.250  glow~       pos=(5.446,1.056,0.369) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.250  glow~       pos=(4.654,2.24,0.167) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.250  glow~       pos=(3.261,2.192,-0.189) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.250  glow~       pos=(2.548,0.956,-0.371) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.250  glow~       pos=(3.169,-0.331,-0.212) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=2
+  0.300  glow~       pos=(5.144,-0.003,0.354) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.300  glow~       pos=(5.344,1.42,0.416) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.300  glow~       pos=(4.308,2.365,0.095) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.300  glow~       pos=(2.989,1.963,-0.313) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
+  0.300  glow~       pos=(2.599,0.584,-0.433) color=(0.4,0.7,0,1) scale=0.25 rate=50 n=3
 # end: emitters=0 coroutines=0 unhandled=[]

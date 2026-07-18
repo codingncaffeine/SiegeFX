@@ -8,4 +8,10 @@
   0.000  cylinder    pos=(4,0,0) color=(0.3,0,0.16,1) rp0=(1.5,1.5,0) rp1=(1.5,1.5,0) hp0=(2,0.25,-0.5) hp1=(0,0,0) alpha=0.5 spin=3 tin=1 tout=1 dur=3 rot=(0,0,0) irot=(0,0,0) tex=8 seg=16
   0.500  cylinder    pos=(4,0,0) color=(0.6,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(-3,-1.25,0.5) hp1=(0,0,0) alpha=0.5 spin=4 tin=1 tout=1 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=8 seg=6
   0.500  cylinder    pos=(4,0,0) color=(0.6,0,0,1) rp0=(1,1,0) rp1=(1,1,0) hp0=(3,1.25,-0.5) hp1=(0,0,0) alpha=0.5 spin=4 tin=1 tout=1 dur=0.35 rot=(0,0,0) irot=(0,0,0) tex=8 seg=6
+  0.500  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=2
+  0.550  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=3
+  0.600  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=2
+  0.650  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=3
+  0.700  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=2
+  0.750  glow~       pos=(4,2.4,0) color=(1,0.4,0.6,1) scale=0.25 rate=50 n=3
 # end: emitters=0 coroutines=0 unhandled=[]

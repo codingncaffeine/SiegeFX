@@ -6,12 +6,27 @@
   0.000  cylinder    pos=(0,0,0) color=(0.4,0.4,1,1) rp0=(0.4,0.4,0) rp1=(0.4,0.4,0) hp0=(-40,30,80) hp1=(-19.96,40,80) alpha=0.15 spin=-7 tin=0.5 tout=1.5 dur=2 rot=(0,0,0) irot=(0,0,0) tex=5 seg=10
   0.600  explosion   pos=(0,0,0) color=(0.5,0.5,1,1) r=0.1 n=35 scale=0.2..0.7 v=4..4 ivel=(0,1.6,0) rvel=(0.25,0.25,0.25) omni=1 fade=2.2..2.2 dur=0.35 srate=0.02 tex=2
   0.600  fireb       pos=(4,0,0) color=(0.2,0.3,0.7,1) vel=(0,10,0) accel=(0,-2,0) life=0.25 disp=0.5 r=0..1 n=96 flame=2
-  0.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=2 displace=0..0 subd=0 minsubd=0
-  0.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=2 displace=0..0 subd=0 minsubd=0
-  0.600  smoke~      pos=(1.727,0.737,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-  0.650  smoke~      pos=(1.965,0.66,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-  0.700  smoke~      pos=(2.202,0.583,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-  0.750  smoke~      pos=(2.44,0.506,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-  0.800  smoke~      pos=(2.678,0.429,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-  0.850  smoke~      pos=(2.916,0.352,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
-# end: emitters=0 coroutines=1 unhandled=[]
+  0.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.15 displace=0..0 subd=0 minsubd=0
+  0.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.15 displace=0..0 subd=0 minsubd=0
+  0.600  smoke~      pos=(2.797,0.39,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
+  0.650  smoke~      pos=(3.213,0.255,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
+  0.700  lightning   src=(0.3,41.2,0) tgt=(3.629,0.12,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  0.700  lightning   src=(0.3,41.2,0) tgt=(3.629,0.12,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  0.700  smoke~      pos=(3.629,0.12,0) color=(0.5,0.5,1,1) vel=(0,100,0) accel=(0,0,0) flame=10 ring=0..0.5 ydisp=0..14 line=0 n=3
+  0.850  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  0.850  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.000  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.000  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.150  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.150  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.300  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.300  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.450  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.450  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.600  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.750  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.750  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.900  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.6,0.6,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+  1.900  lightning   src=(0.3,41.2,0) tgt=(0,0,0) color=(0.1,0.1,1,1) dur=0.13 displace=0..0 subd=0 minsubd=0
+# end: emitters=2 coroutines=1 unhandled=[]

@@ -1163,6 +1163,17 @@ public sealed class SfxRuntime
                 _motionHandles[h.MotionId] = mm;
             }
         }
+        // SC-SPELL-AUDIT-3 — bone_orient: the emitter's authored velocity /
+        // accel are in the BONE's frame (drake breaths blow along the jaw,
+        // not world-up). Approximate the bone frame with the caster→target
+        // frame: authored +Z becomes "toward the target".
+        if (h.BoneOrientFlag)
+        {
+            if (h.VelocityVec.LengthSquared() > 0.0001f)
+                h.VelocityVec = CasterFrameOffset(rs.Ctx, h.VelocityVec);
+            if (h.HasAccel)
+                h.AccelVec = CasterFrameOffset(rs.Ctx, h.AccelVec);
+        }
         // SC-SPELL-AUDIT-2 — dir(x,y,z): launch-direction bias relative to
         // the caster (spark's two globes author dir(±.2) to split L/R).
         // Parsed since Phase 23d but consumed by NOTHING — both globes
