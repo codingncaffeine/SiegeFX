@@ -186,6 +186,10 @@ public sealed class CompanionSnapshot
     public int  AtkOrder  { get; set; } = -1;
     public int  TgtOrder  { get; set; } = -1;
     public bool FollowOn  { get; set; } = true;
+    /// <summary>SC-SELECT-MOVE — true when the member was deliberately
+    /// positioned (ordered without the hero in the selection): they hold
+    /// that ground instead of trailing the leader, across save/load.</summary>
+    public bool FollowSuspended { get; set; }
     /// <summary>SC-MEMBER-ACTIVE-SLOT — the member's selected combat slot
     /// (0 melee / 1 ranged / 2 Active Spell 1 / 3 Active Spell 2; -1 = auto
     /// or pre-field save).</summary>

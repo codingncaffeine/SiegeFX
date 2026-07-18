@@ -713,6 +713,10 @@ public sealed class RenderHost : IDisposable
     private float _lmbMoveRepeatIn;
     private long _lmbDownAtMs;
     private readonly HashSet<int> _selectedPartyIdx = new() { 0 };
+    // SC-PARTY-GROUPS — authored [set_group_1..8] (Ctrl+F1..F8) snapshot the
+    // current selection; [get_group_1..8] (F1..F8) recall it. Session-local,
+    // like retail; dead/disbanded members fall out at recall time.
+    private readonly HashSet<int>?[] _partyGroups = new HashSet<int>?[9];
     private ActorRenderState? _hoverActor;
 
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
@@ -1670,6 +1674,17 @@ public sealed class RenderHost : IDisposable
         public Hud.FieldCommandsPanel.Action FcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback;
         public Hud.FieldCommandsPanel.Action FcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
         public bool FcFollow = true;
+        // SC-SELECT-MOVE — retail's selection-driven orders. A ground click
+        // with this member selected sets MoveOrder (their formation slot at
+        // the destination); an enemy click sets OrderedFoe (explicit attack,
+        // overrides HoldFire/targeting). A member ordered WITHOUT the hero
+        // in the selection is deliberately positioned: FollowSuspended pins
+        // them where they were sent (no leader trailing, no catch-up
+        // teleport) until a later group order that includes the hero — or
+        // re-engaging follow mode on the panel — releases them.
+        public Vector3? MoveOrder;
+        public ActorRenderState? OrderedFoe;
+        public bool FollowSuspended;
         // Seconds a follower has been TRYING to reach its slot without
         // actually moving (blocked path / lost around geometry). Drives the
         // DS1-style catch-up teleport in TickPartyFollowers.
@@ -1965,6 +1980,7 @@ public sealed class RenderHost : IDisposable
         public int? ActiveSlot;
         public int MoveOrder = -1, AtkOrder = -1, TgtOrder = -1;
         public bool FollowOn = true;
+        public bool FollowSuspended;
     }
     /// <summary>Dismissed companions' kept state, by SCID. A dismissed member
     /// stays in the world (talkable); re-inviting them restores this bundle so
@@ -1983,6 +1999,7 @@ public sealed class RenderHost : IDisposable
             AtkOrder  = FcOrderToInt(m.FcAttack),
             TgtOrder  = FcOrderToInt(m.FcTargeting),
             FollowOn  = m.FcFollow,
+            FollowSuspended = m.FollowSuspended,
         };
         if (_companionInventories.Remove(idx, out var inv)) b.Inventory = inv;
         if (_memberEquipment.Remove(idx, out var eq))       b.Equipment = eq;
@@ -2029,6 +2046,7 @@ public sealed class RenderHost : IDisposable
         if (b.AtkOrder  >= 0) npc.FcAttack    = FcAtkFromInt(b.AtkOrder);
         if (b.TgtOrder  >= 0) npc.FcTargeting = FcTgtFromInt(b.TgtOrder);
         npc.FcFollow = b.FollowOn;
+        npc.FollowSuspended = b.FollowSuspended;
         if (_formulas is not null)
         {
             var prog = new SiegeFX.Core.Actors.PlayerProgression(npc.Actor, _formulas);
@@ -2581,7 +2599,18 @@ public sealed class RenderHost : IDisposable
             // slot; Engage (default) fights but won't leave the leader's
             // side; Move Freely roams to whatever it can see.
             ActorRenderState? foe = null;
-            if (m.CanFight && m.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
+            // SC-SELECT-MOVE — an explicit attack order (enemy click with
+            // this member selected) is retail force-attack: it overrides
+            // HoldFire and the targeting prefs until the target dies. An
+            // explicit MOVE order overrides engagement entirely — they run
+            // where they were sent and fight per standing orders on arrival.
+            if (m.OrderedFoe is { IsDead: true } or { Hidden: true }) m.OrderedFoe = null;
+            if (m.MoveOrder is null && m.OrderedFoe is not null)
+            {
+                foe = m.OrderedFoe;
+            }
+            else if (m.MoveOrder is null
+                && m.CanFight && m.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
             {
                 float radius = m.FcMovement switch
                 {
@@ -2594,9 +2623,11 @@ public sealed class RenderHost : IDisposable
                     && m.FcMovement == Hud.FieldCommandsPanel.Action.MoveEngage)
                 {
                     // Engage leash — don't chase a foe that would pull the
-                    // follower far off the leader.
+                    // follower far off the anchor: the leader when trailing,
+                    // the member's own held spot when deliberately positioned.
+                    var anchor = (m.FollowSuspended || !m.FcFollow) ? before : leaderPos;
                     var fp = foe.CurrentTransform.Translation;
-                    float ldx = fp.X - leaderPos.X, ldz = fp.Z - leaderPos.Z;
+                    float ldx = fp.X - anchor.X, ldz = fp.Z - anchor.Z;
                     const float EngageLeash = 16f;
                     if (ldx * ldx + ldz * ldz > EngageLeash * EngageLeash) foe = null;
                 }
@@ -2618,7 +2649,39 @@ public sealed class RenderHost : IDisposable
                 m.Brain.ForceIdle();
                 bool moving = false;
                 m.TriedFollowMove = false;
-                if (m.FcFollow)
+                // SC-SELECT-MOVE — explicit order first: run to the ordered
+                // spot and hold there. Trailing only happens with follow on
+                // AND no deliberate positioning in effect.
+                if (m.MoveOrder is { } orderDest)
+                {
+                    float ogx = before.X - orderDest.X, ogz = before.Z - orderDest.Z;
+                    float ogap2 = ogx * ogx + ogz * ogz;
+                    const float arriveR = 0.7f;
+                    if (ogap2 <= arriveR * arriveR)
+                    {
+                        m.MoveOrder = null;   // arrived — hold this ground
+                    }
+                    else
+                    {
+                        float ogap = MathF.Sqrt(ogap2);
+                        follower.Speed = baseGait * (ogap > 6f ? 2.4f : ogap > 3f ? 1.7f : 1.1f);
+                        float odx = follower.Target.X - orderDest.X, odz = follower.Target.Z - orderDest.Z;
+                        if (follower.ReachedGoal || follower.PathBlocked ||
+                            (odx * odx + odz * odz) > 1.0f)
+                            follower.SetTarget(orderDest);
+                        if (follower.PathBlocked)
+                        {
+                            m.MoveOrder = null;   // unreachable — hold here instead
+                        }
+                        else
+                        {
+                            follower.Tick(dt);
+                            moving = true;
+                            m.TriedFollowMove = true;
+                        }
+                    }
+                }
+                else if (m.FcFollow && !m.FollowSuspended)
                 {
                     var slot = SnapToNavmesh(
                         PartyFormationSlot(_partyFormation, m.PartyIndex, leaderPos, leaderFace),
@@ -2657,12 +2720,20 @@ public sealed class RenderHost : IDisposable
                     face = (moved.X * moved.X + moved.Z * moved.Z) > 1e-6f
                         ? Vector3.Normalize(new Vector3(moved.X, 0f, moved.Z))
                         : leaderFace;
+                    m.Brain.Wander.SetFacing(face);
+                }
+                else if (!m.FollowSuspended)
+                {
+                    face = leaderFace;   // parked / follow off: match the leader's heading
+                    m.Brain.Wander.SetFacing(face);
                 }
                 else
                 {
-                    face = leaderFace;   // parked / follow off: match the leader's heading
+                    // SC-SELECT-MOVE — deliberately positioned members keep
+                    // the facing they arrived with; snapping to the leader's
+                    // heading would spoil a placed ambush/garrison pose.
+                    face = m.Brain.Facing;
                 }
-                m.Brain.Wander.SetFacing(face);
             }
 
             var after = follower.Position;
@@ -2676,7 +2747,7 @@ public sealed class RenderHost : IDisposable
             // (TriedFollowMove + no displacement), so a correctly parked
             // member never counts as stuck, and a blocked one recovers even
             // right next to the leader.
-            if (foe is null && m.FcFollow && !m.IsDead)
+            if (foe is null && m.FcFollow && !m.FollowSuspended && m.MoveOrder is null && !m.IsDead)
             {
                 float lgx = after.X - leaderPos.X, lgz = after.Z - leaderPos.Z;
                 float leaderGap2 = lgx * lgx + lgz * lgz;
@@ -5924,6 +5995,10 @@ public sealed class RenderHost : IDisposable
             if (_sfxRuntime is not null && _sfxStore is not null
                 && _sfxStore.TryGet("un_summon", out _))
                 _sfxRuntime.Spawn("un_summon", SiegeFX.Core.Sfx.SfxContext.At(pos));
+            // Flag dead BEFORE removal so anything holding a reference
+            // (member OrderedFoe, pending attack targets) drops it.
+            a.IsDead = true;
+            a.Brain = null;
             _actors.Remove(a);
             Console.WriteLine($"[multi-summon] {a.Actor.Template.Name} unsummoned (duration up)");
         }
@@ -6152,7 +6227,16 @@ public sealed class RenderHost : IDisposable
             var follower = s.Brain.Wander.Follower;
             var before = follower.Position;
             ActorRenderState? foe = null;
-            if (s.CanFight && s.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
+            // SC-SELECT-MOVE — the summon honors explicit orders like any
+            // selected member: a locked attack target first, and a move
+            // order suppresses engagement until arrival.
+            if (s.OrderedFoe is { IsDead: true } or { Hidden: true }) s.OrderedFoe = null;
+            if (s.MoveOrder is null && s.OrderedFoe is not null)
+            {
+                foe = s.OrderedFoe;
+            }
+            else if (s.MoveOrder is null
+                && s.CanFight && s.FcAttack != Hud.FieldCommandsPanel.Action.AtkHoldFire)
             {
                 float radius = s.FcMovement switch
                 {
@@ -6166,12 +6250,31 @@ public sealed class RenderHost : IDisposable
             {
                 s.Brain.Tick(dt, foe.CurrentTransform.Translation, foe.Actor.Combat, foe.Actor.Stats);
             }
+            else if (s.MoveOrder is { } sorder)
+            {
+                s.Brain.ForceIdle();
+                float ogx = sorder.X - before.X, ogz = sorder.Z - before.Z;
+                if (ogx * ogx + ogz * ogz <= 0.7f * 0.7f)
+                {
+                    s.MoveOrder = null;   // arrived — hold until re-ordered
+                }
+                else
+                {
+                    follower.Speed = 4.5f;
+                    float tdx = follower.Target.X - sorder.X, tdz = follower.Target.Z - sorder.Z;
+                    if (follower.ReachedGoal || follower.PathBlocked
+                        || (tdx * tdx + tdz * tdz) > 1.0f)
+                        follower.SetTarget(sorder);
+                    if (follower.PathBlocked) s.MoveOrder = null;
+                    else follower.Tick(dt);
+                }
+            }
             else
             {
                 s.Brain.ForceIdle();
                 float gx = lp.X - before.X, gz = lp.Z - before.Z;
                 float gap2 = gx * gx + gz * gz;
-                if (!s.FcFollow) { /* parked by orders */ }
+                if (!s.FcFollow || s.FollowSuspended) { /* parked by orders */ }
                 else if (gap2 > 40f * 40f) s.Brain.Teleport(lp);
                 else if (gap2 > 4f * 4f)
                 {
@@ -8232,12 +8335,14 @@ void main()
                         return;
                     }
                 }
-                // ALPHA-PACKAGING — F11 bug snapshot: zips the live session
-                // log + a state summary + the newest save into
+                // ALPHA-PACKAGING — Ctrl+F11 bug snapshot: zips the live
+                // session log + a state summary + the newest save into
                 // %LOCALAPPDATA%\SiegeFX\bugreports\ so a tester can attach
-                // one file to an issue. Always available (it's the whole
-                // point for testers), cheap, and side-effect free.
-                if (key == Key.F11 && !_bootMode)
+                // one file to an issue. Moved off bare F11 — the authored
+                // binding gives F11 to Quick Load (input_bindings.gas
+                // [quick_load]) and retail wins.
+                if (key == Key.F11 && !_bootMode
+                    && (kb.IsKeyPressed(Key.ControlLeft) || kb.IsKeyPressed(Key.ControlRight)))
                 {
                     WriteBugSnapshot();
                     return;
@@ -8290,6 +8395,15 @@ void main()
                 bool modShift = kb.IsKeyPressed(Key.ShiftLeft)   || kb.IsKeyPressed(Key.ShiftRight);
                 // Registry query for the dispatch chain below.
                 bool Is(string actionId) => _keyBindings.Matches(actionId, key, modCtrl, modAlt, modShift);
+                // SC-PARTY-GROUPS — match set_group_N / get_group_N in one
+                // scan; out = the group number (1..8), 0 on no match.
+                bool MatchGroupKey(string prefix, out int group)
+                {
+                    for (int gi = 1; gi <= 8; gi++)
+                        if (Is(prefix + gi)) { group = gi; return true; }
+                    group = 0;
+                    return false;
+                }
                 // SC-MP-PLAYERS — the open chat line owns the keyboard:
                 // Enter sends, Backspace edits, Esc cancels; other keys are
                 // swallowed (their text arrives via KeyChar). Runs before
@@ -8684,12 +8798,33 @@ void main()
                 }
                 else if (Is("stop") && _player is not null && !_player.IsDead)
                 {
-                    _playerFollower?.SetTarget(_playerFollower.Position);
-                    _pendingAttackTarget = null;
-                    _pendingCastTarget = null;
-                    _pendingCastProp = null;
-                    _pendingBreakProp = null;
-                    _pendingPickupPile = null;
+                    // Authored [stop]: halt the SELECTION — the hero's walk +
+                    // pendings when selected, and every selected member's
+                    // explicit orders (SC-SELECT-MOVE).
+                    if (_selectedPartyIdx.Contains(0))
+                    {
+                        _playerFollower?.SetTarget(_playerFollower.Position);
+                        _pendingAttackTarget = null;
+                        _pendingCastTarget = null;
+                        _pendingCastProp = null;
+                        _pendingBreakProp = null;
+                        _pendingPickupPile = null;
+                    }
+                    foreach (var sm in _party)
+                    {
+                        if (sm.PartyIndex <= 0 || sm.IsDead || sm.Brain is null) continue;
+                        if (!_selectedPartyIdx.Contains(sm.PartyIndex)) continue;
+                        sm.MoveOrder = null;
+                        sm.OrderedFoe = null;
+                        var fl = sm.Brain.Wander.Follower;
+                        fl.SetTarget(fl.Position);
+                    }
+                    if (PlayerSummon is { IsDead: false, Brain: not null } ssm
+                        && _selectedPartyIdx.Contains(SummonSelIdx))
+                    {
+                        ssm.MoveOrder = null;
+                        ssm.OrderedFoe = null;
+                    }
                     Console.WriteLine("[cmd] stop");
                 }
                 else if (Is("select_all_party_members"))
@@ -8783,14 +8918,44 @@ void main()
                     _selectedPartyIdx.Add(0);
                     Console.WriteLine("[cmd] select lead");
                 }
+                // SC-PARTY-GROUPS — authored Ctrl+F1..F8 save the current
+                // selection as a named group; F1..F8 recall it (dead or
+                // disbanded members drop out at recall).
+                else if (MatchGroupKey("set_group_", out int gSet))
+                {
+                    _partyGroups[gSet] = new HashSet<int>(_selectedPartyIdx);
+                    _saveToastText = $"Party group {gSet} saved";
+                    _saveToastRemaining = SaveToastDuration;
+                    Console.WriteLine($"[cmd] save group {gSet}: {string.Join(",", _selectedPartyIdx)}");
+                }
+                else if (MatchGroupKey("get_group_", out int gGet))
+                {
+                    if (_partyGroups[gGet] is { Count: > 0 } grp)
+                    {
+                        var live = new List<int>();
+                        foreach (var gi in grp)
+                        {
+                            if (gi == 0 && _player is { IsDead: false }) live.Add(0);
+                            else if (gi == SummonSelIdx && PlayerSummon is { IsDead: false }) live.Add(gi);
+                            else foreach (var gm in _party)
+                                if (gm.PartyIndex == gi && gm.IsPartyMember && !gm.IsDead)
+                                { live.Add(gi); break; }
+                        }
+                        if (live.Count > 0)
+                        {
+                            _selectedPartyIdx.Clear();
+                            foreach (var gi in live) _selectedPartyIdx.Add(gi);
+                            Console.WriteLine($"[cmd] recall group {gGet}: {string.Join(",", live)}");
+                        }
+                    }
+                }
                 // SC-COMMANDS — authored save/load row (input_bindings.gas
                 // [quick_save] key_f9, [quick_load] key_f11, [game_options]
-                // key_f10). F5 stays as an extra quicksave alias — it was
-                // this project's original quicksave key and collides with
-                // nothing real (the gas gives F5 to party group 5, a system
-                // we don't have). The old F11 particle-burst dev receipt is
-                // retired (the sfx_script interpreter has driven the
-                // particle backend from data since SC-F/SC-G).
+                // key_f10). The old F5-quicksave alias is retired: the gas
+                // gives F5 to Recall Party Group 5, which now exists. The
+                // old F11 particle-burst dev receipt is likewise gone (the
+                // sfx_script interpreter has driven the particle backend
+                // from data since SC-F/SC-G).
                 // SC-OPTIONS-GAME — authored game-speed steps ([game_speed_up]
                 // ctrl+equals, [game_speed_down] ctrl+minus, [game_speed_reset]
                 // ctrl+backspace). They edit the same setting the Game tab's
@@ -8805,7 +8970,7 @@ void main()
                     _saveToastRemaining = SaveToastDuration;
                     Console.WriteLine($"[cmd] game speed -> x{_gameSpeed:F2}");
                 }
-                else if (Is("quick_save") || (key == Key.F5 && !modCtrl && !modAlt)) DoQuickSave();
+                else if (Is("quick_save")) DoQuickSave();
                 else if (Is("quick_load")) DoQuickLoad();
                 // SC-INV-ARRANGE — the registry has always listed
                 // sort_inventory (default K); it now drives the same
@@ -22155,7 +22320,9 @@ void main()
         var ringColor = new Vector4(0.05f, 0.78f, 0.10f, 0.92f);
         foreach (var idx in _selectedPartyIdx)
         {
-            var m = idx == 0 ? _player : _party.FirstOrDefault(p => p.PartyIndex == idx);
+            var m = idx == 0 ? _player
+                : idx == SummonSelIdx ? PlayerSummon
+                : _party.FirstOrDefault(p => p.PartyIndex == idx);
             if (m is null || m.IsDead) continue;
             _selectionFx.AddRing(m.CurrentTransform.Translation, 0.62f, ringColor);
         }
@@ -24945,40 +25112,105 @@ void main()
             }
         }
         hit = hit with { Y = _navMesh.SampleYOnTriangle(tri, hit) };
-        // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
-        // still walks to the click point, so you approach and pass through).
-        OpenDoorNear(hit);
-        // SC-ELEVATOR — clicking ON a lever prop (ray hit) queues a
-        // walk-up-and-pull; a click that misses every lever clears any
-        // pending pull.
-        RequestLeverUseNear(near, dir, hit);
-        // ALPHA-2C — same walk-up pattern for chests.
-        RequestChestUseNear(hit);
-        // ALPHA-2E — and for locked usables (Star Device).
-        RequestLockedUseNear(hit);
-        _playerFollower.SetTarget(hit);
+        // SC-SELECT-MOVE — the click is an order to the SELECTION, retail
+        // style: the hero walks only when selected (index 0); every selected
+        // member gets an explicit move order to their formation slot at the
+        // destination. World interactions (doors/levers/chests) stay
+        // hero-driven, so they only queue when the hero is in the order.
+        bool heroSelected = _selectedPartyIdx.Contains(0);
+        if (heroSelected)
+        {
+            // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
+            // still walks to the click point, so you approach and pass through).
+            OpenDoorNear(hit);
+            // SC-ELEVATOR — clicking ON a lever prop (ray hit) queues a
+            // walk-up-and-pull; a click that misses every lever clears any
+            // pending pull.
+            RequestLeverUseNear(near, dir, hit);
+            // ALPHA-2C — same walk-up pattern for chests.
+            RequestChestUseNear(hit);
+            // ALPHA-2E — and for locked usables (Star Device).
+            RequestLockedUseNear(hit);
+            _playerFollower.SetTarget(hit);
+            // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
+            // authored stand spot (the farm winch's is ON the elevator grate, so
+            // the player rides down with the car), not to the raw click point.
+            if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
+                TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
+                _playerFollower.SetTarget(upw);
+            // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
+            // (and Phase 22: any pending walk-up pickup; SC-CAST-APPROACH: any
+            // pending walk-up cast; SC-BREAK-APPROACH: any pending smash).
+            _pendingAttackTarget = null;
+            _pendingCastTarget = null;
+            _pendingCastProp = null;
+            _pendingBreakProp = null;
+            _pendingPickupPile = null;
+        }
+        IssueSelectedMemberMoveOrders(hit, heroSelected);
         // SC-MOUSE-FX — plant the green destination marker at the accepted
         // click point; it fades over MoveMarkerLife.
         _moveMarkerPos = hit;
         _moveMarkerAge = 0f;
-        // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
-        // authored stand spot (the farm winch's is ON the elevator grate, so
-        // the player rides down with the car), not to the raw click point.
-        if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
-            TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
-            _playerFollower.SetTarget(upw);
-        // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
-        // (and Phase 22: any pending walk-up pickup; SC-CAST-APPROACH: any
-        // pending walk-up cast; SC-BREAK-APPROACH: any pending smash).
-        _pendingAttackTarget = null;
-        _pendingCastTarget = null;
-        _pendingCastProp = null;
-        _pendingBreakProp = null;
-        _pendingPickupPile = null;
         // SC-CLICK-AUDIO — the soft order tap on an accepted move click;
         // the authored "can't move there" cue when the point is unreachable.
-        _audio?.Play(_playerFollower.PathBlocked ? SfxOrderCantMove : SfxOrderMove);
+        _audio?.Play(heroSelected && _playerFollower.PathBlocked ? SfxOrderCantMove : SfxOrderMove);
         Console.WriteLine($"click-move: target=({hit.X:F1}, {hit.Y:F1}, {hit.Z:F1})  tri={tri}");
+    }
+
+    /// <summary>SC-SELECT-MOVE — route a ground-click order to every selected
+    /// party member (and the summon): each gets their formation slot around
+    /// the destination as an explicit MoveOrder. Members ordered without the
+    /// hero are deliberate positioning — FollowSuspended pins them at the
+    /// spot; a group order that includes the hero releases the pin so the
+    /// party reassembles.</summary>
+    private void IssueSelectedMemberMoveOrders(Vector3 dest, bool heroSelected)
+    {
+        var refPos = _playerFollower?.Position ?? dest;
+        var face = new Vector3(dest.X - refPos.X, 0f, dest.Z - refPos.Z);
+        face = face.LengthSquared() > 1e-4f
+            ? Vector3.Normalize(face)
+            : (_playerFacing.LengthSquared() > 0.01f ? _playerFacing : Vector3.UnitZ);
+        foreach (var m in _party)
+        {
+            if (m.PartyIndex <= 0 || m.IsDead || m.Brain is null || m.IsNetworkOwned) continue;
+            if (!_selectedPartyIdx.Contains(m.PartyIndex)) continue;
+            var slot = SnapToNavmesh(
+                PartyFormationSlot(_partyFormation, m.PartyIndex, dest, face), dest);
+            m.MoveOrder = slot;
+            m.OrderedFoe = null;
+            m.FollowSuspended = !heroSelected;
+            m.FollowStuckSec = 0f;
+        }
+        if (PlayerSummon is { IsDead: false, Brain: not null } smn
+            && _selectedPartyIdx.Contains(SummonSelIdx))
+        {
+            smn.MoveOrder = SnapToNavmesh(dest, dest);
+            smn.OrderedFoe = null;
+            smn.FollowSuspended = !heroSelected;
+        }
+    }
+
+    /// <summary>SC-SELECT-MOVE — route an enemy click to the selected
+    /// members: each locks the target as an explicit attack order (retail
+    /// force-attack — overrides HoldFire and targeting prefs). Cancels any
+    /// pending move order; deliberate positioning (FollowSuspended) is left
+    /// as-is so a garrisoned archer fights from their post.</summary>
+    private void OrderSelectedMembersAttack(ActorRenderState target)
+    {
+        foreach (var m in _party)
+        {
+            if (m.PartyIndex <= 0 || m.IsDead || m.Brain is null || m.IsNetworkOwned) continue;
+            if (!_selectedPartyIdx.Contains(m.PartyIndex)) continue;
+            m.OrderedFoe = target;
+            m.MoveOrder = null;
+        }
+        if (PlayerSummon is { IsDead: false, Brain: not null } smn
+            && _selectedPartyIdx.Contains(SummonSelIdx))
+        {
+            smn.OrderedFoe = target;
+            smn.MoveOrder = null;
+        }
     }
 
     // Phase 20a — RMB-on-talkable. Same unproject + closest-actor pick as
@@ -25772,6 +26004,17 @@ void main()
         if (screenPick.Enemy is not null) best = screenPick.Enemy;
         else if (screenPick.Prop is not null) return TryClickToBreakProp(groundHit);
 
+        // SC-SELECT-MOVE — the enemy click is an attack order to the
+        // SELECTION: selected members lock this target (force-attack); the
+        // hero only engages when selected. Ordering members onto a foe
+        // clears any pending move order for them.
+        OrderSelectedMembersAttack(best);
+        if (!_selectedPartyIdx.Contains(0))
+        {
+            _audio?.Play(SfxOrderAttack);
+            Console.WriteLine($"click-attack: ordered selection onto {best.Actor.Template.Name} (hero not selected)");
+            return true;
+        }
         // Phase 12-SC-1 — gate by player→target reach, not just click-pick
         // tolerance. ClickAttackRadius=3u is just "did you click on this guy
         // or near him"; the *swing* requires the player be within attacker
@@ -27453,7 +27696,14 @@ void main()
             case Hud.FieldCommandsPanel.Action.ToggleFollow:
             {
                 bool newVal = !(disp?.FcFollow ?? true);
-                foreach (var m in FcOrderTargets()) m.FcFollow = newVal;
+                foreach (var m in FcOrderTargets())
+                {
+                    m.FcFollow = newVal;
+                    // SC-SELECT-MOVE — re-engaging follow mode releases any
+                    // deliberate-positioning pin so the member rejoins the
+                    // formation immediately.
+                    if (newVal) { m.FollowSuspended = false; m.MoveOrder = null; }
+                }
                 break;
             }
             case Hud.FieldCommandsPanel.Action.SelectAll:        SetPartySelection(-1); break;
@@ -36679,6 +36929,7 @@ void main()
             cs.AtkOrder  = FcOrderToInt(m.FcAttack);
             cs.TgtOrder  = FcOrderToInt(m.FcTargeting);
             cs.FollowOn  = m.FcFollow;
+            cs.FollowSuspended = m.FollowSuspended;
             cs.ActiveSlot = _memberActiveSlot.TryGetValue(m.PartyIndex, out var aslot) ? aslot : -1;
             save.Party.Add(cs);
         }
@@ -36696,6 +36947,7 @@ void main()
                 PlacedSpells = new List<string>(b.PlacedSpells),
                 MoveOrder = b.MoveOrder, AtkOrder = b.AtkOrder,
                 TgtOrder = b.TgtOrder, FollowOn = b.FollowOn,
+                FollowSuspended = b.FollowSuspended,
                 ActiveSlot = b.ActiveSlot ?? -1,
             };
             foreach (var it in b.Inventory)
@@ -37518,6 +37770,7 @@ void main()
                     PlacedSpells = new List<string>(cs.PlacedSpells),
                     MoveOrder = cs.MoveOrder, AtkOrder = cs.AtkOrder,
                     TgtOrder = cs.TgtOrder, FollowOn = cs.FollowOn,
+                    FollowSuspended = cs.FollowSuspended,
                     ActiveSlot = cs.ActiveSlot >= 0 ? cs.ActiveSlot : null,
                 };
                 foreach (var e in cs.Inventory)
@@ -37600,6 +37853,9 @@ void main()
             if (cs.AtkOrder  >= 0) npc.FcAttack    = FcAtkFromInt(cs.AtkOrder);
             if (cs.TgtOrder  >= 0) npc.FcTargeting = FcTgtFromInt(cs.TgtOrder);
             npc.FcFollow = cs.FollowOn;
+            npc.FollowSuspended = cs.FollowSuspended;
+            npc.MoveOrder = null;
+            npc.OrderedFoe = null;
             // SC-MEMBER-ACTIVE-SLOT — restore the selected combat slot and
             // drive the brain from it (weapon-vs-spell preference survives
             // save/load like everything else about the member).
