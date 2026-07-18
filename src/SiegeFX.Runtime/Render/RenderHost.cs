@@ -11866,7 +11866,14 @@ void main()
     /// can walk into the freshly-streamed terrain. World coordinates of every
     /// already-spawned actor (including the player) are preserved because
     /// <see cref="_worldRootRegion"/> stays pinned across re-anchors.</summary>
-    private void OnPlayerRegionChanged(string newRegion)
+    private void OnPlayerRegionChanged(string newRegion) =>
+        OnPlayerRegionChanged(newRegion, updateAnchor: true);
+
+    /// <summary>updateAnchor=false streams and integrates a region's ring
+    /// WITHOUT moving the player's region anchor or ambience — the load-time
+    /// frontier search uses it to pull geometry toward a far-away restored
+    /// position one stitch ring at a time.</summary>
+    private void OnPlayerRegionChanged(string newRegion, bool updateAnchor)
     {
         if (_actorSpawner is null || _gl is null) return;
         if (_regionMapTankPath is null) return;
@@ -11885,11 +11892,16 @@ void main()
         if (_cursorScroll is not null) CancelScrollDrag();
 
         var prev = _currentPlayerRegion;
-        _currentPlayerRegion = newRegion;
-        Console.WriteLine($"[region] player region: '{prev}' -> '{newRegion}'");
-        // Phase 21d-2a-xi — refresh the looping bed first so the soundscape
-        // catches up with the new region even when streaming is a no-op.
-        ApplyAmbientForRegion(newRegion);
+        if (updateAnchor)
+        {
+            _currentPlayerRegion = newRegion;
+            Console.WriteLine($"[region] player region: '{prev}' -> '{newRegion}'");
+            // Phase 21d-2a-xi — refresh the looping bed first so the soundscape
+            // catches up with the new region even when streaming is a no-op.
+            ApplyAmbientForRegion(newRegion);
+        }
+        else
+            Console.WriteLine($"[region] expanding ring around '{newRegion}' (anchor stays '{prev}')");
 
         var newlyLoaded = PreloadAroundRegion(newRegion);
         if (newlyLoaded.Count == 0)
@@ -18778,14 +18790,16 @@ void main()
     /// 60-iter check at 2 Hz. Cheap; no spatial index needed at this scale. Returns
     /// null if the lookup is empty (no regions loaded yet, or single-region test
     /// fixture without a stitch helper).</summary>
-    private string? RegionAtWorldPos(Vector3 worldPos)
+    private string? RegionAtWorldPos(Vector3 worldPos) =>
+        RegionAtWorldPosWithDistance(worldPos).Region;
+
+    /// <summary>Nearest placed node's region + distance. A large distance
+    /// means the position is OUTSIDE everything placed so far — the answer
+    /// is then only "the closest known frontier", not a containing region.</summary>
+    private (string? Region, float Dist) RegionAtWorldPosWithDistance(Vector3 worldPos)
     {
-        // SC-SAVE-REGION — prefer the world-wide resolver (all placed
-        // regions, built with the layout at boot): the streamed-only list
-        // answers "nearest LOADED region", which is wrong for any position
-        // outside the current ring (a loaded save far from the boot region).
         var table = _worldSnodeLookup.Length > 0 ? _worldSnodeLookup : _snodeRegionLookup;
-        if (table.Length == 0) return null;
+        if (table.Length == 0) return (null, float.PositiveInfinity);
         float bestSq = float.PositiveInfinity;
         string? best = null;
         for (int i = 0; i < table.Length; i++)
@@ -18797,7 +18811,33 @@ void main()
             float sq = dx * dx + dy * dy + dz * dz;
             if (sq < bestSq) { bestSq = sq; best = entry.RegionPath; }
         }
-        return best;
+        return (best, MathF.Sqrt(bestSq));
+    }
+
+    /// <summary>The placed region nearest to <paramref name="pos"/> that the
+    /// frontier search hasn't expanded yet (per-region minimum node distance).</summary>
+    private string? NearestUnexpandedRegion(Vector3 pos, HashSet<string> expanded)
+    {
+        var table = _worldSnodeLookup.Length > 0 ? _worldSnodeLookup : _snodeRegionLookup;
+        var best = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < table.Length; i++)
+        {
+            var entry = table[i];
+            float dx = entry.Origin.X - pos.X;
+            float dy = entry.Origin.Y - pos.Y;
+            float dz = entry.Origin.Z - pos.Z;
+            float sq = dx * dx + dy * dy + dz * dz;
+            if (!best.TryGetValue(entry.RegionPath, out var cur) || sq < cur)
+                best[entry.RegionPath] = sq;
+        }
+        string? pick = null;
+        float pickSq = float.PositiveInfinity;
+        foreach (var kv in best)
+        {
+            if (expanded.Contains(kv.Key)) continue;
+            if (kv.Value < pickSq) { pickSq = kv.Value; pick = kv.Key; }
+        }
+        return pick;
     }
 
     /// <summary>
@@ -34881,15 +34921,35 @@ void main()
                 if (arow.Scid == mySc) { playerRow = arow; break; }
             if (playerRow is not null)
             {
+                // Directed frontier search: while the nearest PLACED node is
+                // still far from the restored position (the position lies in
+                // an un-placed region), expand the ring around the closest
+                // not-yet-expanded region — each expansion streams its
+                // neighbors and enlarges the resolver — until a node sits
+                // under the player. THEN anchor there. A plain "re-anchor to
+                // nearest" froze one ring away: nearest stayed the same
+                // frontier region forever and its ring was already streamed.
                 var ppos = playerRow.Position.ToVector3();
-                for (int hop = 0; hop < 8; hop++)
+                var expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                const float InsideDist = 20f;
+                for (int hop = 0; hop < 12; hop++)
                 {
-                    var tr = RegionAtWorldPos(ppos);
-                    if (string.IsNullOrEmpty(tr)
-                        || string.Equals(tr, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
+                    var (tr, dist) = RegionAtWorldPosWithDistance(ppos);
+                    if (tr is null) break;
+                    if (dist < InsideDist)
+                    {
+                        if (!string.Equals(tr, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"[load-diag] anchored: position is inside '{tr}' ({dist:F0}u)");
+                            OnPlayerRegionChanged(tr);
+                        }
                         break;
-                    Console.WriteLine($"[load-diag] re-anchor hop {hop + 1}: -> '{tr}'");
-                    OnPlayerRegionChanged(tr!);
+                    }
+                    var target = NearestUnexpandedRegion(ppos, expanded) ?? tr;
+                    if (!expanded.Add(target)) break;   // frontier exhausted
+                    Console.WriteLine($"[load-diag] frontier hop {hop + 1}: nearest node {dist:F0}u away " +
+                                      $"— expanding ring around '{target}'");
+                    OnPlayerRegionChanged(target, updateAnchor: false);
                 }
             }
         }
