@@ -237,7 +237,12 @@ public static class ConversationGasWriter
                 if (!string.IsNullOrWhiteSpace(n.Choice)) sb.Append($"\t\tchoice = {n.Choice.Trim()};\r\n");
                 if (n.QuestDialog) sb.Append("\t\tquest_dialog = true;\r\n");
                 if (n.Nis) sb.Append("\t\tnis = true;\r\n");
-                if (!string.IsNullOrWhiteSpace(n.ActivateQuest)) sb.Append($"\t\tactivate_quest = {n.ActivateQuest.Trim()};\r\n");
+                // A node may carry multiple ';'-joined activations (the
+                // runtime store accumulates repeated activate_quest* keys);
+                // gas wants one starred line per value.
+                if (!string.IsNullOrWhiteSpace(n.ActivateQuest))
+                    foreach (var qk in n.ActivateQuest.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        sb.Append($"\t\tactivate_quest* = {qk};\r\n");
                 sb.Append("\t}\r\n");
             }
             sb.Append("}\r\n");

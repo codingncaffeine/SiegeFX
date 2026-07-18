@@ -3722,6 +3722,14 @@ public sealed class RenderHost : IDisposable
     /// state is activate / deactivate / complete. Trigger rows re-dispatch
     /// while the condition holds; AddActive/MarkCompleted are edge-stable so
     /// we log only on actual transitions.</summary>
+    /// <summary>SC-ENDGAME — conversation nodes can author multiple
+    /// activate/complete/deactivate_quest values; the store ';'-joins them
+    /// and every consumer splits here.</summary>
+    private static string[] SplitQuestKeys(string? joined) =>
+        string.IsNullOrEmpty(joined)
+            ? Array.Empty<string>()
+            : joined.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     internal void OnTriggerChangeQuestState(IReadOnlyList<string> args)
     {
         if (args is null || args.Count == 0 || _progression is null) return;
@@ -3737,17 +3745,23 @@ public sealed class RenderHost : IDisposable
             if (a is "active" or "activate" or "deactivate" or "inactive" or "complete" or "completed")
             { state = a; break; }
         }
+        // SC-ENDGAME — authored keys use the no-comma base form while the
+        // catalog stages with ",N"; apply to every staged variant so the
+        // REAL journal entry flips instead of a cold parallel one.
+        var aliasKeys = SiegeFX.Core.Actors.QuestCatalog.ResolveKeyAliases(key);
         switch (state)
         {
             case "active":
             case "activate":
-                if (_progression.Journal.AddActive(key))
-                    Console.WriteLine($"[quest] trigger activated '{key}'");
+                foreach (var k in aliasKeys)
+                    if (_progression.Journal.AddActive(k))
+                        Console.WriteLine($"[quest] trigger activated '{k}'");
                 break;
             case "complete":
             case "completed":
-                if (_progression.Journal.MarkCompleted(key))
-                    AnnounceQuestCompleted(key, "trigger");
+                foreach (var k in aliasKeys)
+                    if (_progression.Journal.MarkCompleted(k))
+                        AnnounceQuestCompleted(k, "trigger");
                 break;
             case "deactivate":
             case "inactive":
@@ -9536,8 +9550,11 @@ void main()
                     if (btn == MouseButton.Left)
                     {
                         _dialogue.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
-                        var quest = _dialogue.ConsumePendingQuestActivation();
-                        if (quest is not null)
+                        var questJoined = _dialogue.ConsumePendingQuestActivation();
+                        // SC-ENDGAME — a node can author SEVERAL activate_quest
+                        // values (the King grants quest_find_artifacts AND
+                        // quest_destroy_gom); the store ';'-joins, we split.
+                        foreach (var quest in SplitQuestKeys(questJoined))
                         {
                             // Phase 20b — fold the activation into the journal.
                             // AddActive is idempotent so re-pitches don't reset
@@ -14085,16 +14102,16 @@ void main()
         var node = _subtitleNodes[_subtitleIdx];
         // Narration nodes can grant quests (Norick's speech activates the
         // first quest without any dialogue interaction).
-        if (!string.IsNullOrEmpty(node.ActivateQuest) && _progression is not null &&
-            _progression.Journal.AddActive(node.ActivateQuest))
+        foreach (var subQuest in SplitQuestKeys(node.ActivateQuest))
         {
+            if (_progression is null || !_progression.Journal.AddActive(subQuest)) continue;
             // SC-QUEST-UI-D — the storyteller's words become the quest's
             // recorded dialogue (the narrator grants without a talk panel).
             if (_subtitleNodes is not null)
-                _progression.Journal.RecordDialogue(node.ActivateQuest,
+                _progression.Journal.RecordDialogue(subQuest,
                     _subtitleNodes.Where(n => !string.IsNullOrWhiteSpace(n.Text))
                                   .Select(n => n.Text.Replace("\\n", " ")));
-            Console.WriteLine($"[subtitle] quest activated: {node.ActivateQuest}");
+            Console.WriteLine($"[subtitle] quest activated: {subQuest}");
             FlashQuestIndicator();
             // SC-MSG-STRIP — DS1's authored journal notice.
             AddGameMessage("A new quest has been added to your Journal.");
@@ -14144,8 +14161,8 @@ void main()
         {
             if (!string.IsNullOrWhiteSpace(n.Text))
                 yield return n.Text.Replace("\\n", " ");
-            if (!string.IsNullOrEmpty(n.ActivateQuest) &&
-                string.Equals(n.ActivateQuest, questKey, StringComparison.OrdinalIgnoreCase))
+            if (SplitQuestKeys(n.ActivateQuest)
+                    .Any(k => string.Equals(k, questKey, StringComparison.OrdinalIgnoreCase)))
                 yield break;
         }
     }
@@ -14189,10 +14206,9 @@ void main()
         {
             for (int i = Math.Max(0, _subtitleIdx); i < _subtitleNodes.Count; i++)
             {
-                var q = _subtitleNodes[i].ActivateQuest;
-                if (string.IsNullOrEmpty(q)) continue;
-                if (_progression.Journal.AddActive(q))
+                foreach (var q in SplitQuestKeys(_subtitleNodes[i].ActivateQuest))
                 {
+                    if (!_progression.Journal.AddActive(q)) continue;
                     _progression.Journal.RecordDialogue(q,
                         _subtitleNodes.Where(n => !string.IsNullOrWhiteSpace(n.Text))
                                       .Select(n => n.Text.Replace("\\n", " ")));
@@ -29185,12 +29201,12 @@ void main()
     private void FlushDialogueQuestEdges()
     {
         if (_progression is null) return;
-        if (_dialogue.ConsumePendingQuestCompletion() is { } ck)
+        foreach (var ck in SplitQuestKeys(_dialogue.ConsumePendingQuestCompletion()))
         {
             if (_progression.Journal.MarkCompleted(ck))
                 AnnounceQuestCompleted(ck, "conversation turn-in");
         }
-        if (_dialogue.ConsumePendingQuestDeactivation() is { } dk)
+        foreach (var dk in SplitQuestKeys(_dialogue.ConsumePendingQuestDeactivation()))
         {
             if (_progression.Journal.Deactivate(dk))
                 Console.WriteLine($"[quest] '{dk}' deactivated (conversation)");

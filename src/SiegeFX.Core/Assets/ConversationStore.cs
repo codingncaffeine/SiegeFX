@@ -133,9 +133,17 @@ public static class ConversationStore
                     else if (NameEq(name, "screen_text")) text = StripQuotes(raw);
                     else if (NameEq(name, "sample"))      sample = raw.Trim();
                     else if (NameEq(name, "choice"))      choice = raw.Trim().ToLowerInvariant();
-                    else if (NameEq(name, "activate_quest")) activateQuest = raw.Trim();
-                    else if (NameEq(name, "complete_quest")) completeQuest = raw.Trim();
-                    else if (NameEq(name, "deactivate_quest")) deactivateQuest = raw.Trim();
+                    // Multi-valued (`activate_quest* = …` repeated on one
+                    // node — the King's dialogue activates BOTH
+                    // quest_find_artifacts and quest_destroy_gom): values
+                    // accumulate ';'-joined; consumers split. Last-wins
+                    // silently dropped every earlier quest on the node.
+                    else if (NameEq(name, "activate_quest"))
+                        activateQuest = activateQuest is null ? raw.Trim() : activateQuest + ";" + raw.Trim();
+                    else if (NameEq(name, "complete_quest"))
+                        completeQuest = completeQuest is null ? raw.Trim() : completeQuest + ";" + raw.Trim();
+                    else if (NameEq(name, "deactivate_quest"))
+                        deactivateQuest = deactivateQuest is null ? raw.Trim() : deactivateQuest + ";" + raw.Trim();
                     else if (NameEq(name, "quest_dialog"))   questDialog = ParseBool(raw);
                     else if (NameEq(name, "nis"))            nis = ParseBool(raw);
                 }

@@ -540,7 +540,7 @@ public static class QuestCatalog
             {
                 Key                 = "quest_sister_message",
                 ScreenName          = "A Sister's Message",
-                TalkTargetTemplate  = "ella",
+                TalkTargetTemplate  = "mp_townfolk_female_01",
                 TalkCountGoal       = 1,
                 ObjectiveText       = "Deliver Ella's message to her sister Ada in Glacern.",
             },
@@ -552,11 +552,11 @@ public static class QuestCatalog
             {
                 Key                  = "quest_drunkard_tower",
                 ScreenName           = "Ordus' Axe",
-                PickupTargetTemplate = "ordus_axe",
+                PickupTargetTemplate = "ax_g_o_1h1b_low",
                 PickupCountGoal      = 1,
                 TalkTargetTemplate   = "ordus",
                 TalkCountGoal        = 1,
-                DeliverItemTemplate  = "ordus_axe",
+                DeliverItemTemplate  = "ax_g_o_1h1b_low",
                 ObjectiveText        = "Secure Ordus' axe from the Northern guard tower.",
             },
             // Ch.II Glitterdelve aftermath — Torg's beat
@@ -614,7 +614,7 @@ public static class QuestCatalog
             {
                 Key                 = "quest_fort_kroth2,1",
                 ScreenName          = "Reinforce Fortress Kroth",
-                TalkTargetTemplate  = "legionnaire1",
+                TalkTargetTemplate  = "guard",
                 TalkCountGoal       = 1,
                 ObjectiveText       = "Defeat the necromancer besieging Fortress Kroth.",
             },
@@ -673,7 +673,7 @@ public static class QuestCatalog
             {
                 Key                 = "quest_purify_temple_2",
                 ScreenName          = "Purify the Temple",
-                TalkTargetTemplate  = "azunite_scholar",
+                TalkTargetTemplate  = "peasant_male_old_02",
                 TalkCountGoal       = 1,
                 ObjectiveText       = "Place the holy icon on the Temple altar",
             },
@@ -697,11 +697,11 @@ public static class QuestCatalog
                 // Canonical description in DS1 quests.gas is the
                 // (mis-spelled) "Retreive Merik's warding staff." —
                 // preserved verbatim for journal fidelity.
-                PickupTargetTemplate = "merik_staff",
+                PickupTargetTemplate = "st_un_merik",
                 PickupCountGoal      = 1,
                 TalkTargetTemplate   = "merik",
                 TalkCountGoal        = 1,
-                DeliverItemTemplate  = "merik_staff",
+                DeliverItemTemplate  = "st_un_merik",
                 ObjectiveText        = "Retreive Merik's warding staff.",
             },
             // SC-QUEST-OBJ-C smoke-test entry — single pickup gate against a
@@ -755,7 +755,7 @@ public static class QuestCatalog
             {
                 Key                 = "quest_slay_dragon",
                 ScreenName          = "Slay the Ancient Dragon of Rathe",
-                TalkTargetTemplate  = "goquua",
+                TalkTargetTemplate  = "crusader_goquua",
                 TalkCountGoal       = 1,
                 ObjectiveText       = "Slay the Ancient Dragon before the Seck can free him from Dragon's Rathe.",
             },
@@ -805,11 +805,12 @@ public static class QuestCatalog
             {
                 Key                 = "quest_destroy_gom2,1",
                 ScreenName          = "Vanquish the Seck",
-                // FIXME(SC-QUEST-OBJ-E + SC-GOM-TWO-PHASE): the actual credit
-                // path is Gom's death-script spawning Super Gom (HP 8710 →
-                // 11800). Until E + GOM-TWO-PHASE land, this is a TALK gate.
-                TalkTargetTemplate  = "gom",
-                TalkCountGoal       = 1,
+                // SC-ENDGAME — credit = the SECOND-form kill (gom's death
+                // spawns gom_super; gom_super's authored template_triggers
+                // also complete via change_quest_state, so this kill gate
+                // is the belt to that suspenders).
+                KillTargetTemplate  = "gom_super",
+                KillCountGoal       = 1,
                 ObjectiveText       = "Destroy the Seck Leader Gom.",
             },
 
@@ -842,11 +843,11 @@ public static class QuestCatalog
             {
                 Key                  = "quest_merik_staff_mp",
                 ScreenName           = "Merik's Staff",
-                PickupTargetTemplate = "merik_staff",
+                PickupTargetTemplate = "st_un_merik",
                 PickupCountGoal      = 1,
                 TalkTargetTemplate   = "merik",
                 TalkCountGoal        = 1,
-                DeliverItemTemplate  = "merik_staff",
+                DeliverItemTemplate  = "st_un_merik",
                 ObjectiveText        = "Retreive Merik's warding staff.",
             },
             ["quest_find_king_mp"] = new QuestDefinition
@@ -866,6 +867,20 @@ public static class QuestCatalog
     }
 
     public static IReadOnlyDictionary<string, QuestDefinition> All => _defs;
+
+    /// <summary>SC-ENDGAME — resolve an authored change_quest_state key to
+    /// catalog keys. DS1 authors the no-comma base form
+    /// ("quest_destroy_gom2") while staged catalog entries carry ",N"
+    /// suffixes; a verbatim apply cold-created a parallel journal entry
+    /// and left the real staged entry active forever.</summary>
+    public static IReadOnlyList<string> ResolveKeyAliases(string key)
+    {
+        if (_defs.ContainsKey(key)) return new[] { key };
+        var staged = _defs.Keys
+            .Where(k => k.StartsWith(key + ",", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return staged.Count > 0 ? staged : new[] { key };
+    }
 }
 
 /// <summary>One catalog row. Today every quest is a kill objective; when
