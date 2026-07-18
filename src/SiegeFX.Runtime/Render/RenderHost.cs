@@ -3126,6 +3126,7 @@ public sealed class RenderHost : IDisposable
     /// deep valleys; single-node tests false-positived under bridges; the
     /// region majority separates perfectly across all 81 shipped regions.</summary>
     private readonly Dictionary<string, float> _regionOcclFraction = new(StringComparer.OrdinalIgnoreCase);
+    private string? _undergroundPendingReg;   // one-shot "no occl data yet" log key
 
     private void UpdateUndergroundMode()
     {
@@ -3152,14 +3153,28 @@ public sealed class RenderHost : IDisposable
         if (frac >= 0f)
         {
             _isUnderground = frac > 0.5f;
+            _undergroundPendingReg = null;
         }
-        else
+        else if (string.IsNullOrEmpty(reg))
         {
-            // Region unknown (boot instant, off-map dev spawns): legacy Y
-            // hysteresis as the only remaining fallback.
+            // Region truly unknown (boot instant, off-map dev spawns): legacy
+            // Y hysteresis as the only remaining fallback.
             float y = _playerFollower.Position.Y;
             if (!_isUnderground && y < UndergroundEnterY) _isUnderground = true;
             else if (_isUnderground && y > UndergroundExitY) _isUnderground = false;
+        }
+        else
+        {
+            // Region KNOWN but its node data hasn't streamed yet (a cold load
+            // far from the boot region). HOLD the current state — the old Y
+            // fallback latched underground=true for a deep surface valley
+            // during exactly this window, hiding the world while it streamed.
+            if (!string.Equals(_undergroundPendingReg, reg, StringComparison.OrdinalIgnoreCase))
+            {
+                _undergroundPendingReg = reg;
+                Console.WriteLine($"[underground] region '{reg}' has no occl data yet " +
+                                  $"(streamed={_regionOcclFraction.Count} regions) — holding {_isUnderground}");
+            }
         }
         if (wasUnderground != _isUnderground)
             Console.WriteLine($"[underground] flip -> {_isUnderground} region='{reg}' " +
@@ -11865,6 +11880,7 @@ void main()
 
         var prev = _currentPlayerRegion;
         _currentPlayerRegion = newRegion;
+        Console.WriteLine($"[region] player region: '{prev}' -> '{newRegion}'");
         // Phase 21d-2a-xi — refresh the looping bed first so the soundscape
         // catches up with the new region even when streaming is a no-op.
         ApplyAmbientForRegion(newRegion);
@@ -34830,6 +34846,19 @@ void main()
                 $"(boot '{_regionPath}') — this load needs the relaunch path");
             return;
         }
+        // SC-LOAD-DIAG — end-to-end receipts for every load. One block at
+        // entry, per-companion outcomes below, a summary at the end; the
+        // underground/region machinery logs its own decisions.
+        Console.WriteLine(
+            $"[load-diag] apply: schema=v{save.SchemaVersion} region='{save.RegionPath}' " +
+            $"hero='{save.HeroName}' diff='{save.Difficulty}' actors={save.Actors.Count} " +
+            $"party={save.Party.Count} piles={save.LootPiles.Count} " +
+            $"triggers={save.World?.Triggers.Count ?? 0} boot='{_regionPath}' " +
+            $"current='{_currentPlayerRegion}' streamed={_regionMeanY.Count} " +
+            $"resolver={(_worldSnodeLookup.Length > 0 ? $"world({_worldSnodeLookup.Length})" : $"streamed({_snodeRegionLookup.Length})")}");
+        foreach (var pcs in save.Party)
+            Console.WriteLine($"[load-diag]   party row: idx={pcs.PartyIndex} scid=0x{pcs.Scid:X8} " +
+                              $"tpl='{pcs.TemplateName}' pos=({pcs.Position.X:F0},{pcs.Position.Z:F0})");
 
         // Adventurer's Handbook progress rides the save: resume the auto-popup
         // sequence where the player left off, and restore the "Disable tips"
@@ -34946,6 +34975,8 @@ void main()
                 // math all follow the normal region-change path instead of
                 // waiting for the walk detector to notice (or never noticing).
                 var trueRegion = RegionAtWorldPos(pos);
+                Console.WriteLine($"[load-diag] position-region: ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) " +
+                                  $"-> '{trueRegion ?? "<unresolved>"}' (current='{_currentPlayerRegion}')");
                 if (!string.IsNullOrEmpty(trueRegion)
                     && !string.Equals(trueRegion, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
                 {
@@ -35355,9 +35386,13 @@ void main()
                 continue;
             }
             ActorRenderState? npc = byScid.TryGetValue(cs.Scid, out var found) ? found : null;
+            bool wasLive = npc is not null;
             // Recruited in a region that isn't loaded here → respawn from
             // the template at the saved spot (synthetic instance, same scid).
             npc ??= TrySpawnCompanionActor(cs.TemplateName, cs.Scid, cs.Position.ToVector3());
+            Console.WriteLine($"[load-diag] companion 0x{cs.Scid:X8} '{cs.TemplateName}': " +
+                              $"{(wasLive ? "live actor found" : npc is not null ? "spawned synthetic" : "SPAWN FAILED")}" +
+                              $"{(npc is { IsPartyMember: true } ? " — ALREADY party member, skipping row" : "")}");
             if (npc is null)
             {
                 Console.Error.WriteLine($"  load: companion {cs.TemplateName} (0x{cs.Scid:x8}) " +
@@ -35419,6 +35454,8 @@ void main()
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
 
         _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — restored appearance → fresh head-shot
+        Console.WriteLine($"[load-diag] done: current='{_currentPlayerRegion}' underground={_isUnderground} " +
+                          $"party={_party.Count} occlKnown={_regionOcclFraction.Count} streamed={_regionMeanY.Count}");
         Console.WriteLine($"  load: patched {patched}/{save.Actors.Count} actor(s), " +
                           $"{(missing > 0 ? $"{missing} missing from scene, " : "")}" +
                           $"{save.LootPiles.Count} loot pile(s) restored");
