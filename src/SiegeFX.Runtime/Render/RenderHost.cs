@@ -2864,15 +2864,17 @@ public sealed class RenderHost : IDisposable
             s.Brain = null;
             BeginDeathChore(s);
             PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
-            // SC-CARRIED-INVENTORY — dying companions keep their kit. The
-            // hireable-hero templates author their starting gear/spells in
-            // [inventory][other] (Merik's eight spells, Ulora's lore book),
-            // which now feeds the loot table — but retail party members are
-            // resurrectable corpses, never loot piñatas. The two player-kill
-            // sites can't target party members, so this sweep is the only
-            // path that needs the guard.
+            // SC-CARRIED-INVENTORY — a dying companion is never a loot
+            // piñata for the authored [inventory][other] TABLE (that guard
+            // stays: no rolled drops). But the manual is explicit about the
+            // BACKPACK: "Dead: inventory scatters on the ground … other
+            // party members can loot." SC-MEMBER-DEATH-DROP scatters the
+            // carried pack around the corpse; equipped gear stays on the
+            // body so a resurrection brings them back geared.
             if (!s.IsPartyMember)
                 LogLootDrop(s, s.CurrentTransform.Translation);
+            else
+                ScatterMemberInventory(s);
             OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
             CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
             // No XP here. Under the per-damage model every point of life
@@ -36026,6 +36028,50 @@ void main()
     /// Pattern mirrors DropScrollToWorld but reuses the cursor item's
     /// LootEntry verbatim. After landing, the player can walk over
     /// the pile to pick it back up (standard loot path).</summary>
+    /// <summary>SC-MEMBER-DEATH-DROP — manual: "Dead: inventory scatters on
+    /// the ground … other party members can loot." Toss each carried pack
+    /// item onto the ground in a loose ring around the corpse. Equipped
+    /// gear and the spellbook stay on the body (resurrect restores a geared
+    /// companion, retail-style); only the backpack spills.</summary>
+    private void ScatterMemberInventory(ActorRenderState m)
+    {
+        if (!_companionInventories.TryGetValue(m.PartyIndex, out var inv)
+            || inv is null || inv.Count == 0) return;
+        var origin = m.CurrentTransform.Translation;
+        int n = inv.Count;
+        for (int i = 0; i < n; i++)
+        {
+            var it = inv[i];
+            float ang = i * (MathF.Tau / n) + (i % 3) * 0.37f;
+            float r = 0.8f + (i % 4) * 0.28f;
+            var target = origin + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
+            if (_navMesh is not null && _navMesh.TryFindTriangle(target, out var ttri, includeFadeHidden: true))
+                target = target with { Y = _navMesh.SampleYOnTriangle(ttri, target) };
+            else
+                target = origin;   // corpse spot is always legal ground
+            var pile = new LootPile(origin,
+                new List<SiegeFX.Core.Actors.LootEntry>
+                { new(Slot: "", Reference: it.Reference) })
+            {
+                Throw = new LootThrow
+                {
+                    Source         = origin,
+                    Target         = target,
+                    Duration       = 0.5f,
+                    Elapsed        = 0f,
+                    ArcHeight      = 0.5f,
+                    Spins          = 0.5f,
+                    XSpins         = 1.0f,
+                    StartRotation  = ang,
+                    StartRotationX = 0f,
+                },
+            };
+            AddLootPile(pile);
+        }
+        Console.WriteLine($"[member-death] {m.Actor.Template.Name} scattered {n} carried item(s)");
+        inv.Clear();
+    }
+
     private void DropCursorItemToWorld()
     {
         if (_player is null || _cursorItem is null) { ClearCursorItem(); return; }
