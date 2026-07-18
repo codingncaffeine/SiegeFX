@@ -8312,6 +8312,14 @@ void main()
                 // Begin/Cancel; LMB lands on its buttons and never falls through
                 // to click-to-move. RMB swallowed too so a stray right-click
                 // doesn't engage mouse-look behind the modal panel.
+                // SC-ENDGAME — the victory card owns the click once it has
+                // settled; dismissing returns to the live post-game world.
+                if (_victoryActive && btn == MouseButton.Left && _victoryTimer > 3f)
+                {
+                    _victoryActive = false;
+                    Console.WriteLine("[victory] card dismissed — post-game continues");
+                    return;
+                }
                 if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
@@ -15799,7 +15807,15 @@ void main()
             if (spawned.Count > 0)
             {
                 var (onMesh, offMesh) = AttachActorsToScene(spawned, _navMesh);
-                Console.WriteLine($"[gen-in-object] spawned {templateName} ({onMesh} on-mesh / {offMesh} pinned)");
+                // Runtime-spawned children register their trigger matrices
+                // like any placed actor — Gom_Super's authored we_killed
+                // choreography (quest completion, arena-exit elevator
+                // re-arm, ending mood) lives in [template_triggers] keyed
+                // to the spawned scid; without this the final boss died
+                // silently.
+                var childTriggers = _actorSpawner.SpawnTriggers(new[] { inst });
+                Console.WriteLine($"[gen-in-object] spawned {templateName} ({onMesh} on-mesh / {offMesh} pinned"
+                    + (childTriggers.Count > 0 ? $", {childTriggers.Count} trigger matrix(es)" : "") + ")");
             }
         }
         // Entered-world processing: chained generator_in_object blocks
@@ -20890,6 +20906,52 @@ void main()
     // The hero + party corpses hold their chore_die pose underneath (same
     // machinery Norick's intro death uses); the world stays live.
     // ====================================================================
+    // ====================================================================
+    // SC-ENDGAME — victory presentation. gom_super's authored death chain
+    // posts victory_condition_met("end_game") (via we_exploded); the
+    // overlay dims the scene and stamps the ending card. A click after
+    // the card settles dismisses back into the live post-game world (the
+    // save stays playable).
+    // ====================================================================
+    private bool _victoryActive;
+    private float _victoryTimer;
+
+    internal void OnTriggerVictory(string condition)
+    {
+        if (_victoryActive) return;
+        _victoryActive = true;
+        _victoryTimer = 0f;
+        Console.WriteLine($"[victory] condition '{condition}' met — the campaign is complete");
+        AddGameMessage("Gom is destroyed! The Kingdom of Ehb is saved!");
+        _audio?.Play(SfxLevelUp);
+    }
+
+    private void DrawVictoryOverlay(int vw, int vh)
+    {
+        if (!_victoryActive || _barRenderer is null || _textRenderer is null) return;
+        _victoryTimer += (float)_frameDtSeconds;
+        float dimT = Math.Clamp(_victoryTimer / 1.5f, 0f, 1f);
+        float alpha = 0.45f * dimT;
+        var dimTex = TryGetGuiTexture("b_gui_cmn_textbox_bg");
+        if (dimTex is not null && _iconRenderer is not null)
+            _iconRenderer.DrawIcon(vw, vh, dimTex, 0, 0, vw, vh, new Vector4(1f, 1f, 1f, alpha));
+        else
+            _barRenderer.DrawRect(vw, vh, 0, 0, vw, vh, new Vector4(0.06f, 0.05f, 0.04f, alpha));
+        if (dimT <= 0.4f) return;
+        var gold = new Vector4(0.95f, 0.85f, 0.5f, 1f);
+        var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
+        void Center(string t, int y, Vector4 c, int scale)
+        {
+            int tw = _textRenderer!.MeasureWidth(t, scale);
+            _textRenderer.DrawString(vw, vh, t, (vw - tw) / 2, y, c, scale);
+        }
+        Center("VICTORY!", vh / 3, gold, 3);
+        Center("Gom is destroyed. The Kingdom of Ehb is saved.", vh / 3 + 46, white, 1);
+        Center("Your legend will be told for generations.", vh / 3 + 62, white, 1);
+        if (_victoryTimer > 3f)
+            Center("Click to continue", vh / 3 + 92, new Vector4(0.75f, 0.74f, 0.68f, 1f), 1);
+    }
+
     private enum DefeatPhase { None, Dimming, Dialog, DialogClosed }
     private DefeatPhase _defeatPhase;
     private float _defeatTimer;
@@ -29081,7 +29143,13 @@ void main()
         // Actor-embedded instance_triggers rows (Gom's death choreography,
         // quest-gate listeners) key on exactly this message.
         if (scid != 0 && _triggerRuntime is not null)
+        {
             _triggerRuntime.PostInboundMessage(scid, "we_killed");
+            // SC-ENDGAME — corpse explosion isn't modeled as a separate
+            // event, so rows keyed on we_exploded (gom_super's
+            // victory_condition_met) deliver alongside the kill.
+            _triggerRuntime.PostInboundMessage(scid, "we_exploded");
+        }
         // SC-PERSIST-STREAM — session kills join the persisted set so future
         // stream-ins (and, later, unload/reload cycles) never respawn them.
         if (scid != 0 && scid < 0xFE000000) _persistedDeadScids.Add(scid);
@@ -34319,6 +34387,8 @@ void main()
             // SC-DEFEAT — dim + Defeat! + the load-question dialog, above the
             // HUD but below the Load window / dev console.
             DrawDefeatOverlay(size.X, size.Y);
+            // SC-ENDGAME — the victory card stacks the same way.
+            DrawVictoryOverlay(size.X, size.Y);
             // SC-DEVMODE — dev console overlay (topmost among gameplay HUD).
             DrawDevConsole(size.X, size.Y);
             // Phase 23-SC-OPTIONS-A: options dialog. Drawn after pause

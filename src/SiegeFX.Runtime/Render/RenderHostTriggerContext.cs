@@ -129,6 +129,11 @@ internal sealed class RenderHostTriggerContext : TriggerContext
         _host.OnTriggerChangeActorLife(scid, newLife);
     }
 
+    public override void VictoryConditionMet(string condition)
+    {
+        _host.OnTriggerVictory(condition);
+    }
+
     public override void ChangeQuestState(IReadOnlyList<string> args)
     {
         _host.OnTriggerChangeQuestState(args);

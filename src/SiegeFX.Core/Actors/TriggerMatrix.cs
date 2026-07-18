@@ -52,40 +52,48 @@ public sealed class TriggerMatrix
     public static TriggerMatrix? FromInstanceOrTemplate(
         ActorInstance instance, Template template, TemplateStore store, List<string>? diagnostics = null)
     {
-        var perInstance = TryParseFromNode(instance.Node, instance.ToString(), diagnostics);
-        if (perInstance is not null) return perInstance;
-
-        for (var t = template; t is not null; t = t.Specializes)
+        // DS1 splits choreography between TWO sections with identical row
+        // grammar: [instance_triggers] (per placement) and
+        // [template_triggers] (every instance of the template —
+        // gom_super's death chain, the townstones' quest credit). Only the
+        // first ever parsed, so template-authored we_killed rows silently
+        // never fired. Each section resolves independently with the same
+        // override rule (instance node first, then the specializes chain,
+        // first occurrence wins); the two sections' rows then MERGE.
+        var rows = new List<TriggerRow>();
+        foreach (var section in new[] { "instance_triggers", "template_triggers" })
         {
-            var fromTemplate = TryParseFromNode(t.Node, $"template {t.Name}", diagnostics);
-            if (fromTemplate is not null) return fromTemplate;
+            if (TryCollectSection(instance.Node, instance.ToString(), section, rows, diagnostics))
+                continue;
+            for (var t = template; t is not null; t = t.Specializes)
+                if (TryCollectSection(t.Node, $"template {t.Name}", section, rows, diagnostics))
+                    break;
         }
-        return null;
+        return rows.Count == 0 ? null : new TriggerMatrix(rows);
     }
 
-    static TriggerMatrix? TryParseFromNode(GasNode root, string sourceLabel, List<string>? diagnostics)
+    static bool TryCollectSection(GasNode root, string sourceLabel, string sectionName,
+                                  List<TriggerRow> rows, List<string>? diagnostics)
     {
         // Both placement nodes and template nodes nest the matrix under [common]; but a
         // few shipped templates put it at the root. Try both.
         var common = TemplateStore.FindChild(root, "common");
-        var triggersNode = common is null ? null : TemplateStore.FindChild(common, "instance_triggers");
-        triggersNode ??= TemplateStore.FindChild(root, "instance_triggers");
-        if (triggersNode is null) return null;
+        var triggersNode = common is null ? null : TemplateStore.FindChild(common, sectionName);
+        triggersNode ??= TemplateStore.FindChild(root, sectionName);
+        if (triggersNode is null) return false;
 
-        var rows = new List<TriggerRow>();
         foreach (var rowNode in triggersNode.Children)
         {
             // Each [*] block in DS1 maps to one row. Other headers are unexpected; record
             // them as diagnostics rather than skipping silently.
             if (!string.Equals(rowNode.Header, "*", StringComparison.Ordinal))
             {
-                diagnostics?.Add($"{sourceLabel}: unexpected header '[{rowNode.Header}]' inside [instance_triggers]");
+                diagnostics?.Add($"{sourceLabel}: unexpected header '[{rowNode.Header}]' inside [{sectionName}]");
                 continue;
             }
-            var row = TriggerRow.Parse(rowNode, sourceLabel, diagnostics);
-            rows.Add(row);
+            rows.Add(TriggerRow.Parse(rowNode, sourceLabel, diagnostics));
         }
-        return rows.Count == 0 ? null : new TriggerMatrix(rows);
+        return true;
     }
 }
 

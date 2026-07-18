@@ -557,6 +557,12 @@ public sealed class TriggerRuntime
                 ctx.ChangeActorLife(ParseScid(act.Args[1]), newLife);
                 return;
             }
+            // SC-ENDGAME — the campaign's single victory verb (gom_super,
+            // on we_exploded). Without it the game had no reachable end
+            // state at all.
+            case "victory_condition_met":
+                ctx.VictoryConditionMet(act.Args.Count > 0 ? act.Args[0] : "");
+                return;
         }
     }
 
@@ -790,6 +796,10 @@ public class TriggerContext
     public virtual bool PartyHasItemTemplate(string templateName) => false;
     public virtual void SetCameraNodeFlag(string verb, uint nodeGuid, bool on) { }
     public virtual void ChangeActorLife(uint scid, float newLife) { }
+    /// <summary>SC-ENDGAME — gom_super authors
+    /// <c>victory_condition_met("end_game")</c> on we_exploded; the live
+    /// host rolls the ending. Headless contexts no-op.</summary>
+    public virtual void VictoryConditionMet(string condition) { }
     /// <summary>DS1 semantics: is any party member currently standing in a
     /// terrain node of the region identified by <paramref name="regionGuid"/>
     /// whose fade-group keys match (with -1 wildcards)?</summary>
