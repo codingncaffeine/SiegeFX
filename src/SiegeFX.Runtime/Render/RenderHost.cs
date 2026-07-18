@@ -26678,6 +26678,15 @@ void main()
         int mx = (int)_currentMousePos.X, my = (int)_currentMousePos.Y;
         var inv = ActiveInventory;
         int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+        // SC-TOOLTIP-EVERYWHERE — the tiled companion bags get the same item
+        // card as the player's pack (same origin trick the click path uses).
+        if ((idx < 0 || idx >= inv.Count) && CompanionBagAt(mx, my) is { } bagHit)
+        {
+            inv = GetMemberInventory(bagHit.PartyIndex);
+            _companionInvPanel.OriginX = bagHit.OriginX;
+            _companionInvPanel.OriginY = bagHit.OriginY;
+            idx = _companionInvPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+        }
         if (idx < 0 || idx >= inv.Count) return;
         var itemRef = ResolveItemRef(inv[idx].Reference);
         if (!_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return;
@@ -26836,8 +26845,17 @@ void main()
             if (_inventoryPanel.IsPointInGold(mx, my))
                 return ("Click to select an amount of gold from Inventory.", white, null);
             // Hovered backpack item: subject + the authored action hint.
+            // Companion bags resolve through the same path (their tiles use
+            // the origin-shifted panel, exactly like the click handler).
             var inv = ActiveInventory;
             int idx = _inventoryPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            if ((idx < 0 || idx >= inv.Count) && CompanionBagAt(mx, my) is { } bagHit)
+            {
+                inv = GetMemberInventory(bagHit.PartyIndex);
+                _companionInvPanel.OriginX = bagHit.OriginX;
+                _companionInvPanel.OriginY = bagHit.OriginY;
+                idx = _companionInvPanel.TryHitTestItem(mx, my, vw, vh, inv, TryGetItemGridSize);
+            }
             if (idx >= 0 && idx < inv.Count && _templateStore is not null)
             {
                 var itemRef = ResolveItemRef(inv[idx].Reference);
@@ -35080,6 +35098,9 @@ void main()
             _difficulty = savedDiff;
 
         // Index live actors by scid so the patch loop is O(N+M) not O(N*M).
+        // SC-VITALS-ORDER — the player's saved vitals, re-applied at the END
+        // of the restore chain (see the post-resync block below).
+        (float Life, float Mana, bool Dead)? playerVitals = null;
         var byScid = new Dictionary<uint, ActorRenderState>(_actors.Count);
         foreach (var s in _actors) byScid[s.Actor.Instance.Scid] = s;
 
@@ -35127,6 +35148,7 @@ void main()
             // boots render" report.
             if (s.IsPlayer && _playerFollower is not null)
             {
+                playerVitals = (snap.CurrentLife, snap.CurrentMana, snap.IsDead);
                 _playerFollower.Teleport(pos);
                 Console.WriteLine($"  load: player -> ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
                 // SC-SAVE-REGION (load-side self-heal) — older saves stamp the
@@ -35376,6 +35398,21 @@ void main()
             // Without this the body kept the spawn-time template gear and the
             // save's worn armor was stats-only.
             TryLoadPlayerEquipment(_player.Actor.Template);
+
+            // SC-VITALS-ORDER — re-apply the saved vitals now that EVERY
+            // max-affecting restore has run (level resync, gear enchants).
+            // The actor loop's first application clamped current life/mana
+            // against the fresh spawn's BASE maxima — a level-5 hero saved
+            // at 117/117 loaded as 65/117 ("full at save, half at load").
+            // Companions already order vitals after their stat restore; this
+            // gives the player the same guarantee.
+            if (playerVitals is { } pv)
+            {
+                _player.Actor.Combat.RestoreFromSave(pv.Life, pv.Mana, pv.Dead);
+                Console.WriteLine($"[load-diag] player vitals re-applied post-resync: " +
+                                  $"{pv.Life:F0}/{_player.Actor.Stats.MaxLife:F0} HP, " +
+                                  $"{pv.Mana:F0}/{_player.Actor.Stats.MaxMana:F0} MP");
+            }
 
             if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
             {
