@@ -158,6 +158,14 @@ public sealed class SpellTemplate
         string DropScript, float FreqMin, float FreqMax,
         int MaxDrops, float SpawnHeight, float SpawnRadius);
 
+    /// <summary>SC-SUMMON-MULTIPLE — [spell_summon_multiple] (gom_summon):
+    /// N staggered summons rolled from the [delayed_pcontent] weighted
+    /// choices; null = not a multi-summon spell.</summary>
+    public SummonMultipleSpec? SummonMultiple { get; private set; }
+    public sealed record SummonMultipleSpec(
+        int SpawnNum, float SpawnRate, float SpawnRadius, string EffectScript,
+        IReadOnlyList<(float Chance, string Template)> Choices);
+
     /// <summary>Distance in DS1 world units (≈feet) the caster can be from
     /// the target when the cast fires. <c>cast_range</c> in the magic block.
     /// Self-target heals ignore this in <see cref="Actors.PlayerSpellbook"/>.</summary>
@@ -331,6 +339,32 @@ public sealed class SpellTemplate
                             (int)F(TemplateStore.FindAttr(child, "max_drops"), 12f),
                             F(TemplateStore.FindAttr(child, "spawn_height"), 8f),
                             F(TemplateStore.FindAttr(child, "spawn_radius"), 4f));
+                }
+                // SC-SUMMON-MULTIPLE — gom_summon class: N staggered
+                // summons rolled from [inventory][delayed_pcontent] weights.
+                else if (SummonMultiple is null
+                    && child.Header.Equals("spell_summon_multiple", StringComparison.OrdinalIgnoreCase))
+                {
+                    static float F2(string? s, float d) =>
+                        float.TryParse((s ?? "").Trim().Trim('"'), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out var v) ? v : d;
+                    var choices = new List<(float Chance, string Template)>();
+                    var inv = TemplateStore.FindChild(t.Node, "inventory");
+                    var dpc = inv is null ? null : TemplateStore.FindChild(inv, "delayed_pcontent");
+                    if (dpc is not null)
+                        foreach (var oneof in dpc.Children)
+                            foreach (var all in oneof.Children)
+                            {
+                                var tplName = (TemplateStore.FindAttr(all, "il_main") ?? "").Trim().Trim('"');
+                                if (tplName.Length == 0) continue;
+                                choices.Add((F2(TemplateStore.FindAttr(all, "chance"), 1f), tplName));
+                            }
+                    SummonMultiple = new SummonMultipleSpec(
+                        (int)F2(TemplateStore.FindAttr(child, "spawn_num"), 1f),
+                        F2(TemplateStore.FindAttr(child, "spawn_rate"), 0.75f),
+                        F2(TemplateStore.FindAttr(child, "spawn_radius"), 4f),
+                        (TemplateStore.FindAttr(child, "effect_script") ?? "").Trim().Trim('"'),
+                        choices);
                 }
             }
         }
@@ -653,6 +687,15 @@ public sealed class SpellTemplate
                     name = TemplateStore.FindAttr(child, "enchant_script");
                 if (string.IsNullOrWhiteSpace(name))
                     name = TemplateStore.FindAttr(child, "drop_script");
+                // SC-SPELL-AUDIT-4 — an EMPTY [spell_resurrect] block runs
+                // the component's engine-default effect script: shipped
+                // spell_resurrect/_monster author `[spell_resurrect] {}`
+                // and the otherwise-orphaned "resurrect" sfx script is its
+                // body (spell_full_resurrect proves the attribute exists
+                // by overriding it with full_resurrect).
+                if (string.IsNullOrWhiteSpace(name)
+                    && child.Header.Equals("spell_resurrect", StringComparison.OrdinalIgnoreCase))
+                    name = "resurrect";
                 if (string.IsNullOrWhiteSpace(name)) continue;
                 return name.Trim().Trim('"');
             }

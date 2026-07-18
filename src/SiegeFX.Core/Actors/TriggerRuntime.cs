@@ -106,7 +106,19 @@ public sealed class TriggerRuntime
             foreach (var r in s.FiredRows)
                 if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).FiredOnce = true;
             foreach (var r in s.HeldRows)
-                if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).ConditionHeld = true;
+            {
+                if (r < 0 || r >= t.Matrix.Rows.Count) continue;
+                // Fade-verb rows deliberately DON'T restore their held
+                // edge: the fade refcounts they drive rebuild from scratch
+                // at load, so the row must re-fire its rising edge for a
+                // player standing inside the volume — a restored Held
+                // suppressed it and left the cutaway in its boot state.
+                bool fadeRow = t.Matrix.Rows[r].Actions.Any(a =>
+                    a.Verb.StartsWith("fade_", StringComparison.OrdinalIgnoreCase)
+                    || a.Verb.Equals("set_camera_fade_node", StringComparison.OrdinalIgnoreCase));
+                if (fadeRow) continue;
+                t.RowStateAt(r).ConditionHeld = true;
+            }
             foreach (var d in s.Delayed)
             {
                 var act = ActionAtFlatIndex(t, d.FlatIndex);

@@ -5768,6 +5768,8 @@ public sealed class RenderHost : IDisposable
         public int DropsLeft;
         public float NextDropIn;
         public Random Rng = null!;
+        // SC-DEATHRAIN-DAMAGE — the caster (friend/foe + skill scaling).
+        public ActorRenderState? Caster;
     }
     private readonly List<ActiveDeathrain> _deathrains = new();
     private uint _summonSeq;
@@ -5785,13 +5787,74 @@ public sealed class RenderHost : IDisposable
     /// FreqMin..FreqMax intervals, each running drop_script on a random
     /// point within SpawnRadius of the cast target, falling from
     /// SpawnHeight. (Ice Storm = 25 shards over ~4s, not one.)</summary>
-    private void StartDeathrain(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center)
+    // SC-SUMMON-MULTIPLE — [spell_summon_multiple] (gom_summon): N
+    // staggered spawns rolled from the delayed_pcontent weights, each
+    // arriving through the generator-child path (synthetic scid, natural
+    // brain — evil summons hunt the party like any spawned monster) with
+    // the authored arrival effect at the spawn point.
+    private sealed class ActiveMultiSummon
+    {
+        public required SiegeFX.Core.Assets.SpellTemplate Spell;
+        public Vector3 Center;
+        public int Remaining;
+        public float NextIn;
+    }
+    private readonly List<ActiveMultiSummon> _multiSummons = new();
+
+    private void StartMultiSummon(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center)
+    {
+        if (spell.SummonMultiple is not { } sm || sm.Choices.Count == 0) return;
+        _multiSummons.Add(new ActiveMultiSummon
+        {
+            Spell = spell,
+            Center = center,
+            Remaining = Math.Max(1, sm.SpawnNum),
+            NextIn = 0f,
+        });
+        Console.WriteLine($"[multi-summon] {spell.Name}: {sm.SpawnNum} spawn(s) queued");
+    }
+
+    private void TickMultiSummons(float dt)
+    {
+        for (int i = _multiSummons.Count - 1; i >= 0; i--)
+        {
+            var ms = _multiSummons[i];
+            ms.NextIn -= dt;
+            if (ms.NextIn > 0f) continue;
+            var sm = ms.Spell.SummonMultiple!;
+            ms.NextIn = MathF.Max(0.2f, sm.SpawnRate);
+            ms.Remaining--;
+            // Weighted roll over the authored choices.
+            float totalW = 0f;
+            foreach (var (w, _) in sm.Choices) totalW += MathF.Max(0.0001f, w);
+            float roll = (float)_pcontentRng.NextDouble() * totalW;
+            string picked = sm.Choices[^1].Template;
+            foreach (var (w, tpl) in sm.Choices)
+            {
+                roll -= MathF.Max(0.0001f, w);
+                if (roll <= 0f) { picked = tpl; break; }
+            }
+            var ang = (float)_pcontentRng.NextDouble() * MathF.Tau;
+            var r = (float)_pcontentRng.NextDouble() * MathF.Max(1f, sm.SpawnRadius);
+            var pos = ms.Center + new Vector3(MathF.Cos(ang) * r, 0f, MathF.Sin(ang) * r);
+            if (_navMesh is not null && _navMesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true))
+                pos = pos with { Y = _navMesh.SampleYOnTriangle(tri, pos) };
+            SpawnObjectChild(picked, pos);
+            if (sm.EffectScript.Length > 0)
+                OnTriggerCallSfxScript(sm.EffectScript, null, pos);
+            if (ms.Remaining <= 0) _multiSummons.RemoveAt(i);
+        }
+    }
+
+    private void StartDeathrain(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center,
+                                ActorRenderState? caster = null)
     {
         if (spell.Deathrain is null) return;
         _deathrains.Add(new ActiveDeathrain
         {
             Spell = spell,
             Center = center,
+            Caster = caster,
             DropsLeft = Math.Clamp(spell.Deathrain.MaxDrops, 1, 64),
             NextDropIn = 0f,
             Rng = new Random(unchecked((int)(center.X * 73856093f) ^ (int)(center.Z * 19349663f))),
@@ -5823,6 +5886,40 @@ public sealed class RenderHost : IDisposable
                     && _sfxStore.TryGet(spec.DropScript, out _))
                     _sfxRuntime.Spawn(spec.DropScript,
                         new SiegeFX.Core.Sfx.SfxContext(sky, ground, sky));
+                // SC-DEATHRAIN-DAMAGE — every drop is its own hit: roll the
+                // spell's damage at the CASTER's skill against hostiles
+                // within ~2u of the impact point (retail: ice_storm's 25
+                // shards each hurt; the old cast-time single roll made the
+                // storm 96% harmless).
+                if (d.Caster is { } caster && !caster.IsDead)
+                {
+                    var cst = caster.Actor.Stats;
+                    float skill = MathF.Max(1f, MathF.Floor(d.Spell.IsNatureMagic
+                        ? cst.NatureMagicSkill : cst.CombatMagicSkill));
+                    var dctx = new SiegeFX.Core.Assets.SpellEvalContext(skill,
+                        maxLife: cst.MaxLife,
+                        life: caster.Actor.Combat.CurrentLife,
+                        srcMana: caster.Actor.Combat.CurrentMana,
+                        srcLife: caster.Actor.Combat.CurrentLife);
+                    float dmin = SiegeFX.Core.Assets.SpellExpr.Eval(d.Spell.AttackDamageMinExpr, dctx);
+                    float dmax = SiegeFX.Core.Assets.SpellExpr.Eval(d.Spell.AttackDamageMaxExpr, dctx);
+                    if (dmax > 0f)
+                    {
+                        float dmg = dmin + (float)d.Rng.NextDouble() * MathF.Max(0f, dmax - dmin);
+                        foreach (var victim in _actors)
+                        {
+                            if (victim.IsDead || ReferenceEquals(victim, caster)) continue;
+                            if (victim.IsEvilAligned == caster.IsEvilAligned) continue;
+                            var vp = victim.CurrentTransform.Translation;
+                            float vdx = vp.X - ground.X, vdz = vp.Z - ground.Z;
+                            if (vdx * vdx + vdz * vdz > 2.0f * 2.0f) continue;
+                            if (MathF.Abs(vp.Y - ground.Y) > 2.5f) continue;
+                            float dealt = victim.Actor.Combat.ApplyDamage(dmg);
+                            if (dealt > 0f && caster.IsPlayer)
+                                AwardCombatXp(dealt, victim.Actor.Stats, SkillForSpell(d.Spell));
+                        }
+                    }
+                }
             }
             if (d.DropsLeft <= 0) _deathrains.RemoveAt(i);
         }
@@ -20351,6 +20448,7 @@ void main()
                 TickPartyFollowers((float)stepSec);
                 TickRemoteCompanions((float)stepSec);   // SC-MP-RECRUIT (host only)
                 TickDeathrains((float)stepSec);         // SC-SPELL-ENGINE
+                TickMultiSummons((float)stepSec);       // SC-SUMMON-MULTIPLE
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 // Phase 26 — resolve enemies a follower just killed (the player
                 // kill paths self-report; this catches ally kills).
@@ -30971,8 +31069,9 @@ void main()
                 // SC-SPELL-ENGINE — gameplay payloads beyond the visual:
                 // deathrain storms and summoned creatures for NPC casters
                 // (gom's summoning, dark casters' ice storms).
-                if (brain.CastSpell.Deathrain is not null) StartDeathrain(brain.CastSpell, castDst);
+                if (brain.CastSpell.Deathrain is not null) StartDeathrain(brain.CastSpell, castDst, s);
                 if (brain.CastSpell.SummonTemplate.Length > 0) CastSummon(brain.CastSpell, s, castDst);
+                if (brain.CastSpell.SummonMultiple is not null) StartMultiSummon(brain.CastSpell, castDst);
                 // SC-SPELL-LAUNCH — [spell_launch] ammo spells (phrak dart,
                 // skrubb spit, blaster bomb) fire a REAL ballistic ammo GO —
                 // the authored dart/goo mesh on a gravity arc, damage payload
@@ -31670,7 +31769,7 @@ void main()
                     // the script has no sound (so we don't go silent).
                     _audio?.Play(ResolveSpellCastSound(spell));
                     // SC-SPELL-ENGINE — gameplay payloads beyond the visual.
-                    if (spell.Deathrain is not null) StartDeathrain(spell, dst);
+                    if (spell.Deathrain is not null) StartDeathrain(spell, dst, _player);
                     if (spell.SummonTemplate.Length > 0 && _player is not null)
                         CastSummon(spell, _player, dst);
                     if (projectileSpell)
@@ -36520,6 +36619,7 @@ void main()
         if (_dialogue.IsOpen) _dialogue.Close();
         if (_vendor.IsOpen) _vendor.Close();
         _deathrains.Clear();
+        _multiSummons.Clear();
         foreach (var rsFlight in _rangedShots)
             if (rsFlight.FlightMotionId != 0)
                 _sfxRuntime?.EndExternalMotion(rsFlight.FlightMotionId);
