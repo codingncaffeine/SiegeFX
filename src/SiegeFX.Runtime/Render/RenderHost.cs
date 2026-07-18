@@ -4170,12 +4170,14 @@ public sealed class RenderHost : IDisposable
         var face = _playerFacing.LengthSquared() > 0.01f
             ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
             : Vector3.UnitZ;
-        // Tight head-and-shoulders bust: ~1.15u out along the facing, wide
-        // enough FOV that the head fills most of the 128² cell.
-        var eye = headWorld + face * 1.15f + new Vector3(0f, 0.10f, 0f);
-        var at  = headWorld + new Vector3(0f, 0.02f, 0f);
+        // Tight FACE crop: same ~1.15u standoff (close-in would fisheye the
+        // nose) but a telephoto FOV so the head fills the 128² cell — the
+        // old 0.50 rad framed a whole bust with visible shoulders. Aim rides
+        // a touch above the head bone (neck pivot) to center the face.
+        var eye = headWorld + face * 1.15f + new Vector3(0f, 0.14f, 0f);
+        var at  = headWorld + new Vector3(0f, 0.08f, 0f);
         var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.UnitY)
-                * Matrix4x4.CreatePerspectiveFieldOfView(0.50f, 1f, 0.05f, 50f);
+                * Matrix4x4.CreatePerspectiveFieldOfView(0.34f, 1f, 0.05f, 50f);
 
         _skinShader.Use();
         _skinShader.SetMatrix4("uViewProj", pvp);
