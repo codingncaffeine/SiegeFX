@@ -77,6 +77,35 @@ public sealed class RenderHost : IDisposable
     // Session kills append so the set stays authoritative for the whole run.
     private readonly HashSet<uint> _persistedDeadScids = new();
     private SiegeFX.Core.Save.WorldStateSnapshot? _persistedWorldState;
+    // SC-SAVE-AUDIT — save rows whose owning region wasn't streamed at load
+    // time. Re-applied as regions stream in and merged into the next capture,
+    // so history in un-visited regions survives save→load→save chains
+    // (previously each cycle truncated the world to whatever was streamed).
+    private List<SiegeFX.Core.Save.TriggerStateSnapshot> _pendingTriggerSnaps = new();
+    private List<SiegeFX.Core.Save.ElevatorStopSnapshot> _pendingElevatorSnaps = new();
+    private List<SiegeFX.Core.Save.AccumSnapshot> _pendingAccumSnaps = new();
+
+    /// <summary>SC-SAVE-REGION — is this region's geometry currently
+    /// streamed in, making an in-place ApplySave safe? Saves now stamp the
+    /// player's TRUE region, so load routing must ask "is it loaded", not
+    /// "is it the boot region" (that comparison killed F9 after crossing a
+    /// region boundary). Producers differ in path shape, so exact match
+    /// falls back to the map-unique trailing folder name.</summary>
+    private bool IsRegionLive(string? rp)
+    {
+        if (string.IsNullOrEmpty(rp)) return false;
+        if (string.Equals(rp, _regionPath, StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(rp, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase)) return true;
+        string tail = RegionTail(rp!);
+        foreach (var k in _regionMeanY.Keys)
+            if (string.Equals(RegionTail(k), tail, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+    private static string RegionTail(string p)
+    {
+        p = p.TrimEnd('/');
+        return p[(p.LastIndexOf('/') + 1)..];
+    }
 
     /// <summary>SC-PERSIST-STREAM — apply the snapshot's prop flags (opened /
     /// unlocked / levered / broken / cleared) to whatever props are currently
@@ -4607,7 +4636,7 @@ public sealed class RenderHost : IDisposable
     private void PerformLoad(SiegeFX.Core.Save.SaveStore.SaveSlot slot, bool mainMenuStyle)
     {
         bool sameRegion = !mainMenuStyle
-            && string.Equals(slot.RegionPath, _regionPath ?? "", StringComparison.OrdinalIgnoreCase)
+            && IsRegionLive(slot.RegionPath)
             && _player is not null;
         if (sameRegion)
         {
@@ -4817,9 +4846,32 @@ public sealed class RenderHost : IDisposable
         try
         {
             if (!File.Exists(path))
+            {
                 Console.WriteLine($"  load: no quicksave at {path}");
-            else
-                ApplySave(SiegeFX.Core.Save.SaveStore.Load(path));
+                return;
+            }
+            var save = SiegeFX.Core.Save.SaveStore.Load(path);
+            // SC-SAVE-REGION — the quicksave may name a region that isn't
+            // streamed here (saves stamp the TRUE region now). Route those
+            // through the relaunch loader like any cross-region load instead
+            // of letting ApplySave's guard silently no-op.
+            if (!IsRegionLive(save.RegionPath))
+            {
+                Console.WriteLine($"  load: quicksave region '{save.RegionPath}' not loaded — relaunching");
+                if (_ds1ResourcesDir is not null)
+                    LaunchRegionForLoad(_ds1ResourcesDir, path);
+                else if (_regionMapTankPath is not null && _regionTerrainTankPath is not null
+                      && _playLogicTankPath is not null && _playObjectsTankPath is not null)
+                    LaunchRegionForLoadWithTanks(_regionMapTankPath, _regionTerrainTankPath,
+                        _playLogicTankPath, _playObjectsTankPath, path);
+                else
+                {
+                    _saveToastText = "Cannot load this save here.";
+                    _saveToastRemaining = SaveToastDuration;
+                }
+                return;
+            }
+            ApplySave(save);
         }
         catch (Exception ex)
         {
@@ -11959,6 +12011,44 @@ void main()
         if (_persistedWorldState is { } pws)
         {
             if (ApplyWorldPropState(pws)) MarkAllObstacles();
+        }
+        // SC-SAVE-AUDIT (bugs 2/3/4) — the pending ledgers: rows the load
+        // pass couldn't place because their region wasn't streamed. Each
+        // stream-in retries them against the freshly-registered triggers,
+        // lifts and accumulators; whatever applies leaves the ledger.
+        if (_pendingTriggerSnaps.Count > 0 && _triggerRuntime is not null)
+            _pendingTriggerSnaps = _triggerRuntime.RestoreStates(_pendingTriggerSnaps);
+        if (_pendingAccumSnaps.Count > 0)
+            _pendingAccumSnaps.RemoveAll(a =>
+            {
+                if (!_logicGizmos.TryGetValue(a.Scid, out var lg)) return false;
+                lg.Count = a.Count; lg.Fired = a.Fired;
+                return true;
+            });
+        if (_pendingElevatorSnaps.Count > 0)
+        {
+            bool structural = false;
+            _pendingElevatorSnaps.RemoveAll(es =>
+            {
+                if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
+                if (el.AtStop != es.AtStop)
+                {
+                    el.AtStop = es.AtStop;
+                    el.Moving = false;
+                    el.T = 0f;
+                    var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
+                    el.PrevCarPos = pose.Translation;
+                    _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
+                    UpdateElevatorCarInstance(el, pose);
+                    structural = true;
+                }
+                return true;
+            });
+            if (structural)
+            {
+                var nav = RebuildNavMesh();
+                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); }
+            }
         }
     }
 
@@ -20282,6 +20372,12 @@ void main()
             psi.Environment["SIEGEFX_LOAD_SAVE"] = savePath;
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
             psi.Environment["SIEGEFX_CREATOR"] = "0";
+            // SC-SAVE-AUDIT (bug 6) — the load relaunch was the only relaunch
+            // not forwarding difficulty; a Hard save loaded from the frontend
+            // ran at Normal. The save's own record wins; the session setting
+            // covers pre-field saves.
+            psi.Environment["SIEGEFX_DIFFICULTY"] =
+                string.IsNullOrEmpty(save.Difficulty) ? _difficulty.ToString() : save.Difficulty;
 
             Console.WriteLine($"SC-MAINMENU-LOADGAME: relaunching into {regionPath} + applying '{savePath}'");
             System.Diagnostics.Process.Start(psi);
@@ -34368,6 +34464,8 @@ void main()
             // underground state). Position-derived region wins; the streaming
             // tracker seconds it; the boot region is the pre-spawn last resort.
             RegionPath    = PlayerRegionForSave(),
+            // SC-SAVE-AUDIT (bug 6) — difficulty is campaign state.
+            Difficulty    = _difficulty.ToString(),
             NextTipIndex  = _nextTipIndex,
             TipsDisabled  = _tipsDisabled,
             // v12 — Load window preview metadata. HeroName/MapName/ElapsedSeconds
@@ -34404,6 +34502,31 @@ void main()
         // SC-FC-ORDERS — party-wide formation + paid-hire ledger.
         world.PartyFormation = _partyFormation.ToString();
         foreach (var sc in _hiredScids) world.HiredScids.Add(sc);
+
+        // SC-SAVE-AUDIT (bug 5) — merge the un-streamed remainder back in.
+        // The live registries above cover only regions streamed THIS session;
+        // without the merge, every save→load→save cycle truncated world
+        // history to whatever the player re-visited (cleared regions
+        // respawned, opened chests re-armed). Pending ledgers carry
+        // trigger/lift/accum rows; the loaded save's prop lists fill in props
+        // whose owning region never streamed (live registries stay
+        // authoritative for everything that did).
+        world.Triggers.AddRange(_pendingTriggerSnaps);
+        world.Elevators.AddRange(_pendingElevatorSnaps);
+        world.Accumulators.AddRange(_pendingAccumSnaps);
+        if (_persistedWorldState is { } kept)
+        {
+            void MergeProps(List<uint> dest, List<uint> persisted, Func<uint, bool> ownerStreamed)
+            {
+                foreach (var sc in persisted)
+                    if (!ownerStreamed(sc) && !dest.Contains(sc)) dest.Add(sc);
+            }
+            MergeProps(world.OpenedChests, kept.OpenedChests, sc => _chestProps.Any(c => c.Scid == sc));
+            MergeProps(world.UnlockedUsables, kept.UnlockedUsables, sc => _lockedUsables.Any(lu => lu.Prop.Scid == sc));
+            MergeProps(world.LeversOn, kept.LeversOn, sc => _leverProps.Any(lv => lv.Scid == sc));
+            MergeProps(world.BrokenProps, kept.BrokenProps, sc => _breakingByScid.ContainsKey(sc));
+            MergeProps(world.ClearedBlockers, kept.ClearedBlockers, sc => _blockingGizmos.Any(b => b.Scid == sc));
+        }
         save.World = world;
 
         foreach (var s in _actors)
@@ -34424,6 +34547,17 @@ void main()
                 Hidden       = s.Hidden,
                 PinnedAnim   = s.Actor.Host.PinnedOverrideAnim,
             });
+        }
+        // SC-SAVE-AUDIT (bug 5) — the kill ledger holds scids of actors whose
+        // corpses were WITHHELD from spawning (their region streamed after the
+        // load); they exist in no live list, so without these rows every
+        // save→load→save cycle forgot them and their regions re-spawned full.
+        {
+            var liveScids = new HashSet<uint>();
+            foreach (var s in _actors) liveScids.Add(s.Actor.Instance.Scid);
+            foreach (var sc in _persistedDeadScids)
+                if (!liveScids.Contains(sc))
+                    save.Actors.Add(new SiegeFX.Core.Save.ActorSnapshot { Scid = sc, IsDead = true });
         }
 
         foreach (var pile in _lootPiles)
@@ -34662,10 +34796,11 @@ void main()
     // patch that adds NPCs).
     internal void ApplySave(SiegeFX.Core.Save.SaveFile save)
     {
-        if (!string.Equals(save.RegionPath, _regionPath ?? "", StringComparison.OrdinalIgnoreCase))
+        if (!IsRegionLive(save.RegionPath))
         {
             Console.Error.WriteLine(
-                $"  load: region mismatch — save was '{save.RegionPath}', live region is '{_regionPath}'");
+                $"  load: save region '{save.RegionPath}' is not streamed here " +
+                $"(boot '{_regionPath}') — this load needs the relaunch path");
             return;
         }
 
@@ -34715,7 +34850,16 @@ void main()
         // let the region re-apply below rebuild it from the region's mood.
         _weather.Reset();
         _requestedMoodName = null;
-        ApplyAmbientForRegion(_regionPath);
+        // SC-SAVE-AUDIT (bug 1) — re-apply ambience for the region the player
+        // is IN, not the boot region: an in-place F9 in a non-boot region was
+        // wiping correct live ambience and rebuilding the boot region's
+        // bed/mood/weather. The position self-heal below re-applies again if
+        // the restored position lands somewhere else entirely.
+        ApplyAmbientForRegion(_currentPlayerRegion ?? _regionPath);
+        // SC-SAVE-AUDIT (bug 6) — difficulty rides the save; pre-field saves
+        // carry "" and keep the session's current setting.
+        if (Enum.TryParse<GameDifficulty>(save.Difficulty, true, out var savedDiff))
+            _difficulty = savedDiff;
 
         // Index live actors by scid so the patch loop is O(N+M) not O(N*M).
         var byScid = new Dictionary<uint, ActorRenderState>(_actors.Count);
@@ -34792,8 +34936,9 @@ void main()
         // so one-time story choreography doesn't re-arm or replay. Saves
         // written before the field carry an empty list and the triggers
         // keep their boot defaults (the old behavior).
+        _pendingTriggerSnaps.Clear();
         if (_triggerRuntime is not null && save.World?.Triggers is { Count: > 0 } trigSnaps)
-            _triggerRuntime.RestoreStates(trigSnaps);
+            _pendingTriggerSnaps = _triggerRuntime.RestoreStates(trigSnaps);
 
         _lootPiles.Clear();
         // SC-WORLD-INVENTORY-PLACED — _inventoryGasLoaded gates LoadWorldInventory
@@ -34872,22 +35017,22 @@ void main()
         {
             _worldBools.Clear();
             foreach (var kv in ws.Bools) _worldBools[kv.Key] = kv.Value;
+            // SC-SAVE-AUDIT (bugs 3/4) — rows whose owner isn't streamed yet
+            // go to the pending ledgers: re-applied at stream-in, merged into
+            // the next capture so far-away state survives save→load→save.
+            _pendingAccumSnaps.Clear();
             foreach (var a in ws.Accumulators)
+            {
                 if (_logicGizmos.TryGetValue(a.Scid, out var lg))
                 { lg.Count = a.Count; lg.Fired = a.Fired; }
+                else _pendingAccumSnaps.Add(a);
+            }
             bool structural = ApplyWorldPropState(ws);
+            _pendingElevatorSnaps.Clear();
             foreach (var es in ws.Elevators)
             {
-                if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) continue;
-                if (el.AtStop == es.AtStop) continue;
-                el.AtStop = es.AtStop;
-                el.Moving = false;
-                el.T = 0f;
-                var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
-                el.PrevCarPos = pose.Translation;
-                _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
-                UpdateElevatorCarInstance(el, pose);
-                structural = true;
+                if (!_elevatorsByScid.ContainsKey(es.Scid)) { _pendingElevatorSnaps.Add(es); continue; }
+                structural |= ApplyElevatorSnapshot(es);
             }
             if (structural)
             {
@@ -34907,6 +35052,21 @@ void main()
         _persistedDeadScids.Clear();
         foreach (var snap in save.Actors) if (snap.IsDead) _persistedDeadScids.Add(snap.Scid);
         _persistedWorldState = save.World;
+
+        /// <summary>SC-SAVE-AUDIT — one elevator row applied to a live lift.</summary>
+        bool ApplyElevatorSnapshot(SiegeFX.Core.Save.ElevatorStopSnapshot es)
+        {
+            if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
+            if (el.AtStop == es.AtStop) return false;
+            el.AtStop = es.AtStop;
+            el.Moving = false;
+            el.T = 0f;
+            var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
+            el.PrevCarPos = pose.Translation;
+            _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
+            UpdateElevatorCarInstance(el, pose);
+            return true;
+        }
 
         if (save.Player is not null && _player is not null)
         {

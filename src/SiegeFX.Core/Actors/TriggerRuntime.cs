@@ -68,10 +68,14 @@ public sealed class TriggerRuntime
     /// onto the (freshly booted) instances: matched by scid; instances the
     /// save doesn't mention keep their boot defaults. Pending delayed
     /// actions re-schedule with their remaining time; stale pendings for
-    /// restored instances are dropped first.</summary>
-    public void RestoreStates(IReadOnlyList<Save.TriggerStateSnapshot> snaps)
+    /// restored instances are dropped first. Returns the rows whose trigger
+    /// isn't registered yet (region not streamed) so the caller can retry
+    /// after each stream-in and merge them into the next capture — without
+    /// this, saving far from a completed one-shot permanently erased it.</summary>
+    public List<Save.TriggerStateSnapshot> RestoreStates(IReadOnlyList<Save.TriggerStateSnapshot> snaps)
     {
-        if (snaps.Count == 0) return;
+        var leftovers = new List<Save.TriggerStateSnapshot>();
+        if (snaps.Count == 0) return leftovers;
         var byScid = new Dictionary<uint, TriggerInstance>(_instances.Count);
         foreach (var t in _instances) byScid[t.Scid] = t;
         var covered = new HashSet<uint>();
@@ -80,7 +84,7 @@ public sealed class TriggerRuntime
         int applied = 0;
         foreach (var s in snaps)
         {
-            if (!byScid.TryGetValue(s.Scid, out var t)) continue;
+            if (!byScid.TryGetValue(s.Scid, out var t)) { leftovers.Add(s); continue; }
             t.IsActive = s.IsActive;
             foreach (var r in s.FiredRows)
                 if (r >= 0 && r < t.Matrix.Rows.Count) t.RowStateAt(r).FiredOnce = true;
@@ -94,7 +98,9 @@ public sealed class TriggerRuntime
             }
             applied++;
         }
-        Console.WriteLine($"  [triggers] restored state for {applied}/{snaps.Count} saved instance(s)");
+        Console.WriteLine($"  [triggers] restored state for {applied}/{snaps.Count} saved instance(s)" +
+                          (leftovers.Count > 0 ? $" ({leftovers.Count} pending un-streamed)" : ""));
+        return leftovers;
     }
 
     static int FlatActionIndex(TriggerInstance t, TriggerCall action)

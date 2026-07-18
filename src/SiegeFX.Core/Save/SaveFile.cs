@@ -87,6 +87,12 @@ public sealed class SaveFile
     /// fh_r1 actor scids into a different region would hit-or-miss.</summary>
     public string RegionPath { get; set; } = "";
 
+    /// <summary>SC-SAVE-AUDIT — the campaign difficulty (GameDifficulty enum
+    /// name) at save time. Empty = pre-field save; the loader then keeps the
+    /// session's current difficulty (the old behavior, which silently reset
+    /// a Hard campaign to Normal on a frontend load).</summary>
+    public string Difficulty { get; set; } = "";
+
     /// <summary>v12 — the hero's name, mirrored from
     /// <see cref="PlayerSnapshot.HeroName"/> up to the top level so the Load
     /// Game window's lightweight header read can show "HERO: X" without
