@@ -10,7 +10,11 @@ namespace SiegeFX.Core.Actors;
 /// adds a sentinel <c>"gold"</c> slot for <c>[gold*]</c> buckets — Reference
 /// holds <c>"min-max"</c> so the roller can pick a count at draw time
 /// without re-parsing the template.</summary>
-public readonly record struct LootEntry(string Slot, string Reference)
+/// <remarks>SC-POTION-SIP — <paramref name="Fill"/> is the bottle's remaining
+/// fraction (1 = full). Only potions ever drop below 1: drinking sips just
+/// what the drinker needs and the bottle keeps the remainder, per the manual.
+/// Non-potion items always carry 1.</remarks>
+public readonly record struct LootEntry(string Slot, string Reference, float Fill = 1f)
 {
     public bool IsEquipped =>
         Slot.Length > 0 && !Slot.Equals("gold", StringComparison.OrdinalIgnoreCase);

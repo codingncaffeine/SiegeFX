@@ -287,6 +287,9 @@ public sealed class LootEntrySnapshot
 {
     public string Slot { get; set; } = "";
     public string Reference { get; set; } = "";
+    /// <summary>SC-POTION-SIP — remaining bottle fraction (1 = full; only
+    /// potions ever carry less). Pre-field saves default to full.</summary>
+    public float Fill { get; set; } = 1f;
 }
 
 /// <summary>Spellbook state. Slots are the template names of the slotted

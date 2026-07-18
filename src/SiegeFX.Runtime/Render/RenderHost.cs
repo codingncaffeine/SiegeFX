@@ -9912,7 +9912,8 @@ void main()
                             // branch was missing it, leaving the grid
                             // placement-state out of sync.
                             ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry(
-                                Slot: "", Reference: _cursorItem.Value.Reference));
+                                Slot: "", Reference: _cursorItem.Value.Reference,
+                                Fill: _cursorItem.Value.Fill));
                             _inventoryPanel.NotifyItemAdded();
                             // SC-AUDIO-ITEMS — item settles into the pack
                             // with its own put_down cue (DS1: "dropped on
@@ -9921,6 +9922,31 @@ void main()
                                 _player?.CurrentTransform.Translation ?? Vector3.Zero);
                             Console.WriteLine($"  cursor item: placed {_cursorItem.Value.Reference} into inventory");
                             ClearCursorItem();
+                            return;
+                        }
+                        // SC-POTION-SIP — manual: partial potion bottles
+                        // CONSOLIDATE — dropping a potion onto another of
+                        // the same kind pours the held bottle into it; any
+                        // overflow stays on the cursor.
+                        var tgt = ActiveInventory[existingIdx];
+                        bool bothPotions = tgt.Reference.Equals(_cursorItem.Value.Reference,
+                                StringComparison.OrdinalIgnoreCase)
+                            && tgt.Reference.StartsWith("potion_", StringComparison.OrdinalIgnoreCase)
+                            && (tgt.Fill < 1f || _cursorItem.Value.Fill < 1f);
+                        if (bothPotions)
+                        {
+                            float sum = tgt.Fill + _cursorItem.Value.Fill;
+                            float merged = MathF.Min(1f, sum);
+                            float leftover = sum - merged;
+                            ActiveInventory[existingIdx] = tgt with { Fill = merged };
+                            PlayPutDownSfx(tgt.Reference,
+                                _player?.CurrentTransform.Translation ?? Vector3.Zero);
+                            Console.WriteLine($"  cursor item: consolidated {tgt.Reference} " +
+                                              $"→ {merged:P0}{(leftover > 0.004f ? $" (+{leftover:P0} still held)" : "")}");
+                            if (leftover > 0.004f)
+                                _cursorItem = _cursorItem.Value with { Fill = leftover };
+                            else
+                                ClearCursorItem();
                             return;
                         }
                         // Non-empty cell with cursor full — for now,
@@ -26931,53 +26957,90 @@ void main()
         Console.WriteLine($"[pause] world tick {(_isPaused ? "PAUSED" : "RESUMED")}");
     }
 
-    /// <summary>Phase 22-A SC-HUD-DATABAR — DS1's quick-potion: scan the
-    /// player's inventory for the lowest-tier health or mana potion the
-    /// player owns and drink it. "Lowest-tier" matches the DS1 convention
-    /// (small → medium → large → super) so high-tier potions are saved for
-    /// emergencies. No-op when no matching potion exists.</summary>
+    /// <summary>Phase 22-A SC-HUD-DATABAR / SC-POTION-SIP — DS1's quick-potion,
+    /// manual semantics: the H/M keys and the status-bar buttons drink for
+    /// EVERY SELECTED party character that has a matching potion, from their
+    /// own inventory. Drinking sips only what's needed (the bottle keeps the
+    /// remainder); in combat a character only drinks below 50% of the pool;
+    /// unconscious characters can't drink. Lowest tier first, and partially
+    /// empty bottles before full ones within a tier.</summary>
     private void DrinkLowestPotion(bool isHealth)
     {
         if (_player is null || _player.IsDead) return;
         if (_templateStore is null) return;
+        bool inCombat = PartyInCombat();
+        int drank = 0;
+        if (_selectedPartyIdx.Contains(0) && !_player.Actor.Combat.Downed
+            && DrinkFromInventory(_player, _playerInventory, isHealth, inCombat, isHero: true))
+            drank++;
+        foreach (var m in _party)
+        {
+            if (m.PartyIndex <= 0 || m.IsDead || !m.IsPartyMember) continue;
+            if (!_selectedPartyIdx.Contains(m.PartyIndex)) continue;
+            if (m.Actor.Combat.Downed) continue;   // manual: can't drink while down
+            if (!_companionInventories.TryGetValue(m.PartyIndex, out var minv)) continue;
+            if (DrinkFromInventory(m, minv, isHealth, inCombat, isHero: false))
+                drank++;
+        }
+        if (drank == 0)
+            Console.WriteLine($"[potion] nobody in the selection drank ({(isHealth ? "health" : "mana")})");
+    }
+
+    /// <summary>SC-POTION-SIP — any hostile with an alerted brain near the
+    /// party? Drives the manual's in-combat 50% drink threshold.</summary>
+    private bool PartyInCombat()
+    {
+        if (_player is null) return false;
+        var pp = _player.CurrentTransform.Translation;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || !s.IsEvilAligned || s.Brain is null) continue;
+            if (s.Brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Wander) continue;
+            var d = s.CurrentTransform.Translation - pp;
+            if (d.X * d.X + d.Z * d.Z <= 20f * 20f) return true;
+        }
+        return false;
+    }
+
+    /// <summary>SC-POTION-SIP — one character's drink: pick the lowest-tier
+    /// (then emptiest) matching bottle, sip exactly the deficit, keep the
+    /// remainder in the bottle. Returns false when nothing was drunk (full,
+    /// combat-gated, or no potion).</summary>
+    private bool DrinkFromInventory(ActorRenderState who,
+        List<SiegeFX.Core.Actors.LootEntry> inv, bool isHealth, bool inCombat, bool isHero)
+    {
+        var c = who.Actor.Combat;
+        var st = who.Actor.Stats;
+        float cur = isHealth ? c.CurrentLife : c.CurrentMana;
+        float max = isHealth ? st.MaxLife : st.MaxMana;
+        if (max <= 0f) return false;
+        float frac = cur / max;
+        if (frac >= 0.999f) return false;                    // nothing needed
+        if (inCombat && frac >= 0.5f) return false;          // manual's combat gate
         var prefix = isHealth ? "potion_health" : "potion_mana";
-        // Tier ranking — lower index = lower tier (drink first).
-        // Mirrors DS1's authored sizes.
         string[] tierOrder = { "_small", "_medium", "_large", "_super" };
         int bestTier = int.MaxValue;
         int bestIdx = -1;
-        for (int i = 0; i < _playerInventory.Count; i++)
+        float bestFill = 2f;
+        for (int i = 0; i < inv.Count; i++)
         {
-            var entry = _playerInventory[i];
+            var entry = inv[i];
             var name = entry.Reference;
             if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            int tier = tierOrder.Length;   // untiered ranks after supers
             for (int t = 0; t < tierOrder.Length; t++)
-            {
                 if (name.EndsWith(tierOrder[t], StringComparison.OrdinalIgnoreCase))
-                {
-                    if (t < bestTier) { bestTier = t; bestIdx = i; }
-                    break;
-                }
-            }
-            // Untiered fallback — any matching prefix beats nothing.
-            if (bestIdx < 0) bestIdx = i;
+                { tier = t; break; }
+            // Lowest tier first; within a tier, finish partial bottles first.
+            if (tier < bestTier || (tier == bestTier && entry.Fill < bestFill))
+            { bestTier = tier; bestIdx = i; bestFill = entry.Fill; }
         }
-        if (bestIdx < 0)
-        {
-            Console.WriteLine($"[data_bar] no {(isHealth ? "health" : "mana")} potions in inventory");
-            return;
-        }
-        var picked = _playerInventory[bestIdx];
-        _playerInventory.RemoveAt(bestIdx);
-        // Apply the heal — read the actual value from the potion template's
-        // [magic][enchantments][*] alter_life / alter_mana so we match DS1's
-        // shipped numbers (verified against ptn_potion.gas):
-        //   health: 200 / 400 / 1000 / 2000  (small/medium/large/super)
-        //   mana:   200 / 500 / 1400 / 2500
-        // Falls back to a tier-table only if the template lookup misses
-        // (defensive — every shipped potion ships the value, so the fallback
-        // never fires in practice).
-        float amount = ResolvePotionRestoreAmount(picked.Reference, isHealth)
+        if (bestIdx < 0) return false;
+        var picked = inv[bestIdx];
+        // Full-bottle restore value from the authored [magic][enchantments]
+        // alter_life/alter_mana (ptn_potion.gas: health 200/400/1000/2000,
+        // mana 200/500/1400/2500); fallback table is defensive only.
+        float total = ResolvePotionRestoreAmount(picked.Reference, isHealth)
                     ?? (bestTier switch
                     {
                         0 => 200f, 1 => isHealth ? 400f : 500f,
@@ -26985,9 +27048,26 @@ void main()
                         3 => isHealth ? 2000f : 2500f,
                         _ => 200f,
                     });
-        if (isHealth) _player.Actor.Combat.Heal(amount);
-        else          _player.Actor.Combat.RestoreMana(amount);
-        Console.WriteLine($"[data_bar] drank {picked.Reference} → +{amount:F0} {(isHealth ? "HP" : "MP")}");
+        float available = total * Math.Clamp(picked.Fill, 0f, 1f);
+        float sip = MathF.Min(max - cur, available);
+        if (sip <= 0f) return false;
+        if (isHealth) c.Heal(sip);
+        else          c.RestoreMana(sip);
+        float newFill = (available - sip) / total;
+        if (newFill <= 0.004f) inv.RemoveAt(bestIdx);
+        else inv[bestIdx] = picked with { Fill = newFill };
+        Console.WriteLine($"[potion] {who.Actor.Template.Name} sipped {picked.Reference} " +
+                          $"+{sip:F0} {(isHealth ? "HP" : "MP")} " +
+                          $"({(newFill <= 0.004f ? "bottle empty" : $"{newFill:P0} left")})");
+        if (!isHero)
+        {
+            // Companion drink: cue + gesture at the member; no action lock
+            // (their brain resumes on its own next tick).
+            RegisterAndPlayVoiceCue("s_e_potion_drink", who.CurrentTransform.Translation);
+            if (who.Actor.GetClipIndex("drnk") >= 0)
+                who.Actor.PlayChoreOnce("drnk", PotionDrinkSeconds);
+            return true;
+        }
         // SC-AUDIO-ITEMS — DS1 [global_voice] drink cue (priority always).
         if (_player is null
             || !RegisterAndPlayVoiceCue("s_e_potion_drink", _player.CurrentTransform.Translation))
@@ -27039,6 +27119,7 @@ void main()
                 }
             }
         }
+        return true;
     }
 
     /// <summary>Phase 22-A — kick the quest indicator pulse. Called whenever
@@ -36186,7 +36267,7 @@ void main()
                 target = origin;   // corpse spot is always legal ground
             var pile = new LootPile(origin,
                 new List<SiegeFX.Core.Actors.LootEntry>
-                { new(Slot: "", Reference: it.Reference) })
+                { new(Slot: "", Reference: it.Reference, Fill: it.Fill) })
             {
                 Throw = new LootThrow
                 {
@@ -36233,7 +36314,7 @@ void main()
         // entry. The Slot field comes back when the user picks it up
         // (auto-route currently doesn't re-equip; that lands later).
         var entry = new SiegeFX.Core.Actors.LootEntry(Slot: "",
-            Reference: _cursorItem.Value.Reference);
+            Reference: _cursorItem.Value.Reference, Fill: _cursorItem.Value.Fill);
         var pile = new LootPile(origin, new List<SiegeFX.Core.Actors.LootEntry> { entry })
         {
             Throw = new LootThrow
@@ -36933,6 +37014,7 @@ void main()
                 {
                     Slot      = it.Slot,
                     Reference = it.Reference,
+                    Fill      = it.Fill,
                 });
             save.LootPiles.Add(pileSnap);
         }
@@ -36977,13 +37059,14 @@ void main()
                 {
                     Slot      = item.Slot,
                     Reference = item.Reference,
+                    Fill      = item.Fill,
                 });
             // An item mid-drag lives NOWHERE (pickup removed it from its
             // container) — fold it into the pack row so an F5 while
             // dragging can't silently delete it from the save.
             if (_cursorItem is { } heldItem)
                 p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = "", Reference = heldItem.Reference });
+                { Slot = "", Reference = heldItem.Reference, Fill = heldItem.Fill });
             if (_cursorScroll is not null)
                 p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
                 { Slot = "", Reference = _cursorScroll.Name });
@@ -37090,7 +37173,7 @@ void main()
             };
             foreach (var it in GetMemberInventory(m.PartyIndex))
                 cs.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = it.Slot, Reference = it.Reference });
+                { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill });
             foreach (var kv in GetEquipmentDict(m.PartyIndex))
                 cs.Equipment[kv.Key] = kv.Value;
             // SC-COMPANION-PROGRESSION — persist earned XP so a load doesn't
@@ -37135,7 +37218,7 @@ void main()
             };
             foreach (var it in b.Inventory)
                 ds.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = it.Slot, Reference = it.Reference });
+                { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill });
             foreach (var kv2 in b.Equipment) ds.Equipment[kv2.Key] = kv2.Value;
             save.Party.Add(ds);
         }
@@ -37487,7 +37570,7 @@ void main()
             {
                 var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
                 foreach (var e in pileSnap.Entries)
-                    items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                    items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
                 AddLootPile(new LootPile(pileSnap.Position.ToVector3(), items));
             }
         // SC-WORLD-INVENTORY-CONSUMED — restore the consumed-pickup set before
@@ -37718,7 +37801,7 @@ void main()
                 }
                 else
                 {
-                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
                     _inventoryPanel.NotifyItemAdded();
                 }
             }
@@ -37970,7 +38053,7 @@ void main()
                     ActiveSlot = cs.ActiveSlot >= 0 ? cs.ActiveSlot : null,
                 };
                 foreach (var e in cs.Inventory)
-                    db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                    db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
                 foreach (var kv in cs.Equipment) db.Equipment[kv.Key] = kv.Value;
                 _dismissedCompanions[cs.Scid] = db;
                 continue;
@@ -38005,7 +38088,7 @@ void main()
             var bag = GetMemberInventory(npc.PartyIndex);
             bag.Clear();
             foreach (var e in cs.Inventory)
-                bag.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference));
+                bag.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
             var eq = GetEquipmentDict(npc.PartyIndex);
             eq.Clear();
             foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
