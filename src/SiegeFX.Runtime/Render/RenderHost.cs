@@ -2111,6 +2111,11 @@ public sealed class RenderHost : IDisposable
 
         // Build the combat brain from the resolved fighting profile.
         RebuildFollowerBrain(npc, combatStats);
+
+        // SC-COMPANION-STANCE — recruits authored with worn weapons (and
+        // re-hires whose kept gear just came back) start on the weapon's
+        // animation set, not the spawn default.
+        RefreshMemberStance(npc, npc.PartyIndex);
     }
 
     /// <summary>SC-COMPANION-KIT — one-shot template [inventory][other]
@@ -2171,6 +2176,17 @@ public sealed class RenderHost : IDisposable
     // Build/replace a follower's combat brain from the given stats, reusing the
     // existing wander follower so position/heading stay continuous. Used at
     // recruit and again when a weapon is equipped/removed on their paperdoll.
+    /// <summary>SC-COMPANION-STANCE — re-derive a member's animation stance
+    /// from their LIVE equipment (shared CANIMCLASS resolver; the spell-stow
+    /// special case inside it is player-equipment-gated) and reload their
+    /// motion clips so swings play the weapon's animation set.</summary>
+    private void RefreshMemberStance(ActorRenderState m, int pidx)
+    {
+        if (_actorSpawner is null) return;
+        var stance = ComputePreferredPlayerStance(GetEquipmentDict(pidx));
+        _actorSpawner.RefreshMotionClips(m.Actor, stance);
+    }
+
     private void RebuildFollowerBrain(ActorRenderState npc, SiegeFX.Core.Actors.ActorStats combatStats, bool remesh = false)
     {
         // SC-COMPANION-FISTS — retail DS1 lets any party member punch (the
@@ -23132,7 +23148,7 @@ void main()
         // SC-CAST-STOW — a selected spell slot casts in fs5 with a staff,
         // fs0 otherwise (the only stances magic is rigged in); every other
         // weapon is stowed for the duration.
-        if (SpellSlotActive)
+        if (SpellSlotActive && ReferenceEquals(slots, _playerEquipment))
             return _weaponIsStaff ? SiegeFX.Core.Actors.WeaponStance.Staff
                                   : SiegeFX.Core.Actors.WeaponStance.Unarmed;
         SiegeFX.Core.Assets.Template? weaponTpl = null;
@@ -26546,7 +26562,17 @@ void main()
             // held gear from the LIVE dict so paperdoll swaps show on the
             // body (spawn-time gear came from the template/instance).
             if (_party.FirstOrDefault(m => m.PartyIndex == partyIndex) is { } visMember)
+            {
                 RefreshCompanionGearVisuals(visMember, partyIndex);
+                // SC-COMPANION-STANCE — weapon/shield changes re-derive the
+                // member's CANIMCLASS stance and reload their motion clips.
+                // Gyorn held his new mace but still PUNCHED: the brain got
+                // the weapon's damage while the clips stayed on the unarmed
+                // set (only the player ever refreshed stance on equip).
+                if (esTag.Equals("es_weapon_hand", StringComparison.OrdinalIgnoreCase)
+                    || esTag.Equals("es_shield_hand", StringComparison.OrdinalIgnoreCase))
+                    RefreshMemberStance(visMember, partyIndex);
+            }
             // Companion: rebuild their combat brain from the LIVE equipped weapon
             // so damage / range / attack mode track the gear you just put on them
             // (non-weapon slots only refresh the icon caches cleared above).
@@ -36030,6 +36056,10 @@ void main()
             eq.Clear();
             foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
             SyncMemberArmorDefense(npc.PartyIndex);
+            // SC-COMPANION-STANCE — the restored worn weapon drives the
+            // animation set (RecruitActor refreshed from the authored kit,
+            // which the save just replaced).
+            RefreshMemberStance(npc, npc.PartyIndex);
             // SC-COMPANION-PROGRESSION — earned XP overrides the authored
             // re-seed RecruitActor applied. Pre-field saves carry 0 and keep
             // the authored levels.
