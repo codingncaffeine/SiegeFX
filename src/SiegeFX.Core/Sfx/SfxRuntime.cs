@@ -1163,6 +1163,24 @@ public sealed class SfxRuntime
                 _motionHandles[h.MotionId] = mm;
             }
         }
+        // SC-SPELL-AUDIT-2 — dir(x,y,z): launch-direction bias relative to
+        // the caster (spark's two globes author dir(±.2) to split L/R).
+        // Parsed since Phase 23d but consumed by NOTHING — both globes
+        // launched identically and overlapped. Approximated as a caster-
+        // frame positional offset scaled to a visible split.
+        if (h.HasDir && !h.HasOffset)
+        {
+            var dworld = CasterFrameOffset(rs.Ctx, h.DirVec) * 1.6f;
+            h.Anchor   += dworld;
+            h.OtherEnd += dworld;
+            h.Position  = h.Anchor;
+            if (h.MotionId > 0 && _motionHandles.TryGetValue(h.MotionId, out var dm))
+            {
+                dm.Anchor   += dworld;
+                dm.Position += dworld;
+                _motionHandles[h.MotionId] = dm;
+            }
+        }
 
         // Phase 23d-2a — delay(n): pause before the effect starts. The
         // start is queued and Tick dispatches it when it matures, so
@@ -2638,7 +2656,14 @@ public sealed class SfxRuntime
         if (stmt.Tokens.Count > 1)
         {
             var collected = new List<string>(stmt.Tokens.Count - 1);
-            for (int t = 1; t < stmt.Tokens.Count; t++) collected.Add(stmt.Tokens[t]);
+            // SC-SPELL-AUDIT-2 — #POP/#PEEK inside an arg bundle resolve
+            // against the CALLER's stack at call time (the callee gets a
+            // fresh stack). spark's `frandrange 4 5; frandrange 3 4; call
+            // spark_base <accel(#POP)velocity(#POP)dir(.2,0,0)>` feeds the
+            // rolls into the bundle; unresolved they poisoned the callee's
+            // param string and every bundle key dropped.
+            for (int t = 1; t < stmt.Tokens.Count; t++)
+                collected.Add(ResolveArgStackTokens(rs, stmt.Tokens[t]));
             subArgs = collected;
         }
         else
@@ -3264,6 +3289,32 @@ public sealed class SfxRuntime
 
     static bool TryParseF(string s, out float v) =>
         float.TryParse(s.TrimEnd('f', 'F'), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+    /// <summary>SC-SPELL-AUDIT-2 — replace #POP/#PEEK occurrences inside a
+    /// call-arg token with the caller's stack values (frandrange rolls ride
+    /// the stack as Kind-tagged handles). Case-insensitive; #POP consumes.</summary>
+    static string ResolveArgStackTokens(RunningScript rs, string tok)
+    {
+        if (tok.IndexOf("#P", StringComparison.OrdinalIgnoreCase) < 0) return tok;
+        var sb = new System.Text.StringBuilder(tok.Length);
+        for (int i = 0; i < tok.Length; i++)
+        {
+            if (i + 4 <= tok.Length
+                && string.Compare(tok, i, "#POP", 0, 4, StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                sb.Append(rs.Stack.Count > 0 ? rs.Stack.Pop().Kind : "0");
+                i += 3;
+            }
+            else if (i + 5 <= tok.Length
+                && string.Compare(tok, i, "#PEEK", 0, 5, StringComparison.OrdinalIgnoreCase) == 0)
+            {
+                sb.Append(rs.Stack.Count > 0 ? rs.Stack.Peek().Kind : "0");
+                i += 4;
+            }
+            else sb.Append(tok[i]);
+        }
+        return sb.ToString();
+    }
 
     static string SubstituteCallerArgs(string? param, IReadOnlyList<string>? callerArgs)
     {
