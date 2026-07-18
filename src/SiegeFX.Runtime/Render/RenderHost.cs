@@ -717,6 +717,12 @@ public sealed class RenderHost : IDisposable
     // current selection; [get_group_1..8] (F1..F8) recall it. Session-local,
     // like retail; dead/disbanded members fall out at recall time.
     private readonly HashSet<int>?[] _partyGroups = new HashSet<int>?[9];
+    // SC-PORTRAIT-REORDER — a pressed team-strip portrait: becomes a drag
+    // past 8px (green grab tint); released over another follower cell it
+    // swaps their party order, released in place it opens the sheet.
+    private int _portraitPressIdx = -1;
+    private Vector2 _portraitPressPos;
+    private bool _portraitDragActive;
     private ActorRenderState? _hoverActor;
 
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
@@ -9394,11 +9400,13 @@ void main()
                                     }
                                     else if (_cursorItem is null)
                                     {
+                                        // SC-PORTRAIT-REORDER — select now; the
+                                        // sheet opens on RELEASE (no drag), so a
+                                        // drag can reorder without opening panels.
                                         SetPartySelection(pidx);
-                                        _paperdollTargetIndex = pidx;
-                                        _charPanelOpen = true;
-                                        _inventoryOpen = true;
-                                        _openInventoryMembers.Clear(); // single sheet, no tiled dupes
+                                        _portraitPressIdx = pidx;
+                                        _portraitPressPos = new Vector2(mx, my);
+                                        _portraitDragActive = false;
                                     }
                                     break;
                                 case Hud.TeamPortraits.HitKind.Chevron:
@@ -10167,6 +10175,34 @@ void main()
                     return;
                 }
                 if (btn == MouseButton.Left) _lmbWorldMoveHeld = false;
+                // SC-PORTRAIT-REORDER — release of a pressed team-strip
+                // portrait: a drag over another follower cell swaps their
+                // party order; a plain click opens that companion's sheet
+                // (deferred from the press so dragging doesn't open panels).
+                if (btn == MouseButton.Left && _portraitPressIdx > 0)
+                {
+                    int pressIdx = _portraitPressIdx;
+                    bool dragged = _portraitDragActive;
+                    _portraitPressIdx = -1;
+                    _portraitDragActive = false;
+                    _teamPortraits.GrabbedPartyIndex = -1;
+                    int followerCellsUp = _party.Count - 1;
+                    var thUp = _teamPortraits.HitTest((int)m.Position.X, (int)m.Position.Y,
+                        _window.Size.Y, followerCellsUp + (PlayerSummon is not null ? 1 : 0));
+                    if (dragged && thUp.Kind != Hud.TeamPortraits.HitKind.None
+                        && thUp.Member < followerCellsUp && thUp.Member + 1 != pressIdx)
+                    {
+                        SwapPartyOrder(pressIdx, thUp.Member + 1);
+                    }
+                    else if (!dragged)
+                    {
+                        _paperdollTargetIndex = pressIdx;
+                        _charPanelOpen = true;
+                        _inventoryOpen = true;
+                        _openInventoryMembers.Clear();
+                    }
+                    return;
+                }
                 // SC-MOUSE-FX — a completed drag marquee selects the party
                 // members inside the rectangle; consumes the release.
                 // SC-HOLD-MOVE — a LONG hold is steering, not selecting: the
@@ -10583,6 +10619,16 @@ void main()
                     if (!_marqueeActive &&
                         (MathF.Abs(pos.X - dp0.X) > 8f || MathF.Abs(pos.Y - dp0.Y) > 8f))
                         _marqueeActive = true;
+                }
+                // SC-PORTRAIT-REORDER — a pressed portrait becomes a drag
+                // once the cursor moves; the grabbed cell tints green
+                // (manual: "turns green when grabbed").
+                if (_portraitPressIdx > 0 && !_portraitDragActive
+                    && (MathF.Abs(pos.X - _portraitPressPos.X) > 8f
+                        || MathF.Abs(pos.Y - _portraitPressPos.Y) > 8f))
+                {
+                    _portraitDragActive = true;
+                    _teamPortraits.GrabbedPartyIndex = _portraitPressIdx;
                 }
                 if (_handbook.IsOpen)
                 {
@@ -15225,6 +15271,33 @@ void main()
         if (!_selectedPartyIdx.Add(idx)) _selectedPartyIdx.Remove(idx);
         if (_selectedPartyIdx.Count == 0) _selectedPartyIdx.Add(0);
         Console.WriteLine($"[select] ctrl-toggle {idx} → {string.Join(",", _selectedPartyIdx)}");
+    }
+
+    /// <summary>SC-PORTRAIT-REORDER — swap two followers' positions in the
+    /// party order (portraits, formation slots, and every per-index keyed
+    /// store move with them via RemapMemberIndex; selection follows).</summary>
+    private void SwapPartyOrder(int a, int b)
+    {
+        var ma = _party.FirstOrDefault(p => p.PartyIndex == a);
+        var mb = _party.FirstOrDefault(p => p.PartyIndex == b);
+        if (ma is null || mb is null || a == b) return;
+        const int hold = 1000;   // parking index far outside real party range
+        RemapMemberIndex(a, hold);
+        RemapMemberIndex(b, a);
+        RemapMemberIndex(hold, b);
+        ma.PartyIndex = b;
+        mb.PartyIndex = a;
+        // The team strip maps cell i ↔ PartyIndex i+1 by enumeration order —
+        // keep the list sorted so portraits and hit tests stay aligned.
+        _party.Sort((x, y) => x.PartyIndex.CompareTo(y.PartyIndex));
+        bool selA = _selectedPartyIdx.Remove(a);
+        bool selB = _selectedPartyIdx.Remove(b);
+        if (selA) _selectedPartyIdx.Add(b);
+        if (selB) _selectedPartyIdx.Add(a);
+        if (_paperdollTargetIndex == a) _paperdollTargetIndex = b;
+        else if (_paperdollTargetIndex == b) _paperdollTargetIndex = a;
+        Console.WriteLine($"party: swapped order of member {a} and member {b}");
+        _audio?.Play(SfxGuiInventory);
     }
 
     /// <summary>Compass dial's top-left + size — honors the user's dragged
@@ -33228,9 +33301,21 @@ void main()
     private int ComputeArmorRating(Dictionary<string, string> equip)
     {
         if (_templateStore is null || equip.Count == 0) return 0;
+        // SC-2H-SHIELD — manual: a two-handed melee weapon blocks the
+        // shield's DEFENSE bonus (both hands are on the haft), but the
+        // shield's magical bonuses still apply — those ride the separate
+        // ComputeEnchantBonus pass, which deliberately keeps the shield.
+        bool twoHanded = false;
+        if (equip.TryGetValue("es_weapon_hand", out var meleeRef)
+            && _templateStore.TryGet(meleeRef, out var meleeTpl) && meleeTpl is not null)
+            twoHanded = string.Equals(
+                _templateStore.GetAttribute(meleeTpl, "attack", "is_two_handed")?.Trim(),
+                "true", StringComparison.OrdinalIgnoreCase);
         float total = 0f;
         foreach (var kv in equip)
         {
+            if (twoHanded && kv.Key.Equals("es_shield_hand", StringComparison.OrdinalIgnoreCase))
+                continue;
             if (!_templateStore.TryGet(kv.Value, out var tpl) || tpl is null) continue;
             // SC-PAPERDOLL-EQUIP fix — armor authors defense under [defend]
             // ([armor] exists in no shipped gas); the old section read made

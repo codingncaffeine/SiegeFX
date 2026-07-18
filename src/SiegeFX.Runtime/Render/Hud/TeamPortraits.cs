@@ -46,6 +46,11 @@ public sealed class TeamPortraits
         : hpFrac <= 1f / 3f ? new Vector4(1.0f, 0.9f, 0.35f, 1f)
         : Vector4.One;
 
+    /// <summary>SC-PORTRAIT-REORDER — the PartyIndex currently grabbed for a
+    /// drag-reorder (-1 = none). The grabbed cell's portrait tints green,
+    /// matching the manual's "turns green when grabbed".</summary>
+    public int GrabbedPartyIndex = -1;
+
     /// <summary>Which widget in a follower cell was clicked.</summary>
     public enum HitKind { None, Portrait, Chevron, Slot }
 
@@ -132,9 +137,12 @@ public sealed class TeamPortraits
                 // then inset ~5% so it doesn't touch the frame/screen border.
                 var uv = m.Portrait.ContentUv;
                 int inx = (int)MathF.Round(pw * 0.05f), iny = (int)MathF.Round(ph * 0.05f);
+                var tint = GrabbedPartyIndex == i + 1
+                    ? new Vector4(0.35f, 1.0f, 0.35f, 1f)   // grabbed for reorder
+                    : PortraitTint(m.Downed, m.HpFrac);
                 icons.DrawIcon(viewportW, viewportH, m.Portrait,
                     px + inx, py + iny, pw - 2 * inx, ph - 2 * iny,
-                    PortraitTint(m.Downed, m.HpFrac),
+                    tint,
                     uv.X, uv.Y, uv.Z, uv.W);
             }
             if (m.Dead && deathTex is not null)
