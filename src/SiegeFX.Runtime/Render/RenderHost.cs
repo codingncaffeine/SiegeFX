@@ -2882,6 +2882,8 @@ public sealed class RenderHost : IDisposable
             // scid is activated; 18 placements gate chapter progression.
             if (_chapterGizmos.TryGetValue(toScid, out var chapterName))
                 FireChapterCard(chapterName);
+            // SC-ANIM-CMD — animation commands play their authored sub-anim.
+            FireAnimCommand(toScid);
             // Message-activated generators (parked with trigger_range<=0);
             // generator_dumb_guy is an event component, never a spawner.
             foreach (var g in _generators)
@@ -15210,6 +15212,36 @@ void main()
     // anim. Norick's "fall" entry is his mid-bridge collapse spot — a short walk
     // from his post, the destination for his death walk.
     private readonly System.Collections.Generic.Dictionary<uint, Vector3> _animCommandPos = new();
+    // SC-ANIM-CMD — cmd_animation_command activation: scid → (target actor,
+    // authored anim fourcc, repeat flag). Fired on we_req_activate.
+    private readonly System.Collections.Generic.Dictionary<uint, (uint Client, int Fourcc, bool Repeat)> _animCommands = new();
+
+    /// <summary>SC-ANIM-CMD — play an animation command's authored sub-anim
+    /// on its target actor. Fourcc decodes MSB-first ("tal1"); the tal→tlk
+    /// alias covers the authored talk keys (Gom's chore_misc tlk1/tlk2 are
+    /// the SEATED throne monologue clips).</summary>
+    private void FireAnimCommand(uint cmdScid)
+    {
+        if (!_animCommands.TryGetValue(cmdScid, out var ac)) return;
+        ActorRenderState? target = null;
+        foreach (var a in _actors)
+            if (a.Actor.Instance.Scid == ac.Client) { target = a; break; }
+        if (target is null || target.IsDead) return;
+        string key = new string(new[]
+        {
+            (char)((ac.Fourcc >> 24) & 0xFF), (char)((ac.Fourcc >> 16) & 0xFF),
+            (char)((ac.Fourcc >> 8) & 0xFF),  (char)(ac.Fourcc & 0xFF),
+        });
+        if (target.Actor.GetClipIndex(key) < 0 && key.StartsWith("tal", StringComparison.OrdinalIgnoreCase))
+            key = "tlk" + key[3..];
+        if (target.Actor.GetClipIndex(key) < 0)
+        {
+            Console.WriteLine($"[anim-cmd] 0x{cmdScid:X8}: '{key}' not in {target.Actor.Template.Name}'s clips");
+            return;
+        }
+        target.Actor.PlayChoreOnce(key, ac.Repeat ? float.PositiveInfinity : 30f);
+        Console.WriteLine($"[anim-cmd] 0x{cmdScid:X8}: {target.Actor.Template.Name} plays '{key}'");
+    }
 
     private void LoadCommands(IEnumerable<string> regionPaths)
     {
@@ -15272,10 +15304,23 @@ void main()
                     {
                         if (!child.Header.Equals("cmd_animation_command", StringComparison.OrdinalIgnoreCase)) continue;
                         uint clientScid = 0;
+                        int animFourcc = 0;
+                        bool repeatAnim = false;
                         foreach (var at in child.Attributes)
+                        {
                             if (at.Name.Equals("client_scid", StringComparison.OrdinalIgnoreCase))
                                 TryParseSnodeGuid(at.Value, out clientScid);
+                            else if (at.Name.Equals("animation", StringComparison.OrdinalIgnoreCase))
+                                int.TryParse(at.Value.Trim(), out animFourcc);
+                            else if (at.Name.Equals("repeat_animation", StringComparison.OrdinalIgnoreCase))
+                                repeatAnim = at.Value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+                        }
                         if (clientScid != 0) _animCommandPos[clientScid] = world;
+                        // SC-ANIM-CMD — the command now PLAYS its anim on
+                        // activation (it was position-indexed only, so the
+                        // entry NIS's "GOM TALK ANIM" never seated Gom).
+                        if (clientScid != 0 && animFourcc != 0 && !_animCommands.ContainsKey(p.Scid))
+                            _animCommands[p.Scid] = (clientScid, animFourcc, repeatAnim);
                         break;
                     }
                 }
@@ -24550,12 +24595,15 @@ void main()
             s.AlignSwitchLife = s.Actor.Combat.CurrentLife;
             s.IsEvilAligned = false;
             // Parked until the switch: no wander brain walking him off his
-            // authored pose — Gom's chore_default `ds` clip IS the throne
-            // sit (the chore_misc `dsf` anims are its sit-fidgets), so a
-            // brainless switcher holds the chair like retail. The switch
-            // builds the combat brain when it fires.
+            // authored spot. The seated content for Gom's skeleton is the
+            // chore_misc tlk family (the entry NIS's GOM TALK ANIM plays
+            // tlk1 — the throne monologue); pin it as the pre-fight idle
+            // so he holds the chair instead of standing beside it (his
+            // chore_default `ds` is the STANDING stance).
             s.Brain = null;
             s.CanFight = false;
+            if (s.Actor.GetClipIndex("tlk1") >= 0)
+                s.Actor.PlayChoreOnce("tlk1", float.PositiveInfinity);
         }
     }
 
@@ -24568,6 +24616,8 @@ void main()
         s.AlignSwitchArmed = false;
         s.IsEvilAligned = true;
         s.CanFight = true;
+        // Release the parked pose (the throne sit) — the fight is on.
+        s.Actor.Host.OverrideAnimIndex(-1, 0f);
         if (s.Brain is null) RebuildNpcBrain(s, s.CurrentTransform.Translation);
         Console.WriteLine($"[align-switch] {s.Actor.Template.Name} turns HOSTILE ({reason})");
     }
