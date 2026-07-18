@@ -10539,15 +10539,21 @@ void main()
         // player to whatever ring region sat closest (on the Stonebridge
         // road that chain settled in the crypts: underground=true, world
         // hidden). This array covers all placed regions from boot.
-        if (world.Transforms.Count > 0 && _worldSnodeLookup.Length == 0)
+        if (world.Transforms.Count > 0)
         {
+            // Rebuilt on EVERY layout growth (the layout covers only loaded
+            // graphs and expands with streaming) — the first cut built this
+            // once at boot (5 regions) and the region-resolution chain froze
+            // at the first hop, leaving a far-away loaded save in void.
+            int prevLen = _worldSnodeLookup.Length;
             var wl = new List<(Vector3, string)>(world.Transforms.Count);
             foreach (var kv in world.Transforms)
                 if (world.GuidToRegion.TryGetValue(kv.Key, out var wrp))
                     wl.Add((new Vector3(kv.Value.M41, kv.Value.M42, kv.Value.M43), wrp));
             _worldSnodeLookup = wl.ToArray();
-            Console.WriteLine($"  [region-lookup] world-wide resolver: {_worldSnodeLookup.Length} node origins " +
-                              $"across {world.PlacedRegionCount} regions");
+            if (_worldSnodeLookup.Length != prevLen)
+                Console.WriteLine($"  [region-lookup] resolver: {_worldSnodeLookup.Length} node origins " +
+                                  $"across {world.PlacedRegionCount} placed regions");
         }
 
         // Refresh the legacy _worldRegionGraphs view (root region first to
@@ -34860,6 +34866,34 @@ void main()
             Console.WriteLine($"[load-diag]   party row: idx={pcs.PartyIndex} scid=0x{pcs.Scid:X8} " +
                               $"tpl='{pcs.TemplateName}' pos=({pcs.Position.X:F0},{pcs.Position.Z:F0})");
 
+        // SC-SAVE-REGION (convergent re-anchor) — BEFORE patching actors,
+        // walk the region chain to the player's true position. Each hop
+        // re-anchors to the best region the growing resolver knows, which
+        // streams a new ring and enlarges the resolver, until the answer is
+        // stable. A far-from-boot save (old mislabeled stamps) thus loads
+        // with the correct neighborhood fully streamed; the actor patch and
+        // companion restore below then see a complete world.
+        if (_player is not null)
+        {
+            var mySc = _player.Actor.Instance.Scid;
+            SiegeFX.Core.Save.ActorSnapshot? playerRow = null;
+            foreach (var arow in save.Actors)
+                if (arow.Scid == mySc) { playerRow = arow; break; }
+            if (playerRow is not null)
+            {
+                var ppos = playerRow.Position.ToVector3();
+                for (int hop = 0; hop < 8; hop++)
+                {
+                    var tr = RegionAtWorldPos(ppos);
+                    if (string.IsNullOrEmpty(tr)
+                        || string.Equals(tr, _currentPlayerRegion, StringComparison.OrdinalIgnoreCase))
+                        break;
+                    Console.WriteLine($"[load-diag] re-anchor hop {hop + 1}: -> '{tr}'");
+                    OnPlayerRegionChanged(tr!);
+                }
+            }
+        }
+
         // Adventurer's Handbook progress rides the save: resume the auto-popup
         // sequence where the player left off, and restore the "Disable tips"
         // choice (mirrored onto the panel's checkbox). Reset the travel/time
@@ -35385,7 +35419,15 @@ void main()
                 _dismissedCompanions[cs.Scid] = db;
                 continue;
             }
-            ActorRenderState? npc = byScid.TryGetValue(cs.Scid, out var found) ? found : null;
+            // Fresh live scan, NOT the byScid dict: the convergent re-anchor
+            // streams regions DURING ApplySave, and a companion native to one
+            // of them (Ulora, scid region 0x06) appears after the dict was
+            // built — the stale lookup missed her, and the synthetic respawn
+            // was then correctly rejected by the duplicate-scid guard:
+            // "SPAWN FAILED" while she stood in the world.
+            ActorRenderState? npc = null;
+            foreach (var la in _actors)
+                if (la.Actor.Instance.Scid == cs.Scid) { npc = la; break; }
             bool wasLive = npc is not null;
             // Recruited in a region that isn't loaded here → respawn from
             // the template at the saved spot (synthetic instance, same scid).
