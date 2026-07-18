@@ -2114,7 +2114,8 @@ public sealed class RenderHost : IDisposable
 
         // SC-COMPANION-STANCE — recruits authored with worn weapons (and
         // re-hires whose kept gear just came back) start on the weapon's
-        // animation set, not the spawn default.
+        // animation set with the gear visibly in hand, not the spawn default.
+        RefreshCompanionGearVisuals(npc, npc.PartyIndex);
         RefreshMemberStance(npc, npc.PartyIndex);
     }
 
@@ -36083,8 +36084,10 @@ void main()
             foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
             SyncMemberArmorDefense(npc.PartyIndex);
             // SC-COMPANION-STANCE — the restored worn weapon drives the
-            // animation set (RecruitActor refreshed from the authored kit,
-            // which the save just replaced).
+            // animation set AND the in-hand visual (RecruitActor refreshed
+            // from the authored kit, which the save just replaced — without
+            // this the loaded mace exists only in the paperdoll).
+            RefreshCompanionGearVisuals(npc, npc.PartyIndex);
             RefreshMemberStance(npc, npc.PartyIndex);
             // SC-COMPANION-PROGRESSION — earned XP overrides the authored
             // re-seed RecruitActor applied. Pre-field saves carry 0 and keep
