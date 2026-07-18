@@ -8341,12 +8341,20 @@ void main()
                 // Begin/Cancel; LMB lands on its buttons and never falls through
                 // to click-to-move. RMB swallowed too so a stray right-click
                 // doesn't engage mouse-look behind the modal panel.
-                // SC-ENDGAME — the victory card owns the click once it has
-                // settled; dismissing returns to the live post-game world.
-                if (_victoryActive && btn == MouseButton.Left && _victoryTimer > 3f)
+                // SC-ENDGAME — the authored end_game dialog is modal: OK or
+                // the corner X dismiss (notify eg_close) into the post-game
+                // world; other clicks are swallowed while it is up.
+                if (_victoryActive && btn == MouseButton.Left && _victoryTimer >= 1.5f)
                 {
-                    _victoryActive = false;
-                    Console.WriteLine("[victory] card dismissed — post-game continues");
+                    int vmx = (int)m.Position.X, vmy = (int)m.Position.Y;
+                    bool In((int x, int y, int w, int h) r) =>
+                        r.w > 0 && vmx >= r.x && vmx < r.x + r.w && vmy >= r.y && vmy < r.y + r.h;
+                    if (In(_victoryOkRect) || In(_victoryXRect))
+                    {
+                        _victoryActive = false;
+                        _audio?.Play(SfxGuiInventory);
+                        Console.WriteLine("[victory] end_game dialog closed — post-game continues");
+                    }
                     return;
                 }
                 if (_creator.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
@@ -21000,6 +21008,16 @@ void main()
         _audio?.Play(SfxLevelUp);
     }
 
+    // SC-ENDGAME — the AUTHORED end_game dialog text + rects
+    // (/ui/interfaces/backend/end_game/end_game.gas): cpbox_wide
+    // 122,131,507,355, inner cpbox 143,145,479,309, text box
+    // 146,148,475,305, OK button 262,319,362,335, corner X 486,134,502,150.
+    private const string EndGameText =
+        "Congratulations, you have defeated Gom, and have completed the " +
+        "single player game. You can continue playing, or you can import " +
+        "your character from your latest saved game into a multiplayer session.";
+    private (int x, int y, int w, int h) _victoryOkRect, _victoryXRect;
+
     private void DrawVictoryOverlay(int vw, int vh)
     {
         if (!_victoryActive || _barRenderer is null || _textRenderer is null) return;
@@ -21011,19 +21029,53 @@ void main()
             _iconRenderer.DrawIcon(vw, vh, dimTex, 0, 0, vw, vh, new Vector4(1f, 1f, 1f, alpha));
         else
             _barRenderer.DrawRect(vw, vh, 0, 0, vw, vh, new Vector4(0.06f, 0.05f, 0.04f, alpha));
-        if (dimT <= 0.4f) return;
-        var gold = new Vector4(0.95f, 0.85f, 0.5f, 1f);
-        var white = new Vector4(0.95f, 0.93f, 0.85f, 1f);
-        void Center(string t, int y, Vector4 c, int scale)
+        if (dimT < 1f) { _victoryOkRect = _victoryXRect = default; return; }
+
+        float s = Hud.HudScale.Modal(vw, vh);
+        int dx = (vw - (int)(640 * s)) / 2;
+        int dy = (vh - (int)(480 * s)) / 2;
+        (int x, int y, int w, int h) R(int x0, int y0, int x1, int y1) =>
+            (dx + (int)(x0 * s), dy + (int)(y0 * s), (int)((x1 - x0) * s), (int)((y1 - y0) * s));
+        int fs = Math.Max(1, (int)MathF.Round(s));
+
+        var main = R(122, 131, 507, 355);
+        var inner = R(143, 145, 479, 309);
+        if (_iconRenderer is not null)
         {
-            int tw = _textRenderer!.MeasureWidth(t, scale);
-            _textRenderer.DrawString(vw, vh, t, (vw - tw) / 2, y, c, scale);
+            Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh, main.x, main.y, main.w, main.h, Vector4.One);
+            Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh, inner.x, inner.y, inner.w, inner.h, Vector4.One);
         }
-        Center("VICTORY!", vh / 3, gold, 3);
-        Center("Gom is destroyed. The Kingdom of Ehb is saved.", vh / 3 + 46, white, 1);
-        Center("Your legend will be told for generations.", vh / 3 + 62, white, 1);
-        if (_victoryTimer > 3f)
-            Center("Click to continue", vh / 3 + 92, new Vector4(0.75f, 0.74f, 0.68f, 1f), 1);
+        else
+            _barRenderer.DrawRect(vw, vh, main.x, main.y, main.w, main.h, new Vector4(0.05f, 0.05f, 0.05f, 0.92f));
+
+        // Authored text, wrapped and vertically centered (center_height).
+        var tb = R(146, 148, 475, 305);
+        var lines = WrapText(EndGameText, 46).ToList();
+        int lineH = _textRenderer.LineHeight * fs + 2;
+        int ty = tb.y + (tb.h - lines.Count * lineH) / 2;
+        foreach (var line in lines)
+        {
+            int lw = _textRenderer.MeasureWidth(line, fs);
+            _textRenderer.DrawString(vw, vh, line, tb.x + (tb.w - lw) / 2, ty, Vector4.One, fs);
+            ty += lineH;
+        }
+
+        // OK (button_4 chrome) + corner X — both notify(eg_close).
+        var ok = R(262, 319, 362, 335);
+        if (!Hud.ButtonChrome.Draw(_iconRenderer, TryGetGuiTexture, vw, vh, ok.x, ok.y, ok.w, ok.h, "button4", Hud.ButtonChrome.State.Up))
+        {
+            _barRenderer.DrawRect(vw, vh, ok.x, ok.y, ok.w, ok.h, new Vector4(0.14f, 0.13f, 0.11f, 1f));
+            _barRenderer.DrawBorder(vw, vh, ok.x, ok.y, ok.w, ok.h, new Vector4(0.55f, 0.52f, 0.45f, 1f));
+        }
+        int okw = _textRenderer.MeasureWidth("OK", fs);
+        _textRenderer.DrawString(vw, vh, "OK",
+            ok.x + (ok.w - okw) / 2, ok.y + (ok.h - _textRenderer.LineHeight * fs) / 2, Vector4.One, fs);
+        var xr = R(486, 134, 502, 150);
+        var xTex = TryGetGuiTexture("b_gui_cmn_button_x_up");
+        if (xTex is not null && _iconRenderer is not null)
+            _iconRenderer.DrawIcon(vw, vh, xTex, xr.x, xr.y, xr.w, xr.h, Vector4.One);
+        _victoryOkRect = ok;
+        _victoryXRect = xr;
     }
 
     private enum DefeatPhase { None, Dimming, Dialog, DialogClosed }
@@ -23970,6 +24022,13 @@ void main()
             s.AlignSwitchOnDamaged = joined.Contains("damaged", StringComparison.OrdinalIgnoreCase);
             s.AlignSwitchLife = s.Actor.Combat.CurrentLife;
             s.IsEvilAligned = false;
+            // Parked until the switch: no wander brain walking him off his
+            // authored pose — Gom's chore_default `ds` clip IS the throne
+            // sit (the chore_misc `dsf` anims are its sit-fidgets), so a
+            // brainless switcher holds the chair like retail. The switch
+            // builds the combat brain when it fires.
+            s.Brain = null;
+            s.CanFight = false;
         }
     }
 
