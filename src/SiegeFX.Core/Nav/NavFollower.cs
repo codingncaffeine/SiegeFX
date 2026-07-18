@@ -285,7 +285,13 @@ public sealed class NavFollower
             CurrentTriangle = liftTri;
             startTri = liftTri;
         }
-        if (!Mesh.TryFindTriangle(Target, out var goalTri))
+        // SC-NAV-GOAL-COMPONENT — resolve the goal in the START's raw
+        // component when stacked layers offer a choice. Plain best-|dy|
+        // could bind the goal to an unwelded sliver at the target's XZ
+        // (trap cover / decorative slab under the player's feet) and
+        // every request failed RAW-DISCONNECTED — a chasing room froze
+        // solid while the player stood on perfectly good floor.
+        if (!Mesh.TryFindTriangleForGoal(Target, startTri, out var goalTri))
         {
             PathBlocked = true;
             return;

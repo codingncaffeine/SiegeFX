@@ -1133,6 +1133,100 @@ public sealed class NavMesh
         return triIndex >= 0;
     }
 
+    // SC-NAV-COMPONENTS — lazy per-triangle RAW component ids over
+    // Neighbors + door-stitched ExtraLinks, ignoring Blocked/kind gates
+    // (components are structural, obstacles are transient). Union-find,
+    // built once per mesh on first use; ExtraLinks may be one-directional
+    // rows so unions run over every stored edge rather than a BFS.
+    private int[]? _componentIds;
+
+    private void EnsureComponents()
+    {
+        if (_componentIds is not null) return;
+        int n = TriangleCount;
+        var parent = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i;
+        int Find(int x)
+        {
+            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+            return x;
+        }
+        void Union(int a, int b)
+        {
+            int ra = Find(a), rb = Find(b);
+            if (ra != rb) parent[ra] = rb;
+        }
+        for (int t = 0; t < n; t++)
+            for (int s = 0; s < 3; s++)
+            {
+                int nb = Neighbors[3 * t + s];
+                if (nb >= 0 && nb < n) Union(t, nb);
+            }
+        if (ExtraLinks is not null)
+            foreach (var kv in ExtraLinks)
+            {
+                if (kv.Key < 0 || kv.Key >= n) continue;
+                foreach (var nb in kv.Value)
+                    if (nb >= 0 && nb < n) Union(kv.Key, nb);
+            }
+        var ids = new int[n];
+        for (int i = 0; i < n; i++) ids[i] = Find(i);
+        _componentIds = ids;
+    }
+
+    /// <summary>SC-NAV-COMPONENTS — the RAW connectivity component holding
+    /// <paramref name="tri"/> (-1 for out-of-range). Two triangles with the
+    /// same id are reachable ignoring obstacles and traversal gates.</summary>
+    public int ComponentOf(int tri)
+    {
+        if (tri < 0 || tri >= TriangleCount) return -1;
+        EnsureComponents();
+        return _componentIds![tri];
+    }
+
+    /// <summary>SC-NAV-GOAL-COMPONENT — goal-triangle resolve that prefers a
+    /// candidate RAW-CONNECTED to <paramref name="sameComponentAsTri"/>.
+    /// Stacked layers put unwelded slivers (trap covers, rubble caps,
+    /// decorative floors) at the same XZ as the real walkable floor, and
+    /// plain best-|dy| selection could bind a chase goal to the sliver
+    /// under the target's feet — every path request then failed
+    /// RAW-DISCONNECTED and the whole room of chasers froze in place.
+    /// Ranks: unblocked same-component, blocked same-component, then the
+    /// plain <see cref="TryFindTriangle(Vector3, out int)"/> fallback.</summary>
+    public bool TryFindTriangleForGoal(Vector3 worldPos, int sameComponentAsTri, out int triIndex)
+    {
+        triIndex = -1;
+        if (TriangleCount == 0) return false;
+        int refComp = ComponentOf(sameComponentAsTri);
+        if (refComp < 0) return TryFindTriangle(worldPos, out triIndex);
+        int cx = (int)MathF.Floor((worldPos.X - _gridMinX) / GridCellSize);
+        int cz = (int)MathF.Floor((worldPos.Z - _gridMinZ) / GridCellSize);
+        if (cx < 0 || cx >= _gridCellsX || cz < 0 || cz >= _gridCellsZ) return false;
+        var bucket = _grid[cz * _gridCellsX + cx];
+        if (bucket is null) return false;
+        int bestSame = -1, bestSameBlocked = -1;
+        float bestSameDy = float.PositiveInfinity, bestSameBlockedDy = float.PositiveInfinity;
+        for (int i = 0; i < bucket.Length; i++)
+        {
+            int t = bucket[i];
+            if (_componentIds![t] != refComp) continue;
+            var a = Vertices[Indices[3 * t + 0]];
+            var b = Vertices[Indices[3 * t + 1]];
+            var c = Vertices[Indices[3 * t + 2]];
+            if (!PointInTriangleXZ(worldPos, a, b, c)) continue;
+            if (FadeHidden is not null && t < FadeHidden.Length && FadeHidden[t]) continue;
+            float dy = MathF.Abs(InterpolateYXZ(worldPos.X, worldPos.Z, a, b, c) - worldPos.Y);
+            if (Blocked is not null && t < Blocked.Length && Blocked[t])
+            {
+                if (dy < bestSameBlockedDy) { bestSameBlockedDy = dy; bestSameBlocked = t; }
+            }
+            else if (dy < bestSameDy) { bestSameDy = dy; bestSame = t; }
+        }
+        triIndex = bestSame >= 0 ? bestSame : bestSameBlocked;
+        if (triIndex >= 0) return true;
+        return TryFindTriangle(worldPos, out triIndex);
+    }
+
     /// <summary>SC-NAV-GROUND-DIP — continuity-preferring standing probe for
     /// walkers. Where walkable layers stack in XZ and converge vertically
     /// (a bridge deck over the stream bed it spans, a ramp over a floor),
