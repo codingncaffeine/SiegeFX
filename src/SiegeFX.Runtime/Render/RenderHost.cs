@@ -17135,6 +17135,58 @@ void main()
         Console.WriteLine($"[roam-audit] brains={brains} wander={wander} chase={chase} attack={attack} blockedNow={blockedNow} stalled15s={stalled}");
         foreach (var (_, line) in stalledCands.OrderBy(c => c.D2).Take(6))
             Console.WriteLine(line);
+
+        // SC-LOAD-FREEZE-DIAG-2 — aggro probe for the "frozen room" class
+        // where nearby hostiles never enter Chase (chase=0 while the party
+        // stands among them). For the closest few live evil combatants,
+        // print every aggro gate's verdict so the failing stage names
+        // itself: distance, vertical band, and WHICH sight stage blocks
+        // (prop occluder / nav floor ray / terrain SNO geometry).
+        if (_player is not null)
+        {
+            var aggroCands = new List<(float D2, ActorRenderState S)>();
+            foreach (var s in _actors)
+            {
+                if (s.IsDead || s.Brain is null || s.IsPartyMember
+                    || !s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
+                var p = s.CurrentTransform.Translation;
+                float dx = p.X - auditPlayerPos.X, dz = p.Z - auditPlayerPos.Z;
+                float d2 = dx * dx + dz * dz;
+                if (d2 < 30f * 30f) aggroCands.Add((d2, s));
+            }
+            foreach (var (d2, s) in aggroCands.OrderBy(c => c.D2).Take(3))
+            {
+                var p = s.CurrentTransform.Translation;
+                bool losBlocked = IsSightBlocked(p, auditPlayerPos);
+                string stage = "clear";
+                if (losBlocked)
+                {
+                    stage = "prop-occluder";
+                    if (_navMesh is not null)
+                    {
+                        float eyeA = p.Y + 1.5f, eyeB = auditPlayerPos.Y + 1.2f;
+                        var eA = new Vector3(p.X, eyeA, p.Z);
+                        var eB = new Vector3(auditPlayerPos.X, eyeB, auditPlayerPos.Z);
+                        var seg = eB - eA;
+                        float slen = seg.Length();
+                        if (slen > 0.8f)
+                        {
+                            var sd = seg / slen;
+                            if (_navMesh.TryRaycast(eA + sd * 0.3f, sd, slen - 0.6f, out _, out _,
+                                    includeFadeHidden: true))
+                                stage = "nav-floor-ray";
+                            else if (SightTerrainBlocked(eA + sd * 0.3f, sd, slen - 0.6f))
+                                stage = "terrain-sno";
+                        }
+                    }
+                }
+                Console.WriteLine(
+                    $"  [roam-audit]   aggro-probe {s.Actor.Template.Name} state={s.Brain!.State} " +
+                    $"dist={MathF.Sqrt(d2):F1} dy={MathF.Abs(p.Y - auditPlayerPos.Y):F1} " +
+                    $"aggroR={s.Brain.AggroRadius:F1} " +
+                    $"los={(losBlocked ? "BLOCKED:" + stage : "clear")}");
+            }
+        }
     }
 
     /// <summary>SC-AI-FLEE — read the authored [mind] flee params onto a fresh
