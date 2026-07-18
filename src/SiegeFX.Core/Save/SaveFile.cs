@@ -217,6 +217,13 @@ public sealed class WorldStateSnapshot
     /// state. Absent on older saves = generators re-arm from region data
     /// (the old behavior: cleared ambushes respawned on every load).</summary>
     public List<GeneratorSnapshot> Generators { get; set; } = new();
+    /// <summary>Crypt rotating stairwells parked in the DOWN configuration.</summary>
+    public List<uint> StairwellsDown { get; set; } = new();
+    /// <summary>Finite-ammo trap depletion rows.</summary>
+    public List<AutoTrapSnapshot> AutoTraps { get; set; } = new();
+    /// <summary>Message-toggled (emt_sound_act) emitters currently ON.
+    /// NULL = pre-field save (emitters keep their boot state).</summary>
+    public List<uint>? ActiveEmitters { get; set; }
     public List<uint> BrokenProps { get; set; } = new();
     public List<uint> ClearedBlockers { get; set; } = new();
     public List<ElevatorStopSnapshot> Elevators { get; set; } = new();
@@ -240,6 +247,15 @@ public sealed class AccumSnapshot
     public uint Scid { get; set; }
     public int Count { get; set; }
     public bool Fired { get; set; }
+    /// <summary>msg_switch toggle parity (rows for MsgSwitch-kind gizmos).</summary>
+    public bool SwitchOn { get; set; }
+}
+
+/// <summary>Finite-ammo auto-trap depletion.</summary>
+public sealed class AutoTrapSnapshot
+{
+    public uint Scid { get; set; }
+    public int AmmoLeft { get; set; }
 }
 
 public sealed class ElevatorStopSnapshot

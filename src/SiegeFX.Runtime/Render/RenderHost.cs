@@ -35675,8 +35675,13 @@ void main()
         var world = new SiegeFX.Core.Save.WorldStateSnapshot();
         foreach (var kv in _worldBools) world.Bools[kv.Key] = kv.Value;
         foreach (var lg in _logicGizmos.Values)
-            if (lg.Def.Kind == SiegeFX.Core.Assets.LogicGizmoKind.Accumulate && (lg.Count > 0 || lg.Fired))
-                world.Accumulators.Add(new SiegeFX.Core.Save.AccumSnapshot { Scid = lg.Def.Scid, Count = lg.Count, Fired = lg.Fired });
+        {
+            bool accum = lg.Def.Kind == SiegeFX.Core.Assets.LogicGizmoKind.Accumulate && (lg.Count > 0 || lg.Fired);
+            bool msw = lg.Def.Kind == SiegeFX.Core.Assets.LogicGizmoKind.MsgSwitch && lg.SwitchOn;
+            if (accum || msw)
+                world.Accumulators.Add(new SiegeFX.Core.Save.AccumSnapshot
+                { Scid = lg.Def.Scid, Count = lg.Count, Fired = lg.Fired, SwitchOn = lg.SwitchOn });
+        }
         foreach (var c in _chestProps) if (c.ChestOpened) world.OpenedChests.Add(c.Scid);
         foreach (var lu in _lockedUsables) if (lu.Unlocked) world.UnlockedUsables.Add(lu.Prop.Scid);
         foreach (var lv in _leverProps) if (lv.LeverOn) world.LeversOn.Add(lv.Scid);
@@ -35690,6 +35695,16 @@ void main()
         foreach (var g in _generators)
             world.Generators.Add(new SiegeFX.Core.Save.GeneratorSnapshot
             { Scid = g.Scid, Activated = g.Activated, PendingChildren = g.PendingChildren });
+        // Stairwell configuration, trap ammo, and message-toggled ambient
+        // emitters — the last live world state with no snapshot fields.
+        foreach (var sw in _stairwells)
+            if (sw.Moving ? sw.TargetDown : sw.AtDown) world.StairwellsDown.Add(sw.Def.Scid);
+        foreach (var tr in _autoTraps)
+            if (tr.AmmoLeft >= 0)
+                world.AutoTraps.Add(new SiegeFX.Core.Save.AutoTrapSnapshot { Scid = tr.Scid, AmmoLeft = tr.AmmoLeft });
+        world.ActiveEmitters = new List<uint>();
+        foreach (var se in _soundEmitters)
+            if (se.IsAct && se.Active) world.ActiveEmitters.Add(se.Scid);
         foreach (var el in _elevators)
             if (el.AtStop != 1 || el.Moving)
                 world.Elevators.Add(new SiegeFX.Core.Save.ElevatorStopSnapshot
@@ -35731,6 +35746,16 @@ void main()
                 if (!_generators.Any(g => g.Scid == gk.Scid)
                     && !world.Generators.Any(w => w.Scid == gk.Scid))
                     world.Generators.Add(gk);
+            MergeProps(world.StairwellsDown, kept.StairwellsDown,
+                sc => _stairwells.Any(sw => sw.Def.Scid == sc));
+            foreach (var tk in kept.AutoTraps)
+                if (!_autoTraps.Any(t => t.Scid == tk.Scid)
+                    && !world.AutoTraps.Any(w => w.Scid == tk.Scid))
+                    world.AutoTraps.Add(tk);
+            if (kept.ActiveEmitters is not null)
+                foreach (var ek in kept.ActiveEmitters)
+                    if (!_soundEmittersByScid.ContainsKey(ek) && !world.ActiveEmitters!.Contains(ek))
+                        world.ActiveEmitters.Add(ek);
             MergeProps(world.BrokenProps, kept.BrokenProps, sc => _breakingByScid.ContainsKey(sc));
             MergeProps(world.ClearedBlockers, kept.ClearedBlockers, sc => _blockingGizmos.Any(b => b.Scid == sc));
         }
@@ -36385,11 +36410,11 @@ void main()
             // accumulate chain advanced AFTER the save must reset, or an
             // in-session load fires it early (capture skips zero rows, so
             // "not listed" means "zero").
-            foreach (var lg in _logicGizmos.Values) { lg.Count = 0; lg.Fired = false; }
+            foreach (var lg in _logicGizmos.Values) { lg.Count = 0; lg.Fired = false; lg.SwitchOn = false; }
             foreach (var a in ws.Accumulators)
             {
                 if (_logicGizmos.TryGetValue(a.Scid, out var lg))
-                { lg.Count = a.Count; lg.Fired = a.Fired; }
+                { lg.Count = a.Count; lg.Fired = a.Fired; lg.SwitchOn = a.SwitchOn; }
                 else _pendingAccumSnaps.Add(a);
             }
             bool structural = ApplyWorldPropState(ws, authoritative: true);
@@ -36429,6 +36454,43 @@ void main()
             if (gensApplied > 0 || _pendingGeneratorSnaps.Count > 0)
                 Console.WriteLine($"  load: generators — {gensApplied} state row(s) applied" +
                     (_pendingGeneratorSnaps.Count > 0 ? $", {_pendingGeneratorSnaps.Count} pending un-streamed" : ""));
+            // Stairwell configuration follows the save, both directions —
+            // segments snap to the saved pose (no ride animation on load).
+            foreach (var sw in _stairwells)
+            {
+                bool down = ws.StairwellsDown.Contains(sw.Def.Scid);
+                if (sw.AtDown == down && !sw.Moving) continue;
+                sw.AtDown = sw.TargetDown = down;
+                sw.Moving = false;
+                sw.T = 0f;
+                foreach (var seg in sw.Segments)
+                {
+                    var pose = down ? seg.DownPose : seg.UpPose;
+                    UpdateStairSegmentInstance(seg, pose);
+                    _elevatorNodeOverrides[seg.NodeGuid] = pose;
+                    seg.PrevPos = pose.Translation;
+                }
+                structural = true;
+                Console.WriteLine($"  load: stairwell 0x{sw.Def.Scid:X8} snapped {(down ? "DOWN" : "UP")}");
+            }
+            // Finite trap ammo + message-toggled ambient emitters.
+            foreach (var trow in ws.AutoTraps)
+            {
+                var trap = _autoTraps.FirstOrDefault(t => t.Scid == trow.Scid);
+                if (trap is not null) trap.AmmoLeft = trow.AmmoLeft;
+            }
+            if (ws.ActiveEmitters is { } actEm)
+                foreach (var se in _soundEmitters)
+                {
+                    if (!se.IsAct) continue;
+                    bool desired = actEm.Contains(se.Scid);
+                    if (se.Active == desired) continue;
+                    // Only the flag flips: the emitter tick's !Active branch
+                    // owns the StopLoop (clearing LoopStarted here would
+                    // skip it and leak the running audio loop).
+                    se.Active = desired;
+                    se.FiredOnce = false;
+                }
             if (structural)
             {
                 var nav = RebuildNavMesh();
