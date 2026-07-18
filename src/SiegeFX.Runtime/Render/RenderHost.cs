@@ -2695,12 +2695,13 @@ public sealed class RenderHost : IDisposable
                 LogLootDrop(s, s.CurrentTransform.Translation);
             OnActorKilled(s.Actor.Template.Name, s.CurrentTransform.Translation, s.Actor.Instance.Scid);
             CreditGoldFromKill(s.Actor.Stats.ExperienceValue, s.CurrentTransform.Translation);
-            // Party shares the kill's XP (the follower dealt the blow). Our
-            // progression is a single hero pool, so a follower kill credits the
-            // victim's full authored value — passing lifeRemoved = MaxLife makes
-            // the damage-proportional model yield exactly experience_value,
-            // routed through the same limiting-factor cap as hero hits.
-            AwardCombatXp(s.Actor.Stats.MaxLife, s.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
+            // No XP here. Under the per-damage model every point of life
+            // removed was already credited to whoever dealt it, at deal time
+            // (hero via AwardCombatXp, members via their brain's
+            // OnDamageDealt). The old single-hero-pool award — the victim's
+            // FULL value to the PLAYER, hardcoded Melee — predates member
+            // progression and both double-paid the kill and trained melee
+            // for a hero who never swung.
         }
     }
 
