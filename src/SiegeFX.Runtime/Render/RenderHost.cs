@@ -2793,6 +2793,28 @@ public sealed class RenderHost : IDisposable
         // `receive_world_message` condition on trigger B in the same region.
         _actorBus?.Post(name, fromScid, toScid, 0, 0);
         _triggerRuntime?.PostInboundMessage(toScid, name);
+        // SC-STEAM-PUZZLE — valve parity in, inverse steam parity out,
+        // goal once all four valves are on.
+        foreach (var sp in _steamPuzzles)
+        {
+            if (sp.Scid != toScid) continue;
+            bool von = name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase);
+            bool voff = name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase);
+            if (!von && !voff) continue;
+            int vi = Array.IndexOf(sp.Levers, fromScid);
+            if (vi < 0) continue;
+            sp.ValveOn[vi] = von;
+            _worldBools[$"steamvalve:{sp.Scid:x8}:{vi}"] = von;
+            PostTriggerWorldMessage(von ? "we_req_deactivate" : "we_req_activate", sp.Scid, sp.Steams[vi]);
+            Console.WriteLine($"[steam-puzzle] valve {vi + 1} {(von ? "ON (steam shut)" : "off (steam on)")}");
+            if (!sp.Solved && sp.ValveOn.All(v => v))
+            {
+                sp.Solved = true;
+                _worldBools[$"steampuzzle:{sp.Scid:x8}"] = true;
+                PostTriggerWorldMessage("we_req_activate", sp.Scid, sp.GoalScid);
+                Console.WriteLine($"[steam-puzzle] 0x{sp.Scid:X8} SOLVED — goal 0x{sp.GoalScid:X8} activated");
+            }
+        }
         // SC-NIS - enter/leave gizmos activate on we_req_activate.
         if (_nisCommands.Count > 0 &&
             name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase) &&
@@ -3083,6 +3105,55 @@ public sealed class RenderHost : IDisposable
                 { eq.Remove(kv.Key); ApplyEquipmentChange(kv.Key, m.PartyIndex); return true; }
         }
         return false;
+    }
+
+    // SC-STEAM-PUZZLE — wd_r1a's four-valve steam room. Each valve lever
+    // posts its on/off parity at the puzzle gizmo; the puzzle forwards
+    // the INVERSE to that valve's steam-jet scid and fires goal_scid
+    // once all four valves are on (all steam shut). State persists via
+    // world bools.
+    private sealed class SteamPuzzleState
+    {
+        public uint Scid, GoalScid;
+        public uint[] Levers = new uint[4];
+        public uint[] Steams = new uint[4];
+        public bool[] ValveOn = new bool[4];
+        public bool Solved;
+    }
+    private readonly List<SteamPuzzleState> _steamPuzzles = new();
+
+    private void LoadSteamPuzzles(IEnumerable<string> regionPaths)
+    {
+        if (_playMapTank is null) return;
+        var mapReader = new TankReader(_playMapTank);
+        foreach (var rp in regionPaths)
+        {
+            var (placements, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "command.gas");
+            foreach (var p in placements)
+            {
+                if (!p.TemplateName.Equals("cmd_puzzle_steam", StringComparison.OrdinalIgnoreCase)) continue;
+                if (_steamPuzzles.Any(s => s.Scid == p.Scid)) continue;
+                var sec = SiegeFX.Core.Assets.TemplateStore.FindChild(p.Node, "cmd_steam_puzzle");
+                if (sec is null) continue;
+                uint Scid(string key)
+                {
+                    var v = SiegeFX.Core.Assets.TemplateStore.FindAttr(sec, key)?.Trim();
+                    return v is not null && v.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                        && uint.TryParse(v[2..], System.Globalization.NumberStyles.HexNumber,
+                            System.Globalization.CultureInfo.InvariantCulture, out var u) ? u : 0u;
+                }
+                var sp = new SteamPuzzleState { Scid = p.Scid, GoalScid = Scid("goal_scid") };
+                for (int i = 0; i < 4; i++)
+                {
+                    sp.Levers[i] = Scid($"lever{i + 1}_scid");
+                    sp.Steams[i] = Scid($"steam{i + 1}_scid");
+                    sp.ValveOn[i] = _worldBools.TryGetValue($"steamvalve:{p.Scid:x8}:{i}", out var von) && von;
+                }
+                sp.Solved = _worldBools.TryGetValue($"steampuzzle:{p.Scid:x8}", out var sv) && sv;
+                _steamPuzzles.Add(sp);
+                Console.WriteLine($"[steam-puzzle] 0x{sp.Scid:X8} registered (goal 0x{sp.GoalScid:X8})");
+            }
+        }
     }
 
     // SC-CHAPTER — activate_chapter placements (scid → authored chapter
@@ -12336,6 +12407,7 @@ void main()
         LoadLogicGizmos(allLoaded);
         LoadChapterGizmos(allLoaded);
         LoadInvChangers(allLoaded);
+        LoadSteamPuzzles(allLoaded);
         LoadAutoTraps(allLoaded);
         LoadShrines(allLoaded);
         LoadBlockingGizmos(allLoaded);
@@ -12645,6 +12717,7 @@ void main()
         LoadLogicGizmos(newlyLoaded);
         LoadChapterGizmos(newlyLoaded);
         LoadInvChangers(newlyLoaded);
+        LoadSteamPuzzles(newlyLoaded);
         LoadAutoTraps(newlyLoaded);
         LoadShrines(newlyLoaded);
         LoadBlockingGizmos(newlyLoaded);
