@@ -25744,13 +25744,21 @@ void main()
                     && _spellCatalog.TryGet(m.Actor.Stats.PrimarySpell!, out var mSp) && mSp is not null
                     && !string.IsNullOrWhiteSpace(mSp.ActiveIcon))
                     mSpellIcon = ResolveAwpSlotIcon(mSp.ActiveIcon);
+                // SC-MEMBER-ACTIVE-SLOT — slot 4 = the member's Active Spell 2
+                // straight from their spellbook (was hardwired null, so a
+                // spell slotted into Active 2 never showed its icon).
+                GlTexture? mSpell2Icon = null;
+                var mBook = _memberSpellbooks.TryGetValue(m.PartyIndex, out var mbk)
+                    ? mbk : BookFor(m.PartyIndex);
+                if (mBook?.Secondary is { } mSec && !string.IsNullOrWhiteSpace(mSec.ActiveIcon))
+                    mSpell2Icon = ResolveAwpSlotIcon(mSec.ActiveIcon);
                 cells.Add(new Hud.TeamPortraits.Member(
                     ResolveMemberPortrait(m.Actor.Template),
                     st.MaxLife > 0f ? c.CurrentLife / st.MaxLife : 0f,
                     st.MaxMana > 0f ? c.CurrentMana / st.MaxMana : 0f,
                     m.IsDead || c.IsDead,
                     _selectedPartyIdx.Contains(m.PartyIndex),
-                    mSlot1, mSlot2, mSpellIcon, null, mActive));
+                    mSlot1, mSlot2, mSpellIcon, mSpell2Icon, mActive));
             }
             // SC-SUMMON-UI — the summon's cell: portrait + vitals, no
             // weapon/spell slots (it has no inventory), selectable so the
