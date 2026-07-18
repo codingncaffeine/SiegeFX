@@ -11593,6 +11593,24 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _triggerRuntime = spawner.TriggerRuntime;
+        // SC-PCGEN — the authored jewelry generation tables (pcontent.gas
+        // [modifiers] + the pcontent.skrit roll math). #ring/#amulet specs
+        // roll REAL generated jewelry; pcgen_ names re-materialize on
+        // demand so saved references survive across sessions.
+        try
+        {
+            var pcBytes = logicReader.ExtractToMemory("/world/contentdb/pcontent.gas");
+            var modStore = SiegeFX.Core.Assets.PcontentModifierStore.Load(pcBytes);
+            var roller = new SiegeFX.Core.Assets.JewelryRoller(modStore, store);
+            store.MissSynthesizer = roller.SynthesizeGasByName;
+            _pcontentResolver ??= new SiegeFX.Core.Actors.PcontentResolver(store);
+            _pcontentResolver.AttachJewelry(roller);
+            Console.WriteLine($"  pcontent: {modStore.Count} modifier tier(s) loaded — jewelry roller live");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  pcontent modifiers unavailable ({ex.Message}) — generic jewelry fallback");
+        }
         // SC-ACTOR-TRIGGERS — actors can embed [common][instance_triggers]
         // rows of their own (Gom's we_killed death choreography, talk-gated
         // reveals). SpawnTriggers skips placements without a matrix, so this

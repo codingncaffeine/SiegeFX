@@ -37,6 +37,11 @@ public sealed class PcontentResolver
     private readonly Dictionary<string, List<Entry>> _byClass;
     private readonly List<Entry> _all;
     private bool _indexed;
+    // SC-PCGEN — the jewelry roller (authored generation tables); null =
+    // generic root-item fallback.
+    private SiegeFX.Core.Assets.JewelryRoller? _jewelry;
+
+    public void AttachJewelry(SiegeFX.Core.Assets.JewelryRoller roller) => _jewelry = roller;
 
     public PcontentResolver(TemplateStore store)
     {
@@ -65,6 +70,26 @@ public sealed class PcontentResolver
 
         var parsed = ParseSpec(spec);
         if (string.IsNullOrEmpty(parsed.Class)) return false;
+
+        // SC-PCGEN — #ring/#amulet run the authored GENERATION tables
+        // (variant bands + modifier tiers) instead of a catalog pick;
+        // the roller registers a synthetic template and returns its name.
+        if (_jewelry is not null
+            && (parsed.Class.Equals("ring", StringComparison.OrdinalIgnoreCase)
+                || parsed.Class.Equals("amulet", StringComparison.OrdinalIgnoreCase)))
+        {
+            int pMin = parsed.HasPower ? parsed.PowerMin : 1;
+            int pMax = parsed.HasPower ? Math.Max(parsed.PowerMin, parsed.PowerMax) : 20;
+            var rolled = _jewelry.Roll(
+                parsed.Class.Equals("ring", StringComparison.OrdinalIgnoreCase),
+                parsed.Rarity, pMin, pMax, rng, out var rolledPower);
+            if (rolled is not null)
+            {
+                templateName = rolled;
+                chosenPower = rolledPower;
+                return true;
+            }
+        }
 
         // Build the candidate bucket. Literal classes hit _byClass
         // directly; wildcards fold across the indexed entries.

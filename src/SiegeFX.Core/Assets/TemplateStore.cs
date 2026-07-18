@@ -15,11 +15,52 @@ public sealed class TemplateStore
     public int Count => _byName.Count;
     public IEnumerable<Template> All => _byName.Values;
 
+    /// <summary>SC-PCGEN — synthesizer hook: a <c>pcgen_…</c> name with no
+    /// store entry gets one chance to materialize (generated jewelry
+    /// re-resolving from a save written in an earlier session). Returns
+    /// the gas text to register, or null.</summary>
+    public Func<string, string?>? MissSynthesizer { get; set; }
+
     public bool TryGet(string name, out Template template)
     {
         if (_byName.TryGetValue(name, out var t)) { template = t; return true; }
+        if (MissSynthesizer is not null
+            && name.StartsWith("pcgen_", StringComparison.OrdinalIgnoreCase))
+        {
+            var gas = MissSynthesizer(name);
+            if (gas is not null && RegisterFromGasText(gas) > 0
+                && _byName.TryGetValue(name, out t))
+            { template = t; return true; }
+        }
         template = null!;
         return false;
+    }
+
+    /// <summary>Store-only presence probe (no synthesizer re-entry).</summary>
+    public bool TryGetRaw(string name) => _byName.ContainsKey(name);
+
+    /// <summary>SC-PCGEN — register templates parsed from synthesized gas
+    /// text (generated jewelry). Parents resolve against the live store;
+    /// existing names are never overwritten. Returns templates added.</summary>
+    public int RegisterFromGasText(string gasText)
+    {
+        GasDocument doc;
+        try { doc = GasDocument.Load(System.Text.Encoding.UTF8.GetBytes(gasText)); }
+        catch { return 0; }
+        int added = 0;
+        foreach (var node in doc.Roots)
+        {
+            if (!TryParseHeader(node.Header, out var typeTag, out var name)) continue;
+            if (_byName.ContainsKey(name)) continue;
+            var specializes = FindAttr(node, "specializes");
+            var t = new Template(name, typeTag, specializes, node, "<generated>");
+            if (specializes is not null
+                && _byName.TryGetValue(specializes.Trim(), out var parent))
+                t.Specializes = parent;
+            _byName[name] = t;
+            added++;
+        }
+        return added;
     }
 
     /// <summary>Loads every template under <paramref name="rootPath"/> inside the given
