@@ -228,6 +228,13 @@ public sealed class PcontentResolver
         _indexed = true;
         foreach (var tpl in _store.All)
         {
+            // SC-PCONTENT-ACTORS — actors are never items. Every monster
+            // inherits [attack]attack_class=ac_beastfu from the root
+            // actor template, which indexed the whole bestiary into the
+            // wildcard pool: a container's #* roll could hand the player
+            // walking_corpse_boss_01 ("Ancient Corpse") as loot.
+            if (IsDescendantOf(tpl, "actor")) continue;
+
             // is_pcontent_allowed gates normal-tier rolls. We still
             // index the entry so a rarity-modifier spec
             // (#*/-unique(2)/...) can pick it; bare specs filter it

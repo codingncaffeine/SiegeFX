@@ -26121,6 +26121,17 @@ void main()
     private Dictionary<string, string> ActiveEquipment => GetEquipmentDict(_paperdollTargetIndex);
     private List<SiegeFX.Core.Actors.LootEntry> ActiveInventory => GetMemberInventory(_paperdollTargetIndex);
 
+    /// <summary>SC-PCONTENT-ACTORS — true when the template chain roots at
+    /// DS1's <c>actor</c> base (monsters, NPCs, heroes). Such references
+    /// are never legitimate inventory items.</summary>
+    private static bool IsActorTemplate(SiegeFX.Core.Assets.Template tpl)
+    {
+        for (var t = tpl; t is not null; t = t.Specializes)
+            if (string.Equals(t.Name, "actor", StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
     // Screen name for a party member (companion sheet header / stats title).
     private string ResolveMemberName(ActorRenderState member)
     {
@@ -31844,8 +31855,25 @@ void main()
         {
             if (!it.IsEquipped) continue;
             if (!IsWeaponUpgrade(it)) continue;
-            var slotKey = "es_" + it.Slot;
             var resolvedRef = ResolveItemRef(it.Reference);
+            // SC-EQUIP-SLOT-CLASS — derive the slot from the ITEM, never
+            // from the dead actor's authored slot: DS1 archers stow their
+            // BOW in es_shield_hand (it occupies the shield hand while
+            // wielded), which auto-equipped looted bows into the player's
+            // SHIELD slot. Projectiles go to the dedicated ranged box;
+            // everything else uses its own [gui] equip_slot.
+            string slotKey = "es_" + it.Slot;
+            if (_templateStore is not null
+                && _templateStore.TryGet(resolvedRef, out var autoTpl) && autoTpl is not null)
+            {
+                bool proj = string.Equals(
+                    _templateStore.GetAttribute(autoTpl, "attack", "is_projectile")?.Trim(),
+                    "true", StringComparison.OrdinalIgnoreCase);
+                var ownSlot = (_templateStore.GetAttribute(autoTpl, "gui", "equip_slot") ?? "")
+                    .Trim().ToLowerInvariant();
+                if (proj) slotKey = "es_ranged_weapon";
+                else if (ownSlot.Length > 0) slotKey = ownSlot;
+            }
             // SC-PAPERDOLL-EQUIP follow-up — the authored stat gate applies
             // to auto-equip too; a too-heavy upgrade stays in the pack.
             if (_player is not null
@@ -31853,6 +31881,20 @@ void main()
             {
                 Console.WriteLine($"  equipped: [{slotKey}] {resolvedRef} refused — {autoReqFail}");
                 continue;
+            }
+            // The replaced piece goes back to the pack — auto-upgrade used
+            // to overwrite the dict entry and silently DESTROY the old
+            // gear. No room in the pack = no auto-equip (keep current).
+            if (_playerEquipment.TryGetValue(slotKey, out var prevRef)
+                && !string.IsNullOrWhiteSpace(prevRef))
+            {
+                _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry("", prevRef));
+                if (!Hud.InventoryPanel.CanFitAll(_playerInventory, TryGetItemGridSize))
+                {
+                    _playerInventory.RemoveAt(_playerInventory.Count - 1);
+                    Console.WriteLine($"  equipped: [{slotKey}] {resolvedRef} skipped — no pack room for {prevRef}");
+                    continue;
+                }
             }
             _playerEquipment[slotKey] = resolvedRef;
             Console.WriteLine($"  equipped: [{slotKey}] <- {resolvedRef}");
@@ -36186,6 +36228,45 @@ void main()
         }
         if (save.Party.Count > 0)
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
+
+        // SC-PCONTENT-ACTORS — heal saves written while #* container rolls
+        // could hand out MONSTER templates as loot (the "Ancient Corpse"
+        // backpack item): sweep every bag and drop actor references.
+        if (_templateStore is not null)
+        {
+            var sweepIdx = new HashSet<int> { 0 };
+            foreach (var m in _party) sweepIdx.Add(m.PartyIndex);
+            foreach (var pi in sweepIdx)
+            {
+                var bag = GetMemberInventory(pi);
+                int removed = bag.RemoveAll(e =>
+                    _templateStore.TryGet(ResolveItemRef(e.Reference), out var bt)
+                    && bt is not null && IsActorTemplate(bt));
+                if (removed > 0)
+                    Console.WriteLine($"  load: bag[{pi}] dropped {removed} actor-template item(s)");
+
+                // SC-EQUIP-SLOT-CLASS — re-home gear the old kill-loot
+                // auto-equip parked in the wrong slot (a looted BOW in
+                // es_shield_hand): projectiles move to the ranged box, or
+                // to the pack when that box is taken.
+                var eqd = GetEquipmentDict(pi);
+                if (eqd.TryGetValue("es_shield_hand", out var shRef)
+                    && !string.IsNullOrWhiteSpace(shRef)
+                    && _templateStore.TryGet(ResolveItemRef(shRef), out var shTpl)
+                    && shTpl is not null
+                    && string.Equals(
+                        _templateStore.GetAttribute(shTpl, "attack", "is_projectile")?.Trim(),
+                        "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    eqd.Remove("es_shield_hand");
+                    if (!eqd.TryGetValue("es_ranged_weapon", out var rr) || string.IsNullOrWhiteSpace(rr))
+                        eqd["es_ranged_weapon"] = shRef;
+                    else
+                        bag.Add(new SiegeFX.Core.Actors.LootEntry("", shRef));
+                    Console.WriteLine($"  load: projectile '{shRef}' moved out of shield slot [member {pi}]");
+                }
+            }
+        }
 
         // SC-SUMMON-UI — rebind the player's summon so it loads as a
         // CONTROLLED summon (strip cell, orders, dismiss) rather than
