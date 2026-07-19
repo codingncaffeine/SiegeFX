@@ -20914,6 +20914,8 @@ void main()
         TickDefeat((float)dt);
         // SC-CAM-SHAKE — decay the shake envelope on the frame cadence.
         TickCameraShake((float)dt);
+        // SC-SPELL-EFFECTS — expire timed buff rows on the play clock.
+        TickSpellEffects();
         // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
         if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
             _screenFadeAlpha = _screenFadeTarget > _screenFadeAlpha
@@ -27724,6 +27726,106 @@ void main()
         return true;
     }
 
+    // ── SC-SPELL-EFFECTS ───────────────────────────────────────────────────
+    // The buff/curse school's runtime: authored [magic][enchantments] rows
+    // land here as timed stat alterations on the target. Party targets fold
+    // through the existing enchant-rebase syncs (idempotent); rows expire on
+    // the play clock. v1 vocabulary: armor/str/dex/int/max_life/max_mana.
+    private sealed class ActiveSpellEffect
+    {
+        public ActorRenderState Target = null!;
+        public string Spell = "";
+        public string Alteration = "";
+        public float Value;
+        public double ExpiresAt;
+    }
+    private readonly List<ActiveSpellEffect> _spellEffects = new();
+
+    private void ApplySpellEnchantments(
+        SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState target, float magicLevel)
+    {
+        if (spell.Enchantments.Count == 0) return;
+        var ectx = new SiegeFX.Core.Assets.SpellEvalContext(MathF.Max(1f, magicLevel),
+            maxLife: target.Actor.Stats.MaxLife, life: target.Actor.Combat.CurrentLife,
+            srcMana: 100f, srcLife: 100f);
+        bool any = false;
+        foreach (var en in spell.Enchantments)
+        {
+            var alt = en.Alteration.ToLowerInvariant();
+            if (alt is not ("alter_armor" or "alter_strength" or "alter_dexterity"
+                or "alter_intelligence" or "alter_max_life" or "alter_max_mana"))
+            {
+                Console.WriteLine($"[spell-fx] {spell.Name}: alteration '{en.Alteration}' not modeled yet");
+                continue;
+            }
+            float val = SiegeFX.Core.Assets.SpellExpr.Eval(en.ValueExpr, ectx);
+            float dur = SiegeFX.Core.Assets.SpellExpr.Eval(en.DurationExpr, ectx);
+            if (!float.IsFinite(val) || !float.IsFinite(dur) || dur <= 0f
+                || MathF.Abs(val) < 0.01f) continue;
+            var row = _spellEffects.Find(e => ReferenceEquals(e.Target, target)
+                && e.Spell == spell.Name && e.Alteration == alt);
+            if (row is null)
+            {
+                row = new ActiveSpellEffect { Target = target, Spell = spell.Name, Alteration = alt };
+                _spellEffects.Add(row);
+            }
+            row.Value = val;
+            row.ExpiresAt = _playSeconds + dur;
+            any = true;
+            AddFloatingText(
+                $"+{val:0} {alt.Replace("alter_", "").Replace('_', ' ')}",
+                target.CurrentTransform.Translation + new Vector3(0f, 2.4f, 0f),
+                new Vector4(0.55f, 0.85f, 1f, 1f));
+            Console.WriteLine($"[spell-fx] {spell.Name}: {alt} {val:+0.#;-0.#} on " +
+                $"{(target.IsPlayer ? "hero" : target.Actor.Template.Name)} for {dur:F0}s");
+        }
+        if (any) ResyncSpellEffectTarget(target);
+    }
+
+    private (float Str, float Dex, float Int, float Life, float Mana, float Armor)
+        SpellEffectBonusFor(ActorRenderState who)
+    {
+        float str = 0, dex = 0, intl = 0, life = 0, mana = 0, armor = 0;
+        foreach (var e in _spellEffects)
+        {
+            if (!ReferenceEquals(e.Target, who)) continue;
+            switch (e.Alteration)
+            {
+                case "alter_armor":        armor += e.Value; break;
+                case "alter_strength":     str   += e.Value; break;
+                case "alter_dexterity":    dex   += e.Value; break;
+                case "alter_intelligence": intl  += e.Value; break;
+                case "alter_max_life":     life  += e.Value; break;
+                case "alter_max_mana":     mana  += e.Value; break;
+            }
+        }
+        return (str, dex, intl, life, mana, armor);
+    }
+
+    private void ResyncSpellEffectTarget(ActorRenderState who)
+    {
+        if (who.IsPlayer) SyncPlayerArmorDefense();
+        else if (who.IsPartyMember && who.PartyIndex > 0) SyncMemberArmorDefense(who.PartyIndex);
+    }
+
+    private void TickSpellEffects()
+    {
+        if (_spellEffects.Count == 0) return;
+        List<ActorRenderState>? touched = null;
+        for (int i = _spellEffects.Count - 1; i >= 0; i--)
+        {
+            var e = _spellEffects[i];
+            if (e.Target.IsDead) { _spellEffects.RemoveAt(i); continue; }
+            if (_playSeconds < e.ExpiresAt) continue;
+            _spellEffects.RemoveAt(i);
+            (touched ??= new()).Add(e.Target);
+            Console.WriteLine($"[spell-fx] {e.Spell}: {e.Alteration} expired on " +
+                $"{(e.Target.IsPlayer ? "hero" : e.Target.Actor.Template.Name)}");
+        }
+        if (touched is not null)
+            foreach (var t2 in touched.Distinct()) ResyncSpellEffectTarget(t2);
+    }
+
     /// <summary>Phase 22-A — kick the quest indicator pulse. Called whenever
     /// RegisterTalk / RegisterKill / RegisterPickup returns a non-empty
     /// completed list, or when a fresh quest activates.</summary>
@@ -28286,6 +28388,8 @@ void main()
         var dict = GetEquipmentDict(partyIndex);
         if (!_memberArmorBaseline.TryGetValue(partyIndex, out var baseline)) return;
         float total = MathF.Max(0f, baseline.BaseDefense + (ComputeArmorRating(dict) - baseline.InitialArmor));
+        // SC-SPELL-EFFECTS — live buff armor (Magic Armor on a companion).
+        total += SpellEffectBonusFor(member).Armor;
         var s = member.Actor.Stats;
         if (MathF.Abs(s.Defense - total) > 0.01f)
         {
@@ -32748,6 +32852,16 @@ void main()
             BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
             return;
         }
+        // SC-SPELL-EFFECTS — enchantment carriers (Magic Armor, boosts)
+        // target a party member under the cursor like heals do, defaulting
+        // to the caster. Enemy-targeted curses stay on the offensive path.
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other
+            && spell.Enchantments.Count > 0)
+        {
+            best = TryPickPartyMemberAt(_input.Mice[0].Position);
+            BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
+            return;
+        }
         // SC-CORPSE-SPELLS — tt_dead_enemy spells (Burn Body) pick a CORPSE
         // under the cursor and never consider living actors or props. Beyond
         // cast range they share the walk-up latch (the pending drive exempts
@@ -32999,6 +33113,13 @@ void main()
                 // Phase 19 — the cast motion (mg clip) already started at
                 // initiation in BeginPlayerCast; this branch is the FIRE-note
                 // release, so no chore replay here.
+                // SC-SPELL-EFFECTS — enchantment payload lands on the target
+                // (or the caster) at the release.
+                if (spell!.Enchantments.Count > 0 && _player is not null)
+                    ApplySpellEnchantments(spell,
+                        best is { IsDead: false } && (best.IsPlayer || best.IsPartyMember)
+                            ? best : _player,
+                        magicLevel);
                 if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
                     // Phase 17c — heal cast: no bolt; green restore popup over
@@ -33871,6 +33992,12 @@ void main()
         if (_player is null) return;
         var s = _player.Actor.Stats;
         var ench = ComputeEnchantBonus(_playerEquipment);
+        // SC-SPELL-EFFECTS — live buff rows fold into the same enchant
+        // layer, so the natural-rebase accounting absorbs them exactly
+        // like worn gear.
+        var sfxB = SpellEffectBonusFor(_player);
+        ench = (ench.Str + sfxB.Str, ench.Dex + sfxB.Dex, ench.Int + sfxB.Int,
+                ench.Life + sfxB.Life, ench.Mana + sfxB.Mana, ench.Armor + sfxB.Armor);
         float armor = ComputePlayerArmorRating() + ench.Armor;
 
         float nStr = s.Strength     - _appliedEnchant.Str;
