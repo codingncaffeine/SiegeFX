@@ -6423,8 +6423,11 @@ public sealed class RenderHost : IDisposable
         // SC-DOWNED — natural regen keeps working on an unconscious body;
         // it's one of the manual's two revive paths. Only corpses stop.
         if (combat.IsDead && !combat.Downed) return;
-        combat.Heal       (_formulas.LifeRecoveryRate(s.Actor.Stats.Strength)     * dt);
-        combat.RestoreMana(_formulas.ManaRecoveryRate(s.Actor.Stats.Intelligence) * dt);
+        // SC-SPELL-EFFECTS — Regeneration buffs + recovery-enchanted gear
+        // add their authored per-second units on top of the formula rates.
+        var rec = RecoveryBonusFor(s);
+        combat.Heal       ((_formulas.LifeRecoveryRate(s.Actor.Stats.Strength)     + rec.Life) * dt);
+        combat.RestoreMana((_formulas.ManaRecoveryRate(s.Actor.Stats.Intelligence) + rec.Mana) * dt);
     }
 
     /// <summary>Host: heel remote players' companions to their owners and
@@ -27753,7 +27756,8 @@ void main()
         {
             var alt = en.Alteration.ToLowerInvariant();
             if (alt is not ("alter_armor" or "alter_strength" or "alter_dexterity"
-                or "alter_intelligence" or "alter_max_life" or "alter_max_mana"))
+                or "alter_intelligence" or "alter_max_life" or "alter_max_mana"
+                or "alter_life_recovery_unit" or "alter_mana_recovery_unit"))
             {
                 Console.WriteLine($"[spell-fx] {spell.Name}: alteration '{en.Alteration}' not modeled yet");
                 continue;
@@ -27806,6 +27810,46 @@ void main()
     {
         if (who.IsPlayer) SyncPlayerArmorDefense();
         else if (who.IsPartyMember && who.PartyIndex > 0) SyncMemberArmorDefense(who.PartyIndex);
+    }
+
+    /// <summary>SC-SPELL-EFFECTS — per-second regen bonuses from live buff
+    /// rows AND worn gear (alter_life/mana_recovery_unit — the Regeneration
+    /// school and recovery-enchanted gear). Added on top of the formulas
+    /// rates in RegenActor.</summary>
+    private (float Life, float Mana) RecoveryBonusFor(ActorRenderState who)
+    {
+        float lr = 0f, mr = 0f;
+        foreach (var e in _spellEffects)
+        {
+            if (!ReferenceEquals(e.Target, who)) continue;
+            if (e.Alteration == "alter_life_recovery_unit") lr += e.Value;
+            else if (e.Alteration == "alter_mana_recovery_unit") mr += e.Value;
+        }
+        if (_templateStore is not null && (who.IsPlayer || who.IsPartyMember))
+        {
+            var eq = GetEquipmentDict(who.IsPlayer ? 0 : who.PartyIndex);
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            foreach (var kv in eq)
+            {
+                if (!_templateStore.TryGet(kv.Value, out var tpl) || tpl is null) continue;
+                var ench = _templateStore.GetSection(tpl, "magic", "enchantments");
+                if (ench is null) continue;
+                foreach (var row in ench.Children)
+                {
+                    string? alt2 = null; float v2 = 0f;
+                    foreach (var a in row.Attributes)
+                    {
+                        if (a.Name.Equals("alteration", StringComparison.OrdinalIgnoreCase))
+                            alt2 = a.Value.Trim().Trim('"').ToLowerInvariant();
+                        else if (a.Name.Equals("value", StringComparison.OrdinalIgnoreCase))
+                            float.TryParse(a.Value.Trim(), System.Globalization.NumberStyles.Float, ci, out v2);
+                    }
+                    if (alt2 == "alter_life_recovery_unit") lr += v2;
+                    else if (alt2 == "alter_mana_recovery_unit") mr += v2;
+                }
+            }
+        }
+        return (lr, mr);
     }
 
     private void TickSpellEffects()
