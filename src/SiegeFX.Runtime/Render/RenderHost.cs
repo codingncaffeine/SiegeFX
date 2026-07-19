@@ -34825,7 +34825,17 @@ void main()
                     {
                         sfxTrace = $"fallback (rt={_sfxRuntime is not null} st={_sfxStore is not null} script='{spell.CastSfxScript}')";
                     }
-                    if (!ranNativeScript || !nativeProducedVisual)
+                    // SC-VFX-AUTHORED-STUBS — a script that RAN cleanly but
+                    // created no visual is a DS1 author stub (iceblast's
+                    // "only a sound now, should hook up an effect. -ET"):
+                    // retail shows the sound plus the launched ammo GO and
+                    // nothing else. The old gate invented a generic bolt on
+                    // top, double-drawing every launch spell (shard mesh +
+                    // magic bolt) and giving utility stubs (mana_channel,
+                    // rip_mana) a projectile retail never had. Launch spells
+                    // also skip the placeholder when the script never ran —
+                    // their authored ammo mesh IS the visual.
+                    if (!ranNativeScript && !spell.IsLaunch)
                         SpawnSpellVisual(src, dst, spell.Element, elemColor);
                     Console.WriteLine($"  cast vfx: {sfxTrace}");
                     // Phase 21-SC-SPELL-VFX-3a — per-spell cast SFX from the

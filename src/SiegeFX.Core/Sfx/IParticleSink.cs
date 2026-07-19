@@ -246,6 +246,12 @@ public struct PlumeSpec
 /// drives both the live renderer and the headless audit path.</summary>
 public interface IParticleSink
 {
+    /// <summary>SC-VFX-TEXCACHE — resolve an authored `texture(NAME)` value
+    /// to a live renderer slot, loading the bitmap on demand. Sinks without
+    /// a texture cache (labs, tests) return <paramref name="fallback"/> —
+    /// the static family mapping the caller already computed.</summary>
+    int ResolveTextureSlot(string? name, int fallback) => fallback;
+
     void SpawnFire(Vector3 position, Vector4 color, float scale, float duration, int count = 12);
     void SpawnSmoke(Vector3 position, Vector4 color, float scale, float duration, int count = 8);
     void SpawnSteam(Vector3 position, Vector4 color, float scale, float duration, int count = 8);

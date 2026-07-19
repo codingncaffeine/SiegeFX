@@ -188,11 +188,45 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private readonly uint _vao;
     private readonly uint _vboQuad;
     private readonly uint _vboInstance;
-    // Phase 21-SC-SPELL-VISUAL-A — slots 9/10/11 reserved for cylinder
-    // textures (b_sfx_cyl_01/02/03). Most cylinder spells use cyl_03;
-    // earthquake / death_blast etc. occasionally use the other two.
-    private readonly GlTexture?[] _textures = new GlTexture?[12];
+    // SC-VFX-TEXCACHE — slots 0-11 keep their historical preloads (fire,
+    // smoke, sparkle, lightrays, cylinders) so every stored byte slot stays
+    // valid; every OTHER authored texture(NAME) loads on demand into the
+    // next free slot via GetOrLoadTexture. Slots are stable for the session.
+    // 250+ is the ribbon path's "pure vertex color" sentinel, so the cache
+    // caps at 250 distinct textures (DS1 ships ~200 sfx bitmaps total).
+    private readonly List<GlTexture?> _textures = new(new GlTexture?[12]);
+    private readonly Dictionary<string, int> _texSlotByName = new(StringComparer.OrdinalIgnoreCase);
+    private TankReader? _sfxTank;
     public const byte CylinderTexSlot = 11; // b_sfx_cyl_03 — most-used
+
+    /// <summary>SC-VFX-TEXCACHE — IParticleSink.ResolveTextureSlot: exact
+    /// authored bitmap when it loads, else the caller's family fallback.
+    /// Failures cache too (one tank probe per unique name per session).</summary>
+    public int ResolveTextureSlot(string? name, int fallback)
+    {
+        if (string.IsNullOrEmpty(name) || _sfxTank is null) return fallback;
+        var n = name;
+        int slash = n.LastIndexOf('/');
+        if (slash >= 0) n = n[(slash + 1)..];
+        int dot = n.LastIndexOf('.');
+        if (dot >= 0) n = n[..dot];
+        if (_texSlotByName.TryGetValue(n, out var hit))
+            return hit >= 0 ? hit : fallback;
+        int slot = -1;
+        if (_textures.Count < 250)
+        {
+            try
+            {
+                var bytes = _sfxTank.ExtractToMemory($"/art/bitmaps/sfx/{n.ToLowerInvariant()}.raw");
+                var img = RawImage.Load(bytes);
+                _textures.Add(new GlTexture(_gl, img));
+                slot = _textures.Count - 1;
+            }
+            catch { /* unknown name — remember the miss, use the family fallback */ }
+        }
+        _texSlotByName[n] = slot;
+        return slot >= 0 ? slot : fallback;
+    }
 
     // Phase 21-SC-SPELL-VFX-debug — runtime-cyclable bolt texture so we
     // can A/B every plausible DS1 lightning streak from the live game
@@ -245,6 +279,8 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     private List<(SraySpec Spec, float Carry, int Spawned, float Age)> _srayEmits = new(8);
     // Phase 23d-2e — ribbon draw ranges: (vertStart, vertCount, texSlot).
     private readonly List<(int Start, int Count, int Slot)> _ribbonRanges = new(8);
+    // SC-VFX-TEXCACHE — distinct live cylinder texture slots, per frame.
+    private readonly List<byte> _cylSlotScratch = new(8);
     void AddRibbonRange(ref int start, int slot)
     {
         if (_ribbonVertCount > start)
@@ -511,6 +547,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
     /// can't load (the per-particle color tint still reads).</summary>
     public void LoadTextures(TankReader objectsTank)
     {
+        _sfxTank = objectsTank;   // SC-VFX-TEXCACHE — on-demand loads later
         TryLoadSlot(objectsTank, 0, "/art/bitmaps/sfx/b_sfx_fireball-01.raw");
         TryLoadSlot(objectsTank, 1, "/art/bitmaps/sfx/b_sfx_smoke.raw");
         TryLoadSlot(objectsTank, 2, "/art/bitmaps/sfx/b_sfx_sparkle01.raw");
@@ -530,6 +567,12 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     void TryLoadSlot(TankReader tank, int slot, string path)
     {
+        // SC-VFX-TEXCACHE — register the bitmap name → slot so an authored
+        // texture(NAME) matching a preload reuses it instead of re-loading.
+        int slash = path.LastIndexOf('/');
+        int dot = path.LastIndexOf('.');
+        if (slash >= 0 && dot > slash)
+            _texSlotByName[path[(slash + 1)..dot]] = slot;
         try
         {
             var bytes = tank.ExtractToMemory(path);
@@ -1711,10 +1754,16 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         int rangeStart = 0;
         EmitBoltQuads(cameraPos);
         AddRibbonRange(ref rangeStart, BoltTexSlot);
-        for (int slot = 0; slot < _textures.Length; slot++)
+        // SC-VFX-TEXCACHE — emit one range per DISTINCT live cylinder
+        // texture instead of sweeping every cache slot.
+        _cylSlotScratch.Clear();
+        for (int i = 0; i < _cylinders.Count; i++)
+            if (!_cylSlotScratch.Contains(_cylinders[i].TexSlot))
+                _cylSlotScratch.Add(_cylinders[i].TexSlot);
+        for (int i = 0; i < _cylSlotScratch.Count; i++)
         {
-            EmitCylinderQuads((byte)slot);
-            AddRibbonRange(ref rangeStart, slot);
+            EmitCylinderQuads(_cylSlotScratch[i]);
+            AddRibbonRange(ref rangeStart, _cylSlotScratch[i]);
         }
         EmitSrayQuads(cameraPos);
         AddRibbonRange(ref rangeStart, 2); // sparkle01 — soft additive streak read
@@ -1884,21 +1933,37 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
             _instanceBuffer[o + 11] = 0f;
         }
 
+        // SC-VFX-TEXCACHE — per-texture batched draws. Group instances by
+        // (blend mode, texture slot): alpha-blended groups draw first so
+        // additive glows composite on top, and every group binds ITS OWN
+        // texture on unit 0 — the old bind-all-12 + branchy multi-sampler
+        // shader capped the palette at 12 bitmaps forever. Group count per
+        // frame is the number of distinct live textures (rarely > 8), so
+        // this stays a handful of draw calls.
+        _drawGroups.Clear();
+        for (int i = 0; i < totalInstances; i++)
+        {
+            int o = i * InstanceFloats;
+            int slot = (int)(_instanceBuffer[o + 8] + 0.5f);
+            int additive = _instanceBuffer[o + 9] > 0.5f ? 1 : 0;
+            // Alpha groups sort before additive; slot orders within.
+            _drawGroups.Add(((additive << 16) | (slot & 0xFFFF), i));
+        }
+        _drawGroups.Sort(static (a, b) => a.Key != b.Key ? a.Key - b.Key : a.Idx - b.Idx);
+        if (_instanceSorted.Length < _instanceBuffer.Length)
+            _instanceSorted = new float[_instanceBuffer.Length];
+        for (int i = 0; i < totalInstances; i++)
+            Array.Copy(_instanceBuffer, _drawGroups[i].Idx * InstanceFloats,
+                       _instanceSorted, i * InstanceFloats, InstanceFloats);
+
         _gl.BindBuffer(GLEnum.ArrayBuffer, _vboInstance);
         unsafe
         {
-            fixed (float* p = _instanceBuffer)
+            fixed (float* p = _instanceSorted)
                 _gl.BufferData(GLEnum.ArrayBuffer,
                     (nuint)(totalInstances * InstanceFloats * sizeof(float)),
                     p, GLEnum.DynamicDraw);
         }
-
-        // Two-pass draw: alpha-blended first, additive second. We sort by
-        // additive flag in a single scan so the GPU draws each group in
-        // one DrawArraysInstanced call.
-        int alphaCount = 0, addCount = 0;
-        for (int i = 0; i < _particles.Count; i++)
-            if (_particles[i].Additive == 1) addCount++; else alphaCount++;
 
         bool depthWasOn = _gl.IsEnabled(GLEnum.DepthTest);
         _gl.Enable(GLEnum.DepthTest);
@@ -1910,34 +1975,45 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _shader.SetMatrix4("uProj", proj);
         _shader.SetFloat("uGamma", Gamma);
         _shader.SetInt("uTex0", 0);
-        _shader.SetInt("uTex1", 1);
-        _shader.SetInt("uTex2", 2);
-        _shader.SetInt("uTex3", 3);
-        _shader.SetInt("uTex4", 4);
-        _shader.SetInt("uTex5", 5);
-        _shader.SetInt("uTex6", 6);
-        _shader.SetInt("uTex7", 7);
-        _shader.SetInt("uTex8", 8);
-        for (int slot = 0; slot < _textures.Length; slot++)
-        {
-            _gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + slot));
-            _gl.BindTexture(GLEnum.Texture2D, _textures[slot]?.Handle ?? 0);
-        }
-
+        _gl.ActiveTexture(TextureUnit.Texture0);
         _gl.BindVertexArray(_vao);
 
-        // Single batched draw — the per-instance Additive flag tells the
-        // shader to clamp alpha down for additive (we still set the GL
-        // blend mode below). Mixing alpha+additive in one draw call would
-        // need pre-sorting; for SC-E we use one combined SrcAlpha/One blend
-        // that approximates both modes acceptably for a first pass.
-        _gl.BlendFunc(GLEnum.SrcAlpha, GLEnum.OneMinusSrcAlpha);
-        _gl.DrawArraysInstanced(GLEnum.Triangles, 0, 6, (uint)totalInstances);
+        int gStart = 0;
+        while (gStart < totalInstances)
+        {
+            int key = _drawGroups[gStart].Key;
+            int gEnd = gStart + 1;
+            while (gEnd < totalInstances && _drawGroups[gEnd].Key == key) gEnd++;
+            int slot = key & 0xFFFF;
+            bool additive = (key >> 16) != 0;
+            _gl.BindTexture(GLEnum.Texture2D,
+                slot >= 0 && slot < _textures.Count ? _textures[slot]?.Handle ?? 0 : 0);
+            _gl.BlendFunc(GLEnum.SrcAlpha, additive ? GLEnum.One : GLEnum.OneMinusSrcAlpha);
+            // GL 3.3 has no baseInstance for instanced draws — repoint the
+            // instance attribs at this group's first row instead.
+            unsafe
+            {
+                int stride = InstanceFloats * sizeof(float);
+                nint b = gStart * stride;
+                _gl.BindBuffer(GLEnum.ArrayBuffer, _vboInstance);
+                _gl.VertexAttribPointer(2, 3, GLEnum.Float, false, (uint)stride, (void*)b);
+                _gl.VertexAttribPointer(3, 1, GLEnum.Float, false, (uint)stride, (void*)(b + 3 * sizeof(float)));
+                _gl.VertexAttribPointer(4, 4, GLEnum.Float, false, (uint)stride, (void*)(b + 4 * sizeof(float)));
+                _gl.VertexAttribPointer(5, 2, GLEnum.Float, false, (uint)stride, (void*)(b + 8 * sizeof(float)));
+            }
+            _gl.DrawArraysInstanced(GLEnum.Triangles, 0, 6, (uint)(gEnd - gStart));
+            gStart = gEnd;
+        }
 
         _gl.BindVertexArray(0);
+        _gl.BlendFunc(GLEnum.SrcAlpha, GLEnum.OneMinusSrcAlpha);
         _gl.DepthMask(true);
         if (!depthWasOn) _gl.Disable(GLEnum.DepthTest);
     }
+
+    // SC-VFX-TEXCACHE — reused per-frame grouping scratch.
+    private readonly List<(int Key, int Idx)> _drawGroups = new(2048);
+    private float[] _instanceSorted = new float[2048 * InstanceFloats];
 
     // Phase 23d-2d — shared instance-buffer writer for the procedural
     // swarms (SPE / sparkles / charge). Additive, no fade window.
@@ -2309,21 +2385,19 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
         _ribbonShader.SetMatrix4("uView", view);
         _ribbonShader.SetMatrix4("uProj", proj);
         _ribbonShader.SetFloat("uGamma", Gamma);
-        for (int i = 0; i < _textures.Length; i++)
-            _ribbonShader.SetInt("uTex" + i, i);
-        for (int slot = 0; slot < _textures.Length; slot++)
-        {
-            _gl.ActiveTexture((TextureUnit)((int)TextureUnit.Texture0 + slot));
-            _gl.BindTexture(GLEnum.Texture2D, _textures[slot]?.Handle ?? 0);
-        }
+        _ribbonShader.SetInt("uTex0", 0);
+        _gl.ActiveTexture(TextureUnit.Texture0);
 
         _gl.BindVertexArray(_ribbonVao);
-        // Phase 23d-2e — draw each recorded range with its slot (250+ =
-        // pure vertex color for textureless poly shards / sphere meshes).
+        // SC-VFX-TEXCACHE — each range binds its own texture on unit 0
+        // (250+ = pure vertex color for textureless shards/spheres/rain).
         for (int i = 0; i < _ribbonRanges.Count; i++)
         {
             var (rStart, rCount, rSlot) = _ribbonRanges[i];
             _ribbonShader.SetInt("uSlot", rSlot);
+            if (rSlot < 250)
+                _gl.BindTexture(GLEnum.Texture2D,
+                    rSlot >= 0 && rSlot < _textures.Count ? _textures[rSlot]?.Handle ?? 0 : 0);
             _gl.DrawArrays(GLEnum.Triangles, rStart, (uint)rCount);
         }
         _gl.BindVertexArray(0);
@@ -2516,7 +2590,7 @@ public sealed class ParticleSystem : IParticleSink, IDisposable
 
     public void Dispose()
     {
-        for (int i = 0; i < _textures.Length; i++) _textures[i]?.Dispose();
+        for (int i = 0; i < _textures.Count; i++) _textures[i]?.Dispose();
         _gl.DeleteBuffer(_vboQuad);
         _gl.DeleteBuffer(_vboInstance);
         _gl.DeleteVertexArray(_vao);
@@ -2557,38 +2631,22 @@ void main(){
   vAdditive = aSlotAdd.y;
 }";
 
+    // SC-VFX-TEXCACHE — single-sampler fragment: the draw loop batches
+    // per texture and binds each group's bitmap on unit 0, so the shader
+    // no longer branches across a fixed sampler table (which is what
+    // capped the effect palette at 12 textures).
     const string FragmentSrc = @"#version 330 core
 in vec2 vUv;
 in vec4 vColor;
 in float vSlot;
 in float vAdditive;
 uniform sampler2D uTex0;
-uniform sampler2D uTex1;
-uniform sampler2D uTex2;
-uniform sampler2D uTex3;
-uniform sampler2D uTex4;
-uniform sampler2D uTex5;
-uniform sampler2D uTex6;
-uniform sampler2D uTex7;
-uniform sampler2D uTex8;
 uniform float uGamma;
 out vec4 frag;
 void main(){
-  vec4 tex;
-  int slot = int(vSlot + 0.5);
-  if      (slot == 0) tex = texture(uTex0, vUv);
-  else if (slot == 1) tex = texture(uTex1, vUv);
-  else if (slot == 2) tex = texture(uTex2, vUv);
-  else if (slot == 3) tex = texture(uTex3, vUv);
-  else if (slot == 4) tex = texture(uTex4, vUv);
-  else if (slot == 5) tex = texture(uTex5, vUv);
-  else if (slot == 6) tex = texture(uTex6, vUv);
-  else if (slot == 7) tex = texture(uTex7, vUv);
-  else                tex = texture(uTex8, vUv);
-  vec4 c = tex * vColor;
-  // Additive look via the shared SrcAlpha/OneMinusSrcAlpha blend: brighten
-  // RGB and keep alpha so the fragment actually contributes (the prior
-  // c.a=0 zeroed every additive particle and made bolts/sparks invisible).
+  vec4 c = texture(uTex0, vUv) * vColor;
+  // Additive groups draw with SrcAlpha/One; the brighten keeps the glow
+  // read consistent with the old combined-blend tuning.
   if (vAdditive > 0.5) {
     c.rgb *= 1.8;
   }
@@ -2613,39 +2671,18 @@ void main(){
   vColor = aColor;
 }";
 
+    // SC-VFX-TEXCACHE — each ribbon range binds its own texture on unit 0;
+    // uSlot >= 250 keeps the "pure vertex color" sentinel for textureless
+    // primitives (poly shards, sphere meshes, rain).
     const string RibbonFragmentSrc = @"#version 330 core
 in vec2 vUv;
 in vec4 vColor;
 uniform sampler2D uTex0;
-uniform sampler2D uTex1;
-uniform sampler2D uTex2;
-uniform sampler2D uTex3;
-uniform sampler2D uTex4;
-uniform sampler2D uTex5;
-uniform sampler2D uTex6;
-uniform sampler2D uTex7;
-uniform sampler2D uTex8;
 uniform int uSlot;
-uniform sampler2D uTex9;
-uniform sampler2D uTex10;
-uniform sampler2D uTex11;
 uniform float uGamma;
 out vec4 frag;
 void main(){
-  vec4 tex;
-  if      (uSlot >= 250) tex = vec4(1.0); // Phase 23d-2e — textureless (pure vertex color)
-  else if (uSlot == 0) tex = texture(uTex0, vUv);
-  else if (uSlot == 1) tex = texture(uTex1, vUv);
-  else if (uSlot == 2) tex = texture(uTex2, vUv);
-  else if (uSlot == 3) tex = texture(uTex3, vUv);
-  else if (uSlot == 4) tex = texture(uTex4, vUv);
-  else if (uSlot == 5) tex = texture(uTex5, vUv);
-  else if (uSlot == 6) tex = texture(uTex6, vUv);
-  else if (uSlot == 7) tex = texture(uTex7, vUv);
-  else if (uSlot == 8) tex = texture(uTex8, vUv);
-  else if (uSlot == 9) tex = texture(uTex9, vUv);
-  else if (uSlot == 10) tex = texture(uTex10, vUv);
-  else                 tex = texture(uTex11, vUv);
+  vec4 tex = uSlot >= 250 ? vec4(1.0) : texture(uTex0, vUv);
   vec4 c = tex * vColor;
   c.rgb *= 1.8; // ribbons always read as additive bright glow
   c.rgb = pow(c.rgb, vec3(1.0 / max(uGamma, 0.1))); // ALPHA-2V options gamma

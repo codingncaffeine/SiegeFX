@@ -97,6 +97,10 @@ public sealed class SfxRuntime
             // poly shards until the frag-mesh hook lands (FLAGGED
             // DEVIATION alongside model() orbits).
             "linetracer", "spawn",
+            // SC-VFX-TEXCACHE closing sweep — pointtracer (2 shipped
+            // scripts, both utility mana-transfer visuals): a point moving
+            // source→target at velocity(N). Rides the linetracer ribbon.
+            "pointtracer",
         };
 
     /// <summary>True iff every <c>sfx create &lt;kind&gt;</c> reachable from
@@ -1413,7 +1417,7 @@ public sealed class SfxRuntime
                     FadeEnd   = h.HasFadeRange ? h.FadeEnd   : 1.0f,
                     Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
                     SpawnOver = h.SpawnOverSec,
-                    TexSlot   = TextureNameToSlot(h.TextureName, 2),
+                    TexSlot   = ResolveTex(h.TextureName, 2),
                     // Phase 23-fold — per-particle variance color (doc
                     // color1), ground bounce with the authored rebound
                     // elasticity, and splat() stick-where-landed.
@@ -1444,7 +1448,7 @@ public sealed class SfxRuntime
                         CenterSize = h.CenterSize > 0f ? h.CenterSize : 0.75f,
                         IAlpha     = h.IAlpha > 0f ? h.IAlpha : 4.0f,
                         Duration   = h.Duration > 0.05f ? h.Duration : 1.0f,
-                        TexSlot    = TextureNameToSlot(h.TextureName, 2),
+                        TexSlot    = ResolveTex(h.TextureName, 2),
                     };
                     _particles.SpawnCharge(in chspec);
                     break;
@@ -1460,7 +1464,7 @@ public sealed class SfxRuntime
                     PSize    = h.PSize > 0f ? h.PSize : 1.0f,
                     YVel     = h.YVel,
                     Duration = h.Duration > 0.05f ? h.Duration : 1.0f,
-                    TexSlot  = TextureNameToSlot(h.TextureName, 2),
+                    TexSlot  = ResolveTex(h.TextureName, 2),
                 };
                 _particles.SpawnSparkles(in spkspec);
                 break;
@@ -1485,7 +1489,7 @@ public sealed class SfxRuntime
                         FadeIn   = h.HasTin  ? h.FadeIn  : 1.0f,
                         FadeOut  = h.HasTout ? h.FadeOut : 1.0f,
                         Duration = h.Duration > 0.05f ? h.Duration : 1.0f,
-                        TexSlot  = TextureNameToSlot(h.TextureName, 2),
+                        TexSlot  = ResolveTex(h.TextureName, 2),
                     };
                     _particles.SpawnSpe(in spespec);
                     break;
@@ -1509,7 +1513,7 @@ public sealed class SfxRuntime
                     FadeIn    = h.HasTin  ? h.FadeIn  : 1.0f,
                     FadeOut   = h.HasTout ? h.FadeOut : 1.0f,
                     Duration  = h.Duration > 0.05f ? h.Duration : 1.0f,
-                    TexSlot   = TextureNameToSlot(h.TextureName, 2),
+                    TexSlot   = ResolveTex(h.TextureName, 2),
                 };
                 _particles.SpawnFlurry(in fspec);
                 break;
@@ -1588,7 +1592,7 @@ public sealed class SfxRuntime
                     Duration = h.Duration > 0.10f ? h.Duration : 1.0f,
                     Rotate   = h.HasRotate  ? h.RotateVec  : Vector3.Zero,
                     IRotate  = h.HasIRotate ? h.IRotateVec : Vector3.Zero,
-                    TexSlot  = TextureNameToSlot(h.TextureName, 11),
+                    TexSlot  = ResolveTex(h.TextureName, 11),
                     Segments = (byte)Math.Min(96, h.Segments >= 4 ? h.Segments : 16),
                 };
                 _particles.SpawnCylinderTube(in cspec);
@@ -1841,7 +1845,7 @@ public sealed class SfxRuntime
     /// the raw default describes bonfire-scale ambient emitters; the
     /// legacy Scale-derived footprint is kept for that case (flagged for
     /// the DS1 side-by-side pass).</summary>
-    static PlumeSpec BuildPlumeSpec(in Handle h)
+    PlumeSpec BuildPlumeSpec(in Handle h)
     {
         bool steam = h.Mode == EmitterMode.Steam;
         // Honor an AUTHORED velocity even when it's (0,0,0): fireshot's fire
@@ -1877,7 +1881,7 @@ public sealed class SfxRuntime
             Instant     = h.Instant,
             Line        = h.LineMode,
             LineEnd     = h.OtherEnd,
-            TexSlot     = TextureNameToSlot(h.TextureName, h.Mode == EmitterMode.Fire ? (byte)0 : (byte)1),
+            TexSlot     = ResolveTex(h.TextureName, h.Mode == EmitterMode.Fire ? (byte)0 : (byte)1),
             // Phase 23-fold — line-position animation (gom_icesnake's fire
             // walks the line at linespeed) and the burn_body sine wobble.
             LinePos     = h.LinePos,
@@ -2855,6 +2859,7 @@ public sealed class SfxRuntime
             // every tick; child emitters following them via TargetMotionId.
             // Phase 23-fold — monster-corpus kinds.
             case "linetracer":  return EmitterMode.OneShotLineTracer;
+            case "pointtracer": return EmitterMode.OneShotLineTracer; // SC-VFX — moving-point alias
             case "spawn":       return EmitterMode.OneShotExplosion; // poly-shard approx in dispatch
             case "orbiter":     return EmitterMode.MotionOrbiter;
             case "trackball":   return EmitterMode.MotionTrackball;
@@ -3515,6 +3520,17 @@ public sealed class SfxRuntime
     /// family fallbacks (any sparkle-class name → slot 2, any cyl-class
     /// → 9/10/11, etc.). Returns the supplied default when the name
     /// is unrecognized so dispatch arms still pick a usable slot.</summary>
+    /// <summary>SC-VFX-TEXCACHE — authored texture(NAME) → live slot. Asks
+    /// the sink to load the EXACT bitmap on demand (render sinks cache it);
+    /// sinks without a texture cache fall back to the static family map
+    /// below, which is also the fallback when the bitmap doesn't exist.</summary>
+    byte ResolveTex(string? name, byte fallback)
+    {
+        byte mapped = TextureNameToSlot(name, fallback);
+        int live = _particles.ResolveTextureSlot(name, mapped);
+        return live >= 0 && live <= 249 ? (byte)live : mapped;
+    }
+
     public static byte TextureNameToSlot(string? name, byte fallback)
     {
         if (string.IsNullOrEmpty(name)) return fallback;
