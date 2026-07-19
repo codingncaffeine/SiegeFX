@@ -6059,6 +6059,28 @@ public sealed class RenderHost : IDisposable
         return result;
     }
 
+    // SC-MONSTER-SPECIALS — authored [physics] fire_resistance (0..1;
+    // the dragon is 1.0 = immune). Fire-element spell damage scales by
+    // (1 - resistance) at every render-side application point.
+    private readonly Dictionary<string, float> _fireResistCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private float FireResistOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_fireResistCache.TryGetValue(tpl.Name, out var r)) return r;
+        float v = 0f;
+        float.TryParse((_templateStore?.GetAttribute(tpl, "physics", "fire_resistance") ?? "")
+                .Trim(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out v);
+        v = Math.Clamp(v, 0f, 1f);
+        _fireResistCache[tpl.Name] = v;
+        return v;
+    }
+
+    private float ElementScaledDamage(SiegeFX.Core.Assets.SpellTemplate spell,
+        ActorRenderState victim, float dmg)
+        => spell.Element == SiegeFX.Core.Assets.SpellElement.Fire
+            ? dmg * (1f - FireResistOf(victim.Actor.Template)) : dmg;
+
     /// <summary>SC-MONSTER-SPECIALS — the corpse blast: authored damage roll
     /// to EVERYONE inside the radius (party and monsters alike — chained
     /// proxo detonations are authentic), plus a burst visual and a kick of
@@ -30983,7 +31005,8 @@ void main()
                 var d = s.CurrentTransform.Translation - impact;
                 if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 3f) continue;
                 hit.Add(s);
-                float dealt = s.Actor.Combat.ApplyDamage(rolledDamage);
+                float dealt = s.Actor.Combat.ApplyDamage(
+                    ElementScaledDamage(spell, s, rolledDamage));
                 if (dealt <= 0f) continue;
                 AddFloatingText($"-{(int)MathF.Round(dealt)}",
                     s.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
@@ -31015,7 +31038,8 @@ void main()
                 }
                 if (next is null) break;
                 hit.Add(next);
-                float dealt = next.Actor.Combat.ApplyDamage(dmg);
+                float dealt = next.Actor.Combat.ApplyDamage(
+                    ElementScaledDamage(spell, next, dmg));
                 var np = next.CurrentTransform.Translation;
                 if (ch.AttackScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
                     && _sfxStore.TryGet(ch.AttackScript, out _))
@@ -31054,7 +31078,8 @@ void main()
             AwardCombatXp(shot.SpellDamage, best.Actor.Stats, SkillForSpell(spell));
             return;
         }
-        float dealt = best.Actor.Combat.ApplyDamage(shot.SpellDamage);
+        float dealt = best.Actor.Combat.ApplyDamage(
+            ElementScaledDamage(spell, best, shot.SpellDamage));
         Console.WriteLine(
             $"cast {spell.ScreenName}: hit {best.Actor.Template.Name} for {dealt:F0}" +
             $"{(best.Actor.Combat.IsDead ? "  *** DEAD ***" : "")} [impact]");
