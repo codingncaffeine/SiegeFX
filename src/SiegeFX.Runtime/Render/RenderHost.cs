@@ -5434,6 +5434,32 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    /// <summary>SC-MEGAMAP-CHROME — the authored mmap parchment border
+    /// (b_gui_ig_mnu_mmap_* family): corners pinned, edges stretched.
+    /// Missing pieces skip quietly so a partial art set still frames.</summary>
+    private void DrawMegaMapChrome(int vw, int vh)
+    {
+        if (_iconRenderer is null) return;
+        var tl = TryGetGuiTexture("b_gui_ig_mnu_mmap_tl");
+        var tr = TryGetGuiTexture("b_gui_ig_mnu_mmap_tr");
+        var ll = TryGetGuiTexture("b_gui_ig_mnu_mmap_ll");
+        var lr = TryGetGuiTexture("b_gui_ig_mnu_mmap_lr");
+        var tt = TryGetGuiTexture("b_gui_ig_mnu_mmap_t");
+        var bb = TryGetGuiTexture("b_gui_ig_mnu_mmap_bot");
+        var le = TryGetGuiTexture("b_gui_ig_mnu_mmap_l");
+        var re = TryGetGuiTexture("b_gui_ig_mnu_mmap_r");
+        float s = Hud.HudScale.Hud(vh);
+        int corner = (int)(48 * s), edge = (int)(24 * s);
+        if (tt is not null) _iconRenderer.DrawIcon(vw, vh, tt, corner, 0, vw - 2 * corner, edge, Vector4.One);
+        if (bb is not null) _iconRenderer.DrawIcon(vw, vh, bb, corner, vh - edge, vw - 2 * corner, edge, Vector4.One);
+        if (le is not null) _iconRenderer.DrawIcon(vw, vh, le, 0, corner, edge, vh - 2 * corner, Vector4.One);
+        if (re is not null) _iconRenderer.DrawIcon(vw, vh, re, vw - edge, corner, edge, vh - 2 * corner, Vector4.One);
+        if (tl is not null) _iconRenderer.DrawIcon(vw, vh, tl, 0, 0, corner, corner, Vector4.One);
+        if (tr is not null) _iconRenderer.DrawIcon(vw, vh, tr, vw - corner, 0, corner, corner, Vector4.One);
+        if (ll is not null) _iconRenderer.DrawIcon(vw, vh, ll, 0, vh - corner, corner, corner, Vector4.One);
+        if (lr is not null) _iconRenderer.DrawIcon(vw, vh, lr, vw - corner, vh - corner, corner, corner, Vector4.One);
+    }
+
     // --- SC-MATERIAL-MATRIX ----------------------------------------------------
     // The sounddb material rows: (source material, dest material, event) →
     // sound. Materials come from [aspect] material on the template.
@@ -37806,6 +37832,9 @@ void main()
             // strike envelope (~0.45s double pulse). Drawn over the HUD: a
             // real strike whites out everything, and the wash is brief.
             DrawWeatherFlash(size.X, size.Y);
+            // SC-MEGAMAP-CHROME — the authored parchment border frames the
+            // overhead view while the TAB map is up.
+            if (_megaMapActive) DrawMegaMapChrome(size.X, size.Y);
             // SC-NIS-VERBS — fader_proxy screen fade over the world, under
             // the letterbox/subtitles so NIS text stays readable mid-fade.
             if (_screenFadeAlpha > 0.01f && _barRenderer is not null)
