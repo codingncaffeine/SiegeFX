@@ -125,7 +125,11 @@ public sealed class WgcRecorder
         }
         catch (Exception ex)
         {
-            StatusLines.Enqueue($"Recording failed to start ({ex.Message}).");
+            string detail = string.IsNullOrWhiteSpace(ex.Message)
+                ? $"{ex.GetType().Name} 0x{ex.HResult:X8}"
+                : ex.Message;
+            StatusLines.Enqueue($"Recording failed to start ({detail}).");
+            Console.WriteLine($"[record] capture start failed: {ex}");
             CleanupCapture();
             IsRecording = false;
             return false;
@@ -333,12 +337,17 @@ public sealed class WgcRecorder
         string? finishedPath = null;
         try
         {
-            // Explicit profile — presets break with MediaStreamSource input.
-            var profile = new MediaEncodingProfile
-            {
-                Container = new ContainerEncodingProperties { Subtype = MediaEncodingSubtypes.Mpeg4 },
-                Video = VideoEncodingProperties.CreateH264(),
-            };
+            // Preset-based profile with the stream shape overridden. A BARE
+            // explicit profile (CreateH264 with only dims/bitrate/framerate)
+            // is rejected by some HARDWARE encoder MFTs at prepare time with
+            // MF_E_TRANSFORM_TYPE_NOT_SET (0xC00D6D60, empty message — the
+            // field report's instant "Recording failed ()"): the encoder
+            // wants the full H.264 property bag (profile/level/PAR/interlace)
+            // that only the named presets carry. VideoEncodingQuality.Auto is
+            // the one preset that breaks with MediaStreamSource input (it
+            // derives from a source that can't be inspected); NAMED presets
+            // prepare fine — verified headless on the failing machine.
+            var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.HD1080p);
             profile.Video.Width = (uint)(w & ~1); // H.264 wants even dims
             profile.Video.Height = (uint)(h & ~1);
             profile.Video.Bitrate = (uint)Math.Clamp((long)w * h * 10, 8_000_000, 40_000_000);
@@ -347,6 +356,8 @@ public sealed class WgcRecorder
             if (_audioQueue is not null)
                 profile.Audio = AudioEncodingProperties.CreateAac(
                     (uint)_audioRate, (uint)_audioChannels, 192000);
+            else
+                profile.Audio = null; // video-only MSS — drop the preset's AAC leg
 
             var folder = await StorageFolder.GetFolderFromPathAsync(outputDir);
             var file = await folder.CreateFileAsync(fileStem + ".mp4",
@@ -354,16 +365,43 @@ public sealed class WgcRecorder
             using var stream = await file.OpenAsync(FileAccessMode.ReadWrite);
 
             var transcoder = new MediaTranscoder { HardwareAccelerationEnabled = true };
-            var prep = await transcoder.PrepareMediaStreamSourceTranscodeAsync(
-                _mss, stream, profile);
+            PrepareTranscodeResult prep;
+            try
+            {
+                prep = await transcoder.PrepareMediaStreamSourceTranscodeAsync(
+                    _mss, stream, profile);
+            }
+            catch (Exception hwEx)
+            {
+                // The hardware MFT refused the stream — fall back to the
+                // software encoder once (slower, but records everywhere).
+                Console.WriteLine("[record] hardware encoder prepare failed " +
+                    $"({hwEx.GetType().Name} 0x{hwEx.HResult:X8} '{hwEx.Message}') — retrying software");
+                stream.Seek(0);
+                stream.Size = 0;
+                transcoder = new MediaTranscoder { HardwareAccelerationEnabled = false };
+                prep = await transcoder.PrepareMediaStreamSourceTranscodeAsync(
+                    _mss, stream, profile);
+            }
             if (!prep.CanTranscode)
                 throw new InvalidOperationException($"encoder rejected the stream ({prep.FailureReason})");
+            Console.WriteLine($"[record] encoder ready (hw={transcoder.HardwareAccelerationEnabled}, " +
+                $"{profile.Video.Width}x{profile.Video.Height}@60, " +
+                $"audio={(profile.Audio is null ? "none" : $"{_audioRate}Hz {_audioChannels}ch")})");
             await prep.TranscodeAsync();
             finishedPath = file.Path;
         }
         catch (Exception ex)
         {
-            StatusLines.Enqueue($"Recording failed ({ex.Message}).");
+            // WinRT/MF failures often carry an EMPTY Message (restricted
+            // error info with no description) — surface type + HRESULT so
+            // the strip line is never blank, and put the full exception in
+            // the session log for diagnosis.
+            string detail = string.IsNullOrWhiteSpace(ex.Message)
+                ? $"{ex.GetType().Name} 0x{ex.HResult:X8}"
+                : ex.Message;
+            StatusLines.Enqueue($"Recording failed ({detail}).");
+            Console.WriteLine($"[record] transcode failed: {ex}");
         }
         finally
         {
