@@ -1715,6 +1715,10 @@ public sealed class RenderHost : IDisposable
         public Hud.FieldCommandsPanel.Action FcAttack    = Hud.FieldCommandsPanel.Action.AtkFightback;
         public Hud.FieldCommandsPanel.Action FcTargeting = Hud.FieldCommandsPanel.Action.TgtClosest;
         public bool FcFollow = true;
+        // SC-MONSTER-SPECIALS — startup_reveal dormancy: true once this
+        // actor has woken (non-dormant templates wake on first check).
+        public bool StartupAwakened;
+
         // SC-SELECT-MOVE — retail's selection-driven orders. A ground click
         // with this member selected sets MoveOrder (their formation slot at
         // the destination); an enemy click sets OrderedFoe (explicit attack,
@@ -2941,6 +2945,12 @@ public sealed class RenderHost : IDisposable
             BeginDeathChore(s, settled: wasDowned);
             if (!wasDowned)
                 PlayDeathSfx(s.Actor.Template, s.CurrentTransform.Translation);
+            // SC-MONSTER-SPECIALS — authored death blast (proxo, maljin).
+            if (_templateStore is not null)
+            {
+                var sp = MonsterSpecials(s.Actor.Template);
+                if (sp.Explodes) DetonateCorpse(s, sp);
+            }
             // SC-CARRIED-INVENTORY — a dying companion is never a loot
             // piñata for the authored [inventory][other] TABLE (that guard
             // stays: no rolled drops). But the manual is explicit about the
@@ -6018,6 +6028,73 @@ public sealed class RenderHost : IDisposable
     // repeated casts buried the player under a permanent pile of imps.
     private readonly List<(ActorRenderState Actor, float DieAt)> _multiSummonLive = new();
     private float _multiSummonClock;
+
+    // ── SC-MONSTER-SPECIALS ────────────────────────────────────────────────
+    // Per-template cache of the authored monster specials: suicide blasts
+    // ([attack] explode_when_killed + area_damage_radius + damage range —
+    // proxo, maljin) and startup_reveal dormancy ([mind] jat_startup —
+    // buried skeletons/seck that rise when the party closes in).
+    private readonly Dictionary<string, (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant)>
+        _monsterSpecialCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant)
+        MonsterSpecials(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_monsterSpecialCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        var ci = System.Globalization.CultureInfo.InvariantCulture;
+        bool ex = string.Equals(
+            (_templateStore?.GetAttribute(tpl, "attack", "explode_when_killed") ?? "").Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        float rad = 3f, dmin = 20f, dmax = 40f;
+        if (float.TryParse((_templateStore?.GetAttribute(tpl, "attack", "area_damage_radius") ?? "")
+                .Trim(), System.Globalization.NumberStyles.Float, ci, out var r) && r > 0f) rad = r;
+        if (float.TryParse((_templateStore?.GetAttribute(tpl, "attack", "damage_min") ?? "")
+                .Trim(), System.Globalization.NumberStyles.Float, ci, out var mn) && mn > 0f) dmin = mn;
+        if (float.TryParse((_templateStore?.GetAttribute(tpl, "attack", "damage_max") ?? "")
+                .Trim(), System.Globalization.NumberStyles.Float, ci, out var mx) && mx > 0f) dmax = MathF.Max(mx, dmin);
+        bool dormant = (_templateStore?.GetAttribute(tpl, "mind", "jat_startup") ?? "")
+            .Contains("startup_reveal", StringComparison.OrdinalIgnoreCase);
+        var result = (ex, rad, dmin, dmax, dormant);
+        _monsterSpecialCache[tpl.Name] = result;
+        return result;
+    }
+
+    /// <summary>SC-MONSTER-SPECIALS — the corpse blast: authored damage roll
+    /// to EVERYONE inside the radius (party and monsters alike — chained
+    /// proxo detonations are authentic), plus a burst visual and a kick of
+    /// camera shake. Neighbor kills resolve on the next sweep pass.</summary>
+    private void DetonateCorpse(ActorRenderState corpse,
+        (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant) sp)
+    {
+        var center = corpse.CurrentTransform.Translation;
+        float r2 = sp.Radius * sp.Radius;
+        int struck = 0;
+        void Blast(ActorRenderState victim)
+        {
+            if (victim.IsDead || ReferenceEquals(victim, corpse)) return;
+            var d = victim.CurrentTransform.Translation - center;
+            if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 3f) return;
+            float dmg = sp.DmgMin + (float)_turretRng.NextDouble() * (sp.DmgMax - sp.DmgMin);
+            float dealt = victim.Actor.Combat.ApplyDamage(dmg);
+            if (dealt <= 0f) return;
+            struck++;
+            AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                victim.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+                new Vector4(1f, 0.55f, 0.15f, 1f));
+        }
+        if (_player is not null && !_player.IsDead) Blast(_player);
+        foreach (var m in _party)
+            if (m.PartyIndex > 0 && m.IsPartyMember && !m.IsDead) Blast(m);
+        foreach (var a in _actors)
+            if (!a.IsPlayer && !a.IsPartyMember && a.Actor.Stats.IsCombatant) Blast(a);
+        _particles?.SpawnSpark(center + new Vector3(0f, 0.8f, 0f),
+            new Vector4(1f, 0.6f, 0.2f, 1f), 0.5f, 1.0f, 40);
+        _particles?.SpawnSmoke(center + new Vector3(0f, 0.6f, 0f),
+            new Vector4(0.35f, 0.3f, 0.28f, 0.8f), 0.8f, 1.2f, 16);
+        StartCameraShake(0.35f, 0.5f);
+        Console.WriteLine($"[detonate] {corpse.Actor.Template.Name} exploded — " +
+                          $"struck {struck} in {sp.Radius:F1}u");
+    }
 
     // ── SC-SPELL-DELIVERY — turret batteries ([spell_turret]) ──────────────
     // The caster plants an auto-firing battery (Gom's staff turrets): shots
@@ -21430,11 +21507,51 @@ void main()
                     var quarry = hostile
                         ? NearestLivePartyMember(s.CurrentTransform.Translation)
                         : null;
+                    // SC-MONSTER-SPECIALS — startup_reveal dormancy: the
+                    // buried ones hold perfectly still until the party is
+                    // close (or something hurt them), then rise and fight.
+                    if (!s.StartupAwakened && _templateStore is not null)
+                    {
+                        var msp = MonsterSpecials(s.Actor.Template);
+                        if (msp.Dormant)
+                        {
+                            bool hurt = s.Actor.Combat.CurrentLife
+                                < s.Actor.Stats.MaxLife - 0.1f;
+                            float wake2 = 9f * 9f;
+                            bool near = false;
+                            if (quarry is not null)
+                            {
+                                var dv = quarry.CurrentTransform.Translation
+                                    - s.CurrentTransform.Translation;
+                                near = dv.X * dv.X + dv.Z * dv.Z < wake2;
+                            }
+                            if (!near && !hurt) continue;   // stay buried
+                            s.StartupAwakened = true;
+                            if (s.Actor.GetClipIndex("awk") >= 0)
+                                s.Actor.PlayChoreOnce("awk", 1.6f);
+                            Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises");
+                        }
+                        else s.StartupAwakened = true;
+                    }
                     s.Brain.Tick(
                         (float)stepSec,
                         quarry?.CurrentTransform.Translation,
                         quarry?.Actor.Combat,
                         quarry?.Actor.Stats);
+                    // SC-MONSTER-SPECIALS — walk-up detonation: a bomber
+                    // (explode_when_killed + blast radius) that reaches its
+                    // victim fuses itself; the death sweep runs the blast.
+                    if (hostile && quarry is not null && _templateStore is not null)
+                    {
+                        var fsp = MonsterSpecials(s.Actor.Template);
+                        if (fsp.Explodes && fsp.Radius > 0.5f)
+                        {
+                            var fd = quarry.CurrentTransform.Translation
+                                - s.CurrentTransform.Translation;
+                            if (fd.X * fd.X + fd.Z * fd.Z < 1.44f)
+                                s.Actor.Combat.ApplyDamage(1e9f);
+                        }
+                    }
                     // Compose CurrentTransform = rotate-to-facing * translate-to-pos.
                     // We drop the authored spawn orientation once the brain owns
                     // movement; the mesh's local forward in DS1 is +Z, so facing into
