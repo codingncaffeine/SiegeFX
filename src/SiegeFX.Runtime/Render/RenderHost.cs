@@ -15970,10 +15970,13 @@ void main()
                 // SC-NIS - index NIS gizmos with world pose (placement
                 // quaternion composed with the anchor node's rotation).
                 var tnLower = p.TemplateName.ToLowerInvariant();
-                if (tnLower is "cmd_enter_nis" or "cmd_camera_command" or "cmd_camera_waypoint" or "cmd_leave_nis")
+                if (tnLower is "cmd_enter_nis" or "cmd_camera_command" or "cmd_camera_waypoint" or "cmd_leave_nis" or "cmd_camera_move")
                 {
                     var nis = new NisCommand { Scid = p.Scid, Type = tnLower, Pos = world, Orient = p.Placement.Orientation };
                     if (tnLower == "cmd_leave_nis") nis.Duration = 2f;
+                    // SC-NIS-VERBS — cmd_camera_move has no param block:
+                    // pose-only, treated as a 2s snap-hold at the gizmo.
+                    if (tnLower == "cmd_camera_move") { nis.Duration = 2f; nis.Snap = true; }
                     if (_regionLayout is not null &&
                         _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var nw2))
                     {
@@ -16282,6 +16285,16 @@ void main()
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFdg))
                     ActivateAiCommand(cmd.Next, afterFdg);
+                break;
+            case "cmd_camera_move":
+                // Pose-only camera cut: valid mid-NIS (drives the same
+                // segment machinery the camera chains use).
+                if (_nisPhase != NisPhase.Off && _nisCommands.ContainsKey(scid))
+                    StartNisSegment(scid);
+                else
+                    Console.WriteLine($"[cmd] camera_move 0x{scid:X8} outside NIS — ignored");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCamMove))
+                    ActivateAiCommand(cmd.Next, afterCamMove);
                 break;
             case "cmd_ai_t_attack_catalyst":
                 // "Make X attack" — flip the target actor hostile and give
