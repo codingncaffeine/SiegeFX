@@ -2631,6 +2631,8 @@ public sealed class RenderHost : IDisposable
             // SC-DOWNED — an unconscious member lies where they fell: no
             // movement, no combat, no facing updates until revived.
             if (m.Actor.Combat.Downed) continue;
+            // SC-NIS-VERBS — wrangled members hold pose for the set-piece.
+            if (PartyWrangled) { m.Brain.ForceIdle(); continue; }
             // SC-MP-RECRUIT — a CLIENT's companion is host-simulated: its
             // pose arrives via the world delta; driving the local brain too
             // would fight the stream. It still holds its rail/inventory slot.
@@ -3019,6 +3021,20 @@ public sealed class RenderHost : IDisposable
         // conversation (the intro storyteller).
         if (name.Equals("we_req_talk_begin", StringComparison.OrdinalIgnoreCase))
             OnTalkBeginMessage(toScid);
+        // SC-NIS-VERBS — we_req_deactivate releases stateful command gizmos:
+        // the party wrangler unfreezes, a fader proxy fades back in.
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase)
+            && _commands.TryGetValue(toScid, out var offCmd))
+        {
+            var offType = offCmd.Type.ToLowerInvariant();
+            if (offType == "cmd_party_wrangler" && _wranglerActive.Remove(toScid))
+                Console.WriteLine($"[cmd] party_wrangler 0x{toScid:X8} OFF ({_wranglerActive.Count} still active)");
+            else if (offType == "fader_proxy")
+            {
+                _screenFadeTarget = 0f;
+                Console.WriteLine($"[cmd] fader_proxy 0x{toScid:X8} fade back in");
+            }
+        }
         // SC-CMD-ACTIVATE - AI command gizmos fire on we_req_activate
         // (the intro's "move hero" / "move norick" beats).
         if (name.Equals("we_req_activate", StringComparison.OrdinalIgnoreCase))
@@ -15751,6 +15767,14 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos, uint Target1)> _commands = new();
     // SC-CAM-SHAKE — authored magnitude/duration per placed quake gizmo.
     private readonly System.Collections.Generic.Dictionary<uint, (float Magnitude, float Duration)> _quakeParams = new();
+    // SC-NIS-VERBS — cmd_selection_toggle's authored target + mode.
+    private readonly System.Collections.Generic.Dictionary<uint, (uint ObjectScid, bool ToggleVis)> _selToggleParams = new();
+    // SC-NIS-VERBS — active party wranglers: while ANY is on, the party is
+    // frozen and invulnerable (set-piece protection); hostiles ignore them.
+    private readonly HashSet<uint> _wranglerActive = new();
+    private bool PartyWrangled => _wranglerActive.Count > 0;
+    // SC-NIS-VERBS — fader_proxy screen fade (0 = clear, 1 = black).
+    private float _screenFadeAlpha, _screenFadeTarget;
     private HashSet<string>? _commandGasLoaded;
 
     // SC-NORICK — cmd_animation_command target actor (client_scid) -> the command's
@@ -15862,6 +15886,24 @@ void main()
                         }
                     }
                     _quakeParams[p.Scid] = (qMag, qDur);
+                }
+                // SC-NIS-VERBS — cmd_selection_toggle authors its target
+                // object + whether visibility flips.
+                if (p.TemplateName.Equals("cmd_selection_toggle", StringComparison.OrdinalIgnoreCase))
+                {
+                    uint stObj = 0; bool stVis = true;
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("cmd_selection_toggle", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var at in child.Attributes)
+                        {
+                            if (at.Name.Equals("object_scid", StringComparison.OrdinalIgnoreCase))
+                                TryParseSnodeGuid(at.Value, out stObj);
+                            else if (at.Name.Equals("toggle_visability", StringComparison.OrdinalIgnoreCase))
+                                stVis = at.Value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+                        }
+                    }
+                    if (stObj != 0) _selToggleParams[p.Scid] = (stObj, stVis);
                 }
                 // SC-NORICK — index cmd_animation_command by its target actor so the
                 // NIS drivers know where an actor is authored to perform (Norick's
@@ -16089,6 +16131,79 @@ void main()
                 Console.WriteLine($"[cmd] alignment_changer 0x{scid:X8} — combatants already hostile; chained");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAlign))
                     ActivateAiCommand(cmd.Next, afterAlign);
+                break;
+            // SC-NIS-VERBS — the set-piece party verbs.
+            case "cmd_party_wrangler":
+                _wranglerActive.Add(scid);
+                Console.WriteLine($"[cmd] party_wrangler 0x{scid:X8} ON — party frozen+invulnerable");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterWrangle))
+                    ActivateAiCommand(cmd.Next, afterWrangle);
+                break;
+            case "cmd_stop_party":
+                if (_playerFollower is not null)
+                    _playerFollower.SetTarget(_playerFollower.Position);
+                _pendingAttackTarget = null;
+                _pendingCastTarget = null;
+                _pendingCastProp = null;
+                _pendingBreakProp = null;
+                _pendingPickupPile = null;
+                foreach (var spm in _party)
+                {
+                    if (spm.PartyIndex <= 0 || spm.IsDead || spm.Brain is null) continue;
+                    spm.MoveOrder = null;
+                    spm.OrderedFoe = null;
+                    var spf = spm.Brain.Wander.Follower;
+                    spf.SetTarget(spf.Position);
+                }
+                Console.WriteLine($"[cmd] stop_party 0x{scid:X8}");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterStop))
+                    ActivateAiCommand(cmd.Next, afterStop);
+                break;
+            case "cmd_move_party":
+            {
+                // Walk the whole party to the gizmo (formation slots around
+                // its authored position), regardless of the live selection.
+                var mvDest = cmd.Pos;
+                if (_navMesh is not null && _navMesh.TryFindTriangle(mvDest, out var mvTri))
+                    mvDest = mvDest with { Y = _navMesh.SampleYOnTriangle(mvTri, mvDest) };
+                _playerFollower?.SetTarget(mvDest);
+                var mvFace = _playerFollower is not null
+                    ? mvDest - _playerFollower.Position : Vector3.UnitZ;
+                mvFace = new Vector3(mvFace.X, 0f, mvFace.Z);
+                mvFace = mvFace.LengthSquared() > 1e-4f ? Vector3.Normalize(mvFace) : Vector3.UnitZ;
+                foreach (var mpm in _party)
+                {
+                    if (mpm.PartyIndex <= 0 || mpm.IsDead || mpm.Brain is null) continue;
+                    mpm.MoveOrder = SnapToNavmesh(
+                        PartyFormationSlot(_partyFormation, mpm.PartyIndex, mvDest, mvFace), mvDest);
+                    mpm.OrderedFoe = null;
+                    mpm.FollowSuspended = false;
+                }
+                Console.WriteLine($"[cmd] move_party 0x{scid:X8} → ({mvDest.X:F1},{mvDest.Z:F1})");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterMove))
+                    ActivateAiCommand(cmd.Next, afterMove);
+                break;
+            }
+            case "cmd_selection_toggle":
+            {
+                if (_selToggleParams.TryGetValue(scid, out var st))
+                {
+                    bool flipped = false;
+                    foreach (var ta in _actors)
+                        if (ta.Actor.Instance.Scid == st.ObjectScid)
+                        { ta.Hidden = !ta.Hidden; flipped = true; break; }
+                    Console.WriteLine($"[cmd] selection_toggle 0x{scid:X8} → 0x{st.ObjectScid:X8} " +
+                                      (flipped ? "visibility flipped" : "target not found (prop layer?)"));
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterTog))
+                    ActivateAiCommand(cmd.Next, afterTog);
+                break;
+            }
+            case "fader_proxy":
+                _screenFadeTarget = 1f;
+                Console.WriteLine($"[cmd] fader_proxy 0x{scid:X8} fade to black");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFade))
+                    ActivateAiCommand(cmd.Next, afterFade);
                 break;
             case "camera_quake":
             case "rock_beast_stomp":
@@ -18422,6 +18537,9 @@ void main()
     /// distance — same plane the aggro checks use.</summary>
     private ActorRenderState? NearestLivePartyMember(Vector3 from)
     {
+        // SC-NIS-VERBS — a wrangled party is untouchable set-piece cargo:
+        // hostiles simply have no party target while the wrangler holds.
+        if (PartyWrangled) return null;
         // SC-DOWNED — unconscious bodies are LAST-RESORT targets: hostiles
         // switch to whoever is still fighting, and only finish a downed
         // character when nobody conscious remains.
@@ -20639,6 +20757,11 @@ void main()
         TickDefeat((float)dt);
         // SC-CAM-SHAKE — decay the shake envelope on the frame cadence.
         TickCameraShake((float)dt);
+        // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
+        if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
+            _screenFadeAlpha = _screenFadeTarget > _screenFadeAlpha
+                ? MathF.Min(_screenFadeTarget, _screenFadeAlpha + (float)dt * 1.4f)
+                : MathF.Max(_screenFadeTarget, _screenFadeAlpha - (float)dt * 1.4f);
         // SC-ATTACK-SCHED (Phase 18c) — advance the player's in-flight swing
         // (BSWG whoosh, FIRE-note damage, qffg pad, auto-attack re-engage).
         TickPlayerSwing((float)dt);
@@ -36048,6 +36171,11 @@ void main()
             // strike envelope (~0.45s double pulse). Drawn over the HUD: a
             // real strike whites out everything, and the wash is brief.
             DrawWeatherFlash(size.X, size.Y);
+            // SC-NIS-VERBS — fader_proxy screen fade over the world, under
+            // the letterbox/subtitles so NIS text stays readable mid-fade.
+            if (_screenFadeAlpha > 0.01f && _barRenderer is not null)
+                _barRenderer.DrawRect(size.X, size.Y, 0, 0, size.X, size.Y,
+                    new Vector4(0f, 0f, 0f, _screenFadeAlpha));
             DrawNisLetterbox(size.X, size.Y);
             DrawSubtitles(size.X, size.Y);
 
