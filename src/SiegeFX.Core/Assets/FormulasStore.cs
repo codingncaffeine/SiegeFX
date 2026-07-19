@@ -250,7 +250,13 @@ public sealed class FormulasStore
             ReadFloat(combat, "difficulty_easy_player", d.DifficultyEasyPlayer),
             ReadFloat(combat, "difficulty_easy_computer", d.DifficultyEasyComputer),
             ReadFloat(combat, "difficulty_hard_player", d.DifficultyHardPlayer),
-            ReadFloat(combat, "difficulty_hard_computer", d.DifficultyHardComputer));
+            ReadFloat(combat, "difficulty_hard_computer", d.DifficultyHardComputer),
+            ReadFloat(combat, "error_scalar", d.AimErrorScalar),
+            ReadFloat(combat, "dex_scalar", d.AimDexScalar),
+            ReadFloat(combat, "int_scalar", d.AimIntScalar),
+            ReadFloat(combat, "skill_scalar", d.AimSkillScalar),
+            ReadFloat(combat, "min_unconscious_duration", d.MinUnconsciousDuration),
+            ReadFloat(combat, "enemy_near_sphere", d.EnemyNearSphere));
     }
 
     private static GasNode? FindBlock(IReadOnlyList<GasNode> roots, string header)

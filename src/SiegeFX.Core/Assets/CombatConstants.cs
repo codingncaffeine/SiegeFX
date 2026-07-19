@@ -32,7 +32,15 @@ public readonly record struct CombatConstants(
     float ArmorScalar,
     float DifficultyPlayer, float DifficultyComputer,
     float DifficultyEasyPlayer = 1.35f, float DifficultyEasyComputer = 0.5f,
-    float DifficultyHardPlayer = 0.85f, float DifficultyHardComputer = 1.45f)
+    float DifficultyHardPlayer = 0.85f, float DifficultyHardComputer = 1.45f,
+    // SC-AIM-ERROR — ranged aiming error: shot deviates by up to
+    // ±ErrorScalar degrees scaled by (100 − accuracy)/100 where accuracy =
+    // ATan((dex·Dex + int·Int + skill·Skill)/14.7)·63 (authored comment).
+    float AimErrorScalar = 4.0f, float AimDexScalar = 0.35f,
+    float AimIntScalar = 0.10f, float AimSkillScalar = 0.55f,
+    // SC-DOWNED — authored unconsciousness gates: minimum time down, and
+    // the enemy-proximity sphere that blocks natural recovery.
+    float MinUnconsciousDuration = 5.0f, float EnemyNearSphere = 8.0f)
 {
     /// <summary>Retail shipped values at medium difficulty.</summary>
     public static CombatConstants Ds1Default => new(

@@ -1719,6 +1719,10 @@ public sealed class RenderHost : IDisposable
         // actor has woken (non-dormant templates wake on first check).
         public bool StartupAwakened;
 
+        // SC-DOWNED — play-clock stamp of the collapse; the authored
+        // min_unconscious_duration gate measures from here.
+        public double DownedAtSeconds;
+
         // SC-SELECT-MOVE — retail's selection-driven orders. A ground click
         // with this member selected sets MoveOrder (their formation slot at
         // the destination); an enemy click sets OrderedFoe (explicit attack,
@@ -2927,6 +2931,7 @@ public sealed class RenderHost : IDisposable
             if (s.IsPartyMember && !s.Actor.Combat.Downed)
             {
                 s.Actor.Combat.EnterDowned();
+                s.DownedAtSeconds = _playSeconds;
                 s.CanFight = false;
                 s.MoveOrder = null;
                 s.OrderedFoe = null;
@@ -18979,6 +18984,29 @@ void main()
     /// them back up. The hero recovers the same way but never trauma-dies
     /// while a conscious companion could still save them — the downed-aware
     /// PartyWiped() owns the defeat call when nobody is left standing.</summary>
+    /// <summary>SC-DOWNED — the authored recovery gates: a body stays down
+    /// for at least min_unconscious_duration, and NATURAL recovery (the
+    /// regen trickle) won't stand them up while an enemy prowls inside
+    /// enemy_near_sphere — a real heal (≥25% of max) overrides the threat
+    /// gate, matching the manual's "healed back up by a party member".</summary>
+    private bool DownedMayRise(ActorRenderState who)
+    {
+        var cc = _formulas?.Combat ?? SiegeFX.Core.Assets.CombatConstants.Ds1Default;
+        if (_playSeconds - who.DownedAtSeconds < cc.MinUnconsciousDuration) return false;
+        var c = who.Actor.Combat;
+        bool realHeal = c.CurrentLife >= 0.25f * who.Actor.Stats.MaxLife;
+        if (realHeal) return true;
+        float r2 = cc.EnemyNearSphere * cc.EnemyNearSphere;
+        var p = who.CurrentTransform.Translation;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || !s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
+            var d = s.CurrentTransform.Translation - p;
+            if (d.X * d.X + d.Z * d.Z < r2) return false;   // play dead
+        }
+        return true;
+    }
+
     private void TickDownedRecovery()
     {
         float thr = _formulas?.DeathThreshold ?? 0.66f;
@@ -18992,7 +19020,7 @@ void main()
                 c.ConfirmDeath();
                 Console.WriteLine($"[downed] {m.Actor.Template.Name}'s trauma is fatal");
             }
-            else if (c.CurrentLife >= 1f)
+            else if (c.CurrentLife >= 1f && DownedMayRise(m))
             {
                 c.ClearDowned();
                 m.CanFight = true;
@@ -19003,7 +19031,7 @@ void main()
         if (_player is not null && !_player.IsDead)
         {
             var c = _player.Actor.Combat;
-            if (c.Downed && c.CurrentLife >= 1f)
+            if (c.Downed && c.CurrentLife >= 1f && DownedMayRise(_player))
             {
                 c.ClearDowned();
                 _player.Actor.Host.OverrideAnimIndex(-1, 0f);
@@ -22903,6 +22931,7 @@ void main()
             if (!_player.Actor.Combat.Downed && AnyConsciousMember())
             {
                 _player.Actor.Combat.EnterDowned();
+                _player.DownedAtSeconds = _playSeconds;
                 BeginDeathChore(_player);
                 PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
                 _playerFollower?.SetTarget(_playerFollower.Position);
@@ -31475,6 +31504,29 @@ void main()
                     aim = rp.World.Translation + new Vector3(0f, 0.5f, 0f);
                 }
                 else continue;
+                // SC-AIM-ERROR — authored ranged aiming error: the arrow's
+                // aim point deviates by up to ±error_scalar degrees, scaled
+                // by the authored accuracy curve over DEX/INT/Ranged skill.
+                if (_formulas is not null && ps.Target is not null)
+                {
+                    var cc = _formulas.Combat;
+                    var stt = _player.Actor.Stats;
+                    float acc = MathF.Atan(
+                        (cc.AimDexScalar * stt.Dexterity
+                         + cc.AimIntScalar * stt.Intelligence
+                         + cc.AimSkillScalar * stt.RangedSkill) / 14.7f) * 63f;
+                    float errDeg = cc.AimErrorScalar * MathF.Max(0f, 100f - acc) / 100f;
+                    if (errDeg > 0.01f)
+                    {
+                        float ang = (float)(_turretRng.NextDouble() * 2.0 - 1.0)
+                            * errDeg * (MathF.PI / 180f);
+                        var rel = aim - src;
+                        aim = src + new Vector3(
+                            rel.X * MathF.Cos(ang) - rel.Z * MathF.Sin(ang),
+                            rel.Y,
+                            rel.X * MathF.Sin(ang) + rel.Z * MathF.Cos(ang));
+                    }
+                }
                 var shot = new RangedShot
                 {
                     Gravity = _weaponAmmoGravity,
@@ -39067,6 +39119,7 @@ void main()
                 if (ps.Downed && !pv.Dead && pv.Life <= 0f)
                 {
                     _player.Actor.Combat.EnterDowned();
+                    _player.DownedAtSeconds = _playSeconds - 60;   // predates the gate
                     BeginDeathChore(_player, settled: true);
                 }
                 else if (!pv.Dead)
@@ -39380,6 +39433,7 @@ void main()
             {
                 npc.Actor.Combat.RestoreFromSave(0f, cs.CurrentMana, dead: false);
                 npc.Actor.Combat.EnterDowned();
+                npc.DownedAtSeconds = _playSeconds - 60;   // save predates the gate
                 npc.CanFight = false;
                 BeginDeathChore(npc, settled: true);
             }
