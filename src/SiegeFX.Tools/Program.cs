@@ -815,6 +815,7 @@ static int DispatchRegion(string[] a)
         "elevators"   => CmdRegionElevators(a[1..]),
         "logic-gizmos" => CmdRegionLogicGizmos(a[1..]),
         "roam-sim"    => CmdRegionRoamSim(a[1..]),
+        "chase-sim"   => CmdRegionChaseSim(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -3196,7 +3197,7 @@ static int CmdRegionRoamSim(string[] a)
 {
     if (a.Length < 4)
     {
-        Console.Error.WriteLine("usage: siegefx region roam-sim <map-tank> <terrain-tank> <region1,region2,...> <sim-seconds> [--speed=4.5] [--seed=1] [--near=x,z,r]");
+        Console.Error.WriteLine("usage: siegefx region roam-sim <map-tank> <terrain-tank> <region1,region2,...> <sim-seconds> [--speed=4.5] [--seed=1] [--near=x,z,r] [--nogens]");
         Console.Error.WriteLine("       coordinates are in the world frame rooted at region1");
         return 1;
     }
@@ -3205,6 +3206,7 @@ static int CmdRegionRoamSim(string[] a)
     { Console.Error.WriteLine($"bad sim-seconds: '{a[3]}'"); return 1; }
     float speed = 4.5f;
     int seed = 1;
+    bool gens = true;
     Vector3 nearCenter = default;
     float nearRadius = 0f;
     for (int i = 4; i < a.Length; i++)
@@ -3212,6 +3214,7 @@ static int CmdRegionRoamSim(string[] a)
         if (a[i].StartsWith("--speed=") && float.TryParse(a[i]["--speed=".Length..],
             System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sv)) speed = sv;
         else if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var kv)) seed = kv;
+        else if (a[i] == "--nogens") gens = false;
         else if (a[i].StartsWith("--near="))
         {
             var parts = a[i]["--near=".Length..].Split(',');
@@ -3232,35 +3235,26 @@ static int CmdRegionRoamSim(string[] a)
     // an unmarked sim mesh would soak a world with no fences or walls.
     MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld);
 
-    // One sim entry per actor.gas placement that lands on the mesh.
+    // One sim entry per actor.gas placement (and, unless --nogens, per
+    // generator child — the runtime spawns those at the generator's own
+    // position; the actor-only soak was blind to the whole ambush class).
     var sims = new List<(string Template, Vector3 Anchor, SiegeFX.Core.Actors.ActorFollower Follower, int BlockedTicks, float Walked)>();
-    int offMesh = 0, filtered = 0;
-    using (var mapTank = TankFile.Open(a[0]))
+    int offMesh = 0, filtered = 0, genChildren = 0;
+    foreach (var (template, rawPos, fromGen) in CollectSimSpawns(a[0], a[2], nodeWorld, gens))
     {
-        var mapReader = new TankReader(mapTank);
-        foreach (var raw in a[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var pos = rawPos;
+        if (nearRadius > 0f)
         {
-            var rp = raw.Replace('\\', '/');
-            if (!rp.StartsWith('/')) rp = "/" + rp;
-            if (rp.EndsWith('/')) rp = rp[..^1];
-            var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
-            foreach (var p in actors)
-            {
-                if (!nodeWorld.TryGetValue(p.Placement.NodeGuid, out var w)) continue;
-                var pos = Vector3.Transform(p.Placement.LocalPosition, w);
-                if (nearRadius > 0f)
-                {
-                    float dx = pos.X - nearCenter.X, dz = pos.Z - nearCenter.Z;
-                    if (dx * dx + dz * dz > nearRadius * nearRadius) { filtered++; continue; }
-                }
-                if (!mesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) { offMesh++; continue; }
-                pos = pos with { Y = mesh.SampleYOnTriangle(tri, pos) };
-                var f = new SiegeFX.Core.Actors.ActorFollower(mesh, pos, speed, seed + sims.Count, Vector3.UnitZ);
-                sims.Add((p.TemplateName, pos, f, 0, 0f));
-            }
+            float dx = pos.X - nearCenter.X, dz = pos.Z - nearCenter.Z;
+            if (dx * dx + dz * dz > nearRadius * nearRadius) { filtered++; continue; }
         }
+        if (!mesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) { offMesh++; continue; }
+        pos = pos with { Y = mesh.SampleYOnTriangle(tri, pos) };
+        var f = new SiegeFX.Core.Actors.ActorFollower(mesh, pos, speed, seed + sims.Count, Vector3.UnitZ);
+        sims.Add((template, pos, f, 0, 0f));
+        if (fromGen) genChildren++;
     }
-    Console.WriteLine($"Actors     : {sims.Count} simulated, {offMesh} off-mesh skipped" +
+    Console.WriteLine($"Actors     : {sims.Count} simulated ({genChildren} generator children), {offMesh} off-mesh skipped" +
                       (nearRadius > 0f ? $", {filtered} outside --near circle" : ""));
     if (sims.Count == 0) return 2;
 
@@ -3307,6 +3301,10 @@ static int CmdRegionRoamSim(string[] a)
             if (i == j) continue;
             var pj = sims[j].Follower.Position;
             if (Vector3.DistanceSquared(pj, sims[j].Anchor) <= 2.5f * 2.5f) continue;
+            // Generator CLONES share one anchor — siblings milling around
+            // their own spawn are not a pile. Converging counts only from
+            // DIFFERENT authored posts.
+            if (Vector3.DistanceSquared(sims[i].Anchor, sims[j].Anchor) <= 2.5f * 2.5f) continue;
             if (Vector3.DistanceSquared(pi, pj) <= 1.5f * 1.5f) close++;
         }
         if (close >= 3)
@@ -3327,6 +3325,324 @@ static int CmdRegionRoamSim(string[] a)
     foreach (var (_, line) in lines.Take(15)) Console.WriteLine(line);
     if (lines.Count > 15) Console.WriteLine($"  ... {lines.Count - 15} more");
     return frozen == 0 && piled == 0 ? 0 : 3;
+}
+
+/// <summary>Shared spawn collector for the roam/chase sims: every actor.gas
+/// placement plus (optionally) one entry per incubating generator CHILD.
+/// The runtime spawns generator children AT the generator's own position
+/// (RenderHost.SpawnGeneratorChild) — the actor-only soak was blind to the
+/// whole ambush/spawner class (the field report's frozen generator bats).
+/// Child resolution mirrors RenderHost.LoadGenerators / gen-audit: the
+/// [generator*] block on the placement node wins, else the template chain
+/// (skipping the generator_in_object event component). Requires
+/// Logic.dsres beside the map tank for template resolution; absent =
+/// generators skipped with a loud note.</summary>
+static List<(string Template, Vector3 Pos, bool FromGenerator)> CollectSimSpawns(
+    string mapTankPath, string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld,
+    bool includeGenerators)
+{
+    var spawns = new List<(string, Vector3, bool)>();
+    using var mapTank = TankFile.Open(mapTankPath);
+    var mapReader = new TankReader(mapTank);
+    SiegeFX.Core.Assets.TemplateStore? store = null;
+    TankFile? logicTank = null;
+    try
+    {
+        if (includeGenerators)
+        {
+            string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(mapTankPath)));
+            string logicPath = root is null ? "" : Path.Combine(root, "Resources", "Logic.dsres");
+            if (File.Exists(logicPath))
+            {
+                logicTank = TankFile.Open(logicPath);
+                (store, _) = SiegeFX.Core.Assets.TemplateStore.LoadFromTank(new TankReader(logicTank));
+            }
+            else
+                Console.WriteLine("Generators : SKIPPED (Logic.dsres not beside the map tank) — sim covers actor.gas only, unlike in-game");
+        }
+        foreach (var raw in regionsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var rp = raw.Replace('\\', '/');
+            if (!rp.StartsWith('/')) rp = "/" + rp;
+            if (rp.EndsWith('/')) rp = rp[..^1];
+            var (actors, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "actor.gas");
+            foreach (var p in actors)
+                if (nodeWorld.TryGetValue(p.Placement.NodeGuid, out var w))
+                    spawns.Add((p.TemplateName, Vector3.Transform(p.Placement.LocalPosition, w), false));
+            if (store is null) continue;
+            var (gens, _) = SiegeFX.Core.Assets.RegionObjects.LoadPlacements(mapReader, rp, "generator.gas");
+            foreach (var p in gens)
+            {
+                if (!nodeWorld.TryGetValue(p.Placement.NodeGuid, out var w)) continue;
+                store.TryGet(p.TemplateName, out var genT);
+                SiegeFX.Core.Assets.GasNode? pblock = null;
+                foreach (var c in p.Node.Children)
+                    if (c.Header.StartsWith("generator", StringComparison.OrdinalIgnoreCase)) { pblock = c; break; }
+                string? blockHeader = pblock?.Header;
+                if (blockHeader is null && genT is not null)
+                    for (var t = genT; t is not null && blockHeader is null; t = t.Specializes)
+                        foreach (var c in t.Node.Children)
+                        {
+                            if (!c.Header.StartsWith("generator_", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (c.Header.Equals("generator_in_object", StringComparison.OrdinalIgnoreCase)) continue;
+                            blockHeader = c.Header; break;
+                        }
+                if (blockHeader is null) continue;
+                string? child = null;
+                int numChildren = 1;
+                if (pblock is not null)
+                    foreach (var at in pblock.Attributes)
+                    {
+                        if (at.Name.Equals("child_template_name", StringComparison.OrdinalIgnoreCase))
+                            child = at.Value.Trim().Trim('"');
+                        else if (at.Name.Equals("num_children_incubating", StringComparison.OrdinalIgnoreCase))
+                            int.TryParse(at.Value.Trim(), out numChildren);
+                    }
+                if (string.IsNullOrEmpty(child) && genT is not null)
+                    child = store.GetAttribute(genT, blockHeader, "child_template_name")?.Trim().Trim('"');
+                if (string.IsNullOrEmpty(child) || !store.TryGet(child, out _)) continue;
+                if (numChildren <= 1 && genT is not null
+                    && int.TryParse(store.GetAttribute(genT, blockHeader, "num_children_incubating")?.Trim(), out var ncv) && ncv > 0)
+                    numChildren = ncv;
+                var pos = Vector3.Transform(p.Placement.LocalPosition, w);
+                // Children all spawn at the generator's spot; a few clones
+                // keep pile/freeze counts honest without exploding the sim.
+                for (int c = 0; c < Math.Clamp(numChildren, 1, 5); c++)
+                    spawns.Add((child!, pos, true));
+            }
+        }
+    }
+    finally { logicTank?.Dispose(); }
+    return spawns;
+}
+
+/// <summary>`region chase-sim` — headless DIRECTED-movement audit (the roam
+/// sim's missing half: wander soaks never test the chase leg). For every
+/// actor.gas placement AND generator child, sample a few quarry points
+/// 6-14u away that the PATHFINDER declares reachable with the walker's own
+/// traversal, then physically walk the follower there via the same
+/// TickDriven path in-game chasing uses. Any non-arrival is a walker-vs-A*
+/// divergence — the class behind "engaged but can't move" chasers and
+/// "walking in place" patches. Failure kinds:
+///   SETTARGET-BLOCKED — the follower's own replan refused a goal the raw
+///                       A* probe reached (start/goal-bind divergence);
+///   BLOCKED — the walk gave up mid-route (stuck recovery exhausted);
+///   PINNED  — the time budget expired without arrival or a verdict.
+/// Failure end-positions cluster into hotspots for the fix list.</summary>
+static int CmdRegionChaseSim(string[] a)
+{
+    if (a.Length < 3)
+    {
+        Console.Error.WriteLine("usage: siegefx region chase-sim <map-tank> <terrain-tank> <region1,region2,...> [--targets=3] [--speed=4.5] [--seed=1] [--near=x,z,r] [--nogens]");
+        Console.Error.WriteLine("       verifies every mob can physically WALK to pathfinder-reachable points near its spawn");
+        return 1;
+    }
+    int targets = 3, seed = 1;
+    float speed = 4.5f;
+    bool gens = true, diag = false;
+    Vector3 nearCenter = default;
+    float nearRadius = 0f;
+    for (int i = 3; i < a.Length; i++)
+    {
+        if (a[i] == "--diag") diag = true;
+        else if (a[i].StartsWith("--targets=") && int.TryParse(a[i]["--targets=".Length..], out var tv)) targets = Math.Clamp(tv, 1, 12);
+        else if (a[i].StartsWith("--speed=") && float.TryParse(a[i]["--speed=".Length..],
+            System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sv)) speed = sv;
+        else if (a[i].StartsWith("--seed=") && int.TryParse(a[i]["--seed=".Length..], out var kv)) seed = kv;
+        else if (a[i] == "--nogens") gens = false;
+        else if (a[i].StartsWith("--near="))
+        {
+            var parts = a[i]["--near=".Length..].Split(',');
+            if (parts.Length == 3 &&
+                float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nx) &&
+                float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nz) &&
+                float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var nr))
+            { nearCenter = new Vector3(nx, 0f, nz); nearRadius = nr; }
+        }
+    }
+
+    // "all" — audit every region of the map, one mesh at a time (bounded
+    // memory; cross-region border quarries fall out as A*-unreachable and
+    // are skipped, so per-region runs can't false-positive at the edges —
+    // cross-region SEAM walking itself needs a chained set and stays this
+    // mode's acknowledged blind spot).
+    if (a[2].Equals("all", StringComparison.OrdinalIgnoreCase))
+    {
+        var regionPaths = new List<string>();
+        using (var mapTank = TankFile.Open(a[0]))
+        {
+            var mapReader = new TankReader(mapTank);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var path in mapReader.ListFiles())
+            {
+                var idx = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+                var rest = path[(idx + "/regions/".Length)..];
+                var slash = rest.IndexOf('/');
+                if (slash < 0) continue;
+                var regionPath = path[..(idx + "/regions/".Length + slash)];
+                if (seen.Add(regionPath)) regionPaths.Add(regionPath);
+            }
+            regionPaths.Sort(StringComparer.OrdinalIgnoreCase);
+        }
+        Console.WriteLine($"ALL-REGION sweep: {regionPaths.Count} region(s)");
+        int failing = 0;
+        foreach (var rp in regionPaths)
+        {
+            Console.WriteLine($"===== {rp} =====");
+            var sub = new List<string> { a[0], a[1], rp };
+            for (int i = 3; i < a.Length; i++) sub.Add(a[i]);
+            if (CmdRegionChaseSim(sub.ToArray()) != 0) failing++;
+        }
+        Console.WriteLine($"===== SWEEP DONE: {failing}/{regionPaths.Count} region(s) with walker-vs-A* failures =====");
+        return failing == 0 ? 0 : 3;
+    }
+
+    var mesh = LoadWorldNavMesh(a[0], a[1], a[2]);
+    Console.WriteLine($"NavMesh    : {mesh.TriangleCount:N0} tris, {mesh.DoorSeamCount} door seam(s)");
+    var nodeWorld = new Dictionary<uint, Matrix4x4>();
+    foreach (var (guid, _, _, w) in LoadWorldNodePlacements(a[0], a[1], a[2]))
+        nodeWorld[guid] = w;
+    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld);
+
+    var collected = CollectSimSpawns(a[0], a[2], nodeWorld, gens);
+    int genChildren = collected.Count(s => s.FromGenerator);
+    int offMesh = 0, filtered = 0, unbindable = 0, isolated = 0;
+    int attempts = 0, ok = 0;
+    var rng = new Random(seed);
+    var ws = new SiegeFX.Core.Nav.NavPathfinder.Workspace();
+    var probeBuf = new List<int>(256);
+    var failures = new List<(string Template, Vector3 Spawn, Vector3 Quarry, Vector3 End, string Kind, float Walked, float Wanted)>();
+
+    int simmed = 0;
+    foreach (var (template, rawPos, _) in collected)
+    {
+        var pos = rawPos;
+        if (nearRadius > 0f)
+        {
+            float ndx = pos.X - nearCenter.X, ndz = pos.Z - nearCenter.Z;
+            if (ndx * ndx + ndz * ndz > nearRadius * nearRadius) { filtered++; continue; }
+        }
+        if (!mesh.TryFindTriangle(pos, out var tri, includeFadeHidden: true)) { offMesh++; continue; }
+        pos = pos with { Y = mesh.SampleYOnTriangle(tri, pos) };
+        var f = new SiegeFX.Core.Actors.ActorFollower(mesh, pos, speed, seed + simmed, Vector3.UnitZ);
+        simmed++;
+        var spawnPos = f.Position; // ctor may island-escape / re-snap
+        int startTri = f.Follower.CurrentTriangle;
+        if (startTri < 0 && !mesh.TryFindTriangle(spawnPos, out startTri, includeFadeHidden: true))
+        { unbindable++; continue; }
+
+        int made = 0;
+        for (int attempt = 0; attempt < 30 && made < targets; attempt++)
+        {
+            float ang = (float)(rng.NextDouble() * Math.PI * 2.0);
+            float dist = 6f + (float)rng.NextDouble() * 8f;
+            var q = new Vector3(spawnPos.X + MathF.Cos(ang) * dist, spawnPos.Y,
+                                spawnPos.Z + MathF.Sin(ang) * dist);
+            if (!mesh.TryFindTriangle(q, out var qTri, includeFadeHidden: true)) continue;
+            float qY = mesh.SampleYOnTriangle(qTri, q);
+            if (MathF.Abs(qY - spawnPos.Y) > 6f) continue;   // same layer stack
+            if (mesh.IsBlocked(qTri)) continue;
+            if (!f.Follower.Traversal.CanEnter(mesh.Kinds[qTri])) continue;
+            probeBuf.Clear();
+            if (!SiegeFX.Core.Nav.NavPathfinder.TryFindPath(
+                    mesh, startTri, qTri, probeBuf, ws, f.Follower.Traversal)) continue;
+            // A* says reachable → the walker MUST be able to arrive.
+            made++;
+            attempts++;
+            var quarry = new Vector3(q.X, qY, q.Z);
+            f.Follower.SetTarget(quarry);
+            if (f.Follower.PathBlocked)
+            {
+                failures.Add((template, spawnPos, quarry, f.Follower.Position,
+                    "SETTARGET-BLOCKED", 0f, dist));
+                f.Teleport(spawnPos);
+                continue;
+            }
+            float budget = dist / MathF.Max(1f, speed) * 3f + 5f;
+            const float dt = 1f / 20f;
+            float walked = 0f;
+            string outcome = "PINNED";
+            for (float t = 0f; t < budget; t += dt)
+            {
+                var before = f.Follower.Position;
+                f.TickDriven(dt);
+                walked += Vector3.Distance(before, f.Follower.Position);
+                if (f.Follower.ReachedGoal) { outcome = "OK"; break; }
+                if (f.Follower.PathBlocked) { outcome = "BLOCKED"; break; }
+            }
+            if (outcome == "OK") ok++;
+            else failures.Add((template, spawnPos, quarry, f.Follower.Position, outcome, walked, dist));
+            f.Teleport(spawnPos);
+        }
+        if (made == 0) isolated++;
+    }
+
+    Console.WriteLine($"Spawns     : {simmed} simulated ({genChildren} generator children), " +
+                      $"{offMesh} off-mesh, {unbindable} unbindable" +
+                      (nearRadius > 0f ? $", {filtered} outside --near" : ""));
+    Console.WriteLine($"Attempts   : {attempts} pathfinder-verified walks, {ok} arrived, {failures.Count} FAILED, " +
+                      $"{isolated} spawn(s) with no reachable quarry at 6-14u");
+    if (failures.Count > 0)
+    {
+        // Cluster failure END positions into hotspots (3u) — a nav pin traps
+        // every walker that routes through it, so counts rank fix priority.
+        var clusters = new List<(Vector3 Seat, int Count, HashSet<string> Kinds, HashSet<string> Templates, (string, Vector3, Vector3, Vector3, string, float, float) Sample)>();
+        foreach (var fail in failures)
+        {
+            int found = -1;
+            for (int c = 0; c < clusters.Count; c++)
+                if (Vector3.DistanceSquared(clusters[c].Seat, fail.End) <= 3f * 3f) { found = c; break; }
+            if (found < 0)
+                clusters.Add((fail.End, 1, new HashSet<string> { fail.Kind }, new HashSet<string> { fail.Template }, fail));
+            else
+            {
+                var c = clusters[found];
+                c.Kinds.Add(fail.Kind);
+                c.Templates.Add(fail.Template);
+                clusters[found] = (c.Seat, c.Count + 1, c.Kinds, c.Templates, c.Sample);
+            }
+        }
+        clusters.Sort((x, y) => y.Count.CompareTo(x.Count));
+        Console.WriteLine($"Hotspots   : {clusters.Count} failure cluster(s)");
+        foreach (var c in clusters.Take(20))
+        {
+            var s = c.Sample;
+            Console.WriteLine($"  x{c.Count,-3} at ({c.Seat.X:F1},{c.Seat.Y:F1},{c.Seat.Z:F1}) " +
+                $"[{string.Join('/', c.Kinds)}] {string.Join(',', c.Templates.Take(3))}" +
+                $" — e.g. spawn=({s.Item2.X:F1},{s.Item2.Y:F1},{s.Item2.Z:F1})" +
+                $" quarry=({s.Item3.X:F1},{s.Item3.Y:F1},{s.Item3.Z:F1})" +
+                $" walked={s.Item6:F1}/{s.Item7:F1}u {s.Item5}");
+        }
+        if (clusters.Count > 20) Console.WriteLine($"  ... {clusters.Count - 20} more cluster(s)");
+        if (diag)
+        {
+            // --diag: replay one failure per top cluster with the follower's
+            // own diagnostics on, so the refusing gate names itself
+            // ([nav-stuck] / [nav-step-gate] / [nav-rebind] / [nav-seam-hop]).
+            Console.WriteLine("--- diagnostic replays (one per top cluster) ---");
+            foreach (var c in clusters.Take(8))
+            {
+                var s = c.Sample;
+                Console.WriteLine($"replay {s.Item1}: spawn=({s.Item2.X:F1},{s.Item2.Y:F1},{s.Item2.Z:F1}) " +
+                    $"quarry=({s.Item3.X:F1},{s.Item3.Y:F1},{s.Item3.Z:F1}) was {s.Item5}");
+                var rf = new SiegeFX.Core.Actors.ActorFollower(mesh, s.Item2, speed, seed, Vector3.UnitZ);
+                rf.Follower.DiagnosticLogging = true;
+                rf.Follower.SetTarget(s.Item3);
+                float rBudget = s.Item7 / MathF.Max(1f, speed) * 3f + 5f;
+                const float rDt = 1f / 20f;
+                string rOutcome = "PINNED";
+                for (float t = 0f; t < rBudget; t += rDt)
+                {
+                    rf.TickDriven(rDt);
+                    if (rf.Follower.ReachedGoal) { rOutcome = "OK"; break; }
+                    if (rf.Follower.PathBlocked) { rOutcome = "BLOCKED"; break; }
+                }
+                Console.WriteLine($"  replay outcome: {rOutcome} end=({rf.Position.X:F1},{rf.Position.Y:F1},{rf.Position.Z:F1})");
+            }
+        }
+    }
+    return failures.Count == 0 ? 0 : 3;
 }
 
 /// <summary>`world probe` — list EVERY nav triangle whose XZ footprint contains the

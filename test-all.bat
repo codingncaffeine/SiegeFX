@@ -186,6 +186,7 @@ echo  113. ENEMY ROAM-SIM               - headless 90s wander soak over the path
 echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapshot+state-delta+input-authority+chat+malformed-frame safety (loopback)
 echo  115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens\frontend-shots; compare vs retail)
 echo  116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card
+echo  117. ENEMY CHASE-SIM AUDIT        - headless directed-movement audit (walker-vs-A* divergence, incl. generator children); new-game region set + optional all-region sweep
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -308,6 +309,7 @@ if /i "%CHOICE%"=="113" goto T113
 if /i "%CHOICE%"=="114" goto T114
 if /i "%CHOICE%"=="115" goto T115
 if /i "%CHOICE%"=="116" goto T116
+if /i "%CHOICE%"=="117" goto T117
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2687,6 +2689,24 @@ dotnet "%RUN%" --play-region "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.d
 set SIEGEFX_DEV=
 set SIEGEFX_DEBUG_SPELLS=
 set SIEGEFX_DEBUG_SPAWN=
+echo.
+pause
+goto MENU
+
+:T117
+echo.
+echo --- ENEMY CHASE-SIM AUDIT (headless directed-movement, new-game set) ---
+echo [For every actor.gas placement AND generator child in the fh_r1 set,
+echo  samples quarry points 6-14u away that A* declares reachable, then
+echo  physically walks the follower there via the game's TickDriven chase
+echo  path. Any non-arrival is a walker-vs-A* divergence (nav pin) with a
+echo  clustered hotspot list. Receipts: failure count should only go DOWN
+echo  vs the last recorded run (2026-07-19: 49 FAILED / 1122 attempts).
+echo  Append --diag for per-cluster gate-level replays. Region arg "all"
+echo  sweeps every region one mesh at a time (2026-07-19: 57/81 regions
+echo  with failures - the standing burn-down list).]
+echo.
+"%TOOL%" region chase-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1,/world/maps/map_world/regions/bc_r1,/world/maps/map_world/regions/fh_r1a,/world/maps/map_world/regions/hc_r1,/world/maps/map_world/regions/path2crypts
 echo.
 pause
 goto MENU
