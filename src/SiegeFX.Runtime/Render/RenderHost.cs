@@ -16442,6 +16442,47 @@ void main()
                     });
                     Console.WriteLine($"  [smash] set-piece registered: actor 0x{target1:X8} -> break 0x{target2:X8} at ({world.X:F1},{world.Y:F1},{world.Z:F1})");
                 }
+                // SC-LIGHT-GIZMOS — flicker/enable/colorwave placements
+                // targeting a region light by guid.
+                var tnGizmo = p.TemplateName.ToLowerInvariant();
+                if (tnGizmo is "light_flicker" or "light_colorwave" or "light_enable")
+                {
+                    uint lgSl = 0; float lgMag = 0.15f, lgFMin = 10f, lgFMax = 12f, lgPer = 1f, lgSec = 0.6f;
+                    bool lgInitActive = true;
+                    var ciL = System.Globalization.CultureInfo.InvariantCulture;
+                    foreach (var child in p.Node.Children)
+                        foreach (var at in child.Attributes)
+                        {
+                            if (at.Name.Equals("siege_light", StringComparison.OrdinalIgnoreCase))
+                                TryParseSnodeGuid(at.Value, out lgSl);
+                            else if (at.Name.Equals("magnitude", StringComparison.OrdinalIgnoreCase))
+                                float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float, ciL, out lgMag);
+                            else if (at.Name.Equals("flicker_frequency_min", StringComparison.OrdinalIgnoreCase))
+                                float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float, ciL, out lgFMin);
+                            else if (at.Name.Equals("flicker_frequency_max", StringComparison.OrdinalIgnoreCase))
+                                float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float, ciL, out lgFMax);
+                            else if (at.Name.Equals("period", StringComparison.OrdinalIgnoreCase))
+                                float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float, ciL, out lgPer);
+                            else if (at.Name.Equals("secondary_intensity", StringComparison.OrdinalIgnoreCase))
+                                float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float, ciL, out lgSec);
+                            else if (at.Name.Equals("initially_active", StringComparison.OrdinalIgnoreCase))
+                                lgInitActive = at.Value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+                        }
+                    if (lgSl != 0)
+                    {
+                        if (tnGizmo == "light_flicker")
+                            _lightFx.Add(new LightFxRow
+                            { TargetGuid = lgSl, Kind = 0, Magnitude = lgMag, FreqMin = lgFMin, FreqMax = lgFMax });
+                        else if (tnGizmo == "light_colorwave")
+                            _lightFx.Add(new LightFxRow
+                            { TargetGuid = lgSl, Kind = 1, Period = MathF.Max(0.1f, lgPer), Secondary = lgSec });
+                        else
+                        {
+                            _lightEnableTargets[p.Scid] = lgSl;
+                            if (!lgInitActive) _lightsDisabled.Add(lgSl);
+                        }
+                    }
+                }
                 // SC-CAM-SHAKE — placed quake gizmos carry their authored
                 // magnitude/duration; index them for activation-time shakes.
                 if (p.TemplateName.Equals("camera_quake", StringComparison.OrdinalIgnoreCase)
@@ -16934,6 +16975,17 @@ void main()
                 Console.WriteLine($"[cmd] {t} 0x{scid:X8} acknowledged");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAck))
                     ActivateAiCommand(cmd.Next, afterAck);
+                break;
+            case "light_enable":
+                // SC-LIGHT-GIZMOS — toggle the targeted region light.
+                if (_lightEnableTargets.TryGetValue(scid, out var lgTgt))
+                {
+                    bool nowOn = _lightsDisabled.Remove(lgTgt);
+                    if (!nowOn) _lightsDisabled.Add(lgTgt);
+                    Console.WriteLine($"[cmd] light_enable 0x{scid:X8}: light 0x{lgTgt:X8} {(nowOn ? "ON" : "OFF")}");
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterLight))
+                    ActivateAiCommand(cmd.Next, afterLight);
                 break;
             case "camera_quake":
             case "rock_beast_stomp":
@@ -17963,7 +18015,23 @@ void main()
     // is the per-frame slice actually uploaded.
     private const int MaxPointLights = 32;
     private int _pointLightBudget = 16;
-    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer, bool OnTimer)> _pointLights = new();
+    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer, bool OnTimer, uint Guid)> _pointLights = new();
+    // SC-LIGHT-GIZMOS — per-light dynamic scale (flicker/colorwave animate
+    // it; enable gizmos zero it) + guid → index for gizmo targeting.
+    private readonly List<float> _pointLightDynScale = new();
+    private readonly Dictionary<uint, int> _pointLightIndexByGuid = new();
+    private sealed class LightFxRow
+    {
+        public uint TargetGuid;
+        public int Kind;             // 0=flicker 1=colorwave
+        public float Magnitude;      // flicker amplitude
+        public float FreqMin, FreqMax;
+        public float Period = 1f, Secondary = 0.6f;
+        public float Phase;
+    }
+    private readonly List<LightFxRow> _lightFx = new();
+    private readonly HashSet<uint> _lightsDisabled = new();
+    private readonly Dictionary<uint, uint> _lightEnableTargets = new();
     private readonly HashSet<string> _pointLightRegionsLoaded = new(StringComparer.OrdinalIgnoreCase);
     private readonly Vector3[] _framePointPos = new Vector3[MaxPointLights];
     private readonly Vector3[] _framePointColor = new Vector3[MaxPointLights];
@@ -17992,7 +18060,17 @@ void main()
                 if (l.NodeGuid != 0 && _regionLayout.TryGetTransform(l.NodeGuid, out var nodeXf))
                     world = Vector3.Transform(l.DirectionOrPosition, nodeXf);
                 else if (l.NodeGuid != 0) continue; // anchor not streamed; retried next stream pass
-                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius, l.OnTimer));
+                // SC-LIGHT-GIZMOS — the light's name carries its guid
+                // ("light_0xNNNN"), the handle every gizmo targets.
+                uint lguid = 0;
+                int lg = l.Name.IndexOf("0x", StringComparison.OrdinalIgnoreCase);
+                if (lg >= 0)
+                    uint.TryParse(l.Name.AsSpan(lg + 2),
+                        System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out lguid);
+                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius, l.OnTimer, lguid));
+                _pointLightDynScale.Add(1f);
+                if (lguid != 0) _pointLightIndexByGuid[lguid] = _pointLights.Count - 1;
                 added++;
             }
         }
@@ -18013,9 +18091,13 @@ void main()
         var todTintPts = TimeOfDayTint();
         for (int i = 0; i < _pointLights.Count; i++)
         {
-            var (pos, color, inner, outer, onTimer) = _pointLights[i];
+            var (pos, color, inner, outer, onTimer, lguid) = _pointLights[i];
             // SC-DAYNIGHT — on-timer sources ride the world clock's color.
             if (onTimer) color *= todTintPts;
+            // SC-LIGHT-GIZMOS — gizmo-disabled lights skip; flicker and
+            // colorwave rows animate the per-light scale.
+            if (lguid != 0 && _lightsDisabled.Contains(lguid)) continue;
+            if (i < _pointLightDynScale.Count) color *= _pointLightDynScale[i];
             float d2 = Vector3.DistanceSquared(pos, eye);
             // Skip sources far beyond their own reach + a generous view range.
             float reach = outer + 80f;
@@ -21543,6 +21625,25 @@ void main()
         for (int i = 0; i < _dirLightCount; i++)
             _dirLightColors[i] = _dirLightOnTimer[i]
                 ? _dirLightBaseColors[i] * todTint : _dirLightBaseColors[i];
+        // SC-LIGHT-GIZMOS — animate flicker/colorwave scales.
+        foreach (var fx in _lightFx)
+        {
+            if (!_pointLightIndexByGuid.TryGetValue(fx.TargetGuid, out var pi)
+                || pi >= _pointLightDynScale.Count) continue;
+            if (fx.Kind == 0)
+            {
+                fx.Phase += (float)dt * (fx.FreqMin + (fx.FreqMax - fx.FreqMin) * 0.5f);
+                float n = MathF.Sin(fx.Phase * 6.28318f) * 0.6f
+                        + MathF.Sin(fx.Phase * 15.4f) * 0.4f;
+                _pointLightDynScale[pi] = MathF.Max(0f, 1f + n * fx.Magnitude);
+            }
+            else
+            {
+                fx.Phase += (float)dt / fx.Period;
+                float w = (MathF.Sin(fx.Phase * 6.28318f) + 1f) * 0.5f;
+                _pointLightDynScale[pi] = fx.Secondary + (1f - fx.Secondary) * w;
+            }
+        }
         // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
         if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
             _screenFadeAlpha = _screenFadeTarget > _screenFadeAlpha
