@@ -306,6 +306,14 @@ public sealed class ActorBrain
     int _fidgetMode;        // 0 none, 1 walk-to-smash, 2 walk-to-friend
     Vector3 _fidgetGoal;
     float _fidgetHold;
+
+    /// <summary>SC-MOB-PARTIES — while a monster pack marches in formation,
+    /// the pack sets this to the member's slot position and the Chase state
+    /// steers there instead of beelining the quarry. Null = released
+    /// (free movement, normal chase). Attack transitions are untouched, so
+    /// ranged members loose from formation when the quarry enters their
+    /// standoff range — brain_party's hold-formation firing.</summary>
+    public Vector3? PackGoal;
     /// <summary>Host hook: sweep melee damage onto every OTHER enemy within
     /// (origin, range), excluding the primary combat state already hit.</summary>
     public Action<Vector3, float, ActorCombatState?>? SweepMelee;
@@ -587,7 +595,7 @@ public sealed class ActorBrain
                 // increments: approach CautiousApproachDistance closer, then
                 // stand facing the target for CautiousDownTime, repeat —
                 // until inside MinCautiousDistance (or damage breaks it).
-                if (_cautiousArmed && !_cautiousAborted && distXZ > MinCautiousDistance)
+                if (PackGoal is null && _cautiousArmed && !_cautiousAborted && distXZ > MinCautiousDistance)
                 {
                     if (_cautiousDownTimer > 0f)
                     {
@@ -616,7 +624,10 @@ public sealed class ActorBrain
                 // Re-pin the follower target every tick — the player is a moving
                 // goalpost, so a fire-and-forget SetTarget would have us chasing
                 // a stale position. NavFollower replans on each SetTarget call.
-                Wander.Follower.SetTarget(targetPos!.Value);
+                // SC-MOB-PARTIES — a marching pack member steers at its
+                // formation slot instead; the pack clears PackGoal to
+                // release the charge.
+                Wander.Follower.SetTarget(PackGoal ?? targetPos!.Value);
                 Wander.Tick(dt);
                 break;
 

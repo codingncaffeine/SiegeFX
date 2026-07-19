@@ -1750,6 +1750,10 @@ public sealed class RenderHost : IDisposable
         // effectively freeze the body mid-pose. Phase 12d will swap to chore_die.
         public bool IsDead;
 
+        // SC-MOB-PARTIES — the runtime monster pack this actor belongs to
+        // (authored [mind] party_template); null = solo.
+        public MonsterPack? Pack;
+
         // Phase 13a — set for the single player character. Distinct from NPCs so
         // the input layer (LMB move, RMB attack — 13c/d) can find and drive this
         // one actor without scanning all 181. Also gates off the random-wander
@@ -19928,6 +19932,316 @@ void main()
         if (atk is not null) PerformPropBreak(best, atk.Actor.Stats);
     }
 
+    // ── SC-MOB-PARTIES (blindspot Phase B) ────────────────────────────────
+    // brain_party.skrit: retail monsters with [mind] party_template form
+    // runtime packs that march in formation (melee front, ranged behind,
+    // magic rear — the authored monster_* shape tables are engine-internal,
+    // so ranked rows approximate them), hold formation while enough ranged
+    // members can answer fire, release to free movement when the enemy
+    // closes / a member's life drops / ~10s of unanswered fire, optionally
+    // flee when a member dies — and support their own: heal the weakest
+    // (<0.30), and the krug shaman's battlefield REANIMATION on authored
+    // charge/recharge budgets ("kill the shaman or they keep getting up").
+    private sealed class MonsterPack
+    {
+        public string PartyTemplate = "";
+        public readonly List<ActorRenderState> Members = new();
+        public bool FreeMovement;
+        public float UnansweredFire;
+        public int ReanimateCharges;
+        public float ReanimateRecharge = 9f;
+        public double ReanimateNextAt;
+        public int HealCharges = 2;               // brain_party doc defaults
+        public float HealRecharge = 15f;
+        public double HealNextAt;
+        public bool FleeWhenMemberKilled;
+        public int RequiredRangedHold = 1;
+        public float MinApproachDistance = 8f;
+        public bool FreeMoveOnOcz = true;
+        public int LastAliveCount = -1;
+        public float LastLifeSum = -1f;
+    }
+    private readonly List<MonsterPack> _monsterPacks = new();
+    private readonly Dictionary<string, string> _packAuthorCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _reanimatorCache = new(StringComparer.OrdinalIgnoreCase);
+    private double _packClock;
+    private float _packScanIn;
+
+    private string PackAuthorOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_packAuthorCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        var party = (_templateStore?.GetAttribute(tpl, "mind", "party_template") ?? "")
+            .Trim().Trim('"');
+        _packAuthorCache[tpl.Name] = party;
+        return party;
+    }
+
+    private bool IsReanimator(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_reanimatorCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        bool r = string.Equals(
+            _templateStore?.GetAttribute(tpl, "mind", "actor_auto_reanimates_friends")?.Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        _reanimatorCache[tpl.Name] = r;
+        return r;
+    }
+
+    private void TickMonsterPacks(float dt)
+    {
+        _packClock += dt;
+        _packScanIn -= dt;
+        if (_packScanIn > 0f) return;
+        _packScanIn = 0.5f;
+        if (_player is null || _templateStore is null) return;
+
+        // Assignment: authored pack members join a nearby pack of their
+        // party template (20u) or found a new one seeded with its knobs.
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.Hidden || !s.IsEvilAligned || s.Brain is null) continue;
+            if (s.Pack is not null) continue;
+            var party = PackAuthorOf(s.Actor.Template);
+            if (party.Length == 0) continue;
+            var pos = s.CurrentTransform.Translation;
+            MonsterPack? joined = null;
+            foreach (var pk in _monsterPacks)
+            {
+                if (!pk.PartyTemplate.Equals(party, StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var m in pk.Members)
+                {
+                    var d = m.CurrentTransform.Translation - pos;
+                    if (d.X * d.X + d.Z * d.Z < 20f * 20f) { joined = pk; break; }
+                }
+                if (joined is not null) break;
+            }
+            if (joined is null)
+            {
+                joined = new MonsterPack { PartyTemplate = party };
+                if (_templateStore.TryGet(party, out var ptpl) && ptpl is not null)
+                {
+                    var raw = _templateStore.GetAttribute(ptpl, "mind", "jat_brain") ?? "";
+                    joined.ReanimateCharges     = (int)SkritArgF(raw, "reanimate_charges", 0f);
+                    joined.ReanimateRecharge    = SkritArgF(raw, "reanimate_recharge", 9f);
+                    joined.HealCharges          = (int)SkritArgF(raw, "heal_charges", 2f);
+                    joined.HealRecharge         = SkritArgF(raw, "heal_recharge", 15f);
+                    joined.MinApproachDistance  = SkritArgF(raw, "min_approach_distance", 8f);
+                    joined.RequiredRangedHold   = (int)SkritArgF(raw, "required_ranged_attackers_to_hold_formation", 1f);
+                    joined.FleeWhenMemberKilled = SkritArgB(raw, "flee_when_member_killed", false);
+                    joined.FreeMoveOnOcz        = SkritArgB(raw, "free_move_on_enemy_enter_OCZ", true);
+                }
+                _monsterPacks.Add(joined);
+                Console.WriteLine($"[pack] {party} formed");
+            }
+            joined.Members.Add(s);
+            s.Pack = joined;
+        }
+
+        var target = NearestLivePartyMember(_player.CurrentTransform.Translation) ?? _player;
+        var tp = target.CurrentTransform.Translation;
+
+        for (int pi = _monsterPacks.Count - 1; pi >= 0; pi--)
+        {
+            var pk = _monsterPacks[pi];
+            int alive = 0;
+            float lifeSum = 0f;
+            bool anyEngaged = false, anyAttacking = false, lowMember = false;
+            foreach (var m in pk.Members)
+            {
+                if (m.IsDead) continue;
+                alive++;
+                lifeSum += m.Actor.Combat.CurrentLife;
+                if (m.Brain is { } b)
+                {
+                    if (b.State is SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                        or SiegeFX.Core.Actors.ActorBrain.BrainState.Attack) anyEngaged = true;
+                    if (b.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Attack) anyAttacking = true;
+                }
+                if (m.Actor.Combat.CurrentLife < m.Actor.Stats.MaxLife * 0.33f) lowMember = true;
+            }
+            if (alive == 0)
+            {
+                foreach (var m in pk.Members) m.Pack = null;
+                _monsterPacks.RemoveAt(pi);
+                continue;
+            }
+            // A member died since the last scan.
+            if (pk.LastAliveCount > alive)
+            {
+                if (pk.FleeWhenMemberKilled && !pk.FreeMovement)
+                {
+                    foreach (var m in pk.Members)
+                        if (!m.IsDead) m.Brain?.FleeFrom(tp);
+                    Console.WriteLine($"[pack] {pk.PartyTemplate}: member down — the pack scatters");
+                }
+                pk.FreeMovement = true;   // a death always breaks the parade
+            }
+            pk.LastAliveCount = alive;
+
+            if (!anyEngaged || pk.FreeMovement)
+            {
+                foreach (var m in pk.Members) if (m.Brain is { } rb) rb.PackGoal = null;
+                pk.LastLifeSum = lifeSum;
+                // Support casting continues even in free movement.
+                TickPackSupport(pk, alive);
+                continue;
+            }
+
+            // Release checks: enemy close, member hurt, unanswered fire.
+            float packMin = float.MaxValue;
+            Vector3 centroid = default;
+            foreach (var m in pk.Members)
+            {
+                if (m.IsDead) continue;
+                var p = m.CurrentTransform.Translation;
+                centroid += p;
+                float dx = p.X - tp.X, dz = p.Z - tp.Z;
+                packMin = MathF.Min(packMin, MathF.Sqrt(dx * dx + dz * dz));
+            }
+            centroid /= alive;
+            bool oczBreach = pk.FreeMoveOnOcz && packMin < 5f;
+            if (pk.LastLifeSum >= 0f && lifeSum < pk.LastLifeSum - 0.5f && !anyAttacking)
+                pk.UnansweredFire += 0.5f;
+            else if (anyAttacking) pk.UnansweredFire = 0f;
+            pk.LastLifeSum = lifeSum;
+            if (packMin <= pk.MinApproachDistance || lowMember || oczBreach
+                || pk.UnansweredFire >= 10f)
+            {
+                pk.FreeMovement = true;
+                foreach (var m in pk.Members) if (m.Brain is { } rb) rb.PackGoal = null;
+                Console.WriteLine($"[pack] {pk.PartyTemplate}: released to free movement " +
+                    $"(dist={packMin:F1} low={lowMember} ocz={oczBreach} unanswered={pk.UnansweredFire:F0}s)");
+                TickPackSupport(pk, alive);
+                continue;
+            }
+
+            // Formation march: ranked rows perpendicular to the advance.
+            var fwd = tp - centroid; fwd.Y = 0f;
+            float flen = fwd.Length();
+            if (flen < 0.01f) fwd = Vector3.UnitZ; else fwd /= flen;
+            var side = new Vector3(-fwd.Z, 0f, fwd.X);
+            // Hold when enough ranged members can answer; else advance to
+            // MinApproachDistance from the target.
+            int rangedCount = 0;
+            foreach (var m in pk.Members)
+                if (!m.IsDead && m.Brain is { Mode: not SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee })
+                    rangedCount++;
+            bool hold = rangedCount >= pk.RequiredRangedHold && anyAttacking;
+            var anchor = hold
+                ? centroid
+                : tp - fwd * MathF.Max(pk.MinApproachDistance, 2f);
+            int meleeIdx = 0, rangedIdx = 0, magicIdx = 0;
+            foreach (var m in pk.Members)
+            {
+                if (m.IsDead || m.Brain is not { } mb) continue;
+                Vector3 slot;
+                switch (mb.Mode)
+                {
+                    case SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee:
+                        slot = anchor + side * RowOffset(meleeIdx++) ;
+                        break;
+                    case SiegeFX.Core.Actors.ActorBrain.AttackMode.Ranged:
+                        slot = anchor - fwd * 3f + side * RowOffset(rangedIdx++);
+                        break;
+                    default:
+                        slot = anchor - fwd * 5f + side * RowOffset(magicIdx++);
+                        break;
+                }
+                mb.PackGoal = slot;
+            }
+            TickPackSupport(pk, alive);
+        }
+
+        static float RowOffset(int idx)
+        {
+            // 0, +1.6, -1.6, +3.2, -3.2, ...
+            int k = (idx + 1) / 2;
+            return (idx % 2 == 1 ? -1f : 1f) * k * 1.6f;
+        }
+    }
+
+    /// <summary>SC-MOB-PARTIES — the pack's support casting: heal the
+    /// weakest live member below 0.30, and REANIMATE a dead one when a
+    /// member authors actor_auto_reanimates_friends (the krug shaman),
+    /// both on authored charge/recharge budgets.</summary>
+    private void TickPackSupport(MonsterPack pk, int alive)
+    {
+        if (alive == 0) return;
+        // Reanimate first — retail's TryResurrect runs ahead of TryHeal.
+        if (pk.ReanimateCharges > 0 && _packClock >= pk.ReanimateNextAt)
+        {
+            ActorRenderState? deadMember = null, caster = null;
+            foreach (var m in pk.Members)
+            {
+                if (m.IsDead && !m.Hidden) deadMember ??= m;
+                else if (!m.IsDead && IsReanimator(m.Actor.Template)) caster ??= m;
+            }
+            if (deadMember is not null && caster is not null)
+            {
+                var dp = deadMember.CurrentTransform.Translation;
+                var cp = caster.CurrentTransform.Translation;
+                float dx = dp.X - cp.X, dz = dp.Z - cp.Z;
+                if (dx * dx + dz * dz < 14f * 14f)
+                {
+                    pk.ReanimateCharges--;
+                    pk.ReanimateNextAt = _packClock + pk.ReanimateRecharge;
+                    ReanimateMonster(deadMember, caster);
+                }
+            }
+        }
+        // Heal the weakest.
+        if (pk.HealCharges > 0 && _packClock >= pk.HealNextAt)
+        {
+            ActorRenderState? weakest = null, healer = null;
+            float worst = 0.30f;
+            foreach (var m in pk.Members)
+            {
+                if (m.IsDead) continue;
+                float ratio = m.Actor.Combat.CurrentLife / MathF.Max(1f, m.Actor.Stats.MaxLife);
+                if (ratio < worst) { worst = ratio; weakest = m; }
+                if (m.Brain is { Mode: SiegeFX.Core.Actors.ActorBrain.AttackMode.Magic }
+                    || IsReanimator(m.Actor.Template)) healer ??= m;
+            }
+            if (weakest is not null && healer is not null && !ReferenceEquals(weakest, healer))
+            {
+                pk.HealCharges--;
+                pk.HealNextAt = _packClock + pk.HealRecharge;
+                float heal = weakest.Actor.Stats.MaxLife * 0.4f;
+                weakest.Actor.Combat.Heal(heal);
+                if (healer.Actor.GetClipIndex("mg") >= 0)
+                    healer.Actor.PlayChoreOnce("mg", 3f);
+                var wp = weakest.CurrentTransform.Translation + new Vector3(0f, 0.9f, 0f);
+                _particles?.SpawnTwinkle(wp, new Vector4(0.4f, 0.95f, 0.4f, 1f), 0.5f, 0.10f, 0.6f, 10);
+                Console.WriteLine($"[pack] {pk.PartyTemplate}: {healer.Actor.Template.Name} heals " +
+                    $"{weakest.Actor.Template.Name} +{heal:F0}");
+            }
+        }
+    }
+
+    /// <summary>SC-MOB-PARTIES — the shaman's battlefield reanimation: the
+    /// corpse stands back up at half life with a rebuilt brain. The corpse
+    /// already dropped its loot and paid its XP — retail's resurrected krug
+    /// are fresh threats, and killing them again pays again.</summary>
+    private void ReanimateMonster(ActorRenderState dead, ActorRenderState caster)
+    {
+        var pos = dead.CurrentTransform.Translation;
+        dead.Actor.Combat.RestoreFromSave(
+            dead.Actor.Stats.MaxLife * 0.5f, dead.Actor.Stats.MaxMana, dead: false);
+        dead.IsDead = false;
+        dead.AnimTime = 0;
+        uint scid = dead.Actor.Instance.Scid;
+        if (scid != 0) _persistedDeadScids.Remove(scid);
+        RebuildNpcBrain(dead, pos);
+        if (dead.Actor.GetClipIndex("awk") >= 0)
+            dead.Actor.PlayChoreOnce("awk", 1.6f);
+        if (caster.Actor.GetClipIndex("mg") >= 0)
+            caster.Actor.PlayChoreOnce("mg", 3f);
+        _particles?.SpawnTwinkle(pos + new Vector3(0f, 0.6f, 0f),
+            new Vector4(0.75f, 0.35f, 0.95f, 1f), 0.6f, 0.12f, 0.8f, 14);
+        _audio?.PlayAt(SfxZapCast, pos);
+        Console.WriteLine($"[pack] {caster.Actor.Template.Name} REANIMATES " +
+            $"{dead.Actor.Template.Name} — kill the shaman!");
+    }
+
     /// <summary>SC-MOB-FIDGET — a same-alignment live neighbor to walk to for
     /// the social chat / curious watch (2..12u band, same floor).</summary>
     private Vector3? FindFidgetFriendNear(Vector3 pos, SiegeFX.Core.Actors.ActorBrain brain)
@@ -23476,6 +23790,7 @@ void main()
                 TickRoboSuits();                        // SC-RBS composite boss
                 TickGoEmitters((float)stepSec);         // SC-EMT-GO debris
                 TickAutoHealOthers((float)stepSec);     // SC-AUTO-HEAL-OTHERS
+                TickMonsterPacks((float)stepSec);       // SC-MOB-PARTIES
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
