@@ -6019,6 +6019,136 @@ public sealed class RenderHost : IDisposable
     private readonly List<(ActorRenderState Actor, float DieAt)> _multiSummonLive = new();
     private float _multiSummonClock;
 
+    // ── SC-SPELL-DELIVERY — turret batteries ([spell_turret]) ──────────────
+    // The caster plants an auto-firing battery (Gom's staff turrets): shots
+    // at the authored rate for the spell's effect_duration, each picking the
+    // caster's nearest conscious foe and riding the authored bolt visual.
+    private sealed class ActiveTurret
+    {
+        public SiegeFX.Core.Assets.SpellTemplate Spell = null!;
+        public ActorRenderState Caster = null!;
+        public float NextShotIn;
+        public float Remaining;
+        public float DmgMin, DmgMax;
+    }
+    private readonly List<ActiveTurret> _spellTurrets = new();
+    private readonly Random _turretRng = new();
+
+    private (float Min, float Max) ResolveSpellAttackDamage(SiegeFX.Core.Assets.SpellTemplate spell)
+    {
+        float dmin = 20f, dmax = 30f;
+        if (_templateStore is not null && _templateStore.TryGet(spell.Name, out var tpl) && tpl is not null)
+        {
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            if (float.TryParse((_templateStore.GetAttribute(tpl, "attack", "damage_min") ?? "").Trim(),
+                    System.Globalization.NumberStyles.Float, ci, out var mn) && mn > 0f) dmin = mn;
+            if (float.TryParse((_templateStore.GetAttribute(tpl, "attack", "damage_max") ?? "").Trim(),
+                    System.Globalization.NumberStyles.Float, ci, out var mx) && mx > 0f) dmax = MathF.Max(mx, dmin);
+        }
+        return (dmin, dmax);
+    }
+
+    private void StartSpellTurret(SiegeFX.Core.Assets.SpellTemplate spell, ActorRenderState caster)
+    {
+        if (spell.Turret is not { } tu) return;
+        var (dmin, dmax) = ResolveSpellAttackDamage(spell);
+        float dur = MathF.Max(4f, SpellEffectDurationSec(spell, caster));
+        _spellTurrets.Add(new ActiveTurret
+        {
+            Spell = spell, Caster = caster,
+            NextShotIn = tu.InitialDelay, Remaining = dur,
+            DmgMin = dmin, DmgMax = dmax,
+        });
+        if (tu.ChargeEffect.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
+            && _sfxStore.TryGet(tu.ChargeEffect, out _))
+            _sfxRuntime.Spawn(tu.ChargeEffect, SiegeFX.Core.Sfx.SfxContext.At(
+                caster.CurrentTransform.Translation + new Vector3(0f, 1.6f, 0f)));
+        Console.WriteLine($"[turret] {spell.Name}: battery up for {dur:F0}s " +
+                          $"(rate {tu.ShotRate:F2}s, dmg {dmin:F0}-{dmax:F0})");
+    }
+
+    private void TickSpellTurrets(float dt)
+    {
+        for (int i = _spellTurrets.Count - 1; i >= 0; i--)
+        {
+            var tu = _spellTurrets[i];
+            var spec = tu.Spell.Turret!;
+            if (tu.Caster.IsDead) { _spellTurrets.RemoveAt(i); continue; }
+            tu.Remaining -= dt;
+            if (tu.Remaining <= 0f)
+            {
+                _spellTurrets.RemoveAt(i);
+                Console.WriteLine($"[turret] {tu.Spell.Name}: battery down");
+                continue;
+            }
+            tu.NextShotIn -= dt;
+            if (tu.NextShotIn > 0f) continue;
+            tu.NextShotIn = MathF.Max(0.08f, spec.ShotRate);
+            var srcPos = tu.Caster.CurrentTransform.Translation;
+            var quarry = tu.Caster.IsEvilAligned ? NearestLivePartyMember(srcPos) : null;
+            if (quarry is null) continue;
+            var src = srcPos + new Vector3(0f, 1.6f, 0f);
+            var dst = quarry.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+            var dq = dst - src;
+            if (dq.X * dq.X + dq.Z * dq.Z > 30f * 30f) continue;   // battery reach
+            float dmg = tu.DmgMin + (float)_turretRng.NextDouble() * (tu.DmgMax - tu.DmgMin);
+            float dealt = quarry.Actor.Combat.ApplyDamage(dmg);
+            bool ranFx = false;
+            if (spec.EffectScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
+                && _sfxStore.TryGet(spec.EffectScript, out _))
+                ranFx = _sfxRuntime.Spawn(spec.EffectScript, new SiegeFX.Core.Sfx.SfxContext(
+                    SourcePos: src, TargetPos: dst, WeaponBonePos: src));
+            if (!ranFx && _particles is not null)
+                _particles.SpawnProjectile(src, dst,
+                    SpellElementColor(tu.Spell.Element), 0.45f, 22f, 0);
+            if (dealt > 0f)
+                AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                    dst + new Vector3(0f, 0.8f, 0f), SpellElementColor(tu.Spell.Element));
+        }
+    }
+
+    /// <summary>SC-SPELL-DELIVERY — [spell_damage_volume]: one instant burst
+    /// hitting everything opposed to the caster inside the area radius,
+    /// centered per the authored caster_center flag (earth stomp).</summary>
+    private void ApplyDamageVolume(SiegeFX.Core.Assets.SpellTemplate spell,
+        ActorRenderState caster, Vector3 target)
+    {
+        var center = spell.DamageVolumeCasterCenter
+            ? caster.CurrentTransform.Translation : target;
+        float radius = spell.AreaDamageRadius > 0.05f ? spell.AreaDamageRadius : 3.5f;
+        float r2 = radius * radius;
+        var (dmin, dmax) = ResolveSpellAttackDamage(spell);
+        int struck = 0;
+        void Strike(ActorRenderState victim)
+        {
+            var d = victim.CurrentTransform.Translation - center;
+            if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 3f) return;
+            float dmg = dmin + (float)_turretRng.NextDouble() * (dmax - dmin);
+            float dealt = victim.Actor.Combat.ApplyDamage(dmg);
+            if (dealt <= 0f) return;
+            struck++;
+            AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                victim.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+                SpellElementColor(spell.Element));
+        }
+        if (caster.IsEvilAligned)
+        {
+            if (_player is not null && !_player.IsDead && !PartyWrangled) Strike(_player);
+            foreach (var m in _party)
+                if (m.PartyIndex > 0 && m.IsPartyMember && !m.IsDead && !PartyWrangled)
+                    Strike(m);
+        }
+        else
+        {
+            foreach (var s in _actors)
+                if (!s.IsDead && !s.IsPlayer && !s.IsPartyMember
+                    && s.Actor.Stats.IsCombatant && s.IsEvilAligned)
+                    Strike(s);
+        }
+        if (struck > 0)
+            Console.WriteLine($"[dmg-volume] {spell.Name}: struck {struck} in {radius:F1}u");
+    }
+
     private void StartMultiSummon(SiegeFX.Core.Assets.SpellTemplate spell, Vector3 center)
     {
         if (spell.SummonMultiple is not { } sm || sm.Choices.Count == 0) return;
@@ -21561,6 +21691,7 @@ void main()
                 TickDeathrains((float)stepSec);         // SC-SPELL-ENGINE
                 TickMultiSummons((float)stepSec);       // SC-SUMMON-MULTIPLE
                 TickMultiSummonExpiry((float)stepSec);  // SC-SUMMON-TTL
+                TickSpellTurrets((float)stepSec);       // SC-SPELL-DELIVERY
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
@@ -32741,6 +32872,9 @@ void main()
                 if (brain.CastSpell.Deathrain is not null) StartDeathrain(brain.CastSpell, castDst, s);
                 if (brain.CastSpell.SummonTemplate.Length > 0) CastSummon(brain.CastSpell, s, castDst);
                 if (brain.CastSpell.SummonMultiple is not null) StartMultiSummon(brain.CastSpell, castDst);
+                // SC-SPELL-DELIVERY — turret batteries + instant burst volumes.
+                if (brain.CastSpell.Turret is not null) StartSpellTurret(brain.CastSpell, s);
+                if (brain.CastSpell.HasDamageVolume) ApplyDamageVolume(brain.CastSpell, s, castDst);
                 // SC-SPELL-LAUNCH — [spell_launch] ammo spells (phrak dart,
                 // skrubb spit, blaster bomb) fire a REAL ballistic ammo GO —
                 // the authored dart/goo mesh on a gravity arc, damage payload
