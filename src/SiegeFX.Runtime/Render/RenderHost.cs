@@ -5422,6 +5422,32 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    // --- SC-MATERIAL-MATRIX ----------------------------------------------------
+    // The sounddb material rows: (source material, dest material, event) →
+    // sound. Materials come from [aspect] material on the template.
+    private IReadOnlyDictionary<string, string>? _soundDbMatrix;
+    private readonly Dictionary<string, string> _materialCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private string MaterialOf(SiegeFX.Core.Assets.Template? tpl)
+    {
+        if (tpl is null || _templateStore is null) return "generic";
+        if (_materialCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        var m = (_templateStore.GetAttribute(tpl, "aspect", "material") ?? "").Trim().Trim('"');
+        if (m.Length == 0) m = "generic";
+        _materialCache[tpl.Name] = m;
+        return m;
+    }
+
+    /// <summary>Play the matrix sound for (src material, dst material,
+    /// event) at a world position. False when no row resolves.</summary>
+    private bool PlayMaterialEvent(string srcMat, string dstMat, string evt, Vector3 pos)
+    {
+        if (_soundDbMatrix is null) return false;
+        var snd = SiegeFX.Core.Assets.SoundDb.ResolveMaterial(_soundDbMatrix, srcMat, dstMat, evt);
+        if (snd is null) return false;
+        return RegisterAndPlayVoiceCue(snd, pos);
+    }
+
     // --- SC-LORE — lore books --------------------------------------------------
     // Content: {map}/info/lore.gas ([lore] → [lore_key]{description}); a
     // book template's [gui] lore_key names its entry; is_lorebook marks the
@@ -7395,7 +7421,7 @@ public sealed class RenderHost : IDisposable
         if (best is null || best.IsDead || best.Actor.Combat.IsDead) return;
         var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
         float dealt = best.Actor.Combat.ApplyDamage(damage);
-        if (dealt > 0f) { PlayMeleeHit(hitPos); SpawnBloodHit(best); }
+        if (dealt > 0f) { PlayMeleeHit(hitPos, best); SpawnBloodHit(best); }
         if (best.Actor.Combat.ConsumeJustDied())
             HandleActorKilledByHit(best, dealt);
     }
@@ -13428,6 +13454,11 @@ void main()
                         _soundDbEvents = sdbEvents;
                         Console.WriteLine($"  audio: sounddb [global_voice] — {sdbEvents.Count} events");
                         foreach (var d in sdbDiags) Console.Error.WriteLine($"  sounddb: {d}");
+                        // SC-MATERIAL-MATRIX — the 393 source:dest:event rows.
+                        var (sdbMatrix, sdbMatDiags) = SiegeFX.Core.Assets.SoundDb.LoadMaterialMatrix(logicReader);
+                        _soundDbMatrix = sdbMatrix;
+                        Console.WriteLine($"  audio: sounddb material matrix — {sdbMatrix.Count} rows");
+                        foreach (var d in sdbMatDiags) Console.Error.WriteLine($"  sounddb: {d}");
                     }
                     catch (Exception mex)
                     {
@@ -32252,7 +32283,7 @@ void main()
         if (MpIsClientHitOnNetworkActor(best))
         {
             _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
-            PlayMeleeHit(hitPos);
+            PlayMeleeHit(hitPos, best);
             SpawnBloodHit(best);
             AwardCombatXp(raw, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
             return;
@@ -32268,7 +32299,7 @@ void main()
         // whiffs play the miss cue (the swing whoosh rode the BSWG note).
         if (dealt > 0f)
         {
-            PlayMeleeHit(hitPos);
+            PlayMeleeHit(hitPos, best);
             // SC-ENEMY-AUDIO-AUDIT — also fire the target's hit-reaction
             // voice cue, classified by damage fraction (glance/solid/crit).
             // ConsumeJustHit clears the edge so the per-frame scan doesn't
@@ -33242,9 +33273,16 @@ void main()
     /// (5) and steeledge (3); other materials (wood, etc.) currently
     /// fall back to steelsword. Lazy-registers the WAVs and the group on
     /// first encounter; subsequent kills hit the cached buffers.</summary>
-    private void PlayMeleeHit(Vector3 worldPos)
+    private void PlayMeleeHit(Vector3 worldPos, ActorRenderState? victim = null)
     {
         if (_audio is null) return;
+        // SC-MATERIAL-MATRIX — the authored weapon-vs-armor impact pair
+        // wins when a row exists (100 shipped attack_hit_glance pairs);
+        // the legacy flesh-family probe stays as the fallback.
+        if (victim is not null
+            && PlayMaterialEvent(_playerWeaponMaterial, MaterialOf(victim.Actor.Template),
+                   "attack_hit_glance", worldPos))
+            return;
         var material = _playerWeaponMaterial;
         var groupId = SfxMeleeHitGroupPrefix + material;
         if (!_registeredHitGroups.Contains(groupId))

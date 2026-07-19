@@ -86,4 +86,52 @@ public static class SoundDb
         if (!sink.TryGetValue(eventName, out var list)) sink[eventName] = list = new List<string>();
         list.Add(s);
     }
+
+    /// <summary>SC-MATERIAL-MATRIX — the [sounddb] material rows
+    /// (<c>source:dest:event:* = sound;</c> — 393 shipped: 100
+    /// attack_hit_glance impact pairs, the full door/chest/lever/elevator
+    /// event family). Keys are lowercased "src|dst|evt".</summary>
+    public static (IReadOnlyDictionary<string, string> Matrix, IReadOnlyList<string> Diagnostics)
+        LoadMaterialMatrix(TankReader logicTank)
+    {
+        var diags = new List<string>();
+        var matrix = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        byte[] bytes;
+        try { bytes = logicTank.ExtractToMemory(TankPath); }
+        catch (Exception ex) { diags.Add($"{TankPath}: extract failed: {ex.Message}"); return (matrix, diags); }
+        GasDocument doc;
+        try { doc = GasDocument.Load(bytes); }
+        catch (Exception ex) { diags.Add($"{TankPath}: parse failed: {ex.Message}"); return (matrix, diags); }
+        foreach (var root in doc.Roots)
+        {
+            if (!root.Header.Trim().Equals("sounddb", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var attr in root.Attributes)
+            {
+                // "src : dst : event : *" (whitespace-riddled) = sound.
+                var parts = attr.Name.Split(':', StringSplitOptions.TrimEntries);
+                if (parts.Length != 4 || parts[3] != "*") continue;
+                var snd = attr.Value.Trim().Trim('"');
+                if (snd.Length == 0) continue;
+                matrix[$"{parts[0]}|{parts[1]}|{parts[2]}".ToLowerInvariant()] = snd;
+            }
+        }
+        if (matrix.Count == 0) diags.Add($"{TankPath}: no material-matrix rows parsed");
+        return (matrix, diags);
+    }
+
+    /// <summary>SC-MATERIAL-MATRIX — resolve with the documented fallback:
+    /// exact → src+generic → generic+dst → generic+generic. Null = the
+    /// event has no row for any combination.</summary>
+    public static string? ResolveMaterial(
+        IReadOnlyDictionary<string, string> matrix, string src, string dst, string evt)
+    {
+        src = string.IsNullOrWhiteSpace(src) ? "generic" : src.Trim().ToLowerInvariant();
+        dst = string.IsNullOrWhiteSpace(dst) ? "generic" : dst.Trim().ToLowerInvariant();
+        evt = evt.Trim().ToLowerInvariant();
+        if (matrix.TryGetValue($"{src}|{dst}|{evt}", out var s1)) return s1;
+        if (matrix.TryGetValue($"{src}|generic|{evt}", out var s2)) return s2;
+        if (matrix.TryGetValue($"generic|{dst}|{evt}", out var s3)) return s3;
+        if (matrix.TryGetValue($"generic|generic|{evt}", out var s4)) return s4;
+        return null;
+    }
 }
