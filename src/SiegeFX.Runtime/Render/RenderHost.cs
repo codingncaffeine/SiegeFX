@@ -21088,6 +21088,185 @@ void main()
         }
     }
 
+    // ── SC-AUTO-HEAL-OTHERS ───────────────────────────────────────────────
+    // DS1's hero base authors actor_auto_heals_others_life = true with
+    // actor_life_ratio_low_threshold = 0.5: a party character who knows a
+    // healing spell reflexively casts it on a teammate who drops below half
+    // life (brain_hero.skrit WE_LIFE_RATIO_REACHED_LOW →
+    // RSCastLifeHealingSpell, AO_REFLEX — fires even mid-combat). Faithful
+    // boundaries: OTHERS only (auto_heals_SELF is false in every shipped
+    // template — potions and self-heals stay manual), LIFE only
+    // (others_mana is false), and templates that explicitly author
+    // others_life = false (Norick, the old peasants) opt out entirely.
+    private double _autoHealClock;
+    private float _autoHealScanIn;
+    private readonly Dictionary<int, double> _autoHealNextAt = new();
+    private readonly Dictionary<string, float> _lowLifeThresholdCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _autoHealOptOutCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private float LowLifeThresholdOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_lowLifeThresholdCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        float t = 0.5f;   // hero base authored value
+        var raw = _templateStore?.GetAttribute(tpl, "mind", "actor_life_ratio_low_threshold");
+        if (raw is not null && float.TryParse(raw.Trim().TrimEnd('f', 'F'),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var p)
+            && p > 0.01f && p < 0.99f)
+            t = p;
+        _lowLifeThresholdCache[tpl.Name] = t;
+        return t;
+    }
+
+    private bool AutoHealOptedOut(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_autoHealOptOutCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        var raw = _templateStore?.GetAttribute(tpl, "mind", "actor_auto_heals_others_life");
+        bool optOut = raw is not null && raw.Trim().Equals("false", StringComparison.OrdinalIgnoreCase);
+        _autoHealOptOutCache[tpl.Name] = optOut;
+        return optOut;
+    }
+
+    private void TickAutoHealOthers(float dt)
+    {
+        _autoHealClock += dt;
+        _autoHealScanIn -= dt;
+        if (_autoHealScanIn > 0f) return;
+        _autoHealScanIn = 0.35f;
+        if (_player is null || _playerSpellbook is null) return;
+        if (PartyWrangled || _nisPhase != NisPhase.Off) return;
+
+        // The party roster: hero = party index 0, then recruited members.
+        // Built fresh each scan (tiny list, ~0.35s cadence).
+        var roster = new List<(ActorRenderState S, int Pidx)>(1 + _party.Count) { (_player, 0) };
+        foreach (var m in _party) roster.Add((m, m.PartyIndex));
+
+        foreach (var (healer, pidx) in roster)
+        {
+            if (healer.IsDead || healer.Hidden || healer.Actor.Combat.Downed) continue;
+            if (AutoHealOptedOut(healer.Actor.Template)) continue;
+            if (_autoHealNextAt.TryGetValue(pidx, out var nextAt) && nextAt > _autoHealClock) continue;
+            var book = BookFor(pidx);
+            if (book is null) continue;
+
+            // Most-wounded OTHER teammate below their authored low threshold.
+            // Downed (ratio 0) sorts first naturally — healing the fallen is
+            // how a downed member gets back up.
+            ActorRenderState? target = null;
+            float worstRatio = 1f;
+            foreach (var (cand, cpidx) in roster)
+            {
+                if (cpidx == pidx || cand.IsDead || cand.Hidden) continue;
+                float maxLife = MathF.Max(1f, cand.Actor.Stats.MaxLife);
+                float ratio = cand.Actor.Combat.CurrentLife / maxLife;
+                if (ratio >= LowLifeThresholdOf(cand.Actor.Template)) continue;
+                if (ratio < worstRatio) { worstRatio = ratio; target = cand; }
+            }
+            if (target is null) continue;
+            var tgt = target;   // non-null snapshot for the local fn below
+
+            var hp = healer.CurrentTransform.Translation;
+            var tp = target.CurrentTransform.Translation;
+            float dist = MathF.Sqrt((tp.X - hp.X) * (tp.X - hp.X) + (tp.Z - hp.Z) * (tp.Z - hp.Z));
+
+            // Strongest healing spell the healer knows, can afford, and can
+            // reach with — retail's RSCastLifeHealingSpell picks from the
+            // whole book, not just the active slots.
+            SiegeFX.Core.Assets.SpellTemplate? bestSpell = null;
+            float bestHeal = 0f, bestCost = 0f;
+            void Consider(SiegeFX.Core.Assets.SpellTemplate? s)
+            {
+                if (s is null || s.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal) return;
+                if (string.IsNullOrEmpty(s.HealAmountExpr)) return;
+                float skill = MathF.Max(1f, MathF.Floor(s.IsNatureMagic
+                    ? healer.Actor.Stats.NatureMagicSkill
+                    : healer.Actor.Stats.CombatMagicSkill));
+                var ctx = new SiegeFX.Core.Assets.SpellEvalContext(skill,
+                    maxLife: tgt.Actor.Stats.MaxLife,
+                    life:    tgt.Actor.Combat.CurrentLife,
+                    srcMana: healer.Actor.Combat.CurrentMana,
+                    srcLife: healer.Actor.Combat.CurrentLife);
+                float heal = SiegeFX.Core.Assets.SpellExpr.Eval(s.HealAmountExpr, ctx);
+                float cost = s.ManaCost(ctx);
+                if (heal <= 0f || cost > healer.Actor.Combat.CurrentMana) return;
+                if (dist > MathF.Max(3f, s.CastRange)) return;
+                if (heal > bestHeal) { bestSpell = s; bestHeal = heal; bestCost = cost; }
+            }
+            Consider(book.Primary);
+            Consider(book.Secondary);
+            foreach (var pl in book.Placed) Consider(pl);
+            if (bestSpell is null) continue;
+
+            healer.Actor.Combat.SpendMana(bestCost);
+            target.Actor.Combat.Heal(bestHeal);
+            _autoHealNextAt[pidx] = _autoHealClock + 3.0;
+
+            if (healer.Actor.GetClipIndex("mg") >= 0)
+                healer.Actor.PlayChoreOnce("mg", 4f);
+            string healerName = pidx == 0 ? "hero" : ResolveMemberName(healer);
+            string targetName = target.IsPlayer ? "the hero" : ResolveMemberName(target);
+            Console.WriteLine($"[auto-heal] {healerName} casts {bestSpell.ScreenName} on {targetName}: " +
+                              $"+{bestHeal:F0} HP (mana -{bestCost:F1}, ratio was {worstRatio:P0})");
+            AddFloatingText($"+{(int)MathF.Round(bestHeal)} HP",
+                            tp + new Vector3(0f, 2.2f, 0f),
+                            new Vector4(0.40f, 0.95f, 0.40f, 1f));
+            // Heals award cast experience proportional to HP restored, same
+            // rule the manual heal cast applies.
+            if (pidx == 0) AwardRawXp((long)bestHeal, SkillForSpell(bestSpell));
+            else AwardMemberRawXp(pidx, (long)bestHeal, SkillForSpell(bestSpell));
+
+            // Authored heal VFX at the healed teammate, cast-cue fallback.
+            bool ranScript = false;
+            if (_sfxRuntime is not null && _sfxStore is not null
+                && !string.IsNullOrEmpty(bestSpell.CastSfxScript)
+                && _sfxStore.TryGet(bestSpell.CastSfxScript, out var healScript)
+                && IsCastScriptFullyCovered(bestSpell, healScript))
+            {
+                var healCtx = new SiegeFX.Core.Sfx.SfxContext(
+                    SourcePos:     tp + new Vector3(0f, 0.9f, 0f),
+                    TargetPos:     tp + new Vector3(0f, 0.9f, 0f),
+                    WeaponBonePos: hp + new Vector3(0f, 1.2f, 0f),
+                    Resolver:      MakeActorBoneResolver(healer))
+                {
+                    TargetResolver = MakeActorBoneResolver(target),
+                };
+                ranScript = _sfxRuntime.Spawn(bestSpell.CastSfxScript, healCtx);
+            }
+            if (!ranScript) _audio?.Play(ResolveSpellCastSound(bestSpell));
+        }
+    }
+
+    /// <summary>SC-AUTO-HEAL-OTHERS — flat XP award for a member's non-damage
+    /// cast (heals). Mirrors <see cref="AwardMemberXp"/>'s level-up handling
+    /// without the victim-derived scaling.</summary>
+    private void AwardMemberRawXp(int partyIndex, long amount, SiegeFX.Core.Assets.SkillKind skill)
+    {
+        if (amount <= 0 || !_memberProgression.TryGetValue(partyIndex, out var prog)) return;
+        int oldLevel = prog.Level;
+        int oldSkill = prog.SkillLevel(skill);
+        prog.AwardXp(amount, skill);
+        int newSkill = prog.SkillLevel(skill);
+        var member = _party.FirstOrDefault(m => m.PartyIndex == partyIndex);
+        string who = member is not null ? ResolveMemberName(member) : $"member {partyIndex}";
+        if (newSkill > oldSkill || prog.Level > oldLevel || prog.AttributesChangedLastAward)
+            SyncMemberArmorDefense(partyIndex);
+        if (prog.Level > oldLevel || newSkill > oldSkill)
+            Console.WriteLine($"party: {who} leveled — level {prog.Level}, " +
+                              $"{SkillDisplayName(skill)} {newSkill}");
+        if (newSkill > oldSkill)
+        {
+            AddGameMessage($"{who} has advanced to level {newSkill} in " +
+                           $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
+            if (member is { IsDead: false })
+                member.Actor.Combat.Heal(member.Actor.Stats.MaxLife);
+        }
+        foreach (var (attr, lvl) in prog.LastAttrLevelUps)
+        {
+            string attrName = attr == 0 ? "Strength" : attr == 1 ? "Dexterity" : "Intelligence";
+            AddGameMessage($"{who} has advanced to level {lvl} in {attrName}!");
+        }
+    }
+
     /// <summary>SC-WEATHER-F — register each emt_sound / emt_sound_act
     /// placement's [sound_emitter(_act)] block as a runtime sound emitter.
     /// Event names resolve through sounddb.gas [global_voice] at fire time;
@@ -22897,6 +23076,7 @@ void main()
                 TickSpellTurrets((float)stepSec);       // SC-SPELL-DELIVERY
                 TickRoboSuits();                        // SC-RBS composite boss
                 TickGoEmitters((float)stepSec);         // SC-EMT-GO debris
+                TickAutoHealOthers((float)stepSec);     // SC-AUTO-HEAL-OTHERS
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
