@@ -132,6 +132,11 @@ internal sealed class KeyBindingRegistry
             new("load_game",    "Load Game",    GroupGame, "ctrl+l"),
             new("game_options", "Game Options", GroupGame, "f10"),
             new("close_dialogs","Close Dialogs",GroupGame, ""),
+            // SC-RECORD — SiegeFX extension row (no authored equivalent):
+            // toggles the WGC video recorder. Ctrl+F9 sits beside Quick
+            // Save's F9 and is unclaimed in the authored map; rebindable
+            // like everything else.
+            new("record_video", "Record Video", GroupGame, "ctrl+f9"),
         });
         return d.ToArray();
     }

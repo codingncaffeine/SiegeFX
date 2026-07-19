@@ -38,7 +38,13 @@ internal static class OptionsPrefs
                 using var doc = JsonDocument.Parse(text);
                 if (!doc.RootElement.TryGetProperty("PrefsVersion", out _))
                     s.GameSpeed = 50;
-                s.PrefsVersion = 2;
+                // SC-DISPLAY-MODE — pre-v3 files carry the old Fullscreen
+                // bool; fold it into the three-way mode. (Missing property
+                // keeps the "Windowed" initializer, so only a real legacy
+                // fullscreen=true flips anything.)
+                if (!doc.RootElement.TryGetProperty("DisplayMode", out _))
+                    s.DisplayMode = s.Fullscreen ? "Fullscreen" : "Windowed";
+                s.PrefsVersion = 3;
             }
             return s;
         }

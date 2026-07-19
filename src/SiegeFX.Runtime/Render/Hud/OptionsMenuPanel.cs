@@ -52,12 +52,19 @@ internal sealed class OptionsMenuPanel
         public int PrefsVersion = 2;
 
         // Video — ALPHA-2V all runtime-wired. Defaults from /config/options.gas
-        // (modernized: resolution drops DS1's bpp suffix; fullscreen is a new
-        // checkbox — DS1 was always fullscreen, SiegeFX defaults windowed).
-        // Resolution = the fullscreen mode + a windowed resize preset; free
-        // window resizing stays allowed and the last size persists via
-        // WindowW/WindowH (not shown in the UI).
+        // (modernized: resolution drops DS1's bpp suffix; DS1 was always
+        // fullscreen, SiegeFX defaults windowed). Resolution = the
+        // fullscreen mode + a windowed resize preset; free window resizing
+        // stays allowed and the last size persists via WindowW/WindowH
+        // (not shown in the UI).
         public string Resolution = "1920x1080";
+        // SC-DISPLAY-MODE — three-way mode replacing the old Fullscreen
+        // checkbox: Windowed / Borderless (undecorated window covering the
+        // monitor — instant alt-tab, no display-mode switch) / Fullscreen
+        // (exclusive, display mode at the Resolution dropdown's WxH).
+        public string DisplayMode = "Windowed";
+        // Legacy pre-v3 prefs knob — migrated into DisplayMode by
+        // OptionsPrefs.Load and kept only so old prefs.json files parse.
         public bool Fullscreen = false;
         public string Shadows = "complex_party";
         public string TextureFiltering = "trilinear";
@@ -143,6 +150,12 @@ internal sealed class OptionsMenuPanel
         public string Msaa = "Off";          // Off/2x/4x/8x — next launch
         public int PointLightBudget = 16;    // 4..32 per-frame point-light cap
         public int UiScalePercent = 100;     // 50..150 global HUD scale
+
+        // SC-RECORD — capture output folders ("" = the defaults under
+        // %LOCALAPPDATA%\SiegeFX\{Screenshots,Recordings}). Set from the
+        // Advanced tab's folder rows (LMB = native picker, RMB = reset).
+        public string VideosDir = "";
+        public string ScreenshotsDir = "";
 
         public Settings Clone() => (Settings)MemberwiseClone();
     }
@@ -945,6 +958,9 @@ internal sealed class OptionsMenuPanel
         { "1280x720", "1600x900", "1920x1080", "2048x1080", "2560x1080",
           "2560x1440", "3440x1440", "3840x2160" };
 
+    /// <summary>SC-DISPLAY-MODE — the Video tab's mode options.</summary>
+    public static readonly string[] DisplayModes = { "Windowed", "Borderless", "Fullscreen" };
+
     void LayoutVideo(BarRenderer bars, TextRenderer text, int vw, int vh)
     {
         var resOptions = ResolutionOptions is { Length: > 0 } ro ? ro : FallbackResolutions;
@@ -953,8 +969,10 @@ internal sealed class OptionsMenuPanel
         int r = 0;
         CycleField(bars, text, vw, vh, r++, "Resolution",
             () => _staged.Resolution, v => _staged.Resolution = v, resOptions, dropdown: true);
-        CheckboxField(bars, text, vw, vh, r++, "Fullscreen",
-            () => _staged.Fullscreen, v => _staged.Fullscreen = v);
+        // SC-DISPLAY-MODE — three-way cycle replacing the old Fullscreen
+        // checkbox (Borderless is the modern default expectation).
+        CycleField(bars, text, vw, vh, r++, "Display Mode",
+            () => _staged.DisplayMode, v => _staged.DisplayMode = v, DisplayModes, dropdown: true);
         CycleField(bars, text, vw, vh, r++, "Shadows",
             () => _staged.Shadows, v => _staged.Shadows = v, shadows, dropdown: true);
         CycleField(bars, text, vw, vh, r++, "Texture Filtering",
@@ -1022,10 +1040,8 @@ internal sealed class OptionsMenuPanel
     {
         // Phase 23-SC-OPTIONS-FOLD — Audio sliders fire AudioStagedChanged
         // on every set so the host can re-apply volumes live during
-        // drag. Without this the master/music/sfx sliders feel dead
-        // until OK. Ambient + Voice + EAX are persist-only (SiegeFX
-        // doesn't separate those channels) — labels render in InkDim
-        // to hint that they don't apply yet.
+        // drag. Without this the sliders feel dead until OK. Only EAX
+        // remains persist-only (accepted gap).
         int r = 0;
         Action notify = () => AudioStagedChanged?.Invoke();
         BoolCycle(bars, text, vw, vh, r++, "Sound",
@@ -1040,10 +1056,15 @@ internal sealed class OptionsMenuPanel
         IntSlider(bars, text, vw, vh, r++, "SFX Volume",
             () => _staged.SfxVolume,
             v => { _staged.SfxVolume = v; notify(); }, 0, 127);
-        IntSlider(bars, text, vw, vh, r++, "Ambient Volume (inactive)",
-            () => _staged.AmbientVolume, v => _staged.AmbientVolume = v, 0, 127);
-        IntSlider(bars, text, vw, vh, r++, "Voice Volume (inactive)",
-            () => _staged.VoiceVolume, v => _staged.VoiceVolume = v, 0, 127);
+        // SC-AUDIO-BUSES — Ambient + Voice are live channels now (loop
+        // re-gain + voice-tagged cues); they notify like the other
+        // sliders so drags audition in real time.
+        IntSlider(bars, text, vw, vh, r++, "Ambient Volume",
+            () => _staged.AmbientVolume,
+            v => { _staged.AmbientVolume = v; notify(); }, 0, 127);
+        IntSlider(bars, text, vw, vh, r++, "Voice Volume",
+            () => _staged.VoiceVolume,
+            v => { _staged.VoiceVolume = v; notify(); }, 0, 127);
         BoolCycle(bars, text, vw, vh, r++, "EAX (inactive)",
             () => _staged.EaxEnabled, v => _staged.EaxEnabled = v);
     }
@@ -1137,6 +1158,64 @@ internal sealed class OptionsMenuPanel
             () => _staged.UiScalePercent, v => _staged.UiScalePercent = v, 50, 150);
         BoolCycle(bars, text, vw, vh, r++, "Move Panels As One",
             () => _staged.RailLocked, v => _staged.RailLocked = v);
+        // SC-RECORD — capture output folders. LMB opens the native picker
+        // (host-injected — the panel stays shell-free), RMB resets to the
+        // default %LOCALAPPDATA%\SiegeFX location.
+        FolderField(bars, text, vw, vh, r++, "Videos Folder",
+            () => _staged.VideosDir, v => _staged.VideosDir = v,
+            "Choose where recordings are saved");
+        FolderField(bars, text, vw, vh, r++, "Screenshots Folder",
+            () => _staged.ScreenshotsDir, v => _staged.ScreenshotsDir = v,
+            "Choose where screenshots are saved");
+    }
+
+    /// <summary>SC-RECORD — host-injected native folder chooser:
+    /// (dialog title, current path or "") → picked path, or null on
+    /// cancel. Null when headless (rows then just show their value).</summary>
+    public Func<string, string, string?>? PickFolderDialog;
+
+    /// <summary>SC-RECORD — capture-folder row: right-justified label, a
+    /// bordered value button showing the current path ("(default)" when
+    /// unset), LMB = native picker, RMB = reset to default.</summary>
+    void FolderField(BarRenderer bars, TextRenderer text, int vw, int vh,
+                     int rowIdx, string label, Func<string> get, Action<string> set,
+                     string dialogTitle)
+    {
+        RowRect(rowIdx, out var labelR, out var widgetR, vw, vh);
+        int labelTextW = text.MeasureWidth(label, _fontScale);
+        text.DrawString(vw, vh, label,
+            labelR.X + labelR.W - labelTextW, labelR.Y + 1, InkDim, _fontScale);
+
+        int widgetIdx = _widgets.Count;
+        bool hover = _hoveredWidget == widgetIdx;
+        bars.DrawRect(vw, vh, widgetR.X, widgetR.Y, widgetR.W, widgetR.H,
+            hover ? BtnHover : BtnIdle);
+        DrawBorder(bars, vw, vh, widgetR, Border);
+        string cur = get();
+        string disp = cur.Length == 0 ? "(default)" : cur;
+        // Long paths keep their tail — the leaf folder is what identifies
+        // the pick.
+        int maxW = widgetR.W - 8 * _fontScale;
+        if (text.MeasureWidth(disp, _fontScale) > maxW)
+        {
+            while (disp.Length > 4 &&
+                   text.MeasureWidth("..." + disp, _fontScale) > maxW)
+                disp = disp[1..];
+            disp = "..." + disp;
+        }
+        text.DrawString(vw, vh, disp,
+            widgetR.X + 4 * _fontScale, widgetR.Y + 1, Ink, _fontScale);
+
+        _widgets.Add(new W
+        {
+            Rect = widgetR,
+            OnClick = () =>
+            {
+                var picked = PickFolderDialog?.Invoke(dialogTitle, get());
+                if (picked is not null) set(picked);
+            },
+            OnRightClick = () => set(""),
+        });
     }
 
     void DrawPageButton(BarRenderer bars, TextRenderer text, int vw, int vh,
@@ -1432,7 +1511,7 @@ internal sealed class OptionsMenuPanel
         {
             case Tab.Video:
                 _staged.Resolution = d.Resolution;
-                _staged.Fullscreen = d.Fullscreen;
+                _staged.DisplayMode = d.DisplayMode;
                 _staged.Shadows = d.Shadows;
                 _staged.TextureFiltering = d.TextureFiltering;
                 _staged.Gamma = d.Gamma;
@@ -1476,6 +1555,8 @@ internal sealed class OptionsMenuPanel
                 _staged.PointLightBudget = d.PointLightBudget;
                 _staged.UiScalePercent = d.UiScalePercent;
                 _staged.RailLocked = d.RailLocked;
+                _staged.VideosDir = d.VideosDir;
+                _staged.ScreenshotsDir = d.ScreenshotsDir;
                 break;
         }
     }

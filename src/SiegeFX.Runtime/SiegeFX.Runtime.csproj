@@ -12,14 +12,25 @@
     <PackageReference Include="Silk.NET.Maths" Version="2.23.0" />
     <PackageReference Include="Silk.NET.OpenGL" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+    <!-- SC-RECORD — WASAPI loopback capture feeds the video recorder's
+         audio track (records what the user hears; OpenAL has no mix tap). -->
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
   </ItemGroup>
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net11.0</TargetFramework>
+    <!-- SC-RECORD — Windows TFM unlocks the WinRT projections the video
+         recorder needs (Windows.Graphics.Capture + Windows.Media.*). The
+         game was Windows-only already (publish RID win-x64); nothing else
+         references this project so the TFM change is local. -->
+    <TargetFramework>net11.0-windows10.0.22621.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Windows-TFM side effects: no PRI packaging (unpackaged app), and
+         keep the exe runnable on any Win10 build — WGC gates at runtime. -->
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <!-- ALPHA PACKAGING — the game ships (and builds) as SiegeFX.exe /
          SiegeFX.dll; "SiegeFX.Runtime" stays the project/folder name only.
          test-all.bat's RUN path and SiegeSmith's RuntimeLauncher probe both

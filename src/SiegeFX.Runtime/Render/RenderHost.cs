@@ -5373,6 +5373,43 @@ public sealed class RenderHost : IDisposable
     // (back buffer complete), so OnRender's tail calls the capture.
     private bool _screenshotPending;
 
+    // SC-RECORD — Ctrl+F9 (rebindable "record_video") toggles the WGC
+    // video recorder: compositor-level window capture + hardware H.264,
+    // audio from a WASAPI loopback tap. The REC chip only draws for the
+    // first few seconds after arming — WGC records the HUD too, so a
+    // persistent indicator would burn into the whole clip.
+    private readonly Capture.WgcRecorder _recorder = new();
+
+    /// <summary>Capture output folder: the user's pick from the Advanced
+    /// tab, or the default under %LOCALAPPDATA%\SiegeFX.</summary>
+    private static string CaptureDir(string custom, string defaultLeaf)
+        => custom.Length > 0 ? custom
+         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "SiegeFX", defaultLeaf);
+
+    private void ToggleRecording()
+    {
+        if (_recorder.IsRecording)
+        {
+            _recorder.Stop();
+            AddGameMessage("Recording stopped - finalizing...");
+            return;
+        }
+        nint hwnd = _window?.Native?.Win32?.Hwnd ?? 0;
+        if (hwnd == 0)
+        {
+            AddGameMessage("Recording unavailable (no window handle).");
+            return;
+        }
+        var dir = CaptureDir(_optionsMenu.Live.VideosDir, "Recordings");
+        var stem = $"SiegeFX Clip - {DateTime.Now:yyyy-MM-dd HH-mm-ss}";
+        if (_recorder.Start(hwnd, dir, stem))
+        {
+            AddGameMessage("Recording started.");
+            Console.WriteLine($"[record] -> {dir}\\{stem}.mp4");
+        }
+    }
+
     // SC-CHAPTER-TITLE — the centered chapter card (user ref chapter
     // text.bmp: "Chapter 1: Stonebridge"). NOT font-rendered: DS1 authors it
     // as PRE-RENDERED ART — /ui/interfaces/chapters/chapter_N.gas draws
@@ -9311,17 +9348,34 @@ void main()
         // its Hotkeys editor can stage edits against the live map.
         _keyBindings.LoadOverrides(prefs?.KeyBindings);
         _optionsMenu.Registry = _keyBindings;
+        // SC-RECORD — hand the panel a native folder chooser for the
+        // Advanced tab's capture-folder rows (kept out of the panel so the
+        // HUD layer stays shell-free).
+        _optionsMenu.PickFolderDialog = (dlgTitle, current) =>
+            Capture.FolderPicker.Pick(dlgTitle, current.Length > 0 ? current : null);
         var live = _optionsMenu.Live;
         int winW = width, winH = height;
         var winState = WindowState.Normal;
+        // SC-DISPLAY-MODE — three-way boot: Fullscreen = exclusive at the
+        // Resolution WxH; Borderless = undecorated window covering the main
+        // monitor; Windowed = last free-resize size.
+        var winBorder = WindowBorder.Resizable;
+        Vector2D<int>? winPos = null;
         if (prefs is not null)
         {
             winW = Math.Max(640, live.WindowW);
             winH = Math.Max(480, live.WindowH);
-            if (live.Fullscreen && TryParseResolution(live.Resolution, out var fw, out var fh))
+            if (live.DisplayMode == "Fullscreen" && TryParseResolution(live.Resolution, out var fw, out var fh))
             {
                 (winW, winH) = (fw, fh);
                 winState = WindowState.Fullscreen;
+            }
+            else if (live.DisplayMode == "Borderless")
+            {
+                var mb = Silk.NET.Windowing.Monitor.GetMainMonitor(null).Bounds;
+                winBorder = WindowBorder.Hidden;
+                (winW, winH) = (mb.Size.X, mb.Size.Y);
+                winPos = mb.Origin;
             }
         }
         int msaa = ParseMsaa(live.Msaa);
@@ -9331,9 +9385,11 @@ void main()
             Size = new Vector2D<int>(winW, winH),
             VSync = live.VSync,
             WindowState = winState,
+            WindowBorder = winBorder,
             Samples = msaa > 0 ? msaa : null,
         };
         _window = Window.Create(opts);
+        if (winPos is { } borderlessPos) _window.Position = borderlessPos;
         _window.Load    += OnLoad;
         _window.Update  += OnUpdate;
         _window.Render  += OnRender;
@@ -10197,6 +10253,7 @@ void main()
                 // SC-CMD-KEYS — Phase 1 showdown: dispatch the registered-
                 // but-dead authored bindings.
                 else if (Is("take_screenshot")) _screenshotPending = true;
+                else if (Is("record_video")) ToggleRecording();
                 else if (Is("toggle_game_timer"))
                 {
                     _gameTimerVisible = !_gameTimerVisible;
@@ -26339,44 +26396,92 @@ void main()
             ? cap : 0.0;
     }
 
-    /// <summary>Resolution + fullscreen, applied on OK only (mid-menu mode
-    /// switches are jarring). Windowed = free resize, remembered via
-    /// OnResize; the dropdown doubles as a windowed preset. Fullscreen =
-    /// display mode at the dropdown's WxH; unchecking restores the last
-    /// windowed size. Reads Live — the OK path commits before calling.</summary>
+    // SC-DISPLAY-MODE — last windowed (decorated) top-left, captured when
+    // leaving Windowed for Fullscreen/Borderless so the return trip lands
+    // where the user left the window. Null = never windowed this session →
+    // center on the monitor.
+    private Vector2D<int>? _windowedPos;
+
+    /// <summary>SC-DISPLAY-MODE — Resolution + display mode, applied on OK
+    /// only (mid-menu mode switches are jarring). Windowed = free resize
+    /// (the dropdown doubles as a preset); Borderless = undecorated window
+    /// covering the current monitor; Fullscreen = exclusive display mode at
+    /// the dropdown's WxH. Leaving fullscreen restores BOTH the remembered
+    /// size and position — GLFW otherwise parks the window at the monitor
+    /// origin with the title bar off-screen (the reported "back to windowed
+    /// is broken" bug). Reads Live — the OK path commits before calling.</summary>
     private void ApplyWindowMode()
     {
         var s = _optionsMenu.Live;
-        bool isFs = _window.WindowState == WindowState.Fullscreen;
         bool haveRes = TryParseResolution(s.Resolution, out int rw, out int rh);
-        if (s.Fullscreen)
+        bool isFs = _window.WindowState == WindowState.Fullscreen;
+        bool isBorderless = !isFs && _window.WindowBorder == WindowBorder.Hidden;
+        s.Fullscreen = s.DisplayMode == "Fullscreen"; // legacy mirror
+        switch (s.DisplayMode)
         {
-            if (!isFs)
+            case "Fullscreen":
+                if (!isFs)
+                {
+                    RememberWindowedPlacement(isBorderless);
+                    _window.WindowState = WindowState.Fullscreen;
+                }
+                // In fullscreen, resizing the window switches the display mode.
+                if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
+                    _window.Size = new Vector2D<int>(rw, rh);
+                break;
+
+            case "Borderless":
             {
-                // Remember the windowed size for the return trip.
-                s.WindowW = _window.Size.X;
-                s.WindowH = _window.Size.Y;
-                _window.WindowState = WindowState.Fullscreen;
+                if (isFs) _window.WindowState = WindowState.Normal;
+                else if (!isBorderless) RememberWindowedPlacement(borderless: false);
+                var mb = (_window.Monitor ?? Silk.NET.Windowing.Monitor.GetMainMonitor(_window)).Bounds;
+                _window.WindowBorder = WindowBorder.Hidden;
+                _window.Position = mb.Origin;
+                _window.Size = mb.Size;
+                break;
             }
-            // In fullscreen, resizing the window switches the display mode.
-            if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
-                _window.Size = new Vector2D<int>(rw, rh);
+
+            default: // Windowed
+            {
+                bool leaving = isFs || isBorderless;
+                if (isFs) _window.WindowState = WindowState.Normal;
+                if (_window.WindowBorder != WindowBorder.Resizable)
+                    _window.WindowBorder = WindowBorder.Resizable;
+                if (leaving)
+                {
+                    int w = Math.Max(640, s.WindowW), h = Math.Max(480, s.WindowH);
+                    _window.Size = new Vector2D<int>(w, h);
+                    var mb = (_window.Monitor ?? Silk.NET.Windowing.Monitor.GetMainMonitor(_window)).Bounds;
+                    var pos = _windowedPos ?? mb.Origin + new Vector2D<int>(
+                        Math.Max(0, (mb.Size.X - w) / 2), Math.Max(0, (mb.Size.Y - h) / 2));
+                    // Keep the title bar on-screen whatever was remembered.
+                    pos = new Vector2D<int>(
+                        Math.Clamp(pos.X, mb.Origin.X - w + 160, mb.Origin.X + mb.Size.X - 160),
+                        Math.Clamp(pos.Y, mb.Origin.Y, mb.Origin.Y + mb.Size.Y - 120));
+                    _window.Position = pos;
+                }
+                else if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
+                {
+                    // Windowed preset picked from the dropdown.
+                    _window.Size = new Vector2D<int>(rw, rh);
+                    s.WindowW = rw;
+                    s.WindowH = rh;
+                }
+                break;
+            }
         }
-        else
-        {
-            if (isFs)
-            {
-                _window.WindowState = WindowState.Normal;
-                _window.Size = new Vector2D<int>(Math.Max(640, s.WindowW), Math.Max(480, s.WindowH));
-            }
-            else if (haveRes && (_window.Size.X != rw || _window.Size.Y != rh))
-            {
-                // Windowed preset picked from the dropdown.
-                _window.Size = new Vector2D<int>(rw, rh);
-                s.WindowW = rw;
-                s.WindowH = rh;
-            }
-        }
+    }
+
+    /// <summary>Capture the decorated-window size + position before a mode
+    /// switch. Skipped when the window is borderless/fullscreen already —
+    /// monitor-sized values must never overwrite the real windowed
+    /// placement.</summary>
+    private void RememberWindowedPlacement(bool borderless)
+    {
+        if (_window.WindowState != WindowState.Normal || borderless) return;
+        _optionsMenu.Live.WindowW = _window.Size.X;
+        _optionsMenu.Live.WindowH = _window.Size.Y;
+        _windowedPos = _window.Position;
     }
 
     private void ApplyOptionsVideo()
@@ -26390,7 +26495,10 @@ void main()
     /// means the truth lives on the window, not in the last-picked preset).</summary>
     private void OpenOptionsMenu()
     {
-        if (_window.WindowState == WindowState.Normal)
+        // Windowed only — borderless/fullscreen surfaces are display
+        // modes, not the free-resize truth the dropdown mirrors.
+        if (_window.WindowState == WindowState.Normal
+            && _window.WindowBorder != WindowBorder.Hidden)
             _optionsMenu.Live.Resolution = $"{_window.Size.X}x{_window.Size.Y}";
         _optionsMenu.Open();
     }
@@ -39395,6 +39503,22 @@ void main()
                 _textRenderer.DrawString(size.X, size.Y, fpsStr, size.X - fw - 8, 8, col);
             }
 
+            // SC-RECORD — blinking REC chip, top-right, first 4s only
+            // (the capture includes the HUD; a persistent chip would sit
+            // in the whole clip). Start/stop/saved receipts go through
+            // the message strip like screenshots.
+            if (_recorder.IsRecording && _recorder.Elapsed.TotalSeconds < 4.0)
+            {
+                var e = _recorder.Elapsed;
+                var recStr = $"REC {(int)e.TotalMinutes}:{e.Seconds:D2}";
+                int recW = _textRenderer.MeasureWidth(recStr);
+                int rx = size.X - recW - 8, ry = _showFps ? 26 : 8;
+                var red = new Vector4(0.88f, 0.14f, 0.14f, 1f);
+                if (e.Milliseconds < 500)
+                    _barRenderer?.DrawRect(size.X, size.Y, rx - 14, ry + 2, 9, 9, red);
+                _textRenderer.DrawString(size.X, size.Y, recStr, rx, ry, red);
+            }
+
             // Phase 22-AUTH-CHAR-AWP — DS1's always-on player AWP at
             // top-left: HP/MP bars, portrait, 4 weapon/skill slots, and
             // (gas-authored) inventory button. Replaces the home-grown
@@ -40229,13 +40353,18 @@ void main()
         // act of the frame, so the capture contains everything (HUD included)
         // exactly as presented.
         CaptureScreenshotIfPending();
+
+        // SC-RECORD — recorder status lines are produced on encoder
+        // threads; surface them on the strip from the render thread.
+        while (_recorder.StatusLines.TryDequeue(out var recLine))
+            AddGameMessage(recLine);
     }
 
     /// <summary>SC-SCREENSHOT — Print Screen capture. Reads the back buffer
-    /// (GL thread only), writes a 24-bit BMP — the same format DS1 wrote
-    /// ("Dungeon Siege Screen - NNNN.bmp") — to
-    /// %LOCALAPPDATA%\SiegeFX\Screenshots\SiegeFX Screen - NNNN.bmp, and
-    /// confirms on the message strip like retail.</summary>
+    /// (GL thread only) and writes a PNG (modernized from DS1's 24-bit BMP;
+    /// same "Screen - NNNN" naming convention) to the Screenshots folder —
+    /// %LOCALAPPDATA%\SiegeFX\Screenshots or the Advanced tab's custom pick
+    /// — and confirms on the message strip like retail.</summary>
     private void CaptureScreenshotIfPending()
     {
         if (!_screenshotPending || _gl is null || _window is null) return;
@@ -40252,15 +40381,13 @@ void main()
                 fixed (byte* p = pixels)
                     _gl.ReadPixels(0, 0, (uint)w, (uint)h, GLEnum.Rgb, GLEnum.UnsignedByte, p);
             }
-            var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "SiegeFX", "Screenshots");
+            var dir = CaptureDir(_optionsMenu.Live.ScreenshotsDir, "Screenshots");
             Directory.CreateDirectory(dir);
             string path;
             int n = 1;
-            do { path = Path.Combine(dir, $"SiegeFX Screen - {n:D4}.bmp"); n++; }
+            do { path = Path.Combine(dir, $"SiegeFX Screen - {n:D4}.png"); n++; }
             while (File.Exists(path));
-            WriteBmp24(path, w, h, pixels);
+            WritePng(path, w, h, pixels);
             AddGameMessage($"Screenshot successfully taken to '{Path.GetFileName(path)}'");
         }
         catch (Exception ex)
@@ -40270,32 +40397,34 @@ void main()
         }
     }
 
-    /// <summary>24-bit bottom-up BMP writer. GL's ReadPixels rows are already
-    /// bottom-up, matching BMP's native row order — only the per-pixel
-    /// RGB→BGR swizzle is needed.</summary>
-    private static void WriteBmp24(string path, int w, int h, byte[] rgb)
+    /// <summary>PNG writer over the Windows imaging encoder (no extra
+    /// dependency on the Windows TFM). GL's ReadPixels rows are bottom-up;
+    /// PNG is top-down, so rows flip while expanding RGB→RGBA.</summary>
+    private static void WritePng(string path, int w, int h, byte[] rgb)
     {
-        int rowBytes = w * 3, pad = (4 - rowBytes % 4) % 4, stride = rowBytes + pad;
-        int dataSize = stride * h, fileSize = 54 + dataSize;
-        using var bw = new BinaryWriter(new FileStream(path, FileMode.Create, FileAccess.Write));
-        bw.Write((byte)'B'); bw.Write((byte)'M');
-        bw.Write(fileSize); bw.Write(0); bw.Write(54);
-        bw.Write(40); bw.Write(w); bw.Write(h);
-        bw.Write((short)1); bw.Write((short)24);
-        bw.Write(0); bw.Write(dataSize);
-        bw.Write(2835); bw.Write(2835); bw.Write(0); bw.Write(0);
-        var row = new byte[stride];
+        var rgba = new byte[w * h * 4];
         for (int y = 0; y < h; y++)
         {
-            int src = y * rowBytes;
+            int src = (h - 1 - y) * w * 3, dst = y * w * 4;
             for (int x = 0; x < w; x++)
             {
-                row[x * 3 + 0] = rgb[src + x * 3 + 2];
-                row[x * 3 + 1] = rgb[src + x * 3 + 1];
-                row[x * 3 + 2] = rgb[src + x * 3 + 0];
+                rgba[dst++] = rgb[src++];
+                rgba[dst++] = rgb[src++];
+                rgba[dst++] = rgb[src++];
+                rgba[dst++] = 255;
             }
-            bw.Write(row, 0, stride);
         }
+        using var mem = new Windows.Storage.Streams.InMemoryRandomAccessStream();
+        var enc = Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
+            Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, mem)
+            .AsTask().GetAwaiter().GetResult();
+        enc.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Rgba8,
+            Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
+            (uint)w, (uint)h, 96, 96, rgba);
+        enc.FlushAsync().AsTask().GetAwaiter().GetResult();
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        mem.Seek(0);
+        mem.AsStreamForRead().CopyTo(fs);
     }
 
     /// <summary>Phase 21-SC-SCROLL-PRE-2 — start a scroll drag from the
@@ -40996,8 +41125,12 @@ void main()
         _gl?.Viewport(size);
         // ALPHA-2V — remember the last windowed size (free-resize freedom;
         // restored at boot + when leaving fullscreen). Fullscreen sizes are
-        // display modes, not window memory, so they don't record.
-        if (_window.WindowState == WindowState.Normal && size.X >= 320 && size.Y >= 240)
+        // display modes, not window memory, so they don't record — and
+        // SC-DISPLAY-MODE: borderless is WindowState.Normal too but its
+        // monitor-sized surface must not overwrite the real windowed size.
+        if (_window.WindowState == WindowState.Normal
+            && _window.WindowBorder != WindowBorder.Hidden
+            && size.X >= 320 && size.Y >= 240)
         {
             _optionsMenu.Live.WindowW = size.X;
             _optionsMenu.Live.WindowH = size.Y;
@@ -41013,6 +41146,11 @@ void main()
         // post-context and would crash on DeleteTexture/DeleteBuffer.
         if (_glDisposed) return;
         _glDisposed = true;
+
+        // SC-RECORD — closing the window mid-recording: signal the stop so
+        // the encoder finalizes a playable file (the transcode thread
+        // outlives the GL teardown; WGC feeds it nothing further).
+        _recorder.Stop();
 
         // ALPHA-2V — capture the final windowed size (recorded by OnResize
         // into Live) so the next launch opens at the same size.
