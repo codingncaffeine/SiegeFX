@@ -5438,6 +5438,11 @@ public sealed class RenderHost : IDisposable
         return m;
     }
 
+    private string MaterialOfRef(string templateName)
+        => _templateStore is not null
+            && _templateStore.TryGet(templateName, out var t) && t is not null
+            ? MaterialOf(t) : "generic";
+
     /// <summary>Play the matrix sound for (src material, dst material,
     /// event) at a world position. False when no row resolves.</summary>
     private bool PlayMaterialEvent(string srcMat, string dstMat, string evt, Vector3 pos)
@@ -20377,7 +20382,10 @@ void main()
                 d.DoorSwingSign = ComputeFlipSwingSign(d);
                 LogDoorDiag(d);
             }
-            _audio?.PlayAt(SfxDoorOpen, seed);
+            // SC-MATERIAL-MATRIX — the door's authored material picks its
+            // open sound (21 authored rows); the creak stays the fallback.
+            if (!PlayMaterialEvent(MaterialOfRef(best.Template), "generic", "door_open", seed))
+                _audio?.PlayAt(SfxDoorOpen, seed);
             // SC-DOORS-BLOCK — opened doors free their doorway triangles.
             MarkAllObstacles();
             return;
@@ -20385,7 +20393,8 @@ void main()
 
         best.DoorTargetOpen = true;
         best.DoorSwingSign = ComputeDoorSwingSign(best);
-        _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
+        if (!PlayMaterialEvent(MaterialOfRef(best.Template), "generic", "door_open", best.World.Translation))
+            _audio?.PlayAt(SfxDoorOpen, best.World.Translation);
         NotifyDoorOpened(best);
         LogDoorDiag(best);
         // SC-DOORS-BLOCK — opened doors free their doorway triangles.
