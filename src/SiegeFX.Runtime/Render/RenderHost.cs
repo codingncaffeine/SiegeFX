@@ -1265,6 +1265,11 @@ public sealed class RenderHost : IDisposable
     // still fall back to the generic SfxGuiInventory.
     const string SfxGuiPutDownScroll = "gui_put_down_scroll";
     const string SfxGuiOutOfMana   = "gui_out_of_mana";
+    // SC-GUI-CUES — the audit's missing feedback trio: the full-pack
+    // refusal, the can't-equip refusal, and the spellbook open/close leaf.
+    const string SfxGuiInvFull       = "gui_inventory_full";
+    const string SfxGuiNotEquippable = "gui_inventory_not_equippable";
+    const string SfxGuiSpellBook     = "gui_spell_book";
     // SC-CLICK-AUDIO — DS1's order-feedback cues: the soft tap when a
     // ground click issues a move order (s_e_gui_order_move, the smallest
     // wav in the gui family), the chime when a click targets an enemy or
@@ -9166,7 +9171,13 @@ void main()
                     if (key == Key.Enter || key == Key.KeypadEnter)
                     {
                         var msg = _mpChatBuffer.Trim();
-                        if (msg.Length > 0) _mpNetSession?.SendChat(msg);
+                        if (msg.Length > 0)
+                        {
+                            if (_mpNetSession is not null) _mpNetSession.SendChat(msg);
+                            // SC-SP-CHAT — solo sessions echo to the message
+                            // strip (retail's game_console behavior).
+                            else AddGameMessage(msg);
+                        }
                         _mpChatOpen = false; _mpChatBuffer = "";
                         return;
                     }
@@ -9182,9 +9193,10 @@ void main()
                 // in an MP session when no other text surface owns the
                 // keyboard. The shift/ctrl team/all variants open the same
                 // line until channel routing exists.
+                // SC-SP-CHAT — the line opens in SP too (game_console).
                 if ((Is("toggle_gui_edit_box") || Is("toggle_gui_edit_box_team")
                      || Is("toggle_gui_edit_box_everyone"))
-                    && _mpNetSession is not null && !_bootMode
+                    && _player is not null && !_bootMode
                     && !_saveDialog.IsOpen && !_creator.IsOpen && !_devConsoleOpen
                     && !_pauseMenu.IsOpen && !_optionsMenu.IsOpen && !_dialogue.IsOpen)
                 {
@@ -9319,7 +9331,7 @@ void main()
                     _audio?.Play(SfxGuiInventory);
                 }
                 // Phase 21-SC-SPELL-A: Spell Book pane (authored [magic] = b).
-                else if (Is("magic")) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiInventory); }
+                else if (Is("magic")) { _spellBookOpen = !_spellBookOpen; _audio?.Play(SfxGuiSpellBook); }
                 // SC-COMMANDS — authored default (input_bindings.gas
                 // [field_commands] input = key_f): F shows/hides the Field
                 // Commands cluster. The old dev formation-cycle hook moved
@@ -13336,6 +13348,10 @@ void main()
 
                     // Phase 21d-2a-ix — GUI cue triplet (see Sfx const block above).
                     TryRegisterSfx(soundReader, SfxGuiInventory, "/sound/effects/s_e_gui_inventory_sheet.wav");
+                    // SC-GUI-CUES — refusal + spellbook cues.
+                    TryRegisterSfx(soundReader, SfxGuiInvFull, "/sound/effects/s_e_gui_inventory_full.wav");
+                    TryRegisterSfx(soundReader, SfxGuiNotEquippable, "/sound/effects/s_e_gui_inventory_not_equippable.wav");
+                    TryRegisterSfx(soundReader, SfxGuiSpellBook, "/sound/effects/s_e_gui_spell_book.wav");
                     // SC-INV-ARRANGE — the generic backend button click.
                     // inventory.gas authors no per-button sound; DS1's
                     // s_e_gui_element_button_SED maps the standard GUI
@@ -29104,15 +29120,13 @@ void main()
         _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
                          TryGetGuiTexture, viewportW, viewportH, fcState);
 
-        // SC-MP-PLAYERS — roster panel + chat overlay (MP sessions only).
-        if (_mpNetSession is not null)
-        {
-            if (_mpPlayersPanel.IsOpen)
-                _mpPlayersPanel.Draw(_barRenderer!, _textRenderer!, _iconRenderer,
-                                     GetCommonTexture, TryGetGuiTexture,
-                                     viewportW, viewportH, MpBuildRosterRows());
-            DrawMpChat(viewportW, viewportH);
-        }
+        // SC-MP-PLAYERS — roster panel (MP only); SC-SP-CHAT — the chat
+        // line + history draw in every session so Enter works solo too.
+        if (_mpNetSession is not null && _mpPlayersPanel.IsOpen)
+            _mpPlayersPanel.Draw(_barRenderer!, _textRenderer!, _iconRenderer,
+                                 GetCommonTexture, TryGetGuiTexture,
+                                 viewportW, viewportH, MpBuildRosterRows());
+        DrawMpChat(viewportW, viewportH);
     }
 
     /// <summary>SC-MP-PLAYERS — roster rows: the local player first (live
@@ -29840,6 +29854,7 @@ void main()
             AddFloatingText(reqFail,
                 wearer.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
                 new Vector4(1f, 0.35f, 0.25f, 1f));
+            _audio?.Play(SfxGuiNotEquippable);   // SC-GUI-CUES
             return;
         }
 
@@ -35343,6 +35358,7 @@ void main()
             Console.WriteLine($"  pickup: {refused} item(s) refused — no room in inventory");
             AddFloatingText("No room", pile.Position + new Vector3(0f, 1.4f, 0f),
                             new Vector4(1f, 0.45f, 0.30f, 1f));
+            _audio?.Play(SfxGuiInvFull);   // SC-GUI-CUES
         }
         // SC-QUEST-OBJ-C — credit any active pickup objective whose target
         // template matches one of the items we just added. Substring match on
