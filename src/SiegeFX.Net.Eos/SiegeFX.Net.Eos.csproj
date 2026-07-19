@@ -16,6 +16,10 @@
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <DefineConstants>EOS_PLATFORM_WINDOWS_64;$(DefineConstants)</DefineConstants>
+    <!-- Preferred: the SDK unpacked beside the projects (survives Downloads
+         cleanups — the v0.4.0 release found the old copy deleted); the
+         original Downloads location stays as the fallback. -->
+    <EosSdkRoot Condition="'$(EosSdkRoot)' == '' and Exists('I:\Visual Studio Projects\EOS\SDK\Source')">I:\Visual Studio Projects\EOS\SDK</EosSdkRoot>
     <EosSdkRoot Condition="'$(EosSdkRoot)' == ''">$(USERPROFILE)\Downloads\EOS\SDK</EosSdkRoot>
     <!-- Epic's generated SDK trips nullable/obsolete analyzers; silence them
          for the vendor source only (our wrapper stays strict). -->
