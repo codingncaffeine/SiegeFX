@@ -5417,6 +5417,68 @@ public sealed class RenderHost : IDisposable
         }
     }
 
+    // --- SC-LORE — lore books --------------------------------------------------
+    // Content: {map}/info/lore.gas ([lore] → [lore_key]{description}); a
+    // book template's [gui] lore_key names its entry; is_lorebook marks the
+    // item. Right-clicking one in the pack opens the reading panel (the
+    // dialogue box carries the text with its scrollbar).
+    private Dictionary<string, string>? _loreEntries;
+
+    private void EnsureLoreLoaded()
+    {
+        if (_loreEntries is not null) return;
+        _loreEntries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_playMapTank is null || string.IsNullOrEmpty(_regionPath)) return;
+        try
+        {
+            int ridx = _regionPath.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
+            if (ridx < 0) return;
+            var lorePath = _regionPath[..ridx] + "/info/lore.gas";
+            var reader = new SiegeFX.Core.Tank.TankReader(_playMapTank);
+            if (!reader.TryGetFile(lorePath, out _)) return;
+            var doc = SiegeFX.Core.Assets.GasDocument.Load(reader.ExtractToMemory(lorePath));
+            foreach (var root in doc.Roots)
+            {
+                if (!root.Header.Equals("lore", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var entry in root.Children)
+                {
+                    var desc = (SiegeFX.Core.Assets.TemplateStore.FindAttr(entry, "description") ?? "")
+                        .Trim().Trim('"');
+                    if (desc.Length > 0) _loreEntries[entry.Header] = desc.Replace("\\n", "\n");
+                }
+            }
+            Console.WriteLine($"[lore] {_loreEntries.Count} lore entries loaded");
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"[lore] load failed: {ex.Message}"); }
+    }
+
+    /// <summary>SC-LORE — open the reading panel for a lorebook item ref.
+    /// Returns false when the item isn't a lorebook.</summary>
+    private bool TryOpenLoreBook(string itemRef)
+    {
+        if (_templateStore is null) return false;
+        if (!_templateStore.TryGet(ResolveItemRef(itemRef), out var tpl) || tpl is null) return false;
+        if (!string.Equals((_templateStore.GetAttribute(tpl, "gui", "is_lorebook") ?? "").Trim(),
+                "true", StringComparison.OrdinalIgnoreCase)) return false;
+        EnsureLoreLoaded();
+        var key = (_templateStore.GetAttribute(tpl, "gui", "lore_key") ?? "").Trim();
+        string title = (_templateStore.GetAttribute(tpl, "common", "screen_name") ?? "Lore Book")
+            .Trim().Trim('"');
+        string text = key.Length > 0 && _loreEntries is not null
+            && _loreEntries.TryGetValue(key, out var d)
+            ? d : "The pages are too faded to read.";
+        var def = new SiegeFX.Core.Assets.ConversationDef
+        {
+            Key = $"lore:{key}",
+            Nodes = new List<SiegeFX.Core.Assets.DialogueNode>
+            { new() { Order = 0, Text = text } },
+        };
+        _dialogue.Open(title, def);
+        _audio?.Play(SfxGuiInventory);
+        Console.WriteLine($"[lore] reading '{title}' ({key})");
+        return true;
+    }
+
     // --- Adventurer's Handbook -------------------------------------------------
 
     /// <summary>Lazily load the ordered world tips off the play map tank the
@@ -10700,6 +10762,21 @@ void main()
                 }
                 if (btn == MouseButton.Right)
                 {
+                    // SC-LORE — right-clicking a lorebook in the open pack
+                    // reads it (before drag-cancels and the camera latch).
+                    if (_inventoryOpen && _cursorItem is null && _cursorScroll is null
+                        && _window is not null)
+                    {
+                        int lmx = (int)m.Position.X, lmy = (int)m.Position.Y;
+                        if (_inventoryPanel.IsPointInPanel(lmx, lmy, _window.Size.X, _window.Size.Y))
+                        {
+                            int li = _inventoryPanel.TryHitTestItem(lmx, lmy,
+                                _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                            if (li >= 0 && li < ActiveInventory.Count
+                                && TryOpenLoreBook(ActiveInventory[li].Reference))
+                                return;
+                        }
+                    }
                     // Phase 21-SC-SCROLL-B-2 — RMB cancels an in-flight
                     // scroll drag (DS1 convention), restoring the spell to
                     // its source. Done before the camera-look latch so an
