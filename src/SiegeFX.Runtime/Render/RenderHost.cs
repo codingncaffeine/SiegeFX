@@ -4744,6 +4744,18 @@ public sealed class RenderHost : IDisposable
     // RenderPlayerPortrait() below implements the live path; _portraitDirty
     // re-renders on spawn, load, variant apply and equipment changes.
 
+    // SC-VIEW-ROTATE (blindspot E6) — the Equipment Panel View button:
+    // hold-and-drag spins a live full-body render of the equipped
+    // character (manual: "hold-and-drag to rotate a 3D model"). Rides the
+    // same FBO pattern as the live portrait below, at 256² with a
+    // full-body orbit camera; yaw follows the drag.
+    private uint _pdViewFbo, _pdViewFboColor, _pdViewFboDepth;
+    private GlTexture? _pdViewTex;
+    private bool _pdViewActive;
+    private float _pdViewYaw;
+    private float _pdViewLastX;
+    private const int PdViewPx = 256;
+
     private uint _portraitFbo, _portraitFboColor, _portraitFboDepth;
     private GlTexture? _playerPortraitLive;
     private bool _portraitDirty;
@@ -4752,6 +4764,165 @@ public sealed class RenderHost : IDisposable
     private double _portraitRefreshAt = -1;
     private int _portraitChainLeft;
     private const int PortraitPx = 128;
+
+    /// <summary>SC-VIEW-ROTATE — render the full equipped character to the
+    /// 256² view target at the current drag yaw. Same studio-lit FBO recipe
+    /// as the portrait (body subsets + worn gear layers), framed head-to-toe
+    /// with the camera orbiting the character. Called once per frame while
+    /// the View button is held; state restored for the rest of the HUD.</summary>
+    private unsafe void RenderPaperdollView()
+    {
+        if (_gl is null || _skinShader is null || _player is null || _window is null) return;
+        var mesh = _player.Actor.Mesh;
+        if (mesh.BoneCount == 0) return;
+
+        if (_pdViewFbo == 0)
+        {
+            _pdViewFboColor = _gl.GenTexture();
+            _gl.BindTexture(GLEnum.Texture2D, _pdViewFboColor);
+            _gl.TexImage2D(GLEnum.Texture2D, 0, (int)GLEnum.Rgba8,
+                           PdViewPx, PdViewPx, 0, GLEnum.Rgba, GLEnum.UnsignedByte, null);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMinFilter, (int)GLEnum.Linear);
+            _gl.TexParameter(GLEnum.Texture2D, GLEnum.TextureMagFilter, (int)GLEnum.Linear);
+            _pdViewFboDepth = _gl.GenRenderbuffer();
+            _gl.BindRenderbuffer(GLEnum.Renderbuffer, _pdViewFboDepth);
+            _gl.RenderbufferStorage(GLEnum.Renderbuffer, GLEnum.DepthComponent24, PdViewPx, PdViewPx);
+            _pdViewFbo = _gl.GenFramebuffer();
+            _gl.BindFramebuffer(GLEnum.Framebuffer, _pdViewFbo);
+            _gl.FramebufferTexture2D(GLEnum.Framebuffer, GLEnum.ColorAttachment0,
+                                     GLEnum.Texture2D, _pdViewFboColor, 0);
+            _gl.FramebufferRenderbuffer(GLEnum.Framebuffer, GLEnum.DepthAttachment,
+                                        GLEnum.Renderbuffer, _pdViewFboDepth);
+            if (_gl.CheckFramebufferStatus(GLEnum.Framebuffer) != GLEnum.FramebufferComplete)
+            {
+                Console.WriteLine("[view] FBO incomplete — View rotate disabled");
+                _gl.BindFramebuffer(GLEnum.Framebuffer, 0);
+                _gl.DeleteFramebuffer(_pdViewFbo); _pdViewFbo = 0;
+                _pdViewActive = false;
+                return;
+            }
+        }
+        else _gl.BindFramebuffer(GLEnum.Framebuffer, _pdViewFbo);
+
+        _gl.Viewport(0, 0, PdViewPx, PdViewPx);
+        _gl.ClearColor(0.055f, 0.05f, 0.045f, 1f);
+        _gl.Clear((uint)(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit));
+        _gl.Enable(EnableCap.DepthTest);
+        _gl.Disable(GLEnum.CullFace);
+
+        // Pose: the live clip/time, same as the portrait.
+        var clips = _player.Actor.Clips;
+        SiegeFX.Core.Assets.PrsAnimation? clip = null;
+        float t = 0f;
+        if (clips.Length > 0)
+        {
+            int cidx = Math.Min(_player.Actor.CurrentClipIndex, clips.Length - 1);
+            clip = clips[cidx];
+            t = clip.AnimLength > 0f ? (float)(_player.AnimTime % clip.AnimLength) : 0f;
+        }
+        int bones = mesh.BoneCount;
+        if (_boneWorldsScratch.Length < bones)
+            _boneWorldsScratch = new Matrix4x4[Math.Max(bones, 64)];
+        AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _boneWorldsScratch);
+
+        // Full-body orbit frame: feet at the actor origin, crown from the
+        // posed head bone (+ margin); the eye circles at the drag yaw
+        // starting FRONTAL (yaw 0 looks along the character's facing).
+        int headIdx = -1;
+        for (int i = 0; i < mesh.BoneNames.Count; i++)
+            if (mesh.BoneNames[i].EndsWith("bip01_head", StringComparison.OrdinalIgnoreCase))
+            { headIdx = i; break; }
+        var headMesh = headIdx >= 0 ? _boneWorldsScratch[headIdx].Translation
+                                    : new Vector3(0f, 1.7f, 0f);
+        var feet = _player.CurrentTransform.Translation;
+        var headWorld = Vector3.Transform(headMesh, _player.CurrentTransform);
+        float height = MathF.Max(1.4f, headWorld.Y - feet.Y + 0.35f);
+        var face = _playerFacing.LengthSquared() > 0.01f
+            ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
+            : Vector3.UnitZ;
+        float cy = MathF.Cos(_pdViewYaw), sy = MathF.Sin(_pdViewYaw);
+        var dir = new Vector3(face.X * cy - face.Z * sy, 0f, face.X * sy + face.Z * cy);
+        var at  = feet + new Vector3(0f, height * 0.48f, 0f);
+        var eye = at + dir * (height * 1.55f);
+        var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.UnitY)
+                * Matrix4x4.CreatePerspectiveFieldOfView(0.62f, 1f, 0.05f, 50f);
+
+        _skinShader.Use();
+        _skinShader.SetMatrix4("uViewProj", pvp);
+        _skinShader.SetMatrix4("uModel", _player.CurrentTransform);
+        _skinShader.SetInt("uAlbedo", 0);
+        _skinShader.SetInt("uFlipV", 0);
+        _skinShader.SetInt("uDirCount", 1);
+        _skinShader.SetFloat("uAmbient", 0.52f);
+        Span<Vector3> vdir = stackalloc Vector3[1];
+        vdir[0] = Vector3.Normalize(at - eye);
+        Span<Vector3> vcol = stackalloc Vector3[1];
+        vcol[0] = new Vector3(0.85f, 0.82f, 0.75f);
+        _skinShader.SetVec3Array("uDirDir", vdir);
+        _skinShader.SetVec3Array("uDirColor", vcol);
+        _skinShader.SetInt("uPointCount", 0);
+        _skinShader.SetInt("uUseBakedLight", 0);
+
+        if (_skinScratch.Length < bones)
+            _skinScratch = new Matrix4x4[Math.Max(bones, 64)];
+        if (clip is not null)
+            AnimationRuntime.ComputeSkinMatrices(mesh, clip, t, _skinScratch);
+        else
+            for (int i = 0; i < bones; i++) _skinScratch[i] = Matrix4x4.Identity;
+        _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, bones));
+
+        var subsets = mesh.Subsets;
+        if (subsets.Length == 0)
+        {
+            BindActorSlot(_player.Actor, 0);
+            _player.GlMesh.Draw();
+        }
+        else
+        {
+            int lastSlot = -1;
+            foreach (var sub in subsets)
+            {
+                if (sub.TextureIndex != lastSlot)
+                {
+                    BindActorSlot(_player.Actor, sub.TextureIndex);
+                    lastSlot = sub.TextureIndex;
+                }
+                _player.GlMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+            }
+        }
+        foreach (var layer in _equippedLayers)
+        {
+            int lb = layer.Asp.BoneCount;
+            if (lb == 0 || lb > SkinnedMesh.MaxBones) continue;
+            if (_skinScratch.Length < lb) _skinScratch = new Matrix4x4[Math.Max(lb, 64)];
+            if (clip is not null)
+                AnimationRuntime.ComputeSkinMatrices(layer.Asp, clip, t, _skinScratch);
+            else
+                for (int i = 0; i < lb; i++) _skinScratch[i] = Matrix4x4.Identity;
+            _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, lb));
+            if (layer.Texture is not null)
+            {
+                layer.Texture.Bind(TextureUnit.Texture0);
+                _skinShader.SetInt("uHasTexture", 1);
+            }
+            else _skinShader.SetInt("uHasTexture", 0);
+            var lsub = layer.Asp.Subsets;
+            if (lsub.Length == 0) layer.Mesh.Draw();
+            else foreach (var sub in lsub) layer.Mesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+        }
+
+        var rgba = new byte[PdViewPx * PdViewPx * 4];
+        fixed (byte* p = rgba)
+            _gl.ReadPixels(0, 0, PdViewPx, PdViewPx, GLEnum.Rgba, GLEnum.UnsignedByte, p);
+        _pdViewTex?.Dispose();
+        _pdViewTex = new GlTexture(_gl, rgba, PdViewPx, PdViewPx, nearestFilter: false);
+
+        _gl.Enable(GLEnum.CullFace);
+        _gl.BindFramebuffer(GLEnum.Framebuffer, 0);
+        var vfb = _window.FramebufferSize;
+        _gl.Viewport(0, 0, (uint)vfb.X, (uint)vfb.Y);
+        _skinLightingStamp = ulong.MaxValue;
+    }
 
     /// <summary>Render the player's head-and-shoulders to a small offscreen
     /// target using the authored [portrait_camera] frame and rebuild
@@ -10997,6 +11168,19 @@ void main()
                             return;
                         }
                     }
+                    // SC-VIEW-ROTATE — pressing the View button begins the
+                    // hold-and-drag character rotate (manual). Consumes the
+                    // press; MouseUp releases.
+                    if (_charPanelOpen && _player is not null
+                        && _paperdoll.IsPointInViewButton(imx, imy,
+                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                    {
+                        _pdViewActive = true;
+                        _pdViewYaw = 0f;
+                        _pdViewLastX = imx;
+                        _audio?.Play(SfxGuiInventory);
+                        return;
+                    }
                     // INFORAIL-PAPERDOLL-INTERACT — paperdoll slot click.
                     if (_charPanelOpen && _player is not null)
                     {
@@ -11344,6 +11528,8 @@ void main()
                 // HUD button never falls through to anything else.
                 if (btn == MouseButton.Left)
                 {
+                    // SC-VIEW-ROTATE — releasing ends the character spin.
+                    if (_pdViewActive) { _pdViewActive = false; return; }
                     var dbClick = _dataBar.MouseUp(
                         _window.Size.X, _window.Size.Y,
                         (int)m.Position.X, (int)m.Position.Y);
@@ -11847,6 +12033,13 @@ void main()
                 {
                     var sz = _window.FramebufferSize;
                     _mpStaging.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
+                }
+                // SC-VIEW-ROTATE — dragging while the View button is held
+                // spins the character render.
+                if (_pdViewActive)
+                {
+                    _pdViewYaw += (pos.X - _pdViewLastX) * 0.02f;
+                    _pdViewLastX = pos.X;
                 }
                 // SC-RMB-FORMATION — RMB-hold + horizontal mouse movement
                 // rotates the ordered formation's facing (past the tap
@@ -39328,6 +39521,31 @@ void main()
                             return t;
                         },
                         equippedIconLookup: ResolvePaperdollSlotIcon);
+
+                    // SC-VIEW-ROTATE — while the View button is held, the
+                    // live full-body render (at the drag yaw) covers the
+                    // paperdoll pane. Only the hero has a live body render;
+                    // companion sheets keep the slots.
+                    if (_pdViewActive && _paperdollTargetIndex == 0)
+                    {
+                        RenderPaperdollView();
+                        if (_pdViewTex is not null)
+                        {
+                            float pds = Hud.InfoRailLayout.Scale(size.Y);
+                            int vpx = pdX;
+                            int vpy = pdY + (int)MathF.Round(228 * pds);
+                            int vpw = (int)MathF.Round((254 - 87) * pds);
+                            int vph = (int)MathF.Round((446 - 228) * pds);
+                            // Square render centered in the pane.
+                            int side = Math.Min(vpw, vph);
+                            _iconRenderer.DrawIcon(size.X, size.Y, _pdViewTex,
+                                vpx + (vpw - side) / 2, vpy + (vph - side) / 2,
+                                side, side, Vector4.One);
+                            _barRenderer!.DrawBorder(size.X, size.Y,
+                                vpx + (vpw - side) / 2, vpy + (vph - side) / 2,
+                                side, side, new Vector4(0.55f, 0.52f, 0.45f, 1f));
+                        }
+                    }
                 }
 
                 // INFORAIL-F — vertical "spellbook with I" toggle at gas
