@@ -1774,6 +1774,10 @@ public sealed class RenderHost : IDisposable
         // min_unconscious_duration gate measures from here.
         public double DownedAtSeconds;
 
+        // SC-WATER-FX — next play-clock second this actor may splash
+        // (throttles the wading effect to a footfall-ish cadence).
+        public double NextSplashAt;
+
         // SC-SELECT-MOVE — retail's selection-driven orders. A ground click
         // with this member selected sets MoveOrder (their formation slot at
         // the destination); an enemy click sets OrderedFoe (explicit attack,
@@ -22304,6 +22308,20 @@ void main()
                     s.CurrentTransform =
                         Matrix4x4.CreateRotationY(yaw) *
                         Matrix4x4.CreateTranslation(s.Brain.Position);
+                    // SC-WATER-FX — a moving actor standing on a Water
+                    // triangle kicks a wading splash on a footfall cadence.
+                    if (s.IsMoving && _playSeconds >= s.NextSplashAt && _navMesh is not null)
+                    {
+                        int wtri = s.Brain.Wander.Follower.CurrentTriangle;
+                        if (wtri >= 0 && wtri < _navMesh.Kinds.Length
+                            && _navMesh.Kinds[wtri] == SiegeFX.Core.Assets.SnoModel.FloorKind.Water)
+                        {
+                            s.NextSplashAt = _playSeconds + 0.45;
+                            _particles?.SpawnTwinkle(
+                                s.Brain.Position + new Vector3(0f, 0.12f, 0f),
+                                new Vector4(0.65f, 0.8f, 0.95f, 0.8f), 0.35f, 0.10f, 0.4f, 6);
+                        }
+                    }
                     // Phase 21c-4 — flag walking when the brain actually translated this
                     // tick. The wander follower idles between picks (and the brain idles
                     // mid-Attack), so XZ-delta is the cheap, accurate signal — no need to
@@ -22547,6 +22565,21 @@ void main()
                 // Phase 26c — recruited followers trail the leader on the same
                 // fixed cadence (after the leader has moved this tick).
                 TickPartyFollowers((float)stepSec);
+                // SC-WATER-FX — the hero wades too.
+                if (_player is not null && _playerFollower is not null && !_player.IsDead
+                    && _navMesh is not null && _playSeconds >= _player.NextSplashAt
+                    && !_playerFollower.ReachedGoal)
+                {
+                    int ptri = _playerFollower.CurrentTriangle;
+                    if (ptri >= 0 && ptri < _navMesh.Kinds.Length
+                        && _navMesh.Kinds[ptri] == SiegeFX.Core.Assets.SnoModel.FloorKind.Water)
+                    {
+                        _player.NextSplashAt = _playSeconds + 0.45;
+                        _particles?.SpawnTwinkle(
+                            _playerFollower.Position + new Vector3(0f, 0.12f, 0f),
+                            new Vector4(0.65f, 0.8f, 0.95f, 0.8f), 0.35f, 0.10f, 0.4f, 6);
+                    }
+                }
                 TickRemoteCompanions((float)stepSec);   // SC-MP-RECRUIT (host only)
                 TickDeathrains((float)stepSec);         // SC-SPELL-ENGINE
                 TickMultiSummons((float)stepSec);       // SC-SUMMON-MULTIPLE
