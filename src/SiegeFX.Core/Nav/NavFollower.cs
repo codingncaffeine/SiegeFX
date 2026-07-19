@@ -230,9 +230,17 @@ public sealed class NavFollower
     // a genuine block so the "can't move there" feedback still fires.
     private bool _partialRetry;
 
+    /// <summary>OPT-IN, player-order followers only. The fallback scans the
+    /// whole triangle list — fine for a click, catastrophic for the hundreds
+    /// of ambient wanderers whose legs routinely blocked-fail against closed
+    /// doors (field report: 394ms frames, every blocked chicken replan
+    /// sweeping a 139k-tri mesh). Default off: NPC wander keeps the cheap
+    /// fail-and-reroll it always had.</summary>
+    public bool PartialPathFallback { get; set; }
+
     private bool TryPartialGoal(int startTri)
     {
-        if (_partialRetry) return false;
+        if (!PartialPathFallback || _partialRetry) return false;
         int comp = Mesh.ComponentOf(startTri);
         if (comp < 0) return false;
         int bestTri = -1;

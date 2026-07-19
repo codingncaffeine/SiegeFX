@@ -2600,6 +2600,9 @@ public sealed class RenderHost : IDisposable
             if (m.IsNetworkOwned) continue;
             m.Actor.Host.TickOverride(dt);
             var follower = m.Brain.Wander.Follower;
+            // SC-NAV-PARTIAL-PATH — members execute player orders, so their
+            // followers get the same opt-in partial-path the hero has.
+            follower.PartialPathFallback = true;
             var before = follower.Position;
             // Base pace; the follow branch boosts it to catch up when far behind.
             float baseGait = MathF.Max(m.Actor.Stats.WalkSpeed, 3.5f);
@@ -6055,7 +6058,7 @@ public sealed class RenderHost : IDisposable
     private readonly List<(ActorRenderState A, SiegeFX.Core.Nav.NavFollower? F, Vector3 P, float R)> _sepBodies = new();
     private readonly HashSet<ActorRenderState> _sepSeen = new();
     private const float SepMaxPushPerSec = 2.5f;
-    private const float SepGatherRadius = 60f;
+    private const float SepGatherRadius = 40f;
 
     private static float BodyRadius(ActorRenderState s)
         => Math.Clamp(0.40f * s.Actor.Stats.RenderScale, 0.20f, 1.50f);
@@ -25394,6 +25397,9 @@ void main()
         // SC-DOWNED — an unconscious hero can't walk; orders still reach
         // the conscious selected members.
         bool heroSelected = _selectedPartyIdx.Contains(0) && !_player.Actor.Combat.Downed;
+        // SC-NAV-PARTIAL-PATH — the whole-mesh fallback is for PLAYER orders
+        // only (opt-in; ambient wanderers keep cheap fail-and-reroll).
+        _playerFollower.PartialPathFallback = true;
         if (heroSelected)
         {
             // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
