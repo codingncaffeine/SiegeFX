@@ -296,9 +296,31 @@ public sealed unsafe class AudioEngine : IDisposable
     /// listener-locked, which is what we want for "this comes from the
     /// player" cues (cast, level-up, swing). For "this happens out
     /// there in the world" cues, see <see cref="PlayAt"/>.</summary>
+    // SC-DEADWIRE F5 — SED max_simultaneous_samples: a per-cue cap on
+    // concurrent instances (a krug pack can't stack twenty identical
+    // screams). Registered by the host from the SED descriptors.
+    readonly Dictionary<string, int> _instanceCap = new(StringComparer.OrdinalIgnoreCase);
+    public void SetInstanceCap(string clipId, int cap)
+    { if (cap > 0) _instanceCap[clipId] = cap; }
+
+    bool AtInstanceCap(string resolvedId, uint buf)
+    {
+        if (_disposed || !_instanceCap.TryGetValue(resolvedId, out var cap)) return false;
+        int live = 0;
+        foreach (var src in _sourcePool)
+        {
+            _al.GetSourceProperty(src, GetSourceInteger.Buffer, out int b);
+            if ((uint)b != buf) continue;
+            _al.GetSourceProperty(src, GetSourceInteger.SourceState, out int st);
+            if (st == (int)SourceState.Playing && ++live >= cap) return true;
+        }
+        return false;
+    }
+
     public void Play(string id, float gain = 1f, Channel channel = Channel.Sfx)
     {
         if (!Resolve(id, out uint buf, out string resolvedId)) return;
+        if (AtInstanceCap(resolvedId, buf)) return;
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
@@ -320,6 +342,7 @@ public sealed unsafe class AudioEngine : IDisposable
                        Channel channel = Channel.Sfx)
     {
         if (!Resolve(id, out uint buf, out string resolvedId)) return;
+        if (AtInstanceCap(resolvedId, buf)) return;   // SC-DEADWIRE F5
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);

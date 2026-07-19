@@ -865,6 +865,29 @@ public sealed class RenderHost : IDisposable
     private Vector3 TimeOfDayTint()
     {
         float h = ((_worldClockHours % 24f) + 24f) % 24f;
+        // SC-DEADWIRE F3 — a mood authoring its own [sun] timed color keys
+        // OVERRIDES the global timeofday palette while active (the parser
+        // stored these for exactly this; its "no world clock yet" docstring
+        // predates SC-DAYNIGHT). Same normalize + floor as the global path.
+        if (_activeMood is { Sun.Count: > 1 } sunMood)
+        {
+            int minutes = (int)(h * 60f) % 1440;
+            var keys = sunMood.Sun;
+            SiegeFX.Core.Assets.MoodSunKey prev = keys[^1], next = keys[0];
+            foreach (var k in keys)
+            {
+                if (k.Minutes <= minutes) prev = k;
+                else { next = k; break; }
+            }
+            float span = ((next.Minutes - prev.Minutes) + 1440) % 1440;
+            float frac = span < 1f ? 0f : (((minutes - prev.Minutes) + 1440) % 1440) / span;
+            static Vector3 C(uint argb) => new(
+                ((argb >> 16) & 0xFF) / 255f,
+                ((argb >> 8) & 0xFF) / 255f,
+                (argb & 0xFF) / 255f);
+            var mc = Vector3.Lerp(C(prev.Color), C(next.Color), frac) / 0.984f;
+            return Vector3.Max(mc, new Vector3(0.22f, 0.22f, 0.30f));
+        }
         int i0 = (int)MathF.Floor(h) % 24;
         int i1 = (i0 + 1) % 24;
         var c = Vector3.Lerp(TimeOfDayColors[i0], TimeOfDayColors[i1], h - MathF.Floor(h));
@@ -8588,17 +8611,19 @@ public sealed class RenderHost : IDisposable
     /// layer textures bind on Texture0 + Texture1 with independent UV
     /// offsets and a colorop selector. Caller must have set
     /// <c>uAlbedo2 = 1</c> once before the draw run.</summary>
-    private void ApplyAnimatedTextureBinding(string textureName) =>
-        ApplyAnimatedTextureBinding(_meshShader, textureName);
+    private void ApplyAnimatedTextureBinding(string textureName, float instancePhase = 0f) =>
+        ApplyAnimatedTextureBinding(_meshShader, textureName, instancePhase);
 
     /// <summary>SC-ACTOR-TSD — shader-parameterized overload: the skinned-actor pass
     /// binds the same two-layer animated recipes (both programs compile
     /// MeshFragmentSource, so every layer-2 uniform already exists there).</summary>
-    private void ApplyAnimatedTextureBinding(Shader? shader, string textureName)
+    private void ApplyAnimatedTextureBinding(Shader? shader, string textureName,
+        float instancePhase = 0f)
     {
         if (shader is null) return;
         shader.SetInt("uAlbedo2", 1);
-        var (l1, l1Off, l1Op, l2, l2Off, l2Op) = ResolveAnimatedTexture(textureName, _terrainTime);
+        var (l1, l1Off, l1Op, l2, l2Off, l2Op) =
+            ResolveAnimatedTexture(textureName, _terrainTime, instancePhase);
         shader.SetInt("uColorop1", (int)l1Op);
         // SC-TSD-ANIM direction fix — terrain renders with uFlipV=1 (vUv.y is
         // inverted before sampling). DS1 authored vshiftpersecond for D3D
@@ -8668,13 +8693,16 @@ public sealed class RenderHost : IDisposable
 
     private (string Layer1Tex, Vector2 Layer1Off, TsdStore.ColorOp Layer1Op,
              string? Layer2Tex, Vector2 Layer2Off, TsdStore.ColorOp Layer2Op)
-        ResolveAnimatedTexture(string textureName, double time)
+        ResolveAnimatedTexture(string textureName, double time, float instancePhase = 0f)
     {
         if (_tsdStore is null)
             return (textureName, Vector2.Zero, TsdStore.ColorOp.Modulate, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
         var rec = _tsdStore.Get(textureName);
         if (rec is null)
             return (textureName, Vector2.Zero, TsdStore.ColorOp.Modulate, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
+        // SC-DEADWIRE F6 — timesyncanimation=false animates per INSTANCE:
+        // the caller's phase (snode-hashed) desyncs it from the global clock.
+        if (!rec.TimeSync) time += instancePhase;
         var (l1Name, l1U, l1V) = rec.Layer1.Sample(time);
         if (rec.Layer2 is null)
             return (l1Name, new Vector2(l1U, l1V), rec.Layer1.Op, null, Vector2.Zero, TsdStore.ColorOp.Modulate);
@@ -18637,7 +18665,11 @@ void main()
     // is the per-frame slice actually uploaded.
     private const int MaxPointLights = 32;
     private int _pointLightBudget = 16;
-    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer, bool OnTimer, uint Guid)> _pointLights = new();
+    // SC-DEADWIRE F4 — the tuple carries the authored geometry-class flags:
+    // AffActors gates the skin pass, AffWorld (terrain OR items) gates the
+    // mesh pass. (Terrain-vs-items stays unsplit inside the mesh pass —
+    // both draw with the same stamped upload; ledgered approximation.)
+    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer, bool OnTimer, uint Guid, bool AffActors, bool AffWorld)> _pointLights = new();
     // SC-LIGHT-GIZMOS — per-light dynamic scale (flicker/colorwave animate
     // it; enable gizmos zero it) + guid → index for gizmo targeting.
     private readonly List<float> _pointLightDynScale = new();
@@ -18659,6 +18691,11 @@ void main()
     private readonly Vector3[] _framePointColor = new Vector3[MaxPointLights];
     private readonly Vector3[] _framePointRange = new Vector3[MaxPointLights];
     private int _framePointCount;
+    // SC-DEADWIRE F4 — the actor-pass (AffectsActors) frame set.
+    private readonly Vector3[] _frameActorPointPos = new Vector3[MaxPointLights];
+    private readonly Vector3[] _frameActorPointColor = new Vector3[MaxPointLights];
+    private readonly Vector3[] _frameActorPointRange = new Vector3[MaxPointLights];
+    private int _frameActorPointCount;
 
     private void LoadPointLights(IEnumerable<string> regionPaths)
     {
@@ -18690,7 +18727,8 @@ void main()
                     uint.TryParse(l.Name.AsSpan(lg + 2),
                         System.Globalization.NumberStyles.HexNumber,
                         System.Globalization.CultureInfo.InvariantCulture, out lguid);
-                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius, l.OnTimer, lguid));
+                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius,
+                    l.OnTimer, lguid, l.AffectsActors, l.AffectsTerrain || l.AffectsItems));
                 _pointLightDynScale.Add(1f);
                 if (lguid != 0) _pointLightIndexByGuid[lguid] = _pointLights.Count - 1;
                 added++;
@@ -18705,15 +18743,27 @@ void main()
     /// dungeon scope).</summary>
     private void PickFramePointLights()
     {
-        _framePointCount = 0;
-        if (_pointLights.Count == 0) return;
+        // SC-DEADWIRE F4 — two frame sets: the mesh pass (terrain + props +
+        // items) takes AffWorld lights, the skin pass (actors) AffActors.
+        _framePointCount      = PickPointLightsInto(actors: false,
+            _framePointPos, _framePointColor, _framePointRange);
+        _frameActorPointCount = PickPointLightsInto(actors: true,
+            _frameActorPointPos, _frameActorPointColor, _frameActorPointRange);
+    }
+
+    private int PickPointLightsInto(bool actors,
+        Vector3[] outPos, Vector3[] outColor, Vector3[] outRange)
+    {
+        int count = 0;
+        if (_pointLights.Count == 0) return 0;
         var eye = _camera.Position;
         // Partial selection: track the current worst slot; replace when closer.
         Span<float> dist = stackalloc float[MaxPointLights];
         var todTintPts = TimeOfDayTint();
         for (int i = 0; i < _pointLights.Count; i++)
         {
-            var (pos, color, inner, outer, onTimer, lguid) = _pointLights[i];
+            var (pos, color, inner, outer, onTimer, lguid, affActors, affWorld) = _pointLights[i];
+            if (actors ? !affActors : !affWorld) continue;   // SC-DEADWIRE F4
             // SC-DAYNIGHT — on-timer sources ride the world clock's color.
             if (onTimer) color *= todTintPts;
             // SC-LIGHT-GIZMOS — gizmo-disabled lights skip; flicker and
@@ -18725,23 +18775,24 @@ void main()
             float reach = outer + 80f;
             if (d2 > reach * reach) continue;
             int budget = Math.Clamp(_pointLightBudget, 1, MaxPointLights);
-            if (_framePointCount < budget)
+            if (count < budget)
             {
-                dist[_framePointCount] = d2;
-                _framePointPos[_framePointCount] = pos;
-                _framePointColor[_framePointCount] = color;
-                _framePointRange[_framePointCount] = new Vector3(inner, outer, 0f);
-                _framePointCount++;
+                dist[count] = d2;
+                outPos[count] = pos;
+                outColor[count] = color;
+                outRange[count] = new Vector3(inner, outer, 0f);
+                count++;
                 continue;
             }
             int worst = 0;
             for (int j = 1; j < budget; j++) if (dist[j] > dist[worst]) worst = j;
             if (d2 >= dist[worst]) continue;
             dist[worst] = d2;
-            _framePointPos[worst] = pos;
-            _framePointColor[worst] = color;
-            _framePointRange[worst] = new Vector3(inner, outer, 0f);
+            outPos[worst] = pos;
+            outColor[worst] = color;
+            outRange[worst] = new Vector3(inner, outer, 0f);
         }
+        return count;
     }
 
     /// <summary>Uploads the current directional-light state to whichever shader
@@ -18776,12 +18827,19 @@ void main()
         shader.SetVec3Array("uDirDir",   _dirLightDirs.AsSpan(0, _dirLightCount));
         shader.SetVec3Array("uDirColor", _dirLightColors.AsSpan(0, _dirLightCount));
         // ALPHA-2 POINT LIGHTS — this frame's nearest sources.
-        shader.SetInt("uPointCount", _framePointCount);
-        if (_framePointCount > 0)
+        // SC-DEADWIRE F4 — the skin pass takes the AffectsActors set; the
+        // mesh pass (terrain/props/items) the AffectsTerrain|Items set.
+        bool actorPass = shader == _skinShader;
+        int pc = actorPass ? _frameActorPointCount : _framePointCount;
+        shader.SetInt("uPointCount", pc);
+        if (pc > 0)
         {
-            shader.SetVec3Array("uPointPos",   _framePointPos.AsSpan(0, _framePointCount));
-            shader.SetVec3Array("uPointColor", _framePointColor.AsSpan(0, _framePointCount));
-            shader.SetVec3Array("uPointRange", _framePointRange.AsSpan(0, _framePointCount));
+            shader.SetVec3Array("uPointPos",
+                (actorPass ? _frameActorPointPos : _framePointPos).AsSpan(0, pc));
+            shader.SetVec3Array("uPointColor",
+                (actorPass ? _frameActorPointColor : _framePointColor).AsSpan(0, pc));
+            shader.SetVec3Array("uPointRange",
+                (actorPass ? _frameActorPointRange : _framePointRange).AsSpan(0, pc));
         }
         // ALPHA-2V — options gamma (uUseBakedLight's per-draw reset moved
         // to the top of this method, ahead of the per-frame gate).
@@ -20000,6 +20058,12 @@ void main()
                 System.Globalization.CultureInfo.InvariantCulture, out var maxV)
             && maxV > stats.WalkSpeed + 0.05f)
             brain.RunSpeed = maxV;
+        // SC-DEADWIRE F1 — authored [mind] melee_engage_range: the distance
+        // a melee brain COMMITS at (perception stays sight_range). Bounded
+        // by the existing aggro so it can only tighten, never extend.
+        if (stats.MeleeEngageRange > 0.5f
+            && brain.Mode == SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee)
+            brain.AggroRadius = MathF.Min(brain.AggroRadius, stats.MeleeEngageRange);
         if (brain.HitMultiple)
             brain.SweepMelee = (origin, range, exclude) =>
                 SweepMeleeDamage(stats, origin, range, exclude);
@@ -24025,6 +24089,7 @@ void main()
                 TickGoEmitters((float)stepSec);         // SC-EMT-GO debris
                 TickAutoHealOthers((float)stepSec);     // SC-AUTO-HEAL-OTHERS
                 TickMonsterPacks((float)stepSec);       // SC-MOB-PARTIES
+                TickChainJumps((float)stepSec);         // SC-DEADWIRE F7
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
@@ -30351,8 +30416,13 @@ void main()
             float dur = SiegeFX.Core.Assets.SpellExpr.Eval(en.DurationExpr, ectx);
             if (!float.IsFinite(val) || !float.IsFinite(dur) || dur <= 0f
                 || MathF.Abs(val) < 0.01f) continue;
-            var row = _spellEffects.Find(e => ReferenceEquals(e.Target, target)
-                && e.Spell == spell.Name && e.Alteration == alt);
+            // SC-DEADWIRE F2 — the authored is_single_instance flag decides
+            // stack-vs-replace: true (or unauthored) refreshes the live row
+            // like before; FALSE stacks a fresh instance per cast.
+            ActiveSpellEffect? row = en.SingleInstance
+                ? _spellEffects.Find(e => ReferenceEquals(e.Target, target)
+                    && e.Spell == spell.Name && e.Alteration == alt)
+                : null;
             if (row is null)
             {
                 row = new ActiveSpellEffect { Target = target, Spell = spell.Name, Alteration = alt };
@@ -33413,46 +33483,84 @@ void main()
         }
         if (spell.Chain is { } ch && ch.Jumps > 0)
         {
-            var from = primary;
-            float dmg = rolledDamage;
-            for (int j = 0; j < ch.Jumps; j++)
+            // SC-DEADWIRE F7 — the authored chain `dur` paces the arcs:
+            // each jump fires Dur seconds after the previous instead of the
+            // whole chain resolving in one frame.
+            _pendingChainJumps.Add(new PendingChainJump
             {
-                dmg *= ch.Falloff;
-                if (dmg < 1f) break;
-                ActorRenderState? next = null;
-                float bestD2 = ch.Radius * ch.Radius;
-                var fp = from.CurrentTransform.Translation;
-                foreach (var s in _actors)
-                {
-                    if (s.IsDead || s.IsPlayer || s.IsPartyMember || hit.Contains(s)) continue;
-                    if (!s.Actor.Stats.IsCombatant || !s.IsEvilAligned) continue;
-                    var d = s.CurrentTransform.Translation - fp;
-                    float dd = d.X * d.X + d.Z * d.Z;
-                    if (dd < bestD2) { bestD2 = dd; next = s; }
-                }
-                if (next is null) break;
-                hit.Add(next);
-                float dealt = next.Actor.Combat.ApplyDamage(
-                    ElementScaledDamage(spell, next, dmg));
-                var np = next.CurrentTransform.Translation;
-                if (ch.AttackScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
-                    && _sfxStore.TryGet(ch.AttackScript, out _))
-                    _sfxRuntime.Spawn(ch.AttackScript, new SiegeFX.Core.Sfx.SfxContext(
-                        SourcePos:     fp + new Vector3(0f, 1.1f, 0f),
-                        TargetPos:     np + new Vector3(0f, 1.1f, 0f),
-                        WeaponBonePos: fp + new Vector3(0f, 1.1f, 0f)));
-                if (dealt > 0f)
-                {
-                    AddFloatingText($"-{(int)MathF.Round(dealt)}",
-                        np + new Vector3(0f, 1.8f, 0f), SpellElementColor(spell.Element));
-                    SpawnBloodHit(next);
-                    AwardCombatXp(dealt, next.Actor.Stats, SkillForSpell(spell));
-                }
-                Console.WriteLine($"cast {spell.ScreenName}: chain[{j + 1}] hit " +
-                    $"{next.Actor.Template.Name} for {dealt:F0}" +
-                    $"{(next.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
-                from = next;
+                Spell = spell,
+                From = primary,
+                Damage = rolledDamage * ch.Falloff,
+                JumpsLeft = ch.Jumps,
+                FireIn = MathF.Max(0.05f, ch.Dur),
+                Hit = hit,
+            });
+        }
+    }
+
+    // SC-DEADWIRE F7 — staggered chain-arc queue.
+    private sealed class PendingChainJump
+    {
+        public SiegeFX.Core.Assets.SpellTemplate Spell = null!;
+        public ActorRenderState From = null!;
+        public float Damage;
+        public int JumpsLeft;
+        public float FireIn;
+        public HashSet<ActorRenderState> Hit = null!;
+    }
+    private readonly List<PendingChainJump> _pendingChainJumps = new();
+
+    private void TickChainJumps(float dt)
+    {
+        for (int i = _pendingChainJumps.Count - 1; i >= 0; i--)
+        {
+            var pj = _pendingChainJumps[i];
+            pj.FireIn -= dt;
+            if (pj.FireIn > 0f) continue;
+            _pendingChainJumps.RemoveAt(i);
+            if (pj.Damage < 1f || pj.JumpsLeft <= 0 || pj.Spell.Chain is not { } ch) continue;
+            var from = pj.From;
+            ActorRenderState? next = null;
+            float bestD2 = ch.Radius * ch.Radius;
+            var fp = from.CurrentTransform.Translation;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead || s.IsPlayer || s.IsPartyMember || pj.Hit.Contains(s)) continue;
+                if (!s.Actor.Stats.IsCombatant || !s.IsEvilAligned) continue;
+                var d = s.CurrentTransform.Translation - fp;
+                float dd = d.X * d.X + d.Z * d.Z;
+                if (dd < bestD2) { bestD2 = dd; next = s; }
             }
+            if (next is null) continue;
+            pj.Hit.Add(next);
+            float dealt = next.Actor.Combat.ApplyDamage(
+                ElementScaledDamage(pj.Spell, next, pj.Damage));
+            var np = next.CurrentTransform.Translation;
+            if (ch.AttackScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
+                && _sfxStore.TryGet(ch.AttackScript, out _))
+                _sfxRuntime.Spawn(ch.AttackScript, new SiegeFX.Core.Sfx.SfxContext(
+                    SourcePos:     fp + new Vector3(0f, 1.1f, 0f),
+                    TargetPos:     np + new Vector3(0f, 1.1f, 0f),
+                    WeaponBonePos: fp + new Vector3(0f, 1.1f, 0f)));
+            if (dealt > 0f)
+            {
+                AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                    np + new Vector3(0f, 1.8f, 0f), SpellElementColor(pj.Spell.Element));
+                SpawnBloodHit(next);
+                AwardCombatXp(dealt, next.Actor.Stats, SkillForSpell(pj.Spell));
+            }
+            Console.WriteLine($"cast {pj.Spell.ScreenName}: chain hit " +
+                $"{next.Actor.Template.Name} for {dealt:F0}" +
+                $"{(next.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+            _pendingChainJumps.Add(new PendingChainJump
+            {
+                Spell = pj.Spell,
+                From = next,
+                Damage = pj.Damage * ch.Falloff,
+                JumpsLeft = pj.JumpsLeft - 1,
+                FireIn = MathF.Max(0.05f, ch.Dur),
+                Hit = pj.Hit,
+            });
         }
     }
 
@@ -34346,6 +34454,10 @@ void main()
                 sed = found;
                 if (!string.IsNullOrEmpty(sed.SoundEffectFile))
                     wavName = sed.SoundEffectFile;
+                // SC-DEADWIRE F5 — the authored per-cue instance cap.
+                // (_audio proven non-null by this method's head guard.)
+                if (sed.MaxSimultaneousSamples > 0)
+                    _audio.SetInstanceCap(cue, sed.MaxSimultaneousSamples);
             }
             var path = $"/sound/effects/{wavName}.wav";
             // Peek before TryRegisterSfx: some templates author voice cues
@@ -38947,7 +39059,10 @@ void main()
                         bool isFoam = _tsdStore is not null && _tsdStore.Get(resolvedNames[i])?.Layer2 is not null;
                         if ((pass == 0 && isFoam) || (pass == 1 && !isFoam)) continue;
                         if (!modelSet) { _meshShader.SetMatrix4("uModel", inst.World); modelSet = true; }
-                        ApplyAnimatedTextureBinding(resolvedNames[i]);
+                        // SC-DEADWIRE F6 — per-instance phase for
+                        // timesyncanimation=false recipes.
+                        ApplyAnimatedTextureBinding(resolvedNames[i],
+                            (inst.SnodeGuid % 977u) * 0.037f);
                         inst.Mesh.DrawSubset(i);
                     }
                 }

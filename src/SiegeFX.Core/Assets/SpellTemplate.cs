@@ -477,8 +477,11 @@ public sealed class SpellTemplate
                                 alt,
                                 (TemplateStore.FindAttr(row, "value") ?? "0").Trim().Trim('"'),
                                 (TemplateStore.FindAttr(row, "duration") ?? EffectDurationExpr).Trim().Trim('"'),
-                                (TemplateStore.FindAttr(row, "is_single_instance") ?? "")
-                                    .Trim().Equals("true", StringComparison.OrdinalIgnoreCase)));
+                                // SC-DEADWIRE F2 — unauthored = single-
+                                // instance (retail's replace default); only
+                                // an explicit false stacks per cast.
+                                !(TemplateStore.FindAttr(row, "is_single_instance") ?? "")
+                                    .Trim().Equals("false", StringComparison.OrdinalIgnoreCase)));
                         }
                     }
                 }

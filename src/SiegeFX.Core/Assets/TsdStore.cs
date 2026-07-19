@@ -35,7 +35,9 @@ public sealed class TsdStore
 
         /// <summary>Picks the bound texture for a given wallclock time and
         /// returns the UV scroll offset to feed the shader. Frame index folds
-        /// modulo Textures.Length so animation loops cleanly.</summary>
+        /// modulo Textures.Length so animation loops cleanly.
+        /// SC-DEADWIRE F6 — uwrap/vwrap=false CLAMP the authored scroll at
+        /// one full texture length instead of wrapping (a one-shot slide).</summary>
         public (string TextureName, float UOffset, float VOffset) Sample(double time)
         {
             int frame = 0;
@@ -44,8 +46,12 @@ public sealed class TsdStore
                 frame = (int)Math.Floor(time / SecondsPerFrame);
                 frame = ((frame % Textures.Length) + Textures.Length) % Textures.Length;
             }
-            float u = (float)((time * UshiftPerSecond) % 1.0);
-            float v = (float)((time * VshiftPerSecond) % 1.0);
+            float u = UWrap
+                ? (float)((time * UshiftPerSecond) % 1.0)
+                : Math.Clamp((float)(time * UshiftPerSecond), -1f, 1f);
+            float v = VWrap
+                ? (float)((time * VshiftPerSecond) % 1.0)
+                : Math.Clamp((float)(time * VshiftPerSecond), -1f, 1f);
             return (Textures[frame], u, v);
         }
     }
