@@ -306,6 +306,10 @@ public sealed class RenderHost : IDisposable
         public bool LoopStarted;
         public bool FiredOnce;       // one-shot emitters fire once per activation edge
         public float NextFireIn;
+        // SC-DAYNIGHT — authored clock window (crickets 19h→6h etc.);
+        // HourGated emitters only sound while the world clock is inside it.
+        public bool HourGated;
+        public float StartHour, StopHour = 24f;
     }
     private readonly List<SoundEmitterState> _soundEmitters = new();
     private readonly Dictionary<uint, SoundEmitterState> _soundEmittersByScid = new();
@@ -815,6 +819,48 @@ public sealed class RenderHost : IDisposable
     private const int MaxDirectionalLights = 4;
     private readonly Vector3[] _dirLightDirs   = new Vector3[MaxDirectionalLights];
     private readonly Vector3[] _dirLightColors = new Vector3[MaxDirectionalLights];
+    // SC-DAYNIGHT — the world clock. Authored timeofday.gas: 1.6 real
+    // minutes per world hour, 24 hourly sun colors; map main.gas starts
+    // the campaign clock at 22h00m. On-timer lights (the suns and any
+    // timer-flagged lamps) modulate by the clock color; everything else
+    // keeps its authored constant.
+    private float _worldClockHours = 22f;
+    private readonly bool[] _dirLightOnTimer = new bool[MaxDirectionalLights];
+    private readonly Vector3[] _dirLightBaseColors = new Vector3[MaxDirectionalLights];
+    private static readonly Vector3[] TimeOfDayColors = BuildTimeOfDayColors();
+
+    private static Vector3[] BuildTimeOfDayColors()
+    {
+        // timeofday.gas verbatim (0xAARRGGBB → RGB).
+        uint[] argb =
+        {
+            0xFF9E4DCA, 0xFF000040, 0xFF000020, 0xFF000000, 0xFF000010,
+            0xFFA4700F, 0xFFA4700F, 0xFFE0A54B, 0xFFE0A54B, 0xFFE0C24B,
+            0xFFE0C24B, 0xFFF5F19A, 0xFFF5F19A, 0xFFF8FBD7, 0xFFF8FBD7,
+            0xFFF8FBD7, 0xFFF8FBD7, 0xFFF8FBD7, 0xFFF5F19A, 0xFFF5F19A,
+            0xFFE0C24B, 0xFFE0C24B, 0xFFE0A54B, 0xFFA4700F,
+        };
+        var v = new Vector3[24];
+        for (int i = 0; i < 24; i++)
+            v[i] = new Vector3(
+                ((argb[i] >> 16) & 0xFF) / 255f,
+                ((argb[i] >> 8) & 0xFF) / 255f,
+                (argb[i] & 0xFF) / 255f);
+        return v;
+    }
+
+    /// <summary>SC-DAYNIGHT — the clock's sun tint, lerped between the two
+    /// adjacent authored hours, normalized so midday ≈ 1, floored so the
+    /// authored pitch-black 03h stays dark but playable.</summary>
+    private Vector3 TimeOfDayTint()
+    {
+        float h = ((_worldClockHours % 24f) + 24f) % 24f;
+        int i0 = (int)MathF.Floor(h) % 24;
+        int i1 = (i0 + 1) % 24;
+        var c = Vector3.Lerp(TimeOfDayColors[i0], TimeOfDayColors[i1], h - MathF.Floor(h));
+        var t = c / 0.984f;   // max component of the 13h-17h peak (0xF8FBD7)
+        return Vector3.Max(t, new Vector3(0.22f, 0.22f, 0.30f));
+    }
     private int _dirLightCount;
     private float _ambientLevel = 0.25f;
     private SkritRuntime? _actorRuntime;
@@ -14953,8 +14999,10 @@ void main()
     private void SetDefaultLighting()
     {
         _dirLightCount = 1;
-        _dirLightDirs[0]   = Vector3.Normalize(new Vector3(0.4f, 0.9f, 0.3f));
-        _dirLightColors[0] = new Vector3(0.75f, 0.75f, 0.75f);
+        _dirLightDirs[0]       = Vector3.Normalize(new Vector3(0.4f, 0.9f, 0.3f));
+        _dirLightBaseColors[0] = new Vector3(0.75f, 0.75f, 0.75f);
+        _dirLightColors[0]     = _dirLightBaseColors[0];
+        _dirLightOnTimer[0]    = false;   // fallback sun stays constant
         _ambientLevel = 0.25f;
     }
 
@@ -17886,11 +17934,14 @@ void main()
         {
             if (l.Kind != SiegeFX.Core.Assets.RegionLightKind.Directional) continue;
             if (!l.AffectsActors) continue;
+            if (!l.Active) continue;   // SC-DAYNIGHT — authored dark starts
             if (count >= MaxDirectionalLights) break;
             var dir = l.DirectionOrPosition;
             if (dir.LengthSquared() < 1e-6f) continue;
-            _dirLightDirs[count]   = Vector3.Normalize(dir);
-            _dirLightColors[count] = l.Color * l.Intensity;
+            _dirLightDirs[count]       = Vector3.Normalize(dir);
+            _dirLightBaseColors[count] = l.Color * l.Intensity;
+            _dirLightOnTimer[count]    = l.OnTimer;
+            _dirLightColors[count]     = _dirLightBaseColors[count];
             count++;
         }
 
@@ -17912,7 +17963,7 @@ void main()
     // is the per-frame slice actually uploaded.
     private const int MaxPointLights = 32;
     private int _pointLightBudget = 16;
-    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer)> _pointLights = new();
+    private readonly List<(Vector3 Pos, Vector3 Color, float Inner, float Outer, bool OnTimer)> _pointLights = new();
     private readonly HashSet<string> _pointLightRegionsLoaded = new(StringComparer.OrdinalIgnoreCase);
     private readonly Vector3[] _framePointPos = new Vector3[MaxPointLights];
     private readonly Vector3[] _framePointColor = new Vector3[MaxPointLights];
@@ -17931,13 +17982,17 @@ void main()
             var (lights, _) = SiegeFX.Core.Assets.RegionLights.Load(mapReader, norm);
             foreach (var l in lights)
             {
-                if (l.Kind != SiegeFX.Core.Assets.RegionLightKind.Point) continue;
+                // SC-DAYNIGHT — spots join the point pass (position + cone
+                // approximated as a point at the spot origin); authored
+                // active=false lights start dark until a gizmo enables them.
+                if (l.Kind == SiegeFX.Core.Assets.RegionLightKind.Directional) continue;
                 if (l.OuterRadius <= 0.01f) continue;
+                if (!l.Active) continue;
                 var world = l.DirectionOrPosition;
                 if (l.NodeGuid != 0 && _regionLayout.TryGetTransform(l.NodeGuid, out var nodeXf))
                     world = Vector3.Transform(l.DirectionOrPosition, nodeXf);
                 else if (l.NodeGuid != 0) continue; // anchor not streamed; retried next stream pass
-                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius));
+                _pointLights.Add((world, l.Color * l.Intensity, l.InnerRadius, l.OuterRadius, l.OnTimer));
                 added++;
             }
         }
@@ -17955,9 +18010,12 @@ void main()
         var eye = _camera.Position;
         // Partial selection: track the current worst slot; replace when closer.
         Span<float> dist = stackalloc float[MaxPointLights];
+        var todTintPts = TimeOfDayTint();
         for (int i = 0; i < _pointLights.Count; i++)
         {
-            var (pos, color, inner, outer) = _pointLights[i];
+            var (pos, color, inner, outer, onTimer) = _pointLights[i];
+            // SC-DAYNIGHT — on-timer sources ride the world clock's color.
+            if (onTimer) color *= todTintPts;
             float d2 = Vector3.DistanceSquared(pos, eye);
             // Skip sources far beyond their own reach + a generous view range.
             float reach = outer + 80f;
@@ -20471,6 +20529,7 @@ void main()
             float repeatRate = 0f, maxRepeatRate = 0f;
             float minDist = 6f, maxDist = 40f;
             bool hourGated = false;
+            float startHour = 0f, stopHour = 24f;
             foreach (var attr in block.Attributes)
             {
                 var v = attr.Value ?? "";
@@ -20482,18 +20541,15 @@ void main()
                 else if (AttrEq(attr.Name, "max_repeat_rate")) maxRepeatRate = ReadFloatValue(v, 0f);
                 else if (AttrEq(attr.Name, "min_dist")) minDist = ReadFloatValue(v, 6f);
                 else if (AttrEq(attr.Name, "max_dist")) maxDist = ReadFloatValue(v, 40f);
-                else if (AttrEq(attr.Name, "start_hour") || AttrEq(attr.Name, "stop_hour")
-                         || AttrEq(attr.Name, "time_chunk")) hourGated = true;
+                // SC-DAYNIGHT — the crickets/night-bird family gates on the
+                // world clock; parse the authored window instead of parking.
+                else if (AttrEq(attr.Name, "start_hour"))
+                { hourGated = true; startHour = ReadFloatValue(v, 0f); }
+                else if (AttrEq(attr.Name, "stop_hour"))
+                { hourGated = true; stopHour = ReadFloatValue(v, 24f); }
+                else if (AttrEq(attr.Name, "time_chunk")) hourGated = true;
             }
             if (string.IsNullOrEmpty(eventName)) continue;
-            if (hourGated)
-            {
-                // The crickets/night-bird family. DS1 gates these on the game
-                // clock (start_hour/stop_hour/time_chunk); SiegeFX has no
-                // world clock yet, so they'd otherwise chirp 24/7. Park them.
-                Console.WriteLine($"  emitter: 0x{inst.Scid:x8} '{eventName}' hour-gated — parked (no world clock yet)");
-                continue;
-            }
 
             var local = Matrix4x4.CreateFromQuaternion(inst.Placement.Orientation) *
                         Matrix4x4.CreateTranslation(inst.Placement.LocalPosition);
@@ -20512,6 +20568,9 @@ void main()
                 MaxDist = maxDist,
                 IsAct = isAct,
                 Active = isPlain || startOnCreation,
+                HourGated = hourGated,
+                StartHour = startHour,
+                StopHour = stopHour,
             };
             st.NextFireIn = st.Repeats ? SampleRepeatWindow(st) : 0f;
             _soundEmitters.Add(st);
@@ -20598,7 +20657,18 @@ void main()
                 }
             }
             if (st.Samples.Length == 0) continue;
-            if (!st.Active)
+            // SC-DAYNIGHT — an hour-gated emitter (crickets, night birds)
+            // reads as inactive while the world clock sits outside its
+            // authored window; the !Active branch below owns the loop stop.
+            bool hourOk = true;
+            if (st.HourGated)
+            {
+                float h = _worldClockHours;
+                hourOk = st.StartHour <= st.StopHour
+                    ? h >= st.StartHour && h < st.StopHour
+                    : h >= st.StartHour || h < st.StopHour;   // wraps midnight
+            }
+            if (!st.Active || !hourOk)
             {
                 if (st.LoopStarted) { _audio.StopLoop(st.Scid); st.LoopStarted = false; }
                 st.FiredOnce = false;
@@ -21466,6 +21536,13 @@ void main()
         TickSpellEffects();
         // SC-CONTROL-SPELLS — pacification wear-off + reactive retaliation.
         TickControlSpells((float)dt);
+        // SC-DAYNIGHT — advance the world clock (1.6 real min per world
+        // hour) and modulate every on-timer directional by the sun color.
+        _worldClockHours = (_worldClockHours + (float)dt / (1.6f * 60f)) % 24f;
+        var todTint = TimeOfDayTint();
+        for (int i = 0; i < _dirLightCount; i++)
+            _dirLightColors[i] = _dirLightOnTimer[i]
+                ? _dirLightBaseColors[i] * todTint : _dirLightBaseColors[i];
         // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
         if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
             _screenFadeAlpha = _screenFadeTarget > _screenFadeAlpha
@@ -38512,6 +38589,8 @@ void main()
         // SC-FC-ORDERS — party-wide formation + paid-hire ledger.
         world.PartyFormation = _partyFormation.ToString();
         foreach (var sc in _hiredScids) world.HiredScids.Add(sc);
+        // SC-DAYNIGHT — the world clock rides the save.
+        world.WorldClockHours = _worldClockHours;
 
         // SC-SAVE-AUDIT (bug 5) — merge the un-streamed remainder back in.
         // The live registries above cover only regions streamed THIS session;
@@ -39650,6 +39729,9 @@ void main()
             if (!string.IsNullOrEmpty(wsFc.PartyFormation)
                 && Enum.TryParse<PartyFormation>(wsFc.PartyFormation, out var pf))
                 _partyFormation = pf;
+            // SC-DAYNIGHT — restore the world clock (pre-field saves keep
+            // the 22h00m campaign start).
+            if (wsFc.WorldClockHours >= 0f) _worldClockHours = wsFc.WorldClockHours % 24f;
         }
         int partyRestored = 0;
         foreach (var cs in save.Party.OrderBy(c => c.PartyIndex))

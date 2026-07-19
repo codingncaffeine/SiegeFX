@@ -264,6 +264,10 @@ public sealed class WorldStateSnapshot
     /// cost for at least once. A re-invite after disband stays free across
     /// save/load.</summary>
     public List<uint> HiredScids { get; set; } = new();
+
+    /// <summary>SC-DAYNIGHT — the world clock in hours (0..24). -1 in
+    /// pre-field saves → the load keeps the 22h00m campaign start.</summary>
+    public float WorldClockHours { get; set; } = -1f;
 }
 
 public sealed class AccumSnapshot

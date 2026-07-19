@@ -4,7 +4,7 @@ using SiegeFX.Core.Tank;
 
 namespace SiegeFX.Core.Assets;
 
-public enum RegionLightKind { Directional, Point }
+public enum RegionLightKind { Directional, Point, Spot }
 
 /// <summary>One light entry from a region's <c>lights/lights.gas</c>. Color is
 /// already decoded to 0..1 RGB (DS1 stores it as <c>0xAARRGGBB</c>). For
@@ -23,7 +23,12 @@ public sealed record RegionLight(
     Vector3 DirectionOrPosition,
     uint NodeGuid,
     float InnerRadius,
-    float OuterRadius);
+    float OuterRadius,
+    // SC-DAYNIGHT — authored active flag (2 lights ship active=false and
+    // must start dark) and on_timer (the light follows the world clock's
+    // time-of-day color — the sun itself carries it).
+    bool Active = true,
+    bool OnTimer = false);
 
 /// <summary>Parses <c>{region}/lights/lights.gas</c> into a list of
 /// <see cref="RegionLight"/>. Outdoor regions ship 1-2 directional sources
@@ -66,6 +71,10 @@ public static class RegionLights
             RegionLightKind kind;
             if (string.Equals(typeName, "directional", StringComparison.OrdinalIgnoreCase)) kind = RegionLightKind.Directional;
             else if (string.Equals(typeName, "point", StringComparison.OrdinalIgnoreCase)) kind = RegionLightKind.Point;
+            // SC-DAYNIGHT — 171 authored spot lights were silently dropped;
+            // they parse like points (position + direction) and the renderer
+            // treats them as points at the spot origin.
+            else if (string.Equals(typeName, "spot", StringComparison.OrdinalIgnoreCase)) kind = RegionLightKind.Spot;
             else continue;
 
             var color    = DecodeArgb(FindAttr(child, "color"));
@@ -76,8 +85,10 @@ public static class RegionLights
             var affectsTerrain = ParseBool(FindAttr(child, "affects_terrain")) ?? true;
             var inner   = ParseFloat(FindAttr(child, "inner_radius")) ?? 0f;
             var outer   = ParseFloat(FindAttr(child, "outer_radius")) ?? 0f;
+            var active  = ParseBool(FindAttr(child, "active")) ?? true;
+            var onTimer = ParseBool(FindAttr(child, "on_timer")) ?? false;
 
-            // Direction (directional) or position (point) live in a child block.
+            // Direction (directional) or position (point/spot) live in a child block.
             var dirOrPos = Vector3.Zero;
             uint nodeGuid = 0;
             var dirChild = FindChild(child, kind == RegionLightKind.Directional ? "direction" : "position");
@@ -93,7 +104,7 @@ public static class RegionLights
             list.Add(new RegionLight(
                 kind, nameField, color, intensity, drawShadow,
                 affectsActors, affectsItems, affectsTerrain,
-                dirOrPos, nodeGuid, inner, outer));
+                dirOrPos, nodeGuid, inner, outer, active, onTimer));
         }
         return (list, diags);
     }
