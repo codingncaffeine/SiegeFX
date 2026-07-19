@@ -6034,6 +6034,86 @@ public sealed class RenderHost : IDisposable
     private readonly List<(ActorRenderState Actor, float DieAt)> _multiSummonLive = new();
     private float _multiSummonClock;
 
+    // ── SC-RBS — the goblin robo-suit composite boss ───────────────────────
+    // The LEGS actor's [mind] jat_brain=brain_rbs_legs carries a ?ttorso
+    // property naming the TORSO actor: a separate caster welded on top
+    // (il_active_primary_spell=spell_robo_suit_torso). We spawn the torso,
+    // ride it on the legs every tick, and it dies with them — the legs'
+    // authored job_die_explode blast already routes through DetonateCorpse.
+    private readonly Dictionary<string, string> _rbsTorsoCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<(ActorRenderState Legs, ActorRenderState Torso)> _rbsWelds = new();
+    private readonly HashSet<ActorRenderState> _rbsHandled = new();
+
+    private string RbsTorsoOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_rbsTorsoCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        string torso = "";
+        var jatBrain = _templateStore?.GetAttribute(tpl, "mind", "jat_brain") ?? "";
+        if (jatBrain.Contains("brain_rbs_legs", StringComparison.OrdinalIgnoreCase))
+        {
+            int ti = jatBrain.IndexOf("ttorso", StringComparison.OrdinalIgnoreCase);
+            if (ti >= 0)
+            {
+                int q1 = jatBrain.IndexOf('"', ti);
+                int q2 = q1 >= 0 ? jatBrain.IndexOf('"', q1 + 1) : -1;
+                if (q2 > q1) torso = jatBrain[(q1 + 1)..q2];
+            }
+        }
+        _rbsTorsoCache[tpl.Name] = torso;
+        return torso;
+    }
+
+    private void TickRoboSuits()
+    {
+        if (_templateStore is null) return;
+        // Spawn pass — collect first (spawning mutates _actors).
+        List<(ActorRenderState Legs, string Torso)>? toSpawn = null;
+        foreach (var s in _actors)
+        {
+            if (s.IsDead || s.IsPlayer || s.IsPartyMember || _rbsHandled.Contains(s)) continue;
+            var torso = RbsTorsoOf(s.Actor.Template);
+            if (torso.Length == 0) continue;
+            (toSpawn ??= new()).Add((s, torso));
+        }
+        if (toSpawn is not null)
+        {
+            foreach (var (legs, torsoTpl) in toSpawn)
+            {
+                _rbsHandled.Add(legs);
+                int before = _actors.Count;
+                SpawnObjectChild(torsoTpl, legs.CurrentTransform.Translation + new Vector3(0f, 1.7f, 0f));
+                if (_actors.Count > before)
+                {
+                    var torso = _actors[^1];
+                    torso.IsEvilAligned = true;
+                    torso.CanFight = true;
+                    _rbsWelds.Add((legs, torso));
+                    Console.WriteLine($"[rbs] torso '{torsoTpl}' mounted on {legs.Actor.Template.Name}");
+                }
+            }
+        }
+        // Weld pass — the torso rides the legs; dies with them.
+        for (int i = _rbsWelds.Count - 1; i >= 0; i--)
+        {
+            var (legs, torso) = _rbsWelds[i];
+            if (torso.IsDead) { _rbsWelds.RemoveAt(i); continue; }
+            if (legs.IsDead)
+            {
+                torso.Actor.Combat.ApplyDamage(1e9f);
+                _rbsWelds.RemoveAt(i);
+                continue;
+            }
+            var lp = legs.CurrentTransform.Translation;
+            var mount = lp + new Vector3(0f, 1.7f, 0f);
+            torso.Brain?.Teleport(mount);
+            // Face where the legs face; sit exactly on the mount.
+            torso.CurrentTransform =
+                Matrix4x4.CreateRotationY(MathF.Atan2(
+                    legs.CurrentTransform.M31, legs.CurrentTransform.M33))
+                * Matrix4x4.CreateTranslation(mount);
+        }
+    }
+
     // ── SC-CONTROL-SPELLS ──────────────────────────────────────────────────
     // The control school's runtime: Ambivalence alignment flips (timed),
     // Harmony party balancing, ritual self-costs, Return Summoned, corpse
@@ -6245,6 +6325,10 @@ public sealed class RenderHost : IDisposable
         bool ex = string.Equals(
             (_templateStore?.GetAttribute(tpl, "attack", "explode_when_killed") ?? "").Trim(),
             "true", StringComparison.OrdinalIgnoreCase);
+        // SC-RBS — the robo-suit authors its blast via jat_die=job_die_explode.
+        if ((_templateStore?.GetAttribute(tpl, "mind", "jat_die") ?? "")
+            .Contains("die_explode", StringComparison.OrdinalIgnoreCase))
+            ex = true;
         float rad = 3f, dmin = 20f, dmax = 40f;
         if (float.TryParse((_templateStore?.GetAttribute(tpl, "attack", "area_damage_radius") ?? "")
                 .Trim(), System.Globalization.NumberStyles.Float, ci, out var r) && r > 0f) rad = r;
@@ -22083,6 +22167,7 @@ void main()
                 TickMultiSummons((float)stepSec);       // SC-SUMMON-MULTIPLE
                 TickMultiSummonExpiry((float)stepSec);  // SC-SUMMON-TTL
                 TickSpellTurrets((float)stepSec);       // SC-SPELL-DELIVERY
+                TickRoboSuits();                        // SC-RBS composite boss
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
