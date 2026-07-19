@@ -3970,9 +3970,21 @@ public sealed class RenderHost : IDisposable
             var inst = _regionInstances[i];
             if (!inst.CameraFade) continue;
             bool wasHidden = _camFadeHidden.Contains(inst.SnodeGuid);
-            bool occluding = wasHidden
+            // SC-CAMFADE-OCCLUSION — the height rule alone over-hid: a door
+            // HEADER's bottom edge starts above chest height, so the strip
+            // above every doorway vanished even from the street (the
+            // "empty space above house doors" report). Retail's rule — and
+            // the SegmentIntersectsAabb helper built for it — requires the
+            // node to actually sit BETWEEN the camera and the player. Both
+            // conditions now gate the hide: player below the piece AND the
+            // view genuinely blocked. The stay phase tests an inflated box
+            // so an orbiting camera can't strobe the node at the AABB edge.
+            bool below = wasHidden
                 ? playerPos.Y + CamFadeStayMargin < inst.WorldAabbMin.Y
                 : playerPos.Y + CamFadeEnterMargin < inst.WorldAabbMin.Y;
+            var inflate = wasHidden ? new Vector3(0.5f) : Vector3.Zero;
+            bool occluding = below && SegmentIntersectsAabb(camPos, playerPos,
+                inst.WorldAabbMin - inflate, inst.WorldAabbMax + inflate);
             if (occluding && !wasHidden)
             {
                 _camFadeHidden.Add(inst.SnodeGuid);
