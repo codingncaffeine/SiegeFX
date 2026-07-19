@@ -10819,6 +10819,21 @@ void main()
                         ArrangeActiveInventory();
                         return;
                     }
+                    // SC-VIEW-ROTATE — the View button press dispatches on
+                    // the char-panel-only path (the first wiring sat inside
+                    // the inventory-open block and never ran with just the
+                    // sheet up — the user's "not wired at all" repro).
+                    if (_charPanelOpen && _player is not null && btn == MouseButton.Left
+                        && _paperdoll.IsPointInViewButton(mx, my,
+                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                    {
+                        _pdViewActive = true;
+                        _pdViewYaw = 0f;
+                        _pdViewLastX = mx;
+                        _audio?.Play(SfxGuiInventory);
+                        Console.WriteLine("[view] hold-to-rotate begins");
+                        return;
+                    }
                     // SC-EQUIP-ROUTING — paperdoll slot clicks dispatch BEFORE
                     // the character-sheet swallow: the sheet's hit rect overlaps
                     // the paperdoll figure, and swallowing first made the body/
