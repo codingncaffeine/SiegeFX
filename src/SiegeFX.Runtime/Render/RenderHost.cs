@@ -26900,10 +26900,53 @@ void main()
         if (string.IsNullOrWhiteSpace(screenName)) screenName = best.Actor.Template.Name;
         _lastTalkedTemplate = best.Actor.Template.Name;
         _lastTalkedActor = best;
+        // SC-HIRE-STATS — retail shows the candidate's sheet before you pay:
+        // append the stat block to the join-offer node so the Accept fork
+        // carries level, skills, pools, and the authored price.
+        if (!best.IsPartyMember
+            && ResolveHireable(best.Actor.Template) is not null
+            && bestConv.Nodes.Any(n => n.IsRecruitOffer))
+            bestConv = WithHireStats(bestConv, best);
         _dialogue.Open(screenName, bestConv);
         Console.WriteLine(
             $"talk: opened '{bestConv.Key}' with {screenName} ({bestConv.Nodes.Count} node(s))");
         return true;
+    }
+
+    /// <summary>SC-HIRE-STATS — clone the conversation with the candidate's
+    /// stat sheet appended to the join-offer node (level, four skills, the
+    /// pools, and the authored hire price).</summary>
+    private SiegeFX.Core.Assets.ConversationDef WithHireStats(
+        SiegeFX.Core.Assets.ConversationDef conv, ActorRenderState who)
+    {
+        var st = who.Actor.Stats;
+        long price = 0;
+        if (_templateStore is not null
+            && long.TryParse((_templateStore.GetAttribute(who.Actor.Template, "aspect", "gold_value") ?? "")
+                .Trim(), out var gv))
+            price = gv;
+        string stats =
+            $"\n\nMelee {st.MeleeSkill:0}  Ranged {st.RangedSkill:0}  " +
+            $"Nature {st.NatureMagicSkill:0}  Combat {st.CombatMagicSkill:0}\n" +
+            $"Health {st.MaxLife:0}  Mana {st.MaxMana:0}" +
+            (price > 0 ? $"\nPrice: {price} gold" : "");
+        var nodes = new List<SiegeFX.Core.Assets.DialogueNode>(conv.Nodes.Count);
+        foreach (var n in conv.Nodes)
+            nodes.Add(!n.IsRecruitOffer ? n : new SiegeFX.Core.Assets.DialogueNode
+            {
+                Order = n.Order,
+                Text = n.Text + stats,
+                VoiceSample = n.VoiceSample,
+                Choice = n.Choice,
+                ActivateQuest = n.ActivateQuest,
+                CompleteQuest = n.CompleteQuest,
+                DeactivateQuest = n.DeactivateQuest,
+                IsQuestDialog = n.IsQuestDialog,
+                IsNonInteractive = n.IsNonInteractive,
+                ButtonText = n.ButtonText,
+                ScrollRate = n.ScrollRate,
+            });
+        return new SiegeFX.Core.Assets.ConversationDef { Key = conv.Key, Nodes = nodes };
     }
 
     /// <summary>Phase 26 — choose which of an actor's referenced
