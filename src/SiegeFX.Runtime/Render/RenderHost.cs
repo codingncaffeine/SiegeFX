@@ -27124,8 +27124,16 @@ void main()
     private void OpenAllPartyInventories()
     {
         _openInventoryMembers.Clear();
+        // SC-PARTY-MULTI-INV — manual: Ctrl-selecting a SUBSET then pressing
+        // I opens just those members' packs; a plain/leader selection opens
+        // everyone's, the retail default.
+        bool subset = false;
+        foreach (var idx in _selectedPartyIdx)
+            if (idx > 0 && idx != SummonSelIdx) { subset = true; break; }
         foreach (var m in _party)
-            if (m.PartyIndex > 0) _openInventoryMembers.Add(m.PartyIndex);
+            if (m.PartyIndex > 0
+                && (!subset || _selectedPartyIdx.Contains(m.PartyIndex)))
+                _openInventoryMembers.Add(m.PartyIndex);
     }
 
     /// <summary>SC-PARTY-MULTI-INV-ITEMS — which open companion bag sits under
