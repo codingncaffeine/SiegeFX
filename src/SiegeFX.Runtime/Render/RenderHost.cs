@@ -19952,6 +19952,11 @@ void main()
     private void PullLever(StaticPropInstance lever)
     {
         lever.LeverOn = !lever.LeverOn;
+        // SC-MATERIAL-MATRIX — the lever's authored material picks its pull
+        // sound (winch chain, metal crank, wooden handle — 12 authored
+        // lever_start rows).
+        PlayMaterialEvent(MaterialOfRef(lever.Template), "generic", "lever_start",
+            lever.World.Translation);
         // SC-LEVER-MULTISEND — every authored send pair fires on the pull.
         var sends = lever.LeverOn ? lever.LeverOnSends : lever.LeverOffSends;
         Console.WriteLine($"[lever] 0x{lever.Scid:X8} pulled -> {(lever.LeverOn ? "on" : "off")}: " +
@@ -19996,7 +20001,11 @@ void main()
         LogPropLootDrop(chest);
         // SC-AUDIO-ITEMS — sounddb's chest-open material event; spilled
         // loot plays its own put_down cues at landing.
-        if (!RegisterAndPlayVoiceCue("s_e_chest_m_open", chest.World.Translation))
+        // SC-MATERIAL-MATRIX — the chest's authored material picks its open
+        // sound (3 authored chest_open rows) ahead of the metal default.
+        if (!PlayMaterialEvent(MaterialOfRef(chest.Template), "generic", "chest_open",
+                chest.World.Translation)
+            && !RegisterAndPlayVoiceCue("s_e_chest_m_open", chest.World.Translation))
             _audio?.PlayAt(SfxGuiInventory, chest.World.Translation);
     }
 
