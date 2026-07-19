@@ -196,11 +196,12 @@ public sealed class WeatherSystem
             if (_nextStrikeIn <= 0f)
             {
                 _strikeAge = 0f;
-                // Inferred cadence: a strike every 3–10s reads like retail's
-                // opening storm without turning the field into a strobe.
-                _nextStrikeIn = 3f + (float)_rng.NextDouble() * 7f;
-                // Thunder rolls in 0.4–2.0s after the flash (distance feel).
-                _thunderQueue.Add(0.4f + (float)_rng.NextDouble() * 1.6f);
+                // SC-WEATHER-CFG — AUTHORED cadence from /config/weather.gas
+                // [rain]: min/max_lightning_delay 30-60s between strikes,
+                // thunder rolling in min/max_thunder_delay 1.5-3.0s after
+                // the flash. Replaces the eyeballed 3-10s cadence.
+                _nextStrikeIn = 30f + (float)_rng.NextDouble() * 30f;
+                _thunderQueue.Add(1.5f + (float)_rng.NextDouble() * 1.5f);
             }
         }
         else
