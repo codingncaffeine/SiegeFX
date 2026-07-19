@@ -33256,7 +33256,9 @@ void main()
                         float fl = MathF.Sqrt(fl2);
                         _playerFacing = new Vector3(fx / fl, 0f, fz / fl);
                         float pyaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
-                        _player.CurrentTransform =
+                        // (same reasoning as best! above: an offensive Cast
+                        // outcome only exists with a live caster.)
+                        _player!.CurrentTransform =
                             Matrix4x4.CreateRotationY(pyaw) *
                             Matrix4x4.CreateTranslation(playerPos);
                         // 9-SC-10b — snap the render-interp buffers too, otherwise
