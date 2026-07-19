@@ -32482,7 +32482,36 @@ void main()
                             new Vector4(1.00f, 0.85f, 0.40f, 1f));
         _audio?.Play(SfxQuestComplete);
         FlashQuestIndicator();
+        // SC-QUEST-REWARD — the one live authored completion skrit:
+        // quest_gyorn_seek_overseer's overseer_award splits 2000 XP across
+        // the party, each share credited to that character's ACTIVE weapon
+        // skill. (lucky_amulet ships commented out — never fires in retail.)
+        if (key.Contains("gyorn_seek_overseer", StringComparison.OrdinalIgnoreCase))
+        {
+            int partySize = 1 + _party.Count(pm2 => pm2.PartyIndex > 0
+                && pm2.IsPartyMember && !pm2.IsDead);
+            long share = (long)(2000f / Math.Max(1, partySize));
+            AwardRawXp(share, SkillForActiveSlot(_activeAbilityIdx));
+            foreach (var pm2 in _party)
+            {
+                if (pm2.PartyIndex <= 0 || !pm2.IsPartyMember || pm2.IsDead) continue;
+                int mslot = _memberActiveSlot.TryGetValue(pm2.PartyIndex, out var msv) ? msv : 0;
+                if (_memberProgression.TryGetValue(pm2.PartyIndex, out var mp2))
+                    mp2.AwardXp(share, SkillForActiveSlot(mslot));
+            }
+            Console.WriteLine($"[quest] overseer_award: {share} XP × {partySize} characters");
+        }
     }
+
+    /// <summary>SC-QUEST-REWARD — the skill a character's active AWP slot
+    /// trains (0 melee, 1 ranged, 2/3 the equipped spell's school —
+    /// approximated to nature; the award is small either way).</summary>
+    private static SiegeFX.Core.Assets.SkillKind SkillForActiveSlot(int slot) => slot switch
+    {
+        1 => SiegeFX.Core.Assets.SkillKind.Ranged,
+        2 or 3 => SiegeFX.Core.Assets.SkillKind.NatureMagic,
+        _ => SiegeFX.Core.Assets.SkillKind.Melee,
+    };
 
     /// <summary>SC-QUEST-TURNIN — drain the dialogue panel's one-shot
     /// complete_quest*/deactivate_quest* edges (set when their text node
