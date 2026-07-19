@@ -33143,12 +33143,24 @@ void main()
                     && _sfxStore.TryGet(brain.CastSpell.CastSfxScript, out var npcScript)
                     && IsCastScriptFullyCovered(brain.CastSpell, npcScript))
                 {
+                    // SC-TARGET-BONES — NPC casts get live skeleton anchors
+                    // for both ends now (caster bones + whichever party body
+                    // the cast destination sits on), same as the player path.
+                    var castVictim = NearestLivePartyMember(castDst);
+                    if (castVictim is not null)
+                    {
+                        var cvd = castVictim.CurrentTransform.Translation - castDst;
+                        if (cvd.X * cvd.X + cvd.Z * cvd.Z > 9f) castVictim = null;
+                    }
                     var npcCtx = new SiegeFX.Core.Sfx.SfxContext(
                         SourcePos:     castSrc,
                         TargetPos:     castTo,
                         WeaponBonePos: castSrc,
-                        Resolver:      null)
-                    { DefaultEmitterDuration = SpellEffectDurationSec(brain.CastSpell, null) };
+                        Resolver:      MakeActorBoneResolver(s))
+                    {
+                        DefaultEmitterDuration = SpellEffectDurationSec(brain.CastSpell, null),
+                        TargetResolver = castVictim is not null ? MakeActorBoneResolver(castVictim) : null,
+                    };
                     int partsBefore = _particles?.LiveParticleCount ?? 0;
                     int boltsBefore = _particles?.LiveBoltCount ?? 0;
                     if (!string.IsNullOrEmpty(brain.CastSpell.ChargeSfxScript)
