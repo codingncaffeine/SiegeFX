@@ -10379,6 +10379,15 @@ void main()
                         if (th.Kind != Hud.TeamPortraits.HitKind.None)
                         {
                             int pidx = th.Member + 1;   // follower 0 = PartyIndex 1
+                            // SC-PORTRAIT-DROP — dropping a held item on a
+                            // portrait moves it into that character's pack
+                            // (manual; it never makes them drink it).
+                            if (th.Kind == Hud.TeamPortraits.HitKind.Portrait
+                                && _cursorItem is not null)
+                            {
+                                TryTransferCursorItemToMember(pidx);
+                                return;
+                            }
                             switch (th.Kind)
                             {
                                 case Hud.TeamPortraits.HitKind.Portrait:
@@ -10437,6 +10446,13 @@ void main()
                             // notify(character)). If a companion sheet was up, this
                             // switches back to the player; otherwise it toggles.
                             // Does NOT touch inventory/spellbook — only I drives the rail.
+                            // SC-PORTRAIT-DROP — a held item lands in the
+                            // hero's pack (manual transfer rule).
+                            if (_cursorItem is not null)
+                            {
+                                TryTransferCursorItemToMember(0);
+                                return;
+                            }
                             // SC-CTRL-SELECT — ctrl-click toggles the leader in
                             // the multi-selection instead (manual).
                             if (_cursorItem is null && CtrlHeld())
@@ -10860,8 +10876,9 @@ void main()
                             _window.Size.X, _window.Size.Y, memberBag, TryGetItemGridSize);
                         if (occupied < 0)
                         {
-                            memberBag.Add(new SiegeFX.Core.Actors.LootEntry(
-                                Slot: "", Reference: _cursorItem.Value.Reference));
+                            // Keep Fill + BookSpells riding the transfer (a
+                            // half-drunk potion stays half-drunk).
+                            memberBag.Add(_cursorItem.Value with { Slot = "" });
                             if (!Hud.InventoryPanel.CanFitAll(memberBag, TryGetItemGridSize))
                             {
                                 memberBag.RemoveAt(memberBag.Count - 1);
@@ -10890,6 +10907,15 @@ void main()
                             _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
                         if (idx >= 0)
                         {
+                            // SC-CTRL-DROP — Ctrl+click an inventory item:
+                            // drop it at the party's feet, or pass it to the
+                            // NEXT open inventory while the multi-inventory
+                            // row is up (manual).
+                            if (CtrlHeld())
+                            {
+                                QuickDropInventoryItem(idx);
+                                return;
+                            }
                             var clicked = ActiveInventory[idx];
                             // A scroll item is identifiable by its Reference
                             // resolving via ResolveSlottableSpell — same
@@ -38948,7 +38974,12 @@ void main()
                     sheetAttack, armor, xpFrac,
                     _iconRenderer, portrait,
                     chromeLookup: TryGetGuiTexture,
-                    startingClassTitle: sheetClassTitle);
+                    startingClassTitle: sheetClassTitle,
+                    // SC-ATTR-TINT — the hero's live gear/buff attribute
+                    // layer (members fold defense only today).
+                    attrDelta: isPlayerSheet
+                        ? (_appliedEnchant.Str, _appliedEnchant.Dex, _appliedEnchant.Int)
+                        : default);
 
                 // INFORAIL-PAPERDOLL — equipment paperdoll under the
                 // upper stats panes. Reads gas-cited rects from
@@ -40107,6 +40138,66 @@ void main()
                 { found = true; break; }
         _spellBookItemCache[itemRef] = found;
         return found;
+    }
+
+    /// <summary>SC-PORTRAIT-DROP — move the held cursor item into the given
+    /// character's pack (0 = hero). Refusals keep it on the cursor.</summary>
+    private void TryTransferCursorItemToMember(int pidx)
+    {
+        if (_cursorItem is null) return;
+        var bag = GetMemberInventory(pidx);
+        bag.Add(_cursorItem.Value with { Slot = "" });
+        if (!Hud.InventoryPanel.CanFitAll(bag, TryGetItemGridSize))
+        {
+            bag.RemoveAt(bag.Count - 1);
+            AddGameMessage("No room.");
+            _audio?.Play(SfxGuiInvFull);
+            return;
+        }
+        PlayPutDownSfx(_cursorItem.Value.Reference,
+            _player?.CurrentTransform.Translation ?? Vector3.Zero);
+        Console.WriteLine($"  cursor item: {_cursorItem.Value.Reference} -> member[{pidx}] via portrait drop");
+        ClearCursorItem();
+    }
+
+    /// <summary>SC-CTRL-DROP — Ctrl+click quick-drop: while the
+    /// multi-inventory row shows another open pack, the item passes to the
+    /// next open inventory in party order; otherwise it drops at the feet
+    /// as a world pile (manual).</summary>
+    private void QuickDropInventoryItem(int index)
+    {
+        var inv = ActiveInventory;
+        if (index < 0 || index >= inv.Count) return;
+        var entry = inv[index];
+        // Next open pack after the active one (0 = hero, then members).
+        var open = new List<int>();
+        if (_paperdollTargetIndex != 0 || _inventoryOpen) open.Add(0);
+        foreach (var m in _party)
+            if (_openInventoryMembers.Contains(m.PartyIndex)) open.Add(m.PartyIndex);
+        open.Sort();
+        int cur = open.IndexOf(_paperdollTargetIndex);
+        int next = -1;
+        if (open.Count > 1 && cur >= 0)
+            next = open[(cur + 1) % open.Count];
+        if (next >= 0 && next != _paperdollTargetIndex)
+        {
+            var bag = GetMemberInventory(next);
+            bag.Add(entry with { Slot = "" });
+            if (Hud.InventoryPanel.CanFitAll(bag, TryGetItemGridSize))
+            {
+                inv.RemoveAt(index);
+                _inventoryPanel.NotifyItemRemoved(index);
+                _audio?.Play(SfxGuiPickup);
+                Console.WriteLine($"  ctrl-drop: {entry.Reference} -> member[{next}]");
+                return;
+            }
+            bag.RemoveAt(bag.Count - 1);   // full — fall through to world drop
+        }
+        inv.RemoveAt(index);
+        _inventoryPanel.NotifyItemRemoved(index);
+        _cursorItem = entry;
+        DropCursorItemToWorld();
+        Console.WriteLine($"  ctrl-drop: {entry.Reference} -> ground");
     }
 
     private bool TrySwapSpellBookItem(int index)

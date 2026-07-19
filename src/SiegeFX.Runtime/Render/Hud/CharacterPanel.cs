@@ -52,7 +52,8 @@ public sealed class CharacterPanel
                      IconRenderer? icons = null,
                      GlTexture? portraitIcon = null,
                      System.Func<string, GlTexture?>? chromeLookup = null,
-                     string startingClassTitle = "Farmer")
+                     string startingClassTitle = "Farmer",
+                     (float Str, float Dex, float Int) attrDelta = default)
     {
         int px = OriginX, py = OriginY;
         var ink    = new Vector4(0.667f, 0.655f, 0.557f, 1f); // DS1 panel ink #aaa78e
@@ -162,21 +163,26 @@ public sealed class CharacterPanel
             // the attribute only its influence share) and reset on SKILL
             // crossings — the user-reported "looks like INT is about to level,
             // then the bar starts over" without the number moving.
+            // SC-ATTR-TINT — manual: attribute values modified by magic
+            // items draw blue when raised, red when lowered.
+            var tintUp = new Vector4(0.42f, 0.62f, 0.98f, 1f);
+            var tintDn = new Vector4(0.95f, 0.32f, 0.28f, 1f);
+            Vector4? Tint(float d) => d > 0.5f ? tintUp : d < -0.5f ? tintDn : null;
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104, 73, 211, 86), R(214, 73, 236, 86),
                 "Strength",    ((int)player.Stats.Strength).ToString(),
                 progression?.AttrProgressFraction(0) ?? skillXpFraction,
-                ink, slotBg, slotEm);
+                ink, slotBg, slotEm, Tint(attrDelta.Str));
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104, 87, 211, 100), R(214, 87, 236, 100),
                 "Dexterity",   ((int)player.Stats.Dexterity).ToString(),
                 progression?.AttrProgressFraction(1) ?? skillXpFraction,
-                ink, slotBg, slotEm);
+                ink, slotBg, slotEm, Tint(attrDelta.Dex));
             DrawLabeledStatRow(bars, text, viewportW, viewportH,
                 R(104,101, 211, 114), R(214,101, 236, 114),
                 "Intelligence",((int)player.Stats.Intelligence).ToString(),
                 progression?.AttrProgressFraction(2) ?? skillXpFraction,
-                ink, slotBg, slotEm);
+                ink, slotBg, slotEm, Tint(attrDelta.Int));
         }
 
         // INFORAIL-LEVEL — gas:978 text_level rect 201,117,250,130.
@@ -231,7 +237,8 @@ public sealed class CharacterPanel
                                    (int x, int y, int w, int h) labelR,
                                    (int x, int y, int w, int h) valR,
                                    string label, string value, float fraction,
-                                   Vector4 ink, Vector4 bg, Vector4 em)
+                                   Vector4 ink, Vector4 bg, Vector4 em,
+                                   Vector4? valueInk = null)
     {
         bars.DrawRect(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, bg);
         // Left-to-right horizontal fill matching the gas's
@@ -243,7 +250,8 @@ public sealed class CharacterPanel
         }
         bars.DrawBorder(vw, vh, labelR.x, labelR.y, labelR.w, labelR.h, em);
         text.DrawString(vw, vh, label, labelR.x + 4, labelR.y + (labelR.h - 8) / 2, ink);
-        DrawCentered(text, vw, vh, valR, value, ink);
+        // SC-ATTR-TINT — the value cell may carry the gear-delta tint.
+        DrawCentered(text, vw, vh, valR, value, valueInk ?? ink);
     }
 
     static void DrawSkillRow(BarRenderer bars, TextRenderer text, IconRenderer? icons,
