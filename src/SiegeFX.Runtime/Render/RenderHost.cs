@@ -13941,6 +13941,7 @@ void main()
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
+                ConfigureBrainMeleeJob(brain, actor.Template, actor.Stats);
                 ApplyBrainSpellRotation(brain, actor.Template);
                 actorsOnMesh++;
             }
@@ -19839,6 +19840,166 @@ void main()
         brain.ConfigureFlee(threshold, count, distance);
     }
 
+    // ── SC-MOB-JOBS (blindspot Phase A) ──────────────────────────────────
+    /// <summary>Parse job_attack_object_melee's authored skrit args off the
+    /// [mind] jat_attack_object_melee value (`...skrit ?run_chance = 1.0
+    /// &hit_multiple = true` form), plus the [body] max_move_velocity, onto
+    /// the brain — and wire the hit_multiple sweep + near-miss flee flag.</summary>
+    private void ConfigureBrainMeleeJob(SiegeFX.Core.Actors.ActorBrain brain,
+        SiegeFX.Core.Assets.Template tpl, SiegeFX.Core.Actors.ActorStats stats)
+    {
+        if (_templateStore is null) return;
+        var raw = _templateStore.GetAttribute(tpl, "mind", "jat_attack_object_melee");
+        if (!string.IsNullOrEmpty(raw))
+        {
+            brain.RunChance                = SkritArgF(raw, "run_chance", 0f);
+            brain.CautiousChance           = SkritArgF(raw, "cautious_chance", 0f);
+            brain.MinCautiousDistance      = SkritArgF(raw, "min_cautious_distance", 6f);
+            brain.CautiousApproachDistance = SkritArgF(raw, "cautious_approach_distance", 3f);
+            brain.CautiousDownTime         = SkritArgF(raw, "cautious_down_time", 2f);
+            brain.AbortCautiousOnDamage    = SkritArgB(raw, "abort_cautious_on_damage", true);
+            brain.HitMultiple              = SkritArgB(raw, "hit_multiple", false);
+        }
+        if (float.TryParse(_templateStore.GetAttribute(tpl, "body", "max_move_velocity"),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var maxV)
+            && maxV > stats.WalkSpeed + 0.05f)
+            brain.RunSpeed = maxV;
+        if (brain.HitMultiple)
+            brain.SweepMelee = (origin, range, exclude) =>
+                SweepMeleeDamage(stats, origin, range, exclude);
+        // SC-MOB-NEARMISS — arrows whizzing past scare the skittish
+        // (gremals, golems author on_alert_projectile_near_missed_flee).
+        brain.NearMissFlee = string.Equals(
+            _templateStore.GetAttribute(tpl, "mind", "on_alert_projectile_near_missed_flee")?.Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        // SC-MOB-FIDGET — job_fidget's ambient-life chances + world hooks.
+        // job_fidget_curious (gremals, pixie) is a whole-skrit variant:
+        // treat it as an always-curious watcher.
+        var fraw = _templateStore.GetAttribute(tpl, "mind", "jat_fidget");
+        if (!string.IsNullOrEmpty(fraw))
+        {
+            brain.FidgetSocial      = SkritArgF(fraw, "social", 0f);
+            brain.FidgetDestructive = SkritArgF(fraw, "destructive", 0f);
+            if (fraw.Contains("job_fidget_curious", StringComparison.OrdinalIgnoreCase))
+                brain.FidgetCurious = 0.6f;
+            if (brain.FidgetDestructive > 0f)
+            {
+                brain.FindBreakable = FindBreakableNear;
+                brain.SmashAt = p => SmashBreakableAt(p, brain);
+            }
+            if (brain.FidgetSocial > 0f || brain.FidgetCurious > 0f)
+                brain.FindFriendPos = p => FindFidgetFriendNear(p, brain);
+        }
+    }
+
+    /// <summary>SC-MOB-FIDGET — nearest live breakable within smash-fidget
+    /// range of an idle ambient (krug camps smash their own barrels).</summary>
+    private Vector3? FindBreakableNear(Vector3 pos)
+    {
+        StaticPropInstance? best = null;
+        float bestD2 = 8f * 8f;
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsBreakable || prop.IsDestroyed) continue;
+            var d = prop.World.Translation - pos;
+            if (MathF.Abs(d.Y) > 2f) continue;
+            float d2 = d.X * d.X + d.Z * d.Z;
+            if (d2 < bestD2) { bestD2 = d2; best = prop; }
+        }
+        return best?.World.Translation;
+    }
+
+    private void SmashBreakableAt(Vector3 pos, SiegeFX.Core.Actors.ActorBrain brain)
+    {
+        StaticPropInstance? best = null;
+        float bestD2 = 2.25f;
+        foreach (var prop in _staticProps)
+        {
+            if (!prop.IsBreakable || prop.IsDestroyed) continue;
+            var d = prop.World.Translation - pos;
+            float d2 = d.X * d.X + d.Z * d.Z;
+            if (d2 < bestD2) { bestD2 = d2; best = prop; }
+        }
+        if (best is null) return;
+        ActorRenderState? atk = null;
+        foreach (var a in _actors)
+            if (ReferenceEquals(a.Brain, brain)) { atk = a; break; }
+        if (atk is not null) PerformPropBreak(best, atk.Actor.Stats);
+    }
+
+    /// <summary>SC-MOB-FIDGET — a same-alignment live neighbor to walk to for
+    /// the social chat / curious watch (2..12u band, same floor).</summary>
+    private Vector3? FindFidgetFriendNear(Vector3 pos, SiegeFX.Core.Actors.ActorBrain brain)
+    {
+        ActorRenderState? self = null;
+        foreach (var a in _actors)
+            if (ReferenceEquals(a.Brain, brain)) { self = a; break; }
+        if (self is null) return null;
+        ActorRenderState? best = null;
+        float bestD2 = 12f * 12f;
+        foreach (var a in _actors)
+        {
+            if (ReferenceEquals(a, self) || a.IsDead || a.Hidden) continue;
+            if (a.IsEvilAligned != self.IsEvilAligned) continue;
+            var d = a.CurrentTransform.Translation - pos;
+            if (MathF.Abs(d.Y) > 2f) continue;
+            float d2 = d.X * d.X + d.Z * d.Z;
+            if (d2 > 4f && d2 < bestD2) { bestD2 = d2; best = a; }
+        }
+        return best?.CurrentTransform.Translation;
+    }
+
+    static float SkritArgF(string raw, string key, float dflt)
+    {
+        int i = raw.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+        if (i < 0) return dflt;
+        int eq = raw.IndexOf('=', i + key.Length);
+        if (eq < 0) return dflt;
+        int j = eq + 1;
+        while (j < raw.Length && char.IsWhiteSpace(raw[j])) j++;
+        int k = j;
+        while (k < raw.Length && (char.IsDigit(raw[k]) || raw[k] == '.' || raw[k] == '-')) k++;
+        return k > j && float.TryParse(raw[j..k],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v)
+            ? v : dflt;
+    }
+
+    static bool SkritArgB(string raw, string key, bool dflt)
+    {
+        int i = raw.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+        if (i < 0) return dflt;
+        int eq = raw.IndexOf('=', i + key.Length);
+        if (eq < 0) return dflt;
+        int j = eq + 1;
+        while (j < raw.Length && char.IsWhiteSpace(raw[j])) j++;
+        if (j >= raw.Length) return dflt;
+        return raw[j] is 't' or 'T';
+    }
+
+    /// <summary>SC-MOB-SWEEP — hit_multiple FIRE payload: roll + apply melee
+    /// damage to every party-aligned combatant inside the sweep, excluding
+    /// the primary victim (already damaged by the brain).</summary>
+    private void SweepMeleeDamage(SiegeFX.Core.Actors.ActorStats attacker,
+        Vector3 origin, float range, SiegeFX.Core.Actors.ActorCombatState? exclude)
+    {
+        foreach (var s in _actors)
+        {
+            if (!s.IsPlayer && !s.IsPartyMember) continue;
+            if (s.IsDead || ReferenceEquals(s.Actor.Combat, exclude)) continue;
+            var p = s.CurrentTransform.Translation;
+            float dx = p.X - origin.X, dz = p.Z - origin.Z;
+            if (dx * dx + dz * dz > range * range) continue;
+            if (MathF.Abs(p.Y - origin.Y) > 2.5f) continue;
+            float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
+                attacker, s.Actor.Stats, Random.Shared, attackerIsPlayer: false, ranged: false);
+            if (raw <= 0f) continue;
+            s.Actor.Combat.ApplyDamage(raw);
+            SpawnBloodHit(s);
+        }
+    }
+
     /// <summary>SC-AI-TARGETING — the party member (hero included) nearest to
     /// <paramref name="from"/> that is still alive; the hero as fallback while
     /// solo (the party list only populates once recruiting starts). XZ
@@ -19871,6 +20032,45 @@ void main()
         if (best is null) best = bestDowned;
         if (best is null && _player is not null && !_player.IsDead) best = _player;
         return best;
+    }
+
+    // SC-MOB-DOGPILE — retail caps melee attackers per victim
+    // (k_job_c_attack_utils: EngagedMeMeleeAttackerCount >= WorldOptions
+    // limit refuses the pile) and routes AI focus through second-tier
+    // target spreading so a mob doesn't all stack one character. Counts
+    // rebuild every tick from the brains' live engagements.
+    private readonly Dictionary<ActorRenderState, int> _meleeEngagedCount = new();
+    private const int MeleeAttackerCountLimit = 4;
+
+    private ActorRenderState? PickBrainQuarry(ActorRenderState s)
+    {
+        var pos = s.CurrentTransform.Translation;
+        var primary = NearestLivePartyMember(pos);
+        if (primary is null || s.Brain is null
+            || s.Brain.Mode != SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee)
+            return primary;
+        if (!_meleeEngagedCount.TryGetValue(primary, out var cnt)
+            || cnt < MeleeAttackerCountLimit)
+            return primary;
+        // Primary is buried under the cap: nearest CONSCIOUS teammate still
+        // under it. Nobody free → pile on anyway (retail's limit is a
+        // preference, not a hard refusal to fight).
+        ActorRenderState? alt = null;
+        float altD2 = float.MaxValue;
+        void Consider(ActorRenderState? m)
+        {
+            if (m is null || m.IsDead || m.Actor.Combat.Downed
+                || ReferenceEquals(m, primary)) return;
+            if (_meleeEngagedCount.TryGetValue(m, out var c2)
+                && c2 >= MeleeAttackerCountLimit) return;
+            var p = m.CurrentTransform.Translation;
+            float dx = p.X - pos.X, dz = p.Z - pos.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < altD2) { altD2 = d2; alt = m; }
+        }
+        foreach (var m in _party) Consider(m);
+        Consider(_player);
+        return alt ?? primary;
     }
 
     /// <summary>SC-DOWNED — any party character still on their feet?</summary>
@@ -22136,6 +22336,7 @@ void main()
                     selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
                 brain.SightBlocked = IsSightBlocked;
                 ConfigureBrainFlee(brain, actor.Template);
+                ConfigureBrainMeleeJob(brain, actor.Template, actor.Stats);
                 ApplyBrainSpellRotation(brain, actor.Template);
                 onMesh++;
             }
@@ -22859,6 +23060,10 @@ void main()
                     && _lastTalkedActor is { AlignSwitchArmed: true, AlignSwitchOnTalkEnd: true } talked)
                     TriggerAlignmentSwitch(talked, "speech ended");
                 _dialogueWasOpen = dlgOpenNow;
+                // SC-MOB-DOGPILE — rebuild the per-victim melee-attacker
+                // counts each tick; the quarry picker reads them to spread
+                // overflow attackers across the party.
+                _meleeEngagedCount.Clear();
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
@@ -22907,9 +23112,11 @@ void main()
                     // good combatants (guards, kings) never turn on you.
                     bool hostile = s.IsEvilAligned && s.Actor.Stats.IsCombatant
                                    && _nisPhase == NisPhase.Off;
-                    var quarry = hostile
-                        ? NearestLivePartyMember(s.CurrentTransform.Translation)
-                        : null;
+                    // SC-MOB-DOGPILE — melee brains route through the
+                    // spread-aware picker (attacker cap per victim, retail's
+                    // EngagedMeMeleeAttackerCount limit + second-tier
+                    // spreading); ranged/magic keep simple nearest.
+                    var quarry = hostile ? PickBrainQuarry(s) : null;
                     // SC-MONSTER-SPECIALS — startup_reveal dormancy: the
                     // buried ones hold perfectly still until the party is
                     // close (or something hurt them), then rise and fight.
@@ -22959,6 +23166,13 @@ void main()
                         quarry?.CurrentTransform.Translation,
                         quarry?.Actor.Combat,
                         quarry?.Actor.Stats);
+                    // SC-MOB-DOGPILE — count live melee engagements.
+                    if (hostile && quarry is not null
+                        && s.Brain.Mode == SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee
+                        && s.Brain.State is SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                            or SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)
+                        _meleeEngagedCount[quarry] =
+                            _meleeEngagedCount.GetValueOrDefault(quarry) + 1;
                     // SC-MONSTER-SPECIALS — walk-up detonation: a bomber
                     // (explode_when_killed + blast radius) that reaches its
                     // victim fuses itself; the death sweep runs the blast.
@@ -30282,6 +30496,7 @@ void main()
             selfActor: actor, castSpell: ResolveBrainSpell(actor.Stats));
         brain.SightBlocked = IsSightBlocked;
         ConfigureBrainFlee(brain, actor.Template);
+        ConfigureBrainMeleeJob(brain, actor.Template, actor.Stats);
         ApplyBrainSpellRotation(brain, actor.Template);
         s.Brain = brain;
     }
@@ -32460,6 +32675,23 @@ void main()
             if (shot.Pos.Y <= groundY + 0.03f && shot.Vel.Y < 0f)
             {
                 shot.Pos = shot.Pos with { Y = groundY + 0.03f };
+                // SC-MOB-NEARMISS — a party arrow that lands in the dirt
+                // whizzed PAST someone: alert nearby hostiles; the skittish
+                // (gremals, golems author on_alert_projectile_near_missed_
+                // flee) bolt from the shooter without ever being hit.
+                if (shot.FromPlayer)
+                {
+                    var shooterPos = _player?.CurrentTransform.Translation ?? shot.Pos;
+                    foreach (var s in _actors)
+                    {
+                        if (s.IsDead || s.Hidden || !s.IsEvilAligned) continue;
+                        if (s.Brain is not { NearMissFlee: true } nb) continue;
+                        var np = s.CurrentTransform.Translation;
+                        float ndx = np.X - shot.Pos.X, ndz = np.Z - shot.Pos.Z;
+                        if (ndx * ndx + ndz * ndz > 5f * 5f) continue;
+                        nb.FleeFrom(shooterPos);
+                    }
+                }
                 if (shot.ImpactSfxScript.Length > 0)
                 {
                     RunImpactSplat(shot);

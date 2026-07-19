@@ -275,6 +275,56 @@ public sealed class ActorBrain
     }
 
     // Phase 18c — the in-flight attack iteration (see SwingSchedule). Damage
+    // ── SC-MOB-JOBS (blindspot Phase A) — job_attack_object_melee's authored
+    // approach knobs, configured by the host from the template's [mind] jat_
+    // skrit-arg string. run_chance sprints the approach leg at the body's
+    // max_move_velocity (wolves walk 3.1 / run 4.8) until the first hit
+    // lands; cautious_chance stalks in authored increments with stand-down
+    // pauses (wolves 0.9, trogs 0.8); hit_multiple makes each melee FIRE
+    // sweep every enemy in reach (seck, giant spider, rock beast).
+    public float RunChance;
+    public float RunSpeed;                       // body max_move_velocity
+    public float CautiousChance;
+    public float MinCautiousDistance = 6f;       // skrit doc defaults
+    public float CautiousApproachDistance = 3f;
+    public float CautiousDownTime = 2f;
+    public bool  AbortCautiousOnDamage = true;
+    public bool  HitMultiple;
+    /// <summary>SC-MOB-NEARMISS — authored on_alert_projectile_near_missed_flee:
+    /// the host's arrow-miss alert makes this brain bolt from the shooter.</summary>
+    public bool  NearMissFlee;
+
+    // SC-MOB-FIDGET — job_fidget's ambient life beyond plain wandering:
+    // ?social walks to a friend and stops for a "chat" (krug 0.35),
+    // ?destructive finds a breakable and smashes it (krug camps 0.29),
+    // job_fidget_curious follows/watches nearby creatures (gremals, pixie).
+    public float FidgetSocial, FidgetDestructive, FidgetCurious;
+    public Func<Vector3, Vector3?>? FindBreakable;   // host: nearest breakable
+    public Action<Vector3>? SmashAt;                 // host: break it
+    public Func<Vector3, Vector3?>? FindFriendPos;   // host: nearest friend
+    float _fidgetTimer = 6f;
+    int _fidgetMode;        // 0 none, 1 walk-to-smash, 2 walk-to-friend
+    Vector3 _fidgetGoal;
+    float _fidgetHold;
+    /// <summary>Host hook: sweep melee damage onto every OTHER enemy within
+    /// (origin, range), excluding the primary combat state already hit.</summary>
+    public Action<Vector3, float, ActorCombatState?>? SweepMelee;
+
+    bool _charging;
+    float _chargeBaseSpeed;
+    bool _cautiousArmed;
+    bool _cautiousAborted;
+    float _cautiousDownTimer;
+    Vector3? _cautiousGoal;
+    float _lastSeenLife = -1f;
+
+    void EndCharge()
+    {
+        if (!_charging) return;
+        _charging = false;
+        if (_chargeBaseSpeed > 0.1f) Wander.Follower.Speed = _chargeBaseSpeed;
+    }
+
     // lands on the clip's FIRE note(s); the iteration completes at
     // period = reload_delay + base attack duration, and only then can the
     // next swing start. Advanced at the top of Tick regardless of state so
@@ -357,6 +407,13 @@ public sealed class ActorBrain
             {
                 float removedNow = targetCombat.ApplyDamage(raw);
                 if (removedNow > 0f) OnDamageDealt?.Invoke(removedNow, targetStats, Assets.SkillKind.Melee);
+                // SC-MOB-RUN — the charge ends when the first hit lands
+                // (job_attack_object_melee resets the body velocity there).
+                EndCharge();
+                // SC-MOB-SWEEP — hit_multiple: the same FIRE note damages
+                // every other enemy inside reach.
+                if (HitMultiple)
+                    SweepMelee?.Invoke(Wander.Position, MeleeRange * 1.5f + 1.5f, targetCombat);
             }
         }
         if (sw.Complete) _activeSwing = null;
@@ -382,6 +439,17 @@ public sealed class ActorBrain
 
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
+
+        // SC-MOB-CAUTIOUS — taking damage breaks the stalk (authored
+        // abort_cautious_on_damage, default true): a wounded wolf stops
+        // creeping and commits. Life-delta watch needs no host hook.
+        if (_selfActor is not null)
+        {
+            float lifeNow = _selfActor.Combat.CurrentLife;
+            if (_lastSeenLife >= 0f && lifeNow < _lastSeenLife - 0.01f && AbortCautiousOnDamage)
+                _cautiousAborted = true;
+            _lastSeenLife = lifeNow;
+        }
 
         // Phase 18c — follow the in-flight swing through regardless of state
         // transitions (FIRE-note damage, qffg pad, iteration completion).
@@ -417,13 +485,80 @@ public sealed class ActorBrain
                 if (targetAlive && distXZ <= AggroRadius &&
                     MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand &&
                     SightBlocked?.Invoke(Wander.Position, targetPos!.Value) != true)
+                {
+                    _fidgetMode = 0;
                     EnterChase(targetPos!.Value);
+                }
                 else if (PatrolRoute is not null) { _attackFacing = null; TickPatrol(dt); }
-                else { _attackFacing = null; Wander.Tick(dt); }
+                else
+                {
+                    _attackFacing = null;
+                    // SC-MOB-FIDGET — an armed ambient action owns the
+                    // wander until it completes: walk to the goal, then
+                    // either smash it (destructive) or stand facing it for
+                    // a beat (social chat / curious watch).
+                    if (_fidgetMode != 0)
+                    {
+                        if (_fidgetHold > 0f)
+                        {
+                            _fidgetHold -= dt;
+                            FaceTarget(_fidgetGoal);
+                            if (_fidgetHold <= 0f) _fidgetMode = 0;
+                            break;
+                        }
+                        Wander.Tick(dt);
+                        if (Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
+                        {
+                            if (_fidgetMode == 1 && !Wander.Follower.PathBlocked)
+                            {
+                                SmashAt?.Invoke(_fidgetGoal);
+                                _selfActor?.PlayChoreOnce("chore_attack", 1.2f);
+                                _fidgetHold = 0.8f;
+                            }
+                            else
+                            {
+                                _fidgetHold = Wander.Follower.PathBlocked ? 0.1f : 3.5f;
+                            }
+                        }
+                        break;
+                    }
+                    _fidgetTimer -= dt;
+                    if (_fidgetTimer <= 0f)
+                    {
+                        _fidgetTimer = 8f + (float)_swingRng.NextDouble() * 8f;
+                        double roll = _swingRng.NextDouble();
+                        if (FidgetDestructive > 0f && roll < FidgetDestructive
+                            && FindBreakable?.Invoke(Wander.Position) is { } bp)
+                        {
+                            _fidgetMode = 1;
+                            _fidgetGoal = bp;
+                            _fidgetHold = 0f;
+                            Wander.Follower.SetTarget(bp);
+                            break;
+                        }
+                        float meet = MathF.Max(FidgetSocial, FidgetCurious);
+                        if (meet > 0f && roll < FidgetDestructive + meet
+                            && FindFriendPos?.Invoke(Wander.Position) is { } fp)
+                        {
+                            _fidgetMode = 2;
+                            _fidgetGoal = fp;
+                            _fidgetHold = 0f;
+                            var fd = fp - Wander.Position;
+                            float flen = MathF.Sqrt(fd.X * fd.X + fd.Z * fd.Z);
+                            // Stop ~1.5u short — chat range, not a collision.
+                            Wander.Follower.SetTarget(flen > 2f
+                                ? Wander.Position + fd * ((flen - 1.5f) / flen)
+                                : Wander.Position);
+                            break;
+                        }
+                    }
+                    Wander.Tick(dt);
+                }
                 break;
 
             case BrainState.Chase:
-                if (!targetAlive || distXZ > DisengageRadius) { State = BrainState.Wander; _attackFacing = null; break; }
+                if (!targetAlive || distXZ > DisengageRadius)
+                { State = BrainState.Wander; _attackFacing = null; EndCharge(); _cautiousArmed = false; break; }
                 // SC-PATHING — "in range" must mean REACHABLE: a target
                 // across a fence is close by XZ but the melee approach is
                 // obstacle-blocked; keep chasing (the follower's A* now
@@ -448,6 +583,36 @@ public sealed class ActorBrain
                     && !(Mode != AttackMode.Melee
                          && SightBlocked?.Invoke(Wander.Position, targetPos!.Value) == true))
                 { EnterAttack(targetPos!.Value); break; }
+                // SC-MOB-CAUTIOUS — armed stalkers close in authored
+                // increments: approach CautiousApproachDistance closer, then
+                // stand facing the target for CautiousDownTime, repeat —
+                // until inside MinCautiousDistance (or damage breaks it).
+                if (_cautiousArmed && !_cautiousAborted && distXZ > MinCautiousDistance)
+                {
+                    if (_cautiousDownTimer > 0f)
+                    {
+                        _cautiousDownTimer -= dt;
+                        FaceTarget(targetPos!.Value);
+                        break;
+                    }
+                    if (_cautiousGoal is null)
+                    {
+                        float cdx = targetPos!.Value.X - Wander.Position.X;
+                        float cdz = targetPos.Value.Z - Wander.Position.Z;
+                        float clen = MathF.Max(0.01f, MathF.Sqrt(cdx * cdx + cdz * cdz));
+                        float step = MathF.Max(1f, CautiousApproachDistance);
+                        _cautiousGoal = Wander.Position
+                            + new Vector3(cdx / clen, 0f, cdz / clen) * step;
+                        Wander.Follower.SetTarget(_cautiousGoal.Value);
+                    }
+                    Wander.Tick(dt);
+                    if (Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
+                    {
+                        _cautiousGoal = null;
+                        _cautiousDownTimer = CautiousDownTime;
+                    }
+                    break;
+                }
                 // Re-pin the follower target every tick — the player is a moving
                 // goalpost, so a fire-and-forget SetTarget would have us chasing
                 // a stale position. NavFollower replans on each SetTarget call.
@@ -763,6 +928,25 @@ public sealed class ActorBrain
     {
         State = BrainState.Chase;
         _attackFacing = null;
+        // SC-MOB-RUN — roll the authored charge on engagement: sprint the
+        // approach at the body's max_move_velocity until the first hit
+        // lands. Mid-fight Attack↔Chase bounces set State directly, so the
+        // roll happens once per engagement, like the job's init.
+        if (!_charging && RunSpeed > 0.1f && RunChance > 0f
+            && _swingRng.NextDouble() < RunChance)
+        {
+            _charging = true;
+            _chargeBaseSpeed = Wander.Follower.Speed;
+            Wander.Follower.Speed = RunSpeed;
+        }
+        // SC-MOB-CAUTIOUS — roll the stalk per engagement.
+        if (CautiousChance > 0f && _swingRng.NextDouble() < CautiousChance)
+        {
+            _cautiousArmed = true;
+            _cautiousAborted = false;
+            _cautiousGoal = null;
+            _cautiousDownTimer = 0f;
+        }
         Wander.Follower.SetTarget(targetPos);
     }
 
@@ -782,6 +966,8 @@ public sealed class ActorBrain
     // can't leave the actor pinned in Flee forever.
     void EnterFlee(Vector3 threatPos)
     {
+        EndCharge();               // SC-MOB-RUN — flee runs at base gait
+        _cautiousArmed = false;
         _fleeChargesLeft--;
         State = BrainState.Flee;
         _attackFacing = null;
