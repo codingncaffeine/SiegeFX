@@ -35,6 +35,17 @@ public sealed class DialoguePanel
     /// <see cref="ConsumePendingRecruit"/> to add the speaker to the party.</summary>
     public bool PendingRecruit { get; private set; }
 
+    /// <summary>SC-PACKMULE — set on Accept of a <c>choice = buy_packmule</c>
+    /// node; the host consumes it to charge the price and stable the mule.</summary>
+    public bool PendingPackmule { get; private set; }
+
+    public bool ConsumePendingPackmule()
+    {
+        if (!PendingPackmule) return false;
+        PendingPackmule = false;
+        return true;
+    }
+
     // Authentic DS1 conversation chrome — /ui/interfaces/backend/
     // dialogue_box/dialogue_box.gas, authored in a 640×480 reference and
     // top-centre anchored. A cpbox nine-slice frame wraps a recessed cpbox
@@ -253,6 +264,8 @@ public sealed class DialoguePanel
                 // activate_quest (Gyorn's join fires quest_gyorn_seek_overseer),
                 // so both hooks fire off the one Accept.
                 if (node.IsRecruitOffer) PendingRecruit = true;
+                // SC-PACKMULE — mule sale accepted: the host stables one in.
+                if (node.IsPackmuleOffer) PendingPackmule = true;
                 LastQuestConversation = _conv; // snapshot before Close() nulls it
                 Close();
                 return true;

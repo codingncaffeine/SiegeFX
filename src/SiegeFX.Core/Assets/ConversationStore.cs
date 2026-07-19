@@ -39,9 +39,15 @@ public sealed class DialogueNode
     public bool IsRecruitOffer =>
         string.Equals(Choice, "potential_member", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>SC-PACKMULE — a node with <c>choice = buy_packmule</c> is
+    /// the mule trader's sale offer: Accept deducts the price and stables a
+    /// pack mule into the party.</summary>
+    public bool IsPackmuleOffer =>
+        string.Equals(Choice, "buy_packmule", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>True when the node presents an Accept/Decline choice
     /// (quest accept OR recruit offer) rather than a plain Continue.</summary>
-    public bool IsChoiceFork => IsQuestDialog || IsRecruitOffer;
+    public bool IsChoiceFork => IsQuestDialog || IsRecruitOffer || IsPackmuleOffer;
 }
 
 /// <summary>One named conversation tree. Multiple actors can reference the same

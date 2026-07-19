@@ -5257,6 +5257,26 @@ public sealed class RenderHost : IDisposable
     /// into the save's region when it differs / we're at the main menu); Delete
     /// removes the file and refreshes the list; Cancel closes (returning to the
     /// SP submenu in the frontend pose).</summary>
+    // SC-DELETE-CONFIRM — a save deletion needs two clicks on the same slot
+    // within the window; the arming click just warns via the toast.
+    private string _deleteArmedPath = "";
+    private double _deleteArmedUntil;
+
+    private bool ConsumeDeleteConfirm(string path)
+    {
+        var now = Environment.TickCount64 / 1000.0;
+        if (_deleteArmedPath == path && now < _deleteArmedUntil)
+        {
+            _deleteArmedPath = "";
+            return true;
+        }
+        _deleteArmedPath = path;
+        _deleteArmedUntil = now + 4.0;
+        _saveToastText = "Click DELETE again to remove this save";
+        _saveToastRemaining = SaveToastDuration;
+        return false;
+    }
+
     private void HandleLoadDialogResult(LoadGameDialog.Result r)
     {
         switch (r)
@@ -5267,6 +5287,9 @@ public sealed class RenderHost : IDisposable
             case LoadGameDialog.Result.Delete:
                 if (_loadDialog.Selected is { } dslot)
                 {
+                    // SC-DELETE-CONFIRM — first click arms; a second click on
+                    // the SAME slot within the window actually deletes.
+                    if (!ConsumeDeleteConfirm(dslot.Path)) break;
                     SiegeFX.Core.Save.SaveStore.Delete(dslot.Path);
                     _loadDialog.Open(SiegeFX.Core.Save.SaveStore.ListSaves(), _loadDialog.MainMenuStyle);
                 }
@@ -5380,6 +5403,8 @@ public sealed class RenderHost : IDisposable
             case SaveGameDialog.Result.Delete:
                 if (_saveDialog.Selected is { } slot)
                 {
+                    // SC-DELETE-CONFIRM — same two-click confirmation.
+                    if (!ConsumeDeleteConfirm(slot.Path)) break;
                     SiegeFX.Core.Save.SaveStore.Delete(slot.Path);
                     // Re-open against the fresh list so the deleted row vanishes;
                     // keep whatever the player had typed in the name box.
@@ -11100,6 +11125,10 @@ void main()
                             if (TryRecruit(_lastTalkedActor))
                                 OpenRecruitAcceptLine(_lastTalkedActor);
                         }
+                        // SC-PACKMULE — mule sale accepted: charge the price
+                        // and stable the mule into the party.
+                        if (_dialogue.ConsumePendingPackmule())
+                            TryBuyPackmule();
                         // SC-QUEST-OBJ-A — credit any "talk to NPC X" objective
                         // against the just-closed conversation. Runs BEFORE the
                         // vendor branch because TryOpenVendorAfterTalk clears
@@ -26639,11 +26668,12 @@ void main()
         // SC-NAV-PARTIAL-PATH — the whole-mesh fallback is for PLAYER orders
         // only (opt-in; ambient wanderers keep cheap fail-and-reroll).
         _playerFollower.PartialPathFallback = true;
+        // SC-DOORS-OPEN — clicking on/near a door opens it regardless of who
+        // is selected (retail: the first-selected character works doors; the
+        // ordered members walk to the click and pass through).
+        OpenDoorNear(hit);
         if (heroSelected)
         {
-            // SC-DOORS-OPEN — clicking on/near a door opens it (and the player
-            // still walks to the click point, so you approach and pass through).
-            OpenDoorNear(hit);
             // SC-ELEVATOR — clicking ON a lever prop (ray hit) queues a
             // walk-up-and-pull; a click that misses every lever clears any
             // pending pull.
@@ -38020,6 +38050,48 @@ void main()
     /// Pattern mirrors DropScrollToWorld but reuses the cursor item's
     /// LootEntry verbatim. After landing, the player can walk over
     /// the pile to pick it back up (standard loot path).</summary>
+    // SC-PACKMULE — mule purchases (choice=buy_packmule Accept).
+    private uint _muleSeq;
+
+    /// <summary>SC-PACKMULE — stable a mule: spawn the authored pack_mule
+    /// beside the trader and run it through the normal hire path, which
+    /// charges the template's authored gold value and seats it in the
+    /// party (the manual's mule rules: big pack, no fighting).</summary>
+    private void TryBuyPackmule()
+    {
+        if (_player is null || _templateStore is null) return;
+        string muleTpl =
+            _templateStore.TryGet("pack_mule", out var mt) && mt is not null ? "pack_mule"
+            : _templateStore.TryGet("packmule", out var mt2) && mt2 is not null ? "packmule"
+            : "";
+        if (muleTpl.Length == 0)
+        {
+            Console.WriteLine("[packmule] no mule template in the loaded content");
+            return;
+        }
+        var basePos = _lastTalkedActor?.CurrentTransform.Translation
+            ?? _player.CurrentTransform.Translation;
+        var spot = SnapToNavmesh(basePos + new Vector3(1.5f, 0f, 1.5f), basePos);
+        uint scid = 0xFC000000u | (_muleSeq++ & 0xFFFFu);
+        var mule = TrySpawnCompanionActor(muleTpl, scid, spot);
+        if (mule is null)
+        {
+            Console.WriteLine("[packmule] spawn failed");
+            return;
+        }
+        if (!TryRecruit(mule))
+        {
+            // Gold short or party full — the mule goes back to the stable.
+            _actors.Remove(mule);
+            Console.WriteLine("[packmule] purchase refused (gold/party)");
+        }
+        else
+        {
+            mule.CanFight = false;   // manual: mules carry, they don't fight
+            Console.WriteLine("[packmule] mule joins the party");
+        }
+    }
+
     /// <summary>SC-MEMBER-DEATH-DROP — manual: "Dead: inventory scatters on
     /// the ground … other party members can loot." Toss each carried pack
     /// item onto the ground in a loose ring around the corpse. Equipped
