@@ -151,6 +151,29 @@ public sealed class SpellTemplate
     public string SummonTemplate  { get; private set; } = "";
     public string SummonEndScript { get; private set; } = "";
 
+    /// <summary>SC-SPELL-DELIVERY — [attack] area_damage_radius: impacts
+    /// splash their damage to every valid target within this radius
+    /// (fireball's 3.5u burst). 0 = single-target.</summary>
+    public float AreaDamageRadius { get; private set; }
+
+    /// <summary>SC-SPELL-DELIVERY — [spell_chain_attack]: the hit arcs on
+    /// to up to Jumps more victims within Radius of the last, damage
+    /// scaled by Falloff each jump; AttackScript is the per-arc visual.</summary>
+    public sealed record ChainSpec(int Jumps, float Radius, float Falloff, float Dur, string AttackScript);
+    public ChainSpec? Chain { get; private set; }
+
+    /// <summary>SC-SPELL-DELIVERY — [spell_turret]: the caster plants an
+    /// auto-firing battery (Gom's staff turrets) shooting every ShotRate
+    /// seconds for the spell's effect_duration.</summary>
+    public sealed record TurretSpec(float InitialDelay, float ShotRate, string EffectScript, string ChargeEffect);
+    public TurretSpec? Turret { get; private set; }
+
+    /// <summary>SC-SPELL-DELIVERY — [spell_damage_volume]: an instant burst
+    /// hitting everything in the area radius, centered on the caster when
+    /// CasterCenter (earth stomp) else on the target point.</summary>
+    public bool HasDamageVolume { get; private set; }
+    public bool DamageVolumeCasterCenter { get; private set; }
+
     /// <summary>SC-SPELL-EFFECTS — authored [magic][enchantments] rows: the
     /// buff/curse school's stat alterations, applied to the TARGET for the
     /// row's evaluated duration (magic_armor: alter_armor, (#magic*0.7),
@@ -318,6 +341,10 @@ public sealed class SpellTemplate
         // sustained VFX emitters.
         EffectDurationExpr = (store.GetAttribute(template, "magic", "effect_duration") ?? "")
             .Trim().Trim('"');
+        // SC-SPELL-DELIVERY — authored splash radius on the [attack] block.
+        if (float.TryParse((store.GetAttribute(template, "attack", "area_damage_radius") ?? "")
+                .Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var adr))
+            AreaDamageRadius = adr;
         // SC-SPELL-AUDIT-3 — the wind-up chargeup script (never consumed
         // before; the cast paths now run it just ahead of the release).
         ChargeSfxScript = ResolveChargeSfxScript(template);
@@ -332,6 +359,38 @@ public sealed class SpellTemplate
                 {
                     SummonTemplate  = (TemplateStore.FindAttr(child, "template_name") ?? "").Trim().Trim('"');
                     SummonEndScript = (TemplateStore.FindAttr(child, "end_script") ?? "").Trim().Trim('"');
+                }
+                else if (Chain is null
+                    && child.Header.Equals("spell_chain_attack", StringComparison.OrdinalIgnoreCase))
+                {
+                    static float CF(string? s, float d) =>
+                        float.TryParse((s ?? "").Trim().Trim('"'), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out var v) ? v : d;
+                    Chain = new ChainSpec(
+                        (int)CF(TemplateStore.FindAttr(child, "jumps"), 3f),
+                        CF(TemplateStore.FindAttr(child, "radius"), 15f),
+                        CF(TemplateStore.FindAttr(child, "falloff"), 0.5f),
+                        CF(TemplateStore.FindAttr(child, "dur"), 0.5f),
+                        (TemplateStore.FindAttr(child, "attack_script") ?? "").Trim().Trim('"'));
+                }
+                else if (Turret is null
+                    && child.Header.Equals("spell_turret", StringComparison.OrdinalIgnoreCase))
+                {
+                    static float TF(string? s, float d) =>
+                        float.TryParse((s ?? "").Trim().Trim('"'), NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out var v) ? v : d;
+                    Turret = new TurretSpec(
+                        TF(TemplateStore.FindAttr(child, "initial_delay"), 0.4f),
+                        TF(TemplateStore.FindAttr(child, "shot_rate"), 0.2f),
+                        (TemplateStore.FindAttr(child, "effect_script") ?? "").Trim().Trim('"'),
+                        (TemplateStore.FindAttr(child, "charge_effect") ?? "").Trim().Trim('"'));
+                }
+                else if (!HasDamageVolume
+                    && child.Header.Equals("spell_damage_volume", StringComparison.OrdinalIgnoreCase))
+                {
+                    HasDamageVolume = true;
+                    DamageVolumeCasterCenter = (TemplateStore.FindAttr(child, "caster_center") ?? "")
+                        .Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
                 }
                 else if (_enchantments.Count == 0
                     && child.Header.Equals("magic", StringComparison.OrdinalIgnoreCase))

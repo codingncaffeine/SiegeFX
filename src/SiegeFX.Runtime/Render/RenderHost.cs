@@ -30711,6 +30711,85 @@ void main()
         return isProj;
     }
 
+    /// <summary>SC-SPELL-DELIVERY — secondary delivery once the primary hit
+    /// lands: the authored area splash (area_damage_radius — full rolled
+    /// damage to every hostile in the burst), then chain jumps
+    /// ([spell_chain_attack] — arcs to the nearest un-hit hostile within
+    /// radius of the last victim, damage × falloff per jump, the authored
+    /// arc visual between victims). Kills resolve through the normal death
+    /// sweep (loot/quest credit); XP credits per damage as usual.</summary>
+    private void ApplySpellSplash(SiegeFX.Core.Assets.SpellTemplate spell,
+        ActorRenderState primary, float rolledDamage)
+    {
+        if (rolledDamage <= 0f) return;
+        if (spell.AreaDamageRadius <= 0.05f && spell.Chain is null) return;
+        var hit = new HashSet<ActorRenderState> { primary };
+        if (spell.AreaDamageRadius > 0.05f)
+        {
+            var impact = primary.CurrentTransform.Translation;
+            float r2 = spell.AreaDamageRadius * spell.AreaDamageRadius;
+            foreach (var s in _actors)
+            {
+                if (s.IsDead || s.IsPlayer || s.IsPartyMember || hit.Contains(s)) continue;
+                if (!s.Actor.Stats.IsCombatant || !s.IsEvilAligned) continue;
+                var d = s.CurrentTransform.Translation - impact;
+                if (d.X * d.X + d.Z * d.Z > r2 || MathF.Abs(d.Y) > 3f) continue;
+                hit.Add(s);
+                float dealt = s.Actor.Combat.ApplyDamage(rolledDamage);
+                if (dealt <= 0f) continue;
+                AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                    s.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+                    SpellElementColor(spell.Element));
+                SpawnBloodHit(s);
+                AwardCombatXp(dealt, s.Actor.Stats, SkillForSpell(spell));
+                Console.WriteLine($"cast {spell.ScreenName}: splash hit {s.Actor.Template.Name} " +
+                    $"for {dealt:F0}{(s.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+            }
+        }
+        if (spell.Chain is { } ch && ch.Jumps > 0)
+        {
+            var from = primary;
+            float dmg = rolledDamage;
+            for (int j = 0; j < ch.Jumps; j++)
+            {
+                dmg *= ch.Falloff;
+                if (dmg < 1f) break;
+                ActorRenderState? next = null;
+                float bestD2 = ch.Radius * ch.Radius;
+                var fp = from.CurrentTransform.Translation;
+                foreach (var s in _actors)
+                {
+                    if (s.IsDead || s.IsPlayer || s.IsPartyMember || hit.Contains(s)) continue;
+                    if (!s.Actor.Stats.IsCombatant || !s.IsEvilAligned) continue;
+                    var d = s.CurrentTransform.Translation - fp;
+                    float dd = d.X * d.X + d.Z * d.Z;
+                    if (dd < bestD2) { bestD2 = dd; next = s; }
+                }
+                if (next is null) break;
+                hit.Add(next);
+                float dealt = next.Actor.Combat.ApplyDamage(dmg);
+                var np = next.CurrentTransform.Translation;
+                if (ch.AttackScript.Length > 0 && _sfxRuntime is not null && _sfxStore is not null
+                    && _sfxStore.TryGet(ch.AttackScript, out _))
+                    _sfxRuntime.Spawn(ch.AttackScript, new SiegeFX.Core.Sfx.SfxContext(
+                        SourcePos:     fp + new Vector3(0f, 1.1f, 0f),
+                        TargetPos:     np + new Vector3(0f, 1.1f, 0f),
+                        WeaponBonePos: fp + new Vector3(0f, 1.1f, 0f)));
+                if (dealt > 0f)
+                {
+                    AddFloatingText($"-{(int)MathF.Round(dealt)}",
+                        np + new Vector3(0f, 1.8f, 0f), SpellElementColor(spell.Element));
+                    SpawnBloodHit(next);
+                    AwardCombatXp(dealt, next.Actor.Stats, SkillForSpell(spell));
+                }
+                Console.WriteLine($"cast {spell.ScreenName}: chain[{j + 1}] hit " +
+                    $"{next.Actor.Template.Name} for {dealt:F0}" +
+                    $"{(next.Actor.Combat.IsDead ? "  *** DEAD ***" : "")}");
+                from = next;
+            }
+        }
+    }
+
     /// <summary>SC-SPELLFX-IMPACT — the spell payload lands. Mirrors the
     /// instant-cast hit handling (log, floating text, blood, XP, kill flow)
     /// but at projectile arrival with the pre-rolled damage.</summary>
@@ -30734,6 +30813,8 @@ void main()
         AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(dealt)}",
             best.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
             SpellElementColor(spell.Element));
+        // SC-SPELL-DELIVERY — the burst/chain rides the impact.
+        ApplySpellSplash(spell, best, shot.SpellDamage);
         if (dealt > 0f)
         {
             if (!best.Actor.Combat.IsDead && best.Actor.Combat.ConsumeJustHit(out var dmg))
@@ -33225,9 +33306,13 @@ void main()
                             $"cast {spell.ScreenName}: loosed at {best!.Actor.Template.Name} " +
                             $"(mana -{result.ManaSpent:F1}, damage rides the projectile)");
                     else
+                    {
                         Console.WriteLine(
                             $"cast {spell.ScreenName}: hit {best!.Actor.Template.Name} for {result.Damage:F0} " +
                             $"(mana -{result.ManaSpent:F1}){(result.TargetKilled ? "  *** DEAD ***" : "")}");
+                        // SC-SPELL-DELIVERY — instant hits splash/chain too.
+                        ApplySpellSplash(spell, best!, result.Damage);
+                    }
                     // SC-SPELL-IMPACT-SPARKLE — DS1 bursts a sparkle cloud ON
                     // the victim at the hit (user ref sparkles.bmp), tinted by
                     // the originating spell's element (zap = pale blue-white,
