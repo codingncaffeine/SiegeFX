@@ -1303,9 +1303,37 @@ internal sealed class OptionsMenuPanel
             }
         }
 
-        // Scrollbar (authored scroll_bindings at 500,110..306) — simple
-        // proportional thumb; click/drag anywhere on the track jumps.
-        var trackR = A(500, 110, 516, 306);
+        // Scrollbar (authored scroll_bindings at 500,110..306) — retail's
+        // bar is arrow button / track+thumb / arrow button (see the user's
+        // hotkeys.bmp reference); the arrows step one row per click.
+        var upBtnR   = A(500, 110, 516, 126);
+        var downBtnR = A(500, 290, 516, 306);
+        var trackR   = A(500, 126, 516, 290);
+
+        void ArrowButton((int X, int Y, int W, int H) r, bool up, Action step)
+        {
+            bool hover = _hoveredWidget == _widgets.Count;
+            bars.DrawRect(vw, vh, r.X, r.Y, r.W, r.H, hover ? BtnHover : BtnIdle);
+            DrawBorder(bars, vw, vh, r, Border);
+            // Bar-stacked triangle glyph — widens away from the tip.
+            int rowsN = Math.Max(3, r.H / 4);
+            int rowH = Math.Max(1, r.H / 10);
+            for (int k = 0; k < rowsN; k++)
+            {
+                int wN = Math.Max(2, (int)(r.W * 0.55f * (k + 1) / rowsN));
+                int cx = r.X + (r.W - wN) / 2;
+                int yy = up
+                    ? r.Y + (int)(r.H * 0.28f) + k * rowH
+                    : r.Y + r.H - (int)(r.H * 0.28f) - (k + 1) * rowH;
+                bars.DrawRect(vw, vh, cx, yy, wN, rowH, Ink);
+            }
+            _widgets.Add(new W { Rect = r, OnClick = step });
+        }
+        ArrowButton(upBtnR, up: true,
+            step: () => _bindScroll = Math.Max(0, _bindScroll - 1));
+        ArrowButton(downBtnR, up: false,
+            step: () => _bindScroll = Math.Min(maxScroll, _bindScroll + 1));
+
         bars.DrawRect(vw, vh, trackR.X, trackR.Y, trackR.W, trackR.H, cellBg);
         DrawBorder(bars, vw, vh, trackR, Border);
         if (maxScroll > 0)

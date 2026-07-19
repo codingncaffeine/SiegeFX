@@ -108,6 +108,12 @@ internal sealed class KeyBindingRegistry
             new("toggle_gui_edit_box_team",     "Chat Window (Send to Team)", GroupUi, "shift+return"),
             new("toggle_gui_edit_box_everyone", "Chat Window (Send to All)",  GroupUi, "ctrl+return"),
             new("expert_gui_mode", "Minimize/Maximize Weapons Panel", GroupUi, "w"),
+            // SC-KEY-AUDIT — SiegeFX extension row (not in the authored gas):
+            // our UI splits the character sheet out of the inventory screen,
+            // and its old hardcoded C shadowed the AUTHORED [cast] = key_c
+            // (Force Cast Spell could never fire). P is unclaimed in the
+            // authored map; rebindable like everything else.
+            new("character_sheet", "Character Sheet", GroupUi, "p"),
             new("toggle_quest_log","Journal",       GroupUi, "j"),
             new("collect_loot",    "Collect Loot",  GroupUi, "z"),
             new("chat_history_up",   "Chat History: Scroll Up",    GroupUi, "pageup"),

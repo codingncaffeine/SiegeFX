@@ -5015,6 +5015,8 @@ public sealed class RenderHost : IDisposable
         Environment.GetEnvironmentVariable("SIEGEFX_DEV") == "1";
     private bool _camTracking = true;
     private bool _altComboFired;
+    // SC-FREE-LOOK — authored camera_free_look hold state (default D).
+    private bool _freeLookHeld;
     // SC-OPTIONS-REBIND — the live key-binding registry (authored
     // input_bindings.gas defaults + the user's prefs.json overrides).
     // The KeyDown chain queries it instead of hardcoded keycodes so
@@ -5084,7 +5086,57 @@ public sealed class RenderHost : IDisposable
     {
         _gameMessages.Add(new GameMessage { Text = text, Remaining = GameMessageSeconds });
         while (_gameMessages.Count > GameMessageMax) _gameMessages.RemoveAt(0);
+        // SC-KEY-AUDIT — the chat-history scrollback (authored
+        // chat_history_up/down/clear/lock keys page/clear/pin it).
+        _gameMsgLog.Add(text);
+        while (_gameMsgLog.Count > 200) _gameMsgLog.RemoveAt(0);
         Console.WriteLine($"[msg] {text}");
+    }
+    // SC-KEY-AUDIT — message scrollback + lock state.
+    private readonly List<string> _gameMsgLog = new();
+    private bool _msgHistoryOpen;
+    private int _msgHistoryScroll;
+    private bool _gameMsgLocked;
+    private const int MsgHistoryVisible = 12;
+
+    // SC-KEY-AUDIT — weapon configs (authored set_awp_NN / get_awp_NN):
+    // config N maps party index → active ability slot for the characters
+    // that were SELECTED at save time. Session-local like party groups.
+    private readonly Dictionary<int, Dictionary<int, int>> _weaponConfigs = new();
+
+    private void SaveWeaponConfig(int cfg)
+    {
+        var snap = new Dictionary<int, int>();
+        foreach (var idx in _selectedPartyIdx)
+        {
+            snap[idx] = idx == 0 ? _activeAbilityIdx
+                      : _memberActiveSlot.TryGetValue(idx, out var ms) ? ms : 0;
+        }
+        if (snap.Count == 0) return;
+        _weaponConfigs[cfg] = snap;
+        AddGameMessage($"Weapon configuration {cfg % 10} saved.");
+    }
+
+    private void RecallWeaponConfig(int cfg)
+    {
+        if (_weaponConfigs.TryGetValue(cfg, out var snap))
+        {
+            foreach (var (idx, slot) in snap)
+            {
+                if (idx == 0) SetActiveAbilitySlot(Math.Clamp(slot, 0, 3));
+                else if (_party.Any(p => p.PartyIndex == idx))
+                    _memberActiveSlot[idx] = Math.Clamp(slot, 0, 3);
+            }
+            _audio?.Play(SfxGuiInventory);
+            return;
+        }
+        // Unsaved config: 1-4 keep the classic direct slot select (the
+        // default configs everyone knows); unsaved 5-0 do nothing.
+        if (cfg <= 4)
+        {
+            SetActiveAbilitySlot(cfg - 1);
+            _audio?.Play(SfxGuiInventory);
+        }
     }
 
     // SC-SCREENSHOT — Print Screen capture (DS1: "Dungeon Siege Screen -
@@ -9294,6 +9346,15 @@ void main()
                     group = 0;
                     return false;
                 }
+                // SC-KEY-AUDIT — weapon configs 1..10 (authored set_awp_NN /
+                // get_awp_NN, defaults Ctrl+1-0 save / 1-0 recall).
+                bool MatchAwpKey(string prefix, out int cfg)
+                {
+                    for (int ai = 1; ai <= 10; ai++)
+                        if (Is($"{prefix}{ai:00}")) { cfg = ai; return true; }
+                    cfg = 0;
+                    return false;
+                }
                 // SC-MP-PLAYERS — the open chat line owns the keyboard:
                 // Enter sends, Backspace edits, Esc cancels; other keys are
                 // swallowed (their text arrives via KeyChar). Runs before
@@ -9451,11 +9512,11 @@ void main()
                     else if (_bootMode) _window.Close();
                     else _pauseMenu.Toggle();
                 }
-                // Phase 21-SC-INV-A: 'C' toggles the DS1 character pane. The
-                // chase↔fly camera flip moved to F8 so the muscle-memory C key
-                // matches the original game. Alt-guarded: Alt+C is the
-                // authored "Targeting: Target Weakest" order (input_bindings.gas).
-                else if (key == Key.C && !kb.IsKeyPressed(Key.AltLeft) && !kb.IsKeyPressed(Key.AltRight))
+                // SC-KEY-AUDIT — the character pane rides its own registry
+                // action now (default P). Its old hardcoded C sat EARLIER in
+                // this chain than the authored [cast] = key_c dispatch, so
+                // Force Cast Spell could never fire from the keyboard.
+                else if (Is("character_sheet"))
                 {
                     // Player's own sheet: switch back from a companion sheet, else toggle.
                     if (_paperdollTargetIndex != 0) { _paperdollTargetIndex = 0; _charPanelOpen = true; }
@@ -9769,17 +9830,48 @@ void main()
                     _awpExpertMode = !_awpExpertMode;
                     _audio?.Play(SfxGuiInventory);
                 }
-                // Weapon-config recall — authored [get_awp_01..04] (default
-                // 1..4). The gas authors these as saved AWP loadout recalls;
-                // with 4 fixed slots and no config-save system, direct slot
-                // select is the same muscle motion players know.
-                else if ((Is("get_awp_01") || Is("get_awp_02") || Is("get_awp_03") || Is("get_awp_04"))
-                         && _player is not null && !_player.IsDead)
+                // SC-KEY-AUDIT — full weapon-config vocabulary: Ctrl+1-0
+                // saves the SELECTED characters' active slots as config N;
+                // 1-0 recalls it (each saved character returns to their
+                // saved slot). Unsaved configs 1-4 keep the classic direct
+                // slot select; unsaved 5-0 are a quiet no-op, like retail.
+                else if (MatchAwpKey("set_awp_", out int awpSet))
                 {
-                    SetActiveAbilitySlot(Is("get_awp_01") ? 0
-                                       : Is("get_awp_02") ? 1
-                                       : Is("get_awp_03") ? 2 : 3);
-                    _audio?.Play(SfxGuiInventory);
+                    SaveWeaponConfig(awpSet);
+                }
+                else if (MatchAwpKey("get_awp_", out int awpGet)
+                         && _player is not null && !_player.IsDead
+                         && !_inventoryOpen && !_dialogue.IsOpen && !_vendor.IsOpen)
+                {
+                    RecallWeaponConfig(awpGet);
+                }
+                // SC-KEY-AUDIT — chat-history keys (authored [chat_history_*]:
+                // PageUp/PageDown scroll the message-strip scrollback, End
+                // clears it, ScrollLock pins live lines (no expiry fade).
+                else if (Is("chat_history_up") && _player is not null)
+                {
+                    _msgHistoryOpen = true;
+                    _msgHistoryScroll = Math.Min(_msgHistoryScroll + 4,
+                        Math.Max(0, _gameMsgLog.Count - MsgHistoryVisible));
+                }
+                else if (Is("chat_history_down") && _msgHistoryOpen)
+                {
+                    _msgHistoryScroll -= 4;
+                    if (_msgHistoryScroll < 0) { _msgHistoryScroll = 0; _msgHistoryOpen = false; }
+                }
+                else if (Is("chat_history_clear"))
+                {
+                    _gameMsgLog.Clear();
+                    _gameMessages.Clear();
+                    _msgHistoryOpen = false;
+                    _msgHistoryScroll = 0;
+                }
+                else if (Is("chat_history_lock"))
+                {
+                    _gameMsgLocked = !_gameMsgLocked;
+                    AddGameMessage(_gameMsgLocked
+                        ? "Message history locked."
+                        : "Message history unlocked.");
                 }
                 // Collect Loot — authored [collect_loot] (default Z): vacuum
                 // ground piles near the party into the inventory (refusals
@@ -11389,8 +11481,9 @@ void main()
                             _window.Size.X, _window.Size.Y))
                         return;
                 }
-                // SC-CAM-MMB — middle-mouse release ends the camera orbit.
-                if (btn == MouseButton.Middle)
+                // SC-CAM-MMB — middle-mouse release ends the camera orbit
+                // (unless the free-look key is still holding it open).
+                if (btn == MouseButton.Middle && !_freeLookHeld)
                 {
                     _mouseLookActive = false;
                     _lastMousePos = null;
@@ -11675,6 +11768,13 @@ void main()
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
                     _pauseMenu.IsOpen || _creator.IsOpen || _optionsMenu.IsOpen) return;
                 if (wheel.Y == 0f) return;
+                // SC-KEY-AUDIT — the wheel only zooms while the zoom actions
+                // actually hold their authored wheel_up/wheel_down secondary
+                // tokens; rebinding them away in the Hotkeys editor now
+                // genuinely frees the wheel.
+                string wheelTok = wheel.Y > 0f ? "wheel_up" : "wheel_down";
+                var zSlots = _keyBindings.Get(wheel.Y > 0f ? "camera_zoom_in" : "camera_zoom_out");
+                if (zSlots[0] != wheelTok && zSlots[1] != wheelTok) return;
                 float zoomFactor = 1f - wheel.Y * ChaseZoomDeltaPct;
                 _chaseDistance = Math.Clamp(
                     _chaseDistance * MathF.Max(0.25f, zoomFactor),
@@ -22483,6 +22583,44 @@ void main()
                     _chaseDistance = Math.Clamp(_chaseDistance + zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
                 if (_keyBindings.AnyPressed("camera_zoom_in", kb))
                     _chaseDistance = Math.Clamp(_chaseDistance - zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
+            }
+            // SC-FREE-LOOK — authored camera_free_look (default: hold D):
+            // the mouse orbits the camera while held, same raw-cursor orbit
+            // the middle-mouse hold drives; release restores the pointer
+            // unless the MMB orbit is itself still down.
+            bool flHeld = false;
+            foreach (var kb in _input.Keyboards)
+                if (_keyBindings.AnyPressed("camera_free_look", kb)) { flHeld = true; break; }
+            if (flHeld != _freeLookHeld && _input.Mice.Count > 0)
+            {
+                var flm = _input.Mice[0];
+                _freeLookHeld = flHeld;
+                if (flHeld && !_mouseLookActive)
+                {
+                    _mouseLookActive = true;
+                    _lastMousePos = null;
+                    flm.Cursor.CursorMode = CursorMode.Raw;
+                }
+                else if (!flHeld && _mouseLookActive && !flm.IsButtonPressed(MouseButton.Middle))
+                {
+                    _mouseLookActive = false;
+                    _lastMousePos = null;
+                    bool flSprite = _player is not null || FrontendWantsSpriteCursor();
+                    flm.Cursor.CursorMode = flSprite ? CursorMode.Hidden : CursorMode.Normal;
+                }
+            }
+        }
+        else if (_freeLookHeld && _input.Mice.Count > 0)
+        {
+            // A menu opened (or the camera left chase mode) mid-hold —
+            // release the orbit so the raw cursor can't get stuck.
+            _freeLookHeld = false;
+            if (_mouseLookActive && !_input.Mice[0].IsButtonPressed(MouseButton.Middle))
+            {
+                _mouseLookActive = false;
+                _lastMousePos = null;
+                bool flSprite = _player is not null || FrontendWantsSpriteCursor();
+                _input.Mice[0].Cursor.CursorMode = flSprite ? CursorMode.Hidden : CursorMode.Normal;
             }
         }
 
@@ -36332,11 +36470,13 @@ void main()
         if (_saveToastRemaining > 0f) _saveToastRemaining -= (float)dt;
         // SC-MSG-STRIP / SC-CHAPTER-TITLE — tick + prune the message lines
         // and the chapter card.
-        for (int i = _gameMessages.Count - 1; i >= 0; i--)
-        {
-            _gameMessages[i].Remaining -= (float)dt;
-            if (_gameMessages[i].Remaining <= 0f) _gameMessages.RemoveAt(i);
-        }
+        // SC-KEY-AUDIT — ScrollLock pins the strip: no expiry while locked.
+        if (!_gameMsgLocked)
+            for (int i = _gameMessages.Count - 1; i >= 0; i--)
+            {
+                _gameMessages[i].Remaining -= (float)dt;
+                if (_gameMessages[i].Remaining <= 0f) _gameMessages.RemoveAt(i);
+            }
         if (_chapterTitleRemaining > 0f) _chapterTitleRemaining -= (float)dt;
         if (_levelUpFxRemaining > 0f) _levelUpFxRemaining -= (float)dt;
         // Phase 18c — listener follows the PC every frame. We use camera
@@ -38343,6 +38483,39 @@ void main()
                     _textRenderer.DrawString(size.X, size.Y, msg.Text, bandX + padX, lineY,
                         new Vector4(0.93f, 0.90f, 0.74f, a), fscale);
                     lineY += lineH;
+                }
+            }
+
+            // SC-KEY-AUDIT — the chat-history scrollback panel (PageUp opens
+            // and pages older lines; PageDown pages back down and closes at
+            // the bottom; End clears). Draws under the live strip.
+            if (_msgHistoryOpen && _gameMsgLog.Count > 0 && _barRenderer is not null)
+            {
+                float hs2 = Hud.HudScale.Hud(size.Y);
+                int fs2 = Math.Max(1, (int)MathF.Round(hs2));
+                int lh2 = _textRenderer!.LineHeight * fs2 + 2 * fs2;
+                int pw = (int)(size.X * 0.655f);
+                int px2 = (size.X - pw) / 2;
+                int rows = Math.Min(MsgHistoryVisible, _gameMsgLog.Count);
+                int ph = rows * lh2 + 10 * fs2 + lh2;
+                int py2 = (int)MathF.Round(30 * hs2);
+                _barRenderer.DrawRect(size.X, size.Y, px2, py2, pw, ph,
+                    new Vector4(0.02f, 0.02f, 0.03f, 0.82f));
+                _barRenderer.DrawBorder(size.X, size.Y, px2, py2, pw, ph,
+                    new Vector4(0.45f, 0.42f, 0.34f, 0.9f));
+                int maxScroll2 = Math.Max(0, _gameMsgLog.Count - rows);
+                _msgHistoryScroll = Math.Clamp(_msgHistoryScroll, 0, maxScroll2);
+                int first = _gameMsgLog.Count - rows - _msgHistoryScroll;
+                int ly = py2 + 5 * fs2;
+                _textRenderer.DrawString(size.X, size.Y,
+                    $"Message History ({_gameMsgLog.Count}){(_gameMsgLocked ? "  [LOCKED]" : "")}",
+                    px2 + 8 * fs2, ly, new Vector4(0.75f, 0.70f, 0.55f, 1f), fs2);
+                ly += lh2;
+                for (int i = 0; i < rows; i++)
+                {
+                    _textRenderer.DrawString(size.X, size.Y, _gameMsgLog[first + i],
+                        px2 + 8 * fs2, ly, new Vector4(0.93f, 0.90f, 0.74f, 1f), fs2);
+                    ly += lh2;
                 }
             }
 
