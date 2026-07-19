@@ -5460,6 +5460,49 @@ public sealed class RenderHost : IDisposable
         if (lr is not null) _iconRenderer.DrawIcon(vw, vh, lr, vw - corner, vh - corner, corner, corner, Vector4.One);
     }
 
+    /// <summary>SC-PROP-ANIM — true when a non-actor template authors an
+    /// AMBIENT looping animation: a [chore_default] whose skrit is
+    /// infinite_loop / random_infinite_loop with real anim files. This is
+    /// the authored convention for swaying trees, bobbing logs, and goblin
+    /// machinery. Doors and chests author [chore_open] with skrit =
+    /// transition (interactive open/close — NOT ambient) and the rotatex
+    /// spinner family authors its own skrit; both stay on their existing
+    /// paths.</summary>
+    private readonly Dictionary<string, bool> _propAnimCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool PropAuthorsAnims(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_propAnimCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        bool result = false;
+        for (var t = tpl; t is not null && !result; t = t.Specializes)
+        {
+            foreach (var body in t.Node.Children)
+            {
+                if (!body.Header.Equals("body", StringComparison.OrdinalIgnoreCase)) continue;
+                foreach (var cd in body.Children)
+                {
+                    if (!cd.Header.Equals("chore_dictionary", StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (var chore in cd.Children)
+                    {
+                        if (!chore.Header.Equals("chore_default", StringComparison.OrdinalIgnoreCase)) continue;
+                        var skrit = (SiegeFX.Core.Assets.TemplateStore.FindAttr(chore, "skrit") ?? "");
+                        if (!skrit.Contains("infinite_loop", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var af in chore.Children)
+                        {
+                            if (!af.Header.Equals("anim_files", StringComparison.OrdinalIgnoreCase)) continue;
+                            if (af.Attributes.Count > 0) { result = true; break; }
+                        }
+                        if (result) break;
+                    }
+                    if (result) break;
+                }
+                if (result) break;
+            }
+        }
+        _propAnimCache[tpl.Name] = result;
+        return result;
+    }
+
     // --- SC-MATERIAL-MATRIX ----------------------------------------------------
     // The sounddb material rows: (source material, dest material, event) →
     // sound. Materials come from [aspect] material on the template.
@@ -8493,6 +8536,10 @@ public sealed class RenderHost : IDisposable
         float vSign = riverOriented ? 1f : -1f;
         l1Off = new Vector2(l1Off.X, vSign * l1Off.Y);
         l2Off = new Vector2(l2Off.X, vSign * l2Off.Y);
+        // SC-PROP-ANIM — gizmo-driven nodal texture crawl (elevator chains,
+        // machinery belts) rides on top of any TSD offset. Zero for every
+        // node outside the enabled set and for all non-terrain passes.
+        l1Off += _nodalScrollExtra;
         if (_snoTextures.TryGetValue(l1, out var t1))
         {
             t1.Bind(TextureUnit.Texture0);
@@ -14853,6 +14900,42 @@ void main()
                         }
                     }
 
+                    // SC-PROP-ANIM — a prop authoring a chore dictionary
+                    // with real anim files is ANIMATED scenery (the swaying
+                    // tree, the bobbing log, the goblin machinery): route it
+                    // through the actor pipeline as a brainless looping
+                    // performer instead of freezing it. The rotatex spinner
+                    // family keeps its dedicated spin path, and a mesh that
+                    // turns out to have no playable clips falls back here.
+                    if (_templateStore is not null && template is not null
+                        && PropAuthorsAnims(template))
+                    {
+                        var apLocal = Matrix4x4.CreateFromQuaternion(p.Placement.Orientation)
+                                    * Matrix4x4.CreateTranslation(p.Placement.LocalPosition);
+                        var apWorld = _regionLayout is not null
+                            && _regionLayout.TryGetTransform(p.Placement.NodeGuid, out var apNw)
+                            ? apLocal * apNw : apLocal;
+                        var ap = TrySpawnCompanionActor(template.Name, p.Scid, apWorld.Translation);
+                        if (ap is not null && ap.Actor.Clips.Length > 0)
+                        {
+                            // OUT of _actors: fh_r1 alone places 745 sway
+                            // trees — the sim scans (separation, targeting,
+                            // triggers) must never iterate scenery. They
+                            // live in _animatedProps, drawn by a dedicated
+                            // distance-gated pass.
+                            _actors.Remove(ap);
+                            ap.Brain = null;
+                            ap.CanFight = false;
+                            ap.IsSelectable = false;
+                            ap.CurrentTransform = apWorld;   // authored pose
+                            _animatedProps.Add(ap);
+                            if (_propAnimLogged.Add(template.Name))
+                                Console.WriteLine($"  [prop-anim] {template.Name} animates via the actor pipeline");
+                            continue;
+                        }
+                        if (ap is not null) _actors.Remove(ap);   // clipless — stay static
+                    }
+
                     // SC-DOORS-OPEN — door detection. base_door
                     // ancestor in the specializes chain identifies
                     // every door variant (door_cav_01, door_csl_01,
@@ -16542,6 +16625,17 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (string Message, uint ToScid)> _sendMsgParams = new();
     // SC-NIS-VERBS — cmd_ai_c_animate's authored anim fourcc (int1).
     private readonly System.Collections.Generic.Dictionary<uint, int> _cAnimParams = new();
+    // SC-PROP-ANIM — animated scenery (sway trees, bobbing logs, goblin
+    // machinery): brainless looping performers kept OUT of _actors so the
+    // per-frame sim scans never pay for them. One-line-per-template load log.
+    private readonly List<ActorRenderState> _animatedProps = new();
+    private readonly HashSet<string> _propAnimLogged = new(StringComparer.OrdinalIgnoreCase);
+    // SC-PROP-ANIM — animate_object's authored target object scid, and the
+    // chain/elevator/nodal gizmos' target siege node whose textures crawl.
+    private readonly System.Collections.Generic.Dictionary<uint, uint> _animObjectTargets = new();
+    private readonly System.Collections.Generic.Dictionary<uint, uint> _nodalTexAnimTargets = new();
+    private readonly HashSet<uint> _nodalTexAnimOn = new();
+    private Vector2 _nodalScrollExtra;
     // SC-NIS-VERBS — active party wranglers: while ANY is on, the party is
     // frozen and invulnerable (set-piece protection); hostiles ignore them.
     private readonly HashSet<uint> _wranglerActive = new();
@@ -16712,6 +16806,31 @@ void main()
                         }
                     }
                     _quakeParams[p.Scid] = (qMag, qDur);
+                }
+                // SC-PROP-ANIM — animate_object names its target object;
+                // the chain/elevator gizmos carry [nodal_tex_anim] naming
+                // the siege node whose textures scroll when activated.
+                if (tnGizmo == "animate_object")
+                {
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("animate_object", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var at in child.Attributes)
+                            if (at.Name.Equals("target", StringComparison.OrdinalIgnoreCase)
+                                && TryParseSnodeGuid(at.Value, out var aoT) && aoT != 0)
+                                _animObjectTargets[p.Scid] = aoT;
+                    }
+                }
+                if (tnGizmo is "animate_chain" or "animate_elevator" or "nodal_tex_anim")
+                {
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("nodal_tex_anim", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var at in child.Attributes)
+                            if (at.Name.Equals("siege_node", StringComparison.OrdinalIgnoreCase)
+                                && TryParseSnodeGuid(at.Value, out var ntaN) && ntaN != 0)
+                                _nodalTexAnimTargets[p.Scid] = ntaN;
+                    }
                 }
                 // SC-NIS-VERBS — cmd_ai_c_animate authors its anim fourcc.
                 if (p.TemplateName.Equals("cmd_ai_c_animate", StringComparison.OrdinalIgnoreCase))
@@ -17165,13 +17284,41 @@ void main()
                 break;
             }
             case "animate_object":
+            {
+                // SC-PROP-ANIM — the targeted prop now lives on the actor
+                // path (spawned with its authored chore dictionary looping);
+                // confirm the body exists and keep the chain flowing.
+                _animObjectTargets.TryGetValue(scid, out var aoTarget);
+                if (aoTarget == 0) aoTarget = cmd.Target1;
+                ActorRenderState? aoBody = null;
+                foreach (var pa in _animatedProps)
+                    if (pa.Actor.Instance.Scid == aoTarget) { aoBody = pa; break; }
+                if (aoBody is null)
+                    foreach (var pa in _actors)
+                        if (pa.Actor.Instance.Scid == aoTarget) { aoBody = pa; break; }
+                if (aoBody is not null)
+                    Console.WriteLine($"[cmd] animate_object 0x{scid:X8}: {aoBody.Actor.Template.Name} 0x{aoTarget:X8} animating");
+                else
+                    Console.WriteLine($"[cmd] animate_object 0x{scid:X8}: target 0x{aoTarget:X8} has no animated body — acknowledged");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAnimObj))
+                    ActivateAiCommand(cmd.Next, afterAnimObj);
+                break;
+            }
             case "animate_chain":
             case "animate_elevator":
             case "nodal_tex_anim":
-                // Goblin-machinery prop animation — real PRS prop playback
-                // lands with the Phase 10 sway-tree work; acknowledge so the
-                // set-piece chains never stall on these.
-                Console.WriteLine($"[cmd] {t} 0x{scid:X8} acknowledged (prop anim playback: Phase 10)");
+                // SC-PROP-ANIM — nodal texture scroll: the gizmo names a
+                // siege node whose textures crawl (the Glitterdelve elevator
+                // chain, goblin machinery belts). Toggle the node into the
+                // scrolling set; the terrain pass adds a V crawl on top of
+                // any TSD offset for its subsets.
+                if (_nodalTexAnimTargets.TryGetValue(scid, out var ntaNode))
+                {
+                    if (!_nodalTexAnimOn.Add(ntaNode)) _nodalTexAnimOn.Remove(ntaNode);
+                    Console.WriteLine($"[cmd] {t} 0x{scid:X8}: node 0x{ntaNode:X8} tex-anim {(_nodalTexAnimOn.Contains(ntaNode) ? "ON" : "OFF")}");
+                }
+                else
+                    Console.WriteLine($"[cmd] {t} 0x{scid:X8}: no siege_node authored — acknowledged");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterPropAnim))
                     ActivateAiCommand(cmd.Next, afterPropAnim);
                 break;
@@ -36371,6 +36518,60 @@ void main()
             // otherwise composite the scrolling molten layer over armour).
             if (_skinLayer2Active) { ResetAnimatedTextureBinding(_skinShader); _skinLayer2Active = false; }
 
+            // SC-PROP-ANIM — animated scenery pass. Same skin-shader state as
+            // the actor loop above; each prop derives its clip time from the
+            // global terrain clock plus a scid-hashed phase (a forest must not
+            // sway in lockstep), so there's no per-instance sim state at all.
+            // The 80u camera gate is what keeps fh_r1's 745 sway trees cheap:
+            // only the visible ring pays skinning + a draw call.
+            if (_animatedProps.Count > 0)
+            {
+                var apCam = _camera.Position;
+                foreach (var s in _animatedProps)
+                {
+                    if (s.Hidden) continue;
+                    var appos = s.CurrentTransform.Translation;
+                    float apdx = appos.X - apCam.X, apdz = appos.Z - apCam.Z;
+                    if (apdx * apdx + apdz * apdz > 80f * 80f) continue;
+                    if (IsPosInFadedSnode(appos)) continue;
+                    var apClips = s.Actor.Clips;
+                    if (apClips.Length == 0) continue;
+                    var apClip = apClips[Math.Min(s.Actor.CurrentClipIndex, apClips.Length - 1)];
+                    float apT = apClip.AnimLength > 0f
+                        ? (float)((_terrainTime + (s.Actor.Instance.Scid % 97) * 0.211) % apClip.AnimLength)
+                        : 0f;
+                    int apBones = s.Actor.Mesh.BoneCount;
+                    if (_skinScratch.Length < apBones)
+                        _skinScratch = new Matrix4x4[Math.Max(apBones, 64)];
+                    AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, apClip, apT, _skinScratch);
+                    float apScale = s.Actor.Stats.RenderScale;
+                    _skinShader.SetMatrix4("uModel",
+                        apScale == 1f ? s.CurrentTransform
+                                      : Matrix4x4.CreateScale(apScale) * s.CurrentTransform);
+                    _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, apBones));
+                    var apSubs = s.Actor.Mesh.Subsets;
+                    if (apSubs.Length == 0)
+                    {
+                        BindActorSlot(s.Actor, 0);
+                        s.GlMesh.Draw();
+                    }
+                    else
+                    {
+                        int apLastSlot = -1;
+                        foreach (var sub in apSubs)
+                        {
+                            if (sub.TextureIndex != apLastSlot)
+                            {
+                                BindActorSlot(s.Actor, sub.TextureIndex);
+                                apLastSlot = sub.TextureIndex;
+                            }
+                            s.GlMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+                        }
+                    }
+                }
+                if (_skinLayer2Active) { ResetAnimatedTextureBinding(_skinShader); _skinLayer2Active = false; }
+            }
+
             // Phase 21d-2a-vii — layered equipment pass. Each entry is a skinned
             // ASP that shares the player body's biped skeleton; we re-skin it
             // against the body's current animation clip + time, then bind the
@@ -37283,6 +37484,12 @@ void main()
                     // the lower region — only flips back on region
                     // change.
                     if (IsAbovePlayer(inst.RegionPath)) continue;
+                    // SC-PROP-ANIM — nodal tex anim: gizmo-enabled V crawl
+                    // on this node's textures (chains, belts). Wraps at 1.0
+                    // so the float never loses precision over a long session.
+                    _nodalScrollExtra = _nodalTexAnimOn.Count > 0 && _nodalTexAnimOn.Contains(inst.SnodeGuid)
+                        ? new Vector2(0f, -(float)(_terrainTime * 0.45 % 1.0))
+                        : Vector2.Zero;
                     var resolvedNames = GetResolvedSubsetTexNames(inst.Mesh, inst.TexsetAbbr);
                     bool modelSet = false;
                     for (var i = 0; i < inst.Mesh.Subsets.Count; i++)
@@ -37300,6 +37507,7 @@ void main()
                     _gl.Disable(EnableCap.PolygonOffsetFill);
                 }
             }
+            _nodalScrollExtra = Vector2.Zero;   // SC-PROP-ANIM — terrain-only
             ResetAnimatedTextureBinding();
             _meshShader.SetInt("uUvOrient", 0);
         }
