@@ -177,21 +177,35 @@ internal sealed class OptionsMenuPanel
     int _captureSlot;        // 0 = primary, 1 = secondary
     const int BindRowsVisible = 10;
 
-    // Flattened display list: group headers + catalog rows, authored order.
+    // Flattened display list: group headers + catalog rows. Groups keep
+    // their authored order (Party / View / UI / Game Settings); rows sort
+    // ALPHABETICALLY within each group, matching the retail screen (the
+    // user's hotkeys.bmp: "Attack: Defend … Cycle Active Spell 1 … Drink
+    // Health Potion … Force Attack"). Numbered families stay adjacent by
+    // construction.
     sealed record BindRow(string? Header, KeyBindingRegistry.Def? Def);
     static readonly List<BindRow> BindRows = BuildBindRows();
     static List<BindRow> BuildBindRows()
     {
         var rows = new List<BindRow>();
-        string group = "";
+        var groupOrder = new List<string>();
+        var byGroup = new Dictionary<string, List<KeyBindingRegistry.Def>>();
         foreach (var def in KeyBindingRegistry.Defs)
         {
-            if (def.Group != group)
+            if (!byGroup.TryGetValue(def.Group, out var list))
             {
-                group = def.Group;
-                rows.Add(new BindRow(group, null));
+                byGroup[def.Group] = list = new List<KeyBindingRegistry.Def>();
+                groupOrder.Add(def.Group);
             }
-            rows.Add(new BindRow(null, def));
+            list.Add(def);
+        }
+        foreach (var g in groupOrder)
+        {
+            rows.Add(new BindRow(g, null));
+            var defs = byGroup[g];
+            defs.Sort((a, b) => string.Compare(a.Name, b.Name,
+                StringComparison.OrdinalIgnoreCase));
+            foreach (var def in defs) rows.Add(new BindRow(null, def));
         }
         return rows;
     }
