@@ -86,7 +86,20 @@ public sealed class HandbookPanel
         IsOpen = true;
     }
 
-    public void Close() { IsOpen = false; _pressed = Hit.None; }
+    // SC-DEFEAT-TIP — event-driven filtered tips (the authored [world_tips]
+    // defeat_tip) show once, outside the ordered set: no Prev/Next, no
+    // "Tip N of M" footer, and closing never advances the auto cadence.
+    private WorldTip? _oneOff;
+    public bool IsOneOff => _oneOff is not null;
+    public void OpenOneOff(WorldTip tip)
+    {
+        _oneOff = tip;
+        BrowseMode = false;
+        _pressed = _hover = Hit.None;
+        IsOpen = true;
+    }
+
+    public void Close() { IsOpen = false; _oneOff = null; _pressed = Hit.None; }
 
     public void Next() { if (CurrentIndex < _tips.Count - 1) CurrentIndex++; }
     public void Prev() { if (CurrentIndex > 0) CurrentIndex--; }
@@ -169,7 +182,7 @@ public sealed class HandbookPanel
                      Func<string, GlTexture?>? guiTex, Func<string, GlTexture?>? commonChrome,
                      int vw, int vh)
     {
-        if (!IsOpen || _tips.Count == 0) return;
+        if (!IsOpen || (_tips.Count == 0 && _oneOff is null)) return;
         Layout(vw, vh);
         float s = HudScale.Modal(vw, vh);
         int fs = Math.Max(1, (int)MathF.Round(s));
@@ -212,7 +225,7 @@ public sealed class HandbookPanel
                         titleBar.y + (titleBar.h - text.LineHeight * titleScale) / 2, gold, titleScale);
 
         // Bullets: icon + wrapped text per row.
-        var tip = _tips[CurrentIndex];
+        var tip = _oneOff ?? _tips[CurrentIndex];
         for (int i = 0; i < RText.Length && i < tip.Bullets.Count; i++)
         {
             var b = tip.Bullets[i];
@@ -226,9 +239,13 @@ public sealed class HandbookPanel
             DrawWrapped(text, vw, vh, b.Text, tr.x, tr.y, tr.w, fs, parch, lineH);
         }
 
-        // Counter, checkbox + label.
-        var num = Scr(RTipNum, vw, vh);
-        text.DrawString(vw, vh, $"Tip: {CurrentIndex + 1} of {_tips.Count}", num.x, num.y, dim, fs);
+        // Counter, checkbox + label. One-off filtered tips sit outside the
+        // ordered set — no "Tip N of M".
+        if (_oneOff is null)
+        {
+            var num = Scr(RTipNum, vw, vh);
+            text.DrawString(vw, vh, $"Tip: {CurrentIndex + 1} of {_tips.Count}", num.x, num.y, dim, fs);
+        }
 
         var chk = _sCheck;
         var chkTex = guiTex?.Invoke(Disabled ? "b_gui_cmn_checkbox_x" : "b_gui_cmn_checkbox");

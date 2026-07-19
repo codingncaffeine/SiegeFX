@@ -53,6 +53,81 @@ public static class WorldTips
         return regionPath[..i] + "/info/tips.gas";
     }
 
+    /// <summary>SC-DEFEAT-TIP — the event-driven defeat tip: [world_tips]
+    /// authors <c>defeat_tip = tip_filtered_5</c> naming a
+    /// <c>[t:filtered_tip]</c> entry ("You have died! Be sure to keep an
+    /// eye on your Health indicator…"). Null when unauthored/absent.</summary>
+    public static WorldTip? LoadDefeatTip(TankReader tank, string mapInfoTipsPath)
+    {
+        try
+        {
+            if (!tank.TryGetFile(mapInfoTipsPath, out _)) return null;
+            return ParseDefeatTip(tank.ExtractToMemory(mapInfoTipsPath));
+        }
+        catch { return null; }
+    }
+
+    public static WorldTip? ParseDefeatTip(byte[] gasBytes)
+    {
+        var doc = GasDocument.Load(gasBytes);
+        foreach (var root in doc.Roots)
+        {
+            if (!string.Equals(root.Header.Trim(), "world_tips", System.StringComparison.OrdinalIgnoreCase))
+                continue;
+            string defeatName = "";
+            foreach (var a in root.Attributes)
+                if (string.Equals(a.Name, "defeat_tip", System.StringComparison.OrdinalIgnoreCase))
+                    defeatName = a.Value.Trim();
+            if (defeatName.Length == 0) return null;
+            foreach (var node in root.Children)
+            {
+                if (!TryParseName(node.Header, out var name)
+                    || !string.Equals(name, defeatName, System.StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var bullets = ParseBullets(node);
+                if (bullets.Count > 0) return new WorldTip { Order = 0, Bullets = bullets };
+            }
+        }
+        return null;
+    }
+
+    static List<WorldTipBullet> ParseBullets(GasNode node)
+    {
+        var bullets = new List<WorldTipBullet>();
+        foreach (var child in node.Children)
+        {
+            if (!child.Header.StartsWith("text", System.StringComparison.OrdinalIgnoreCase))
+                continue; // skip [actions] and any non-text child
+            string text = "", icon = DefaultIcon;
+            foreach (var a in child.Attributes)
+            {
+                if (string.Equals(a.Name, "screen_name", System.StringComparison.OrdinalIgnoreCase))
+                    text = Unquote(a.Value);
+                else if (string.Equals(a.Name, "texture", System.StringComparison.OrdinalIgnoreCase))
+                    icon = a.Value.Trim();
+            }
+            if (text.Length > 0)
+                bullets.Add(new WorldTipBullet(text, icon.Length > 0 ? icon : DefaultIcon));
+        }
+        return bullets;
+    }
+
+    // "t:filtered_tip,n:tip_filtered_5" -> "tip_filtered_5".
+    private static bool TryParseName(string header, out string name)
+    {
+        name = "";
+        foreach (var tok in header.Split(','))
+        {
+            var t = tok.Trim();
+            if (t.StartsWith("n:", System.StringComparison.OrdinalIgnoreCase))
+            {
+                name = t[2..].Trim();
+                return name.Length > 0;
+            }
+        }
+        return false;
+    }
+
     public static IReadOnlyList<WorldTip> Parse(byte[] gasBytes)
     {
         var doc = GasDocument.Load(gasBytes);

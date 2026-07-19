@@ -3161,7 +3161,20 @@ public sealed class RenderHost : IDisposable
                 if (semOn.Repeats) semOn.NextFireIn = 0f;
                 Console.WriteLine($"[emitter] 0x{toScid:X8} '{semOn.EventName}' activated");
             }
+            // SC-EMT-GO — debris emitters arm on activate (the ac_r2a
+            // "boulder emitter" send_world_message rows).
+            if (_goEmittersByScid.TryGetValue(toScid, out var geOn) && !geOn.Active)
+            {
+                geOn.Active = true;
+                geOn.Spawned = 0;
+                geOn.NextIn = geOn.RandomDelay > 0f
+                    ? (float)Random.Shared.NextDouble() * geOn.RandomDelay : 0f;
+                Console.WriteLine($"[emt-go] 0x{toScid:X8} armed ({geOn.Models.Length} models, count={geOn.Count})");
+            }
         }
+        if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
+            _goEmittersByScid.TryGetValue(toScid, out var geOff))
+            geOff.Active = false;   // SC-EMT-GO
         // SC-WEATHER-F — emt_sound_act turns OFF (loop stops on the next tick).
         if (name.Equals("we_req_deactivate", StringComparison.OrdinalIgnoreCase) &&
             _soundEmittersByScid.TryGetValue(toScid, out var semOff) && semOff.Active)
@@ -5613,7 +5626,10 @@ public sealed class RenderHost : IDisposable
             var tips = SiegeFX.Core.Assets.WorldTips.Load(reader, tipsPath);
             _handbook.SetTips(tips);
             _handbook.Disabled = _tipsDisabled;
-            Console.WriteLine($"[handbook] loaded {tips.Count} tips from {tipsPath}");
+            // SC-DEFEAT-TIP — the event-driven defeat tip rides along.
+            _defeatTip = SiegeFX.Core.Assets.WorldTips.LoadDefeatTip(reader, tipsPath);
+            Console.WriteLine($"[handbook] loaded {tips.Count} tips from {tipsPath}"
+                + (_defeatTip is not null ? " (+defeat tip)" : ""));
         }
         catch (Exception ex) { Console.Error.WriteLine($"[handbook] load failed: {ex.Message}"); }
     }
@@ -5673,7 +5689,7 @@ public sealed class RenderHost : IDisposable
 
     private void OnHandbookClosed()
     {
-        if (!_handbook.BrowseMode)
+        if (!_handbook.BrowseMode && !_handbook.IsOneOff)   // SC-DEFEAT-TIP
         {
             _nextTipIndex = Math.Min(_handbook.Count, _nextTipIndex + 1);
             _tipTravel = 0f; _tipTimer = 0f; _tipTracking = false;
@@ -13215,6 +13231,10 @@ void main()
             // waterfalls, tavern hubbub). Trigger-toggled ones wait for
             // we_req_activate; the rest start with the region.
             RegisterSoundEmitters(placements);
+
+            // SC-EMT-GO — debris game-object emitters (ac_r2a's ice-cave
+            // avalanche, dl_r1's rockfalls). Armed by we_req_activate.
+            RegisterGoEmitters(placements);
 
             // SC-DECALS — decal registration moved AFTER LoadStaticProps (the
             // wall-decal projection needs prop geometry: the barn chars land on
@@ -20951,6 +20971,123 @@ void main()
         return registered;
     }
 
+    // ── SC-EMT-GO ─────────────────────────────────────────────────────────
+    // Debris game-object emitters ([go_emitter]): on we_req_activate they
+    // launch authored frag meshes (ice chunks, boulders, bones) along the
+    // gizmo's +Z at lvz ± lvz_var, tumbling under gravity for `duration`
+    // seconds. The ac_r2a ice-cave avalanche and dl_r1 rockfalls.
+    private sealed class GoEmitterRow
+    {
+        public uint Scid;
+        public Vector3 Origin;
+        public Vector3 LaunchDir;
+        public string[] Models = System.Array.Empty<string>();
+        public int Count;
+        public float Interval, RandomDelay, Duration, Lvz, LvzVar, EndRadiusMax;
+        public bool Active;
+        public int Spawned;
+        public float NextIn;
+    }
+    private readonly Dictionary<uint, GoEmitterRow> _goEmittersByScid = new();
+    private struct GoDebrisP
+    {
+        public ItemMesh Mesh;
+        public Vector3 Pos, Vel, RotAxis;
+        public float RotAngle, RotRate, Age, Life;
+    }
+    private readonly List<GoDebrisP> _goDebris = new();
+
+    private int RegisterGoEmitters(IReadOnlyList<SiegeFX.Core.Assets.ActorInstance> placements)
+    {
+        if (_regionLayout is null) return 0;
+        int n = 0;
+        foreach (var inst in placements)
+        {
+            if (!inst.TemplateName.Equals("emt_go", StringComparison.OrdinalIgnoreCase)) continue;
+            var ge = SiegeFX.Core.Assets.TemplateStore.FindChild(inst.Node, "go_emitter");
+            if (ge is null) continue;
+            var models = new List<string>();
+            foreach (var a in ge.Attributes)
+                if (a.Name.StartsWith("model", StringComparison.OrdinalIgnoreCase)
+                    && a.Value.Trim().Trim('"').Length > 0)
+                    models.Add(a.Value.Trim().Trim('"'));
+            if (models.Count == 0) continue;
+            var local = Matrix4x4.CreateFromQuaternion(inst.Placement.Orientation) *
+                        Matrix4x4.CreateTranslation(inst.Placement.LocalPosition);
+            var world = _regionLayout.TryGetTransform(inst.Placement.NodeGuid, out var nw)
+                ? local * nw : local;
+            var dir = Vector3.TransformNormal(Vector3.UnitZ, world);
+            dir = dir.LengthSquared() < 1e-6f ? Vector3.UnitY : Vector3.Normalize(dir);
+            _goEmittersByScid[inst.Scid] = new GoEmitterRow
+            {
+                Scid         = inst.Scid,
+                Origin       = world.Translation,
+                LaunchDir    = dir,
+                Models       = models.ToArray(),
+                Count        = Math.Max(1, (int)ReadFloat(ge, "count", 1f)),
+                Interval     = ReadFloat(ge, "interval", 0f),
+                RandomDelay  = ReadFloat(ge, "random_delay", 0f),
+                Duration     = ReadFloat(ge, "duration", 2f),
+                Lvz          = ReadFloat(ge, "lvz", 4f),
+                LvzVar       = ReadFloat(ge, "lvz_var", 0f),
+                EndRadiusMax = ReadFloat(ge, "end_radius_max", 0f),
+            };
+            n++;
+        }
+        if (n > 0) Console.WriteLine($"    [emt-go] {n} debris emitters registered");
+        return n;
+    }
+
+    private void TickGoEmitters(float dt)
+    {
+        if (_goEmittersByScid.Count > 0)
+        {
+            foreach (var kv in _goEmittersByScid)
+            {
+                var e = kv.Value;
+                if (!e.Active || e.Spawned >= e.Count) continue;
+                e.NextIn -= dt;
+                if (e.NextIn > 0f) continue;
+                e.Spawned++;
+                e.NextIn = e.Interval > 0f ? e.Interval
+                         : e.RandomDelay > 0f ? 0.2f + (float)Random.Shared.NextDouble() * e.RandomDelay
+                         : 0.3f;
+                var mesh = TryGetItemMesh(e.Models[Random.Shared.Next(e.Models.Length)]);
+                if (mesh is null) continue;   // slot consumed; template's mesh missing
+                float speed = e.Lvz + (e.LvzVar > 0f
+                    ? ((float)Random.Shared.NextDouble() * 2f - 1f) * e.LvzVar : 0f);
+                // Lateral scatter toward the authored end_radius footprint.
+                float sc = e.EndRadiusMax > 0f ? (float)Random.Shared.NextDouble() * e.EndRadiusMax : 0f;
+                float sa = (float)Random.Shared.NextDouble() * MathF.Tau;
+                var lateral = new Vector3(MathF.Cos(sa), 0f, MathF.Sin(sa)) * sc;
+                var axis = new Vector3(
+                    (float)Random.Shared.NextDouble() * 2f - 1f,
+                    (float)Random.Shared.NextDouble() * 2f - 1f,
+                    (float)Random.Shared.NextDouble() * 2f - 1f);
+                axis = axis.LengthSquared() < 1e-4f ? Vector3.UnitX : Vector3.Normalize(axis);
+                _goDebris.Add(new GoDebrisP
+                {
+                    Mesh     = mesh,
+                    Pos      = e.Origin,
+                    Vel      = e.LaunchDir * MathF.Max(0.5f, speed) + lateral,
+                    RotAxis  = axis,
+                    RotRate  = 2f + (float)Random.Shared.NextDouble() * 6f,
+                    Life     = MathF.Max(0.5f, e.Duration),
+                });
+            }
+        }
+        for (int i = _goDebris.Count - 1; i >= 0; i--)
+        {
+            var d = _goDebris[i];
+            d.Age += dt;
+            if (d.Age >= d.Life) { _goDebris.RemoveAt(i); continue; }
+            d.Vel.Y -= 9.0f * dt;
+            d.Pos += d.Vel * dt;
+            d.RotAngle += d.RotRate * dt;
+            _goDebris[i] = d;
+        }
+    }
+
     /// <summary>SC-WEATHER-F — register each emt_sound / emt_sound_act
     /// placement's [sound_emitter(_act)] block as a runtime sound emitter.
     /// Event names resolve through sounddb.gas [global_voice] at fire time;
@@ -22759,6 +22896,7 @@ void main()
                 TickMultiSummonExpiry((float)stepSec);  // SC-SUMMON-TTL
                 TickSpellTurrets((float)stepSec);       // SC-SPELL-DELIVERY
                 TickRoboSuits();                        // SC-RBS composite boss
+                TickGoEmitters((float)stepSec);         // SC-EMT-GO debris
                 TickSummons((float)stepSec);            // SC-SPELL-ENGINE
                 TickBodySeparation((float)stepSec);     // SC-BODY-SEPARATION
                 // Phase 26 — resolve enemies a follower just killed (the player
@@ -23843,7 +23981,19 @@ void main()
                 break;
             case DefeatPhase.Dimming:
                 _defeatTimer += dt;
-                if (_defeatTimer >= 1.5f) _defeatPhase = DefeatPhase.Dialog;
+                if (_defeatTimer >= 1.5f)
+                {
+                    _defeatPhase = DefeatPhase.Dialog;
+                    // SC-DEFEAT-TIP — the authored [world_tips] defeat_tip
+                    // ("You have died! Keep an eye on your Health…") pops
+                    // once per session over the dimmed screen; the load
+                    // prompt waits until it's dismissed. Honors Disable tips.
+                    if (!_defeatTipShown && !_tipsDisabled && _defeatTip is not null)
+                    {
+                        _defeatTipShown = true;
+                        _handbook.OpenOneOff(_defeatTip);
+                    }
+                }
                 break;
             case DefeatPhase.Dialog:
             case DefeatPhase.DialogClosed:
@@ -23866,7 +24016,12 @@ void main()
         }
     }
 
-    private bool DefeatDialogActive => _defeatPhase == DefeatPhase.Dialog && !_loadDialog.IsOpen;
+    private bool DefeatDialogActive => _defeatPhase == DefeatPhase.Dialog
+        && !_loadDialog.IsOpen && !_handbook.IsOpen;   // SC-DEFEAT-TIP — tip first
+    // SC-DEFEAT-TIP — authored [world_tips] defeat_tip, loaded with the
+    // ordered handbook tips; shown once per session on the first wipe.
+    private SiegeFX.Core.Assets.WorldTip? _defeatTip;
+    private bool _defeatTipShown;
 
     // ── SC-CAM-SHAKE ───────────────────────────────────────────────────────
     // Shake envelope: amplitude decays linearly over the duration; the
@@ -37438,6 +37593,30 @@ void main()
                     _meshShader.SetInt("uHasTexture", 0);
                     _lootCube.Draw();
                 }
+            }
+        }
+
+        // SC-EMT-GO — tumbling debris chunks (activated avalanches /
+        // rockfalls). Same mesh-shader state family as the loot piles.
+        if (_meshShader is not null && _goDebris.Count > 0)
+        {
+            _meshShader.Use();
+            _meshShader.SetMatrix4("uViewProj", vp);
+            _meshShader.SetInt("uAlbedo", 0);
+            _meshShader.SetInt("uFlipV", 0);
+            ApplyLightingUniforms(_meshShader);
+            foreach (var d in _goDebris)
+            {
+                var dm = Matrix4x4.CreateFromAxisAngle(d.RotAxis, d.RotAngle)
+                       * Matrix4x4.CreateTranslation(d.Pos);
+                _meshShader.SetMatrix4("uModel", dm);
+                if (d.Mesh.Texture is not null)
+                {
+                    d.Mesh.Texture.Bind(TextureUnit.Texture0);
+                    _meshShader.SetInt("uHasTexture", 1);
+                }
+                else _meshShader.SetInt("uHasTexture", 0);
+                d.Mesh.Mesh.Draw();
             }
         }
 
