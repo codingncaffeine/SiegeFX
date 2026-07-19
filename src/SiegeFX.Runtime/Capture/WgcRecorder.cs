@@ -68,6 +68,7 @@ public sealed class WgcRecorder
     // ---- audio state ----------------------------------------------------
 
     WasapiLoopbackCapture? _loopback;
+    ProcessLoopbackCapture? _procLoopback;
     BlockingCollection<byte[]>? _audioQueue;
     int _audioRate = 48000;
     int _audioChannels = 2;
@@ -146,6 +147,7 @@ public sealed class WgcRecorder
         _frameReady.Set();
         try { _audioQueue?.CompleteAdding(); } catch { }
         try { _loopback?.StopRecording(); } catch { }
+        try { _procLoopback?.Stop(); } catch { }
     }
 
     // ---- capture plumbing -----------------------------------------------
@@ -169,6 +171,38 @@ public sealed class WgcRecorder
 
     void StartAudio()
     {
+        // SC-RECORD-PROC-AUDIO — prefer PROCESS loopback: the track is the
+        // game's own audio tapped BEFORE the endpoint master volume, so a
+        // user who plays at 8% system volume still gets a full, consistent
+        // soundtrack (device loopback records post-volume — quiet system =
+        // quiet clip, the OBS "Desktop Audio" complaint that motivated the
+        // in-game recorder). Bonus: only THIS process's audio lands in the
+        // clip — no Discord pings or notification dings. Verified on the
+        // field machine: captured level identical at master 0.12 and 0.25
+        // while device loopback scaled 3.8x. Device loopback stays as the
+        // fallback for pre-2004 Windows or activation failure.
+        if (ProcessLoopbackCapture.IsSupported)
+        {
+            try
+            {
+                _procLoopback = new ProcessLoopbackCapture(48000, 2);
+                _audioRate = 48000;
+                _audioChannels = 2;
+                _audioQueue = new BlockingCollection<byte[]>(boundedCapacity: 256);
+                _procLoopback.DataAvailable += OnProcAudioData;
+                _procLoopback.Start();
+                Console.WriteLine("[record] audio: process loopback (game-only, volume-independent)");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[record] process loopback unavailable " +
+                    $"({ex.GetType().Name} 0x{ex.HResult:X8} '{ex.Message}') — falling back to device loopback");
+                try { _procLoopback?.Dispose(); } catch { }
+                _procLoopback = null;
+                _audioQueue = null;
+            }
+        }
         try
         {
             _loopback = new WasapiLoopbackCapture();
@@ -178,6 +212,7 @@ public sealed class WgcRecorder
             _audioQueue = new BlockingCollection<byte[]>(boundedCapacity: 256);
             _loopback.DataAvailable += OnAudioData;
             _loopback.StartRecording();
+            Console.WriteLine("[record] audio: device loopback — clip level follows the Windows volume slider");
         }
         catch (Exception ex)
         {
@@ -187,6 +222,16 @@ public sealed class WgcRecorder
             _loopback = null;
             _audioQueue = null;
         }
+    }
+
+    /// <summary>Process-loopback chunks arrive as interleaved s16 at the
+    /// requested (48000, 2) — no conversion needed; bounded add drops under
+    /// pressure instead of stalling the capture thread.</summary>
+    void OnProcAudioData(byte[] chunk)
+    {
+        var q = _audioQueue;
+        if (q is null || _stopping || chunk.Length == 0) return;
+        q.TryAdd(chunk);
     }
 
     /// <summary>Loopback callback → interleaved 16-bit PCM chunks. The mix
@@ -437,6 +482,12 @@ public sealed class WgcRecorder
             try { _loopback.DataAvailable -= OnAudioData; } catch { }
             try { _loopback.Dispose(); } catch { }
             _loopback = null;
+        }
+        if (_procLoopback is not null)
+        {
+            try { _procLoopback.DataAvailable -= OnProcAudioData; } catch { }
+            try { _procLoopback.Dispose(); } catch { }
+            _procLoopback = null;
         }
         try { _audioQueue?.Dispose(); } catch { }
         _audioQueue = null;
