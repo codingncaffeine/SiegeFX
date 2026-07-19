@@ -20356,10 +20356,47 @@ void main()
     private readonly Dictionary<ActorRenderState, int> _meleeEngagedCount = new();
     private const int MeleeAttackerCountLimit = 4;
 
+    // SC-NPC-BATTLES — per-tick alignment rosters (built ahead of the
+    // actor loop) + nearest-of helper for both directions of the fight.
+    private readonly List<ActorRenderState> _evilCombatantCache = new();
+    private readonly List<ActorRenderState> _goodFighterCache = new();
+
+    private ActorRenderState? NearestOfRoster(List<ActorRenderState> roster, ActorRenderState from)
+    {
+        var pos = from.CurrentTransform.Translation;
+        ActorRenderState? best = null;
+        float bestD2 = float.MaxValue;
+        foreach (var a in roster)
+        {
+            if (ReferenceEquals(a, from) || a.IsDead) continue;
+            var p = a.CurrentTransform.Translation;
+            float dx = p.X - pos.X, dz = p.Z - pos.Z;
+            float d2 = dx * dx + dz * dz;
+            if (d2 < bestD2) { bestD2 = d2; best = a; }
+        }
+        return best;
+    }
+
     private ActorRenderState? PickBrainQuarry(ActorRenderState s)
     {
         var pos = s.CurrentTransform.Translation;
         var primary = NearestLivePartyMember(pos);
+        // SC-NPC-BATTLES — a good non-party fighter (dwarf, guard) closer
+        // than the nearest party member draws the monster instead: the
+        // Glitterdelve dwarves-vs-krug skirmish plays out with or without
+        // the party's help.
+        var defender = NearestOfRoster(_goodFighterCache, s);
+        if (defender is not null)
+        {
+            float PdD2(ActorRenderState a)
+            {
+                var p = a.CurrentTransform.Translation;
+                float dx = p.X - pos.X, dz = p.Z - pos.Z;
+                return dx * dx + dz * dz;
+            }
+            if (primary is null || PdD2(defender) < PdD2(primary))
+                return defender;
+        }
         if (primary is null || s.Brain is null
             || s.Brain.Mode != SiegeFX.Core.Actors.ActorBrain.AttackMode.Melee)
             return primary;
@@ -23378,6 +23415,19 @@ void main()
                 // counts each tick; the quarry picker reads them to spread
                 // overflow attackers across the party.
                 _meleeEngagedCount.Clear();
+                // SC-NPC-BATTLES — per-tick alignment rosters: evil
+                // combatants (targets for the town defenders) and good
+                // non-party fighters (guards, dwarves — extra targets for
+                // the monsters). One O(n) pass; the loop below stays O(n).
+                _evilCombatantCache.Clear();
+                _goodFighterCache.Clear();
+                foreach (var a in _actors)
+                {
+                    if (a.IsDead || a.Hidden || !a.Actor.Stats.IsCombatant) continue;
+                    if (a.IsEvilAligned) _evilCombatantCache.Add(a);
+                    else if (!a.IsPlayer && !a.IsPartyMember && a.Brain is not null)
+                        _goodFighterCache.Add(a);
+                }
                 foreach (var s in _actors)
                 {
                     if (s.IsDead) continue;
@@ -23430,7 +23480,16 @@ void main()
                     // spread-aware picker (attacker cap per victim, retail's
                     // EngagedMeMeleeAttackerCount limit + second-tier
                     // spreading); ranged/magic keep simple nearest.
-                    var quarry = hostile ? PickBrainQuarry(s) : null;
+                    // SC-NPC-BATTLES — good non-party fighters (guards,
+                    // Glitterdelve's dwarves) hunt the nearest evil
+                    // combatant; the brain's own aggro radius still gates
+                    // when they actually engage.
+                    bool goodFighter = !hostile && !s.IsEvilAligned
+                        && !s.IsPlayer && !s.IsPartyMember
+                        && s.Actor.Stats.IsCombatant && _nisPhase == NisPhase.Off;
+                    var quarry = hostile ? PickBrainQuarry(s)
+                        : goodFighter ? NearestOfRoster(_evilCombatantCache, s)
+                        : null;
                     // SC-MONSTER-SPECIALS — startup_reveal dormancy: the
                     // buried ones hold perfectly still until the party is
                     // close (or something hurt them), then rise and fight.
