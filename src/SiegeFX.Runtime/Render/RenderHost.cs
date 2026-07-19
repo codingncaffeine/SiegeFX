@@ -5017,6 +5017,11 @@ public sealed class RenderHost : IDisposable
     private bool _altComboFired;
     // SC-FREE-LOOK — authored camera_free_look hold state (default D).
     private bool _freeLookHeld;
+    // SC-INPUT-TAB — Options → Input runtime knobs (previously persist-only).
+    private float _cameraRateScale = 1f;   // composite Camera Sensitivity
+    private bool _screenEdgeTracking = true;
+    private bool _lockCameraX;
+    private bool _lockCameraY;
     // SC-OPTIONS-REBIND — the live key-binding registry (authored
     // input_bindings.gas defaults + the user's prefs.json overrides).
     // The KeyDown chain queries it instead of hardcoded keycodes so
@@ -11719,16 +11724,20 @@ void main()
                         // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
                         // so chase mode and first-person mode share the same
                         // sensitivity/invert formula.
-                        _chaseYaw += _camera.YawIncrement(dx);
+                        // SC-INPUT-TAB — Lock Camera X/Y-Axis freeze their
+                        // axis against MOUSE orbit (keys stay deliberate).
+                        if (!_lockCameraX)
+                            _chaseYaw += _camera.YawIncrement(dx);
                         // SC-CAM-MMB — middle-mouse drag tilts as well as
                         // rotates (DS1's authored behavior), all the way up
                         // to fully overhead. PitchIncrement is signed and
                         // already adjusted for invert + sensitivity; mouse
                         // dy is screen-down-positive, so a downward drag
                         // INCREASES pitch (camera looks more steeply down).
-                        _chasePitch = System.Math.Clamp(
-                            _chasePitch + _camera.PitchIncrement(dy),
-                            ChasePitchMin, ChasePitchMax);
+                        if (!_lockCameraY)
+                            _chasePitch = System.Math.Clamp(
+                                _chasePitch + _camera.PitchIncrement(dy),
+                                ChasePitchMin, ChasePitchMax);
                     }
                     else
                     {
@@ -11775,7 +11784,9 @@ void main()
                 string wheelTok = wheel.Y > 0f ? "wheel_up" : "wheel_down";
                 var zSlots = _keyBindings.Get(wheel.Y > 0f ? "camera_zoom_in" : "camera_zoom_out");
                 if (zSlots[0] != wheelTok && zSlots[1] != wheelTok) return;
-                float zoomFactor = 1f - wheel.Y * ChaseZoomDeltaPct;
+                // SC-INPUT-TAB — the composite sensitivity scales wheel
+                // zoom too (its authored zoom_meters_per_second share).
+                float zoomFactor = 1f - wheel.Y * ChaseZoomDeltaPct * _cameraRateScale;
                 _chaseDistance = Math.Clamp(
                     _chaseDistance * MathF.Max(0.25f, zoomFactor),
                     ChaseDistanceMin, ChaseDistanceMax);
@@ -22568,9 +22579,12 @@ void main()
             && !_loadDialog.IsOpen && !_handbook.IsOpen && !_devConsoleOpen
             && !_optionsMenu.IsOpen)
         {
-            const float rotRate = 1.7f;   // rad/s — matches DS1's brisk edge-rotate feel
-            const float tiltRate = 0.9f;  // rad/s
-            const float zoomRate = 6.5f;  // m/s
+            // SC-INPUT-TAB — the composite Camera Sensitivity slider scales
+            // every key/edge-driven camera rate (DS1's authored azimuth /
+            // orbit / zoom per-second trio behind one control).
+            float rotRate  = 1.7f * _cameraRateScale;   // rad/s — DS1's brisk edge-rotate feel at 1.0
+            float tiltRate = 0.9f * _cameraRateScale;   // rad/s
+            float zoomRate = 6.5f * _cameraRateScale;   // m/s
             foreach (var kb in _input.Keyboards)
             {
                 if (_keyBindings.AnyPressed("camera_rotate_left", kb))  _chaseYaw += rotRate * (float)dt;
@@ -22583,6 +22597,37 @@ void main()
                     _chaseDistance = Math.Clamp(_chaseDistance + zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
                 if (_keyBindings.AnyPressed("camera_zoom_in", kb))
                     _chaseDistance = Math.Clamp(_chaseDistance - zoomRate * (float)dt, ChaseDistanceMin, ChaseDistanceMax);
+            }
+            // SC-INPUT-TAB — Use Screen Edge Tracking (authored default ON;
+            // the handbook's own tip teaches it: "move the mouse pointer to
+            // the edge of the screen"). The pointer resting on a left/right
+            // edge rotates; top/bottom tilts — same directions as the arrow
+            // keys, so steering by holding LMB toward an edge turns the
+            // view exactly like retail. Suppressed while the mouse is
+            // owned by an orbit/marquee or a full-screen panel is up, and
+            // the Lock Camera axes apply (edge tracking is mouse-driven).
+            if (_screenEdgeTracking && !_mouseLookActive && !_marqueeActive
+                && !_inventoryOpen && !_vendor.IsOpen && !_dialogue.IsOpen
+                && _window is not null)
+            {
+                var fbE = _window.FramebufferSize;
+                var mpE = _currentMousePos;
+                float band = MathF.Max(2f, fbE.Y * 0.007f);
+                if (mpE.X >= 0f && mpE.Y >= 0f && mpE.X <= fbE.X && mpE.Y <= fbE.Y)
+                {
+                    if (!_lockCameraX)
+                    {
+                        if (mpE.X <= band)             _chaseYaw += rotRate * (float)dt;
+                        else if (mpE.X >= fbE.X - band) _chaseYaw -= rotRate * (float)dt;
+                    }
+                    if (!_lockCameraY)
+                    {
+                        if (mpE.Y <= band)
+                            _chasePitch = Math.Clamp(_chasePitch + tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
+                        else if (mpE.Y >= fbE.Y - band)
+                            _chasePitch = Math.Clamp(_chasePitch - tiltRate * (float)dt, ChasePitchMin, ChasePitchMax);
+                    }
+                }
             }
             // SC-FREE-LOOK — authored camera_free_look (default: hold D):
             // the mouse orbits the camera while held, same raw-cursor orbit
@@ -25313,6 +25358,15 @@ void main()
             float mouse = MathF.Max(0.1f, s.MouseSensitivity / 50f);
             _camera.SensitivityScale = mouse;
         }
+        // SC-INPUT-TAB — the four previously persist-only Input knobs go
+        // live. Camera Sensitivity is DS1's composite slider (the authored
+        // azimuth/orbit/zoom per-second trio behind one 0..100 control):
+        // it scales the KEY-rotate/tilt/zoom rates and screen-edge
+        // tracking; Mouse Sensitivity keeps owning the drag-orbit feel.
+        _cameraRateScale = MathF.Max(0.1f, s.CameraSensitivity / 50f);
+        _screenEdgeTracking = s.ScreenEdgeTracking;
+        _lockCameraX = s.LockCameraX;
+        _lockCameraY = s.LockCameraY;
         _showFps = s.ShowFramerate;
         _spellbookWithI = s.SpellbookOpensWithI;
         // SC-OPTIONS-GAME — the Game tab's knobs go live here (boot, OK,
