@@ -113,6 +113,11 @@ public sealed class DataBar
     /// <summary>Map a 640×480 reference X to viewport X, honoring right-anchor.
     /// Vertical math always scales by viewport height — bottom anchoring is
     /// implicit because every button's Y is in the lower band of the frame.</summary>
+    /// <summary>SC-DATABAR-DOCK (blindspot E8) — the manual: the status bar
+    /// sits at the bottom by default and can be dragged to the TOP. When
+    /// docked top, the authored bottom band (449..480) mirrors to y=0.</summary>
+    public static bool DockTop;
+
     public static (int X, int Y, int W, int H) ProjectRect(in Slot slot, int viewportW, int viewportH)
     {
         // ALPHA-2V RE-BASELINE — element SIZE follows the shared HUD
@@ -123,7 +128,9 @@ public sealed class DataBar
         float scale = HudScale.Hud(viewportH);
         int w = (int)Math.Round(slot.W * scale);
         int h = (int)Math.Round(slot.H * scale);
-        int y = viewportH - (int)Math.Round((RefH - slot.Y) * scale);
+        int y = DockTop
+            ? (int)Math.Round((slot.Y - BgY) * scale)
+            : viewportH - (int)Math.Round((RefH - slot.Y) * scale);
         int x;
         if (slot.RightAnchorPx > 0)
         {
@@ -145,10 +152,11 @@ public sealed class DataBar
     /// authors stretch_x=true on the dockbar.</summary>
     public static (int X, int Y, int W, int H) ProjectBgRect(int viewportW, int viewportH)
     {
-        // Bottom-anchored like ProjectRect (band authored 449..480).
+        // Bottom-anchored like ProjectRect (band authored 449..480);
+        // SC-DATABAR-DOCK mirrors the band to the top edge when docked.
         float scale = HudScale.Hud(viewportH);
         int h = (int)Math.Round(BgH * scale);
-        int y = viewportH - (int)Math.Round((RefH - BgY) * scale);
+        int y = DockTop ? 0 : viewportH - (int)Math.Round((RefH - BgY) * scale);
         return (0, y, viewportW, h);
     }
 

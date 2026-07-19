@@ -212,6 +212,20 @@ public sealed class PaperdollPanel
         return null;
     }
 
+    /// <summary>SC-FORGIVING-DROP — true when the point is anywhere on the
+    /// paperdoll pane (authored 87..254 × 228..446 at panel scale): the
+    /// forgiving-drop fallback routes an item released here to its own
+    /// slot even when it missed every slot rect.</summary>
+    public bool IsPointInPanel(int x, int y, int panelOriginX, int panelOriginY, int viewportH)
+    {
+        float s = Scale(viewportH);
+        int px = panelOriginX;
+        int py = panelOriginY + (int)System.Math.Round(228 * s);
+        int pw = (int)System.Math.Round((254 - 87) * s);
+        int ph = (int)System.Math.Round((446 - 228) * s);
+        return x >= px && y >= py && x < px + pw && y < py + ph;
+    }
+
     /// <summary>True if the given screen point is inside the View
     /// button rect (paperdoll-local). Caller passes panelOriginX
     /// matching the Draw call.</summary>

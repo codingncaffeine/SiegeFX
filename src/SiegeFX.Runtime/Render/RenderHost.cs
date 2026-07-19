@@ -732,6 +732,16 @@ public sealed class RenderHost : IDisposable
     // and the armed force-attack/-cast orders (authored A / C).
     private bool _gameTimerVisible;
     private float _formationSpacing = 1f;
+    // SC-RMB-FORMATION (blindspot E4) — the manual's RMB-hold formation
+    // modal: while RMB is held, LMB cycles the pattern, mouse X rotates the
+    // formation's facing, and the wheel changes spacing. Any modal use
+    // suppresses the RMB-release tap action.
+    private bool _rmbHeld;
+    private bool _rmbModalUsed;
+    private float _formationRotOffset;   // radians, applied to order facing
+    private Vector2? _lastRmbMovePos;
+    // SC-DATABAR-DOCK — LMB pressed on the empty status-bar band.
+    private bool _dataBarDragArm;
     private bool _forceAttackArmed, _forceCastArmed;
 
     /// <summary>SC-CMD-KEYS — authored rotate_primary/secondary_spell_slot:
@@ -1753,6 +1763,9 @@ public sealed class RenderHost : IDisposable
         // SC-MOB-PARTIES — the runtime monster pack this actor belongs to
         // (authored [mind] party_template); null = solo.
         public MonsterPack? Pack;
+
+        // SC-DROOG-BOW — next play-clock second this greeter may bow again.
+        public double NextBowAt;
 
         // Phase 13a — set for the single player character. Distinct from NPCs so
         // the input layer (LMB move, RMB attack — 13c/d) can find and drive this
@@ -9914,6 +9927,7 @@ void main()
                 {
                     _selectedPartyIdx.Clear();
                     _selectedPartyIdx.Add(0);
+                    _firstSelectedIdx = 0;   // SC-FIRST-SELECTED
                     Console.WriteLine("[cmd] select lead");
                 }
                 // SC-PARTY-GROUPS — authored Ctrl+F1..F8 save the current
@@ -9943,6 +9957,7 @@ void main()
                         {
                             _selectedPartyIdx.Clear();
                             foreach (var gi in live) _selectedPartyIdx.Add(gi);
+                            _firstSelectedIdx = live[0];   // SC-FIRST-SELECTED
                             Console.WriteLine($"[cmd] recall group {gGet}: {string.Join(",", live)}");
                         }
                     }
@@ -10528,6 +10543,15 @@ void main()
                     // fall through to click-to-move.
                     var dbDown = _dataBar.MouseDown(_window.Size.X, _window.Size.Y, mx, my);
                     if (dbDown is not null) return;
+                    // SC-DATABAR-DOCK — pressing the EMPTY band (no button)
+                    // arms the relocate drag; releasing in the other half of
+                    // the screen docks the bar there (manual: drag to top).
+                    var dbBand = Hud.DataBar.ProjectBgRect(_window.Size.X, _window.Size.Y);
+                    if (my >= dbBand.Y && my < dbBand.Y + dbBand.H)
+                    {
+                        _dataBarDragArm = true;
+                        return;
+                    }
                     // INFORAIL-F — spellbook-with-I toggle on paperdoll.
                     // Rect 229,238,250,269 in gas, mapped via paperdollX.
                     // Clicking flips _spellbookWithI; if the spellbook is
@@ -11084,6 +11108,9 @@ void main()
                     // only records the press point so MouseUp can fire the
                     // tap action (talk / attack / cast).
                     _rmbDownPos = m.Position;
+                    // SC-RMB-FORMATION — arm the formation modal.
+                    _rmbHeld = true;
+                    _rmbModalUsed = false;
                 }
                 // SC-CAM-MMB — middle-mouse hold = rotate + tilt, exactly as
                 // DS1 authors it ([camera] middle-mouse; the manual's "hold
@@ -11094,6 +11121,16 @@ void main()
                     _mouseLookActive = true;
                     _lastMousePos = null;
                     m.Cursor.CursorMode = CursorMode.Raw;
+                }
+                // SC-RMB-FORMATION — RMB-hold + LMB cycles the formation
+                // pattern (manual's modal; consumes the click).
+                else if (btn == MouseButton.Left && _rmbHeld && _player is not null
+                         && !_bootMode)
+                {
+                    CyclePartyFormation();
+                    _rmbModalUsed = true;
+                    _audio?.Play(SfxGuiInventory);
+                    AddGameMessage($"Formation: {_partyFormation}");
                 }
                 // Phase 21-SC-SCROLL-F-1 — LMB outside any UI WITH a scroll
                 // on cursor = world drop. Spawn a loot pile at the player's
@@ -11164,6 +11201,14 @@ void main()
                     int rmx = (int)m.Position.X, rmy = (int)m.Position.Y;
                     var relSlot = _paperdoll.TryHitTestSlot(rmx, rmy,
                         _paperdollRect.X, _paperdollRect.Y, _window.Size.Y);
+                    // SC-FORGIVING-DROP (blindspot E5) — the manual: an item
+                    // dropped ANYWHERE on the Equipment Panel lands in its
+                    // correct slot. When the release misses every slot rect
+                    // but sits inside the panel, resolve the item's own slot.
+                    if (relSlot is null
+                        && _paperdoll.IsPointInPanel(rmx, rmy,
+                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                        relSlot = PaperdollSlotForItem(_cursorItem.Value.Reference);
                     if (relSlot is not null
                         && !string.Equals(PaperdollSlotToEsTag(relSlot) ?? "",
                                _cursorItem.Value.Slot, StringComparison.OrdinalIgnoreCase))
@@ -11275,6 +11320,21 @@ void main()
                         _window.Size.X, _window.Size.Y,
                         (int)m.Position.X, (int)m.Position.Y);
                     if (dbClick is not null) { OnDataBarClick(dbClick.Value); return; }
+                    // SC-DATABAR-DOCK — finish the relocate drag: released
+                    // in the opposite half → dock there; persists via prefs.
+                    if (_dataBarDragArm)
+                    {
+                        _dataBarDragArm = false;
+                        bool wantTop = m.Position.Y < _window.Size.Y * 0.5f;
+                        if (wantTop != Hud.DataBar.DockTop)
+                        {
+                            Hud.DataBar.DockTop = wantTop;
+                            _optionsMenu.Live.DataBarTop = wantTop;
+                            OptionsPrefs.Save(_optionsMenu.Live);
+                            Console.WriteLine($"[databar] docked {(wantTop ? "TOP" : "BOTTOM")}");
+                            return;
+                        }
+                    }
                 }
                 // Phase 21d-2a-viii-b — character creator. Begin/Cancel resolve
                 // here; the post-modal world spawn is driven by FlushCreator()
@@ -11545,6 +11605,11 @@ void main()
                 }
                 if (btn == MouseButton.Right)
                 {
+                    // SC-RMB-FORMATION — close the modal; a modal use
+                    // (cycle/rotate/spacing) suppresses the tap action.
+                    _rmbHeld = false;
+                    bool rmbModalConsumed = _rmbModalUsed;
+                    _rmbModalUsed = false;
                     // Phase 13d — tap-click discrimination. With the camera
                     // orbit on middle-mouse the cursor stays in normal mode
                     // during an RMB hold, so the release position is reliable:
@@ -11552,7 +11617,7 @@ void main()
                     // zero drift means the user tapped without dragging.
                     float rmbDrift = MathF.Abs(m.Position.X - _rmbDownPos.X)
                                    + MathF.Abs(m.Position.Y - _rmbDownPos.Y);
-                    if (rmbDrift <= RmbClickDriftPx)
+                    if (rmbDrift <= RmbClickDriftPx && !rmbModalConsumed)
                     {
                         // Phase 20a — talk before attack. If the click landed on
                         // a talkable NPC, open dialogue; otherwise fall through
@@ -11755,6 +11820,20 @@ void main()
                     var sz = _window.FramebufferSize;
                     _mpStaging.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
+                // SC-RMB-FORMATION — RMB-hold + horizontal mouse movement
+                // rotates the ordered formation's facing (past the tap
+                // drift so plain right-clicks stay taps).
+                if (_rmbHeld && !_mouseLookActive && _player is not null)
+                {
+                    if (_lastRmbMovePos is { } lastRm
+                        && MathF.Abs(pos.X - _rmbDownPos.X) > RmbClickDriftPx)
+                    {
+                        _formationRotOffset += (pos.X - lastRm.X) * 0.008f;
+                        _rmbModalUsed = true;
+                    }
+                    _lastRmbMovePos = pos;
+                }
+                else _lastRmbMovePos = null;
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
@@ -11814,6 +11893,16 @@ void main()
                     return;
                 }
                 if (_handbook.IsOpen) return;
+                // SC-RMB-FORMATION — RMB-hold + wheel changes formation
+                // spacing (manual's modal), stealing the wheel from zoom.
+                if (_rmbHeld && _player is not null && !_bootMode && wheel.Y != 0f)
+                {
+                    _formationSpacing = Math.Clamp(
+                        _formationSpacing + MathF.Sign(wheel.Y) * 0.15f, 0.6f, 2.5f);
+                    _rmbModalUsed = true;
+                    Console.WriteLine($"[formation] spacing -> {_formationSpacing:F2}");
+                    return;
+                }
                 if (_cameraMode != CameraMode.Chase) return;
                 if (_inventoryOpen || _vendor.IsOpen || _dialogue.IsOpen ||
                     _pauseMenu.IsOpen || _creator.IsOpen || _optionsMenu.IsOpen) return;
@@ -16388,9 +16477,14 @@ void main()
     /// never left empty (falls back to the leader).</summary>
     private void TogglePartySelection(int idx)
     {
+        bool wasEmptyish = _selectedPartyIdx.Count == 0;
         if (!_selectedPartyIdx.Add(idx)) _selectedPartyIdx.Remove(idx);
         if (_selectedPartyIdx.Count == 0) _selectedPartyIdx.Add(0);
-        Console.WriteLine($"[select] ctrl-toggle {idx} → {string.Join(",", _selectedPartyIdx)}");
+        // SC-FIRST-SELECTED — the first index ADDED to the running
+        // selection acts; removing them promotes the lowest remaining.
+        if (wasEmptyish || !_selectedPartyIdx.Contains(_firstSelectedIdx))
+            _firstSelectedIdx = _selectedPartyIdx.Min();
+        Console.WriteLine($"[select] ctrl-toggle {idx} → {string.Join(",", _selectedPartyIdx)} (first={_firstSelectedIdx})");
     }
 
     /// <summary>SC-PORTRAIT-REORDER — swap two followers' positions in the
@@ -20013,6 +20107,19 @@ void main()
         return party;
     }
 
+    // SC-DROOG-BOW — templates whose [mind] jat_brain routes brain_bow
+    // (droog villagers): they greet instead of fight.
+    private readonly Dictionary<string, bool> _bowGreeterCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool IsBowGreeter(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_bowGreeterCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        bool r = (_templateStore?.GetAttribute(tpl, "mind", "jat_brain") ?? "")
+            .Contains("brain_bow", StringComparison.OrdinalIgnoreCase);
+        _bowGreeterCache[tpl.Name] = r;
+        return r;
+    }
+
     private bool IsReanimator(SiegeFX.Core.Assets.Template tpl)
     {
         if (_reanimatorCache.TryGetValue(tpl.Name, out var hit)) return hit;
@@ -20539,10 +20646,12 @@ void main()
 
         if (_pendingLeverUse is { } lever)
         {
+            // SC-FIRST-SELECTED — the ACTING character (first-selected
+            // member when the hero isn't in the selection) works the lever.
             if (lever.IsDestroyed) _pendingLeverUse = null;
-            else if (_player is not null && !_player.IsDead)
+            else if (ActingCharacter() is { IsDead: false } leverActor)
             {
-                var pp = _player.CurrentTransform.Translation;
+                var pp = leverActor.CurrentTransform.Translation;
                 bool inRange;
                 if (lever.LeverUsePointScids.Length > 0 &&
                     TryNearestLeverUsePoint(lever, pp, out var up))
@@ -20576,9 +20685,9 @@ void main()
         if (_pendingLockedUse is { } locked)
         {
             if (locked.Unlocked || locked.Prop.IsDestroyed) _pendingLockedUse = null;
-            else if (_player is not null && !_player.IsDead)
+            else if (ActingCharacter() is { IsDead: false } lockActor)
             {
-                var pp = _player.CurrentTransform.Translation;
+                var pp = lockActor.CurrentTransform.Translation;
                 var lp = locked.Prop.World.Translation;
                 float dx = pp.X - lp.X, dz = pp.Z - lp.Z;
                 float range = MathF.Max(1.2f, locked.UseRange);
@@ -20594,9 +20703,9 @@ void main()
         if (_pendingChestUse is { } chest)
         {
             if (chest.IsDestroyed || chest.ChestOpened) _pendingChestUse = null;
-            else if (_player is not null && !_player.IsDead)
+            else if (ActingCharacter() is { IsDead: false } chestActor)
             {
-                var pp = _player.CurrentTransform.Translation;
+                var pp = chestActor.CurrentTransform.Translation;
                 var cp = chest.World.Translation;
                 float dx = pp.X - cp.X, dz = pp.Z - cp.Z;
                 if (dx * dx + dz * dz <= chest.ChestUseRange * chest.ChestUseRange &&
@@ -23513,8 +23622,11 @@ void main()
                     }
                     // SC-ALIGNMENT — only evil-chain actors hunt the party;
                     // good combatants (guards, kings) never turn on you.
+                    // SC-DROOG-BOW — brain_bow greeters (droog villagers)
+                    // never fight: their whole brain is the bow.
                     bool hostile = s.IsEvilAligned && s.Actor.Stats.IsCombatant
-                                   && _nisPhase == NisPhase.Off;
+                                   && _nisPhase == NisPhase.Off
+                                   && !IsBowGreeter(s.Actor.Template);
                     // SC-MOB-DOGPILE — melee brains route through the
                     // spread-aware picker (attacker cap per victim, retail's
                     // EngagedMeMeleeAttackerCount limit + second-tier
@@ -23554,6 +23666,30 @@ void main()
                             Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises");
                         }
                         else s.StartupAwakened = true;
+                    }
+                    // SC-DROOG-BOW (blindspot E9) — brain_bow.skrit: when a
+                    // human-controlled friend enters the outer comfort zone,
+                    // play the env_droog_bow cue, bow, then hold prostrate.
+                    if (!hostile && IsBowGreeter(s.Actor.Template)
+                        && _playSeconds >= s.NextBowAt)
+                    {
+                        var bower = NearestLivePartyMember(s.CurrentTransform.Translation);
+                        if (bower is not null)
+                        {
+                            var dbw = bower.CurrentTransform.Translation
+                                - s.CurrentTransform.Translation;
+                            if (dbw.X * dbw.X + dbw.Z * dbw.Z < 7f * 7f
+                                && MathF.Abs(dbw.Y) < 2f)
+                            {
+                                s.NextBowAt = _playSeconds + 30.0;
+                                RegisterAndPlayVoiceCue("env_droog_bow",
+                                    s.CurrentTransform.Translation);
+                                if (s.Actor.GetClipIndex("bow1") >= 0)
+                                    s.Actor.PlayChoreOnce("bow1", 2.2f);
+                                else if (s.Actor.GetClipIndex("pron") >= 0)
+                                    s.Actor.PlayChoreOnce("pron", 6f);
+                            }
+                        }
                     }
                     // SC-AI-OCZ-FLEE — skittish ambients bolt from anyone
                     // entering their authored outer comfort zone.
@@ -25200,8 +25336,9 @@ void main()
                 picked.Add(m.PartyIndex);
 
         _selectedPartyIdx.Clear();
-        if (picked.Count == 0) { _selectedPartyIdx.Add(0); return; }
+        if (picked.Count == 0) { _selectedPartyIdx.Add(0); _firstSelectedIdx = 0; return; }
         foreach (var i in picked) _selectedPartyIdx.Add(i);
+        _firstSelectedIdx = picked[0];   // SC-FIRST-SELECTED
         if (picked.Count == 1) _paperdollTargetIndex = picked[0];
         Console.WriteLine($"[select] marquee picked {picked.Count} member(s): {string.Join(",", picked)}");
     }
@@ -25996,6 +26133,8 @@ void main()
         _screenEdgeTracking = s.ScreenEdgeTracking;
         _lockCameraX = s.LockCameraX;
         _lockCameraY = s.LockCameraY;
+        // SC-DATABAR-DOCK — restore the status bar's dock edge.
+        Hud.DataBar.DockTop = s.DataBarTop;
         _showFps = s.ShowFramerate;
         _spellbookWithI = s.SpellbookOpensWithI;
         // SC-OPTIONS-GAME — the Game tab's knobs go live here (boot, OK,
@@ -28217,7 +28356,12 @@ void main()
         // is selected (retail: the first-selected character works doors; the
         // ordered members walk to the click and pass through).
         OpenDoorNear(hit);
-        if (heroSelected)
+        // SC-FIRST-SELECTED (blindspot E3) — a member-only selection can
+        // work levers/chests/usables too: the request latches queue the
+        // same way, and their arrival checks test the ACTING character
+        // (first-selected member), who is already being ordered to the
+        // click by the selection move below.
+        if (heroSelected || _selectedPartyIdx.Count > 0)
         {
             // SC-ELEVATOR — clicking ON a lever prop (ray hit) queues a
             // walk-up-and-pull; a click that misses every lever clears any
@@ -28227,13 +28371,16 @@ void main()
             RequestChestUseNear(hit);
             // ALPHA-2E — and for locked usables (Star Device).
             RequestLockedUseNear(hit);
-            _playerFollower.SetTarget(hit);
-            // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
-            // authored stand spot (the farm winch's is ON the elevator grate, so
-            // the player rides down with the car), not to the raw click point.
-            if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
-                TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
-                _playerFollower.SetTarget(upw);
+            if (heroSelected)
+            {
+                _playerFollower.SetTarget(hit);
+                // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
+                // authored stand spot (the farm winch's is ON the elevator grate, so
+                // the player rides down with the car), not to the raw click point.
+                if (_pendingLeverUse is { } pl && pl.LeverUsePointScids.Length > 0 &&
+                    TryNearestLeverUsePoint(pl, _playerFollower.Position, out var upw))
+                    _playerFollower.SetTarget(upw);
+            }
             // Phase 12-SC-1 — an LMB move overrides any pending walk-up-and-swing
             // (and Phase 22: any pending walk-up pickup; SC-CAST-APPROACH: any
             // pending walk-up cast; SC-BREAK-APPROACH: any pending smash).
@@ -28269,6 +28416,13 @@ void main()
         face = face.LengthSquared() > 1e-4f
             ? Vector3.Normalize(face)
             : (_playerFacing.LengthSquared() > 0.01f ? _playerFacing : Vector3.UnitZ);
+        // SC-RMB-FORMATION — the modal's rotation offset turns the
+        // ordered formation's facing.
+        if (MathF.Abs(_formationRotOffset) > 0.01f)
+        {
+            float cr = MathF.Cos(_formationRotOffset), sr = MathF.Sin(_formationRotOffset);
+            face = new Vector3(face.X * cr - face.Z * sr, 0f, face.X * sr + face.Z * cr);
+        }
         foreach (var m in _party)
         {
             if (m.PartyIndex <= 0 || m.IsDead || m.Brain is null || m.IsNetworkOwned) continue;
@@ -30972,8 +31126,29 @@ void main()
     /// selection SET (marquee/hotkeys/movement clicks) and every panel
     /// consumer (rail highlight, disband, orders scope) can never disagree.
     /// -1 = the leader plus every living follower ("select all").</summary>
+    // SC-FIRST-SELECTED (blindspot E3) — the manual's rule: the FIRST-
+    // selected character (circle under their feet) performs single-action
+    // commands. Tracked across every selection mutation; ActingCharacter()
+    // resolves it (hero wins whenever the hero is in the selection, since
+    // the hero is always "first" in a selection that includes them).
+    private int _firstSelectedIdx;
+
+    private ActorRenderState? ActingCharacter()
+    {
+        if (_player is null) return null;
+        if (_selectedPartyIdx.Contains(0) && !_player.Actor.Combat.Downed) return _player;
+        var first = _party.FirstOrDefault(p => p.PartyIndex == _firstSelectedIdx
+            && _selectedPartyIdx.Contains(p.PartyIndex));
+        if (first is { IsDead: false } && !first.Actor.Combat.Downed) return first;
+        foreach (var p in _party)
+            if (_selectedPartyIdx.Contains(p.PartyIndex) && !p.IsDead && !p.Actor.Combat.Downed)
+                return p;
+        return _player;
+    }
+
     private void SetPartySelection(int idx)
     {
+        _firstSelectedIdx = Math.Max(0, idx);
         _selectedPartyIdx.Clear();
         if (idx < 0)
         {
@@ -31437,6 +31612,39 @@ void main()
     /// used in [inventory][equipment]. Mirrors the table in
     /// <see cref="ResolvePaperdollSlotIcon"/>; reuse a single source
     /// once the surrounding code's stabilized.</summary>
+    /// <summary>SC-FORGIVING-DROP — the item's own paperdoll slot from its
+    /// authored [gui] equip_slot (+ the weapon melee/ranged split). Null
+    /// when the item isn't equippable.</summary>
+    private string? PaperdollSlotForItem(string itemRef)
+    {
+        if (_templateStore is null
+            || !_templateStore.TryGet(ResolveItemRef(itemRef), out var tpl)
+            || tpl is null) return null;
+        var es = (_templateStore.GetAttribute(tpl, "gui", "equip_slot") ?? "")
+            .Trim().ToLowerInvariant();
+        return es switch
+        {
+            "es_head"        => "helmet",
+            "es_chest"       => "armor",
+            "es_forearms"    => "gauntlets",
+            "es_feet"        => "boots",
+            "es_amulet"      => "amulet",
+            "es_shield_hand" => "shield",
+            "es_spellbook"   => "spellbook",
+            "es_ring"        => "ring1",
+            "es_ring_1"      => "ring1",
+            "es_ring_2"      => "ring2",
+            // Weapons: the melee/ranged boxes split by the template's
+            // attack class (bows/minigun → ranged box).
+            "es_weapon_hand" =>
+                (_templateStore.GetAttribute(tpl, "attack", "is_ranged") ?? "")
+                    .Trim().Equals("true", StringComparison.OrdinalIgnoreCase)
+                || tpl.Name.StartsWith("bw_", StringComparison.OrdinalIgnoreCase)
+                    ? "ranged" : "melee",
+            _ => null,
+        };
+    }
+
     private static string? PaperdollSlotToEsTag(string slotName) => slotName switch
     {
         // SC-PAPERDOLL-EQUIP — canonical DS1 tags: base_helm authors

@@ -114,6 +114,10 @@ internal sealed class OptionsMenuPanel
         // authored defaults. Round-trips through prefs.json with the rest.
         public Dictionary<string, string[]> KeyBindings = new();
 
+        // SC-DATABAR-DOCK — the status bar's dock edge (manual: drag to
+        // top to relocate). Persists with everything else.
+        public bool DataBarTop = false;
+
         // SC-HUD-DRAG — user-positioned HUD pieces (Shift+LMB drag; QoL
         // addition). Normalized viewport fractions of each piece's top-left
         // corner; -1 = the built-in layout. Persist with everything else.
