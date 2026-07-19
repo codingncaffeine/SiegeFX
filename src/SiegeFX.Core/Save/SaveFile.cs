@@ -137,6 +137,11 @@ public sealed class SaveFile
     /// place on load so an unpicked drop doesn't vanish.</summary>
     public List<LootPileSnapshot> LootPiles { get; set; } = new();
 
+    /// <summary>SC-SPELL-EFFECTS — live timed buff rows (Magic Armor and
+    /// friends) on party characters at save time; re-applied with their
+    /// remaining duration on load. Empty in pre-field saves.</summary>
+    public List<SpellEffectSnapshot> SpellEffects { get; set; } = new();
+
     /// <summary>ALPHA-2G — cross-region world state that a 20h+ campaign run
     /// accumulates: quest-gating booleans, one-shot gizmo progress, opened
     /// containers, unlocked mechanisms, cleared blockers, lift positions.
@@ -198,6 +203,17 @@ public sealed class CompanionSnapshot
     /// (0 melee / 1 ranged / 2 Active Spell 1 / 3 Active Spell 2; -1 = auto
     /// or pre-field save).</summary>
     public int ActiveSlot { get; set; } = -1;
+}
+
+/// <summary>SC-SPELL-EFFECTS — one live timed buff row at save time.
+/// PartyIndex 0 = the hero, N = that companion.</summary>
+public sealed class SpellEffectSnapshot
+{
+    public string Spell { get; set; } = "";
+    public string Alteration { get; set; } = "";
+    public float Value { get; set; }
+    public float RemainingSec { get; set; }
+    public int PartyIndex { get; set; }
 }
 
 /// <summary>SC-GEN-PERSIST — one spawner's mutable state.</summary>

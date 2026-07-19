@@ -37997,6 +37997,21 @@ void main()
             foreach (var kv2 in b.Equipment) ds.Equipment[kv2.Key] = kv2.Value;
             save.Party.Add(ds);
         }
+        // SC-SPELL-EFFECTS — live buff rows ride the save with their
+        // remaining time so a mid-buff save doesn't strip the party.
+        foreach (var fx in _spellEffects)
+        {
+            int fxIdx = fx.Target.IsPlayer ? 0
+                : fx.Target.IsPartyMember ? fx.Target.PartyIndex : -1;
+            if (fxIdx < 0) continue;
+            float rem = (float)(fx.ExpiresAt - _playSeconds);
+            if (rem <= 0.5f) continue;
+            save.SpellEffects.Add(new SiegeFX.Core.Save.SpellEffectSnapshot
+            {
+                Spell = fx.Spell, Alteration = fx.Alteration, Value = fx.Value,
+                RemainingSec = rem, PartyIndex = fxIdx,
+            });
+        }
         return save;
     }
 
@@ -38951,6 +38966,28 @@ void main()
         }
         if (save.Party.Count > 0)
             Console.WriteLine($"  load: party — {partyRestored}/{save.Party.Count} companion(s) restored");
+
+        // SC-SPELL-EFFECTS — reapply live buff rows with remaining time
+        // (after party restore so targets resolve; after the play clock
+        // restore so expiry math lines up).
+        _spellEffects.Clear();
+        foreach (var fxs in save.SpellEffects)
+        {
+            var fxTgt = fxs.PartyIndex == 0 ? _player
+                : _party.FirstOrDefault(pm => pm.PartyIndex == fxs.PartyIndex);
+            if (fxTgt is null || fxTgt.IsDead) continue;
+            _spellEffects.Add(new ActiveSpellEffect
+            {
+                Target = fxTgt, Spell = fxs.Spell, Alteration = fxs.Alteration,
+                Value = fxs.Value, ExpiresAt = _playSeconds + fxs.RemainingSec,
+            });
+        }
+        if (_spellEffects.Count > 0)
+        {
+            foreach (var fxT in _spellEffects.Select(e => e.Target).Distinct())
+                ResyncSpellEffectTarget(fxT);
+            Console.WriteLine($"  load: {_spellEffects.Count} live spell effect(s) reapplied");
+        }
 
         // SC-PCONTENT-ACTORS — heal saves written while #* container rolls
         // could hand out MONSTER templates as loot (the "Ancient Corpse"
