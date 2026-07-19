@@ -23386,6 +23386,8 @@ void main()
 
     private void OnUpdate(double dt)
     {
+        // SC-DISPLAY-MODE-TASKBAR — keep the borderless topmost pin honest.
+        TickTopmostWatchdog(dt);
         // Re-apply the window/taskbar icon across the first frames of the live
         // loop. GLFW only pushes the icon to the Windows taskbar if events are
         // polled within ~500ms of SetWindowIcon (glfw#2753); OnLoad sets it
@@ -26454,23 +26456,69 @@ void main()
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter,
         int x, int y, int cx, int cy, uint uFlags);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetWindowLongPtrW(nint hWnd, int nIndex);
     private const uint SwpNoSizeNoMoveNoActivate = 0x0001 | 0x0002 | 0x0010;
+    private const int GwlExStyle = -20;
+    private const long WsExTopmost = 0x8;
+
+    private bool _windowFocused = true;
+    private double _topmostWatchdog;
 
     private bool IsBorderlessNow =>
         _window.WindowState == WindowState.Normal
         && _window.WindowBorder == WindowBorder.Hidden;
 
-    private void SetBorderlessTopmost(bool on)
+    private unsafe void SetBorderlessTopmost(bool on)
     {
+        // GLFW re-applies z-order from its own FLOATING flag on every
+        // mode/monitor transition — leaving exclusive fullscreen ends in an
+        // internal SetWindowPos(HWND_NOTOPMOST) when the flag is off, which
+        // stripped a raw WS_EX_TOPMOST pin the moment the user cycled
+        // Fullscreen → Borderless (field-reproduced). Set the ATTRIBUTE so
+        // GLFW maintains the band itself across its transitions, then apply
+        // the immediate Win32 pin for this instant, and log what stuck.
+        try
+        {
+            var glfw = Silk.NET.Windowing.Glfw.GlfwWindowing.GetExistingApi(_window);
+            glfw?.SetWindowAttrib((Silk.NET.GLFW.WindowHandle*)_window.Handle,
+                Silk.NET.GLFW.WindowAttributeSetter.Floating, on);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[display] glfw floating attribute failed: {ex.Message}");
+        }
         nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
-        if (hwnd == 0) return;
-        SetWindowPos(hwnd, on ? (nint)(-1) : (nint)(-2), // HWND_TOPMOST / HWND_NOTOPMOST
+        if (hwnd == 0) { Console.WriteLine("[display] topmost pin skipped — no hwnd"); return; }
+        bool ok = SetWindowPos(hwnd, on ? (nint)(-1) : (nint)(-2), // HWND_TOPMOST / HWND_NOTOPMOST
             0, 0, 0, 0, SwpNoSizeNoMoveNoActivate);
+        bool has = ((long)GetWindowLongPtrW(hwnd, GwlExStyle) & WsExTopmost) != 0;
+        Console.WriteLine($"[display] borderless topmost -> {on} (setpos={ok} exTopmost={has})");
     }
 
     private void OnWindowFocusChanged(bool focused)
     {
+        _windowFocused = focused;
         if (IsBorderlessNow) SetBorderlessTopmost(focused);
+    }
+
+    /// <summary>SC-DISPLAY-MODE-TASKBAR — once-a-second pin verification.
+    /// Explorer and windowing transitions can strip WS_EX_TOPMOST outside
+    /// our sight; while borderless holds focus, detect a missing pin and
+    /// repair it (the log line is the diagnosis when the taskbar wins).</summary>
+    private void TickTopmostWatchdog(double dt)
+    {
+        _topmostWatchdog += dt;
+        if (_topmostWatchdog < 1.0) return;
+        _topmostWatchdog = 0;
+        if (!IsBorderlessNow || !_windowFocused) return;
+        nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
+        if (hwnd == 0) return;
+        if (((long)GetWindowLongPtrW(hwnd, GwlExStyle) & WsExTopmost) == 0)
+        {
+            Console.WriteLine("[display] borderless pin was stripped — re-asserting");
+            SetBorderlessTopmost(true);
+        }
     }
 
     /// <summary>SC-DISPLAY-MODE — Resolution + display mode, applied on OK
