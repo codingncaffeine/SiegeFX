@@ -33860,6 +33860,31 @@ void main()
                             if (spell.LaunchVelocity > 1f) carrierSpeed = spell.LaunchVelocity;
                         }
                         SpawnRangedShot(carrier, src, dst, carrierSpeed);
+                        // SC-SPELL-DELIVERY — [spell_launch] number: the
+                        // cluster bomb fires its extra carriers in a fan
+                        // around the aim line (each lands + splashes).
+                        for (int cn = 1; cn < spell.LaunchNumber; cn++)
+                        {
+                            float fan = (cn - (spell.LaunchNumber - 1) * 0.5f) * 0.18f;
+                            var rel = dst - src;
+                            var fanDst = src + new Vector3(
+                                rel.X * MathF.Cos(fan) - rel.Z * MathF.Sin(fan),
+                                rel.Y,
+                                rel.X * MathF.Sin(fan) + rel.Z * MathF.Cos(fan));
+                            var extra = new RangedShot
+                            {
+                                Gravity = carrier.Gravity,
+                                Mesh = carrier.Mesh,
+                                Tex = carrier.Tex,
+                                ImpactSfxScript = carrier.ImpactSfxScript,
+                                FlightSfxScript = carrier.FlightSfxScript,
+                                FromPlayer = true,
+                                Spell = spell,
+                                SpellDamage = result.Damage,
+                                SnapshotAim = fanDst,
+                            };
+                            SpawnRangedShot(extra, src, fanDst, carrierSpeed);
+                        }
                     }
                     else
                     {

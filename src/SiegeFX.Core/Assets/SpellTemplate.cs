@@ -296,6 +296,10 @@ public sealed class SpellTemplate
     /// velocity (phrak dart 15, skrubb spit 7-10).</summary>
     public float LaunchVelocity { get; private set; } = 15f;
 
+    /// <summary>SC-SPELL-DELIVERY — [spell_launch] number: carriers fired
+    /// per cast (cluster bomb = 5, everything else 1).</summary>
+    public int LaunchNumber { get; private set; } = 1;
+
     /// <summary>Phase 24a — player-acquirable = a combat/nature-school
     /// spell (monster arsenal and unknown-chain templates excluded).</summary>
     public bool PlayerAcquirable =>
@@ -479,7 +483,14 @@ public sealed class SpellTemplate
         for (var t = template; t is not null && !IsLaunch; t = t.Specializes)
             foreach (var child in t.Node.Children)
                 if (child.Header.Equals("spell_launch", StringComparison.OrdinalIgnoreCase))
-                { IsLaunch = true; break; }
+                {
+                    IsLaunch = true;
+                    // SC-SPELL-DELIVERY — carriers per cast (cluster = 5).
+                    if (int.TryParse((TemplateStore.FindAttr(child, "number") ?? "")
+                            .Trim(), out var ln) && ln > 1)
+                        LaunchNumber = Math.Min(ln, 12);
+                    break;
+                }
         if (IsLaunch)
         {
             LaunchAmmoTemplate = (store.GetAttribute(template, "attack", "ammo_template") ?? "")
