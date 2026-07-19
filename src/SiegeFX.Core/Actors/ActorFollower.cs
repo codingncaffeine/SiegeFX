@@ -172,6 +172,32 @@ public sealed class ActorFollower
             _idleTicksRemaining = _rng.Next(IdleMinTicks, IdleMaxTicks + 1);
     }
 
+    /// <summary>SC-MOB-CHASE-FREEZE — tick for BRAIN-DRIVEN legs (chase /
+    /// flee / cautious approach / fidget walk / patrol): the brain owns the
+    /// follower's target, so the wander machinery must stay out of the way.
+    /// The regular <see cref="Tick"/> gated these legs through the idle
+    /// dwell too — any ReachedGoal/blocked event armed up to 7.5s of
+    /// stand-still that swallowed the following ticks outright (a chaser
+    /// statue-frozen while its quarry stood in plain sight), and the
+    /// dwell-expiry PickNewTarget stomped the externally-set target. This
+    /// path skips idle/pick/watchdog entirely: advance the follower, track
+    /// facing, nothing else.</summary>
+    public void TickDriven(float dt)
+    {
+        _idleTicksRemaining = 0;   // cancel any pending wander dwell
+        _legArmed = false;         // external target — the leg watchdog is not ours
+        var before = Follower.Position;
+        Follower.Tick(dt);
+        float dx = Follower.Position.X - before.X;
+        float dz = Follower.Position.Z - before.Z;
+        float len2 = dx * dx + dz * dz;
+        if (len2 > 1e-6f)
+        {
+            float len = MathF.Sqrt(len2);
+            _facing = new Vector3(dx / len, 0f, dz / len);
+        }
+    }
+
     /// <summary>Phase 19b — teleport the underlying nav follower to
     /// <paramref name="pos"/> and force a fresh wander pick on the next tick.
     /// Used by save/load to restore actor positions; the saved facing is
@@ -265,7 +291,16 @@ public sealed class ActorFollower
                     origin.X + MathF.Cos(angle) * radius,
                     origin.Y,
                     origin.Z + MathF.Sin(angle) * radius);
-                if (!mesh.TryFindTriangle(candidate, out var tri)) continue;
+                // SC-MOB-FADE-PICK — include fade-hidden ground: it is
+                // physical floor (every OTHER resolve in the follower stack
+                // includes it — Replan's start bind, the stand probes, the
+                // spawn snap). Without the flag, a mob whose interior is
+                // currently cutaway-hidden failed EVERY sample AND the
+                // last-ditch anchor bind below — target never changed,
+                // PathBlocked stuck true, and the mob stood frozen for the
+                // whole session (field report: generator bats + crypt spider,
+                // stalled[Wander] blocked=True with a static target).
+                if (!mesh.TryFindTriangle(candidate, out var tri, includeFadeHidden: true)) continue;
                 // SC-MOB-ROAM-AUDIT — the sample must land on the actor's OWN
                 // layer and on ground its policy can enter. The picker resolves
                 // best-Y at the XZ, so on a switchback path or above a valley an
@@ -295,7 +330,7 @@ public sealed class ActorFollower
         // potentially fruitless, but it visibly "tries" rather than
         // freezing. Idle backoff scales the retry rate down so we
         // don't burn CPU on a permanently-pinned actor.
-        if (mesh.TryFindTriangle(origin, out _))
+        if (mesh.TryFindTriangle(origin, out _, includeFadeHidden: true))
         {
             Follower.SetTarget(origin);
             // SC-MOB-LEG-TIMEOUT — the walk-home fallback leg can be long

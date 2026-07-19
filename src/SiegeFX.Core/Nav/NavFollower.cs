@@ -729,6 +729,19 @@ public sealed class NavFollower
             if (dx * dx + dz * dz > MaxSeamHopDist * MaxSeamHopDist) continue;
             if (MathF.Abs(landing.Y - Position.Y) > MaxRebindDy) continue;
             if (landing.Y < Position.Y - MaxStepDownDy) continue;
+            // SC-NAV-SEAM-HOP-FORWARD — the hop must make PROGRESS. The
+            // nearest point of the far triangle can sit BEHIND the walker
+            // (its near edge lies back along the corridor); hopping there,
+            // walking forward, and falling off at the same spot loops
+            // forever — the chase-sim's PINNED orbit (83u walked for a 9u
+            // trip; in-game: a chaser jogging in place). Reject a landing
+            // that isn't strictly closer to the active waypoint; the
+            // containment clamp then holds the edge and stuck-recovery
+            // replans honestly.
+            var wpGoal = _waypointIdx < _waypoints.Count ? _waypoints[_waypointIdx] : Target;
+            float curDx = wpGoal.X - Position.X, curDz = wpGoal.Z - Position.Z;
+            float landDx = wpGoal.X - landing.X, landDz = wpGoal.Z - landing.Z;
+            if (landDx * landDx + landDz * landDz >= curDx * curDx + curDz * curDz - 1e-3f) continue;
             hopTri = far;
             hopPathIdx = k;
             hopX = landing.X;

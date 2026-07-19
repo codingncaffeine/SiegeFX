@@ -1888,6 +1888,16 @@ public sealed class RenderHost : IDisposable
         public Vector3 LastPositionXZ;
         public bool HasLastPosition;
         public bool IsMoving;
+        // SC-MOB-MOONWALK — nav stuck-recovery escape hops displace ~0.4u in
+        // a single tick, which beats the per-tick IsMoving threshold while
+        // the mob makes zero NET progress: a pinned actor played its walk
+        // clip against an invisible wall ("walking in place" patches). The
+        // windowed check below forces stand when no real ground is covered;
+        // a sustained per-tick streak re-opens the walk immediately.
+        public Vector3 MoveWindowAnchor;
+        public float MoveWindowTimer;
+        public int MoveStreak;
+        public bool PinnedStanding;
 
         // SC-NPC-WEAPONS — resolved equipped gear, rendered attached to the
         // skeleton's weapon/shield bones (same raw-attach rule as the player:
@@ -24110,7 +24120,30 @@ void main()
                         var dz = posXZ.Z - s.LastPositionXZ.Z;
                         // ~0.05 u over a 50ms tick = 1 u/s; well below krug walk speed but
                         // above floating-point noise from idle followers.
-                        s.IsMoving = (dx * dx + dz * dz) > 0.0025f;
+                        bool tickMoved = (dx * dx + dz * dz) > 0.0025f;
+                        // SC-MOB-MOONWALK — walk needs REAL ground covered.
+                        // Recovery jiggle is single-tick spikes between 8-tick
+                        // stuck runs, so it never sustains a streak; genuine
+                        // walking clears the pin flag within ~200ms. The 0.6s
+                        // window then catches any pin the streak lets through
+                        // (net displacement < 0.3u → stand, not moonwalk).
+                        s.MoveStreak = tickMoved ? s.MoveStreak + 1 : 0;
+                        if (s.MoveStreak >= 4) s.PinnedStanding = false;
+                        s.MoveWindowTimer += (float)stepSec;
+                        if (s.MoveWindowTimer >= 0.6f)
+                        {
+                            float wdx = posXZ.X - s.MoveWindowAnchor.X;
+                            float wdz = posXZ.Z - s.MoveWindowAnchor.Z;
+                            s.PinnedStanding = (wdx * wdx + wdz * wdz) < 0.3f * 0.3f;
+                            s.MoveWindowTimer = 0f;
+                            s.MoveWindowAnchor = posXZ;
+                        }
+                        s.IsMoving = tickMoved && !s.PinnedStanding;
+                    }
+                    else
+                    {
+                        s.MoveWindowAnchor = posXZ;
+                        s.MoveWindowTimer = 0f;
                     }
                     s.LastPositionXZ = posXZ;
                     s.HasLastPosition = true;

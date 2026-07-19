@@ -326,6 +326,34 @@ public sealed class ActorBrain
     Vector3? _cautiousGoal;
     float _lastSeenLife = -1f;
 
+    // SC-MOB-CHASE-GIVEUP — a chase whose approach is genuinely unwalkable
+    // (blocked path, or a nav pin the follower's stuck-recovery can't
+    // escape) must END, not statue-stand in Chase forever (field report:
+    // stalled[Chase] blocked=False mobs frozen 45s+ mid-pursuit). Two
+    // detectors: continuously-blocked time, and a no-progress window that
+    // catches recovery-oscillation pins the blocked flag never surfaces.
+    // On give-up the brain leashes home and a short cooldown keeps the very
+    // next tick's aggro check from re-entering the same dead chase.
+    float _chaseBlockedSecs;
+    float _chaseStallTimer;
+    Vector3 _chaseStallAnchor;
+    float _reaggroCooldown;
+    const float ChaseBlockedGiveUpSecs = 1.5f;
+    const float ChaseStallWindowSecs = 3f;
+    const float ChaseStallMinProgress = 0.75f;
+    const float ReaggroCooldownSecs = 4f;
+
+    void GiveUpChase()
+    {
+        _chaseBlockedSecs = 0f;
+        _chaseStallTimer = 0f;
+        _reaggroCooldown = ReaggroCooldownSecs;
+        State = BrainState.Wander;
+        _attackFacing = null;
+        EndCharge();
+        _cautiousArmed = false;
+    }
+
     void EndCharge()
     {
         if (!_charging) return;
@@ -448,6 +476,9 @@ public sealed class ActorBrain
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
 
+        // SC-MOB-CHASE-GIVEUP — tick down the post-give-up re-aggro pause.
+        if (_reaggroCooldown > 0f) _reaggroCooldown -= dt;
+
         // SC-MOB-CAUTIOUS — taking damage breaks the stalk (authored
         // abort_cautious_on_damage, default true): a wounded wolf stops
         // creeping and commits. Life-delta watch needs no host hook.
@@ -490,7 +521,7 @@ public sealed class ActorBrain
                 // thick (crypt end room, ~4u under the surface). The host
                 // test now includes terrain, so a floor/ceiling/ridge between
                 // the two blocks the spot outright.
-                if (targetAlive && distXZ <= AggroRadius &&
+                if (targetAlive && distXZ <= AggroRadius && _reaggroCooldown <= 0f &&
                     MathF.Abs(Wander.Position.Y - targetPos!.Value.Y) <= AggroVerticalBand &&
                     SightBlocked?.Invoke(Wander.Position, targetPos!.Value) != true)
                 {
@@ -514,7 +545,10 @@ public sealed class ActorBrain
                             if (_fidgetHold <= 0f) _fidgetMode = 0;
                             break;
                         }
-                        Wander.Tick(dt);
+                        // SC-MOB-CHASE-FREEZE — the fidget walk targets the
+                        // brain's goal; driven tick so the dwell can't stall
+                        // it and a dwell-expiry pick can't stomp the goal.
+                        Wander.TickDriven(dt);
                         if (Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
                         {
                             if (_fidgetMode == 1 && !Wander.Follower.PathBlocked)
@@ -613,7 +647,11 @@ public sealed class ActorBrain
                             + new Vector3(cdx / clen, 0f, cdz / clen) * step;
                         Wander.Follower.SetTarget(_cautiousGoal.Value);
                     }
-                    Wander.Tick(dt);
+                    // SC-MOB-CHASE-FREEZE — cautious stands are deliberate;
+                    // keep them out of the stall detector's window.
+                    _chaseStallTimer = 0f;
+                    _chaseStallAnchor = Wander.Position;
+                    Wander.TickDriven(dt);
                     if (Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
                     {
                         _cautiousGoal = null;
@@ -621,14 +659,49 @@ public sealed class ActorBrain
                     }
                     break;
                 }
-                // Re-pin the follower target every tick — the player is a moving
-                // goalpost, so a fire-and-forget SetTarget would have us chasing
-                // a stale position. NavFollower replans on each SetTarget call.
+                // Re-pin the follower when the quarry has moved meaningfully
+                // (the player is a moving goalpost). NOT every tick: the old
+                // 20 Hz SetTarget re-ran a full A* per chaser AND cleared
+                // PathBlocked before anything could observe it — an
+                // unreachable quarry left the mob standing in Chase forever
+                // while replanning at full rate.
                 // SC-MOB-PARTIES — a marching pack member steers at its
                 // formation slot instead; the pack clears PackGoal to
                 // release the charge.
-                Wander.Follower.SetTarget(PackGoal ?? targetPos!.Value);
-                Wander.Tick(dt);
+                // SC-MOB-CHASE-FREEZE — movement rides TickDriven so a
+                // wander dwell can never gate a live pursuit.
+                var chaseGoal = PackGoal ?? targetPos!.Value;
+                float tdx = chaseGoal.X - Wander.Follower.Target.X;
+                float tdz = chaseGoal.Z - Wander.Follower.Target.Z;
+                if (Wander.Follower.ReachedGoal || tdx * tdx + tdz * tdz > 0.4f * 0.4f)
+                    Wander.Follower.SetTarget(chaseGoal);
+                Wander.TickDriven(dt);
+                // SC-MOB-CHASE-GIVEUP — two pin detectors. (1) The follower
+                // says blocked and stays blocked: give up quickly. (2) No
+                // real progress across a window despite an allegedly-open
+                // path — the recovery-oscillation pin (walker jiggles ≤0.4u
+                // against a seam/ledge forever, blocked flag flickering too
+                // briefly to accumulate).
+                if (Wander.Follower.PathBlocked)
+                {
+                    _chaseBlockedSecs += dt;
+                    if (_chaseBlockedSecs >= ChaseBlockedGiveUpSecs) { GiveUpChase(); break; }
+                }
+                else _chaseBlockedSecs = 0f;
+                _chaseStallTimer += dt;
+                if (_chaseStallTimer >= ChaseStallWindowSecs)
+                {
+                    // Standing near the quarry is a fight, not a pin —
+                    // Attack↔Chase bounces re-enter here without EnterChase,
+                    // and a melee dance holds position legitimately. The
+                    // blocked detector above still covers unwalkable
+                    // approaches at close range.
+                    if (DistXZ(Wander.Position, _chaseStallAnchor) < ChaseStallMinProgress
+                        && distXZ > EngageRange * 1.5f)
+                    { GiveUpChase(); break; }
+                    _chaseStallTimer = 0f;
+                    _chaseStallAnchor = Wander.Position;
+                }
                 break;
 
             case BrainState.Attack:
@@ -718,7 +791,10 @@ public sealed class ActorBrain
                 // the next engagement is to the death, matching authored
                 // flee_count=1 semantics).
                 _fleeTimer -= dt;
-                Wander.Tick(dt);
+                // SC-MOB-CHASE-FREEZE — flee is a brain-driven leg; the
+                // wander dwell must not gate the run (it froze fleers in
+                // place for seconds while the threat closed in).
+                Wander.TickDriven(dt);
                 if (_fleeTimer <= 0f || Wander.Follower.ReachedGoal || Wander.Follower.PathBlocked)
                 {
                     State = BrainState.Wander;
@@ -903,7 +979,9 @@ public sealed class ActorBrain
                 _patrolBlockedSkips = 0;
             }
         }
-        Wander.Tick(dt);
+        // SC-MOB-CHASE-FREEZE — patrol owns the target; driven tick so the
+        // wander dwell can't stall the route between waypoints.
+        Wander.TickDriven(dt);
     }
 
     /// <summary>SC-MOB-PARTY — alert-friends hook. A packmate that spotted the
@@ -914,6 +992,9 @@ public sealed class ActorBrain
     public void ForceAggro(Vector3 targetPos)
     {
         if (State != BrainState.Wander) return;
+        // SC-MOB-CHASE-GIVEUP — a packmate's shout doesn't override the
+        // post-give-up pause; this brain just proved it can't reach.
+        if (_reaggroCooldown > 0f) return;
         // Same vertical band as the direct spot — a packmate's shout doesn't
         // carry through a floor.
         if (MathF.Abs(Wander.Position.Y - targetPos.Y) > AggroVerticalBand) return;
@@ -939,6 +1020,10 @@ public sealed class ActorBrain
     {
         State = BrainState.Chase;
         _attackFacing = null;
+        // SC-MOB-CHASE-GIVEUP — fresh pursuit, fresh pin detectors.
+        _chaseBlockedSecs = 0f;
+        _chaseStallTimer = 0f;
+        _chaseStallAnchor = Wander.Position;
         // SC-MOB-RUN — roll the authored charge on engagement: sprint the
         // approach at the body's max_move_velocity until the first hit
         // lands. Mid-fight Attack↔Chase bounces set State directly, so the
