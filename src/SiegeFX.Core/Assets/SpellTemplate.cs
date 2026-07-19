@@ -174,6 +174,31 @@ public sealed class SpellTemplate
     public bool HasDamageVolume { get; private set; }
     public bool DamageVolumeCasterCenter { get; private set; }
 
+    // SC-CONTROL-SPELLS — the authored control components (one flag/param
+    // each; empty/false = not that kind of spell).
+    /// <summary>[spell_switch_alignment] — flips the target's alignment
+    /// (Ambivalence: hostile → neutral) for the spell's effect_duration.</summary>
+    public bool SwitchesAlignment { get; private set; }
+    /// <summary>[spell_balance] — redistributes the party's life/mana
+    /// fractions evenly (Harmony).</summary>
+    public bool BalancesLife { get; private set; }
+    public bool BalancesMana { get; private set; }
+    /// <summary>[spell_body_bomb] — detonates the targeted corpse.</summary>
+    public bool HasBodyBomb { get; private set; }
+    /// <summary>[spell_penalty] decrease_health — flat self-cost per cast.</summary>
+    public float PenaltyHealth { get; private set; }
+    /// <summary>[spell_return_summoned] health_per_level — dismiss your
+    /// summon, restoring this much life per magic level.</summary>
+    public float ReturnSummonHealthPerLevel { get; private set; }
+    /// <summary>[spell_reactive_armor] react_script — the buffed character
+    /// retaliates with this effect when struck, for the duration.</summary>
+    public string ReactiveArmorScript { get; private set; } = "";
+    /// <summary>[spell_transmute]/[spell_polymorph] — parsed so cast sites
+    /// can act (transmute: pile→gold) or log the accepted gap (polymorph
+    /// authors no target form outside skrit).</summary>
+    public bool HasTransmute { get; private set; }
+    public bool HasPolymorph { get; private set; }
+
     /// <summary>SC-SPELL-EFFECTS — authored [magic][enchantments] rows: the
     /// buff/curse school's stat alterations, applied to the TARGET for the
     /// row's evaluated duration (magic_armor: alter_armor, (#magic*0.7),
@@ -396,6 +421,36 @@ public sealed class SpellTemplate
                     DamageVolumeCasterCenter = (TemplateStore.FindAttr(child, "caster_center") ?? "")
                         .Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
                 }
+                else if (child.Header.Equals("spell_switch_alignment", StringComparison.OrdinalIgnoreCase))
+                    SwitchesAlignment = true;
+                else if (child.Header.Equals("spell_balance", StringComparison.OrdinalIgnoreCase))
+                {
+                    BalancesLife = !(TemplateStore.FindAttr(child, "balance_life") ?? "true")
+                        .Trim().Equals("false", StringComparison.OrdinalIgnoreCase);
+                    BalancesMana = !(TemplateStore.FindAttr(child, "balance_mana") ?? "true")
+                        .Trim().Equals("false", StringComparison.OrdinalIgnoreCase);
+                }
+                else if (child.Header.Equals("spell_body_bomb", StringComparison.OrdinalIgnoreCase))
+                    HasBodyBomb = true;
+                else if (child.Header.Equals("spell_penalty", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (float.TryParse((TemplateStore.FindAttr(child, "decrease_health") ?? "")
+                            .Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var ph))
+                        PenaltyHealth = ph;
+                }
+                else if (child.Header.Equals("spell_return_summoned", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (float.TryParse((TemplateStore.FindAttr(child, "health_per_level") ?? "22")
+                            .Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var rh))
+                        ReturnSummonHealthPerLevel = rh;
+                }
+                else if (child.Header.Equals("spell_reactive_armor", StringComparison.OrdinalIgnoreCase))
+                    ReactiveArmorScript = (TemplateStore.FindAttr(child, "react_script") ?? "")
+                        .Trim().Trim('"');
+                else if (child.Header.Equals("spell_transmute", StringComparison.OrdinalIgnoreCase))
+                    HasTransmute = true;
+                else if (child.Header.Equals("spell_polymorph", StringComparison.OrdinalIgnoreCase))
+                    HasPolymorph = true;
                 else if (_enchantments.Count == 0
                     && child.Header.Equals("magic", StringComparison.OrdinalIgnoreCase))
                 {

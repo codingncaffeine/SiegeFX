@@ -6034,6 +6034,201 @@ public sealed class RenderHost : IDisposable
     private readonly List<(ActorRenderState Actor, float DieAt)> _multiSummonLive = new();
     private float _multiSummonClock;
 
+    // ── SC-CONTROL-SPELLS ──────────────────────────────────────────────────
+    // The control school's runtime: Ambivalence alignment flips (timed),
+    // Harmony party balancing, ritual self-costs, Return Summoned, corpse
+    // bombs, reactive armor retaliation, and Transmute's pile→gold.
+    private readonly List<(ActorRenderState Target, double Until)> _alignFlips = new();
+
+    private sealed class ReactiveArmorRow
+    {
+        public ActorRenderState Target = null!;
+        public SiegeFX.Core.Assets.SpellTemplate Spell = null!;
+        public double Until;
+        public float LastLife;
+    }
+    private readonly List<ReactiveArmorRow> _reactiveArmors = new();
+
+    private void ApplyControlSpellPayload(SiegeFX.Core.Assets.SpellTemplate spell,
+        ActorRenderState? target, float magicLevel)
+    {
+        if (_player is null) return;
+        // Ambivalence — the struck hostile forgets the fight for a while.
+        if (spell.SwitchesAlignment && target is { IsDead: false, IsEvilAligned: true })
+        {
+            target.IsEvilAligned = false;
+            target.Brain?.ForceIdle();
+            float adur = MathF.Max(8f, SpellEffectDurationSec(spell, _player));
+            _alignFlips.Add((target, _playSeconds + adur));
+            AddFloatingText("pacified",
+                target.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
+                new Vector4(0.7f, 0.9f, 1f, 1f));
+            Console.WriteLine($"[control] {spell.Name}: {target.Actor.Template.Name} pacified for {adur:F0}s");
+        }
+        // Harmony — average the standing party's life/mana fractions.
+        if (spell.BalancesLife || spell.BalancesMana)
+        {
+            var members = new List<ActorRenderState>();
+            if (!_player.IsDead && !_player.Actor.Combat.Downed) members.Add(_player);
+            foreach (var m in _party)
+                if (m.PartyIndex > 0 && m.IsPartyMember && !m.IsDead && !m.Actor.Combat.Downed)
+                    members.Add(m);
+            if (members.Count > 1)
+            {
+                float lifeFrac = 0f, manaFrac = 0f;
+                foreach (var x in members)
+                {
+                    lifeFrac += x.Actor.Combat.CurrentLife / MathF.Max(1f, x.Actor.Stats.MaxLife);
+                    manaFrac += x.Actor.Combat.CurrentMana / MathF.Max(1f, x.Actor.Stats.MaxMana);
+                }
+                lifeFrac /= members.Count;
+                manaFrac /= members.Count;
+                foreach (var x in members)
+                {
+                    float wantLife = spell.BalancesLife
+                        ? MathF.Max(1f, lifeFrac * x.Actor.Stats.MaxLife) : x.Actor.Combat.CurrentLife;
+                    float wantMana = spell.BalancesMana
+                        ? manaFrac * x.Actor.Stats.MaxMana : x.Actor.Combat.CurrentMana;
+                    x.Actor.Combat.RestoreFromSave(wantLife, wantMana, dead: false);
+                }
+                Console.WriteLine($"[control] {spell.Name}: balanced {members.Count} characters " +
+                                  $"(life {lifeFrac:P0}, mana {manaFrac:P0})");
+            }
+        }
+        // Ritual self-cost.
+        if (spell.PenaltyHealth > 0f && !_player.IsDead)
+            _player.Actor.Combat.ApplyDamage(spell.PenaltyHealth);
+        // Return Summoned — dismiss the creature, take back its vigor.
+        if (spell.ReturnSummonHealthPerLevel > 0f && PlayerSummon is { IsDead: false } smn2)
+        {
+            DespawnSummon(_player, smn2);
+            float heal = spell.ReturnSummonHealthPerLevel * MathF.Max(1f, magicLevel);
+            _player.Actor.Combat.Heal(heal);
+            AddFloatingText($"+{(int)heal} HP",
+                _player.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f),
+                new Vector4(0.4f, 0.95f, 0.4f, 1f));
+            Console.WriteLine($"[control] {spell.Name}: summon returned, +{heal:F0} life");
+        }
+        // Corpse bomb — the targeted body detonates and burns away.
+        if (spell.HasBodyBomb && target is { IsDead: true } corpse2)
+        {
+            ApplyDamageVolume(spell, _player, corpse2.CurrentTransform.Translation);
+            _particles?.SpawnSpark(corpse2.CurrentTransform.Translation + new Vector3(0f, 0.6f, 0f),
+                new Vector4(1f, 0.5f, 0.15f, 1f), 0.5f, 0.9f, 30);
+            _actors.Remove(corpse2);
+            Console.WriteLine($"[control] {spell.Name}: corpse of {corpse2.Actor.Template.Name} detonated");
+        }
+        // Reactive armor — the buffed character bites back when struck.
+        if (spell.ReactiveArmorScript.Length > 0)
+        {
+            var raTgt = target is { IsDead: false } t2 && (t2.IsPlayer || t2.IsPartyMember)
+                ? t2 : _player;
+            float rdur = MathF.Max(10f, SpellEffectDurationSec(spell, _player));
+            _reactiveArmors.RemoveAll(r => ReferenceEquals(r.Target, raTgt));
+            _reactiveArmors.Add(new ReactiveArmorRow
+            {
+                Target = raTgt, Spell = spell,
+                Until = _playSeconds + rdur,
+                LastLife = raTgt.Actor.Combat.CurrentLife,
+            });
+            Console.WriteLine($"[control] {spell.Name}: reactive armor on " +
+                $"{(raTgt.IsPlayer ? "hero" : raTgt.Actor.Template.Name)} for {rdur:F0}s");
+        }
+        // Transmute — the nearest loot pile turns to gold.
+        if (spell.HasTransmute) TransmuteNearestPile(MathF.Max(4f, spell.CastRange));
+        if (spell.HasPolymorph)
+            Console.WriteLine($"[control] {spell.Name}: polymorph form is skrit-authored — visual only (accepted gap)");
+    }
+
+    private void TickControlSpells(float dt)
+    {
+        for (int i = _alignFlips.Count - 1; i >= 0; i--)
+        {
+            var (t, until) = _alignFlips[i];
+            if (t.IsDead) { _alignFlips.RemoveAt(i); continue; }
+            if (_playSeconds < until) continue;
+            _alignFlips.RemoveAt(i);
+            t.IsEvilAligned = true;
+            Console.WriteLine($"[control] {t.Actor.Template.Name}'s pacification wore off");
+        }
+        for (int i = _reactiveArmors.Count - 1; i >= 0; i--)
+        {
+            var r = _reactiveArmors[i];
+            if (r.Target.IsDead || _playSeconds >= r.Until)
+            { _reactiveArmors.RemoveAt(i); continue; }
+            float life = r.Target.Actor.Combat.CurrentLife;
+            if (life < r.LastLife - 0.5f)
+            {
+                // Struck — retaliate at the nearest hostile in reach.
+                var p = r.Target.CurrentTransform.Translation;
+                ActorRenderState? foe = null;
+                float best2 = 5f * 5f;
+                foreach (var a in _actors)
+                {
+                    if (a.IsDead || !a.IsEvilAligned || !a.Actor.Stats.IsCombatant) continue;
+                    var d = a.CurrentTransform.Translation - p;
+                    float dd = d.X * d.X + d.Z * d.Z;
+                    if (dd < best2) { best2 = dd; foe = a; }
+                }
+                if (foe is not null)
+                {
+                    var fp2 = foe.CurrentTransform.Translation;
+                    if (_sfxRuntime is not null && _sfxStore is not null
+                        && _sfxStore.TryGet(r.Spell.ReactiveArmorScript, out _))
+                        _sfxRuntime.Spawn(r.Spell.ReactiveArmorScript, new SiegeFX.Core.Sfx.SfxContext(
+                            SourcePos:     p + new Vector3(0f, 1.2f, 0f),
+                            TargetPos:     fp2 + new Vector3(0f, 1.0f, 0f),
+                            WeaponBonePos: p + new Vector3(0f, 1.2f, 0f)));
+                    var (rmin, rmax) = ResolveSpellAttackDamage(r.Spell);
+                    float rdmg = rmin + (float)_turretRng.NextDouble() * (rmax - rmin);
+                    float rdealt = foe.Actor.Combat.ApplyDamage(rdmg);
+                    if (rdealt > 0f)
+                        AddFloatingText($"-{(int)MathF.Round(rdealt)}",
+                            fp2 + new Vector3(0f, 1.8f, 0f), new Vector4(1f, 0.6f, 0.2f, 1f));
+                }
+            }
+            r.LastLife = life;
+        }
+    }
+
+    /// <summary>SC-CONTROL-SPELLS — Transmute: the nearest reachable loot
+    /// pile's items become gold at their authored aspect value.</summary>
+    private void TransmuteNearestPile(float range)
+    {
+        if (_player is null || _templateStore is null) return;
+        var pp = _player.CurrentTransform.Translation;
+        LootPile? bestPile = null;
+        float best2 = range * range;
+        foreach (var pile in _lootPiles)
+        {
+            if (pile.Items.Count == 0 || pile.Items.TrueForAll(e => e.IsGold)) continue;
+            var d = pile.Position - pp;
+            float dd = d.X * d.X + d.Z * d.Z;
+            if (dd < best2) { best2 = dd; bestPile = pile; }
+        }
+        if (bestPile is null)
+        {
+            Console.WriteLine("[control] transmute: no pile in range");
+            return;
+        }
+        long gold = 0;
+        foreach (var it in bestPile.Items)
+        {
+            if (it.IsGold) { var (lo, hi) = it.GoldRange(); gold += (lo + hi) / 2; continue; }
+            var itemRef = ResolveItemRef(it.Reference);
+            if (_templateStore.TryGet(itemRef, out var tpl) && tpl is not null
+                && long.TryParse((_templateStore.GetAttribute(tpl, "aspect", "gold_value") ?? "")
+                    .Trim(), out var gv))
+                gold += Math.Max(1, gv);
+            else gold += 1;
+        }
+        bestPile.Items.Clear();
+        bestPile.Items.Add(new SiegeFX.Core.Actors.LootEntry("gold", $"{gold}-{gold}"));
+        _particles?.SpawnTwinkle(bestPile.Position + new Vector3(0f, 0.4f, 0f),
+            new Vector4(1f, 0.9f, 0.3f, 1f), 0.5f, 0.12f, 0.6f, 12);
+        Console.WriteLine($"[control] transmute: pile → {gold} gold");
+    }
+
     // ── SC-MONSTER-SPECIALS ────────────────────────────────────────────────
     // Per-template cache of the authored monster specials: suicide blasts
     // ([attack] explode_when_killed + area_damage_radius + damage range —
@@ -21185,6 +21380,8 @@ void main()
         TickCameraShake((float)dt);
         // SC-SPELL-EFFECTS — expire timed buff rows on the play clock.
         TickSpellEffects();
+        // SC-CONTROL-SPELLS — pacification wear-off + reactive retaliation.
+        TickControlSpells((float)dt);
         // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
         if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
             _screenFadeAlpha = _screenFadeTarget > _screenFadeAlpha
@@ -33344,14 +33541,33 @@ void main()
             BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
             return;
         }
-        // SC-SPELL-EFFECTS — enchantment carriers (Magic Armor, boosts)
-        // target a party member under the cursor like heals do, defaulting
-        // to the caster. Enemy-targeted curses stay on the offensive path.
+        // SC-SPELL-EFFECTS — enchantment carriers (Magic Armor, boosts) and
+        // reactive armor target a party member under the cursor like heals
+        // do, defaulting to the caster. Enemy curses stay offensive-path.
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other
-            && spell.Enchantments.Count > 0)
+            && (spell.Enchantments.Count > 0 || spell.ReactiveArmorScript.Length > 0))
         {
             best = TryPickPartyMemberAt(_input.Mice[0].Position);
             BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
+            return;
+        }
+        // SC-CONTROL-SPELLS — Ambivalence picks the enemy under the cursor;
+        // the caster-centric rituals (Harmony, Return Summoned, Transmute)
+        // cast with no target at all.
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other && spell.SwitchesAlignment)
+        {
+            var pacTgt = PickActorAtCursor(_input.Mice[0].Position, s2 =>
+                !s2.IsDead && !s2.IsPlayer && !s2.IsPartyMember
+                && s2.Actor.Stats.IsCombatant && s2.IsEvilAligned && s2.IsSelectable);
+            if (pacTgt is null) { AddFloatingText("no target", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.85f, 0.85f, 0.85f, 1f)); return; }
+            BeginPlayerCast(slot, spell, pacTgt, prop: null, magicLevel);
+            return;
+        }
+        if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other
+            && (spell.BalancesLife || spell.BalancesMana
+                || spell.ReturnSummonHealthPerLevel > 0f || spell.HasTransmute))
+        {
+            BeginPlayerCast(slot, spell, null, prop: null, magicLevel);
             return;
         }
         // SC-CORPSE-SPELLS — tt_dead_enemy spells (Burn Body) pick a CORPSE
@@ -33612,6 +33828,8 @@ void main()
                         best is { IsDead: false } && (best.IsPlayer || best.IsPartyMember)
                             ? best : _player,
                         magicLevel);
+                // SC-CONTROL-SPELLS — the control school's payloads.
+                ApplyControlSpellPayload(spell!, best, magicLevel);
                 if (spell!.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
                 {
                     // Phase 17c — heal cast: no bolt; green restore popup over
