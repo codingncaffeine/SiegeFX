@@ -165,6 +165,40 @@ public sealed unsafe class AudioEngine : IDisposable
     public float SfxVolume => _sfxVolume;
     float _sfxVolume = 1f;
 
+    /// <summary>SC-AUDIO-BUSES — the Options Audio tab's Ambient and Voice
+    /// sliders were persist-only; every cue rode the SFX gain. One-shots
+    /// now tag a channel at the play site (default Sfx keeps every legacy
+    /// call unchanged); ambient loops (emitter loops + the mood bed) ride
+    /// the ambient gain and re-apply LIVE on slider drag — a rain loop
+    /// ducks as you pull the slider, not on the next region load.</summary>
+    public enum Channel { Sfx, Ambient, Voice }
+    float _ambientVolume = 1f, _voiceVolume = 1f;
+    float ChannelGain(Channel c) => c switch
+    {
+        Channel.Ambient => _ambientVolume,
+        Channel.Voice   => _voiceVolume,
+        _               => _sfxVolume,
+    };
+
+    public void SetVoiceVolume(float volume) => _voiceVolume = MathF.Max(0f, volume);
+
+    public void SetAmbientVolume(float volume)
+    {
+        _ambientVolume = MathF.Max(0f, volume);
+        if (_disposed) return;
+        // Live loops re-gain immediately (they run for minutes).
+        if (_ambientCurrentClip is not null)
+            _al.SetSourceProperty(_ambientSource, SourceFloat.Gain,
+                _ambientBedBaseGain * _ambientVolume);
+        foreach (var (key, src) in _loopSources)
+            if (_loopBaseGain.TryGetValue(key, out var bg))
+                _al.SetSourceProperty(src, SourceFloat.Gain, bg * _ambientVolume);
+    }
+
+    // Base (pre-bus) gains so a volume change can recompute live sources.
+    float _ambientBedBaseGain = 0.55f;
+    readonly Dictionary<uint, float> _loopBaseGain = new();
+
     /// <summary>Decode a WAV byte array, upload to a buffer, and key it by
     /// <paramref name="id"/>. Subsequent calls with the same id replace the
     /// previous buffer. Returns false (and logs) on any failure so the
@@ -262,13 +296,13 @@ public sealed unsafe class AudioEngine : IDisposable
     /// listener-locked, which is what we want for "this comes from the
     /// player" cues (cast, level-up, swing). For "this happens out
     /// there in the world" cues, see <see cref="PlayAt"/>.</summary>
-    public void Play(string id, float gain = 1f)
+    public void Play(string id, float gain = 1f, Channel channel = Channel.Sfx)
     {
         if (!Resolve(id, out uint buf, out string resolvedId)) return;
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * ChannelGain(channel));
         _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         // Listener-relative + zero position = always centered, no falloff.
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, true);
@@ -282,13 +316,14 @@ public sealed unsafe class AudioEngine : IDisposable
     /// chosen for the DS1 unit scale (≈1 unit = 1 ft): full volume out
     /// to ~6 units, audible to ~40 units, silent past that.</summary>
     public void PlayAt(string id, Vector3 worldPos, float gain = 1f,
-                       float refDistance = 6f, float maxDistance = 40f)
+                       float refDistance = 6f, float maxDistance = 40f,
+                       Channel channel = Channel.Sfx)
     {
         if (!Resolve(id, out uint buf, out string resolvedId)) return;
         uint src = NextSource();
         _al.SourceStop(src);
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * ChannelGain(channel));
         _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(resolvedId));
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
         _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
@@ -355,7 +390,9 @@ public sealed unsafe class AudioEngine : IDisposable
         }
         _al.SourceStop(_ambientSource);
         _al.SetSourceProperty(_ambientSource, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(_ambientSource, SourceFloat.Gain, gain);
+        // SC-AUDIO-BUSES — the mood bed rides the ambient bus.
+        _ambientBedBaseGain = gain;
+        _al.SetSourceProperty(_ambientSource, SourceFloat.Gain, gain * _ambientVolume);
         _al.SetSourceProperty(_ambientSource, SourceBoolean.Looping, true);
         _al.SourcePlay(_ambientSource);
         _ambientCurrentClip = clipId;
@@ -390,7 +427,11 @@ public sealed unsafe class AudioEngine : IDisposable
             _al.SourceStop(src);
         }
         _al.SetSourceProperty(src, SourceInteger.Buffer, (int)buf);
-        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _sfxVolume);
+        // SC-AUDIO-BUSES — placed emitter loops (rain, waterfalls,
+        // crickets, prop fires) are AMBIENT by nature; remember the base
+        // gain so a live slider drag re-gains the running loop.
+        _loopBaseGain[key] = gain;
+        _al.SetSourceProperty(src, SourceFloat.Gain, gain * _ambientVolume);
         _al.SetSourceProperty(src, SourceFloat.Pitch, SamplePitch(clipId));
         _al.SetSourceProperty(src, SourceBoolean.SourceRelative, false);
         _al.SetSourceProperty(src, SourceFloat.ReferenceDistance, refDistance);
@@ -422,6 +463,7 @@ public sealed unsafe class AudioEngine : IDisposable
             _al.DeleteSources(1, &s);
         }
         _loopSources.Clear();
+        _loopBaseGain.Clear();   // SC-AUDIO-BUSES
     }
 
     /// <summary>Phase 21d-2a-xii — register the per-fire pitch range for

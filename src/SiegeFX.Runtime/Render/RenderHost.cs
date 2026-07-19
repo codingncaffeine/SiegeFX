@@ -21567,7 +21567,8 @@ void main()
                 float mn = st.MinDist, mx = st.MaxDist;
                 var clip = ResolveEmitterClip(PickSample(st), ref mn, ref mx);
                 if (clip is null) { st.Active = false; continue; }
-                _audio.PlayAt(clip, st.Pos, 1f, mn, mx);
+                _audio.PlayAt(clip, st.Pos, 1f, mn, mx,
+                    SiegeFX.Audio.AudioEngine.Channel.Ambient);   // SC-AUDIO-BUSES
                 st.NextFireIn = SampleRepeatWindow(st);
             }
             else if (!st.FiredOnce)
@@ -21575,7 +21576,8 @@ void main()
                 float mn = st.MinDist, mx = st.MaxDist;
                 var clip = ResolveEmitterClip(PickSample(st), ref mn, ref mx);
                 if (clip is null) { st.Active = false; continue; }
-                _audio.PlayAt(clip, st.Pos, 1f, mn, mx);
+                _audio.PlayAt(clip, st.Pos, 1f, mn, mx,
+                    SiegeFX.Audio.AudioEngine.Channel.Ambient);   // SC-AUDIO-BUSES
                 st.FiredOnce = true;
             }
         }
@@ -25427,6 +25429,11 @@ void main()
             float master = s.SoundEnabled ? s.MasterVolume / 127f : 0f;
             _audio.SetMasterVolume(master);
             _audio.SetSfxVolume(s.SfxVolume / 127f);
+            // SC-AUDIO-BUSES — Ambient (emitter loops, mood bed, weather
+            // one-shots) and Voice (creature/character cues) go live;
+            // running loops re-gain immediately so slider drags are audible.
+            _audio.SetAmbientVolume(s.AmbientVolume / 127f);
+            _audio.SetVoiceVolume(s.VoiceVolume / 127f);
         }
         _musicBaseVolume = s.MusicVolume / 127f;
         ApplyMusicVolume();
@@ -33488,7 +33495,9 @@ void main()
             }
         }
         if (!_availableVoiceCues.Contains(cue)) return false;
-        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f));
+        // SC-AUDIO-BUSES — creature/character voice cues ride the Voice bus.
+        _audio.PlayAt(cue, worldPos + new Vector3(0f, 1.0f, 0f),
+            channel: SiegeFX.Audio.AudioEngine.Channel.Voice);
         return true;
     }
 
