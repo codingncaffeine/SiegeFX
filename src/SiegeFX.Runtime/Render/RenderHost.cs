@@ -15769,6 +15769,8 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (float Magnitude, float Duration)> _quakeParams = new();
     // SC-NIS-VERBS — cmd_selection_toggle's authored target + mode.
     private readonly System.Collections.Generic.Dictionary<uint, (uint ObjectScid, bool ToggleVis)> _selToggleParams = new();
+    // SC-NIS-VERBS — cmd_ai_c_send_message's authored payload.
+    private readonly System.Collections.Generic.Dictionary<uint, (string Message, uint ToScid)> _sendMsgParams = new();
     // SC-NIS-VERBS — active party wranglers: while ANY is on, the party is
     // frozen and invulnerable (set-piece protection); hostiles ignore them.
     private readonly HashSet<uint> _wranglerActive = new();
@@ -15886,6 +15888,23 @@ void main()
                         }
                     }
                     _quakeParams[p.Scid] = (qMag, qDur);
+                }
+                // SC-NIS-VERBS — cmd_ai_c_send_message authors its payload.
+                if (p.TemplateName.Equals("cmd_ai_c_send_message", StringComparison.OrdinalIgnoreCase))
+                {
+                    string smMsg = ""; uint smTo = 0;
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("cmd_send_world_message", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var at in child.Attributes)
+                        {
+                            if (at.Name.Equals("send_message", StringComparison.OrdinalIgnoreCase))
+                                smMsg = at.Value.Trim().Trim('"');
+                            else if (at.Name.Equals("sendtoscid", StringComparison.OrdinalIgnoreCase))
+                                TryParseSnodeGuid(at.Value, out smTo);
+                        }
+                    }
+                    if (smMsg.Length > 0 && smTo != 0) _sendMsgParams[p.Scid] = (smMsg, smTo);
                 }
                 // SC-NIS-VERBS — cmd_selection_toggle authors its target
                 // object + whether visibility flips.
@@ -16204,6 +16223,60 @@ void main()
                 Console.WriteLine($"[cmd] fader_proxy 0x{scid:X8} fade to black");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFade))
                     ActivateAiCommand(cmd.Next, afterFade);
+                break;
+            case "cmd_ai_c_send_message":
+                if (_sendMsgParams.TryGetValue(scid, out var sm) && _triggerRuntime is not null)
+                {
+                    _triggerRuntime.PostInboundMessage(sm.ToScid, sm.Message);
+                    Console.WriteLine($"[cmd] send_message 0x{scid:X8}: {sm.Message} → 0x{sm.ToScid:X8}");
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterSend))
+                    ActivateAiCommand(cmd.Next, afterSend);
+                break;
+            case "cmd_ai_c_face":
+            case "cmd_ai_t_face":
+            {
+                // Turn the target actor toward the gizmo's authored spot.
+                foreach (var fa in _actors)
+                {
+                    if (fa.Actor.Instance.Scid != cmd.Target1 || fa.IsDead) continue;
+                    var fd = cmd.Pos - fa.CurrentTransform.Translation;
+                    var fv = new Vector3(fd.X, 0f, fd.Z);
+                    if (fv.LengthSquared() > 1e-4f)
+                    {
+                        fv = Vector3.Normalize(fv);
+                        fa.Brain?.Wander.SetFacing(fv);
+                        fa.CurrentTransform =
+                            Matrix4x4.CreateRotationY(MathF.Atan2(fv.X, fv.Z))
+                            * Matrix4x4.CreateTranslation(fa.CurrentTransform.Translation);
+                    }
+                    Console.WriteLine($"[cmd] face 0x{scid:X8}: actor 0x{cmd.Target1:X8} turned");
+                    break;
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFace))
+                    ActivateAiCommand(cmd.Next, afterFace);
+                break;
+            }
+            case "cmd_ai_t_fidget":
+                foreach (var ga in _actors)
+                {
+                    if (ga.Actor.Instance.Scid != cmd.Target1 || ga.IsDead) continue;
+                    if (ga.Actor.GetClipIndex("fgt") >= 0) ga.Actor.PlayChoreOnce("fgt", 2.5f);
+                    else if (ga.Actor.GetClipIndex("fidget") >= 0) ga.Actor.PlayChoreOnce("fidget", 2.5f);
+                    Console.WriteLine($"[cmd] fidget 0x{scid:X8}: actor 0x{cmd.Target1:X8}");
+                    break;
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFdg))
+                    ActivateAiCommand(cmd.Next, afterFdg);
+                break;
+            case "cmd_ai_t_guard":
+            case "preload_go":
+                // Guard = the actor's default combat stance (already our
+                // idle-brain behavior); preload = a streaming hint we don't
+                // need. Acknowledge and keep the chain flowing.
+                Console.WriteLine($"[cmd] {t} 0x{scid:X8} acknowledged");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAck))
+                    ActivateAiCommand(cmd.Next, afterAck);
                 break;
             case "camera_quake":
             case "rock_beast_stomp":
