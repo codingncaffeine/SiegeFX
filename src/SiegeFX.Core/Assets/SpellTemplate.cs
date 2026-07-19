@@ -330,6 +330,10 @@ public sealed class SpellTemplate
     public bool PlayerAcquirable =>
         Class is SpellClass.CombatMagic or SpellClass.NatureMagic;
 
+    /// <summary>SC-SPELL-REQLEVEL — authored [magic] required_level: the
+    /// minimum Nature/Combat magic skill to cast. 0/1 = no gate.</summary>
+    public int RequiredLevel { get; private set; }
+
     SpellTemplate(string name, string screenName, SpellKind kind,
         float castRange, float castReloadDelay,
         float baseManaCost, string manaCostModifierExpr,
@@ -370,6 +374,13 @@ public sealed class SpellTemplate
         // sustained VFX emitters.
         EffectDurationExpr = (store.GetAttribute(template, "magic", "effect_duration") ?? "")
             .Trim().Trim('"');
+        // SC-SPELL-REQLEVEL (blindspot Phase D) — the authored class-skill
+        // gate (spl_spell.gas required_level 1..98): a caster below it
+        // cannot fire the spell, and the stat card shows the requirement
+        // in red until met.
+        if (int.TryParse((store.GetAttribute(template, "magic", "required_level") ?? "")
+                .Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rl))
+            RequiredLevel = rl;
         // SC-SPELL-DELIVERY — authored splash radius on the [attack] block.
         if (float.TryParse((store.GetAttribute(template, "attack", "area_damage_radius") ?? "")
                 .Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var adr))

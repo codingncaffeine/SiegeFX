@@ -14,7 +14,12 @@ namespace SiegeFX.Core.Actors;
 /// fraction (1 = full). Only potions ever drop below 1: drinking sips just
 /// what the drinker needs and the bottle keeps the remainder, per the manual.
 /// Non-potion items always carry 1.</remarks>
-public readonly record struct LootEntry(string Slot, string Reference, float Fill = 1f)
+/// <remarks>SC-BOOK-ITEMS — <paramref name="BookSpells"/> is a carried
+/// spell book's stored loadout: pipe-joined template names in slot order
+/// (primary|secondary|placed0..11); "" = fresh book or not a book.
+/// Swapping books trades this payload with the character's live book.</remarks>
+public readonly record struct LootEntry(string Slot, string Reference, float Fill = 1f,
+    string BookSpells = "")
 {
     public bool IsEquipped =>
         Slot.Length > 0 && !Slot.Equals("gold", StringComparison.OrdinalIgnoreCase);

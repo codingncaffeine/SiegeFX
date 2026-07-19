@@ -310,6 +310,9 @@ public sealed class LootEntrySnapshot
     /// <summary>SC-POTION-SIP — remaining bottle fraction (1 = full; only
     /// potions ever carry less). Pre-field saves default to full.</summary>
     public float Fill { get; set; } = 1f;
+    /// <summary>SC-BOOK-ITEMS — a carried spell book's stored loadout
+    /// (pipe-joined slot names); "" for everything else / older saves.</summary>
+    public string BookSpells { get; set; } = "";
 }
 
 /// <summary>Spellbook state. Slots are the template names of the slotted

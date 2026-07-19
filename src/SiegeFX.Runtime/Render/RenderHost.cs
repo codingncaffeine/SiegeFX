@@ -11020,6 +11020,17 @@ void main()
                             if (li >= 0 && li < ActiveInventory.Count
                                 && TryOpenLoreBook(ActiveInventory[li].Reference))
                                 return;
+                            // SC-SPELL-PICKUP-RETAIL — the manual's other
+                            // add path: right-click a spell in inventory to
+                            // place it into the open character's book.
+                            if (li >= 0 && li < ActiveInventory.Count
+                                && TryAddSpellFromInventory(li))
+                                return;
+                            // SC-BOOK-ITEMS — right-click a carried spell
+                            // book to swap loadouts with the live book.
+                            if (li >= 0 && li < ActiveInventory.Count
+                                && TrySwapSpellBookItem(li))
+                                return;
                         }
                     }
                     // Phase 21-SC-SCROLL-B-2 — RMB cancels an in-flight
@@ -21843,6 +21854,8 @@ void main()
                 float skill = MathF.Max(1f, MathF.Floor(s.IsNatureMagic
                     ? healer.Actor.Stats.NatureMagicSkill
                     : healer.Actor.Stats.CombatMagicSkill));
+                // SC-SPELL-REQLEVEL — the reflex heal respects the gate too.
+                if (s.RequiredLevel > 1 && skill < s.RequiredLevel) return;
                 var ctx = new SiegeFX.Core.Assets.SpellEvalContext(skill,
                     maxLife: tgt.Actor.Stats.MaxLife,
                     life:    tgt.Actor.Combat.CurrentLife,
@@ -32253,6 +32266,14 @@ void main()
             (spell.ScreenName is { Length: > 0 } sn ? sn : spell.Name, cls),
             (spell.IsNatureMagic ? "Nature Magic" : "Combat Magic", cls),
         };
+        // SC-SPELL-REQLEVEL — the authored requirement, red until met
+        // (retail shows the unmet gate in red on the card).
+        if (spell.RequiredLevel > 1)
+        {
+            bool met = skill >= spell.RequiredLevel;
+            lines.Add(($"Requires Level {spell.RequiredLevel}",
+                met ? white : new Vector4(0.95f, 0.30f, 0.25f, 1f)));
+        }
         // Authored description; templated <value> tags stripped (their
         // numbers live in per-level enchantment exprs).
         var desc = System.Text.RegularExpressions.Regex
@@ -33380,6 +33401,23 @@ void main()
         StaticPropInstance? prop, float magicLevel)
     {
         if (_player is null || _playerSpellbook is null) return;
+        // SC-SPELL-REQLEVEL — the authored class-skill gate: below the
+        // spell's required_level the cast refuses with the retail-red
+        // requirement message instead of winding up.
+        if (spell.RequiredLevel > 1)
+        {
+            float skillNow = MathF.Floor(spell.IsNatureMagic
+                ? _player.Actor.Stats.NatureMagicSkill
+                : _player.Actor.Stats.CombatMagicSkill);
+            if (skillNow < spell.RequiredLevel)
+            {
+                AddFloatingText(
+                    $"Requires {(spell.IsNatureMagic ? "Nature" : "Combat")} Magic {spell.RequiredLevel}",
+                    _player.CurrentTransform.Translation + new Vector3(0f, 2.1f, 0f),
+                    new Vector4(0.95f, 0.30f, 0.25f, 1f));
+                return;
+            }
+        }
         // SC-POTION-DRINK — casting is locked out for the drink gesture too.
         if (PlayerDrinking) return;
         if (_playerCast is not null)
@@ -40050,6 +40088,97 @@ void main()
     /// pile were handled (caller should still process non-scroll items
     /// the normal way). Active1/Active2 are NEVER auto-filled — those
     /// stay player-controlled via drag-drop.</summary>
+    // SC-BOOK-ITEMS (blindspot Phase D) — spells live in the BOOK: a
+    // carried spell book item (base_book_spell family, vendor #spellbook
+    // stock) stores a whole loadout in its BookSpells payload. Right-click
+    // a carried book to SWAP loadouts with the character's live book — a
+    // fresh book swaps an empty loadout in, banking the old one in the
+    // item: the retail "carry multiple books, one equipped" model (no
+    // paperdoll book slot is rendered; the live book is "equipped").
+    private readonly Dictionary<string, bool> _spellBookItemCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool IsSpellBookItem(string itemRef)
+    {
+        if (_spellBookItemCache.TryGetValue(itemRef, out var hit)) return hit;
+        bool found = false;
+        if (_templateStore is not null && _templateStore.TryGet(itemRef, out var tpl))
+            for (var t = tpl; t is not null; t = t.Specializes)
+                if (t.Name.Equals("spellbook", StringComparison.OrdinalIgnoreCase))
+                { found = true; break; }
+        _spellBookItemCache[itemRef] = found;
+        return found;
+    }
+
+    private bool TrySwapSpellBookItem(int index)
+    {
+        var inv = ActiveInventory;
+        if (index < 0 || index >= inv.Count) return false;
+        var entry = inv[index];
+        if (!string.IsNullOrEmpty(entry.Slot)) return false;
+        if (!IsSpellBookItem(ResolveItemRef(entry.Reference))) return false;
+        var book = BookFor(_paperdollTargetIndex);
+        if (book is null) return false;
+        // Bank the live loadout into the item…
+        var live = new List<string>
+        {
+            book.Primary?.Name ?? "",
+            book.Secondary?.Name ?? "",
+        };
+        for (int p = 0; p < book.PlacedCount; p++)
+            live.Add(book.Placed[p]?.Name ?? "");
+        string banked = string.Join("|", live);
+        // …and load the item's stored loadout into the live book.
+        var stored = (entry.BookSpells ?? "").Split('|');
+        SiegeFX.Core.Assets.SpellTemplate? Res(int k) =>
+            k < stored.Length && stored[k].Length > 0
+                ? ResolveSlottableSpell(stored[k], debugSpellsEnv: null) : null;
+        book.Slot(SiegeFX.Core.Actors.SpellSlot.Primary,   Res(0), resetCooldown: true);
+        book.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, Res(1), resetCooldown: true);
+        for (int p = 0; p < book.PlacedCount; p++)
+            book.SetPlaced(p, Res(2 + p));
+        inv[index] = entry with { BookSpells = banked };
+        if (_paperdollTargetIndex > 0) SyncMemberCastFromBook(_paperdollTargetIndex);
+        _audio?.Play(SfxGuiSpellBook);
+        AddGameMessage("Spell Books swapped.");
+        Console.WriteLine($"  spellbook: swapped with carried {entry.Reference}");
+        return true;
+    }
+
+    /// <summary>SC-SPELL-PICKUP-RETAIL — the manual's right-click add: a
+    /// spell page in the OPEN character's pack routes into that character's
+    /// book (first empty Placed slot; the no-dupe rule holds). Returns
+    /// false when the item isn't a spell or the book can't take it.</summary>
+    private bool TryAddSpellFromInventory(int index)
+    {
+        var inv = ActiveInventory;
+        if (index < 0 || index >= inv.Count) return false;
+        var entry = inv[index];
+        if (!string.IsNullOrEmpty(entry.Slot)) return false;
+        var spell = ResolveSlottableSpell(ResolveItemRef(entry.Reference), debugSpellsEnv: null);
+        if (spell is null) return false;
+        var book = BookFor(_paperdollTargetIndex);
+        if (book is null) return false;
+        if (BookContainsSpell(book, spell.Name))
+        {
+            AddGameMessage("That spell is already in the Spell Book.");
+            return true;   // consumed the click — retail refuses duplicates
+        }
+        int dest = -1;
+        for (int p = 0; p < book.PlacedCount; p++)
+            if (book.Placed[p] is null) { dest = p; break; }
+        if (dest < 0)
+        {
+            AddGameMessage("The Spell Book is full.");
+            return true;
+        }
+        book.SetPlaced(dest, spell);
+        inv.RemoveAt(index);
+        if (_paperdollTargetIndex > 0) SyncMemberCastFromBook(_paperdollTargetIndex);
+        _audio?.Play(SfxGuiSpellBook);
+        Console.WriteLine($"  spellbook: {spell.Name} added via right-click (Placed[{dest}])");
+        return true;
+    }
+
     private bool TryAutoPickupScrollsFromPile(LootPile pile)
     {
         if (_playerSpellbook is null || _spellCatalog is null) return false;
@@ -40066,25 +40195,14 @@ void main()
                 entry = entry with { Reference = resolvedRef };
             var spell = ResolveSlottableSpell(entry.Reference, debugSpellsEnv: null);
             if (spell is null) continue;                          // not a spell template
-            // First empty Placed slot wins. SC-BOOK-NO-DUPES — a spell the
-            // book already holds routes to inventory instead (one copy per
-            // book, per the manual).
-            int dest = -1;
-            if (!BookContainsSpell(_playerSpellbook, spell.Name))
-                for (int p = 0; p < _playerSpellbook.PlacedCount; p++)
-                    if (_playerSpellbook.Placed[p] is null) { dest = p; break; }
-            if (dest >= 0)
-            {
-                _playerSpellbook.SetPlaced(dest, spell);
-                Console.WriteLine($"  scroll pickup: {spell.Name} -> spellbook Placed[{dest}]");
-            }
-            else
-            {
-                // Spellbook full — keep as inventory item so it isn't lost.
-                _playerInventory.Add(entry);
-                _inventoryPanel.NotifyItemAdded();
-                Console.WriteLine($"  scroll pickup: {spell.Name} -> inventory (spellbook Placed full)");
-            }
+            // SC-SPELL-PICKUP-RETAIL (blindspot Phase D) — the manual is
+            // explicit: spells NEVER auto-equip; they sit in inventory
+            // until manually placed (drag onto the book, or the new
+            // right-click-in-pack add). The old auto-place into the first
+            // empty Placed slot was a QoL divergence — retired.
+            _playerInventory.Add(entry);
+            _inventoryPanel.NotifyItemAdded();
+            Console.WriteLine($"  scroll pickup: {spell.Name} -> inventory (manual placement, per manual)");
             pile.Items.RemoveAt(i);
             anyHandled = true;
         }
@@ -40633,6 +40751,7 @@ void main()
                     Slot      = it.Slot,
                     Reference = it.Reference,
                     Fill      = it.Fill,
+                    BookSpells = it.BookSpells,
                 });
             save.LootPiles.Add(pileSnap);
         }
@@ -40678,13 +40797,14 @@ void main()
                     Slot      = item.Slot,
                     Reference = item.Reference,
                     Fill      = item.Fill,
+                    BookSpells = item.BookSpells,
                 });
             // An item mid-drag lives NOWHERE (pickup removed it from its
             // container) — fold it into the pack row so an F5 while
             // dragging can't silently delete it from the save.
             if (_cursorItem is { } heldItem)
                 p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = "", Reference = heldItem.Reference, Fill = heldItem.Fill });
+                { Slot = "", Reference = heldItem.Reference, Fill = heldItem.Fill, BookSpells = heldItem.BookSpells });
             if (_cursorScroll is not null)
                 p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
                 { Slot = "", Reference = _cursorScroll.Name });
@@ -40790,8 +40910,7 @@ void main()
                 Downed       = m.Actor.Combat.Downed,   // SC-DOWNED
             };
             foreach (var it in GetMemberInventory(m.PartyIndex))
-                cs.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill });
+                cs.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill, BookSpells = it.BookSpells });
             foreach (var kv in GetEquipmentDict(m.PartyIndex))
                 cs.Equipment[kv.Key] = kv.Value;
             // SC-COMPANION-PROGRESSION — persist earned XP so a load doesn't
@@ -40835,8 +40954,7 @@ void main()
                 ActiveSlot = b.ActiveSlot ?? -1,
             };
             foreach (var it in b.Inventory)
-                ds.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill });
+                ds.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot { Slot = it.Slot, Reference = it.Reference, Fill = it.Fill, BookSpells = it.BookSpells });
             foreach (var kv2 in b.Equipment) ds.Equipment[kv2.Key] = kv2.Value;
             save.Party.Add(ds);
         }
@@ -41203,7 +41321,7 @@ void main()
             {
                 var items = new List<SiegeFX.Core.Actors.LootEntry>(pileSnap.Entries.Count);
                 foreach (var e in pileSnap.Entries)
-                    items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
+                    items.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
                 AddLootPile(new LootPile(pileSnap.Position.ToVector3(), items));
             }
         // SC-WORLD-INVENTORY-CONSUMED — restore the consumed-pickup set before
@@ -41434,7 +41552,7 @@ void main()
                 }
                 else
                 {
-                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
+                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
                     _inventoryPanel.NotifyItemAdded();
                 }
             }
@@ -41690,7 +41808,7 @@ void main()
                     ActiveSlot = cs.ActiveSlot >= 0 ? cs.ActiveSlot : null,
                 };
                 foreach (var e in cs.Inventory)
-                    db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
+                    db.Inventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
                 foreach (var kv in cs.Equipment) db.Equipment[kv.Key] = kv.Value;
                 _dismissedCompanions[cs.Scid] = db;
                 continue;
@@ -41725,7 +41843,7 @@ void main()
             var bag = GetMemberInventory(npc.PartyIndex);
             bag.Clear();
             foreach (var e in cs.Inventory)
-                bag.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill));
+                bag.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
             var eq = GetEquipmentDict(npc.PartyIndex);
             eq.Clear();
             foreach (var kv in cs.Equipment) eq[kv.Key] = kv.Value;
