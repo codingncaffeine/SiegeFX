@@ -3479,6 +3479,14 @@ public sealed class RenderHost : IDisposable
         }
         _chapterCardTex = tex;
         _chapterTitleRemaining = ChapterTitleSeconds;
+        // SC-CHAPTER-PRESENT — the authored interstitial dressing: a quick
+        // screen dip under the card (interface_fade) and the chapter sting
+        // (play_chapter_sound — the shared level-up-quest fanfare family).
+        _screenFadeTarget = 0.55f;
+        _chapterFadeRelease = ChapterTitleSeconds * 0.5f;
+        if (!RegisterAndPlayVoiceCue("s_e_gui_chapter",
+                _player?.CurrentTransform.Translation ?? Vector3.Zero))
+            _audio?.Play(SfxQuestComplete);
         Console.WriteLine($"[chapter] {chapterKey} card stamped");
     }
 
@@ -16514,6 +16522,9 @@ void main()
     // SC-INTEREST-RADIUS — authored AI activation radius (0 = unlimited).
     private float _aiInterestRadius;
 
+    // SC-CHAPTER-PRESENT — countdown to release the chapter card's dip.
+    private float _chapterFadeRelease;
+
     public void OnTriggerSetInterestRadius(float radius)
     {
         _aiInterestRadius = MathF.Max(0f, radius);
@@ -21823,6 +21834,12 @@ void main()
                 float w = (MathF.Sin(fx.Phase * 6.28318f) + 1f) * 0.5f;
                 _pointLightDynScale[pi] = fx.Secondary + (1f - fx.Secondary) * w;
             }
+        }
+        // SC-CHAPTER-PRESENT — release the chapter dip when its hold ends.
+        if (_chapterFadeRelease > 0f)
+        {
+            _chapterFadeRelease -= (float)dt;
+            if (_chapterFadeRelease <= 0f) _screenFadeTarget = 0f;
         }
         // SC-NIS-VERBS — fader_proxy screen fade eases toward its target.
         if (MathF.Abs(_screenFadeAlpha - _screenFadeTarget) > 0.001f)
