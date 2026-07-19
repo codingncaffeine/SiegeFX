@@ -27312,10 +27312,27 @@ void main()
         }
     }
 
+    // SC-VENDOR-RESTOCK — shelves re-roll after the authored-feel cadence
+    // (5 real minutes since the last roll); the restock generation mixes
+    // into the seed so a fresh visit sees fresh goods.
+    private readonly Dictionary<string, double> _storeRolledAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _storeGen = new(StringComparer.OrdinalIgnoreCase);
+    private const double VendorRestockSeconds = 300.0;
+
     private SiegeFX.Core.Actors.VendorDefinition? ResolveVendor(SiegeFX.Core.Assets.Template tpl)
     {
         if (_templateStore is null) return null;
-        if (_storeDefs.TryGetValue(tpl.Name, out var cached)) return cached;
+        if (_storeDefs.TryGetValue(tpl.Name, out var cached))
+        {
+            if (cached is null
+                || !_storeRolledAt.TryGetValue(tpl.Name, out var rolledAt)
+                || _playSeconds - rolledAt < VendorRestockSeconds)
+                return cached;
+            // Restock — evict and fall through to a fresh generation roll.
+            _storeDefs.Remove(tpl.Name);
+            _storeGen[tpl.Name] = _storeGen.TryGetValue(tpl.Name, out var g) ? g + 1 : 1;
+            Console.WriteLine($"[vendor] {tpl.Name}: shelf restocked (gen {_storeGen[tpl.Name]})");
+        }
 
         // Phase 25b/25c — panel hooks (idempotent): sell-side valuation
         // rides the same base-value model as buying; the POTIONS tab
@@ -27368,8 +27385,10 @@ void main()
         if (table is not null && table.IsShop)
         {
             _playResolverPcontent ??= new SiegeFX.Core.Actors.PcontentResolver(_templateStore);
-            var rng = new Random(StableNameHash(tpl.Name));
+            var rng = new Random(StableNameHash(tpl.Name)
+                ^ (_storeGen.TryGetValue(tpl.Name, out var sgen) ? sgen * 0x5bd1e995 : 0));
             var stock = table.GenerateStock(_playResolverPcontent, rng);
+            _storeRolledAt[tpl.Name] = _playSeconds;
             var items = new List<SiegeFX.Core.Actors.VendorStockItem>(stock.Count);
             foreach (var it in stock)
             {
