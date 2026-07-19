@@ -6034,10 +6034,10 @@ public sealed class RenderHost : IDisposable
     // ([attack] explode_when_killed + area_damage_radius + damage range —
     // proxo, maljin) and startup_reveal dormancy ([mind] jat_startup —
     // buried skeletons/seck that rise when the party closes in).
-    private readonly Dictionary<string, (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant)>
+    private readonly Dictionary<string, (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant, bool OczFlee, float OczRange)>
         _monsterSpecialCache = new(StringComparer.OrdinalIgnoreCase);
 
-    private (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant)
+    private (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant, bool OczFlee, float OczRange)
         MonsterSpecials(SiegeFX.Core.Assets.Template tpl)
     {
         if (_monsterSpecialCache.TryGetValue(tpl.Name, out var hit)) return hit;
@@ -6054,7 +6054,16 @@ public sealed class RenderHost : IDisposable
                 .Trim(), System.Globalization.NumberStyles.Float, ci, out var mx) && mx > 0f) dmax = MathF.Max(mx, dmin);
         bool dormant = (_templateStore?.GetAttribute(tpl, "mind", "jat_startup") ?? "")
             .Contains("startup_reveal", StringComparison.OrdinalIgnoreCase);
-        var result = (ex, rad, dmin, dmax, dormant);
+        // SC-AI-OCZ-FLEE — skittish ambients bolt when anyone enters their
+        // outer comfort zone (chickens/cows: ocz_flee + ocz range 5).
+        bool oczFlee = string.Equals(
+            (_templateStore?.GetAttribute(tpl, "mind", "on_enemy_entered_ocz_flee") ?? "").Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        float oczRange = 5f;
+        if (float.TryParse((_templateStore?.GetAttribute(tpl, "mind", "outer_comfort_zone_range") ?? "")
+                .Trim(), System.Globalization.NumberStyles.Float, ci, out var ocz) && ocz > 0.2f)
+            oczRange = ocz;
+        var result = (ex, rad, dmin, dmax, dormant, oczFlee, oczRange);
         _monsterSpecialCache[tpl.Name] = result;
         return result;
     }
@@ -6086,7 +6095,7 @@ public sealed class RenderHost : IDisposable
     /// proxo detonations are authentic), plus a burst visual and a kick of
     /// camera shake. Neighbor kills resolve on the next sweep pass.</summary>
     private void DetonateCorpse(ActorRenderState corpse,
-        (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant) sp)
+        (bool Explodes, float Radius, float DmgMin, float DmgMax, bool Dormant, bool OczFlee, float OczRange) sp)
     {
         var center = corpse.CurrentTransform.Translation;
         float r2 = sp.Radius * sp.Radius;
@@ -21554,6 +21563,24 @@ void main()
                             Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises");
                         }
                         else s.StartupAwakened = true;
+                    }
+                    // SC-AI-OCZ-FLEE — skittish ambients bolt from anyone
+                    // entering their authored outer comfort zone.
+                    if (!hostile && _templateStore is not null)
+                    {
+                        var asp2 = MonsterSpecials(s.Actor.Template);
+                        if (asp2.OczFlee)
+                        {
+                            var pmNear = NearestLivePartyMember(s.CurrentTransform.Translation);
+                            if (pmNear is not null)
+                            {
+                                var dpz = pmNear.CurrentTransform.Translation
+                                    - s.CurrentTransform.Translation;
+                                if (dpz.X * dpz.X + dpz.Z * dpz.Z
+                                    < asp2.OczRange * asp2.OczRange)
+                                    s.Brain.FleeFrom(pmNear.CurrentTransform.Translation);
+                            }
+                        }
                     }
                     s.Brain.Tick(
                         (float)stepSec,

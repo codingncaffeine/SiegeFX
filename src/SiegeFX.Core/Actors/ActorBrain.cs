@@ -766,6 +766,17 @@ public sealed class ActorBrain
         Wander.Follower.SetTarget(targetPos);
     }
 
+    /// <summary>SC-AI-OCZ-FLEE — proximity flee for skittish ambients
+    /// ([mind] on_enemy_entered_ocz_flee — chickens, cows): bolt away from
+    /// the intruder regardless of life ratio, riding the same flee leg and
+    /// charge accounting. No-op while already fleeing or out of charges.</summary>
+    public void FleeFrom(Vector3 threatPos)
+    {
+        if (State == BrainState.Flee || _fleeChargesLeft <= 0) return;
+        if (_fleeDistance < 1f) _fleeDistance = 6f;
+        EnterFlee(threatPos);
+    }
+
     // SC-AI-FLEE — run flee_distance directly away from the attacker. The
     // timer bounds the run (distance at gait + slack) so a blocked path
     // can't leave the actor pinned in Flee forever.
