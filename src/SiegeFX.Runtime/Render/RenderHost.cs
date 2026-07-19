@@ -16269,6 +16269,22 @@ void main()
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFdg))
                     ActivateAiCommand(cmd.Next, afterFdg);
                 break;
+            case "cmd_ai_t_attack_catalyst":
+                // "Make X attack" — flip the target actor hostile and give
+                // it a live brain; the standard hostility loop then hunts
+                // the nearest party member (gd_a_r1: "make swanny attack").
+                foreach (var ca in _actors)
+                {
+                    if (ca.Actor.Instance.Scid != cmd.Target1 || ca.IsDead) continue;
+                    ca.IsEvilAligned = true;
+                    ca.CanFight = true;
+                    if (ca.Brain is null) RebuildNpcBrain(ca, ca.CurrentTransform.Translation);
+                    Console.WriteLine($"[cmd] attack_catalyst 0x{scid:X8}: 0x{cmd.Target1:X8} ({ca.Actor.Template.Name}) joins the fight");
+                    break;
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCat))
+                    ActivateAiCommand(cmd.Next, afterCat);
+                break;
             case "cmd_ai_t_guard":
             case "preload_go":
                 // Guard = the actor's default combat stance (already our
