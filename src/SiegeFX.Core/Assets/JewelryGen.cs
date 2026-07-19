@@ -193,11 +193,82 @@ public sealed class JewelryRoller
         return EnsureRegistered(name) ? name : null;
     }
 
+    /// <summary>SC-PCGEN-WA — roll authored modifiers onto a concrete
+    /// weapon/armor base (pcontent.skrit calc_modifier_count/power over
+    /// the same [modifiers] tiers). Returns the wrapper template name, or
+    /// null for a plain roll (the authored tables leave MOST items plain).
+    /// </summary>
+    public string? RollWeaponArmor(string baseName, bool isWeapon, float totalPower,
+        PcontentResolver.Rarity rarity, Random rng)
+    {
+        // calc_modifier_count$ — authored 0/1/2 tables per type + power band.
+        float chance = (float)rng.NextDouble();
+        int count = 0;
+        if (isWeapon)
+        {
+            if (totalPower is >= 20 and <= 40)       count = chance <= 0.4f ? 1 : chance <= 0.5f ? 2 : 0;
+            else if (totalPower is > 40 and <= 82)   count = chance <= 0.35f ? 1 : chance <= 0.7f ? 2 : 0;
+            else if (totalPower is > 83 and <= 198)  count = chance <= 0.4f ? 1 : chance <= 0.99f ? 2 : 0;
+            else if (totalPower > 198)               count = chance <= 0.35f ? 1 : chance <= 0.99f ? 2 : 0;
+        }
+        else
+        {
+            if (totalPower is >= 30 and <= 73)       count = chance <= 0.3f ? 1 : chance <= 0.4f ? 2 : 0;
+            else if (totalPower is > 73 and <= 147)  count = chance <= 0.45f ? 1 : chance <= 0.7f ? 2 : 0;
+            else if (totalPower is > 147 and <= 310) count = chance <= 0.4f ? 1 : chance <= 0.9f ? 2 : 0;
+            else if (totalPower is > 310 and <= 497) count = chance <= 0.45f ? 1 : chance <= 0.97f ? 2 : 0;
+            else if (totalPower > 497)               count = chance <= 0.35f ? 1 : chance <= 0.99f ? 2 : 0;
+        }
+        if (count == 0) return null;
+
+        bool ra = rarity != PcontentResolver.Rarity.Normal;
+        string cls = isWeapon ? "weapon" : "armor";
+        var picks = new List<PcontentModifierStore.Modifier>();
+        for (int i = 0; i < count; i++)
+        {
+            // calc_modifier_power$ — normal rolls Rand(0.05,0.125)×total;
+            // rare/unique tiers widen toward Rand(0.02,0.3), halved when
+            // two modifiers share the budget.
+            float lo = ra ? 0.02f : 0.05f;
+            float hi = ra ? (count == 2 ? 0.15f : 0.3f) : 0.125f;
+            float modP = (lo + (float)rng.NextDouble() * (hi - lo)) * totalPower;
+            float fuzz = modP * FuzzPct(modP);
+            var pool = new List<PcontentModifierStore.Modifier>();
+            bool wantPrefix = i == 0;   // authored convention: prefix first, then suffix
+            foreach (var m in _mods.All)
+            {
+                if (!m.ObjectTypes.Contains(cls, StringComparison.OrdinalIgnoreCase)) continue;
+                bool special = m.SpecialType.Length > 0;
+                if (ra != special) continue;
+                if (ra && !m.SpecialType.Contains(
+                        rarity == PcontentResolver.Rarity.Rare ? "rare" : "unique",
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                if (count == 2 && m.IsPrefix != wantPrefix) continue;
+                if (m.Power < modP - fuzz || m.Power > modP + fuzz) continue;
+                if (picks.Contains(m)) continue;
+                pool.Add(m);
+            }
+            if (pool.Count > 0) picks.Add(pool[rng.Next(pool.Count)]);
+        }
+        if (picks.Count == 0) return null;
+
+        var nameSb = new StringBuilder($"pcgen_{(isWeapon ? "w" : "a")}__{baseName}");
+        foreach (var m in picks) nameSb.Append("__").Append(m.Key);
+        string name = nameSb.ToString();
+        return EnsureRegistered(name) ? name : null;
+    }
+
     /// <summary>TemplateStore miss hook — regenerate the gas for a
     /// <c>pcgen_…</c> name (saved references from an earlier session).</summary>
     public string? SynthesizeGasByName(string name)
     {
         var parts = name.Split("__", StringSplitOptions.None);
+        // SC-PCGEN-WA — pcgen_w/pcgen_a wrap a concrete base template with
+        // 1-2 rolled modifiers: parts = [pcgen_w, base, mod1, (mod2)].
+        if (parts.Length is 3 or 4
+            && (parts[0].Equals("pcgen_w", StringComparison.OrdinalIgnoreCase)
+                || parts[0].Equals("pcgen_a", StringComparison.OrdinalIgnoreCase)))
+            return SynthesizeWeaponArmorGas(name, parts);
         if (parts.Length != 3) return null;
         bool isRing = parts[0].Equals("pcgen_ring", StringComparison.OrdinalIgnoreCase);
         bool isAmulet = parts[0].Equals("pcgen_amulet", StringComparison.OrdinalIgnoreCase);
@@ -249,6 +320,52 @@ public sealed class JewelryRoller
             sb.AppendLine("\t}");
         }
         _ = bandMid;
+        sb.AppendLine("}");
+        return sb.ToString();
+    }
+
+    /// <summary>SC-PCGEN-WA — synthesize the wrapper gas: specializes the
+    /// concrete base, composes the prefix/suffix screen name around the
+    /// base's, and copies each modifier's alteration blocks verbatim.
+    /// Gold stays the base's (magic sell-value premium noted as a gap).</summary>
+    string? SynthesizeWeaponArmorGas(string name, string[] parts)
+    {
+        string baseName = parts[1];
+        if (!_templates.TryGet(baseName, out var baseTpl) || baseTpl is null) return null;
+        string baseScreen = (_templates.GetAttribute(baseTpl, "common", "screen_name") ?? baseName)
+            .Trim().Trim('"');
+        var mods = new List<PcontentModifierStore.Modifier>();
+        for (int i = 2; i < parts.Length; i++)
+        {
+            var m = _mods.ByKey(parts[i]);
+            if (m is null) return null;
+            mods.Add(m);
+        }
+        string screen = baseScreen;
+        foreach (var m in mods)
+            screen = m.IsPrefix ? $"{m.ScreenName} {screen}" : $"{screen} {m.ScreenName}";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"[t:template,n:{name}]");
+        sb.AppendLine("{");
+        sb.AppendLine($"\tspecializes = {baseName};");
+        sb.AppendLine("\tcommon:is_pcontent_allowed = false;");
+        sb.AppendLine($"\tcommon:screen_name = \"{screen}\";");
+        sb.AppendLine("\t[magic]");
+        sb.AppendLine("\t{");
+        sb.AppendLine("\t\t[enchantments]");
+        sb.AppendLine("\t\t{");
+        foreach (var m in mods)
+            foreach (var alt in m.Node.Children)
+            {
+                sb.AppendLine("\t\t\t[*]");
+                sb.AppendLine("\t\t\t{");
+                foreach (var a in alt.Attributes)
+                    sb.AppendLine($"\t\t\t\t{a.Name} = {a.Value};");
+                sb.AppendLine("\t\t\t}");
+            }
+        sb.AppendLine("\t\t}");
+        sb.AppendLine("\t}");
         sb.AppendLine("}");
         return sb.ToString();
     }

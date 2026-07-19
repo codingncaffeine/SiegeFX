@@ -166,6 +166,20 @@ public sealed class PcontentResolver
         var picked = pool[rng.Next(pool.Count)];
         templateName = picked.Name;
         chosenPower = picked.Power;
+        // SC-PCGEN-WA — concrete weapon/armor picks roll the authored
+        // modifier-count tables on top (pcontent.skrit); count 0 — the
+        // common case — keeps the plain base item.
+        if (_jewelry is not null)
+        {
+            bool isWeapon = (picked.Group & (Group.Melee | Group.Ranged)) != 0;
+            bool isArmor  = (picked.Group & Group.Armor) != 0;
+            if (isWeapon || isArmor)
+            {
+                var wrapped = _jewelry.RollWeaponArmor(
+                    picked.Name, isWeapon, picked.Power, parsed.Rarity, rng);
+                if (wrapped is not null) templateName = wrapped;
+            }
+        }
         return true;
     }
 
