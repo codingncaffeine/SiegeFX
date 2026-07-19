@@ -151,6 +151,15 @@ public sealed class SpellTemplate
     public string SummonTemplate  { get; private set; } = "";
     public string SummonEndScript { get; private set; } = "";
 
+    /// <summary>SC-SPELL-EFFECTS — authored [magic][enchantments] rows: the
+    /// buff/curse school's stat alterations, applied to the TARGET for the
+    /// row's evaluated duration (magic_armor: alter_armor, (#magic*0.7),
+    /// 240+(#magic*7)). Empty for non-enchantment spells.</summary>
+    public sealed record SpellEnchant(
+        string Alteration, string ValueExpr, string DurationExpr, bool SingleInstance);
+    public IReadOnlyList<SpellEnchant> Enchantments => _enchantments;
+    private readonly List<SpellEnchant> _enchantments = new();
+
     /// <summary>SC-SPELL-ENGINE — [spell_deathrain] storm parameters
     /// (ice_storm's 25 falling shards); null = not a deathrain spell.</summary>
     public DeathrainSpec? Deathrain { get; private set; }
@@ -323,6 +332,26 @@ public sealed class SpellTemplate
                 {
                     SummonTemplate  = (TemplateStore.FindAttr(child, "template_name") ?? "").Trim().Trim('"');
                     SummonEndScript = (TemplateStore.FindAttr(child, "end_script") ?? "").Trim().Trim('"');
+                }
+                else if (_enchantments.Count == 0
+                    && child.Header.Equals("magic", StringComparison.OrdinalIgnoreCase))
+                {
+                    // SC-SPELL-EFFECTS — [magic][enchantments][*] rows.
+                    foreach (var ench in child.Children)
+                    {
+                        if (!ench.Header.Equals("enchantments", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var row in ench.Children)
+                        {
+                            var alt = (TemplateStore.FindAttr(row, "alteration") ?? "").Trim().Trim('"');
+                            if (alt.Length == 0) continue;
+                            _enchantments.Add(new SpellEnchant(
+                                alt,
+                                (TemplateStore.FindAttr(row, "value") ?? "0").Trim().Trim('"'),
+                                (TemplateStore.FindAttr(row, "duration") ?? EffectDurationExpr).Trim().Trim('"'),
+                                (TemplateStore.FindAttr(row, "is_single_instance") ?? "")
+                                    .Trim().Equals("true", StringComparison.OrdinalIgnoreCase)));
+                        }
+                    }
                 }
                 else if (Deathrain is null
                     && child.Header.Equals("spell_deathrain", StringComparison.OrdinalIgnoreCase))
