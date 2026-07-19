@@ -15771,6 +15771,8 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (uint ObjectScid, bool ToggleVis)> _selToggleParams = new();
     // SC-NIS-VERBS — cmd_ai_c_send_message's authored payload.
     private readonly System.Collections.Generic.Dictionary<uint, (string Message, uint ToScid)> _sendMsgParams = new();
+    // SC-NIS-VERBS — cmd_ai_c_animate's authored anim fourcc (int1).
+    private readonly System.Collections.Generic.Dictionary<uint, int> _cAnimParams = new();
     // SC-NIS-VERBS — active party wranglers: while ANY is on, the party is
     // frozen and invulnerable (set-piece protection); hostiles ignore them.
     private readonly HashSet<uint> _wranglerActive = new();
@@ -15888,6 +15890,18 @@ void main()
                         }
                     }
                     _quakeParams[p.Scid] = (qMag, qDur);
+                }
+                // SC-NIS-VERBS — cmd_ai_c_animate authors its anim fourcc.
+                if (p.TemplateName.Equals("cmd_ai_c_animate", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var child in p.Node.Children)
+                    {
+                        if (!child.Header.Equals("cmd_ai_dojob", StringComparison.OrdinalIgnoreCase)) continue;
+                        foreach (var at in child.Attributes)
+                            if (at.Name.Equals("int1", StringComparison.OrdinalIgnoreCase)
+                                && int.TryParse(at.Value.Trim(), out var caF) && caF != 0)
+                                _cAnimParams[p.Scid] = caF;
+                    }
                 }
                 // SC-NIS-VERBS — cmd_ai_c_send_message authors its payload.
                 if (p.TemplateName.Equals("cmd_ai_c_send_message", StringComparison.OrdinalIgnoreCase))
@@ -16284,6 +16298,47 @@ void main()
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCat))
                     ActivateAiCommand(cmd.Next, afterCat);
+                break;
+            case "cmd_ai_c_animate":
+            {
+                // [cmd_ai_dojob] int1 = MSB-first anim fourcc, no explicit
+                // target — the choreography addresses whoever the scene
+                // parked at the gizmo; play it on the nearest live actor.
+                _cAnimParams.TryGetValue(scid, out int fourcc);
+                if (fourcc != 0)
+                {
+                    ActorRenderState? nearest = null;
+                    float nd2 = 6f * 6f;
+                    foreach (var na in _actors)
+                    {
+                        if (na.IsDead || na.IsPlayer || na.Hidden) continue;
+                        var nv = na.CurrentTransform.Translation - cmd.Pos;
+                        float d2 = nv.X * nv.X + nv.Z * nv.Z;
+                        if (d2 < nd2) { nd2 = d2; nearest = na; }
+                    }
+                    if (nearest is not null)
+                    {
+                        string anim = $"{(char)((fourcc >> 24) & 0xFF)}{(char)((fourcc >> 16) & 0xFF)}{(char)((fourcc >> 8) & 0xFF)}{(char)(fourcc & 0xFF)}".Trim();
+                        if (anim.Equals("talk", StringComparison.OrdinalIgnoreCase)) anim = "tlk1";
+                        if (nearest.Actor.GetClipIndex(anim) >= 0)
+                            nearest.Actor.PlayChoreOnce(anim, 4f);
+                        Console.WriteLine($"[cmd] ai_c_animate 0x{scid:X8}: '{anim}' on {nearest.Actor.Template.Name}");
+                    }
+                }
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCAnim))
+                    ActivateAiCommand(cmd.Next, afterCAnim);
+                break;
+            }
+            case "animate_object":
+            case "animate_chain":
+            case "animate_elevator":
+            case "nodal_tex_anim":
+                // Goblin-machinery prop animation — real PRS prop playback
+                // lands with the Phase 10 sway-tree work; acknowledge so the
+                // set-piece chains never stall on these.
+                Console.WriteLine($"[cmd] {t} 0x{scid:X8} acknowledged (prop anim playback: Phase 10)");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterPropAnim))
+                    ActivateAiCommand(cmd.Next, afterPropAnim);
                 break;
             case "cmd_ai_t_guard":
             case "preload_go":
