@@ -24,6 +24,11 @@ public sealed class Camera
     public bool  InvertX { get; set; }
     public bool  InvertY { get; set; }
 
+    /// <summary>SC-CAM-SHAKE — transient world-space offset added to the eye
+    /// and look target (the view translates, it doesn't wobble-rotate).
+    /// Driven by the host's shake envelope; zero when idle.</summary>
+    public Vector3 ShakeOffset { get; set; }
+
     private const float PitchLimit = MathF.PI / 2f - 0.01f;
 
     public Vector3 Forward
@@ -85,7 +90,8 @@ public sealed class Camera
         Position += Vector3.UnitY * vertical * speed;
     }
 
-    public Matrix4x4 GetView() => Matrix4x4.CreateLookAt(Position, Position + Forward, Up);
+    public Matrix4x4 GetView()
+        => Matrix4x4.CreateLookAt(Position + ShakeOffset, Position + ShakeOffset + Forward, Up);
 
     public Matrix4x4 GetProjection(float aspect)
         => Matrix4x4.CreatePerspectiveFieldOfView(FovRadians, aspect, NearPlane, FarPlane);

@@ -723,6 +723,41 @@ public sealed class RenderHost : IDisposable
     private int _portraitPressIdx = -1;
     private Vector2 _portraitPressPos;
     private bool _portraitDragActive;
+    // SC-CMD-KEYS — Phase 1 showdown state: elapsed-clock readout toggle
+    // (authored semicolon), formation spacing multiplier (authored [ ]),
+    // and the armed force-attack/-cast orders (authored A / C).
+    private bool _gameTimerVisible;
+    private float _formationSpacing = 1f;
+    private bool _forceAttackArmed, _forceCastArmed;
+
+    /// <summary>SC-CMD-KEYS — authored rotate_primary/secondary_spell_slot:
+    /// cycle the ACTIVE spell through the equipped book's placed pages.</summary>
+    private void RotateActiveSpellSlot(bool primary)
+    {
+        if (_playerSpellbook is null) return;
+        var cur = primary ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
+        int n = _playerSpellbook.PlacedCount;
+        int start = 0;
+        if (cur is not null)
+            for (int i = 0; i < n; i++)
+                if (_playerSpellbook.Placed[i] is { } pl
+                    && pl.Name.Equals(cur.Name, StringComparison.OrdinalIgnoreCase))
+                { start = i + 1; break; }
+        for (int k = 0; k < n; k++)
+        {
+            var cand = _playerSpellbook.Placed[(start + k) % n];
+            if (cand is null) continue;
+            var other = primary ? _playerSpellbook.Secondary : _playerSpellbook.Primary;
+            if (other is not null && cand.Name.Equals(other.Name, StringComparison.OrdinalIgnoreCase))
+                continue;
+            _playerSpellbook.Slot(
+                primary ? SiegeFX.Core.Actors.SpellSlot.Primary : SiegeFX.Core.Actors.SpellSlot.Secondary,
+                cand, resetCooldown: false);
+            _audio?.Play(SfxGuiInventory);
+            Console.WriteLine($"[cmd] rotate {(primary ? "primary" : "secondary")} spell → {cand.Name}");
+            return;
+        }
+    }
     private ActorRenderState? _hoverActor;
 
     // SC-REGION-LAYER-HIDE — per-region representative Y (the mean of all
@@ -2538,15 +2573,17 @@ public sealed class RenderHost : IDisposable
 
     /// <summary>The world-space follow slot for follower <paramref name="index"/>
     /// (1-based) under the active formation, placed 1:1 per formations.gas.</summary>
-    private static Vector3 PartyFormationSlot(PartyFormation formation, int index,
-                                              Vector3 leaderPos, Vector3 leaderFace)
+    private Vector3 PartyFormationSlot(PartyFormation formation, int index,
+                                       Vector3 leaderPos, Vector3 leaderFace)
     {
         var right = new Vector3(leaderFace.Z, 0f, -leaderFace.X); // leader's right (XZ)
         var f = FormationData(formation);
         int i0 = System.Math.Clamp(index - 1, 0, f.Spots.Length - 1);
         var (r, c) = f.Spots[i0];
-        float forward = r * f.SpotL - f.CenterL;     // negative → behind the leader
-        float lateral = (c - 4) * f.SpotW + f.CenterW;
+        // SC-CMD-KEYS — authored Formation: Expand/Contract ([ ]) scales
+        // the spot offsets around the leader.
+        float forward = (r * f.SpotL - f.CenterL) * _formationSpacing;
+        float lateral = ((c - 4) * f.SpotW + f.CenterW) * _formationSpacing;
         return leaderPos + leaderFace * forward + right * lateral;
     }
 
@@ -9012,6 +9049,42 @@ void main()
                     _saveToastRemaining = SaveToastDuration;
                     Console.WriteLine($"[cmd] game speed -> x{_gameSpeed:F2}");
                 }
+                // SC-CMD-KEYS — Phase 1 showdown: dispatch the registered-
+                // but-dead authored bindings.
+                else if (Is("take_screenshot")) _screenshotPending = true;
+                else if (Is("toggle_game_timer"))
+                {
+                    _gameTimerVisible = !_gameTimerVisible;
+                    _audio?.Play(SfxGuiInventory);
+                }
+                else if (Is("disband_selected")) DisbandSelectedFollowers();
+                else if (Is("formation_increase_spacing") || Is("formation_decrease_spacing"))
+                {
+                    _formationSpacing = Math.Clamp(
+                        _formationSpacing + (Is("formation_increase_spacing") ? 0.15f : -0.15f),
+                        0.6f, 2.5f);
+                    Console.WriteLine($"[cmd] formation spacing x{_formationSpacing:F2}");
+                }
+                else if (Is("cycle_formations")) CyclePartyFormation();
+                else if (Is("rotate_primary_spell_slot"))   RotateActiveSpellSlot(primary: true);
+                else if (Is("rotate_secondary_spell_slot")) RotateActiveSpellSlot(primary: false);
+                // Authored [attack]/[cast] force orders: arm the next click
+                // to attack/cast at ANY combatant (even friendlies), retail
+                // force-attack semantics.
+                else if (Is("attack") && _player is not null && !_player.IsDead)
+                {
+                    _forceAttackArmed = true;
+                    _forceCastArmed = false;
+                    _saveToastText = "Force attack: click a target";
+                    _saveToastRemaining = SaveToastDuration;
+                }
+                else if (Is("cast") && _player is not null && !_player.IsDead)
+                {
+                    _forceCastArmed = true;
+                    _forceAttackArmed = false;
+                    _saveToastText = "Force cast: click a target";
+                    _saveToastRemaining = SaveToastDuration;
+                }
                 else if (Is("quick_save")) DoQuickSave();
                 else if (Is("quick_load")) DoQuickLoad();
                 // SC-INV-ARRANGE — the registry has always listed
@@ -11976,6 +12049,9 @@ void main()
                 // in arrow_tracer, spell impacts, goo splats) dispatch to
                 // the shared voice-cue player instead of no-opping.
                 _sfxRuntime.SoundSink = (clip, pos) => RegisterAndPlayVoiceCue(clip, pos);
+                // SC-CAM-SHAKE — 48 authored camerashake calls (monster
+                // stomps, big impacts) finally reach the camera.
+                _sfxRuntime.CameraShakeHook = StartCameraShake;
             }
             Console.WriteLine($"  sfx scripts: {_sfxStore.Count} loaded");
         }
@@ -15673,6 +15749,8 @@ void main()
     /// actor's placement authors [mind] initial_command pointing at its
     /// route's first command (the fh_r1 krug scouts walk a 3-point loop).</summary>
     private readonly System.Collections.Generic.Dictionary<uint, (string Type, uint Next, Vector3 Pos, uint Target1)> _commands = new();
+    // SC-CAM-SHAKE — authored magnitude/duration per placed quake gizmo.
+    private readonly System.Collections.Generic.Dictionary<uint, (float Magnitude, float Duration)> _quakeParams = new();
     private HashSet<string>? _commandGasLoaded;
 
     // SC-NORICK — cmd_animation_command target actor (client_scid) -> the command's
@@ -15762,6 +15840,28 @@ void main()
                         AttackPos    = world,
                     });
                     Console.WriteLine($"  [smash] set-piece registered: actor 0x{target1:X8} -> break 0x{target2:X8} at ({world.X:F1},{world.Y:F1},{world.Z:F1})");
+                }
+                // SC-CAM-SHAKE — placed quake gizmos carry their authored
+                // magnitude/duration; index them for activation-time shakes.
+                if (p.TemplateName.Equals("camera_quake", StringComparison.OrdinalIgnoreCase)
+                    || p.TemplateName.Equals("rock_beast_stomp", StringComparison.OrdinalIgnoreCase))
+                {
+                    float qMag = 0.35f, qDur = 0.8f;
+                    foreach (var child in p.Node.Children)
+                    {
+                        foreach (var at in child.Attributes)
+                        {
+                            if (at.Name.StartsWith("magnitude", StringComparison.OrdinalIgnoreCase)
+                                && float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out var qm))
+                                qMag = MathF.Max(qMag, MathF.Abs(qm));
+                            else if (at.Name.Equals("duration", StringComparison.OrdinalIgnoreCase)
+                                && float.TryParse(at.Value.Trim(), System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out var qd))
+                                qDur = qd;
+                        }
+                    }
+                    _quakeParams[p.Scid] = (qMag, qDur);
                 }
                 // SC-NORICK — index cmd_animation_command by its target actor so the
                 // NIS drivers know where an actor is authored to perform (Norick's
@@ -15990,6 +16090,25 @@ void main()
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAlign))
                     ActivateAiCommand(cmd.Next, afterAlign);
                 break;
+            case "camera_quake":
+            case "rock_beast_stomp":
+            {
+                // SC-CAM-SHAKE — placed quakes shake at authored strength,
+                // attenuated by the player's distance to the gizmo (a stomp
+                // across the canyon rumbles; one at your feet kicks).
+                var (qm, qd) = _quakeParams.TryGetValue(scid, out var qp) ? qp : (0.35f, 0.8f);
+                if (_playerFollower is not null)
+                {
+                    var dq = _playerFollower.Position - cmd.Pos;
+                    float dist = MathF.Sqrt(dq.X * dq.X + dq.Z * dq.Z);
+                    qm *= Math.Clamp(1f - dist / 40f, 0.15f, 1f);
+                }
+                StartCameraShake(qm, qd);
+                Console.WriteLine($"[cmd] {t} 0x{scid:X8} shake mag={qm:F2} dur={qd:F2}");
+                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterQuake))
+                    ActivateAiCommand(cmd.Next, afterQuake);
+                break;
+            }
             default:
                 // ALPHA-2 CRASH FOLD — walk stubbed links ITERATIVELY with a
                 // visited set. Patrol chains cycle by design; the old
@@ -20518,6 +20637,8 @@ void main()
         TickDevGodMode();
         // SC-DEFEAT — hero death edge + party-wipe presentation.
         TickDefeat((float)dt);
+        // SC-CAM-SHAKE — decay the shake envelope on the frame cadence.
+        TickCameraShake((float)dt);
         // SC-ATTACK-SCHED (Phase 18c) — advance the player's in-flight swing
         // (BSWG whoosh, FIRE-note damage, qffg pad, auto-attack re-engage).
         TickPlayerSwing((float)dt);
@@ -22263,6 +22384,41 @@ void main()
 
     private bool DefeatDialogActive => _defeatPhase == DefeatPhase.Dialog && !_loadDialog.IsOpen;
 
+    // ── SC-CAM-SHAKE ───────────────────────────────────────────────────────
+    // Shake envelope: amplitude decays linearly over the duration; the
+    // offset is a three-axis sine mix (incommensurate frequencies, so it
+    // reads as a rumble, not a metronome). Sources: the SFX VM's authored
+    // camerashake calls (48 scripts) and the placed camera_quake /
+    // rock_beast_stomp command gizmos.
+    private float _camShakeAmp, _camShakeDur, _camShakeRemaining, _camShakePhase;
+
+    private void StartCameraShake(float amplitude, float duration)
+    {
+        if (amplitude <= 0f || duration <= 0f) return;
+        _camShakeAmp = MathF.Max(_camShakeAmp, MathF.Min(amplitude, 2.5f));
+        _camShakeRemaining = MathF.Max(_camShakeRemaining, MathF.Min(duration, 4f));
+        _camShakeDur = MathF.Max(_camShakeDur, _camShakeRemaining);
+    }
+
+    private void TickCameraShake(float dt)
+    {
+        if (_camShakeRemaining <= 0f)
+        {
+            if (_camera.ShakeOffset != Vector3.Zero) _camera.ShakeOffset = Vector3.Zero;
+            _camShakeAmp = 0f;
+            _camShakeDur = 0f;
+            return;
+        }
+        _camShakeRemaining = MathF.Max(0f, _camShakeRemaining - dt);
+        _camShakePhase += dt * 31f;
+        float decay = _camShakeDur > 0f ? _camShakeRemaining / _camShakeDur : 0f;
+        float a = _camShakeAmp * decay;
+        _camera.ShakeOffset = new Vector3(
+            MathF.Sin(_camShakePhase * 1.13f) * a,
+            MathF.Sin(_camShakePhase * 1.71f + 1.3f) * a * 0.6f,
+            MathF.Sin(_camShakePhase * 0.97f + 2.6f) * a);
+    }
+
     private bool DefeatClick(int px, int py, bool isUp)
     {
         if (!DefeatDialogActive) return false;
@@ -22626,6 +22782,18 @@ void main()
     private void DrawMouseHudFx(int vw, int vh)
     {
         if (_barRenderer is null || _textRenderer is null) return;
+        // SC-CMD-KEYS — authored Game Timer (semicolon): the character's
+        // elapsed play clock, top-center readout while toggled on.
+        if (_gameTimerVisible)
+        {
+            var el = TimeSpan.FromSeconds(_playSeconds);
+            string clock = $"TIME {(int)el.TotalHours}:{el.Minutes:00}:{el.Seconds:00}";
+            float ts = Hud.HudScale.Hud(vh);
+            int px2 = Math.Max(1, (int)MathF.Round(ts));
+            _textRenderer.DrawString(vw, vh, clock,
+                vw / 2 - (int)(34 * ts), (int)(6 * ts),
+                new Vector4(0.95f, 0.9f, 0.6f, 0.95f), px2);
+        }
         if (_marqueeActive && _lmbWorldDownPos is { } dp)
         {
             int x0 = (int)MathF.Min(dp.X, _marqueeEnd.X), x1 = (int)MathF.Max(dp.X, _marqueeEnd.X);
@@ -25429,6 +25597,8 @@ void main()
             _pendingBreakProp = null;
             _pendingPickupPile = null;
         }
+        _forceAttackArmed = false;   // a move click disarms a pending order
+        _forceCastArmed = false;
         IssueSelectedMemberMoveOrders(hit, heroSelected);
         // SC-MOUSE-FX — plant the green destination marker at the accepted
         // click point; it fades over MoveMarkerLife.
@@ -26247,9 +26417,13 @@ void main()
         // pick replaces the old plane-at-player-Y XZ radius (which missed
         // anything on a slope, a stair, or behind a prop). The planar
         // radius survives as the fallback for degenerate projections.
+        // SC-CMD-KEYS — an armed Force Attack (authored A) drops the
+        // alignment and party-member guards: click ANYTHING with combat
+        // stats, retail force-attack.
+        bool forceAtk = _forceAttackArmed;
         ActorRenderState? best = PickActorAtCursor(cursorPx, s =>
-            !s.IsDead && !s.IsPlayer && !s.IsPartyMember
-            && s.Actor.Stats.IsCombatant && s.IsEvilAligned && s.IsSelectable);
+            !s.IsDead && !s.IsPlayer && (forceAtk || !s.IsPartyMember)
+            && s.Actor.Stats.IsCombatant && (forceAtk || s.IsEvilAligned) && s.IsSelectable);
         if (best is null)
         {
             float bestDist = ClickAttackRadius;
@@ -26257,9 +26431,9 @@ void main()
             {
                 if (s.IsDead) continue;
                 if (s.IsPlayer) continue;
-                if (s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
+                if (!forceAtk && s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
-                if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+                if ((!forceAtk && !s.IsEvilAligned) || !s.IsSelectable) continue; // SC-ALIGNMENT
                 if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
@@ -26292,6 +26466,7 @@ void main()
         // SELECTION: selected members lock this target (force-attack); the
         // hero only engages when selected. Ordering members onto a foe
         // clears any pending move order for them.
+        _forceAttackArmed = false;   // the armed order is spent on this click
         OrderSelectedMembersAttack(best);
         if (!_selectedPartyIdx.Contains(0) || _player.Actor.Combat.Downed)
         {
@@ -32350,14 +32525,17 @@ void main()
             if (t < 0f) return;
             var groundHit = near + dir * t;
 
+            // SC-CMD-KEYS — an armed Force Cast (authored C) drops the
+            // alignment and party guards, retail force-cast.
+            bool forceCast = _forceCastArmed;
             float bestDist = ClickAttackRadius;
             foreach (var s in _actors)
             {
                 if (s.IsDead) continue;
                 if (s.IsPlayer) continue;
-                if (s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
+                if (!forceCast && s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
-                if (!s.IsEvilAligned || !s.IsSelectable) continue; // SC-ALIGNMENT
+                if ((!forceCast && !s.IsEvilAligned) || !s.IsSelectable) continue; // SC-ALIGNMENT
             if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
@@ -32365,6 +32543,7 @@ void main()
                 float d  = MathF.Sqrt(dx * dx + dz * dz);
                 if (d < bestDist) { bestDist = d; best = s; }
             }
+            if (best is not null) _forceCastArmed = false;   // order spent
 
             // Phase 21-SC-BARREL-B — no actor under cursor? Try a breakable
             // static prop. The cursor sprite already previews this state
