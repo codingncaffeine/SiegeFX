@@ -9404,6 +9404,9 @@ void main()
         _window.Update  += OnUpdate;
         _window.Render  += OnRender;
         _window.Resize  += OnResize;
+        // SC-DISPLAY-MODE-TASKBAR — borderless pins topmost only while
+        // focused; the focus edge is the whole mechanism.
+        _window.FocusChanged += OnWindowFocusChanged;
         // Phase 16b — release GL resources while the context is still alive.
         // Silk.NET's Run() returns after the GLFW window is destroyed, so the
         // outer Dispose() runs with no current context and DeleteTextures
@@ -9455,6 +9458,11 @@ void main()
         if (_diagMode) _diagBootStopwatch.Start();
         _gl = GL.GetApi(_window);
         _input = _window.CreateInput();
+
+        // SC-DISPLAY-MODE-TASKBAR — booting straight into borderless (prefs)
+        // must pin over the taskbar too; the initial show doesn't reliably
+        // raise FocusChanged, so apply once here.
+        if (IsBorderlessNow) SetBorderlessTopmost(true);
 
         // Title-bar + taskbar icon. GLFW ignores the exe's <ApplicationIcon>
         // for its own window, and only lands the icon on the Windows TASKBAR
@@ -26435,6 +26443,36 @@ void main()
     // center on the monitor.
     private Vector2D<int>? _windowedPos;
 
+    // SC-DISPLAY-MODE-TASKBAR — borderless must beat the taskbar. The shell
+    // only slides its always-on-top taskbar behind a window its fullscreen
+    // heuristic recognizes, and that detection is unreliable for undecorated
+    // GL windows (field report: taskbar stayed over the game). Modern
+    // borderless titles pin the window TOPMOST while it has focus and release
+    // it on focus loss, so alt-tab, other apps, and our own ownerless dialogs
+    // (folder pickers) layer normally the moment they activate — replicated
+    // here via the window's focus edge.
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter,
+        int x, int y, int cx, int cy, uint uFlags);
+    private const uint SwpNoSizeNoMoveNoActivate = 0x0001 | 0x0002 | 0x0010;
+
+    private bool IsBorderlessNow =>
+        _window.WindowState == WindowState.Normal
+        && _window.WindowBorder == WindowBorder.Hidden;
+
+    private void SetBorderlessTopmost(bool on)
+    {
+        nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
+        if (hwnd == 0) return;
+        SetWindowPos(hwnd, on ? (nint)(-1) : (nint)(-2), // HWND_TOPMOST / HWND_NOTOPMOST
+            0, 0, 0, 0, SwpNoSizeNoMoveNoActivate);
+    }
+
+    private void OnWindowFocusChanged(bool focused)
+    {
+        if (IsBorderlessNow) SetBorderlessTopmost(focused);
+    }
+
     /// <summary>SC-DISPLAY-MODE — Resolution + display mode, applied on OK
     /// only (mid-menu mode switches are jarring). Windowed = free resize
     /// (the dropdown doubles as a preset); Borderless = undecorated window
@@ -26453,6 +26491,7 @@ void main()
         switch (s.DisplayMode)
         {
             case "Fullscreen":
+                if (isBorderless) SetBorderlessTopmost(false);
                 if (!isFs)
                 {
                     RememberWindowedPlacement(isBorderless);
@@ -26471,12 +26510,16 @@ void main()
                 _window.WindowBorder = WindowBorder.Hidden;
                 _window.Position = mb.Origin;
                 _window.Size = mb.Size;
+                // The options menu is open, so the game holds focus — pin
+                // over the taskbar now; the focus edge maintains it after.
+                SetBorderlessTopmost(true);
                 break;
             }
 
             default: // Windowed
             {
                 bool leaving = isFs || isBorderless;
+                if (isBorderless) SetBorderlessTopmost(false);
                 if (isFs) _window.WindowState = WindowState.Normal;
                 if (_window.WindowBorder != WindowBorder.Resizable)
                     _window.WindowBorder = WindowBorder.Resizable;
