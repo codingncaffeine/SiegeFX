@@ -73,6 +73,11 @@ internal sealed class RenderHostTriggerContext : TriggerContext
         _host.OnTriggerMoodChange(moodName);
     }
 
+    public override void SetInterestRadius(float radius)
+    {
+        _host.OnTriggerSetInterestRadius(radius);
+    }
+
     public override void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin)
     {
         _host.OnTriggerCallSfxScript(scriptName, args, origin);

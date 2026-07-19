@@ -16510,6 +16510,15 @@ void main()
     private bool PartyWrangled => _wranglerActive.Count > 0;
     // SC-NIS-VERBS — fader_proxy screen fade (0 = clear, 1 = black).
     private float _screenFadeAlpha, _screenFadeTarget;
+
+    // SC-INTEREST-RADIUS — authored AI activation radius (0 = unlimited).
+    private float _aiInterestRadius;
+
+    public void OnTriggerSetInterestRadius(float radius)
+    {
+        _aiInterestRadius = MathF.Max(0f, radius);
+        Console.WriteLine($"[trigger] interest radius → {(radius > 0.5f ? $"{radius:F0}u" : "unlimited")}");
+    }
     private HashSet<string>? _commandGasLoaded;
 
     // SC-NORICK — cmd_animation_command target actor (client_scid) -> the command's
@@ -22189,6 +22198,16 @@ void main()
                     // loop in TickPartyFollowers; skip them here so they don't
                     // chase the player as if hostile.
                     if (s.IsPartyMember) continue;
+                    // SC-INTEREST-RADIUS — an authored set_interest_radius
+                    // freezes AI beyond the radius from the player (NIS
+                    // scenes calm the world outside the shot). 0 = off.
+                    if (_aiInterestRadius > 0.5f && _playerFollower is not null)
+                    {
+                        var ird = s.CurrentTransform.Translation - _playerFollower.Position;
+                        if (ird.X * ird.X + ird.Z * ird.Z
+                            > _aiInterestRadius * _aiInterestRadius)
+                            continue;
+                    }
                     // SC-ALIGNMENT — only evil-chain actors hunt the party;
                     // good combatants (guards, kings) never turn on you.
                     bool hostile = s.IsEvilAligned && s.Actor.Stats.IsCombatant
