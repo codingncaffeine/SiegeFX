@@ -9460,9 +9460,14 @@ void main()
         _input = _window.CreateInput();
 
         // SC-DISPLAY-MODE-TASKBAR — booting straight into borderless (prefs)
-        // must pin over the taskbar too; the initial show doesn't reliably
-        // raise FocusChanged, so apply once here.
-        if (IsBorderlessNow) SetBorderlessTopmost(true);
+        // must cover the FULL monitor (the boot path sized from Silk's
+        // work-area bounds) and pin over the taskbar; the initial show
+        // doesn't reliably raise FocusChanged, so apply once here.
+        if (IsBorderlessNow)
+        {
+            ApplyBorderlessRect();
+            SetBorderlessTopmost(true);
+        }
 
         // Title-bar + taskbar icon. GLFW ignores the exe's <ApplicationIcon>
         // for its own window, and only lands the icon on the Windows TASKBAR
@@ -26460,8 +26465,46 @@ void main()
     private static extern nint GetWindowLongPtrW(nint hWnd, int nIndex);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetWindowRect(nint hWnd, out Win32Rect rect);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint MonitorFromWindow(nint hWnd, uint flags);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetMonitorInfoW(nint hMonitor, ref Win32MonitorInfo info);
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct Win32Rect { public int Left, Top, Right, Bottom; }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct Win32MonitorInfo
+    {
+        public uint Size;
+        public Win32Rect Monitor;
+        public Win32Rect Work;
+        public uint Flags;
+    }
+
+    /// <summary>SC-DISPLAY-MODE-TASKBAR round 4 — the actual root cause,
+    /// straight from the field logs: rect=0,0..3440,1392 on a 3440x1440
+    /// panel. Silk's IMonitor.Bounds is GLFW's WORK AREA (monitor minus
+    /// taskbar), so "borderless covering the monitor" stopped exactly one
+    /// taskbar-height short — the taskbar was never on top of the game,
+    /// the game ended above it, and no shell fullscreen heuristic could
+    /// match a window that size. Re-rect from the Win32 monitor rect —
+    /// the full panel in physical pixels (per-monitor DPI aware, same
+    /// coordinate space GLFW uses).</summary>
+    private void ApplyBorderlessRect()
+    {
+        nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
+        if (hwnd == 0) return;
+        nint hmon = MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */);
+        var mi = new Win32MonitorInfo
+        { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<Win32MonitorInfo>() };
+        if (hmon == 0 || !GetMonitorInfoW(hmon, ref mi)) return;
+        _window.Position = new Vector2D<int>(mi.Monitor.Left, mi.Monitor.Top);
+        _window.Size = new Vector2D<int>(
+            mi.Monitor.Right - mi.Monitor.Left, mi.Monitor.Bottom - mi.Monitor.Top);
+        Console.WriteLine(
+            $"[display] borderless rect -> {mi.Monitor.Left},{mi.Monitor.Top}.." +
+            $"{mi.Monitor.Right},{mi.Monitor.Bottom} (full monitor; work area was " +
+            $"{mi.Work.Left},{mi.Work.Top}..{mi.Work.Right},{mi.Work.Bottom})");
+    }
     private const uint SwpNoSizeNoMoveNoActivate = 0x0001 | 0x0002 | 0x0010;
     private const int GwlExStyle = -20;
     private const long WsExTopmost = 0x8;
@@ -26605,10 +26648,14 @@ void main()
             {
                 if (isFs) _window.WindowState = WindowState.Normal;
                 else if (!isBorderless) RememberWindowedPlacement(borderless: false);
+                // Silk bounds first (work-area sized — gets the window ONTO
+                // the right monitor), then the Win32 full-monitor re-rect
+                // fixes the taskbar-height shortfall (round 4, see helper).
                 var mb = (_window.Monitor ?? Silk.NET.Windowing.Monitor.GetMainMonitor(_window)).Bounds;
                 _window.WindowBorder = WindowBorder.Hidden;
                 _window.Position = mb.Origin;
                 _window.Size = mb.Size;
+                ApplyBorderlessRect();
                 // The options menu is open, so the game holds focus — pin
                 // over the taskbar now; the focus edge maintains it after.
                 SetBorderlessTopmost(true);
