@@ -5056,6 +5056,17 @@ public sealed class RenderHost : IDisposable
         _skinShader.SetVec3Array("uDirColor", pcol);
         _skinShader.SetInt("uPointCount", 0);
         _skinShader.SetInt("uUseBakedLight", 0);
+        // SC-PORTRAIT-GAMMA — the portrait renders BEFORE the world skin
+        // pass on a fresh boot, so the shared shader still holds the GL
+        // default uGamma=0 → pow(lit, 10) crushed the hero to a grey
+        // silhouette until some later re-render (equipping armor) happened
+        // to run after the world had stamped its gamma. Same self-contained
+        // uniform set HeroPreviewRenderer ships (397bc65): gamma is the
+        // load-bearing one; fog and subset-tint guard against stale world
+        // state bleeding into the studio shot.
+        _skinShader.SetFloat("uGamma", _gammaLevel > 0.05f ? _gammaLevel : 1.0f);
+        _skinShader.SetInt("uFogOn", 0);
+        _skinShader.SetInt("uSubsetTintActive", 0);
 
         if (_skinScratch.Length < bones)
             _skinScratch = new Matrix4x4[Math.Max(bones, 64)];
@@ -38545,7 +38556,10 @@ void main()
                     int apBones = s.Actor.Mesh.BoneCount;
                     if (_skinScratch.Length < apBones)
                         _skinScratch = new Matrix4x4[Math.Max(apBones, 64)];
-                    AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, apClip, apT, _skinScratch);
+                    // SC-PROP-ANIM-ANCHOR — scenery roots stay planted; the
+                    // clip's constant root offset lifted trees onto visible
+                    // base discs ("coaster"), see AnimationRuntime overload.
+                    AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, apClip, apT, _skinScratch, anchorRoot: true);
                     float apScale = s.Actor.Stats.RenderScale;
                     _skinShader.SetMatrix4("uModel",
                         apScale == 1f ? s.CurrentTransform

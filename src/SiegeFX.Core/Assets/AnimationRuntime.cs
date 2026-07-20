@@ -56,6 +56,19 @@ public static class AnimationRuntime
     /// <paramref name="skinOut"/>. Hot-path callers (per-frame, per-actor) should
     /// reuse one scratch buffer across the entire actor list.</summary>
     public static void ComputeSkinMatrices(AspMesh mesh, PrsAnimation anim, float timeSec, Span<Matrix4x4> skinOut)
+        => ComputeSkinMatrices(mesh, anim, timeSec, skinOut, anchorRoot: false);
+
+    /// <summary>SC-PROP-ANIM-ANCHOR overload — <paramref name="anchorRoot"/>
+    /// pins parentless bones' TRANSLATION at bind + the clip's own
+    /// delta-from-first-frame. Scenery loops (DS1 sway trees, bobbing logs)
+    /// can author the root position track against a different origin than
+    /// the mesh bind; played verbatim through the skin path the whole mesh
+    /// rides that constant difference — fh_r1's 745 trees hovered one root
+    /// offset above their planted spot ("sitting on a coaster"). The
+    /// first-frame delta reference keeps intentional oscillation (bobbing)
+    /// while killing the constant bias. Actors must NOT use this — their
+    /// clips' root motion is a convention the actor pipeline expects.</summary>
+    public static void ComputeSkinMatrices(AspMesh mesh, PrsAnimation anim, float timeSec, Span<Matrix4x4> skinOut, bool anchorRoot)
     {
         var bc = mesh.BoneCount;
         if (bc == 0) return;
@@ -83,7 +96,14 @@ public static class AnimationRuntime
             var prs = map[i]; if (prs < 0) continue;
             var keys = anim.BoneKeys[prs]; if (keys is null) continue;
             if (keys.RotKeys.Count > 0) localRot[i] = SampleRotation(keys, anim.AnimLength, timeSec);
-            if (keys.PosKeys.Count > 0) localPos[i] = SamplePosition(keys, anim.AnimLength, timeSec);
+            if (keys.PosKeys.Count > 0)
+            {
+                var pos = SamplePosition(keys, anim.AnimLength, timeSec);
+                if (anchorRoot && mesh.BoneParents[i] < 0)
+                    pos = mesh.BindPose[i].Translation
+                        + (pos - SamplePosition(keys, anim.AnimLength, 0f));
+                localPos[i] = pos;
+            }
         }
         for (var i = 0; i < bc; i++)
         {
