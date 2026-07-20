@@ -666,12 +666,26 @@ public sealed class RenderHost : IDisposable
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Brain is null) continue;
+            // SC-AUTO-DEFEND-TARGETS — only EVIL combatants are legal
+            // (retail never lets the hero swing at guards, and the
+            // NPC-battle good fighters run Chase/Attack states too — this
+            // scan used to grab them). The spot must also be legitimate:
+            // same-story vertical band + clear sight, the exact gates
+            // brain aggro uses — ungated, a crypt mob one floor below in
+            // a chase flap latched the pending attack and marched the
+            // hero off to swing at air (field report: random melee
+            // attacks out of combat after a fight).
+            if (!s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
             if (s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Attack
                 && s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Chase) continue;
             var p = s.CurrentTransform.Translation;
+            if (MathF.Abs(p.Y - pp.Y) > SiegeFX.Core.Actors.ActorBrain.AggroVerticalBand) continue;
             float dx = p.X - pp.X, dz = p.Z - pp.Z;
             float d2 = dx * dx + dz * dz;
-            if (d2 < bestD2) { bestD2 = d2; foe = s; }
+            if (d2 >= bestD2) continue;
+            if (IsSightBlocked(p, pp)) continue;
+            bestD2 = d2;
+            foe = s;
         }
         if (foe is null) return;
         if (SpellSlotActive && _playerSpellbook is not null)
