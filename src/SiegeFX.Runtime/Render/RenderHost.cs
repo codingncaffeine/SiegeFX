@@ -27016,7 +27016,20 @@ void main()
             int boxYGlBottom = viewportH - boxYTop - boxH;
             _gl?.Enable(EnableCap.ScissorTest);
             _gl?.Scissor(boxX, boxYGlBottom, (uint)boxW, (uint)boxH);
+            // SC-FE-CULL — the title drum's tip mechanism NEEDS backface
+            // culling (tip-up plate = culled; tip-down = the visible title,
+            // recipe §LoadGame). FrontendShotHost always sets this state —
+            // which is why the goldens were clean — but the live pass
+            // inherited whatever the frame left behind: on the creator the
+            // tip-up CHOOSE HERO plate stopped culling and the title drew
+            // twice. Scope cull-on to the chrome draw; the per-widget
+            // overlay draws below keep the cull-off environment they were
+            // built and tuned under.
+            _gl?.Enable(EnableCap.CullFace);
+            _gl?.CullFace(GLEnum.Back);
+            _gl?.FrontFace(GLEnum.Ccw);
             _frontendScene.Draw(viewportW, viewportH);
+            _gl?.Disable(EnableCap.CullFace);
             if (_frontendScene.State == Hud.FrontendScene.ScreenState.MainMenu)
             {
                 // MainMenuPanel owns hit-testing + the click→action pipeline
