@@ -20,7 +20,7 @@ namespace SiegeFX.Core.Nav;
 /// </summary>
 public sealed class NavFollower
 {
-    public NavMesh Mesh { get; }
+    public NavMesh Mesh { get; private set; }
 
     /// <summary>Current world position (region-space). Y is resampled from the triangle
     /// the follower is standing on after every tick.</summary>
@@ -201,6 +201,28 @@ public sealed class NavFollower
                 $"path={_path.Count}tri waypoints={_waypoints.Count} " +
                 $"blocked={PathBlocked}{reason}");
         }
+    }
+
+    /// <summary>SC-NAV-REHOME — swap this follower onto a freshly rebuilt
+    /// mesh. Region streaming, elevators, and breakables REPLACE the live
+    /// NavMesh object; a follower keeping the old one paths against stale
+    /// obstacle marks and misses every newly welded triangle (field logs:
+    /// followerMesh=49438tri vs liveMesh=76580tri, mobs blocked forever).
+    /// Clears the active path and stuck state; the owner rolls a fresh leg
+    /// on its next tick.</summary>
+    public void Rehome(NavMesh mesh)
+    {
+        Mesh = mesh;
+        _path.Clear();
+        _waypoints.Clear();
+        _pathIdx = 0;
+        _waypointIdx = 0;
+        CurrentTriangle = -1;
+        PathBlocked = false;
+        ReachedGoal = true;
+        _stuckTicks = 0;
+        _stuckRecoveryAttempts = 0;
+        _hasLastTickPos = false;
     }
 
     /// <summary>Phase 19b — drop the follower at <paramref name="pos"/> and clear

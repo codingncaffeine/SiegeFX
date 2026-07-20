@@ -198,6 +198,16 @@ public sealed class ActorFollower
         }
     }
 
+    /// <summary>SC-NAV-REHOME — carry this wander driver onto a rebuilt
+    /// mesh in place; brain state stays intact and the next tick rolls a
+    /// fresh leg on the new triangles.</summary>
+    public void Rehome(NavMesh mesh)
+    {
+        Follower.Rehome(mesh);
+        _idleTicksRemaining = 1;
+        _legArmed = false;
+    }
+
     /// <summary>Phase 19b — teleport the underlying nav follower to
     /// <paramref name="pos"/> and force a fresh wander pick on the next tick.
     /// Used by save/load to restore actor positions; the saved facing is

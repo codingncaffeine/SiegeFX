@@ -7231,6 +7231,33 @@ public sealed class RenderHost : IDisposable
     private static float BodyRadius(ActorRenderState s)
         => Math.Clamp(0.40f * s.Actor.Stats.RenderScale, 0.20f, 1.50f);
 
+    /// <summary>SC-NAV-REHOME — point every live follower at a freshly
+    /// rebuilt mesh (brains keep their state; each rolls a fresh leg next
+    /// tick). The old "NPCs only wander locally, a stale mesh is fine"
+    /// assumption died in the field: stale followers path against outdated
+    /// obstacle marks and miss every new weld — the roam-audit's
+    /// followerMesh/liveMesh fingerprint split with mobs blocked forever.</summary>
+    private void RehomeAllFollowers(SiegeFX.Core.Nav.NavMesh nav)
+    {
+        int rehomed = 0;
+        foreach (var s in _actors)
+        {
+            var f = s.Brain?.Wander;
+            if (f is null || ReferenceEquals(f.Follower.Mesh, nav)) continue;
+            f.Rehome(nav);
+            rehomed++;
+        }
+        foreach (var m in _party)
+        {
+            var f = m.Brain?.Wander;
+            if (f is null || ReferenceEquals(f.Follower.Mesh, nav)) continue;
+            f.Rehome(nav);
+            rehomed++;
+        }
+        if (rehomed > 0)
+            Console.WriteLine($"[nav-rehome] {rehomed} follower(s) moved onto the rebuilt mesh ({nav.TriangleCount} tris)");
+    }
+
     private void TickBodySeparation(float dt)
     {
         if (_player is null || _playerFollower is null || _player.IsDead) return;
@@ -7279,13 +7306,24 @@ public sealed class RenderHost : IDisposable
                 }
                 else { nx = dx / d; nz = dz / d; }
                 float push = MathF.Min((want - d) * 0.5f, maxPush);
-                if (fa is not null && fb is not null)
+                // SC-BODY-SEPARATION-ANCHOR — retail bodies yield to the
+                // party, never the reverse (field report: a krug pack
+                // bulldozed the player across the map to their death).
+                // Rank: player(2) immovable against everyone, party(1)
+                // immovable against monsters/NPCs, equals push soft-
+                // symmetric so packs and the party still shuffle among
+                // themselves.
+                int rankA = a.IsPlayer ? 2 : a.IsPartyMember ? 1 : 0;
+                int rankB = b.IsPlayer ? 2 : b.IsPartyMember ? 1 : 0;
+                if (fa is null || (fb is not null && rankB < rankA))
+                    fb!.Nudge(nx * push * 2f, nz * push * 2f);
+                else if (fb is null || rankA < rankB)
+                    fa.Nudge(-nx * push * 2f, -nz * push * 2f);
+                else
                 {
                     fa.Nudge(-nx * push, -nz * push);
                     fb.Nudge(nx * push, nz * push);
                 }
-                else if (fa is not null) fa.Nudge(-nx * push * 2f, -nz * push * 2f);
-                else fb!.Nudge(nx * push * 2f, nz * push * 2f);
             }
         }
     }
@@ -9404,9 +9442,6 @@ void main()
         _window.Update  += OnUpdate;
         _window.Render  += OnRender;
         _window.Resize  += OnResize;
-        // SC-DISPLAY-MODE-TASKBAR — borderless pins topmost only while
-        // focused; the focus edge is the whole mechanism.
-        _window.FocusChanged += OnWindowFocusChanged;
         // Phase 16b — release GL resources while the context is still alive.
         // Silk.NET's Run() returns after the GLFW window is destroyed, so the
         // outer Dispose() runs with no current context and DeleteTextures
@@ -9460,14 +9495,9 @@ void main()
         _input = _window.CreateInput();
 
         // SC-DISPLAY-MODE-TASKBAR — booting straight into borderless (prefs)
-        // must cover the FULL monitor (the boot path sized from Silk's
-        // work-area bounds) and pin over the taskbar; the initial show
-        // doesn't reliably raise FocusChanged, so apply once here.
-        if (IsBorderlessNow)
-        {
-            ApplyBorderlessRect();
-            SetBorderlessTopmost(true);
-        }
+        // must cover the FULL monitor; the boot path sized from Silk's
+        // work-area bounds, one taskbar-height short.
+        if (IsBorderlessNow) ApplyBorderlessRect();
 
         // Title-bar + taskbar icon. GLFW ignores the exe's <ApplicationIcon>
         // for its own window, and only lands the icon on the Windows TASKBAR
@@ -14693,12 +14723,12 @@ void main()
         LoadElevators(_worldRegionGraphs.Select(t => t.Path));
 
         // Rebuild the nav mesh against the full unified scope so newly-loaded
-        // floor tris weld to the original ring. Existing NPC followers keep
-        // their old mesh reference (they only wander locally so loss of the
-        // newest tris is fine); the player follower is reseated below so the
-        // PC can walk onto the new terrain.
+        // floor tris weld to the original ring. Every live follower is
+        // re-homed onto it (SC-NAV-REHOME — stale-mesh followers pathed
+        // against outdated obstacle marks and froze); the player follower
+        // is reseated below so the PC can walk onto the new terrain.
         var newNav = RebuildNavMesh();
-        if (newNav is not null) _navMesh = newNav;
+        if (newNav is not null) { _navMesh = newNav; RehomeAllFollowers(newNav); }
         // SC-NAV-OBSTACLE-AVOID audit fold — re-mark obstacles
         // against the freshly-built navmesh BEFORE LoadStaticProps
         // adds the new region's props. After LoadStaticProps runs
@@ -14883,7 +14913,7 @@ void main()
             if (structural)
             {
                 var nav = RebuildNavMesh();
-                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); }
+                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); RehomeAllFollowers(nav); }
             }
         }
     }
@@ -21147,6 +21177,7 @@ void main()
                 {
                     _navMesh = nav;
                     MarkAllObstacles();
+                    RehomeAllFollowers(nav);
                     if (_player is not null && _playerFollower is not null)
                     {
                         var pos = _player.CurrentTransform.Translation;
@@ -21229,6 +21260,7 @@ void main()
                 {
                     _navMesh = nav;
                     MarkAllObstacles();
+                    RehomeAllFollowers(nav);
                     if (_player is not null && _playerFollower is not null)
                     {
                         var pos = _player.CurrentTransform.Translation;
@@ -21841,6 +21873,7 @@ void main()
         {
             _navMesh = nav;
             MarkAllObstacles();
+            RehomeAllFollowers(nav);
             if (_player is not null && _playerFollower is not null)
             {
                 var pos = _playerFollower.Position;
@@ -21935,6 +21968,7 @@ void main()
         {
             _navMesh = nav;
             MarkAllObstacles();
+            RehomeAllFollowers(nav);
         }
     }
 
@@ -23391,8 +23425,6 @@ void main()
 
     private void OnUpdate(double dt)
     {
-        // SC-DISPLAY-MODE-TASKBAR — keep the borderless topmost pin honest.
-        TickTopmostWatchdog(dt);
         // Re-apply the window/taskbar icon across the first frames of the live
         // loop. GLFW only pushes the icon to the Windows taskbar if events are
         // polled within ~500ms of SetWindowIcon (glfw#2753); OnLoad sets it
@@ -26450,21 +26482,14 @@ void main()
     // center on the monitor.
     private Vector2D<int>? _windowedPos;
 
-    // SC-DISPLAY-MODE-TASKBAR — borderless must beat the taskbar. The shell
-    // only slides its always-on-top taskbar behind a window its fullscreen
-    // heuristic recognizes, and that detection is unreliable for undecorated
-    // GL windows (field report: taskbar stayed over the game). Modern
-    // borderless titles pin the window TOPMOST while it has focus and release
-    // it on focus loss, so alt-tab, other apps, and our own ownerless dialogs
-    // (folder pickers) layer normally the moment they activate — replicated
-    // here via the window's focus edge.
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter,
-        int x, int y, int cx, int cy, uint uFlags);
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern nint GetWindowLongPtrW(nint hWnd, int nIndex);
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool GetWindowRect(nint hWnd, out Win32Rect rect);
+    // SC-DISPLAY-MODE-TASKBAR — plain borderless windowed: an undecorated
+    // window at the EXACT full-monitor rect, nothing else. The shell's own
+    // fullscreen detection hides the taskbar behind it while it is
+    // foreground. Earlier rounds layered a focused topmost pin and
+    // ITaskbarList2::MarkFullscreenWindow on top — both pushed the surface
+    // into exclusive-style presentation (black alt-tab flicker + WGC
+    // recording captured darkness) and neither was ever the missing piece:
+    // the rect was one taskbar-height short (Silk Bounds = work area).
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern nint MonitorFromWindow(nint hWnd, uint flags);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -26505,115 +26530,9 @@ void main()
             $"{mi.Monitor.Right},{mi.Monitor.Bottom} (full monitor; work area was " +
             $"{mi.Work.Left},{mi.Work.Top}..{mi.Work.Right},{mi.Work.Bottom})");
     }
-    private const uint SwpNoSizeNoMoveNoActivate = 0x0001 | 0x0002 | 0x0010;
-    private const int GwlExStyle = -20;
-    private const long WsExTopmost = 0x8;
-
-    // SC-DISPLAY-MODE-TASKBAR round 3 — field logs proved the window HOLDS
-    // WS_EX_TOPMOST and the Win11 taskbar still draws above it: explorer
-    // re-raises the taskbar inside the topmost band, an arms race z-order
-    // can't win. The way modern apps win is the documented shell contract:
-    // ITaskbarList2::MarkFullscreenWindow (Chromium's mechanism) — explorer
-    // itself demotes the taskbar below a marked foreground window.
-    [System.Runtime.InteropServices.ComImport,
-     System.Runtime.InteropServices.Guid("56FDF344-FD6D-11d0-958A-006097C9A090"),
-     System.Runtime.InteropServices.ClassInterface(System.Runtime.InteropServices.ClassInterfaceType.None)]
-    private class TaskbarListCom { }
-
-    [System.Runtime.InteropServices.ComImport,
-     System.Runtime.InteropServices.Guid("602D4995-B13A-429B-A66E-1935E44F4317"),
-     System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
-    private interface ITaskbarList2
-    {
-        void HrInit();
-        void AddTab(nint hwnd);
-        void DeleteTab(nint hwnd);
-        void ActivateTab(nint hwnd);
-        void SetActiveAlt(nint hwnd);
-        void MarkFullscreenWindow(nint hwnd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool fullscreen);
-    }
-
-    private ITaskbarList2? _taskbarList;
-    private bool _taskbarListFailed;
-
-    private bool _windowFocused = true;
-    private double _topmostWatchdog;
-
     private bool IsBorderlessNow =>
         _window.WindowState == WindowState.Normal
         && _window.WindowBorder == WindowBorder.Hidden;
-
-    private unsafe void SetBorderlessTopmost(bool on)
-    {
-        // GLFW re-applies z-order from its own FLOATING flag on every
-        // mode/monitor transition — leaving exclusive fullscreen ends in an
-        // internal SetWindowPos(HWND_NOTOPMOST) when the flag is off, which
-        // stripped a raw WS_EX_TOPMOST pin the moment the user cycled
-        // Fullscreen → Borderless (field-reproduced). Set the ATTRIBUTE so
-        // GLFW maintains the band itself across its transitions, then apply
-        // the immediate Win32 pin for this instant, and log what stuck.
-        try
-        {
-            var glfw = Silk.NET.Windowing.Glfw.GlfwWindowing.GetExistingApi(_window);
-            glfw?.SetWindowAttrib((Silk.NET.GLFW.WindowHandle*)_window.Handle,
-                Silk.NET.GLFW.WindowAttributeSetter.Floating, on);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[display] glfw floating attribute failed: {ex.Message}");
-        }
-        nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
-        if (hwnd == 0) { Console.WriteLine("[display] topmost pin skipped — no hwnd"); return; }
-        bool ok = SetWindowPos(hwnd, on ? (nint)(-1) : (nint)(-2), // HWND_TOPMOST / HWND_NOTOPMOST
-            0, 0, 0, 0, SwpNoSizeNoMoveNoActivate);
-        bool has = ((long)GetWindowLongPtrW(hwnd, GwlExStyle) & WsExTopmost) != 0;
-        GetWindowRect(hwnd, out var wr);
-        Console.WriteLine($"[display] borderless topmost -> {on} (setpos={ok} exTopmost={has} " +
-            $"rect={wr.Left},{wr.Top}..{wr.Right},{wr.Bottom})");
-        // The load-bearing piece: explorer demotes its taskbar below a
-        // window marked fullscreen while that window is foreground — the
-        // same contract every modern borderless title rides.
-        try
-        {
-            if (_taskbarList is null && !_taskbarListFailed)
-            {
-                _taskbarList = (ITaskbarList2)new TaskbarListCom();
-                _taskbarList.HrInit();
-            }
-            _taskbarList?.MarkFullscreenWindow(hwnd, on);
-            Console.WriteLine($"[display] shell fullscreen mark -> {on}");
-        }
-        catch (Exception ex)
-        {
-            _taskbarListFailed = true;
-            Console.WriteLine($"[display] MarkFullscreenWindow failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
-        }
-    }
-
-    private void OnWindowFocusChanged(bool focused)
-    {
-        _windowFocused = focused;
-        if (IsBorderlessNow) SetBorderlessTopmost(focused);
-    }
-
-    /// <summary>SC-DISPLAY-MODE-TASKBAR — once-a-second pin verification.
-    /// Explorer and windowing transitions can strip WS_EX_TOPMOST outside
-    /// our sight; while borderless holds focus, detect a missing pin and
-    /// repair it (the log line is the diagnosis when the taskbar wins).</summary>
-    private void TickTopmostWatchdog(double dt)
-    {
-        _topmostWatchdog += dt;
-        if (_topmostWatchdog < 1.0) return;
-        _topmostWatchdog = 0;
-        if (!IsBorderlessNow || !_windowFocused) return;
-        nint hwnd = _window.Native?.Win32?.Hwnd ?? 0;
-        if (hwnd == 0) return;
-        if (((long)GetWindowLongPtrW(hwnd, GwlExStyle) & WsExTopmost) == 0)
-        {
-            Console.WriteLine("[display] borderless pin was stripped — re-asserting");
-            SetBorderlessTopmost(true);
-        }
-    }
 
     /// <summary>SC-DISPLAY-MODE — Resolution + display mode, applied on OK
     /// only (mid-menu mode switches are jarring). Windowed = free resize
@@ -26633,7 +26552,6 @@ void main()
         switch (s.DisplayMode)
         {
             case "Fullscreen":
-                if (isBorderless) SetBorderlessTopmost(false);
                 if (!isFs)
                 {
                     RememberWindowedPlacement(isBorderless);
@@ -26656,16 +26574,12 @@ void main()
                 _window.Position = mb.Origin;
                 _window.Size = mb.Size;
                 ApplyBorderlessRect();
-                // The options menu is open, so the game holds focus — pin
-                // over the taskbar now; the focus edge maintains it after.
-                SetBorderlessTopmost(true);
                 break;
             }
 
             default: // Windowed
             {
                 bool leaving = isFs || isBorderless;
-                if (isBorderless) SetBorderlessTopmost(false);
                 if (isFs) _window.WindowState = WindowState.Normal;
                 if (_window.WindowBorder != WindowBorder.Resizable)
                     _window.WindowBorder = WindowBorder.Resizable;
@@ -42465,7 +42379,7 @@ void main()
             if (structural)
             {
                 var nav = RebuildNavMesh();
-                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); }
+                if (nav is not null) { _navMesh = nav; MarkAllObstacles(); RehomeAllFollowers(nav); }
             }
             Console.WriteLine($"  load: world state — {ws.Bools.Count} bool(s), {ws.Accumulators.Count} accum, " +
                               $"{ws.OpenedChests.Count} chest(s), {ws.UnlockedUsables.Count} unlock(s), " +
